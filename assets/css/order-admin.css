@@ -1,0 +1,32 @@
+.fflhub-order-ffl-panel {
+    margin-top: 20px;
+    padding: 12px 14px;
+    border-radius: 4px;
+    border: 1px solid #dcdcde;
+    background-color: #f8f9f9;
+}
+
+.fflhub-order-ffl-title {
+    margin-top: 0;
+    margin-bottom: 10px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.fflhub-order-ffl-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.fflhub-order-ffl-table th {
+    text-align: left;
+    padding: 3px 0;
+    width: 130px;
+    color: #555d66;
+    font-weight: 600;
+}
+
+.fflhub-order-ffl-table td {
+    padding: 3px 0;
+}

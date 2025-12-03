@@ -1,0 +1,24 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Dependencies (pick what applies)
+vendor/
+node_modules/
+
+
+# Env / secrets
+.env
+.env.*
+*.key
+*.pem
+
+# LocalWP / WP junk you never want in a plugin repo
+wp-config.php
+wp-content/uploads/
+wp-content/cache/

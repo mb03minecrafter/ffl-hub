@@ -1,0 +1,164 @@
+/* Basic layout */
+
+.fflhub-wrap {
+    max-width: 1100px;
+}
+
+.fflhub-title {
+    margin-bottom: 4px;
+}
+
+.fflhub-description {
+    margin-top: 0;
+    margin-bottom: 20px;
+    color: #555d66;
+}
+
+/* Distributor cards */
+
+.fflhub-distributor-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.fflhub-distributor-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    min-width: 220px;
+    border-radius: 4px;
+    border: 1px solid #dcdcde;
+    background-color: #fff;
+    cursor: pointer;
+    text-align: left;
+    transition:
+        border-color 0.15s ease,
+        box-shadow 0.15s ease,
+        background-color 0.15s ease,
+        transform 0.1s ease;
+}
+
+.fflhub-distributor-card:hover {
+    border-color: #2271b1;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    background-color: #f6f7f7;
+    transform: translateY(-1px);
+}
+
+.fflhub-distributor-card:focus {
+    outline: none;
+    border-color: #2271b1;
+    box-shadow: 0 0 0 1px #2271b1;
+}
+
+.fflhub-distributor-card-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 4px;
+    overflow: hidden;
+    background-color: #f0f0f0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.fflhub-distributor-card-icon img {
+    max-width: 100%;
+    max-height: 100%;
+    display: block;
+}
+
+.fflhub-distributor-label {
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.fflhub-distributor-card-text {
+    flex: 1;
+}
+
+.fflhub-distributor-name {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.fflhub-distributor-description {
+    display: block;
+    font-size: 12px;
+    color: #6c7781;
+}
+
+/* Modal */
+
+.fflhub-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 100000; /* above WP admin bar */
+    display: none;
+}
+
+.fflhub-modal.is-open {
+    display: block;
+}
+
+.fflhub-modal-overlay {
+    position: absolute;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.45);
+}
+
+.fflhub-modal-dialog {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    max-width: 720px;
+    width: 90%;
+    max-height: 85vh;
+    transform: translate(-50%, -50%);
+    background-color: #fff;
+    border-radius: 6px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+    padding: 18px 20px 20px;
+    overflow: hidden;
+}
+
+.fflhub-modal-inner {
+    max-height: calc(85vh - 40px);
+    overflow: auto;
+    padding-right: 4px;
+}
+
+/* Close button */
+
+.fflhub-modal-close {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    border: none;
+    background: none;
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    color: #555d66;
+}
+
+.fflhub-modal-close:hover {
+    color: #000;
+}
+
+/* Modal panels */
+
+.fflhub-modal-panel {
+    display: none;
+}
+
+.fflhub-modal-panel.is-active {
+    display: block;
+}
+
+
+
+

@@ -1,0 +1,284 @@
+.fflhub-distributor-debug-wrap {
+  margin-top: 16px;
+}
+.fflhub-distributor-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 20px;
+  margin-top: 16px;
+}
+.fflhub-distributor-card {
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #dcdcdc;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  padding: 16px 18px;
+}
+.fflhub-distributor-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.fflhub-distributor-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: contain;
+  background: #f5f5f5;
+  padding: 4px;
+}
+.fflhub-distributor-logo-fallback {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  color: #fff;
+  background: #2271b1;
+  text-transform: uppercase;
+  font-size: 14px;
+}
+.fflhub-distributor-card-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fflhub-distributor-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+.fflhub-distributor-id {
+  font-size: 11px;
+  color: #777;
+}
+.fflhub-distributor-card-error {
+  background: #fef2f2;
+  border-left: 4px solid #dc3232;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #7f1d1d;
+}
+.fflhub-distributor-card-body pre {
+  max-height: 320px;
+  overflow: auto;
+  background: #f6f7f7;
+  border-radius: 4px;
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.fflhub-distributor-card-body details {
+  margin-top: 8px;
+}
+.fflhub-distributor-card-body summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+
+/* Distributor Products: cannot drop ship warning */
+.fflhub-distributor-no-dropship {
+    color: #b91c1c;          /* strong red */
+    font-weight: 700;
+    font-size: 13px;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+}
+
+
+
+
+
+
+
+/* Container for the results area */
+.fflhub-product-card {
+    margin-top: 20px;
+    padding: 18px 22px;
+    background: #25292e;
+    border-radius: 10px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+    display: flex;
+    gap: 20px;
+    color: #f3f4f6;
+    align-items: flex-start;
+    box-sizing: border-box;
+}
+
+/* Image block */
+.fflhub-product-card-image {
+    flex: 0 0 220px;
+    max-width: 220px;
+}
+
+.fflhub-product-card-image img {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 8px;
+    background: #111827;
+    object-fit: contain;
+    padding: 4px;
+    box-sizing: border-box;
+}
+
+.fflhub-product-card-image-placeholder {
+    width: 100%;
+    height: 180px;
+    border-radius: 8px;
+    background: #111827;
+    color: #9ca3af;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+}
+
+/* Main content block */
+.fflhub-product-card-main {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Header (title + distributor badge) */
+.fflhub-product-card-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.fflhub-product-card-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0;
+    color: #f9fafb;
+}
+
+.fflhub-product-card-distributor {
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: #374151;
+    color: #e5e7eb;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+/* Meta line (UPC / SKU) */
+.fflhub-product-card-meta {
+    margin: 0 0 6px;
+    font-size: 12px;
+    color: #d1d5db;
+}
+
+.fflhub-product-card-meta strong {
+    font-weight: 600;
+    color: #e5e7eb;
+}
+
+/* Description */
+.fflhub-product-card-description {
+    margin: 6px 0 10px;
+    font-size: 13px;
+    line-height: 1.4;
+    color: #e5e7eb;
+}
+
+/* Pricing grid */
+.fflhub-product-card-pricing {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 4px 16px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(55, 65, 81, 0.9);
+    font-size: 13px;
+}
+
+.fflhub-product-card-pricing p {
+    margin: 0;
+    color: #e5e7eb;
+}
+
+.fflhub-product-card-pricing strong {
+    font-weight: 600;
+    color: #fbbf24; /* yellow accent for labels */
+}
+
+/* Stock info */
+.fflhub-product-card-stock {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(55, 65, 81, 0.9);
+    font-size: 13px;
+}
+
+.fflhub-product-card-stock strong {
+    font-weight: 600;
+    color: #fbbf24;
+}
+
+/* Carriers list (Available From section) */
+.fflhub-product-carriers-list {
+    margin: 14px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.fflhub-product-carrier-item {
+    padding: 6px 10px;
+    margin-bottom: 4px;
+    border-radius: 6px;
+    background: #1f2933;
+    color: #e5e7eb;
+    font-size: 12px;
+}
+
+.fflhub-product-carrier-item strong {
+    color: #f9fafb;
+    font-weight: 600;
+}
+
+/* Small tweaks so this doesn't clash with wp-admin */
+.wrap h2 + .fflhub-product-card {
+    margin-top: 12px;
+}
+
+/* Responsive-ish stacking for narrower admin widths */
+@media (max-width: 900px) {
+    .fflhub-product-card {
+        flex-direction: column;
+    }
+
+    .fflhub-product-card-image {
+        max-width: 100%;
+        flex: 0 0 auto;
+    }
+}
+
+
+
+
+.fflhub-product-carrier-header {
+    margin-bottom: 2px;
+}
+
+.fflhub-product-carrier-metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    font-size: 12px;
+    color: #e5e7eb;
+}
+
+.fflhub-product-carrier-metrics strong {
+    font-weight: 600;
+    color: #fbbf24;
+}

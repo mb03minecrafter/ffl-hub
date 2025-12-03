@@ -1,0 +1,205 @@
+/* =========================================================
+   FFLHub Checkout FFL Picker – Complete Styles
+   ========================================================= */
+
+/* --- Outer card wrapper --- */
+
+.fflhub-checkout-map-wrapper {
+  margin-top: 1.75rem;
+  padding: 1.25rem 1.25rem 1.5rem;
+  border-radius: 0.9rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  margin-bottom: 2rem;
+}
+
+.fflhub-checkout-map-wrapper h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.fflhub-checkout-map-wrapper p {
+  margin: 0 0 0.85rem;
+  font-size: 0.85rem;
+  color: #4b5563;
+}
+
+/* --- ZIP row: label + input + button, aligned --- */
+
+.fflhub-ffl-picker__zip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.95rem;
+}
+
+.fflhub-ffl-picker__zip-row label {
+  font-size: 1rem; /* same size as button text */
+  font-weight: 500;
+  color: #111827;
+  white-space: nowrap;
+  height: 2.4rem; /* match input/button height */
+  display: flex; /* vertically center the text */
+  align-items: center;
+  margin: 0;
+}
+
+.fflhub-ffl-picker__zip-input {
+  flex: 0 1 180px;
+  height: 2.4rem;
+  padding: 0 0.75rem;
+  border-radius: 0.6rem;
+  border: 1px solid #d1d5db;
+  font-size: 1rem;
+  color: #111827;
+  background: #ffffff;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.fflhub-ffl-picker__zip-input:focus {
+  border-color: #111827;
+  box-shadow: 0 0 0 1px #11182715;
+}
+
+.fflhub-ffl-picker__search-button {
+  height: 2.4rem;
+  padding: 0 1.1rem;
+  border-radius: 999px;
+  border: none;
+  background: #111827;
+  color: #f9fafb;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  transition: transform 0.1s ease, box-shadow 0.1s ease, background 0.1s ease;
+}
+
+.fflhub-ffl-picker__search-button:hover {
+  background: #020617;
+  box-shadow: 0 5px 12px rgba(15, 23, 42, 0.25);
+  transform: translateY(-1px);
+}
+
+.fflhub-ffl-picker__search-button:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+/* --- Layout: list + map --- */
+
+.fflhub-ffl-picker__content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+/* Desktop: two columns – list ~35%, map ~65% */
+@media (min-width: 768px) {
+  .fflhub-ffl-picker__content {
+        flex-direction: row;
+        gap: 1.25rem;
+    }
+
+    .fflhub-ffl-picker__list {
+        flex: 0 0 30%;   /* slightly narrower list */
+    }
+
+    .fflhub-ffl-picker__map {
+        flex: 0 0 70%;   /* wider map */
+    }
+}
+
+/* --- List styling --- */
+
+.fflhub-ffl-picker__list {
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+/* Remove bullets & reset spacing */
+.fflhub-ffl-picker__list-inner {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Just in case anything else inside picker uses <ul> */
+.fflhub-ffl-picker ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fflhub-ffl-picker__placeholder {
+  font-size: 0.8rem;
+  color: #6b7280;
+  margin: 0 0 0.4rem;
+}
+
+/* Each dealer row as a compact card */
+.fflhub-ffl-picker__dealer {
+  padding: 0.45rem 0.55rem;
+  margin-bottom: 0.3rem;
+  border-radius: 0.55rem;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease,
+    box-shadow 0.12s ease;
+  display: block;
+}
+
+.fflhub-ffl-picker__dealer:hover {
+  border-color: #d1d5db;
+  background: #f9fafb;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.06);
+}
+
+.fflhub-ffl-picker__dealer.is-selected {
+  border-color: #111827;
+  background: #e5e7eb;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+}
+
+.fflhub-ffl-picker__dealer strong {
+  font-size: 0.86rem;
+  color: #111827;
+}
+
+.fflhub-ffl-picker__dealer-address {
+  margin-top: 0.15rem;
+  font-size: 0.78rem;
+  color: #4b5563;
+}
+
+.fflhub-ffl-picker__dealer-meta {
+  margin-top: 0.1rem;
+  font-size: 0.72rem;
+  color: #6b7280;
+}
+
+.fflhub-ffl-picker__map {
+    padding: 0;              /* let the map use full column width */
+}
+
+/* Map iframe: respect padding and stay inside the box */
+.fflhub-ffl-picker__map-iframe {
+  width: 95%;
+  height: 420px;
+  border: 0;
+  border-radius: 0.9rem;
+  background: #e5e7eb;
+  display: block;
+  box-sizing: border-box; /* ⬅ ensures it fits inside padding */
+}

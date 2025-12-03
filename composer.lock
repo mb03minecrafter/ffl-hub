@@ -1,0 +1,60 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "8bd5c4da5f9611e350ad1b164258ab10",
+    "packages": [
+        {
+            "name": "lipseys/apiintegration",
+            "version": "1.2.2",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/Lipseys/LipseysApiIntegrationPhp.git",
+                "reference": "d650b0355116d44601afdc655f6e393becec9a43"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/Lipseys/LipseysApiIntegrationPhp/zipball/d650b0355116d44601afdc655f6e393becec9a43",
+                "reference": "d650b0355116d44601afdc655f6e393becec9a43",
+                "shasum": ""
+            },
+            "require": {
+                "ext-curl": "*",
+                "ext-json": "*"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "lipseys\\ApiIntegration\\": "src"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Lipsey's LLC",
+                    "email": "api@lipseys.com"
+                }
+            ],
+            "description": "Lipseys Api Integration",
+            "support": {
+                "issues": "https://github.com/Lipseys/LipseysApiIntegrationPhp/issues",
+                "source": "https://github.com/Lipseys/LipseysApiIntegrationPhp/tree/v1.2.2"
+            },
+            "time": "2024-12-13T18:34:11+00:00"
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}
