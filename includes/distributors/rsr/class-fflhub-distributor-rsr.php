@@ -278,6 +278,11 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
             array('image_name')
         );
 
+        $deptNum = $this->get_string_field(
+            $row,
+            array('dept_number')
+        );
+        $reccomended_category = FFLHub_Category_Mapper::map_rsr($deptNum);
 
         //TODO FIGURE OUT RSR FFL REQUIREMENTS CHECKING 
 
@@ -294,6 +299,7 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
             (float) $true_cost,
             (string) $image_url,
             (bool)false, //<--- this shit needs to get fixed 
+            $reccomended_category,
             $raw
         );
     }

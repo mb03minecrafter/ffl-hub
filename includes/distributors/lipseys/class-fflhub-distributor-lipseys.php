@@ -195,6 +195,7 @@ class FFLHub_Distributor_Lipseys extends FFLHub_Distributor_Base
             return null;
         }
 
+
         if (! class_exists('FFLHub_Lipseys_Fulfillment_Table')) {
             error_log('FFLHub Lipseys: FFLHub_Lipseys_Fulfillment_Table class not found in get_product_by_upc().');
             return null;
@@ -212,6 +213,7 @@ class FFLHub_Distributor_Lipseys extends FFLHub_Distributor_Base
         );
 
         if (! $row) {
+
             return null;
         }
 
@@ -234,6 +236,8 @@ class FFLHub_Distributor_Lipseys extends FFLHub_Distributor_Base
             $name_parts[] = $caliber;
         }
 
+
+
         $fallback_desc = isset($row['product_description']) ? (string) $row['product_description'] : '';
 
         $name        = ! empty($name_parts) ? implode(' ', $name_parts) : $fallback_desc;
@@ -251,6 +255,8 @@ class FFLHub_Distributor_Lipseys extends FFLHub_Distributor_Base
         $msrp = isset($row['retail_msrp']) && $row['retail_msrp'] !== ''
             ? (float) $row['retail_msrp']
             : 0.0;
+
+    
 
         // Inventory.
         $quantity_raw = isset($row['inventory_quantity']) ? trim((string) $row['inventory_quantity']) : '';
@@ -274,6 +280,13 @@ class FFLHub_Distributor_Lipseys extends FFLHub_Distributor_Base
         $ffl_required = isset($row['ffl_required']) ? (bool) $row['ffl_required'] : false;
 
 
+
+
+        $item_group = isset($row['item_group']) ? (string) $row['item_group'] : '';
+        $reccomended_category = FFLHub_Category_Mapper::map_lipseys($item_group);
+
+
+
         return new FFLHub_Distributor_Product_Payload(
             (string) $normalized_upc,
             (string) $sku,
@@ -287,6 +300,7 @@ class FFLHub_Distributor_Lipseys extends FFLHub_Distributor_Base
             (float) $true_cost,
             (string) $image_url,
             (bool)$ffl_required,
+            $reccomended_category,
             $row // raw source data
         );
     }

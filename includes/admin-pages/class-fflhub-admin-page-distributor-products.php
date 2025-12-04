@@ -123,6 +123,7 @@ class FFLHub_Admin_Page_Distributor_Products
                     );
 
                 foreach ($distributors as $id => $distributor) {
+
                     if (! $distributor) {
                         continue;
                     }
@@ -306,8 +307,19 @@ class FFLHub_Admin_Page_Distributor_Products
                 $p_shipping    = isset($payload['shipping_cost']) ? (float) $payload['shipping_cost'] : null;
                 $p_true_cost   = isset($payload['true_cost']) ? (float) $payload['true_cost'] : null;
 
-                $p_image_url   = $payload['image_url'] ?? '';
+                $p_image_url    = $payload['image_url'] ?? '';
                 $p_ffl_required = isset($payload['ffl_required']) ? (bool) $payload['ffl_required'] : false;
+
+                // NEW: recommended category path from payload.
+                $p_recommended_category = $payload['recommended_category'] ?? null;
+                $p_recommended_category_label = '';
+
+                if (is_array($p_recommended_category) && ! empty($p_recommended_category)) {
+                    $p_recommended_category_label = implode(' > ', array_map('strval', $p_recommended_category));
+                } elseif (is_string($p_recommended_category) && $p_recommended_category !== '') {
+                    // In case someone later stores it as a plain string.
+                    $p_recommended_category_label = $p_recommended_category;
+                }
                 ?>
                 <hr />
 
@@ -416,6 +428,17 @@ class FFLHub_Admin_Page_Distributor_Products
                                     ? esc_html__('Yes', 'ffl-hub')
                                     : esc_html__('No', 'ffl-hub')
                                 );
+                                ?>
+                            </p>
+
+                            <p>
+                                <strong><?php esc_html_e('Recommended Category:', 'ffl-hub'); ?></strong>
+                                <?php
+                                if ($p_recommended_category_label !== '') {
+                                    echo ' ' . esc_html($p_recommended_category_label);
+                                } else {
+                                    echo ' ' . esc_html__('N/A', 'ffl-hub');
+                                }
                                 ?>
                             </p>
                         </div>
@@ -628,8 +651,6 @@ class FFLHub_Admin_Page_Distributor_Products
         // Title / Description
         $product->set_name($name ?: $sku ?: $upc);
         $product->set_description($description); // full description
-        // optional: you could set short description if you have one
-        // $product->set_short_description( $short_description );
 
         // SKU
         $sku_to_use = $sku ?: $upc;
@@ -639,18 +660,42 @@ class FFLHub_Admin_Page_Distributor_Products
 
         // Price
         $product->set_regular_price(wc_format_decimal($recommended, 2));
-        // if you want sale price, you could set it with $product->set_sale_price()
 
         // Stock / inventory
         $product->set_manage_stock(true);
         $product->set_stock_quantity((int) $qty_sum);
         $product->set_stock_status($qty_sum > 0 ? 'instock' : 'outofstock');
 
-        // Optionally: catalog visibility, status, etc.
-        $product->set_status('draft'); // same as your prior wp_insert_post status
+        // Status / visibility
+        $product->set_status('draft');
         $product->set_catalog_visibility('visible');
 
-        // Save (creates the product post + saves core Woo data)
+        /**
+         * NEW: Set product categories from recommended_category path, if available.
+         *
+         * expected payload['recommended_category'] like:
+         *   [ 'Firearms', 'Handguns', 'Pistols' ]
+         */
+        if (
+            isset($payload['recommended_category']) &&
+            is_array($payload['recommended_category']) &&
+            ! empty($payload['recommended_category']) &&
+            class_exists('FFLHub_Category_Installer')
+        ) {
+            $term_ids = FFLHub_Category_Installer::get_term_ids_for_path($payload['recommended_category']);
+
+            if (! empty($term_ids) && is_array($term_ids)) {
+                // Ensure unique ints.
+                $term_ids = array_values(array_unique(array_map('intval', $term_ids)));
+
+                if (! empty($term_ids)) {
+                    // Attach all categories in the path (top, mid, leaf).
+                    $product->set_category_ids($term_ids);
+                }
+            }
+        }
+
+        // Save (creates the product post + saves core Woo data + categories)
         $product->save();
 
         $product_id = $product->get_id();
@@ -662,10 +707,8 @@ class FFLHub_Admin_Page_Distributor_Products
             );
         }
 
-        // Now set your custom metadata as before
-        // Set WooCommerce UPC field (global unique id)
-        
-        $product->set_global_unique_id($upc); 
+        // Now set your custom metadata as before.
+        $product->set_global_unique_id($upc);
         $product->update_meta_data(FFLHub_Product_Meta::FFLHUB_UPC_META, $upc);
         $product->update_meta_data(FFLHub_Product_Meta::FFLHUB_MANAGED_META, true);
         $product->update_meta_data(FFLHub_Product_Meta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id);
@@ -682,7 +725,6 @@ class FFLHub_Admin_Page_Distributor_Products
 
         $product->update_meta_data(FFLHub_Product_Meta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
 
-       
         // Message / return
         $edit_link = get_edit_post_link($product_id, '');
 
@@ -693,9 +735,7 @@ class FFLHub_Admin_Page_Distributor_Products
             esc_url($edit_link)
         );
 
-
-        $product->save();               // <- required to persist the meta you just added
-
+        $product->save(); // persist meta
 
         return array(
             'message' => $message,

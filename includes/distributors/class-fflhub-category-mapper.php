@@ -6,66 +6,18 @@ if (! defined('ABSPATH')) {
 
 /**
  * Maps distributor-specific category values (Lipsey item groups, RSR department numbers)
- * into FFLHub's unified category + subcategory structure.
+ * into FFLHub's unified category structure.
  */
-
-
-/**
- * 
- * Here is the unified category structure, it is still WIP:
- * 
- * Firearms
- *     Handguns
- *         Pistols    
- *         Revolvers
- *     Rifles
- *         Semi-Auto
- *         Bolt Action
- *         Lever Action
- *         Pump Action
- *         Single Shot / Break Action
- *     Shotguns
- *         Semi-Auto
- *         Bolt Action
- *         Lever Action
- *         Pump Action
- *         Single Shot / Break Action
- *     Other / Specialty
- * Optics / Optics Accessories 
- *     Scopes / Magnified Optics
- *     Red Dots / Non-Magnified Optics
- *     Optic Mounts & Rings
- *     Observation / Range Finding
- *     Optics Accessories
- * Lights and Lasers
- * Magazines
- *     Rifle
- *     Handgun
- *     Shotgun
- * Ammo
- * NFA
- *     Suppressor Accessories 
- *
- * Black Powder
- *     Guns
- *     Firearms
- *     Accessories 
- * Less Lethal
- *     Tasers
- *     Pistol
- *     Rifle
- *     Ammo
- *     Accessories 
- * 
- */
-
-
 class FFLHub_Category_Mapper
 {
-
-
     /**
-     * Map Lipsey's item_group → normalized category/subcategory
+     * Map Lipsey's item_group → unified category path.
+     *
+     * Returns an array like:
+     *   [ top-level, mid-level, leaf ]
+     *   e.g. [ 'Firearms', 'Handguns', 'Pistols' ]
+     *
+     * Some entries may be only 1–2 levels deep depending on what we know.
      */
     public static function map_lipseys(string $item_group): ?array
     {
@@ -74,189 +26,160 @@ class FFLHub_Category_Mapper
         $map = [
 
             // ---- Handguns ----
-            'SPECIALTY PISTOLS' => ['Firearms', 'Handguns', 'Pistol'],
-            'POLYMER CENTERFIRE PISTOLS' => ['Firearms', 'Handguns', 'Pistol'],
-            'POLYMER CENTERFIRE CONCEAL CARRY PISTOLS' => ['Firearms', 'Handguns', 'Pistol'],
-            'METAL FRAME CENTERFIRE PISTOLS' => ['Firearms', 'Handguns', 'Pistol'],
-            'METAL FRAME CENTERFIRE CONCEAL PISTOLS' => ['Firearms', 'Handguns', 'Pistol'],
-            'POLYMER RIMFIRE PISTOLS' => ['Firearms', 'Handguns', 'Pistol'],
-            'METAL FRAME RIMFIRE PISTOLS' => ['Firearms', 'Handguns', 'Pistol'],
-            'TACTICAL CENTERFIRE SEMI-AUTO PISTOLS' => ['Firearms', 'Handguns', 'Pistol'],
-            'TACTICAL RIMFIRE SEMI-AUTO PISTOL' => ['Firearms', 'Handguns', 'Pistol'],
-            'SINGLE SHOT HANDGUNS' => ['Firearms', 'Handguns', 'Pistol'],
-            'DERRINGERS' => ['Firearms', 'Handguns', 'Pistol'],
+            'SPECIALTY PISTOLS'                         => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'POLYMER CENTERFIRE PISTOLS'                => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'POLYMER CENTERFIRE CONCEAL CARRY PISTOLS'  => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'METAL FRAME CENTERFIRE PISTOLS'            => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'METAL FRAME CENTERFIRE CONCEAL PISTOLS'    => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'POLYMER RIMFIRE PISTOLS'                   => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'METAL FRAME RIMFIRE PISTOLS'               => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'TACTICAL CENTERFIRE SEMI-AUTO PISTOLS'     => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'TACTICAL RIMFIRE SEMI-AUTO PISTOL'         => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'SINGLE SHOT HANDGUNS'                      => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'DERRINGERS'                                => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Pistols'],
 
-            'SINGLE ACTION CENTERFIRE REVOLVERS' => ['Firearms', 'Handguns', 'Revolver'],
-            'SINGLE ACTION RIMFIRE REVOLVERS' => ['Firearms', 'Handguns', 'Revolver'],
-            'DOUBLE ACTION CENTERFIRE REVOLVERS' => ['Firearms', 'Handguns', 'Revolver'],
-            'DOUBLE ACTION CENTRIFIRE CONCEAL REVOLVER' => ['Firearms', 'Handguns', 'Revolver'],
-            'DOUBLE ACTION RIMFIRE REVOLVERS' => ['Firearms', 'Handguns', 'Revolver'],
-            'DOUBLE ACTION RIMFIRE CONCEAL REVOLVERS' => ['Firearms', 'Handguns', 'Revolver'],
+            'SINGLE ACTION CENTERFIRE REVOLVERS'        => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'SINGLE ACTION RIMFIRE REVOLVERS'           => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'DOUBLE ACTION CENTERFIRE REVOLVERS'        => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'DOUBLE ACTION CENTRIFIRE CONCEAL REVOLVER' => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'DOUBLE ACTION RIMFIRE REVOLVERS'           => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'DOUBLE ACTION RIMFIRE CONCEAL REVOLVERS'   => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
 
             // ---- Rifles ----
-            'SPORTING BOLT ACTION CENTERFIRE RIFLES' => ['Firearms', 'Rifles', 'Bolt Action'],
-            'SPORTING BOLT ACTION RIMFIRE RIFLES' => ['Firearms', 'Rifles', 'Bolt Action'],
-            'TACTICAL BOLT ACTION RIFLES' => ['Firearms', 'Rifles', 'Bolt Action'],
-            'SPORTING SEMI-AUTO CENTERFIRE RIFLES' => ['Firearms', 'Rifles', 'Semi-Auto'],
-            'SPORTING SEMI-AUTO RIMFIRE RIFLES' => ['Firearms', 'Rifles', 'Semi-Auto'],
-            'TACTICAL CENTERFIRE SEMI-AUTO RIFLES' => ['Firearms', 'Rifles', 'Semi-Auto'],
-            'TACTICAL RIMFIRE SEMI-AUTO RIFLES' => ['Firearms', 'Rifles', 'Semi-Auto'],
-            'AR STYLE CENTERFIRE RIFLES' => ['Firearms', 'Rifles', 'Semi-Auto'],
-            'SPORTING LEVERACTION CENTERFIRE RIFLES' => ['Firearms', 'Rifles', 'Lever Action'],
-            'SPORTING LEVERACTION RIMFIRE RIFLES' => ['Firearms', 'Rifles', 'Lever Action'],
-            'PUMP CENTERFIRE RIFLES' => ['Firearms', 'Rifles', 'Pump Action'],
-            'PUMP RIMFIRE RIFLES' => ['Firearms', 'Rifles', 'Pump Action'],
-            'SINGLE SHOT CENTERFIRE RIFLES' => ['Firearms', 'Rifles', 'Single Shot / Break Action'],
-            'SINGLE SHOT RIMFIRE RIFLES' => ['Firearms', 'Rifles', 'Single Shot / Break Action'],
-            'RIFLE/SHOTGUN COMBOS' => ['Firearms', 'Rifles', 'Single Shot / Break Action'],
-
-
+            'SPORTING BOLT ACTION CENTERFIRE RIFLES'    => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Bolt Action'],
+            'SPORTING BOLT ACTION RIMFIRE RIFLES'       => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Bolt Action'],
+            'TACTICAL BOLT ACTION RIFLES'               => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Bolt Action'],
+            'SPORTING SEMI-AUTO CENTERFIRE RIFLES'      => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Semi-Auto'],
+            'SPORTING SEMI-AUTO RIMFIRE RIFLES'         => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Semi-Auto'],
+            'TACTICAL CENTERFIRE SEMI-AUTO RIFLES'      => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Semi-Auto'],
+            'TACTICAL RIMFIRE SEMI-AUTO RIFLES'         => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Semi-Auto'],
+            'AR STYLE CENTERFIRE RIFLES'                => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Semi-Auto'],
+            'SPORTING LEVERACTION CENTERFIRE RIFLES'    => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Lever Action'],
+            'SPORTING LEVERACTION RIMFIRE RIFLES'       => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Lever Action'],
+            'PUMP CENTERFIRE RIFLES'                    => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Pump Action'],
+            'PUMP RIMFIRE RIFLES'                       => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Pump Action'],
+            'SINGLE SHOT CENTERFIRE RIFLES'             => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Single Shot / Break Action'],
+            'SINGLE SHOT RIMFIRE RIFLES'                => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Single Shot / Break Action'],
+            'RIFLE/SHOTGUN COMBOS'                      => [FFLHub_Category_Schema::CAT_FIREARMS, 'Rifles', 'Single Shot / Break Action'],
 
             // ---- Shotguns ----
-            'SPORTING PUMP SHOTGUNS' => ['Firearms', 'Shotguns', 'Pump Action'],
-            'TACTICAL PUMP SHOTGUNS' => ['Firearms', 'Shotguns', 'Pump Action'],
-            'SPORTING SEMI-AUTO SHOTGUNS' => ['Firearms', 'Shotguns', 'Semi-Auto'],
-            'TACTICAL SEMI-AUTO SHOTGUNS' => ['Firearms', 'Shotguns', 'Semi-Auto'],
-            'OVER/UNDER SHOTGUNS' => ['Firearms', 'Shotguns', 'Single Shot / Break Action'],
-            'SIDE BY SIDE SHOTGUNS' => ['Firearms', 'Shotguns', 'Single Shot / Break Action'],
-            'SINGLE SHOT SHOTGUNS' => ['Firearms', 'Shotguns', 'Single Shot / Break Action'],
-            'LEVERACTION SHOTGUNS' => ['Firearms', 'Shotguns', 'Lever Action'],
-            'BOLT ACTION SHOTGUN' => ['Firearms', 'Shotguns', 'Bolt Action'],
+            'SPORTING PUMP SHOTGUNS'                    => [FFLHub_Category_Schema::CAT_FIREARMS, 'Shotguns', 'Pump Action'],
+            'TACTICAL PUMP SHOTGUNS'                    => [FFLHub_Category_Schema::CAT_FIREARMS, 'Shotguns', 'Pump Action'],
+            'SPORTING SEMI-AUTO SHOTGUNS'               => [FFLHub_Category_Schema::CAT_FIREARMS, 'Shotguns', 'Semi-Auto'],
+            'TACTICAL SEMI-AUTO SHOTGUNS'               => [FFLHub_Category_Schema::CAT_FIREARMS, 'Shotguns', 'Semi-Auto'],
+            'OVER/UNDER SHOTGUNS'                       => [FFLHub_Category_Schema::CAT_FIREARMS, 'Shotguns', 'Single Shot / Break Action'],
+            'SIDE BY SIDE SHOTGUNS'                     => [FFLHub_Category_Schema::CAT_FIREARMS, 'Shotguns', 'Single Shot / Break Action'],
+            'SINGLE SHOT SHOTGUNS'                      => [FFLHub_Category_Schema::CAT_FIREARMS, 'Shotguns', 'Single Shot / Break Action'],
+            'LEVERACTION SHOTGUNS'                      => [FFLHub_Category_Schema::CAT_FIREARMS, 'Shotguns', 'Lever Action'],
+            'BOLT ACTION SHOTGUN'                       => [FFLHub_Category_Schema::CAT_FIREARMS, 'Shotguns', 'Bolt Action'],
 
-            //other
-            'OTHER FIREARMS' => ['Firearms', 'Other / Specialty'],
-            'FIRE CONTROL UNIT' => ['Firearms', 'Other / Specialty'],
-            'ACTIONS' => ['Firearms', 'Other / Specialty'],
+            // ---- Firearms: Other / Specialty ----
+            'OTHER FIREARMS'                            => [FFLHub_Category_Schema::CAT_FIREARMS, 'Other / Specialty'],
+            'FIRE CONTROL UNIT'                         => [FFLHub_Category_Schema::CAT_FIREARMS, 'Other / Specialty'],
+            'ACTIONS'                                   => [FFLHub_Category_Schema::CAT_FIREARMS, 'Other / Specialty'],
 
             // ---- Optics ----
-            'SCOPES' => ['Optics', 'Scopes / Magnified Optics'],
-            'MAGNIFIED TACTICAL OPTICS' => ['Optics', 'Scopes / Magnified Optics'],
-            'SPOTTING SCOPES' => ['Optics', 'Scopes / Magnified Optics'],
-            'NON-MAGNIFIED OPTICS' => ['Optics', 'Red Dots / Non-Magnified Optics'],
-            'THERMAL OPTICS' => ['Optics', 'Red Dots / Non-Magnified Optics'],
-            'HANDGUN SIGHTS' => ['Optics', 'Red Dots / Non-Magnified Optics'],
-            'LONG GUN SIGHTS' => ['Optics', 'Red Dots / Non-Magnified Optics'],
-            'SCOPE RINGS' => ['Optics', 'Optic Mounts & Rings'],
-            'SCOPE MOUNTS' => ['Optics', 'Optic Mounts & Rings'],
-            'MAGNIFIED TACTICAL OPTIC MOUNTS' => ['Optics', 'Optic Mounts & Rings'],
-            'NON-MAGNIFIED OPTIC MOUNTS' => ['Optics', 'Optic Mounts & Rings'],
-            'BINOCULARS' => ['Optics', 'Observation / Range Finding'],
-            'RANGE FINDERS' => ['Optics', 'Observation / Range Finding'],
+            'SCOPES'                                    => [FFLHub_Category_Schema::CAT_OPTICS, 'Scopes / Magnified Optics'],
+            'MAGNIFIED TACTICAL OPTICS'                 => [FFLHub_Category_Schema::CAT_OPTICS, 'Scopes / Magnified Optics'],
+            'SPOTTING SCOPES'                           => [FFLHub_Category_Schema::CAT_OPTICS, 'Scopes / Magnified Optics'],
+            'NON-MAGNIFIED OPTICS'                      => [FFLHub_Category_Schema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'],
+            'THERMAL OPTICS'                            => [FFLHub_Category_Schema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'],
+            'HANDGUN SIGHTS'                            => [FFLHub_Category_Schema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'],
+            'LONG GUN SIGHTS'                           => [FFLHub_Category_Schema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'],
+            'SCOPE RINGS'                               => [FFLHub_Category_Schema::CAT_OPTICS, 'Optic Mounts & Rings'],
+            'SCOPE MOUNTS'                              => [FFLHub_Category_Schema::CAT_OPTICS, 'Optic Mounts & Rings'],
+            'MAGNIFIED TACTICAL OPTIC MOUNTS'           => [FFLHub_Category_Schema::CAT_OPTICS, 'Optic Mounts & Rings'],
+            'NON-MAGNIFIED OPTIC MOUNTS'                => [FFLHub_Category_Schema::CAT_OPTICS, 'Optic Mounts & Rings'],
+            'NON-MAGNIFIED OPTIC ACCESSORIES'           => [FFLHub_Category_Schema::CAT_OPTICS, 'Optic Mounts & Rings'],
+            'SCOPE ACCESSORIES'                         => [FFLHub_Category_Schema::CAT_OPTICS, 'Optics Accessories'],
+            'BINOCULARS'                                => [FFLHub_Category_Schema::CAT_OPTICS, 'Observation / Range Finding'],
+            'RANGE FINDERS'                             => [FFLHub_Category_Schema::CAT_OPTICS, 'Observation / Range Finding'],
 
-            'NON-MAGNIFIED OPTIC ACCESSORIES' => ['Optics', 'Optic Mounts & Rings'],
-            'SCOPE ACCESSORIES' => ['Optics', 'Optics Accessories'],
+            // ---- Lights and Lasers ----
+            'LASERS AND LIGHTS'                         => [FFLHub_Category_Schema::CAT_LIGHTS],
 
-            //Lights and Lasers
-            'LASERS AND LIGHTS' => ['Lights and Lasers'],
+            // ---- Magazines ----
+            'RIFLE MAGAZINES'                           => [FFLHub_Category_Schema::CAT_MAGAZINES, 'Rifle'],
+            'HANDGUN MAGAZINES'                         => [FFLHub_Category_Schema::CAT_MAGAZINES, 'Pistol'], // matches schema
+            'SHOTGUN MAGAZINES'                         => [FFLHub_Category_Schema::CAT_MAGAZINES, 'Shotgun'],
 
-            //Magazines
-            'Rifle Magazines' => ['Magazines', 'Rifle'],
-            'Handgun Magazines' => ['Magazines', 'Handgun'],
-            'SHOTGUN MAGAZINES' => ['Magazines', 'Shotgun'],
+            // ---- Ammo ----
+            'CENTERFIRE AMMO'                           => [FFLHub_Category_Schema::CAT_AMMO],
 
-            //Ammo
-            'CENTERFIRE AMMO' => ['Ammo'],
+            // ---- NFA ----
+            'SILENCER ACCESSORIES'                      => [FFLHub_Category_Schema::CAT_NFA, 'Suppressor Accessories'],
+            'SILENCER MOUNTS'                           => [FFLHub_Category_Schema::CAT_NFA, 'Suppressor Accessories'],
+            'SILENCER PISTONS'                          => [FFLHub_Category_Schema::CAT_NFA, 'Suppressor Accessories'],
 
-            //NFA
-            'SILENCER ACCESSORIES' => ['NFA / Suppressors', 'Suppressor Accessories'],
-            'SILENCER MOUNTS' => ['NFA / Suppressors', 'Suppressor Accessories'],
-            'SILENCER PISTONS' => ['NFA / Suppressors', 'Suppressor Accessories'],
+            // ---- Black Powder ----
+            'BLACK POWDER GUNS'                         => [FFLHub_Category_Schema::CAT_BLACK_POWDER, 'Guns'],
+            'BLACK POWDER FIREARMS (ATF CONTROLLED)'    => [FFLHub_Category_Schema::CAT_BLACK_POWDER, 'Firearms'],
+            'BLACK POWDER ACCESSORIES'                  => [FFLHub_Category_Schema::CAT_BLACK_POWDER, 'Accessories'],
 
-
-            //Black Powder
-            'BLACK POWDER GUNS' => ['Black Powder', 'Guns'],
-            'BLACK POWDER FIREARMS (ATF CONTROLLED)' => ['Black Powder', 'Firearms'],
-            'BLACK POWDER ACCESSORIES' => ['Black Powder', 'Accessories'],
-
-            //Less lethal
-            'LESS LETHAL PISTOL' => ['Less Lethal', 'Pistol'],
-            'LESS LETHAL RIFLE' => ['Less Lethal', 'Rifle'],
-            'LESS LETHAL AMMO' => ['Less Lethal', 'Ammo'],
-            'LESS LETHAL ACCESSORIES' => ['Less Lethal', 'Accessories'],
-
+            // ---- Less Lethal ----
+            'LESS LETHAL PISTOL'                        => [FFLHub_Category_Schema::CAT_LESS_LETHAL, 'Pistol'],
+            'LESS LETHAL RIFLE'                         => [FFLHub_Category_Schema::CAT_LESS_LETHAL, 'Rifle'],
+            'LESS LETHAL AMMO'                          => [FFLHub_Category_Schema::CAT_LESS_LETHAL, 'Ammo'],
+            'LESS LETHAL ACCESSORIES'                   => [FFLHub_Category_Schema::CAT_LESS_LETHAL, 'Accessories'],
         ];
 
         return $map[$g] ?? null;
     }
 
-    //NEEDS A LOT OF WORK
     /**
-     * Map RSR department number → unified category / subcategory.
+     * Map RSR department number → unified category path.
      *
-     * Unified structure (WIP):
-     *
-     * Firearms
-     *   Handguns: Pistols, Revolvers
-     *   Rifles:   Semi-Auto, Bolt Action, Lever Action, Pump Action, Single Shot / Break Action
-     *   Shotguns: Semi-Auto, Bolt Action, Lever Action, Pump Action, Single Shot / Break Action
-     *   Other / Specialty
-     * Optics / Optics Accessories:
-     *   Scopes / Magnified Optics
-     *   Red Dots / Non-Magnified Optics
-     *   Optic Mounts & Rings
-     *   Observation / Range Finding
-     *   Optics Accessories
-     * Lights and Lasers
-     * Magazines: Rifle, Handgun, Shotgun
-     * Ammo
-     * NFA: Suppressor Accessories
-     * Black Powder: Guns, Firearms, Accessories
-     * Less Lethal: Tasers, Pistol, Rifle, Ammo, Accessories
+     * Returns arrays like:
+     *   [ top-level, mid-level? ]
+     * Examples:
+     *   [ Firearms, Handguns ]
+     *   [ Optics / Optics Accessories, Scopes / Magnified Optics ]
+     *   [ Magazines ]
      */
     public static function map_rsr(int|string $dept): ?array
     {
         $dept = (int) $dept;
 
-        // NOTE:
-        // - Only departments that clearly fit your current tree are mapped.
-        // - Others return null so you can treat them as "uncategorized" or add categories later.
-        // - Subcategory can be null when the dept is too broad (e.g. generic "Magazines", "Ammo").
-
         $map = [
 
             // --- Firearms: Handguns ---
-            1 => ['Firearms', 'Handguns'],  // Handguns
-            2 => ['Firearms', 'Handguns'],  // Used Handguns (no way to split pistol vs revolver from dept alone)
+            1 => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns'], // Handguns
+            2 => [FFLHub_Category_Schema::CAT_FIREARMS, 'Handguns'], // Used Handguns
 
             // --- Firearms: Long guns (ambiguous rifle/shotgun) ---
-            3 => ['Firearms', 'Other / Specialty'], // Used Long Guns
-            5 => ['Firearms', 'Other / Specialty'], // Long Guns (could be rifles or shotguns; refine elsewhere if needed)
+            3 => [FFLHub_Category_Schema::CAT_FIREARMS, 'Other / Specialty'], // Used Long Guns
+            5 => [FFLHub_Category_Schema::CAT_FIREARMS, 'Other / Specialty'], // Long Guns (mixed)
 
             // --- Less Lethal ---
-            4  => ['Less Lethal', 'Tasers'],       // Tasers
-            //26 => ['Less Lethal', 'Accessories'],  // Safety & Protection (often pepper spray, etc.)
-            27 => ['Less Lethal'],  // Non-Lethal Defense (mixed less-lethal SKUs)
+            4  => [FFLHub_Category_Schema::CAT_LESS_LETHAL, 'Tasers'], // Tasers
+            27 => [FFLHub_Category_Schema::CAT_LESS_LETHAL],           // Non-Lethal Defense (mixed)
 
             // --- NFA ---
-            6 => ['NFA'], // NFA Products (mixed but closest bucket you defined)
+            6  => [FFLHub_Category_Schema::CAT_NFA], // NFA Products (mixed; not only suppressors)
 
             // --- Black Powder ---
-            7  => ['Black Powder', 'Firearms'],     // Black Powder
-            16 => ['Black Powder', 'Accessories'],  // Black Powder Accessories
+            7  => [FFLHub_Category_Schema::CAT_BLACK_POWDER, 'Firearms'],
+            16 => [FFLHub_Category_Schema::CAT_BLACK_POWDER, 'Accessories'],
 
             // --- Optics / Optics Accessories ---
-            8  => ['Optics / Optics Accessories', 'Scopes / Magnified Optics'], // Optics
-            28 => ['Optics / Optics Accessories', 'Observation / Range Finding'], // Binoculars
-            29 => ['Optics / Optics Accessories', 'Observation / Range Finding'], // Spotting Scopes
-            30 => ['Optics / Optics Accessories', 'Red Dots / Non-Magnified Optics'], // Sights
-            9  => ['Optics / Optics Accessories', 'Optics Accessories'], // Optical Accessories
-            31 => ['Optics / Optics Accessories', 'Optics Accessories'], // Optical Accessories
+            8  => [FFLHub_Category_Schema::CAT_OPTICS],
+            28 => [FFLHub_Category_Schema::CAT_OPTICS, 'Observation / Range Finding'],
+            29 => [FFLHub_Category_Schema::CAT_OPTICS, 'Observation / Range Finding'],
+            30 => [FFLHub_Category_Schema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'],
+            9  => [FFLHub_Category_Schema::CAT_OPTICS, 'Optics Accessories'],
+            31 => [FFLHub_Category_Schema::CAT_OPTICS, 'Optics Accessories'],
 
             // --- Lights and Lasers ---
-            20 => ['Lights and Lasers'],  // Lights, Lasers & Batteries
+            20 => [FFLHub_Category_Schema::CAT_LIGHTS],
 
             // --- Magazines ---
-            10 => ['Magazines'], // Magazines (mixed rifle/handgun/shotgun)
-            24 => ['Magazines'], // High Capacity Magazines (still mixed; usually rifle, but not guaranteed)
+            10 => [FFLHub_Category_Schema::CAT_MAGAZINES],
+            24 => [FFLHub_Category_Schema::CAT_MAGAZINES],
 
             // --- Ammo ---
-            18 => ['Ammo'], // Ammunition (mixed calibers & types)
+            18 => [FFLHub_Category_Schema::CAT_AMMO],
 
-            // --- Firearms: Other / Specialty (airguns, parts that don't fit elsewhere yet) ---
-            //22 => ['Firearms', 'Other / Specialty'], // Airguns (no dedicated category yet)
-            //41 => ['Firearms', 'Other / Specialty'], // Upper Receivers & Conversion Kits
-            //42 => ['NFA',      'Suppressor Accessories'], // SBR Barrels & Upper Receivers (NFA-ish bucket)
-            //43 => ['Firearms', 'Other / Specialty'], // Upper Receivers & Conversion Kits - High Capacity
+            // (You can later decide where to place 22, 41, 42, 43 etc.)
         ];
 
         return $map[$dept] ?? null;

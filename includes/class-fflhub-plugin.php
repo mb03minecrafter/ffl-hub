@@ -83,6 +83,7 @@ class FFLHub_Plugin
 
             // FFL / product features.
             'products/class-fflhub-product-meta.php',
+            'products/class-fflhub-category-schema.php',
             'products/class-fflhub-category-installer.php',
 
             //ffl api to get ffls from table
@@ -94,6 +95,7 @@ class FFLHub_Plugin
             // Distributor framework (now inside distributors/).
             'distributors/interface-fflhub-distributor.php',
             'distributors/class-fflhub-distributor-base.php',
+            'distributors/class-fflhub-category-mapper.php',
 
             // Admin pages.
             'admin-pages/class-fflhub-admin-page.php',
@@ -286,6 +288,7 @@ class FFLHub_Plugin
         require_once FFLHUB_PLUGIN_PATH . 'includes/tables/class-fflhub-lipseys-fulfillment-table.php';
 
         require_once FFLHUB_PLUGIN_PATH . 'includes/products/class-fflhub-category-installer.php';
+        require_once FFLHUB_PLUGIN_PATH . 'includes/products/class-fflhub-category-schema.php';
 
 
         // Create required tables.
