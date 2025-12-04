@@ -714,7 +714,7 @@ class FFLHub_Admin_Page_Distributor_Products
     private static function get_global_markup_percent(): float
     {
         // Adjust the option name to whatever you use on your settings page.
-        $raw = get_option('fflhub_global_markup_percent', '25'); // default to 25%
+        $raw = get_option('fflhub_global_markup', '25'); // default to 25%
 
         if (is_numeric($raw)) {
             $percent = (float) $raw;

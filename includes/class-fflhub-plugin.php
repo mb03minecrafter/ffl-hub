@@ -51,6 +51,7 @@ class FFLHub_Plugin
         // 2. Register distributor instances.
         $this->register_distributors();
 
+
         // 3. Initialize feature/services classes.
         $this->register_services();
 
@@ -81,7 +82,8 @@ class FFLHub_Plugin
             'class-fflhub-store-api.php',
 
             // FFL / product features.
-            'class-fflhub-product-meta.php',
+            'products/class-fflhub-product-meta.php',
+            'products/class-fflhub-category-installer.php',
 
             //ffl api to get ffls from table
             'checkout/class-fflhub-ffl-api.php',
@@ -283,6 +285,9 @@ class FFLHub_Plugin
         require_once FFLHUB_PLUGIN_PATH . 'includes/tables/class-fflhub-rsr-fulfillment-table.php';
         require_once FFLHUB_PLUGIN_PATH . 'includes/tables/class-fflhub-lipseys-fulfillment-table.php';
 
+        require_once FFLHUB_PLUGIN_PATH . 'includes/products/class-fflhub-category-installer.php';
+
+
         // Create required tables.
         self::create_tables();
 
@@ -297,6 +302,11 @@ class FFLHub_Plugin
         if (get_option('fflhub_global_markup', null) === null) {
             add_option('fflhub_global_markup', '10.0'); // 2.9% default
         }
+
+        FFLHub_Category_Installer::install_default_categories();
+
+
+
     }
 
     /**
