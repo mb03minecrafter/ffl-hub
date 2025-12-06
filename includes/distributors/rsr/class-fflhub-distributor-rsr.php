@@ -211,7 +211,6 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
         }
 
         // Map DB columns → payload fields.
-        // We use a few possible column names as fallbacks in case schema evolves.
         $sku = $this->get_string_field(
             $row,
             array('rsr_stock_number', 'sku')
@@ -227,17 +226,20 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
             array('model')
         );
 
+        
+
         $description = $this->get_string_field(
             $row,
             array('product_description')
         );
 
-        // Distributor (dealer) price: prefer RSR Regular Price type columns.
+        $name = $description; //just for now since rsr names suck balls
+
+        // Distributor (dealer) price.
         $price = $this->get_float_field(
             $row,
             array('distributor_price')
         );
-
 
         $quantity = $this->get_int_field(
             $row,
@@ -256,7 +258,7 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
             array('retail_msrp')
         );
 
-        // Drop-ship block flag.
+        // Drop-ship block flag (not used yet, but kept for future).
         $blocked_flag = $this->get_string_field(
             $row,
             array('blocked_from_dropship', 'drop_ship_block')
@@ -265,28 +267,37 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
         // Raw payload: keep the DB row so debug tools / UIs can inspect it.
         $raw = $row;
 
-
-
-        //error_log('Shipping Cost:' . $this->get_shipping_cost_by_upc($normalized_upc));
-
+        // Shipping cost and "true cost".
         $shipping_cost = $this->get_shipping_cost_by_upc($normalized_upc);
+        $true_cost     = $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping_cost);
 
-        $true_cost =  $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping_cost);
-
-        $image_url = 'https://img.rsrgroup.com/pimages/' . $this->get_string_field(
+        // Base image name from RSR feed, e.g. "LAS981-0054_1.jpg".
+        $image_name = $this->get_string_field(
             $row,
             array('image_name')
         );
+        $image_name = trim((string) $image_name);
 
-        $deptNum = $this->get_string_field(
-            $row,
-            array('dept_number')
-        );
+        // Build full list of *real* image URLs (no "image coming soon").
+        $rsr_image_urls = array();
+        if ($image_name !== '') {
+            $rsr_image_urls = $this->build_rsr_image_urls_from_image_name($image_name);
+        }
+
+        // Primary image URL = first image in the list (if any).
+        $primary_image_url = '';
+        if (! empty($rsr_image_urls)) {
+            $primary_image_url = (string) $rsr_image_urls[0];
+        }
+
+        $deptNum              = $this->get_string_field($row, array('dept_number'));
         $reccomended_category = FFLHub_Category_Mapper::map_rsr($deptNum);
 
-        //TODO FIGURE OUT RSR FFL REQUIREMENTS CHECKING 
+        // TODO: FIGURE OUT RSR FFL REQUIREMENTS CHECKING
+        $ffl_required = false;
 
-        return new FFLHub_Distributor_Product_Payload(
+        // Build the normalized payload. This seeds image_urls with $primary_image_url (if non-empty).
+        $payload = new FFLHub_Distributor_Product_Payload(
             (string) $item_upc,
             (string) $sku,
             (string) $name,
@@ -297,12 +308,25 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
             (int) $quantity,
             (float) $shipping_cost,
             (float) $true_cost,
-            (string) $image_url,
-            (bool)false, //<--- this shit needs to get fixed 
+            (string) $primary_image_url,
+            (bool) $ffl_required,
             $reccomended_category,
             $raw
         );
+
+        // Add any additional discovered RSR image URLs to the payload.
+        if (! empty($rsr_image_urls)) {
+            // Skip index 0 because constructor already added primary.
+            foreach (array_slice($rsr_image_urls, 1) as $extra_url) {
+                $payload->add_image_url($extra_url);
+            }
+        }
+
+        error_log(implode(" ", $rsr_image_urls));
+
+        return $payload;
     }
+
 
     /**
      * Get stock quantity for a product by UPC using the fulfillment table.
@@ -387,7 +411,7 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
 
         // Look up the distributor/fulfillment data for this UPC.
         // Replace this with whatever helper you already use to hit your RSR/Lipsey's table.
-        
+
 
         $product = $this->get_row_by_upc($normalized_upc);
         if (! $product) {
@@ -401,12 +425,12 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
             $product,
             array('adult_sig_required')
         );
-        
+
 
         if ($requires_signature == 1) {
             $cost += 5.0;
         }
-       
+
 
         return $cost;
     }
@@ -450,5 +474,115 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
             'password' => $password,
             'use_ssl'  => $use_ssl,
         );
+    }
+
+
+    /**
+     * Given an RSR image_name like "LAS981-0054_1.jpg", generate all real
+     * product image URLs for that item, stopping when we hit the generic
+     * "image coming soon" placeholder (110x85).
+     *
+     * @param string $image_name
+     * @return string[]
+     */
+    private function build_rsr_image_urls_from_image_name(string $image_name): array
+    {
+        $image_name = trim($image_name);
+        if ($image_name === '') {
+            return array();
+        }
+
+        $base_prefix = 'https://img.rsrgroup.com/pimages/';
+        $urls        = array();
+
+        // Expect pattern like "LAS981-0054_1.jpg"
+        if (preg_match('/^(.*)_([0-9]+)(\.[^.]+)$/', $image_name, $matches)) {
+            $base        = $matches[1]; // "LAS981-0054"
+            $start_index = (int) $matches[2]; // usually 1
+            $ext         = $matches[3]; // ".jpg"
+
+            // Always include the base image from the feed first, without checking.
+            $first_file = $base . '_' . $start_index . $ext;
+            $first_url  = $base_prefix . $first_file;
+            $urls[]     = $first_url;
+
+            // Now probe for additional images by incrementing the suffix.
+            // We stop at the first non-real/placeholder image.
+            $max_extra_attempts = 15; // safety cap so we don't loop forever.
+
+            for ($i = $start_index + 1; $i <= $start_index + $max_extra_attempts; $i++) {
+                $file = $base . '_' . $i . $ext;
+                $url  = $base_prefix . $file;
+
+                if (! $this->rsr_is_real_image_url($url)) {
+                    // Hit a placeholder (110x85) or missing image → stop.
+                    break;
+                }
+
+                $urls[] = $url;
+            }
+        } else {
+            // If we don't match the numbered pattern, just use the raw name.
+            $urls[] = $base_prefix . ltrim($image_name, '/');
+        }
+
+        // Ensure unique URLs.
+        $urls = array_values(array_unique($urls));
+
+        return $urls;
+    }
+
+
+    /**
+     * Check whether the given RSR image URL is a real product image
+     * and NOT the generic "image coming soon" placeholder.
+     *
+     * RSR's placeholder image is 110x85; no real product images use that size.
+     *
+     * @param string $url
+     * @return bool True if this looks like a real product image.
+     */
+    private function rsr_is_real_image_url(string $url): bool
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return false;
+        }
+
+        // Use WordPress HTTP API to fetch the image.
+        $response = wp_remote_get($url, array(
+            'timeout'     => 5,
+            'redirection' => 3,
+        ));
+
+        if (is_wp_error($response)) {
+            return false;
+        }
+
+        $code = wp_remote_retrieve_response_code($response);
+        if ($code < 200 || $code >= 300) {
+            return false;
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        if ($body === '' || $body === null) {
+            return false;
+        }
+
+        // Determine dimensions from the binary image string.
+        $image_info = @getimagesizefromstring($body);
+        if (false === $image_info) {
+            return false;
+        }
+
+        $width  = isset($image_info[0]) ? (int) $image_info[0] : 0;
+        $height = isset($image_info[1]) ? (int) $image_info[1] : 0;
+
+        // RSR "image coming soon" placeholder is exactly 110x85.
+        if ($width === 110 && $height === 85) {
+            return false;
+        }
+
+        return true;
     }
 }

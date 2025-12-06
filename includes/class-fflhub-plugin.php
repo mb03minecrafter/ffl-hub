@@ -104,8 +104,10 @@ class FFLHub_Plugin
             'admin-pages/class-fflhub-ffl-importer.php',
             'admin-pages/class-fflhub-product-meta-box.php',
 
+
             // Distributors.
             'distributors/rsr/class-fflhub-distributor-rsr.php',
+            'distributors/class-fflhub-product-images.php',
             'distributors/rsr/class-fflhub-rsr-ftp-client.php',
             'distributors/rsr/class-fflhub-rsr-fulfillment-importer.php',
 
@@ -187,6 +189,7 @@ class FFLHub_Plugin
 
         // Somewhere in your plugin bootstrap:
         FFLHub_Product_Meta_Box::init();
+
     }
 
     /**

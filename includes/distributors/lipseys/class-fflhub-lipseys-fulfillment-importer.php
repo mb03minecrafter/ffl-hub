@@ -41,6 +41,8 @@ class FFLHub_Lipseys_Fulfillment_Parser {
         $can_dropship_raw = $this->get_string( $item, 'canDropship' );
         $can_dropship     = $this->to_flag( $can_dropship_raw );
 
+
+        
         if ( $can_dropship !== '1' ) {
             // Not drop ship enabled => do not import this item at all.
             return null;

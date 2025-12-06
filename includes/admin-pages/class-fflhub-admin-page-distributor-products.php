@@ -234,7 +234,7 @@ class FFLHub_Admin_Page_Distributor_Products
                 }
             }
         }
-?>
+        ?>
         <div class="wrap">
             <h1><?php esc_html_e('Distributor Products', 'ffl-hub'); ?></h1>
 
@@ -307,17 +307,27 @@ class FFLHub_Admin_Page_Distributor_Products
                 $p_shipping    = isset($payload['shipping_cost']) ? (float) $payload['shipping_cost'] : null;
                 $p_true_cost   = isset($payload['true_cost']) ? (float) $payload['true_cost'] : null;
 
-                $p_image_url    = $payload['image_url'] ?? '';
+                // image_urls-based primary image
+                $p_image_url = '';
+                if (isset($payload['image_urls']) && is_array($payload['image_urls']) && ! empty($payload['image_urls'])) {
+                    foreach ($payload['image_urls'] as $url) {
+                        $url = trim((string) $url);
+                        if ($url !== '') {
+                            $p_image_url = $url;
+                            break;
+                        }
+                    }
+                }
+
                 $p_ffl_required = isset($payload['ffl_required']) ? (bool) $payload['ffl_required'] : false;
 
-                // NEW: recommended category path from payload.
-                $p_recommended_category = $payload['recommended_category'] ?? null;
-                $p_recommended_category_label = '';
+                // recommended category path from payload.
+                $p_recommended_category        = $payload['recommended_category'] ?? null;
+                $p_recommended_category_label  = '';
 
                 if (is_array($p_recommended_category) && ! empty($p_recommended_category)) {
                     $p_recommended_category_label = implode(' > ', array_map('strval', $p_recommended_category));
                 } elseif (is_string($p_recommended_category) && $p_recommended_category !== '') {
-                    // In case someone later stores it as a plain string.
                     $p_recommended_category_label = $p_recommended_category;
                 }
                 ?>
@@ -531,7 +541,7 @@ class FFLHub_Admin_Page_Distributor_Products
                 <?php endif; ?>
             <?php endif; ?>
         </div>
-<?php
+        <?php
     }
 
     /**
@@ -671,7 +681,7 @@ class FFLHub_Admin_Page_Distributor_Products
         $product->set_catalog_visibility('visible');
 
         /**
-         * NEW: Set product categories from recommended_category path, if available.
+         * Set product categories from recommended_category path, if available.
          *
          * expected payload['recommended_category'] like:
          *   [ 'Firearms', 'Handguns', 'Pistols' ]
@@ -724,6 +734,30 @@ class FFLHub_Admin_Page_Distributor_Products
         $product->update_meta_data(FFLHub_Product_Meta::FFLHUB_NFA_ITEM_META, 0);
 
         $product->update_meta_data(FFLHub_Product_Meta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
+
+        // Import images from ALL distributors:
+        // - Selected distributor's images: featured + gallery
+        // - Other distributors' images: gallery only
+        if (class_exists('FFLHub_Product_Images')) {
+            foreach ($carrier_distributors as $dist_id => $info) {
+                if (
+                    empty($info['payload']) ||
+                    ! ($info['payload'] instanceof FFLHub_Distributor_Product_Payload)
+                ) {
+                    continue;
+                }
+
+                $is_primary = ((string) $dist_id === (string) $selected_dist_id);
+
+                FFLHub_Product_Images::import_images_for_distributor(
+                    $product_id,
+                    $upc,
+                    $info['payload'],
+                    (string) $dist_id,
+                    $is_primary
+                );
+            }
+        }
 
         // Message / return
         $edit_link = get_edit_post_link($product_id, '');
