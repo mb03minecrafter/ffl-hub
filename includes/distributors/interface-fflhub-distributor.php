@@ -54,6 +54,8 @@ interface FFLHub_Distributor_Interface
     public function get_product_by_upc(string $upc): ?FFLHub_Distributor_Product_Payload;
 
 
+    //same as above but image url is not performed since its expensive to perform 
+    public function get_pricing_payload_by_upc(string $upc): ?FFLHub_Distributor_Product_Payload;
 
     /**
      * Get current stock quantity for a product by UPC.

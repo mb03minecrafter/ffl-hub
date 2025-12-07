@@ -1,5 +1,10 @@
 {
     "require": {
         "lipseys/apiintegration": "^1.2"
+    },
+    "autoload": {
+        "classmap": [
+            "includes/"
+        ]
     }
 }

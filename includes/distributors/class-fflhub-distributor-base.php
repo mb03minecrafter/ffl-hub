@@ -219,6 +219,13 @@ abstract class FFLHub_Distributor_Base implements FFLHub_Distributor_Interface
     }
 
 
+
+    public function get_pricing_payload_by_upc(string $upc): ?FFLHub_Distributor_Product_Payload {
+        return $this->get_product_by_upc($upc);
+    }
+
+
+
     /**
      * Default implementation: call get_product_by_upc() and return the
      * normalized 'quantity' field.

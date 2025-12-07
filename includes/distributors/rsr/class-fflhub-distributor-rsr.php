@@ -226,7 +226,7 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
             array('model')
         );
 
-        
+
 
         $description = $this->get_string_field(
             $row,
@@ -326,6 +326,109 @@ class FFLHub_Distributor_RSR extends FFLHub_Distributor_Base
 
         return $payload;
     }
+
+
+
+
+    /**
+     * Lightweight pricing/stock payload for cron sync.
+     *
+     * Same normalized payload shape, but does NOT do any remote image probing.
+     *
+     * @param string $upc
+     * @return FFLHub_Distributor_Product_Payload|null
+     */
+    public function get_pricing_payload_by_upc(string $upc): ?FFLHub_Distributor_Product_Payload
+    {
+        $normalized_upc = $this->normalize_upc($upc);
+        if ($normalized_upc === null) {
+            return null;
+        }
+
+        $row = $this->get_row_by_upc($normalized_upc);
+        if (! $row) {
+            return null;
+        }
+
+        // Basic fields from the fulfillment table.
+        $sku = $this->get_string_field(
+            $row,
+            array('rsr_stock_number', 'sku')
+        );
+
+        $item_upc = $this->get_string_field(
+            $row,
+            array('upc')
+        );
+
+        $name = $this->get_string_field(
+            $row,
+            array('model')
+        );
+
+        $description = $this->get_string_field(
+            $row,
+            array('product_description')
+        );
+
+        // Dealer price.
+        $price = $this->get_float_field(
+            $row,
+            array('distributor_price')
+        );
+
+        // Quantity.
+        $quantity = $this->get_int_field(
+            $row,
+            array('inventory_quantity')
+        );
+
+        // MAP.
+        $map = $this->get_float_field(
+            $row,
+            array('retail_map')
+        );
+
+        // MSRP.
+        $msrp = $this->get_float_field(
+            $row,
+            array('retail_msrp')
+        );
+
+        // Shipping + true cost.
+        $shipping_cost = $this->get_shipping_cost_by_upc($normalized_upc);
+        $true_cost     = $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping_cost);
+
+        // Recommended category.
+        $deptNum              = $this->get_string_field($row, array('dept_number'));
+        $recommended_category = FFLHub_Category_Mapper::map_rsr($deptNum);
+
+        // For sync we don't need images, so just leave image_urls empty.
+        $image_url = '';
+
+        // TODO: real RSR FFL requirement logic. For now, false.
+        $ffl_required = false;
+
+        $raw = $row;
+
+        return new FFLHub_Distributor_Product_Payload(
+            (string) $item_upc,
+            (string) $sku,
+            (string) $name,
+            (string) $description,
+            (float) $price,
+            (float) $map,
+            (float) $msrp,
+            (int) $quantity,
+            (float) $shipping_cost,
+            (float) $true_cost,
+            $image_url,
+            (bool) $ffl_required,
+            $recommended_category,
+            $raw
+        );
+    }
+
 
 
     /**

@@ -45,8 +45,6 @@ class FFLHub_Plugin
      */
     private function __construct()
     {
-        // 1. Load all class files used by the plugin.
-        self::load_dependencies();
 
         // 2. Register distributor instances.
         $this->register_distributors();
@@ -59,83 +57,7 @@ class FFLHub_Plugin
         $this->register_hooks();
     }
 
-    /**
-     * Include all core classes used by the plugin.
-     *
-     * Made static so it can be reused by activate()/deactivate()
-     * without instantiating the whole plugin.
-     */
-    private static function load_dependencies(): void
-    {
-        // This file lives in the /includes/ directory.
-        $base_path = plugin_dir_path(__FILE__);
-
-        $files = array(
-            // Table classes.
-            'tables/class-fflhub-table-schema.php',
-            'tables/class-fflhub-ffl-table.php',
-
-            'tables/class-fflhub-rsr-fulfillment-table.php',
-            'tables/class-fflhub-lipseys-fulfillment-table.php',
-
-            // Store / checkout APIs.
-            'class-fflhub-store-api.php',
-
-            // FFL / product features.
-            'products/class-fflhub-product-meta.php',
-            'products/class-fflhub-category-schema.php',
-            'products/class-fflhub-category-installer.php',
-
-            //ffl api to get ffls from table
-            'checkout/class-fflhub-ffl-api.php',
-
-            // Distributor product payload.
-            'distributors/class-fflhub-distributor-product-payload.php',
-
-            // Distributor framework (now inside distributors/).
-            'distributors/interface-fflhub-distributor.php',
-            'distributors/class-fflhub-distributor-base.php',
-            'distributors/class-fflhub-category-mapper.php',
-
-            // Admin pages.
-            'admin-pages/class-fflhub-admin-page.php',
-            'admin-pages/class-fflhub-ffl-order-admin.php',
-            'admin-pages/class-fflhub-admin-page-distributor-products.php',
-            'admin-pages/class-fflhub-ffl-importer.php',
-            'admin-pages/class-fflhub-product-meta-box.php',
-
-
-            // Distributors.
-            'distributors/rsr/class-fflhub-distributor-rsr.php',
-            'distributors/class-fflhub-product-images.php',
-            'distributors/rsr/class-fflhub-rsr-ftp-client.php',
-            'distributors/rsr/class-fflhub-rsr-fulfillment-importer.php',
-
-            // RSR cron + cron warning.
-            'class-fflhub-wp-cron-warning.php',
-            'distributors/rsr/cron/class-fflhub-rsr-fulfillment-cron.php',
-            'distributors/rsr/cron/class-fflhub-rsr-inventory-cron.php',
-
-            // Lipsey's.
-            'distributors/lipseys/class-fflhub-distributor-lipseys.php',
-            'distributors/lipseys/class-fflhub-lipseys-fulfillment-importer.php',
-
-            // Lipsey's cron.
-            'distributors/lipseys/cron/class-fflhub-lipseys-fulfillment-cron.php',
-            'distributors/lipseys/cron/class-fflhub-lipseys-pricing-quantity-cron.php',
-
-            // Checkout UI.
-            'checkout/class-fflhub-checkout-fields.php',
-            'checkout/class-fflhub-checkout-map.php',
-        );
-
-        foreach ($files as $file) {
-            $path = $base_path . $file;
-            if (file_exists($path)) {
-                require_once $path;
-            }
-        }
-    }
+    
 
     /**
      * Instantiate and store distributor objects.
@@ -166,6 +88,11 @@ class FFLHub_Plugin
         // Lipsey's cron jobs.
         FFLHub_Lipseys_Fulfillment_Cron::init();
         FFLHub_Lipseys_Pricing_Quantity_Cron::init();
+
+
+        FFLHub_Product_Sync::init();
+
+
 
         // Woo store API integration.
         FFLHub_Store_API::init();
@@ -283,15 +210,7 @@ class FFLHub_Plugin
      */
     public static function activate(): void
     {
-        // Make sure all needed classes are loaded.
-        // Only load what we need to create tables.
-        require_once FFLHUB_PLUGIN_PATH . 'includes/tables/class-fflhub-table-schema.php';
-        require_once FFLHUB_PLUGIN_PATH . 'includes/tables/class-fflhub-ffl-table.php';
-        require_once FFLHUB_PLUGIN_PATH . 'includes/tables/class-fflhub-rsr-fulfillment-table.php';
-        require_once FFLHUB_PLUGIN_PATH . 'includes/tables/class-fflhub-lipseys-fulfillment-table.php';
 
-        require_once FFLHUB_PLUGIN_PATH . 'includes/products/class-fflhub-category-installer.php';
-        require_once FFLHUB_PLUGIN_PATH . 'includes/products/class-fflhub-category-schema.php';
 
 
         // Create required tables.
@@ -324,23 +243,21 @@ class FFLHub_Plugin
     public static function deactivate(): void
     {
         // Load dependencies so cron classes are available.
-        self::load_dependencies();
 
-        // Clean up cron jobs and other scheduled tasks.
-        if (class_exists('FFLHub_RSR_Fulfillment_Cron')) {
-            FFLHub_RSR_Fulfillment_Cron::on_deactivation();
-        }
+        FFLHub_RSR_Fulfillment_Cron::on_deactivation();
+        
 
-        if (class_exists('FFLHub_RSR_Inventory_Cron')) {
-            FFLHub_RSR_Inventory_Cron::on_deactivation();
-        }
+        FFLHub_RSR_Inventory_Cron::on_deactivation();
+        
 
-        if (class_exists('FFLHub_Lipseys_Fulfillment_Cron')) {
-            FFLHub_Lipseys_Fulfillment_Cron::on_deactivation();
-        }
+        FFLHub_Lipseys_Fulfillment_Cron::on_deactivation();
+        
 
-        if (class_exists('FFLHub_Lipseys_Pricing_Quantity_Cron')) {
-            FFLHub_Lipseys_Pricing_Quantity_Cron::on_deactivation();
-        }
+        FFLHub_Lipseys_Pricing_Quantity_Cron::on_deactivation();
+        
+
+        FFLHub_Product_Sync::deactivate();
+
+
     }
 }
