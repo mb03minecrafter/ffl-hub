@@ -611,10 +611,10 @@ class DistributorProductSync
 
         // Get all configured distributors (RSR, Lipsey’s, etc.).
         $distributors = method_exists($plugin, 'get_distributors')
-            ? $plugin->get_distributors()
+            ? $plugin->distributor_handler->get_distributors()
             : array(
-                'rsr'     => $plugin->get_distributor_by_id('rsr'),
-                'lipseys' => $plugin->get_distributor_by_id('lipseys'),
+                'rsr'     => $plugin->distributor_handler->get_distributor_by_id('rsr'),
+                'lipseys' => $plugin->distributor_handler->get_distributor_by_id('lipseys'),
             );
 
         self::log('get_distributor_payloads_for_upc: checking distributors=' . implode(',', array_keys($distributors)));
