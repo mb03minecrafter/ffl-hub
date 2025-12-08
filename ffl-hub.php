@@ -11,6 +11,9 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
+
+use FFLHub\Plugin;
+
 /**
  * Autoload Composer dependencies (e.g. Lipsey's API client).
  * Guarded so it won't fatal if vendor/ doesn't exist yet.
@@ -42,12 +45,6 @@ if ( ! defined( 'FFLHUB_PLUGIN_VERSION' ) ) {
 
 
 /**
- * Load the main plugin class.
- * This class will in turn load the rest of the plugin files.
- */
-require_once FFLHUB_PLUGIN_PATH . 'includes/class-fflhub-plugin.php';
-
-/**
  * Activation hook.
  *
  * Per WordPress docs, this must be registered in the main plugin file
@@ -55,7 +52,7 @@ require_once FFLHUB_PLUGIN_PATH . 'includes/class-fflhub-plugin.php';
  */
 register_activation_hook(
     FFLHUB_PLUGIN_FILE,
-    array( 'FFLHub_Plugin', 'activate' )
+    array( Plugin::class, 'activate' )
 );
 
 /**
@@ -66,7 +63,7 @@ register_activation_hook(
  */
 register_deactivation_hook(
     FFLHUB_PLUGIN_FILE,
-    array( 'FFLHub_Plugin', 'deactivate' )
+    array( Plugin::class, 'deactivate' )
 );
 
 /**
@@ -75,8 +72,7 @@ register_deactivation_hook(
 add_action(
     'plugins_loaded',
     function () {
-        if ( class_exists( 'FFLHub_Plugin' ) ) {
-            FFLHub_Plugin::instance();
-        }
+            Plugin::instance();
     }
+    
 );
