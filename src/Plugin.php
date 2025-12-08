@@ -15,13 +15,13 @@ use FFLHub\Admin\OrderFFLPanel;
 use FFLHub\Admin\ProductMetaBox;
 
 use FFLHub\Distributor\DistributorInterface;
-use FFLHub\Distributor\RSR\DistributorRSR;
 use FFLHub\Distributor\RSR\Cron\RSRFulfillmentCron;
 use FFLHub\Distributor\RSR\Cron\RSRInventoryCron;
 use FFLHub\Distributor\RSR\Tables\RSRFulfillmentTable;
 
 
-use FFLHub\Distributor\Lipseys\DistributorLipseys;
+use FFLHub\Distributor\DistributorHandler;
+
 
 
 use FFLHub\Checkout\CheckoutFields;
@@ -52,12 +52,7 @@ class Plugin
      */
     private static $instance = null;
 
-    /**
-     * Registered distributor objects.
-     *
-     * @var DistributorInterface[]
-     */
-    private $distributors = array();
+    public DistributorHandler $distributor_handler;
 
     /**
      * Get the single instance of the class.
@@ -80,8 +75,12 @@ class Plugin
      */
     private function __construct()
     {
+
+
+        $this->distributor_handler = new DistributorHandler();
+
         // 2. Register distributor instances.
-        $this->register_distributors();
+        //$this->register_distributors();
 
         // 3. Initialize feature/services classes.
         $this->register_services();
@@ -90,19 +89,7 @@ class Plugin
         $this->register_hooks();
     }
 
-    /**
-     * Instantiate and store distributor objects.
-     */
-    private function register_distributors(): void
-    {
-        $this->distributors = array(
-            // RSR distributor.
-            new DistributorRSR(),
-
-            // Lipsey's distributor.
-            new DistributorLipseys(),
-        );
-    }
+    
 
     /**
      * Initialize feature/service classes.
@@ -160,7 +147,7 @@ class Plugin
      */
     public function register_distributor_settings(): void
     {
-        foreach ($this->distributors as $dist) {
+        foreach ($this->distributor_handler->get_distributors() as $dist) {
             $dist->register_settings();
         }
     }
@@ -171,39 +158,10 @@ class Plugin
      */
     public function render_settings_page(): void
     {
-        AdminPage::render($this->distributors);
+        AdminPage::render($this->distributor_handler->get_distributors());
     }
 
-    /**
-     * Get a distributor by its ID (e.g. 'lipseys', 'rsr').
-     *
-     * @param string $id
-     * @return DistributorInterface|null
-     */
-    public function get_distributor_by_id(string $id): ?DistributorInterface
-    {
-        foreach ($this->distributors as $dist) {
-            if ($dist->get_id() === $id) {
-                return $dist;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Get all registered distributor instances.
-     *
-     * @return \DistributorInterface[]
-     */
-    public function get_distributors(): array
-    {
-        if (! isset($this->distributors) || ! is_array($this->distributors)) {
-            return array();
-        }
-
-        return $this->distributors;
-    }
+    
 
     /**
      * Create all required database tables.
