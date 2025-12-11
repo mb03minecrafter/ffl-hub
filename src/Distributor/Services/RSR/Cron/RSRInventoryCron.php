@@ -1,7 +1,7 @@
 <?php
 
 
-namespace FFLHub\Distributor\RSR\Cron;
+namespace FFLHub\Distributor\Services\RSR\Cron;
 
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -9,9 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 
-use FFLHub\Distributor\RSR\RSRFTPClient;
+use FFLHub\Distributor\Services\RSR\RSRFTPClient;
 use FFLHub\Distributor\RSR\DistributorRSR;
-use FFLHub\Distributor\RSR\Tables\RSRFulfillmentTable;
+use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentTable;
 
 
 /**

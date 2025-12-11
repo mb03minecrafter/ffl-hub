@@ -1,15 +1,15 @@
 <?php
 
-namespace FFLHub\Distributor\RSR\Cron;
+namespace FFLHub\Distributor\Services\RSR\Cron;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-use FFLHub\Distributor\RSR\RSRFTPClient;
+use FFLHub\Distributor\Services\RSR\RSRFTPClient;
 use FFLHub\Distributor\RSR\DistributorRSR;
-use FFLHub\Distributor\RSR\RSRFulfillmentImporter;
-use FFLHub\Distributor\RSR\Tables\RSRFulfillmentTable;
+use FFLHub\Distributor\Services\RSR\RSRFulfillmentImporter;
+use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentTable;
 
 /**
  * Sets up a WP-Cron job to regularly download the RSR fulfillment catalog file

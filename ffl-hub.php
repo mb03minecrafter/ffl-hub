@@ -2,77 +2,53 @@
 /**
  * Plugin Name: FFL Hub
  * Description: A WooCommerce extension for firearm-friendly dropshipping, starting with RSR and Lipsey's.
- * Version: 0.1.0
- * Author: Your Name
+ * Version: 1.0.0
+ * Author: Matthew Bickham
  * Text Domain: ffl-hub
  */
 
-if ( ! defined( 'ABSPATH' ) ) {
+
+if (! defined('ABSPATH')) {
     exit;
 }
-
 
 use FFLHub\Plugin;
 
 /**
- * Autoload Composer dependencies (e.g. Lipsey's API client).
- * Guarded so it won't fatal if vendor/ doesn't exist yet.
+ * Autoload Composer dependencies if present.
  */
-if ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {
+if (file_exists(__DIR__ . '/vendor/autoload.php')) {
     require __DIR__ . '/vendor/autoload.php';
 }
 
-
 /**
- * Plugin constants.
- * Define these first so all included classes can rely on them.
+ * Define plugin constants.
  */
-if ( ! defined( 'FFLHUB_PLUGIN_FILE' ) ) {
-    define( 'FFLHUB_PLUGIN_FILE', __FILE__ );
-}
+define('FFLHUB_PLUGIN_FILE', __FILE__);
+define('FFLHUB_PLUGIN_PATH', plugin_dir_path(__FILE__));
+define('FFLHUB_PLUGIN_URL', plugin_dir_url(__FILE__));
+define('FFLHUB_PLUGIN_VERSION', '1.0.0');
 
-if ( ! defined( 'FFLHUB_PLUGIN_PATH' ) ) {
-    define( 'FFLHUB_PLUGIN_PATH', plugin_dir_path( __FILE__ ) );
-}
-
-if ( ! defined( 'FFLHUB_PLUGIN_URL' ) ) {
-    define( 'FFLHUB_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
-}
-
-if ( ! defined( 'FFLHUB_PLUGIN_VERSION' ) ) {
-    define( 'FFLHUB_PLUGIN_VERSION', '1.0.0' );
-}
 
 
 /**
- * Activation hook.
- *
- * Per WordPress docs, this must be registered in the main plugin file
- * using the main plugin file path (here, __FILE__ / FFLHUB_PLUGIN_FILE).
+ * Load plugin text domain.
  */
-register_activation_hook(
-    FFLHUB_PLUGIN_FILE,
-    array( Plugin::class, 'activate' )
-);
+add_action('init', function() {
+    load_plugin_textdomain('ffl-hub', false, dirname(plugin_basename(__FILE__)) . '/languages');
+});
 
 /**
- * Deactivation hook.
- *
- * We delegate to a static method on our main plugin class so it can
- * handle cron cleanup, etc., after loading the required classes.
+ * Activation / Deactivation hooks.
  */
-register_deactivation_hook(
-    FFLHUB_PLUGIN_FILE,
-    array( Plugin::class, 'deactivate' )
-);
+register_activation_hook(FFLHUB_PLUGIN_FILE, [Plugin::class, 'activate']);
+register_deactivation_hook(FFLHUB_PLUGIN_FILE, [Plugin::class, 'deactivate']);
 
 /**
- * Initialize the main plugin singleton after all plugins are loaded.
+ * Initialize main plugin after all plugins are loaded.
  */
-add_action(
-    'plugins_loaded',
-    function () {
-            Plugin::instance();
-    }
-    
-);
+add_action('plugins_loaded', function () {
+    if (class_exists(Plugin::class)) {
+        Plugin::instance();
+    } 
+});

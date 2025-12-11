@@ -13,13 +13,14 @@ if (! defined('ABSPATH')) {
 
 class DistributorHandler {
 
-    /** @var array<string, DistributorInterface> */
+    /** @var array<string, DistributorBase> */
     private array $distributors = [];
 
     public function __construct()
     {
         $this->register_distributors();
     }
+
 
     //register and instantiate the distributors 
     private function register_distributors(): void
@@ -31,7 +32,7 @@ class DistributorHandler {
     /**
      * Get all registered distributor instances.
      *
-     * @return array<string, DistributorInterface>
+     * @return array<string, DistributorBase>
      */
     public function get_distributors(): array
     {
@@ -44,7 +45,7 @@ class DistributorHandler {
      * @param string $id
      * @return DistributorInterface|null
      */
-    public function get_distributor_by_id(string $id): ?DistributorInterface
+    public function get_distributor_by_id(string $id): ?DistributorBase
     {
         foreach ($this->distributors as $dist) {
             if ($dist->get_id() === $id) {

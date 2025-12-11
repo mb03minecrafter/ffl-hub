@@ -1,57 +1,54 @@
 <?php
 
-namespace FFLHub\Distributor\RSR\Tables;
+namespace FFLHub\Distributor\Services\RSR\Tables;
 
+use FFLHub\Distributor\Services\Tables\FulfillmentSchemaInterface;
 
-if (! defined('ABSPATH')) {
+if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-class RSRFulfillmentSchema
+class RSRFulfillmentSchema implements FulfillmentSchemaInterface
 {
+    public const BASE_TABLE_KEY    = 'fflhub_rsr_fulfillment';
+    public const LIVE_TABLE_OPTION = 'fflhub_rsr_fulfillment_live_table';
 
-    /**
-     * Base DB table key.
-     */
-    const BASE_TABLE_KEY    = 'fflhub_rsr_fulfillment';
-    const LIVE_TABLE_OPTION = 'fflhub_rsr_fulfillment_live_table';
+    public static function get_base_table_key(): string
+    {
+        return self::BASE_TABLE_KEY;
+    }
 
-    /**
-     * Column definitions for CREATE TABLE.
-     *
-     * Key = column name, value = full SQL fragment after the name.
-     */
+    public static function get_live_table_option_name(): string
+    {
+        return self::LIVE_TABLE_OPTION;
+    }
+
     public static function get_column_definitions(): array
     {
         return array(
             // Primary key
-            'upc'                        => 'VARCHAR(32)   NOT NULL',
+            'upc'                      => 'VARCHAR(32)   NOT NULL',
+            'rsr_stock_number'         => 'VARCHAR(64)   NOT NULL',
 
-            'rsr_stock_number'           => 'VARCHAR(64)   NOT NULL',
+            // Quantity and Pricing
+            'inventory_quantity'       => 'VARCHAR(32)   NULL',
+            'allocation_status'        => 'VARCHAR(64)   NULL',
+            'distributor_price'        => 'VARCHAR(32)   NULL',
+            'retail_map'               => 'VARCHAR(32)   NULL',
+            'retail_msrp'              => 'VARCHAR(32)   NULL',
 
+            // Catalog data
+            'product_description'      => 'TEXT          NOT NULL',
+            'dept_number'              => 'VARCHAR(16)   NULL',
+            'manufacturer_id'          => 'VARCHAR(64)   NULL',
+            'product_weight_oz'        => 'VARCHAR(32)   NULL',
+            'model'                    => 'VARCHAR(128)  NULL',
+            'full_manufacturer_name'   => 'VARCHAR(255)  NULL',
+            'manufacturer_part_number' => 'VARCHAR(128)  NULL',
+            'expanded_product_description' => 'TEXT       NULL',
+            'image_name'               => 'VARCHAR(255)  NULL',
 
-
-            //Quantity and Pricing
-            'inventory_quantity'         => 'VARCHAR(32)   NULL',
-            'allocation_status'          => 'VARCHAR(64)   NULL',
-            'distributor_price'          => 'VARCHAR(32)   NULL',
-            'retail_map'                 => 'VARCHAR(32)  NULL',
-            'retail_msrp'               => 'VARCHAR(32)   NULL',
-
-
-            //Catalog data
-            'product_description'        => 'TEXT          NOT NULL',
-            'dept_number'                => 'VARCHAR(16)   NULL',
-            'manufacturer_id'            => 'VARCHAR(64)   NULL',
-            'product_weight_oz'          => 'VARCHAR(32)   NULL',
-            'model'                      => 'VARCHAR(128)  NULL',
-            'full_manufacturer_name'     => 'VARCHAR(255)  NULL',
-            'manufacturer_part_number'   => 'VARCHAR(128)  NULL',
-            'expanded_product_description' => 'TEXT        NULL',
-            'image_name'                 => 'VARCHAR(255)  NULL',
-
-            //RSR PER STATE SHIPPING FLAGS 
-
+            // Per-state shipping flags
             'ship_ak' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'ship_al' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'ship_ar' => 'TINYINT(1) NOT NULL DEFAULT 0',
@@ -104,62 +101,44 @@ class RSRFulfillmentSchema
             'ship_wv' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'ship_wy' => 'TINYINT(1) NOT NULL DEFAULT 0',
 
-            'ground_shipments_only'      => 'TINYINT(1) NOT NULL DEFAULT 0',
-            'adult_sig_required'         => 'TINYINT(1) NOT NULL DEFAULT 0',
-            'blocked_from_dropship'      => 'TINYINT(1) NOT NULL DEFAULT 0',
-            'date_entered'               => 'VARCHAR(16)  NULL',
-            'image_disclaimer'           => 'TEXT         NULL',
+            'ground_shipments_only' => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'adult_sig_required'    => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'blocked_from_dropship' => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'date_entered'          => 'VARCHAR(16)  NULL',
+            'image_disclaimer'      => 'TEXT        NULL',
 
-            'shipping_length_in'         => 'VARCHAR(32)  NULL',
-            'shipping_width_in'          => 'VARCHAR(32)  NULL',
-            'shipping_height_in'         => 'VARCHAR(32)  NULL',
+            'shipping_length_in'    => 'VARCHAR(32)  NULL',
+            'shipping_width_in'     => 'VARCHAR(32)  NULL',
+            'shipping_height_in'    => 'VARCHAR(32)  NULL',
 
-
-
-            'reserved_future'            => 'VARCHAR(255) NULL',
+            'reserved_future'       => 'VARCHAR(255) NULL',
         );
     }
 
-
-    /**
-     * Index definitions (PRIMARY and KEYs).
-     *
-     * Each value is a full index line to drop directly into CREATE TABLE.
-     */
     public static function get_index_definitions(): array
     {
         return array(
             'PRIMARY KEY  (upc)',
             'KEY rsr_stock_number (rsr_stock_number)',
-
         );
     }
 
-    /**
-     * Columns used when doing INSERTs (exclude id, etc).
-     */
     public static function get_insert_columns(): array
     {
-        $all = array_keys(self::get_column_definitions());
-        // Remove columns you never insert directly (id, maybe reserved, etc).
+        $all = array_keys( self::get_column_definitions() );
+
         return array_values(
             array_filter(
                 $all,
-                static fn($col) => $col !== 'id'
+                static fn( string $col ) => $col !== 'id'
             )
         );
     }
 
-    /**
-     * Columns touched by the qty cron (for building CASE / UPDATE if you want).
-     */
     public static function get_quantity_update_columns(): array
     {
         return array(
             'inventory_quantity',
         );
     }
-
-    // Helpers for table names (v1/v2) – you already have this logic, just move it here if you want,
-    // or keep it in the Table class and have *that* use BASE_TABLE_KEY from here.
 }

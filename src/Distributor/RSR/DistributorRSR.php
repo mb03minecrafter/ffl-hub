@@ -2,10 +2,11 @@
 
 namespace FFLHub\Distributor\RSR;
 
-use FFLHub\Distributor\DistributorBase;
+use FFLHub\Distributor\DistributorWithFulfillmentTable;
 use FFLHub\Distributor\Product\DistributorProductPayload;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
-use FFLHub\Distributor\RSR\Tables\RSRFulfillmentTable;
+use FFLHub\Distributor\Services\RSR\RSRServices;
+
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
@@ -17,106 +18,108 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Now uses the local RSR fulfillment table for product/price/quantity lookups,
  * instead of calling the RSR get-items API for those operations.
  */
-class DistributorRSR extends DistributorBase
+class DistributorRSR extends DistributorWithFulfillmentTable
 {
-    /**
-     * Base URL for RSR DirectConnect API.
-     *
-     * Still kept for future use (e.g. placing orders), but no longer used
-     * for catalog/price/quantity lookups.
-     */
-    private const API_BASE = 'https://www.rsrgroup.com';
+   
 
-    /**
-     * Path for the check-catalog API.
-     *
-     * Full URL: https://www.rsrgroup.com/api/rsrbridge/1.0/pos/check-catalog
-     * (currently unused, but kept for completeness).
-     */
-    private const API_CHECK_CATALOG = '/api/rsrbridge/1.0/pos/check-catalog';
 
-    public function __construct()
+    private const ID          = 'rsr';
+    private const LABEL       = 'RSR';
+    private const NAME        = 'RSR Group';
+    private const DESCRIPTION = 'RSR Group Distributor';
+    private const SECTION_DESCRIPTION = 'RSR Group Distributor';
+    private const ICON_URL = FFLHUB_PLUGIN_URL . 'assets/icons/logo-rsr.png';
+
+    public static function get_id(): string { return self::ID; }
+    public static function get_label(): string { return self::LABEL; }
+    public static function get_name(): string { return self::NAME; }
+    public static function get_description(): string { return self::DESCRIPTION; }
+    public static function get_section_description(): string { return self::SECTION_DESCRIPTION; }
+    public static function get_icon_url(): string { return self::ICON_URL; }
+
+    public static function get_field_definitions(): array
     {
-        // Identity / display
-        $this->id          = 'rsr';
-        $this->label       = 'RSR';
-        $this->name        = 'RSR Group';
-        $this->description = 'RSR Group Distributor';
-
-        // Icon (already in your assets).
-        $this->icon_url = FFLHUB_PLUGIN_URL . 'assets/icons/logo-rsr.png';
-
-        // Section intro text shown at top of the modal.
-        $this->section_description = 'Configure your RSR API and FTP credentials. These will be used for inventory, pricing, and order integrations.';
-
-        // Field schema for RSR (options will be fflhub_rsr_<field_key> via get_option_name()).
-        $this->fields = array(
-            'main_account_number' => array(
+        return [
+            'main_account_number' => [
                 'label'       => 'Main Account Number',
                 'type'        => 'text',
                 'placeholder' => '',
                 'description' => 'Your main RSR account number (this is your RSR username).',
                 'default'     => '',
-            ),
-            'main_account_password' => array(
+            ],
+            'main_account_password' => [
                 'label'       => 'Main Account Password',
                 'type'        => 'password',
                 'placeholder' => '',
                 'description' => 'Your RSR main account password.',
                 'default'     => '',
-            ),
-            'pos_indicator' => array(
+            ],
+            'pos_indicator' => [
                 'label'       => 'POS Indicator',
                 'type'        => 'text',
                 'placeholder' => '',
-                'description' => 'Your RSR POS indicator for API requests (contact RSR DirectConnect if unsure).',
+                'description' => 'Your RSR POS indicator for API requests.',
                 'default'     => '',
-            ),
-            'dropship_account_number' => array(
+            ],
+            'dropship_account_number' => [
                 'label'       => 'Drop-Ship Account Number',
                 'type'        => 'text',
                 'placeholder' => '',
                 'description' => 'Your RSR drop-ship account number (different from main).',
                 'default'     => '',
-            ),
-            'dropship_account_password' => array(
+            ],
+            'dropship_account_password' => [
                 'label'       => 'Drop-Ship Account Password',
                 'type'        => 'password',
                 'placeholder' => '',
                 'description' => 'Password for the drop-ship account.',
                 'default'     => '',
-            ),
-
-            // FTP credentials for catalog/quantity file downloads.
-            'ftp_host' => array(
+            ],
+            'ftp_host' => [
                 'label'       => 'FTP Host',
                 'type'        => 'text',
                 'placeholder' => 'ftps.rsrgroup.com',
-                'description' => 'Hostname for the RSR FTP server used for fulfillment/catalog files.',
+                'description' => 'Hostname for the RSR FTP server.',
                 'default'     => '',
-            ),
-            'ftp_username' => array(
+            ],
+            'ftp_username' => [
                 'label'       => 'FTP Username',
                 'type'        => 'text',
                 'placeholder' => '',
-                'description' => 'Your RSR FTP username (often the same as your main RSR account).',
+                'description' => 'Your RSR FTP username.',
                 'default'     => '',
-            ),
-            'ftp_password' => array(
+            ],
+            'ftp_password' => [
                 'label'       => 'FTP Password',
                 'type'        => 'password',
                 'placeholder' => '',
                 'description' => 'Your RSR FTP password.',
                 'default'     => '',
-            ),
-            'ftp_use_ssl' => array(
+            ],
+            'ftp_use_ssl' => [
                 'label'       => 'Use FTPS (SSL)',
                 'type'        => 'checkbox',
-                'description' => 'Connect using FTPS/SSL (recommended if your hosting supports it).',
-                'default'     => '1', // we’ll treat non-empty as “true”
-            ),
-        );
+                'description' => 'Connect using FTPS/SSL (recommended).',
+                'default'     => '1',
+            ],
+        ];
     }
+
+    private const SERVICE_CLASS = RSRServices::class;
+
+    public static function get_services_class(): string { return self::SERVICE_CLASS; }
+
+
+
+    
+
+    public function __construct()
+    {
+        
+    }
+
+
+    
 
     /**
      * Get main-account credentials + POS indicator for API calls.
@@ -154,45 +157,9 @@ class DistributorRSR extends DistributorBase
         );
     }
 
-    /**
-     * Helper: get the live fulfillment table name.
-     *
-     * @return string|null
-     */
-    protected function get_live_table_name(): ?string
-    {
-        
+    
 
-        return RSRFulfillmentTable::get_live_table_name();
-    }
-
-    /**
-     * Helper: load a single fulfillment row by normalized UPC.
-     *
-     * @param string $normalized_upc
-     * @return array<string,mixed>|null
-     */
-    protected function get_row_by_upc( string $normalized_upc ): ?array
-    {
-        $table = $this->get_live_table_name();
-        if ( ! $table ) {
-            return null;
-        }
-
-        global $wpdb;
-
-        $sql = "SELECT * FROM {$table} WHERE upc = %s LIMIT 1";
-        $row = $wpdb->get_row(
-            $wpdb->prepare( $sql, $normalized_upc ),
-            ARRAY_A
-        );
-
-        if ( ! is_array( $row ) || empty( $row ) ) {
-            return null;
-        }
-
-        return $row;
-    }
+    
 
     /**
      * Look up a single product by UPC using the local fulfillment table.
@@ -208,6 +175,7 @@ class DistributorRSR extends DistributorBase
         }
 
         $row = $this->get_row_by_upc( $normalized_upc );
+
         if ( ! $row ) {
             error_log( 'FFLHub RSR: no fulfillment row found for UPC ' . $normalized_upc );
             return null;

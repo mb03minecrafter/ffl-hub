@@ -6,6 +6,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
+use FFlHub\Settings\Options;
 
 use FFLHub\Admin\WPCronWarning;
 use FFLHub\Admin\DistributorProductsPage;
@@ -14,13 +15,8 @@ use FFLHub\Admin\FFLImporterPage;
 use FFLHub\Admin\OrderFFLPanel;
 use FFLHub\Admin\ProductMetaBox;
 
-use FFLHub\Distributor\DistributorInterface;
-use FFLHub\Distributor\RSR\Cron\RSRFulfillmentCron;
-use FFLHub\Distributor\RSR\Cron\RSRInventoryCron;
-use FFLHub\Distributor\RSR\Tables\RSRFulfillmentTable;
-
-
 use FFLHub\Distributor\DistributorHandler;
+use FFLHub\Distributor\Services\DistributorServiceHandler;
 
 
 
@@ -29,11 +25,6 @@ use FFLHub\Checkout\CheckoutMap;
 use FFLHub\Checkout\FFLRequiredCartExtension;
 
 
-
-use FFLHub\Distributor\Lipseys\Cron\LipseysFulfilmentCron;
-use FFLHub\Distributor\Lipseys\Cron\LipseysPricingQuantityCron;
-use FFLHub\Distributor\Lipseys\Tables\LipseysFulfillmentTable;
-use FFLHub\Distributor\Product\DistributorProductSync;
 
 use FFLHub\FFL\FFLApi;
 use FFLHub\FFL\Tables\FFLTable;
@@ -78,12 +69,15 @@ class Plugin
 
 
         $this->distributor_handler = new DistributorHandler();
+        AdminPage::init();
+        DistributorProductsPage::init();
 
         // 2. Register distributor instances.
         //$this->register_distributors();
 
         // 3. Initialize feature/services classes.
         $this->register_services();
+
 
         // 4. Hook into WordPress admin.
         $this->register_hooks();
@@ -97,37 +91,30 @@ class Plugin
     private function register_services(): void
     {
         // Cron warning.
-        WPCronWarning::init();
+        //WPCronWarning::init();
 
-        // RSR cron jobs.
-        RSRFulfillmentCron::init();
-        RSRInventoryCron::init();
+       
 
-        // Lipsey's cron jobs.
-        LipseysFulfilmentCron::init();
-        LipseysPricingQuantityCron::init();
-
-        // Managed product sync cron.
-        DistributorProductSync::init();
+        DistributorServiceHandler::register_runtime_services();
 
         // Woo store API integration.
-        FFLRequiredCartExtension::init();
+        //FFLRequiredCartExtension::init();
 
         // FFL importer + REST API + admin order panel.
-        FFLImporterPage::init();
-        FFLApi::init();
-        OrderFFLPanel::init();
+        //FFLImporterPage::init();
+        //FFLApi::init();
+        //OrderFFLPanel::init();
 
         // Admin settings page & subpages.
-        AdminPage::init();
-        DistributorProductsPage::init();
+        //AdminPage::init();
+        //DistributorProductsPage::init();
 
         // Checkout fields + map UI.
-        CheckoutFields::init();
-        CheckoutMap::init();
+        //CheckoutFields::init();
+        //CheckoutMap::init();
 
         // Product meta box.
-        ProductMetaBox::init();
+        //ProductMetaBox::init();
     }
 
     /**
@@ -139,27 +126,20 @@ class Plugin
     private function register_hooks(): void
     {
         // Distributors still use the Settings API via admin_init.
-        add_action('admin_init', array($this, 'register_distributor_settings'));
+        //add_action('admin_init', array($this, 'register_distributor_settings'));
     }
 
     /**
      * Let each distributor register its own settings.
      */
-    public function register_distributor_settings(): void
+    /*public function register_distributor_settings(): void
     {
         foreach ($this->distributor_handler->get_distributors() as $dist) {
             $dist->register_settings();
         }
-    }
+    }*/
 
-    /**
-     * Render the main settings page.
-     * Delegates to the FFLHub_Admin_Page renderer.
-     */
-    public function render_settings_page(): void
-    {
-        AdminPage::render($this->distributor_handler->get_distributors());
-    }
+    
 
     
 
@@ -173,11 +153,6 @@ class Plugin
         // FFL table.
         FFLTable::create_table();
 
-        // RSR fulfillment table.
-        RSRFulfillmentTable::create_tables();
-
-        // Lipsey's fulfillment table.
-        LipseysFulfillmentTable::create_tables();
     }
 
     private static function destroy_tables(): void
@@ -196,14 +171,9 @@ class Plugin
         // Create required tables.
         self::create_tables();
 
-        if (get_option('fflhub_payment_processor_fee_percent', null) === null) {
-            add_option('fflhub_payment_processor_fee_percent', '2.9'); // 2.9% default
-        }
+        Options::init_defaults();
 
-        if (get_option('fflhub_global_markup', null) === null) {
-            add_option('fflhub_global_markup', '10.0'); // 10% default
-        }
-
+        DistributorServiceHandler::on_activate();
         CategoryInstaller::install_default_categories();
     }
 
@@ -215,12 +185,14 @@ class Plugin
      */
     public static function deactivate(): void
     {
+        DistributorServiceHandler::on_deactivate();
+        
         // Cron classes clean themselves up.
-        RSRFulfillmentCron::on_deactivation();
-        RSRInventoryCron::on_deactivation();
-        LipseysFulfilmentCron::on_deactivation();
-        LipseysPricingQuantityCron::on_deactivation();
-        DistributorProductSync::deactivate();
+        //RSRFulfillmentCron::on_deactivation();
+        //RSRInventoryCron::on_deactivation();
+        //LipseysFulfilmentCron::on_deactivation();
+        //LipseysPricingQuantityCron::on_deactivation();
+        //DistributorProductSync::deactivate();
     }
 }
 
@@ -230,4 +202,3 @@ class Plugin
  * Allow legacy references to the global FFLHub_Plugin class name,
  * e.g. register_activation_hook(..., array('FFLHub_Plugin', 'activate')).
  */
-\class_alias(__NAMESPACE__ . '\\Plugin', 'FFLHub_Plugin');

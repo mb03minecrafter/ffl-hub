@@ -13,99 +13,58 @@ use FFLHub\Distributor\Product\DistributorProductPayload;
  */
 abstract class DistributorBase implements DistributorInterface
 {
-    /** @var string */
-    protected $id = '';
-
-    /** @var string */
-    protected $label = '';
-
-    /** @var string */
-    protected $name = '';
-
-    /** @var string */
-    protected $description = '';
-
-    /** @var string */
-    protected $icon_url = '';
-
-    /** @var string */
-    protected $section_description = '';
-
     /**
-     * Field schema:
-     *  [
-     *    'field_key' => [
-     *      'label'       => 'Field Label',
-     *      'type'        => 'text|password',
-     *      'placeholder' => '...',
-     *      'description' => 'Optional help text',
-     *      'default'     => '',
-     *    ],
-     *  ]
-     *
-     * @var array
+     * Children MUST implement these statics.
      */
-    protected $fields = array();
+    abstract public static function get_id(): string;
+    abstract public static function get_label(): string;
+    abstract public static function get_name(): string;
+    abstract public static function get_description(): string;
+    abstract public static function get_section_description(): string;
+    abstract public static function get_icon_url(): string;
+    abstract public static function get_field_definitions(): array;
+    abstract public static function get_services_class(): string;
 
-    /* ---- Simple getters ---- */
 
-    public function get_id(): string
-    {
-        return $this->id;
-    }
 
-    public function get_label(): string
-    {
-        return $this->label;
-    }
 
-    public function get_name(): string
-    {
-        return $this->name;
-    }
 
-    public function get_description(): string
-    {
-        return $this->description;
-    }
-
-    public function get_icon_url(): string
-    {
-        return $this->icon_url;
-    }
+    // No more $id, $label, $name, $description, $fields as instance properties.
 
     /* ---- Helpers for WordPress Settings API ---- */
 
     protected function get_option_group(): string
     {
-        return 'fflhub_' . $this->id . '_settings_group';
+        return 'fflhub_' . static::get_id() . '_settings_group';
     }
 
     protected function get_settings_page(): string
     {
-        return 'ffl-hub-settings-' . $this->id;
+        return 'ffl-hub-settings-' . static::get_id();
     }
 
     protected function get_section_id(): string
     {
-        return 'fflhub_' . $this->id . '_section';
+        return 'fflhub_' . static::get_id() . '_section';
     }
 
-    protected function get_option_name(string $field_key): string
+    public function get_option_name(string $field_key): string
     {
-        return 'fflhub_' . $this->id . '_' . $field_key;
+        return 'fflhub_' . static::get_id() . '_' . $field_key;
     }
 
     protected function get_field_id(string $field_key): string
     {
-        return 'fflhub_' . $this->id . '_' . $field_key . '_field';
+        return 'fflhub_' . static::get_id() . '_' . $field_key . '_field';
     }
 
     /* ---- Settings registration ---- */
 
-    public function register_settings(): void
+    /*public function register_settings(): void
     {
-        if (empty($this->id) || empty($this->fields)) {
+        $fields = static::get_field_definitions();
+
+        if (static::get_id() === '' || empty($fields)) {
             return;
         }
 
@@ -114,7 +73,7 @@ abstract class DistributorBase implements DistributorInterface
         $section_id    = $this->get_section_id();
 
         // Register options for each field.
-        foreach ($this->fields as $key => $field) {
+        foreach ($fields as $key => $field) {
             $option_name = $this->get_option_name($key);
             register_setting($option_group, $option_name);
         }
@@ -123,48 +82,43 @@ abstract class DistributorBase implements DistributorInterface
         add_settings_section(
             $section_id,
             '',
-            array($this, 'render_section_intro'),
+            [$this, 'render_section_intro'],
             $settings_page
         );
 
         // Fields.
-        foreach ($this->fields as $key => $field) {
+        foreach ($fields as $key => $field) {
             add_settings_field(
                 $this->get_field_id($key),
                 $field['label'] ?? $key,
-                array($this, 'render_field'),
+                [$this, 'render_field'],
                 $settings_page,
                 $section_id,
-                array(
+                [
                     'field_key' => $key,
-                )
+                ]
             );
         }
-    }
+    }*/
 
-    /**
-     * Section intro text (uses $section_description if present).
-     */
-    public function render_section_intro(): void
+    /*public function render_section_intro(): void
     {
-        if (! empty($this->section_description)) {
-            echo '<p>' . esc_html($this->section_description) . '</p>';
+        $desc = static::get_section_description();
+        if ($desc !== '') {
+            echo '<p>' . esc_html($desc) . '</p>';
         }
-    }
+    }*/
 
-    /**
-     * Generic field renderer for any field in $fields.
-     *
-     * @param array $args
-     */
-    public function render_field($args): void
+    /*public function render_field($args): void
     {
         $key = $args['field_key'] ?? '';
-        if (! $key || ! isset($this->fields[$key])) {
+        $fields = static::get_field_definitions();
+
+        if ($key === '' || ! isset($fields[$key])) {
             return;
         }
 
-        $field       = $this->fields[$key];
+        $field       = $fields[$key];
         $type        = $field['type']        ?? 'text';
         $placeholder = $field['placeholder'] ?? '';
         $description = $field['description'] ?? '';
@@ -186,15 +140,12 @@ abstract class DistributorBase implements DistributorInterface
             <p class="description"><?php echo esc_html($description); ?></p>
         <?php endif; ?>
         <?php
-    }
+    }*/
 
-    /**
-     * Render the entire settings panel (form) for this distributor.
-     */
-    public function render_settings_panel(): void
+    /*public function render_settings_panel(): void
     {
         ?>
-        <h2><?php echo esc_html($this->get_name()); ?> Settings</h2>
+        <h2><?php echo esc_html(static::get_name()); ?> Settings</h2>
 
         <form method="post" action="options.php">
             <?php
@@ -204,7 +155,7 @@ abstract class DistributorBase implements DistributorInterface
             ?>
         </form>
         <?php
-    }
+    }*/
 
     /**
      * Default UPC lookup implementation.

@@ -1,9 +1,9 @@
 <?php
 
 
-namespace FFLHub\Distributor\Lipseys\Cron;
+namespace FFLHub\Distributor\Services\Lipseys\Cron;
 
-use FFLHub\Distributor\Lipseys\Tables\LipseysFulfillmentTable;
+use FFLHub\Distributor\Services\Lipseys\Tables\LipseysFulfillmentTable;
 
 if (! defined('ABSPATH')) {
     exit;

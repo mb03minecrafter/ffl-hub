@@ -1,9 +1,9 @@
 <?php
 
-namespace FFLHub\Distributor\RSR;
+namespace FFLHub\Distributor\Services\RSR;
 
-use FFLHub\Distributor\RSR\Tables\RSRFulfillmentSchema;
-use FFLHub\Distributor\RSR\Tables\RSRFulfillmentTable;
+use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentSchema;
+use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentTable;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;

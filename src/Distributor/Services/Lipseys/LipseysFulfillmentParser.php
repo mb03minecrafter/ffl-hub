@@ -1,5 +1,5 @@
 <?php
-namespace FFLHub\Distributor\Lipseys;
+namespace FFLHub\Distributor\Services\Lipseys;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;

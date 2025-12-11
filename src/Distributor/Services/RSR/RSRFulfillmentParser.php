@@ -1,6 +1,6 @@
 <?php
 
-namespace FFLHub\Distributor\RSR;
+namespace FFLHub\Distributor\Services\RSR;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;

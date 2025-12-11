@@ -1,8 +1,8 @@
 <?php
-namespace FFLHub\Distributor\Lipseys;
+namespace FFLHub\Distributor\Services\Lipseys;
 
-use FFLHub\Distributor\Lipseys\Tables\LipseysFulfillmentSchema;
-use FFLHub\Distributor\Lipseys\Tables\LipseysFulfillmentTable;
+use FFLHub\Distributor\Services\Lipseys\Tables\LipseysFulfillmentSchema;
+use FFLHub\Distributor\Services\Lipseys\Tables\LipseysFulfillmentTable;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;

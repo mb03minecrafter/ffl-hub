@@ -8,17 +8,20 @@ namespace FFLHub\Distributor\Lipseys;
 if (! defined('ABSPATH')) {
     exit;
 }
-use FFLHub\Distributor\DistributorBase;
-use FFLHub\Distributor\Lipseys\Tables\LipseysFulfillmentTable;
+use FFLHub\Distributor\DistributorWithFulfillmentTable;
 use FFLHub\Distributor\Product\DistributorProductPayload;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
+
+
+use FFLHub\Distributor\Services\Lipseys\LipseysServices;
+
 /**
  * Lipsey's distributor implementation.
  *
  * Uses the official Lipsey's PHP client (lipseys/apiintegration)
  * if it is available. See: https://github.com/Lipseys/LipseysApiIntegrationPhp
  */
-class DistributorLipseys extends DistributorBase
+class DistributorLipseys extends DistributorWithFulfillmentTable
 {
 
     /**
@@ -35,29 +38,29 @@ class DistributorLipseys extends DistributorBase
      */
     private $client_initialized = false;
 
-    public function __construct()
+
+
+
+
+    private const ID          = 'lipseys';
+    private const LABEL       = "Lipsey's";
+    private const NAME        = "Lipsey's";
+    private const DESCRIPTION = "Lipsey's Distributor";
+    private const SECTION_DESCRIPTION = "Lipsey's Distributor";
+    private const ICON_URL = FFLHUB_PLUGIN_URL . 'assets/icons/logo-lipseys.png';
+
+
+
+    public static function get_id(): string { return self::ID; }
+    public static function get_label(): string { return self::LABEL; }
+    public static function get_name(): string { return self::NAME; }
+    public static function get_description(): string { return self::DESCRIPTION; }
+    public static function get_section_description(): string { return self::SECTION_DESCRIPTION; }
+    public static function get_icon_url(): string { return self::ICON_URL; }
+
+    public static function get_field_definitions(): array
     {
-        // Identity / display.
-        $this->id          = 'lipseys';
-        $this->label       = "Lipsey's";
-        $this->name        = "Lipsey's";
-        $this->description = "Lipsey's Distributor";
-
-        // Icon path – adjust if your asset lives somewhere else.
-        $this->icon_url = FFLHUB_PLUGIN_URL . 'assets/icons/logo-lipseys.png';
-
-        // Description shown at top of the Lipsey's settings section/modal.
-        $this->section_description = "Configure your Lipsey's API credentials. "
-            . "These will be used to look up products and, later, submit orders.";
-
-        /**
-         * Settings fields for Lipsey's.
-         *
-         * These map to WordPress options named fflhub_lipseys_<field_key>.
-         *
-         * You can expand this later with fulfillment credentials, etc.
-         */
-        $this->fields = array(
+        return [
             'dealer_email' => array(
                 'label'       => 'Dealer Email',
                 'type'        => 'text',
@@ -72,11 +75,24 @@ class DistributorLipseys extends DistributorBase
                 'description' => "Password for your Lipsey's dealer account.",
                 'default'     => '',
             ),
-
-        );
-
-        $this->get_client();
+        ];
     }
+
+    private const SERVICE_CLASS = LipseysServices::class;
+
+    public static function get_services_class(): string { return self::SERVICE_CLASS; }
+
+
+    
+    
+
+
+    public function __construct()
+    {
+        
+    }
+
+
 
 
 
@@ -206,16 +222,9 @@ class DistributorLipseys extends DistributorBase
 
         
 
-        $table_name = LipseysFulfillmentTable::get_live_table_name();
 
         // Fetch the row by UPC from the live fulfillment table.
-        $row = $wpdb->get_row(
-            $wpdb->prepare(
-                "SELECT * FROM {$table_name} WHERE upc = %s LIMIT 1",
-                $normalized_upc
-            ),
-            ARRAY_A
-        );
+        $row = $this->get_row_by_upc($normalized_upc);
 
         if (! $row) {
 
@@ -327,7 +336,7 @@ class DistributorLipseys extends DistributorBase
 
         
 
-        $table_name = LipseysFulfillmentTable::get_live_table_name();
+        $table_name = $this->get_live_table_name();
 
         $qty_raw = $wpdb->get_var(
             $wpdb->prepare(
@@ -364,7 +373,7 @@ class DistributorLipseys extends DistributorBase
 
         
 
-        $table_name = LipseysFulfillmentTable::get_live_table_name();
+        $table_name = $this->get_live_table_name();
 
         $price_raw = $wpdb->get_var(
             $wpdb->prepare(
