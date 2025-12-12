@@ -10,7 +10,6 @@ if (! defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\DistributorBase;
-use FFLHub\Distributor\DistributorWithFulfillmentTable;
 use FFLHub\Distributor\Product\DistributorProductPayload;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 
@@ -53,14 +52,14 @@ class DistributorLipseys extends DistributorBase
 
 
 
-    public static function get_id(): string { return self::ID; }
-    public static function get_label(): string { return self::LABEL; }
-    public static function get_name(): string { return self::NAME; }
-    public static function get_description(): string { return self::DESCRIPTION; }
-    public static function get_section_description(): string { return self::SECTION_DESCRIPTION; }
-    public static function get_icon_url(): string { return self::ICON_URL; }
+    public function get_id(): string { return self::ID; }
+    public function get_label(): string { return self::LABEL; }
+    public function get_name(): string { return self::NAME; }
+    public function get_description(): string { return self::DESCRIPTION; }
+    public function get_section_description(): string { return self::SECTION_DESCRIPTION; }
+    public function get_icon_url(): string { return self::ICON_URL; }
 
-    public static function get_field_definitions(): array
+    public function get_field_definitions(): array
     {
         return [
             'dealer_email' => array(
@@ -80,18 +79,13 @@ class DistributorLipseys extends DistributorBase
         ];
     }
 
-    private const SERVICE_CLASS = LipseysServices::class;
-
-    public static function get_services_class(): string { return self::SERVICE_CLASS; }
-
-
     
     
 
 
-    public function __construct()
+    public function __construct(?LipseysServices $services = null)
     {
-        
+        parent::__construct($services);
     }
 
 
@@ -226,7 +220,7 @@ class DistributorLipseys extends DistributorBase
 
 
         // Fetch the row by UPC from the live fulfillment table.
-        $row = $this->get_row_by_upc($normalized_upc);
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
 
         if (! $row) {
 
@@ -329,33 +323,22 @@ class DistributorLipseys extends DistributorBase
      */
     public function get_stock_quantity_by_upc(string $upc): ?int
     {
-        global $wpdb;
-
         $normalized_upc = $this->normalize_upc($upc);
         if ($normalized_upc === null) {
             return null;
         }
 
-        
-
-        $table_name = $this->get_live_table_name();
-
-        $qty_raw = $wpdb->get_var(
-            $wpdb->prepare(
-                "SELECT inventory_quantity FROM {$table_name} WHERE upc = %s LIMIT 1",
-                $normalized_upc
-            )
-        );
-
-        if ($qty_raw === null) {
-            return null; // no matching row
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+        if (! $row) {
+            return null;
         }
 
-        $qty_raw = trim((string) $qty_raw);
+        $quantity = $this->get_int_field(
+            $row,
+            array('inventory_quantity')
+        );
 
-        return ($qty_raw !== '' && is_numeric($qty_raw))
-            ? (int) $qty_raw
-            : 0;
+        return $quantity;
     }
 
     /**
@@ -366,28 +349,24 @@ class DistributorLipseys extends DistributorBase
      */
     public function get_distributor_price_by_upc(string $upc): ?float
     {
-        global $wpdb;
 
         $normalized_upc = $this->normalize_upc($upc);
         if ($normalized_upc === null) {
             return null;
         }
 
-        
-
-        $table_name = $this->get_live_table_name();
-
-        $price_raw = $wpdb->get_var(
-            $wpdb->prepare(
-                "SELECT distributor_price FROM {$table_name} WHERE upc = %s LIMIT 1",
-                $normalized_upc
-            )
-        );
-
-        if ($price_raw === null || $price_raw === '') {
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+        if (! $row) {
             return null;
         }
-        return is_numeric($price_raw) ? (float) $price_raw : null;
+
+        $price_raw = $this->get_float_field(
+            $row,
+            array('distributor_price')
+        );
+
+        
+        return (float)$price_raw;
     }
 
     /**

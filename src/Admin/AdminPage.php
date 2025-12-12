@@ -124,16 +124,16 @@ class AdminPage
         $distributors = $handler->get_distributors();
 
         foreach ($distributors as $distributor) {
-            $fields = $distributor::get_field_definitions();
+            $fields = $distributor->get_field_definitions();
             if (empty($fields)) {
                 continue;
             }
 
-            $group = 'fflhub_' . $distributor::get_id() . '_settings_group';
+            $group = 'fflhub_' . $distributor->get_id() . '_settings_group';
 
             foreach ($fields as $key => $field) {
                 // We can't call protected methods from here, so replicate the option-name pattern:
-                $option_name = 'fflhub_' . $distributor::get_id() . '_' . $key;
+                $option_name = 'fflhub_' . $distributor->get_id() . '_' . $key;
                 register_setting($group, $option_name);
             }
         }
@@ -328,11 +328,11 @@ class AdminPage
         ?>
         <div class="fflhub-distributor-grid">
             <?php foreach ($distributors as $distributor) :
-                $id          = $distributor::get_id();
-                $name        = $distributor::get_name();
-                $label       = $distributor::get_label();
-                $description = $distributor::get_description();
-                $icon_url    = $distributor::get_icon_url();
+                $id          = $distributor->get_id();
+                $name        = $distributor->get_name();
+                $label       = $distributor->get_label();
+                $description = $distributor->get_description();
+                $icon_url    = $distributor->get_icon_url();
 
                 $enabled = Options::is_distributor_enabled($id);
                 ?>
@@ -400,7 +400,7 @@ class AdminPage
 
                 <div class="fflhub-modal-content">
                     <?php foreach ($distributors as $distributor) :
-                        $id = $distributor::get_id(); ?>
+                        $id = $distributor->get_id(); ?>
                         <div
                             id="fflhub-panel-<?php echo esc_attr($id); ?>"
                             class="fflhub-modal-panel"
@@ -420,9 +420,9 @@ class AdminPage
      */
     private static function render_distributor_settings_form($distributor): void
     {
-        $id     = $distributor::get_id();
-        $name   = $distributor::get_name();
-        $fields = $distributor::get_field_definitions();
+        $id     = $distributor->get_id();
+        $name   = $distributor->get_name();
+        $fields = $distributor->get_field_definitions();
         $enabled = Options::is_distributor_enabled($id);
 
         $group = 'fflhub_' . $id . '_settings_group';

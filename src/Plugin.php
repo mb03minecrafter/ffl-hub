@@ -69,6 +69,7 @@ class Plugin
 
 
         $this->distributor_handler = new DistributorHandler();
+        $this->distributor_handler->register_runtime_services();
 
         WPCronWarning::init(); //REWORK
         AdminPage::init();
@@ -144,6 +145,11 @@ class Plugin
         Options::init_defaults();
 
         CategoryInstaller::install_default_categories();
+
+        $handler = new DistributorHandler();
+        $handler->on_activate();
+
+
     }
 
     /**
@@ -154,7 +160,8 @@ class Plugin
      */
     public static function deactivate(): void
     {
-        
+        $handler = new DistributorHandler();
+        $handler->on_deactivate();
         // Cron classes clean themselves up.
         //RSRFulfillmentCron::on_deactivation();
         //RSRInventoryCron::on_deactivation();

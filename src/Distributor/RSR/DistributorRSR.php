@@ -8,7 +8,7 @@ use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 use FFLHub\Distributor\Services\RSR\RSRServices;
 
 
-if ( ! defined( 'ABSPATH' ) ) {
+if (! defined('ABSPATH')) {
     exit;
 }
 
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 class DistributorRSR extends DistributorBase
 {
-   
+
 
 
     private const ID          = 'rsr';
@@ -30,14 +30,32 @@ class DistributorRSR extends DistributorBase
     private const SECTION_DESCRIPTION = 'RSR Group Distributor';
     private const ICON_URL = FFLHUB_PLUGIN_URL . 'assets/icons/logo-rsr.png';
 
-    public static function get_id(): string { return self::ID; }
-    public static function get_label(): string { return self::LABEL; }
-    public static function get_name(): string { return self::NAME; }
-    public static function get_description(): string { return self::DESCRIPTION; }
-    public static function get_section_description(): string { return self::SECTION_DESCRIPTION; }
-    public static function get_icon_url(): string { return self::ICON_URL; }
+    public function get_id(): string
+    {
+        return self::ID;
+    }
+    public function get_label(): string
+    {
+        return self::LABEL;
+    }
+    public function get_name(): string
+    {
+        return self::NAME;
+    }
+    public function get_description(): string
+    {
+        return self::DESCRIPTION;
+    }
+    public function get_section_description(): string
+    {
+        return self::SECTION_DESCRIPTION;
+    }
+    public function get_icon_url(): string
+    {
+        return self::ICON_URL;
+    }
 
-    public static function get_field_definitions(): array
+    public function get_field_definitions(): array
     {
         return [
             'main_account_number' => [
@@ -105,21 +123,13 @@ class DistributorRSR extends DistributorBase
         ];
     }
 
-    private const SERVICE_CLASS = RSRServices::class;
-
-    public static function get_services_class(): string { return self::SERVICE_CLASS; }
-
-
-
-    
-
-    public function __construct()
+    public function __construct(?RSRServices $services = null)
     {
-        
+        parent::__construct($services);
     }
 
 
-    
+
 
     /**
      * Get main-account credentials + POS indicator for API calls.
@@ -131,15 +141,15 @@ class DistributorRSR extends DistributorBase
      */
     protected function get_main_credentials(): ?array
     {
-        $username = get_option( $this->get_option_name( 'dropship_account_number' ) );
-        $password = get_option( $this->get_option_name( 'dropship_account_password' ) );
-        $pos      = get_option( $this->get_option_name( 'pos_indicator' ) );
+        $username = get_option($this->get_option_name('dropship_account_number'));
+        $password = get_option($this->get_option_name('dropship_account_password'));
+        $pos      = get_option($this->get_option_name('pos_indicator'));
 
-        $username = is_string( $username ) ? trim( $username ) : '';
-        $password = is_string( $password ) ? trim( $password ) : '';
-        $pos      = is_string( $pos )      ? trim( $pos )      : '';
+        $username = is_string($username) ? trim($username) : '';
+        $password = is_string($password) ? trim($password) : '';
+        $pos      = is_string($pos)      ? trim($pos)      : '';
 
-        if ( $username === '' || $password === '' || $pos === '' ) {
+        if ($username === '' || $password === '' || $pos === '') {
             error_log(
                 sprintf(
                     'FFLHub RSR: missing credentials or POS (username: %s, pos: %s).',
@@ -157,9 +167,9 @@ class DistributorRSR extends DistributorBase
         );
     }
 
-    
 
-    
+
+
 
     /**
      * Look up a single product by UPC using the local fulfillment table.
@@ -167,39 +177,39 @@ class DistributorRSR extends DistributorBase
      * @param string $upc
      * @return DistributorProductPayload|null
      */
-    public function get_product_by_upc( string $upc ): ?DistributorProductPayload
+    public function get_product_by_upc(string $upc): ?DistributorProductPayload
     {
-        $normalized_upc = $this->normalize_upc( $upc );
-        if ( $normalized_upc === null ) {
+        $normalized_upc = $this->normalize_upc($upc);
+        if ($normalized_upc === null) {
             return null;
         }
 
-        $row = $this->get_row_by_upc( $normalized_upc );
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
 
-        if ( ! $row ) {
-            error_log( 'FFLHub RSR: no fulfillment row found for UPC ' . $normalized_upc );
+        if (! $row) {
+            error_log('FFLHub RSR: no fulfillment row found for UPC ' . $normalized_upc);
             return null;
         }
 
         // Map DB columns → payload fields.
         $sku = $this->get_string_field(
             $row,
-            array( 'rsr_stock_number', 'sku' )
+            array('rsr_stock_number', 'sku')
         );
 
         $item_upc = $this->get_string_field(
             $row,
-            array( 'upc' )
+            array('upc')
         );
 
         $name = $this->get_string_field(
             $row,
-            array( 'model' )
+            array('model')
         );
 
         $description = $this->get_string_field(
             $row,
-            array( 'product_description' )
+            array('product_description')
         );
 
         // Just for now since RSR model names suck.
@@ -208,60 +218,60 @@ class DistributorRSR extends DistributorBase
         // Distributor (dealer) price.
         $price = $this->get_float_field(
             $row,
-            array( 'distributor_price' )
+            array('distributor_price')
         );
 
         $quantity = $this->get_int_field(
             $row,
-            array( 'inventory_quantity' )
+            array('inventory_quantity')
         );
 
         // MAP (Minimum Advertised Price).
         $map = $this->get_float_field(
             $row,
-            array( 'retail_map' )
+            array('retail_map')
         );
 
         // MSRP / retail.
         $msrp = $this->get_float_field(
             $row,
-            array( 'retail_msrp' )
+            array('retail_msrp')
         );
 
         // Drop-ship block flag (not used yet, but kept for future).
         $blocked_flag = $this->get_string_field(
             $row,
-            array( 'blocked_from_dropship', 'drop_ship_block' )
+            array('blocked_from_dropship', 'drop_ship_block')
         );
 
         // Raw payload: keep the DB row so debug tools / UIs can inspect it.
         $raw = $row;
 
         // Shipping cost and "true cost".
-        $shipping_cost = $this->get_shipping_cost_by_upc( $normalized_upc );
-        $true_cost     = $this->get_true_cost_by_distributor_cost_shipping_cost( $price, $shipping_cost );
+        $shipping_cost = $this->get_shipping_cost_by_upc($normalized_upc);
+        $true_cost     = $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping_cost);
 
         // Base image name from RSR feed, e.g. "LAS981-0054_1.jpg".
         $image_name = $this->get_string_field(
             $row,
-            array( 'image_name' )
+            array('image_name')
         );
-        $image_name = trim( (string) $image_name );
+        $image_name = trim((string) $image_name);
 
         // Build full list of *real* image URLs (no "image coming soon").
         $rsr_image_urls = array();
-        if ( $image_name !== '' ) {
-            $rsr_image_urls = $this->build_rsr_image_urls_from_image_name( $image_name );
+        if ($image_name !== '') {
+            $rsr_image_urls = $this->build_rsr_image_urls_from_image_name($image_name);
         }
 
         // Primary image URL = first image in the list (if any).
         $primary_image_url = '';
-        if ( ! empty( $rsr_image_urls ) ) {
+        if (! empty($rsr_image_urls)) {
             $primary_image_url = (string) $rsr_image_urls[0];
         }
 
-        $deptNum              = $this->get_string_field( $row, array( 'dept_number' ) );
-        $reccomended_category = DistributorProductCategoryMapper::map_rsr( $deptNum );
+        $deptNum              = $this->get_string_field($row, array('dept_number'));
+        $reccomended_category = DistributorProductCategoryMapper::map_rsr($deptNum);
 
         // TODO: FIGURE OUT RSR FFL REQUIREMENTS CHECKING
         $ffl_required = false;
@@ -285,14 +295,14 @@ class DistributorRSR extends DistributorBase
         );
 
         // Add any additional discovered RSR image URLs to the payload.
-        if ( ! empty( $rsr_image_urls ) ) {
+        if (! empty($rsr_image_urls)) {
             // Skip index 0 because constructor already added primary.
-            foreach ( array_slice( $rsr_image_urls, 1 ) as $extra_url ) {
-                $payload->add_image_url( $extra_url );
+            foreach (array_slice($rsr_image_urls, 1) as $extra_url) {
+                $payload->add_image_url($extra_url);
             }
         }
 
-        error_log( implode( ' ', $rsr_image_urls ) );
+        error_log(implode(' ', $rsr_image_urls));
 
         return $payload;
     }
@@ -305,70 +315,70 @@ class DistributorRSR extends DistributorBase
      * @param string $upc
      * @return DistributorProductPayload|null
      */
-    public function get_pricing_payload_by_upc( string $upc ): ?DistributorProductPayload
+    public function get_pricing_payload_by_upc(string $upc): ?DistributorProductPayload
     {
-        $normalized_upc = $this->normalize_upc( $upc );
-        if ( $normalized_upc === null ) {
+        $normalized_upc = $this->normalize_upc($upc);
+        if ($normalized_upc === null) {
             return null;
         }
 
-        $row = $this->get_row_by_upc( $normalized_upc );
-        if ( ! $row ) {
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+        if (! $row) {
             return null;
         }
 
         // Basic fields from the fulfillment table.
         $sku = $this->get_string_field(
             $row,
-            array( 'rsr_stock_number', 'sku' )
+            array('rsr_stock_number', 'sku')
         );
 
         $item_upc = $this->get_string_field(
             $row,
-            array( 'upc' )
+            array('upc')
         );
 
         $name = $this->get_string_field(
             $row,
-            array( 'model' )
+            array('model')
         );
 
         $description = $this->get_string_field(
             $row,
-            array( 'product_description' )
+            array('product_description')
         );
 
         // Dealer price.
         $price = $this->get_float_field(
             $row,
-            array( 'distributor_price' )
+            array('distributor_price')
         );
 
         // Quantity.
         $quantity = $this->get_int_field(
             $row,
-            array( 'inventory_quantity' )
+            array('inventory_quantity')
         );
 
         // MAP.
         $map = $this->get_float_field(
             $row,
-            array( 'retail_map' )
+            array('retail_map')
         );
 
         // MSRP.
         $msrp = $this->get_float_field(
             $row,
-            array( 'retail_msrp' )
+            array('retail_msrp')
         );
 
         // Shipping + true cost.
-        $shipping_cost = $this->get_shipping_cost_by_upc( $normalized_upc );
-        $true_cost     = $this->get_true_cost_by_distributor_cost_shipping_cost( $price, $shipping_cost );
+        $shipping_cost = $this->get_shipping_cost_by_upc($normalized_upc);
+        $true_cost     = $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping_cost);
 
         // Recommended category.
-        $deptNum              = $this->get_string_field( $row, array( 'dept_number' ) );
-        $recommended_category = DistributorProductCategoryMapper::map_rsr( $deptNum );
+        $deptNum              = $this->get_string_field($row, array('dept_number'));
+        $recommended_category = DistributorProductCategoryMapper::map_rsr($deptNum);
 
         // For sync we don't need images, so just leave image_urls empty.
         $image_url = '';
@@ -402,21 +412,21 @@ class DistributorRSR extends DistributorBase
      * @param string $upc
      * @return int|null
      */
-    public function get_stock_quantity_by_upc( string $upc ): ?int
+    public function get_stock_quantity_by_upc(string $upc): ?int
     {
-        $normalized_upc = $this->normalize_upc( $upc );
-        if ( $normalized_upc === null ) {
+        $normalized_upc = $this->normalize_upc($upc);
+        if ($normalized_upc === null) {
             return null;
         }
 
-        $row = $this->get_row_by_upc( $normalized_upc );
-        if ( ! $row ) {
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+        if (! $row) {
             return null;
         }
 
         $quantity = $this->get_int_field(
             $row,
-            array( 'inventory_quantity' )
+            array('inventory_quantity')
         );
 
         return $quantity;
@@ -428,26 +438,26 @@ class DistributorRSR extends DistributorBase
      * @param string $upc
      * @return float|null
      */
-    public function get_distributor_price_by_upc( string $upc ): ?float
+    public function get_distributor_price_by_upc(string $upc): ?float
     {
-        $normalized_upc = $this->normalize_upc( $upc );
-        if ( $normalized_upc === null ) {
+        $normalized_upc = $this->normalize_upc($upc);
+        if ($normalized_upc === null) {
             return null;
         }
 
-        $row = $this->get_row_by_upc( $normalized_upc );
-        if ( ! $row ) {
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+        if (! $row) {
             return null;
         }
 
         $price = $this->get_float_field(
             $row,
-            array( 'distributor_price' )
+            array('distributor_price')
         );
-        if ( $price <= 0 ) {
+        if ($price <= 0) {
             $price = $this->get_float_field(
                 $row,
-                array( 'retail_price' )
+                array('retail_price')
             );
         }
 
@@ -465,30 +475,30 @@ class DistributorRSR extends DistributorBase
      * @param string $upc
      * @return float|null
      */
-    public function get_shipping_cost_by_upc( string $upc ): ?float
+    public function get_shipping_cost_by_upc(string $upc): ?float
     {
         // Base assumption: FedEx 2Day to the lower 48
         $cost = 15.0;
 
-        $normalized_upc = $this->normalize_upc( $upc );
-        if ( $normalized_upc === null ) {
+        $normalized_upc = $this->normalize_upc($upc);
+        if ($normalized_upc === null) {
             return null;
         }
 
         // Look up the distributor/fulfillment data for this UPC.
-        $product = $this->get_row_by_upc( $normalized_upc );
-        if ( ! $product ) {
-            error_log( 'FFLHub RSR: no fulfillment row found for UPC ' . $normalized_upc );
+        $product = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+        if (! $product) {
+            error_log('FFLHub RSR: no fulfillment row found for UPC ' . $normalized_upc);
             return null;
         }
 
         // We use a few possible column names as fallbacks in case schema evolves.
         $requires_signature = $this->get_bool_field(
             $product,
-            array( 'adult_sig_required' )
+            array('adult_sig_required')
         );
 
-        if ( $requires_signature == 1 ) {
+        if ($requires_signature == 1) {
             $cost += 5.0;
         }
 
@@ -507,17 +517,17 @@ class DistributorRSR extends DistributorBase
      */
     public function get_ftp_credentials(): ?array
     {
-        $host     = get_option( $this->get_option_name( 'ftp_host' ) );
-        $username = get_option( $this->get_option_name( 'ftp_username' ) );
-        $password = get_option( $this->get_option_name( 'ftp_password' ) );
-        $use_ssl  = get_option( $this->get_option_name( 'ftp_use_ssl' ) );
+        $host     = get_option($this->get_option_name('ftp_host'));
+        $username = get_option($this->get_option_name('ftp_username'));
+        $password = get_option($this->get_option_name('ftp_password'));
+        $use_ssl  = get_option($this->get_option_name('ftp_use_ssl'));
 
-        $host     = is_string( $host )     ? trim( $host )     : '';
-        $username = is_string( $username ) ? trim( $username ) : '';
-        $password = is_string( $password ) ? trim( $password ) : '';
-        $use_ssl  = ( is_string( $use_ssl ) ? trim( $use_ssl ) : '' ) !== '';
+        $host     = is_string($host)     ? trim($host)     : '';
+        $username = is_string($username) ? trim($username) : '';
+        $password = is_string($password) ? trim($password) : '';
+        $use_ssl  = (is_string($use_ssl) ? trim($use_ssl) : '') !== '';
 
-        if ( $host === '' || $username === '' || $password === '' ) {
+        if ($host === '' || $username === '' || $password === '') {
             error_log(
                 sprintf(
                     'FFLHub RSR: missing FTP credentials (host: %s, user: %s).',
@@ -544,10 +554,10 @@ class DistributorRSR extends DistributorBase
      * @param string $image_name
      * @return string[]
      */
-    private function build_rsr_image_urls_from_image_name( string $image_name ): array
+    private function build_rsr_image_urls_from_image_name(string $image_name): array
     {
-        $image_name = trim( $image_name );
-        if ( $image_name === '' ) {
+        $image_name = trim($image_name);
+        if ($image_name === '') {
             return array();
         }
 
@@ -555,7 +565,7 @@ class DistributorRSR extends DistributorBase
         $urls        = array();
 
         // Expect pattern like "LAS981-0054_1.jpg"
-        if ( preg_match( '/^(.*)_([0-9]+)(\.[^.]+)$/', $image_name, $matches ) ) {
+        if (preg_match('/^(.*)_([0-9]+)(\.[^.]+)$/', $image_name, $matches)) {
             $base        = $matches[1]; // "LAS981-0054"
             $start_index = (int) $matches[2]; // usually 1
             $ext         = $matches[3]; // ".jpg"
@@ -569,11 +579,11 @@ class DistributorRSR extends DistributorBase
             // We stop at the first non-real/placeholder image.
             $max_extra_attempts = 15; // safety cap so we don't loop forever.
 
-            for ( $i = $start_index + 1; $i <= $start_index + $max_extra_attempts; $i++ ) {
+            for ($i = $start_index + 1; $i <= $start_index + $max_extra_attempts; $i++) {
                 $file = $base . '_' . $i . $ext;
                 $url  = $base_prefix . $file;
 
-                if ( ! $this->rsr_is_real_image_url( $url ) ) {
+                if (! $this->rsr_is_real_image_url($url)) {
                     // Hit a placeholder (110x85) or missing image → stop.
                     break;
                 }
@@ -582,11 +592,11 @@ class DistributorRSR extends DistributorBase
             }
         } else {
             // If we don't match the numbered pattern, just use the raw name.
-            $urls[] = $base_prefix . ltrim( $image_name, '/' );
+            $urls[] = $base_prefix . ltrim($image_name, '/');
         }
 
         // Ensure unique URLs.
-        $urls = array_values( array_unique( $urls ) );
+        $urls = array_values(array_unique($urls));
 
         return $urls;
     }
@@ -600,10 +610,10 @@ class DistributorRSR extends DistributorBase
      * @param string $url
      * @return bool True if this looks like a real product image.
      */
-    private function rsr_is_real_image_url( string $url ): bool
+    private function rsr_is_real_image_url(string $url): bool
     {
-        $url = trim( $url );
-        if ( $url === '' ) {
+        $url = trim($url);
+        if ($url === '') {
             return false;
         }
 
@@ -616,35 +626,34 @@ class DistributorRSR extends DistributorBase
             )
         );
 
-        if ( is_wp_error( $response ) ) {
+        if (is_wp_error($response)) {
             return false;
         }
 
-        $code = wp_remote_retrieve_response_code( $response );
-        if ( $code < 200 || $code >= 300 ) {
+        $code = wp_remote_retrieve_response_code($response);
+        if ($code < 200 || $code >= 300) {
             return false;
         }
 
-        $body = wp_remote_retrieve_body( $response );
-        if ( $body === '' || $body === null ) {
+        $body = wp_remote_retrieve_body($response);
+        if ($body === '' || $body === null) {
             return false;
         }
 
         // Determine dimensions from the binary image string.
-        $image_info = @getimagesizefromstring( $body );
-        if ( false === $image_info ) {
+        $image_info = @getimagesizefromstring($body);
+        if (false === $image_info) {
             return false;
         }
 
-        $width  = isset( $image_info[0] ) ? (int) $image_info[0] : 0;
-        $height = isset( $image_info[1] ) ? (int) $image_info[1] : 0;
+        $width  = isset($image_info[0]) ? (int) $image_info[0] : 0;
+        $height = isset($image_info[1]) ? (int) $image_info[1] : 0;
 
         // RSR "image coming soon" placeholder is exactly 110x85.
-        if ( $width === 110 && $height === 85 ) {
+        if ($width === 110 && $height === 85) {
             return false;
         }
 
         return true;
     }
 }
-
