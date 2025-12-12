@@ -69,65 +69,35 @@ class Plugin
 
 
         $this->distributor_handler = new DistributorHandler();
+
+        WPCronWarning::init(); //REWORK
         AdminPage::init();
         DistributorProductsPage::init();
 
-        // 2. Register distributor instances.
-        //$this->register_distributors();
+       // Woo store API integration.
+        FFLRequiredCartExtension::init(); //REWORK
 
-        // 3. Initialize feature/services classes.
-        $this->register_services();
+        // FFL importer + REST API + admin order panel.
+        FFLImporterPage::init(); //REWORK
+        FFLApi::init(); //REWORK
+        OrderFFLPanel::init(); //REWORK
 
+
+        // Checkout fields + map UI.
+        CheckoutFields::init(); //REWORK
+        CheckoutMap::init(); //REWORK
+
+        // Product meta box.
+        ProductMetaBox::init(); //REWORK
 
         // 4. Hook into WordPress admin.
-        $this->register_hooks();
     }
 
     
 
-    /**
-     * Initialize feature/service classes.
-     */
-    private function register_services(): void
-    {
-        // Cron warning.
-        //WPCronWarning::init();
+    
 
-       
-
-        DistributorServiceHandler::register_runtime_services();
-
-        // Woo store API integration.
-        //FFLRequiredCartExtension::init();
-
-        // FFL importer + REST API + admin order panel.
-        //FFLImporterPage::init();
-        //FFLApi::init();
-        //OrderFFLPanel::init();
-
-        // Admin settings page & subpages.
-        //AdminPage::init();
-        //DistributorProductsPage::init();
-
-        // Checkout fields + map UI.
-        //CheckoutFields::init();
-        //CheckoutMap::init();
-
-        // Product meta box.
-        //ProductMetaBox::init();
-    }
-
-    /**
-     * Register WordPress hooks (admin).
-     *
-     * NOTE: In this pattern, admin pages register their own menus,
-     * but we still give distributors a chance to register settings.
-     */
-    private function register_hooks(): void
-    {
-        // Distributors still use the Settings API via admin_init.
-        //add_action('admin_init', array($this, 'register_distributor_settings'));
-    }
+   
 
     /**
      * Let each distributor register its own settings.
@@ -173,7 +143,6 @@ class Plugin
 
         Options::init_defaults();
 
-        DistributorServiceHandler::on_activate();
         CategoryInstaller::install_default_categories();
     }
 
@@ -185,7 +154,6 @@ class Plugin
      */
     public static function deactivate(): void
     {
-        DistributorServiceHandler::on_deactivate();
         
         // Cron classes clean themselves up.
         //RSRFulfillmentCron::on_deactivation();

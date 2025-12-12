@@ -1,18 +1,24 @@
 <?php
+
 namespace FFLHub\Distributor\Services\Lipseys;
 
-use FFLHub\Distributor\Services\Lipseys\Tables\LipseysFulfillmentSchema;
-use FFLHub\Distributor\Services\Lipseys\Tables\LipseysFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-
 /**
- * Coordinator for importing Lipsey's catalog items into the STAGING table.
+ * Service for importing Lipsey's catalog items into the STAGING table
+ * of a double-buffered fulfillment table.
  */
-class LipseysFulfillmentImporter {
+class LipseysFulfillmentImporterService
+{
+    private DoubleBufferedFulfillmentTable $table;
+
+    public function __construct( DoubleBufferedFulfillmentTable $table ) {
+        $this->table = $table;
+    }
 
     /**
      * Import an array of item arrays into the staging table.
@@ -20,62 +26,20 @@ class LipseysFulfillmentImporter {
      * @param array<int,array<string,mixed>> $items
      * @return int Number of rows successfully inserted.
      */
-    public static function import_items_array( array $items ): int {
-        global $wpdb;
-
-        
-
-        $table_name = LipseysFulfillmentTable::get_staging_table_name();
-
-        // Allow long-running import if needed.
+    public function import_items_array( array $items ): int
+    {
         if ( function_exists( 'set_time_limit' ) ) {
             @set_time_limit( 0 );
         }
 
-        // Start with a clean staging table.
-        $wpdb->query( "TRUNCATE TABLE {$table_name}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        // Start with a clean staging table via the table helper.
+        $this->table->truncate_staging();
 
-        $parser       = new LipseysFulfillmentParser();
-        $batch_size   = 250;
-        $batch_rows   = array();
-        $total_import = 0;
-
-        // NEW: track rows skipped due to missing/invalid UPC.
-        $skipped_missing_upc = 0; // NEW
-
-        // Single source of truth for column order from the schema helper.
-        $columns  = LipseysFulfillmentSchema::get_insert_columns();
-        $num_cols = count( $columns );
-
-        $flush_batch = function () use ( &$batch_rows, &$total_import, $table_name, $wpdb, $columns, $num_cols ) {
-            if ( empty( $batch_rows ) ) {
-                return;
-            }
-
-            $placeholders = array();
-            $values       = array();
-
-            foreach ( $batch_rows as $row ) {
-                $placeholders[] = '(' . implode( ', ', array_fill( 0, $num_cols, '%s' ) ) . ')';
-
-                foreach ( $columns as $col ) {
-                    $values[] = isset( $row[ $col ] ) ? $row[ $col ] : '';
-                }
-            }
-
-            $sql = 'INSERT INTO ' . $table_name .
-                ' (' . implode( ', ', $columns ) . ') VALUES ' .
-                implode( ', ', $placeholders );
-
-            $prepared = $wpdb->prepare( $sql, $values );
-            $result   = $wpdb->query( $prepared );
-
-            if ( $result !== false ) {
-                $total_import += count( $batch_rows );
-            }
-
-            $batch_rows = array();
-        };
+        $parser             = new LipseysFulfillmentParser();
+        $batch_size         = 250;
+        $batch_rows         = [];
+        $total_import       = 0;
+        $skipped_missing_upc = 0;
 
         foreach ( $items as $item ) {
             if ( ! is_array( $item ) ) {
@@ -89,30 +53,34 @@ class LipseysFulfillmentImporter {
                 continue;
             }
 
-            // NEW: enforce UPC requirement here too.
+            // Enforce UPC requirement.
             $upc = isset( $row['upc'] ) ? trim( (string) $row['upc'] ) : '';
-            if ( $upc === '' || strcasecmp( $upc, 'null' ) === 0 ) { // NEW
-                $skipped_missing_upc++;                               // NEW
-                continue;                                             // NEW
+            if ( $upc === '' || strcasecmp( $upc, 'null' ) === 0 ) {
+                $skipped_missing_upc++;
+                continue;
             }
 
             $batch_rows[] = $row;
 
             if ( count( $batch_rows ) >= $batch_size ) {
-                $flush_batch();
+                // Let the table handle the actual batch INSERT.
+                $inserted     = $this->table->insert_rows_into_staging( $batch_rows );
+                $total_import += $inserted;
+                $batch_rows    = [];
             }
         }
 
         // Flush any remaining rows.
-        $flush_batch();
+        if ( ! empty( $batch_rows ) ) {
+            $inserted     = $this->table->insert_rows_into_staging( $batch_rows );
+            $total_import += $inserted;
+        }
 
-        // Optional: store last-import info.
         if ( $total_import > 0 ) {
             update_option( 'fflhub_lipseys_fulfillment_last_import', current_time( 'mysql' ) );
             update_option( 'fflhub_lipseys_fulfillment_last_import_count', $total_import );
         }
 
-        // NEW: log summary including skipped_missing_upc.
         error_log(
             sprintf(
                 '[FFLHub][Lipseys Import] import_items_array(): items_in=%d, rows_inserted=%d, skipped_missing_upc=%d',
@@ -120,7 +88,7 @@ class LipseysFulfillmentImporter {
                 $total_import,
                 $skipped_missing_upc
             )
-        ); // NEW
+        );
 
         return $total_import;
     }

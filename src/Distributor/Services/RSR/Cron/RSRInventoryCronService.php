@@ -1,18 +1,14 @@
 <?php
 
-
 namespace FFLHub\Distributor\Services\RSR\Cron;
-
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-
-use FFLHub\Distributor\Services\RSR\RSRFTPClient;
-use FFLHub\Distributor\RSR\DistributorRSR;
-use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentTable;
-
+use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\RSR\RSRFTPService;
 
 /**
  * Cron job for real-time inventory updates using RSR's IM-QTY-CSV.csv file.
@@ -20,77 +16,56 @@ use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentTable;
  * Runs every 5 minutes:
  *  - downloads IM-QTY-CSV.csv via FTP to uploads/fflhub-rsr/
  *  - parses it (RSR Stock Number, Quantity)
- *  - updates inventory_quantity in the *live* fulfillment table
+ *  - updates inventory_quantity in the LIVE fulfillment table.
  */
-class RSRInventoryCron {
-
-
-
-    const CRON_HOOK = 'fflhub_rsr_pricing_quantity_update';
-
+final class RSRInventoryCronService extends AbstractTableCronService {
 
     /**
-     * Hook this up from your main plugin bootstrap.
+     * Cron hook name for RSR inventory refresh.
      */
-    public static function init(): void {
-        // Add custom 5-minute interval.
-        add_filter( 'cron_schedules', array( __CLASS__, 'register_intervals' ) );
+    public const CRON_HOOK = 'fflhub_rsr_pricing_quantity_update';
 
-        // Cron event callback.
-        add_action(
-            self::CRON_HOOK,
-            array( __CLASS__, 'cron_update_inventory_from_qty_file' )
-        );
-
-        // Runtime safety: if event missing, schedule it.
-        add_action( 'init', array( __CLASS__, 'maybe_schedule_event' ) );
+    /**
+     * Inject the double-buffered fulfillment table.
+     */
+    public function __construct( DoubleBufferedFulfillmentTable $table ) {
+        parent::__construct( $table );
     }
 
     /**
-     * Register a custom interval of 5 minutes for inventory updates.
-     *
-     * @param array<string,array<string,int|string>> $schedules
-     * @return array
+     * Unique cron hook name.
      */
-    public static function register_intervals( array $schedules ): array {
-        if ( ! isset( $schedules['fflhub_five_minutes'] ) ) {
-            $schedules['fflhub_five_minutes'] = array(
-                'interval' => 5 * MINUTE_IN_SECONDS,
-                'display'  => 'Every 5 minutes (FFLHub RSR inventory)',
-            );
-        }
-
-        return $schedules;
+    public function get_cron_hook_name(): string {
+        return self::CRON_HOOK;
     }
 
     /**
-     * Runtime guard: make sure the inventory event is scheduled.
+     * Schedule key used in cron_schedules.
+     * (Kept as 'fflhub_five_minutes' to avoid breaking existing schedules.)
      */
-    public static function maybe_schedule_event(): void {
-        if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
-            wp_schedule_event(
-                time() + 2 * MINUTE_IN_SECONDS,
-                'fflhub_five_minutes',
-                self::CRON_HOOK
-            );
-        }
+    protected function get_schedule_key(): string {
+        return 'fflhub_five_minutes';
     }
 
     /**
-     * Optional: called on plugin activation.
+     * Interval length in seconds.
      */
-    public static function on_activation(): void {
-        self::maybe_schedule_event();
+    protected function get_interval_seconds(): int {
+        return 5 * MINUTE_IN_SECONDS;
     }
 
     /**
-     * Called on plugin deactivation to clear the scheduled event.
+     * Human-readable schedule label.
      */
-    public static function on_deactivation(): void {
-        $timestamp = wp_next_scheduled( self::CRON_HOOK );
-        if ( $timestamp ) {
-            wp_unschedule_event( $timestamp, self::CRON_HOOK );
-        }
+    protected function get_interval_display(): string {
+        return 'Every 5 minutes (FFLHub RSR inventory)';
+    }
+
+    /**
+     * Delay before first run (keeps your old 2-minute initial delay).
+     */
+    protected function get_initial_delay_seconds(): int {
+        return 2 * MINUTE_IN_SECONDS;
     }
 
     /**
@@ -98,10 +73,14 @@ class RSRInventoryCron {
      *  1) Download IM-QTY-CSV.csv from RSR FTP to uploads.
      *  2) Parse it and update inventory_quantity in the live table.
      */
-    public static function cron_update_inventory_from_qty_file(): void {
+    public function run(): void {
         $t_start = microtime( true );
 
-        $log_timing = function ( string $label, float $t0 ) {
+        if ( function_exists( 'set_time_limit' ) ) {
+            @set_time_limit( 0 );
+        }
+
+        $log_timing = function ( string $label, float $t0 ): void {
             $elapsed_ms = ( microtime( true ) - $t0 ) * 1000;
             error_log(
                 sprintf(
@@ -116,18 +95,9 @@ class RSRInventoryCron {
 
         // 0) Get FTP credentials.
         $t_creds_start = microtime( true );
+        $creds         = $this->get_ftp_credentials();
 
-        
-
-        $rsr = new DistributorRSR();
-        if ( ! method_exists( $rsr, 'get_ftp_credentials' ) ) {
-            error_log( '[FFLHub][RSR Inventory Cron] ERROR: get_ftp_credentials() not available on distributor.' );
-            return;
-        }
-
-        $creds = $rsr->get_ftp_credentials();
         if ( ! is_array( $creds ) ) {
-            // get_ftp_credentials() already logged a detailed error.
             $log_timing( 'Credentials retrieval (failed)', $t_creds_start );
             error_log( '[FFLHub][RSR Inventory Cron] ---- RUN END (CREDS FAILED) ----' );
             return;
@@ -135,31 +105,41 @@ class RSRInventoryCron {
 
         $log_timing( 'Credentials retrieval', $t_creds_start );
 
-        $host     = $creds['host'] ?? '';
-        $username = $creds['username'] ?? '';
-        $password = $creds['password'] ?? '';
-        $use_ssl  = ! empty( $creds['use_ssl'] );
+        $host     = $creds['host'];
+        $username = $creds['username'];
+        $password = $creds['password'];
+        $use_ssl  = $creds['use_ssl'];
 
         // Local path for the quantity file.
-        $uploads    = wp_upload_dir();
-        $base_dir   = trailingslashit( $uploads['basedir'] ) . 'fflhub-rsr';
+        $uploads  = wp_upload_dir();
+        $base_dir = trailingslashit( $uploads['basedir'] ) . 'fflhub-rsr';
+
+        if ( ! wp_mkdir_p( $base_dir ) ) {
+            error_log( '[FFLHub][RSR Inventory Cron] ERROR: failed to create base directory ' . $base_dir );
+            $log_timing( 'Total cron run (mkdir failed)', $t_start );
+            error_log( '[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----' );
+            return;
+        }
+
         $file_name  = 'IM-QTY-CSV.csv';
         $local_path = trailingslashit( $base_dir ) . $file_name;
 
         // Remote path on RSR FTP (leading slash to match fulfillment path style).
         $remote_path = '/ftpdownloads/IM-QTY-CSV.csv';
 
-        // 1) Download the file.
+        // 1) Download the file via the new instance-based FTP service.
         $t_ftp_start = microtime( true );
 
-        $ok = RSRFTPClient::download_file(
-            $remote_path,
-            $local_path,
-            $host,
-            $username,
-            $password,
-            $use_ssl
-        );
+        $ftp = new RSRFTPService( $host, $username, $password, $use_ssl );
+        if ( ! $ftp->is_connected() ) {
+            update_option( 'fflhub_rsr_inventory_last_download_error', current_time( 'mysql' ) );
+            error_log( '[FFLHub][RSR Inventory Cron] FTP connection not available.' );
+            $log_timing( 'Total (FTP connection failed)', $t_start );
+            error_log( '[FFLHub][RSR Inventory Cron] ---- RUN END (FTP FAILED) ----' );
+            return;
+        }
+
+        $ok = $ftp->download_file( $remote_path, $local_path );
 
         $log_timing( 'FTP download', $t_ftp_start );
 
@@ -177,7 +157,7 @@ class RSRInventoryCron {
         // 2) Apply inventory updates to live table.
         $t_apply_start = microtime( true );
 
-        $updated_rows = self::apply_inventory_updates_from_file( $local_path );
+        $updated_rows = $this->apply_inventory_updates_from_file( $local_path );
 
         $log_timing( 'Apply inventory updates', $t_apply_start );
 
@@ -208,7 +188,7 @@ class RSRInventoryCron {
      * @param string $file_path
      * @return int Number of input rows processed (not exact DB rows changed).
      */
-    protected static function apply_inventory_updates_from_file( string $file_path ): int {
+    protected function apply_inventory_updates_from_file( string $file_path ): int {
         global $wpdb;
 
         $t_start       = microtime( true );
@@ -220,8 +200,8 @@ class RSRInventoryCron {
             return 0;
         }
 
-
-        $live_table = RSRFulfillmentTable::get_live_table_name();
+        // Use the injected double-buffer table to locate the LIVE table.
+        $live_table = $this->table->get_live_table_name();
 
         if ( function_exists( 'set_time_limit' ) ) {
             @set_time_limit( 0 );
@@ -237,9 +217,7 @@ class RSRInventoryCron {
         $batch_size    = 200; // rows per UPDATE batch
         $batch_updates = array();
 
-
         $wpdb->query( 'START TRANSACTION' );
-
 
         $flush_batch = function () use ( &$batch_updates, &$total_rows, $live_table, $wpdb, &$t_flush_total ) {
             if ( empty( $batch_updates ) ) {
@@ -343,9 +321,6 @@ class RSRInventoryCron {
 
         $wpdb->query( 'COMMIT' );
 
-
-
-
         $t_total_ms = ( microtime( true ) - $t_start ) * 1000;
         $t_parse_ms = $t_parse_total * 1000;
         $t_flush_ms = $t_flush_total * 1000;
@@ -361,5 +336,45 @@ class RSRInventoryCron {
         );
 
         return $total_rows;
+    }
+
+    /**
+     * Get FTP credentials for downloading RSR inventory files.
+     *
+     * @return array|null {
+     *   @type string $host
+     *   @type string $username
+     *   @type string $password
+     *   @type bool   $use_ssl
+     * }
+     */
+    public function get_ftp_credentials(): ?array {
+        $host     = get_option( 'fflhub_rsr_ftp_host' );
+        $username = get_option( 'fflhub_rsr_ftp_username' );
+        $password = get_option( 'fflhub_rsr_ftp_password' );
+        $use_ssl  = get_option( 'fflhub_rsr_ftp_use_ssl' );
+
+        $host     = is_string( $host )     ? trim( $host )     : '';
+        $username = is_string( $username ) ? trim( $username ) : '';
+        $password = is_string( $password ) ? trim( $password ) : '';
+        $use_ssl  = ( is_string( $use_ssl ) ? trim( $use_ssl ) : '' ) !== '';
+
+        if ( $host === '' || $username === '' || $password === '' ) {
+            error_log(
+                sprintf(
+                    '[FFLHub][RSR Inventory Cron] Missing FTP credentials (host: %s, user: %s).',
+                    $host !== '' ? 'set' : 'empty',
+                    $username !== '' ? 'set' : 'empty'
+                )
+            );
+            return null;
+        }
+
+        return array(
+            'host'     => $host,
+            'username' => $username,
+            'password' => $password,
+            'use_ssl'  => $use_ssl,
+        );
     }
 }

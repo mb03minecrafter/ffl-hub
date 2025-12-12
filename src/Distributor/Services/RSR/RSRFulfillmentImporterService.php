@@ -3,9 +3,9 @@
 namespace FFLHub\Distributor\Services\RSR;
 
 use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentSchema;
-use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 
-if ( ! defined( 'ABSPATH' ) ) {
+if (! defined('ABSPATH')) {
     exit;
 }
 
@@ -21,55 +21,73 @@ if ( ! defined( 'ABSPATH' ) ) {
  * (or legacy FFLHub_RSR_Fulfillment_Importer) after your FTP cron has fetched
  * the latest fulfillment-inv-new.txt.
  */
-class RSRFulfillmentImporter
+class RSRFulfillmentImporterService
 {
-    /**
-     * Convenience wrapper: import from the standard downloaded file location.
-     *
-     * @return int Number of rows inserted.
-     */
-    public static function import_from_downloaded_file(): int
+    /** @var DoubleBufferedFulfillmentTable */
+    private $table;
+
+    public function __construct(DoubleBufferedFulfillmentTable $table)
     {
-        $uploads   = wp_upload_dir();
-        $base_dir  = trailingslashit( $uploads['basedir'] ) . 'fflhub-rsr';
-        $file_path = trailingslashit( $base_dir ) . 'fulfillment-inv-new.txt';
-
-        if ( ! file_exists( $file_path ) || ! is_readable( $file_path ) ) {
-            error_log( '[FFLHub] RSR fulfillment import: file missing or not readable at ' . $file_path );
-            return 0;
-        }
-
-        // Route through main importer (which may use LOAD DATA).
-        return self::import_fulfillment_file( $file_path );
+        $this->table = $table;
     }
 
     /**
-     * Check whether LOAD DATA LOCAL INFILE appears to be usable.
+     * Import from standard downloaded file (uploads/fflhub-rsr/fulfillment-inv-new.txt).
      *
-     * @return bool
+     * @return int Number of rows imported.
      */
-    public static function can_use_load_data_local_infile(): bool
+    public function import_from_downloaded_file(): int
+    {
+        $uploads   = wp_upload_dir();
+        $base_dir  = trailingslashit($uploads['basedir']) . 'fflhub-rsr';
+        $file_path = trailingslashit($base_dir) . 'fulfillment-inv-new.txt';
+
+        if (! file_exists($file_path) || ! is_readable($file_path)) {
+            error_log('[FFLHub][RSR Import] File missing or unreadable at ' . $file_path);
+            return 0;
+        }
+
+        return $this->import_fulfillment_file($file_path);
+    }
+
+    /**
+     * Attempts to import a file into the staging table.
+     * Uses LOAD DATA LOCAL INFILE if available, falls back to PHP batch insert.
+     *
+     * @param string $file_path
+     * @return int Number of rows imported.
+     */
+    public function import_fulfillment_file(string $file_path): int
+    {
+        if ($this->can_use_load_data_local_infile()) {
+            $rows = $this->import_fulfillment_file_via_load_data($file_path);
+            if ($rows >= 0) {
+                return $rows;
+            }
+            error_log('[FFLHub][RSR Import] LOAD DATA path failed, falling back to PHP importer.');
+        }
+
+        return $this->import_fulfillment_file_via_php($file_path);
+    }
+
+    /**
+     * Determines if LOAD DATA LOCAL INFILE can be used.
+     */
+    private function can_use_load_data_local_infile(): bool
     {
         global $wpdb;
 
-        // Check MySQL server variable.
-        $row      = $wpdb->get_row( "SHOW VARIABLES LIKE 'local_infile'" );
-        $mysql_ok = false;
+        $row      = $wpdb->get_row("SHOW VARIABLES LIKE 'local_infile'");
+        $mysql_ok = $row && isset($row->Value) && in_array(strtolower((string) $row->Value), ['on', '1'], true);
 
-        if ( $row && isset( $row->Value ) ) {
-            $val      = strtolower( (string) $row->Value );
-            $mysql_ok = ( $val === 'on' || $val === '1' );
-        }
+        $ini_val = ini_get('mysqli.allow_local_infile');
+        $php_ok  = in_array(strtolower((string) $ini_val), ['on', '1'], true);
 
-        // Check PHP ini for mysqli.
-        $ini_val = ini_get( 'mysqli.allow_local_infile' );
-        $php_ok  = ( $ini_val === '1' || strtolower( (string) $ini_val ) === 'on' );
-
-        $result = ( $mysql_ok && $php_ok );
+        $result = ($mysql_ok && $php_ok);
 
         error_log(
             sprintf(
-                '[FFLHub][RSR Import][DEBUG] can_use_load_data_local_infile: mysql_ok=%s, php_ok=%s, result=%s',
+                '[FFLHub][RSR Import][DEBUG] LOAD DATA check: mysql_ok=%s, php_ok=%s, result=%s',
                 $mysql_ok ? 'true' : 'false',
                 $php_ok ? 'true' : 'false',
                 $result ? 'true' : 'false'
@@ -77,32 +95,6 @@ class RSRFulfillmentImporter
         );
 
         return $result;
-    }
-
-    /**
-     * Import from a specific file path into the staging table.
-     * Uses LOAD DATA LOCAL INFILE when available; falls back to PHP batch importer.
-     *
-     * @param string $file_path
-     * @return int Number of rows inserted.
-     */
-    public static function import_fulfillment_file( string $file_path ): int
-    {
-        // Try fast path first.
-        if ( self::can_use_load_data_local_infile() ) {
-            $rows = self::import_fulfillment_file_via_load_data( $file_path );
-            if ( $rows >= 0 ) {
-                return $rows;
-            }
-
-            // If LOAD DATA failed, log and fall back to PHP path.
-            error_log(
-                '[FFLHub][RSR Import] LOAD DATA path failed, falling back to PHP batch importer.'
-            );
-        }
-
-        // Fallback (or if LOAD DATA disabled): PHP batch importer.
-        return self::import_fulfillment_file_via_php( $file_path );
     }
 
     /**
@@ -115,41 +107,41 @@ class RSRFulfillmentImporter
      * @param string $file_path
      * @return int
      */
-    private static function import_fulfillment_file_via_load_data( string $file_path ): int
+    private function import_fulfillment_file_via_load_data(string $file_path): int
     {
         global $wpdb;
 
-        $t_start = microtime( true );
+        $t_start = microtime(true);
 
-        if ( ! file_exists( $file_path ) || ! is_readable( $file_path ) ) {
-            error_log( '[FFLHub][RSR Import][LOAD DATA] file missing or not readable at ' . $file_path );
+        if (! file_exists($file_path) || ! is_readable($file_path)) {
+            error_log('[FFLHub][RSR Import][LOAD DATA] file missing or not readable at ' . $file_path);
             return -1;
         }
 
-        
 
-        $table_name = RSRFulfillmentTable::get_staging_table_name();
+
+        $table_name = $this->table->get_staging_table_name();
 
         // Allow long-running import if needed.
-        if ( function_exists( 'set_time_limit' ) ) {
-            @set_time_limit( 0 );
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
         }
 
         // Detect if first line is a header (same logic as parser).
         $ignore_lines = 0;
-        $fh           = fopen(( $file_path ), 'r' );
-        if ( $fh ) {
-            $first_line = fgets( $fh );
-            fclose( $fh );
+        $fh           = fopen(($file_path), 'r');
+        if ($fh) {
+            $first_line = fgets($fh);
+            fclose($fh);
 
-            if ( $first_line !== false ) {
-                $first_line = trim( $first_line );
-                if ( $first_line !== '' ) {
-                    $cols      = explode( ';', $first_line );
-                    $first_col = isset( $cols[0] ) ? trim( $cols[0] ) : '';
+            if ($first_line !== false) {
+                $first_line = trim($first_line);
+                if ($first_line !== '') {
+                    $cols      = explode(';', $first_line);
+                    $first_col = isset($cols[0]) ? trim($cols[0]) : '';
                     if (
-                        stripos( $first_col, 'RSR Stock' ) === 0 ||
-                        stripos( $first_col, 'RSR#' ) === 0
+                        stripos($first_col, 'RSR Stock') === 0 ||
+                        stripos($first_col, 'RSR#') === 0
                     ) {
                         $ignore_lines = 1;
                     }
@@ -158,7 +150,7 @@ class RSRFulfillmentImporter
         }
 
         // Clean staging table first.
-        $wpdb->query( "TRUNCATE TABLE {$table_name}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query("TRUNCATE TABLE {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         /**
          * Map each semicolon-separated column into @c0..@c75, then SET real columns.
@@ -263,29 +255,29 @@ class RSRFulfillmentImporter
                 reserved_future       = TRIM(TRIM(BOTH '\\r' FROM @c75))
         ";
 
-        $prepared    = $wpdb->prepare( $sql, $file_path );
-        $t_sql_start = microtime( true );
-        $result      = $wpdb->query( $prepared );
-        $t_sql_ms    = ( microtime( true ) - $t_sql_start ) * 1000;
+        $prepared    = $wpdb->prepare($sql, $file_path);
+        $t_sql_start = microtime(true);
+        $result      = $wpdb->query($prepared);
+        $t_sql_ms    = (microtime(true) - $t_sql_start) * 1000;
 
-        if ( $result === false ) {
+        if ($result === false) {
             error_log(
                 '[FFLHub][RSR Import][LOAD DATA] query failed: ' . $wpdb->last_error
             );
             return -1;
         }
 
-        $wpdb->query( "DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''" );
+        $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''");
 
         // Count rows actually loaded.
-        $rows = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table_name}" );
+        $rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}");
 
-        if ( $rows > 0 ) {
-            update_option( 'fflhub_rsr_fulfillment_last_import', current_time( 'mysql' ), false );
-            update_option( 'fflhub_rsr_fulfillment_last_import_count', $rows, false );
+        if ($rows > 0) {
+            update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'), false);
+            update_option('fflhub_rsr_fulfillment_last_import_count', $rows, false);
         }
 
-        $t_total_ms = ( microtime( true ) - $t_start ) * 1000;
+        $t_total_ms = (microtime(true) - $t_start) * 1000;
 
         error_log(
             sprintf(
@@ -306,35 +298,35 @@ class RSRFulfillmentImporter
      * @param string $file_path
      * @return int
      */
-    private static function import_fulfillment_file_via_php( string $file_path ): int
+    private function import_fulfillment_file_via_php(string $file_path): int
     {
         global $wpdb;
 
-        $t_import_start = microtime( true );
+        $t_import_start = microtime(true);
         $t_parse_total  = 0.0;
         $t_flush_total  = 0.0;
 
-        if ( ! file_exists( $file_path ) || ! is_readable( $file_path ) ) {
+        if (! file_exists($file_path) || ! is_readable($file_path)) {
             return 0;
         }
 
-        
 
-        $table_name = RSRFulfillmentTable::get_staging_table_name();
+
+        $table_name = $this->table->get_staging_table_name();
 
         // Allow long-running import if needed.
-        if ( function_exists( 'set_time_limit' ) ) {
-            @set_time_limit( 0 );
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
         }
 
-        $handle = fopen( $file_path, 'r' );
-        if ( ! $handle ) {
-            error_log( '[FFLHub] RSR fulfillment import: could not fopen ' . $file_path );
+        $handle = fopen($file_path, 'r');
+        if (! $handle) {
+            error_log('[FFLHub] RSR fulfillment import: could not fopen ' . $file_path);
             return 0;
         }
 
         // Start with a clean staging table.
-        $wpdb->query( "TRUNCATE TABLE {$table_name}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query("TRUNCATE TABLE {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $parser = new RSRFulfillmentParser();
 
@@ -346,16 +338,16 @@ class RSRFulfillmentImporter
         $skipped_missing_upc = 0;
 
         // Single source of truth for column order from the schema helper.
-        $columns     = RSRFulfillmentSchema::get_insert_columns();
-        $num_cols    = count( $columns );
-        $column_list = implode( ', ', $columns );
+        $columns     = $this->table->get_schema()->get_insert_columns();
+        $num_cols    = count($columns);
+        $column_list = implode(', ', $columns);
 
         // Precompute placeholders and insert prefix.
-        $row_placeholder = '(' . implode( ', ', array_fill( 0, $num_cols, '%s' ) ) . ')';
+        $row_placeholder = '(' . implode(', ', array_fill(0, $num_cols, '%s')) . ')';
         $insert_prefix   = 'INSERT INTO ' . $table_name . ' (' . $column_list . ') VALUES ';
 
         // Wrap all inserts in a single transaction to avoid per-batch commit overhead.
-        $wpdb->query( 'START TRANSACTION' );
+        $wpdb->query('START TRANSACTION');
 
         $flush_batch = function () use (
             &$batch_rows,
@@ -367,86 +359,86 @@ class RSRFulfillmentImporter
             $row_placeholder,
             $insert_prefix
         ) {
-            if ( empty( $batch_rows ) ) {
+            if (empty($batch_rows)) {
                 return;
             }
 
-            $t0 = microtime( true );
+            $t0 = microtime(true);
 
             $placeholders = array();
             $values       = array();
 
-            foreach ( $batch_rows as $row ) {
+            foreach ($batch_rows as $row) {
                 // Reuse the precomputed row placeholder.
                 $placeholders[] = $row_placeholder;
 
-                foreach ( $columns as $col ) {
-                    $values[] = isset( $row[ $col ] ) ? $row[ $col ] : '';
+                foreach ($columns as $col) {
+                    $values[] = isset($row[$col]) ? $row[$col] : '';
                 }
             }
 
-            $sql = $insert_prefix . implode( ', ', $placeholders );
+            $sql = $insert_prefix . implode(', ', $placeholders);
 
             // One big prepared statement per batch.
-            $prepared = $wpdb->prepare( $sql, $values );
-            $result   = $wpdb->query( $prepared );
+            $prepared = $wpdb->prepare($sql, $values);
+            $result   = $wpdb->query($prepared);
 
-            if ( $result !== false ) {
-                $total_import += count( $batch_rows );
+            if ($result !== false) {
+                $total_import += count($batch_rows);
             } else {
-                error_log( '[FFLHub][RSR Import] Batch INSERT failed: ' . $wpdb->last_error );
+                error_log('[FFLHub][RSR Import] Batch INSERT failed: ' . $wpdb->last_error);
             }
 
             $batch_rows = array();
 
-            $t_flush_total += ( microtime( true ) - $t0 );
+            $t_flush_total += (microtime(true) - $t0);
         };
 
         // Read + parse loop.
-        while ( ( $line = fgets( $handle ) ) !== false ) {
+        while (($line = fgets($handle)) !== false) {
             $line_number++;
 
-            $t0  = microtime( true );
-            $row = $parser->parse_line( $line, $line_number );
-            $t1  = microtime( true );
+            $t0  = microtime(true);
+            $row = $parser->parse_line($line, $line_number);
+            $t1  = microtime(true);
 
             // Accumulate parsing (includes fgets + parse_line).
-            $t_parse_total += ( $t1 - $t0 );
+            $t_parse_total += ($t1 - $t0);
 
-            if ( $row === null ) {
+            if ($row === null) {
                 continue;
             }
 
             // Skip rows where UPC is missing/empty/'null'.
-            $upc = isset( $row['upc'] ) ? trim( (string) $row['upc'] ) : '';
-            if ( $upc === '' || strcasecmp( $upc, 'null' ) === 0 ) {
+            $upc = isset($row['upc']) ? trim((string) $row['upc']) : '';
+            if ($upc === '' || strcasecmp($upc, 'null') === 0) {
                 $skipped_missing_upc++;
                 continue;
             }
 
             $batch_rows[] = $row;
 
-            if ( count( $batch_rows ) >= $batch_size ) {
+            if (count($batch_rows) >= $batch_size) {
                 $flush_batch();
             }
         }
 
-        fclose( $handle );
+        fclose($handle);
 
         // Flush any remaining rows.
         $flush_batch();
 
         // Commit all inserts as a single transaction.
-        $wpdb->query( 'COMMIT' );
+        $wpdb->query('COMMIT');
 
         // Optional: store last-import info.
-        if ( $total_import > 0 ) {
-            update_option( 'fflhub_rsr_fulfillment_last_import', current_time( 'mysql' ), false );
-            update_option( 'fflhub_rsr_fulfillment_last_import_count', $total_import, false );
+        if ($total_import > 0) {
+            update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'), false);
+            update_option('fflhub_rsr_fulfillment_last_import_count', $total_import, false);
         }
 
         // Timing logs for deeper insight.
-        $t_import_total_ms = ( microtime( true ) - $t_import_start ) * 1000;
+        $t_import_total_ms = (microtime(true) - $t_import_start) * 1000;
         $t_parse_ms        = $t_parse_total * 1000;
         $t_flush_ms        = $t_flush_total * 1000;
 
@@ -464,4 +456,3 @@ class RSRFulfillmentImporter
         return $total_import;
     }
 }
-

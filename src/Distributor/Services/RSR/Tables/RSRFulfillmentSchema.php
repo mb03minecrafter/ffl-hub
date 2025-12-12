@@ -13,17 +13,17 @@ class RSRFulfillmentSchema implements FulfillmentSchemaInterface
     public const BASE_TABLE_KEY    = 'fflhub_rsr_fulfillment';
     public const LIVE_TABLE_OPTION = 'fflhub_rsr_fulfillment_live_table';
 
-    public static function get_base_table_key(): string
+    public function get_base_table_key(): string
     {
         return self::BASE_TABLE_KEY;
     }
 
-    public static function get_live_table_option_name(): string
+    public function get_live_table_option_name(): string
     {
         return self::LIVE_TABLE_OPTION;
     }
 
-    public static function get_column_definitions(): array
+    public function get_column_definitions(): array
     {
         return array(
             // Primary key
@@ -115,7 +115,7 @@ class RSRFulfillmentSchema implements FulfillmentSchemaInterface
         );
     }
 
-    public static function get_index_definitions(): array
+    public function get_index_definitions(): array
     {
         return array(
             'PRIMARY KEY  (upc)',
@@ -123,7 +123,7 @@ class RSRFulfillmentSchema implements FulfillmentSchemaInterface
         );
     }
 
-    public static function get_insert_columns(): array
+    public function get_insert_columns(): array
     {
         $all = array_keys( self::get_column_definitions() );
 
@@ -135,7 +135,7 @@ class RSRFulfillmentSchema implements FulfillmentSchemaInterface
         );
     }
 
-    public static function get_quantity_update_columns(): array
+    public function get_quantity_update_columns(): array
     {
         return array(
             'inventory_quantity',

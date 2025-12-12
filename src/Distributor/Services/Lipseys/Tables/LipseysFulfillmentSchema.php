@@ -10,23 +10,37 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 /**
  * Single source of truth for the Lipsey's fulfillment table schema.
+ *
+ * Now instance-based to work with DoubleBufferedFulfillmentTable and
+ * other services that expect a FulfillmentSchemaInterface instance.
  */
 class LipseysFulfillmentSchema implements FulfillmentSchemaInterface
 {
-    public const BASE_TABLE_KEY    = 'fflhub_lipseys_fulfillment';
-    public const LIVE_TABLE_OPTION = 'fflhub_lipseys_fulfillment_live_table';
+    private const BASE_TABLE_KEY    = 'fflhub_lipseys_fulfillment';
+    private const LIVE_TABLE_OPTION = 'fflhub_lipseys_fulfillment_live_table';
 
-    public static function get_base_table_key(): string
+    /**
+     * Base key used to build table names (without $wpdb->prefix, without _v1/_v2).
+     */
+    public function get_base_table_key(): string
     {
         return self::BASE_TABLE_KEY;
     }
 
-    public static function get_live_table_option_name(): string
+    /**
+     * Option name that stores the "live" table (used by DoubleBufferedFulfillmentTable).
+     */
+    public function get_live_table_option_name(): string
     {
         return self::LIVE_TABLE_OPTION;
     }
 
-    public static function get_column_definitions(): array
+    /**
+     * Column definitions for CREATE TABLE.
+     *
+     * @return array<string,string> column_name => SQL definition
+     */
+    public function get_column_definitions(): array
     {
         return array(
             // Core identifiers
@@ -82,7 +96,12 @@ class LipseysFulfillmentSchema implements FulfillmentSchemaInterface
         );
     }
 
-    public static function get_index_definitions(): array
+    /**
+     * Index definitions (PRIMARY + secondary keys).
+     *
+     * @return string[]
+     */
+    public function get_index_definitions(): array
     {
         return array(
             'PRIMARY KEY  (upc)',
@@ -90,21 +109,34 @@ class LipseysFulfillmentSchema implements FulfillmentSchemaInterface
         );
     }
 
-    public static function get_insert_columns(): array
+    /**
+     * Columns used in INSERT statements for the full catalog import.
+     * Order matters and must match the values you bind in INSERTs.
+     *
+     * @return string[]
+     */
+    public function get_insert_columns(): array
     {
-        $columns = array_keys( self::get_column_definitions() );
+        $columns = array_keys( $this->get_column_definitions() );
 
         return array_values(
             array_filter(
                 $columns,
-                static function (string $col): bool {
+                static function ( string $col ): bool {
+                    // In case you ever add an auto-increment id later.
                     return $col !== 'id';
                 }
             )
         );
     }
 
-    public static function get_pricing_quantity_update_columns(): array
+    /**
+     * Lipseys-specific subset used for pricing/quantity update operations.
+     * (Not part of FulfillmentSchemaInterface; just extra helper.)
+     *
+     * @return string[]
+     */
+    public function get_pricing_quantity_update_columns(): array
     {
         return array(
             'lipseys_item_number',

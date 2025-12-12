@@ -8,6 +8,8 @@ namespace FFLHub\Distributor\Lipseys;
 if (! defined('ABSPATH')) {
     exit;
 }
+
+use FFLHub\Distributor\DistributorBase;
 use FFLHub\Distributor\DistributorWithFulfillmentTable;
 use FFLHub\Distributor\Product\DistributorProductPayload;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
@@ -21,7 +23,7 @@ use FFLHub\Distributor\Services\Lipseys\LipseysServices;
  * Uses the official Lipsey's PHP client (lipseys/apiintegration)
  * if it is available. See: https://github.com/Lipseys/LipseysApiIntegrationPhp
  */
-class DistributorLipseys extends DistributorWithFulfillmentTable
+class DistributorLipseys extends DistributorBase
 {
 
     /**

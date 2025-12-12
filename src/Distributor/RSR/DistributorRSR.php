@@ -2,7 +2,7 @@
 
 namespace FFLHub\Distributor\RSR;
 
-use FFLHub\Distributor\DistributorWithFulfillmentTable;
+use FFLHub\Distributor\DistributorBase;
 use FFLHub\Distributor\Product\DistributorProductPayload;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 use FFLHub\Distributor\Services\RSR\RSRServices;
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Now uses the local RSR fulfillment table for product/price/quantity lookups,
  * instead of calling the RSR get-items API for those operations.
  */
-class DistributorRSR extends DistributorWithFulfillmentTable
+class DistributorRSR extends DistributorBase
 {
    
 

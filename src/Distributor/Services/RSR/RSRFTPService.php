@@ -9,15 +9,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Minimal FTP/FTPS client for talking to RSR's FTP server.
  *
- * Singleton-style: use RSRFTPClient::download_file(...) statically.
- * Under the hood, it reuses a single FTP connection per PHP request.
+ * Instance-based service. Create a new instance with host/credentials and
+ * call download_file() / download_zip_file().
  */
-class RSRFTPClient
-{
-    /**
-     * @var RSRFTPClient|null
-     */
-    private static $instance = null;
+class RSRFTPService {
 
     /**
      * @var resource|\FTP\Connection|null Underlying FTP/FTPS connection.
@@ -30,7 +25,7 @@ class RSRFTPClient
     private $last_error = null;
 
     /**
-     * Credentials used for this connection (so we can detect changes).
+     * Credentials used for this connection.
      *
      * @var string
      */
@@ -58,18 +53,18 @@ class RSRFTPClient
     private const DEFAULT_TIMEOUT = 30;
 
     /**
-     * Private constructor. Use get_instance() instead.
+     * Constructor. Establishes FTP/FTPS connection immediately.
      *
      * @param string $host
      * @param string $username
      * @param string $password
      * @param bool   $use_ssl
      */
-    private function __construct(
+    public function __construct(
         string $host,
         string $username,
         string $password,
-        bool $use_ssl
+        bool $use_ssl = true
     ) {
         $this->host     = $host;
         $this->username = $username;
@@ -77,7 +72,7 @@ class RSRFTPClient
         $this->use_ssl  = $use_ssl;
 
         if ( $host === '' || $username === '' || $password === '' ) {
-            $this->set_error( 'Empty host/username/password passed to FTP client constructor.' );
+            $this->set_error( 'Empty host/username/password passed to FTP service constructor.' );
             error_log( '[FFLHub] RSR FTP: empty host/username/password passed to constructor.' );
             return;
         }
@@ -117,89 +112,38 @@ class RSRFTPClient
     /**
      * Destructor. Ensure the FTP connection is closed when the object is destroyed.
      */
-    public function __destruct()
-    {
+    public function __destruct() {
         $this->close_internal();
     }
 
     /**
-     * Get (and possibly create) the singleton instance for the given credentials.
+     * Check whether the service is connected and logged in.
      *
-     * If credentials change between calls, the previous connection is closed
-     * and a new one is created.
-     *
-     * @param string $host
-     * @param string $username
-     * @param string $password
-     * @param bool   $use_ssl
-     * @return RSRFTPClient|null
+     * @return bool
      */
-    private static function get_instance(
-        string $host,
-        string $username,
-        string $password,
-        bool $use_ssl
-    ) {
-        // If we already have an instance and credentials match, reuse it.
-        if (
-            self::$instance instanceof self &&
-            self::$instance->host === $host &&
-            self::$instance->username === $username &&
-            self::$instance->password === $password &&
-            self::$instance->use_ssl === $use_ssl &&
-            self::$instance->is_connected()
-        ) {
-            return self::$instance;
-        }
-
-        // Credentials changed or connection died. Close old and create new.
-        if ( self::$instance instanceof self ) {
-            self::$instance->close_internal();
-        }
-
-        self::$instance = new self( $host, $username, $password, $use_ssl );
-
-        if ( ! self::$instance->is_connected() ) {
-            // Constructor already logged the error.
-            return null;
-        }
-
-        return self::$instance;
+    public function is_connected(): bool {
+        return (bool) $this->conn;
     }
 
     /**
-     * Public static API: download a file from RSR FTP to a local path.
-     * Reuses a single FTP connection per request when called multiple times
-     * with the same credentials.
+     * Public API: download a file from RSR FTP to a local path.
      *
      * @param string $remote_path Remote path on the RSR FTP server.
      * @param string $local_path  Absolute local filesystem path to save to.
-     * @param string $host        FTP host.
-     * @param string $username    FTP username.
-     * @param string $password    FTP password.
-     * @param bool   $use_ssl     Whether to use FTPS (ftp_ssl_connect) if available.
      * @return bool True on success, false on failure.
      */
-    public static function download_file(
-        string $remote_path,
-        string $local_path,
-        string $host,
-        string $username,
-        string $password,
-        bool $use_ssl = true
-    ): bool {
-        $client = self::get_instance( $host, $username, $password, $use_ssl );
-
-        if ( ! $client || ! $client->is_connected() ) {
+    public function download_file( string $remote_path, string $local_path ): bool {
+        if ( ! $this->is_connected() ) {
+            $this->set_error( 'download_file() called but FTP connection is not available.' );
             error_log( '[FFLHub] RSR FTP: download_file() called but FTP connection is not available.' );
             return false;
         }
 
-        return $client->download_file_internal( $remote_path, $local_path );
+        return $this->download_file_internal( $remote_path, $local_path );
     }
 
     /**
-     * Public static API: download a ZIP file and extract it.
+     * Public API: download a ZIP file and extract it.
      *
      * - Downloads the remote ZIP to $local_zip_path.
      * - Extracts it into $extract_to_dir (or dirname($local_zip_path) if empty).
@@ -207,38 +151,45 @@ class RSRFTPClient
      *
      * @param string $remote_path      Remote ZIP path on the RSR FTP server.
      * @param string $local_zip_path   Absolute local filesystem path to save the ZIP.
-     * @param string $host             FTP host.
-     * @param string $username         FTP username.
-     * @param string $password         FTP password.
      * @param string $extract_to_dir   Directory to extract into. If empty, uses dirname($local_zip_path).
-     * @param bool   $use_ssl          Whether to use FTPS (ftp_ssl_connect) if available.
      * @param bool   $delete_zip_after Whether to delete the ZIP after successful extraction.
      *
      * @return bool True on success, false on failure.
      */
-    public static function download_zip_file(
+    public function download_zip_file(
         string $remote_path,
         string $local_zip_path,
-        string $host,
-        string $username,
-        string $password,
         string $extract_to_dir = '',
-        bool $use_ssl = true,
         bool $delete_zip_after = true
     ): bool {
-        $client = self::get_instance( $host, $username, $password, $use_ssl );
-
-        if ( ! $client || ! $client->is_connected() ) {
+        if ( ! $this->is_connected() ) {
+            $this->set_error( 'download_zip_file() called but FTP connection is not available.' );
             error_log( '[FFLHub] RSR FTP: download_zip_file() called but FTP connection is not available.' );
             return false;
         }
 
-        return $client->download_zip_file_internal(
+        return $this->download_zip_file_internal(
             $remote_path,
             $local_zip_path,
             $extract_to_dir,
             $delete_zip_after
         );
+    }
+
+    /**
+     * Get the last error message for this instance (if any).
+     *
+     * @return string|null
+     */
+    public function get_last_error(): ?string {
+        return $this->last_error;
+    }
+
+    /**
+     * Explicitly close the FTP connection.
+     */
+    public function close(): void {
+        $this->close_internal();
     }
 
     /**
@@ -248,8 +199,7 @@ class RSRFTPClient
      * @param string $local_path
      * @return bool
      */
-    private function download_file_internal( string $remote_path, string $local_path ): bool
-    {
+    private function download_file_internal( string $remote_path, string $local_path ): bool {
         $dir = dirname( $local_path );
         if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) {
             $this->set_error( 'Failed to create directory ' . $dir );
@@ -389,20 +339,9 @@ class RSRFTPClient
     }
 
     /**
-     * Check whether the client is connected and logged in.
-     *
-     * @return bool
-     */
-    private function is_connected(): bool
-    {
-        return (bool) $this->conn;
-    }
-
-    /**
      * Close the FTP connection (instance-level).
      */
-    private function close_internal(): void
-    {
+    private function close_internal(): void {
         if ( $this->conn ) {
             /** @var \FTP\Connection|resource $connection */
             $connection = $this->conn;
@@ -413,37 +352,11 @@ class RSRFTPClient
     }
 
     /**
-     * Public static method to explicitly close and reset the singleton.
-     */
-    public static function close(): void
-    {
-        if ( self::$instance instanceof self ) {
-            self::$instance->close_internal();
-            self::$instance = null;
-        }
-    }
-
-    /**
-     * Get the last error message from the singleton instance (if any).
-     *
-     * @return string|null
-     */
-    public static function get_last_error(): ?string
-    {
-        if ( self::$instance instanceof self ) {
-            return self::$instance->last_error;
-        }
-        return null;
-    }
-
-    /**
      * Internal helper to store last error.
      *
      * @param string $message
      */
-    private function set_error( string $message ): void
-    {
+    private function set_error( string $message ): void {
         $this->last_error = $message;
     }
 }
-
