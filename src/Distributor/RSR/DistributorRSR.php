@@ -277,6 +277,9 @@ class DistributorRSR extends DistributorBase
         $ffl_required = false;
 
         // Build the normalized payload. This seeds image_urls with $primary_image_url (if non-empty).
+
+        error_log("Product image url: " . $primary_image_url);
+
         $payload = new DistributorProductPayload(
             (string) $item_upc,
             (string) $sku,
@@ -387,6 +390,8 @@ class DistributorRSR extends DistributorBase
         $ffl_required = false;
 
         $raw = $row;
+
+
 
         return new DistributorProductPayload(
             (string) $item_upc,

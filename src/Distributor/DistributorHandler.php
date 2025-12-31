@@ -22,6 +22,10 @@ use FFLHub\Distributor\Services\Lipseys\Cron\LipseysInventoryCronService;
 use FFLHub\Distributor\Services\Lipseys\Tables\LipseysFulfillmentSchema;
 use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentSchema;
 
+
+
+use FFLHub\Distributor\Product\DistributorProductPayload;
+
 /**
  * Central place to build and expose distributor instances.
  *
@@ -173,5 +177,116 @@ class DistributorHandler
 
         $this->productSinceCronService->register();
 
+    }
+
+
+
+
+    /**
+     * Fetch normalized distributor payloads for a UPC across all distributors.
+     *
+     * Returns:
+     *  - carriers: all distributors that carry this UPC
+     *  - cheapest_in_stock: cheapest valid true_cost with quantity > 0
+     *  - cheapest_any: cheapest valid true_cost ignoring stock
+     *
+     * @param string $upc
+     * @return array{
+     *   carriers: array<string,array{label:string,payload:DistributorProductPayload,true_cost:?float,quantity:?int}>,
+     *   cheapest_in_stock: ?array{product:DistributorProductPayload,true_cost:float,label:string,id:string,quantity:?int},
+     *   cheapest_any: ?array{product:DistributorProductPayload,true_cost:float,label:string,id:string,quantity:?int}
+     * }
+     */
+    public function get_payloads_for_upc(string $upc): array
+    {
+        $upc = trim($upc);
+
+        $carriers          = [];
+        $cheapest_in_stock = null;
+        $cheapest_any      = null;
+
+        if ($upc === '') {
+            return [
+                'carriers'          => $carriers,
+                'cheapest_in_stock' => $cheapest_in_stock,
+                'cheapest_any'      => $cheapest_any,
+            ];
+        }
+
+        foreach ($this->distributors as $id => $distributor) {
+            if (! $distributor) {
+                continue;
+            }
+
+            try {
+                
+                $product = $distributor->get_product_by_upc($upc);
+                
+            } catch (\Throwable $e) {
+                // Ignore this distributor on error; others may still succeed.
+                continue;
+            }
+
+            if (! ($product instanceof DistributorProductPayload)) {
+                continue;
+            }
+
+            $label = method_exists($distributor, 'get_label')
+                ? $distributor->get_label()
+                : ucfirst((string) $id);
+
+            $payload_array = get_object_vars($product);
+
+            $true_cost = null;
+            if (isset($payload_array['true_cost']) && is_numeric($payload_array['true_cost'])) {
+                $true_cost = (float) $payload_array['true_cost'];
+            }
+
+            $quantity = null;
+            if (isset($payload_array['quantity']) && is_numeric($payload_array['quantity'])) {
+                $quantity = (int) $payload_array['quantity'];
+            }
+
+            $key = (string) $id;
+
+            $carriers[$key] = [
+                'label'     => $label,
+                'payload'   => $product,
+                'true_cost' => $true_cost,
+                'quantity'  => $quantity,
+            ];
+
+            // Cheapest overall (any quantity) if true_cost is valid.
+            if ($true_cost !== null) {
+                if ($cheapest_any === null || $true_cost < $cheapest_any['true_cost']) {
+                    $cheapest_any = [
+                        'product'   => $product,
+                        'true_cost' => $true_cost,
+                        'label'     => $label,
+                        'id'        => $key,
+                        'quantity'  => $quantity,
+                    ];
+                }
+            }
+
+            // Cheapest *in stock* (quantity > 0 and valid true_cost).
+            if ($true_cost !== null && $quantity !== null && $quantity > 0) {
+                if ($cheapest_in_stock === null || $true_cost < $cheapest_in_stock['true_cost']) {
+                    $cheapest_in_stock = [
+                        'product'   => $product,
+                        'true_cost' => $true_cost,
+                        'label'     => $label,
+                        'id'        => $key,
+                        'quantity'  => $quantity,
+                    ];
+                }
+            }
+        }
+
+        return [
+            'carriers'          => $carriers,
+            'cheapest_in_stock' => $cheapest_in_stock,
+            'cheapest_any'      => $cheapest_any,
+        ];
     }
 }

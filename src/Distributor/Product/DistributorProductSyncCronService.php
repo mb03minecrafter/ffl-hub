@@ -9,13 +9,11 @@ use FFLHub\Distributor\Product\DistributorProductPayload;
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
 use FFLHub\Product\ProductMeta;
 
-use function apply_filters;
 use function class_exists;
 use function current_time;
 use function get_option;
 use function get_post_meta;
 use function get_post_status;
-use function time;
 use function update_post_meta;
 use function wc_get_product;
 use function wc_format_decimal;
@@ -635,173 +633,65 @@ class DistributorProductSyncCronService extends AbstractCronService
         );
     }
 
+    /**
+     * Delegate UPC lookup to the DistributorHandler helper.
+     *
+     * @param string $upc
+     * @return array{
+     *   carriers: array<string,array{label:string,payload:DistributorProductPayload,true_cost:?float,quantity:?int}>,
+     *   cheapest_in_stock: ?array{product:DistributorProductPayload,true_cost:float,label:string,id:string,quantity:?int},
+     *   cheapest_any: ?array{product:DistributorProductPayload,true_cost:float,label:string,id:string,quantity:?int}
+     * }
+     */
     private function get_distributor_payloads_for_upc( string $upc ): array
     {
         $start = microtime( true );
         $this->log( 'get_distributor_payloads_for_upc: START upc=' . $upc );
 
-        $carriers          = array();
-        $cheapest_in_stock = null;
-        $cheapest_any      = null;
+        $empty = array(
+            'carriers'          => array(),
+            'cheapest_in_stock' => null,
+            'cheapest_any'      => null,
+        );
 
         if ( ! class_exists( Plugin::class ) ) {
             $this->log( 'get_distributor_payloads_for_upc: Plugin class missing.' );
-            return array(
-                'carriers'          => $carriers,
-                'cheapest_in_stock' => $cheapest_in_stock,
-                'cheapest_any'      => $cheapest_any,
-            );
+            return $empty;
         }
 
-        $plugin = Plugin::instance();
+        $plugin  = Plugin::instance();
+        $handler = $plugin->distributor_handler ?? null;
 
-        // Get all configured distributors (RSR, Lipsey’s, etc.).
-        $distributors = method_exists( $plugin, 'get_distributors' )
-            ? $plugin->distributor_handler->get_distributors()
-            : array(
-                'rsr'     => $plugin->distributor_handler->get_distributor_by_id( 'rsr' ),
-                'lipseys' => $plugin->distributor_handler->get_distributor_by_id( 'lipseys' ),
-            );
-
-        $this->log(
-            'get_distributor_payloads_for_upc: checking distributors=' .
-            implode( ',', array_keys( $distributors ) )
-        );
-
-        foreach ( $distributors as $id => $distributor ) {
-            if ( ! $distributor ) {
-                $this->log(
-                    sprintf(
-                        'get_distributor_payloads_for_upc: distributor %s is null, skipping.',
-                        (string) $id
-                    )
-                );
-                continue;
-            }
-
+        if ( ! $handler || ! method_exists( $handler, 'get_payloads_for_upc' ) ) {
             $this->log(
-                sprintf(
-                    'get_distributor_payloads_for_upc: querying distributor %s for UPC %s',
-                    (string) $id,
-                    $upc
-                )
+                'get_distributor_payloads_for_upc: distributor_handler missing or does not implement get_payloads_for_upc.'
             );
-
-            $d_start = microtime( true );
-
-            try {
-                // Prefer a lightweight pricing method if the distributor provides it.
-                if ( method_exists( $distributor, 'get_pricing_payload_by_upc' ) ) {
-                    $product = $distributor->get_pricing_payload_by_upc( $upc );
-                } else {
-                    $product = $distributor->get_product_by_upc( $upc );
-                }
-            } catch ( \Throwable $e ) {
-                $d_ms = round( ( microtime( true ) - $d_start ) * 1000, 2 );
-                $this->log(
-                    sprintf(
-                        'get_distributor_payloads_for_upc: exception from distributor %s for UPC %s after %s ms: %s',
-                        (string) $id,
-                        $upc,
-                        $d_ms,
-                        $e->getMessage()
-                    )
-                );
-                continue;
-            }
-
-            $d_ms = round( ( microtime( true ) - $d_start ) * 1000, 2 );
-
-            if ( ! ( $product instanceof DistributorProductPayload ) ) {
-                $this->log(
-                    sprintf(
-                        'get_distributor_payloads_for_upc: distributor %s returned no payload for UPC %s (took %s ms).',
-                        (string) $id,
-                        $upc,
-                        $d_ms
-                    )
-                );
-                continue;
-            }
-
-            $label = method_exists( $distributor, 'get_label' )
-                ? $distributor->get_label()
-                : ucfirst( (string) $id );
-
-            $payload_array = get_object_vars( $product );
-
-            $true_cost = null;
-            if ( isset( $payload_array['true_cost'] ) && is_numeric( $payload_array['true_cost'] ) ) {
-                $true_cost = (float) $payload_array['true_cost'];
-            }
-
-            $quantity = null;
-            if ( isset( $payload_array['quantity'] ) && is_numeric( $payload_array['quantity'] ) ) {
-                $quantity = (int) $payload_array['quantity'];
-            }
-
-            $this->log(
-                sprintf(
-                    'get_distributor_payloads_for_upc: distributor %s label=%s true_cost=%s qty=%s (took %s ms)',
-                    (string) $id,
-                    $label,
-                    var_export( $true_cost, true ),
-                    var_export( $quantity, true ),
-                    $d_ms
-                )
-            );
-
-            $carriers[ (string) $id ] = array(
-                'label'     => $label,
-                'payload'   => $product,
-                'true_cost' => $true_cost,
-                'quantity'  => $quantity,
-            );
-
-            // Cheapest overall (any quantity) if true_cost is valid.
-            if ( $true_cost !== null ) {
-                if ( $cheapest_any === null || $true_cost < $cheapest_any['true_cost'] ) {
-                    $cheapest_any = array(
-                        'product'   => $product,
-                        'true_cost' => $true_cost,
-                        'label'     => $label,
-                        'id'        => (string) $id,
-                        'quantity'  => $quantity,
-                    );
-                    $this->log(
-                        sprintf(
-                            'get_distributor_payloads_for_upc: updated cheapest_any to %s with true_cost=%s',
-                            (string) $id,
-                            var_export( $true_cost, true )
-                        )
-                    );
-                }
-            }
-
-            // Cheapest *in stock* (quantity > 0 and valid true_cost).
-            if ( $true_cost !== null && $quantity !== null && $quantity > 0 ) {
-                if (
-                    $cheapest_in_stock === null ||
-                    $true_cost < $cheapest_in_stock['true_cost']
-                ) {
-                    $cheapest_in_stock = array(
-                        'product'   => $product,
-                        'true_cost' => $true_cost,
-                        'label'     => $label,
-                        'id'        => (string) $id,
-                        'quantity'  => $quantity,
-                    );
-                    $this->log(
-                        sprintf(
-                            'get_distributor_payloads_for_upc: updated cheapest_in_stock to %s with true_cost=%s qty=%d',
-                            (string) $id,
-                            var_export( $true_cost, true ),
-                            (int) $quantity
-                        )
-                    );
-                }
-            }
+            return $empty;
         }
+
+        try {
+            $lookup = $handler->get_payloads_for_upc( $upc );
+        } catch ( \Throwable $e ) {
+            $this->log(
+                sprintf(
+                    'get_distributor_payloads_for_upc: exception while delegating to handler for UPC %s: %s',
+                    $upc,
+                    $e->getMessage()
+                )
+            );
+            return $empty;
+        }
+
+        if ( ! is_array( $lookup ) ) {
+            $this->log(
+                'get_distributor_payloads_for_upc: handler returned non-array; using empty result.'
+            );
+            return $empty;
+        }
+
+        $carriers = isset( $lookup['carriers'] ) && is_array( $lookup['carriers'] )
+            ? $lookup['carriers']
+            : array();
 
         $elapsed_ms = round( ( microtime( true ) - $start ) * 1000, 2 );
         $this->log(
@@ -815,8 +705,8 @@ class DistributorProductSyncCronService extends AbstractCronService
 
         return array(
             'carriers'          => $carriers,
-            'cheapest_in_stock' => $cheapest_in_stock,
-            'cheapest_any'      => $cheapest_any,
+            'cheapest_in_stock' => $lookup['cheapest_in_stock'] ?? null,
+            'cheapest_any'      => $lookup['cheapest_any'] ?? null,
         );
     }
 

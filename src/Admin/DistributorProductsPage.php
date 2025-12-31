@@ -9,10 +9,6 @@ if (! defined('ABSPATH')) {
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Plugin;
 use FFLHub\Distributor\Product\DistributorProductPayload;
-use FFLHub\Distributor\Product\DistributorProductImages;
-use FFLHub\Product\CategoryInstaller;
-use FFLHub\Product\ProductMeta;
-use FFLHub\Settings\Options;
 
 use FFLHub_Category_Installer;
 use WP_Error;
@@ -122,103 +118,63 @@ class DistributorProductsPage
                     check_admin_referer('fflhub_distributor_products_create');
                 }
 
-                $plugin = Plugin::instance();
+                $plugin  = Plugin::instance();
+                $handler = $plugin->distributor_handler ?? null;
 
-                // Get all configured distributors (RSR, Lipsey’s, etc.).
-                $distributors = method_exists($plugin, 'get_distributors')
-                    ? $plugin->distributor_handler->get_distributors()
-                    : [
-                        'rsr'     => $plugin->distributor_handler->get_distributor_by_id('rsr'),
-                        'lipseys' => $plugin->distributor_handler->get_distributor_by_id('lipseys'),
-                    ];
-
-                foreach ($distributors as $id => $distributor) {
-                    if (! $distributor) {
-                        continue;
-                    }
-
-                    try {
-                        $product = $distributor->get_product_by_upc($upc);
-
-                        if ($product instanceof DistributorProductPayload) {
-                            $label = method_exists($distributor, 'get_label')
-                                ? $distributor->get_label()
-                                : ucfirst((string) $id);
-
-                            $payload = get_object_vars($product);
-
-                            $true_cost = null;
-                            if (isset($payload['true_cost']) && is_numeric($payload['true_cost'])) {
-                                $true_cost = (float) $payload['true_cost'];
-                            }
-
-                            $quantity = null;
-                            if (isset($payload['quantity']) && is_numeric($payload['quantity'])) {
-                                $quantity = (int) $payload['quantity'];
-                            }
-
-                            // Record that this distributor carries the product.
-                            $carrier_distributors[(string) $id] = [
-                                'label'     => $label,
-                                'payload'   => $product,
-                                'true_cost' => $true_cost,
-                                'quantity'  => $quantity,
-                            ];
-
-                            // Track cheapest overall (any quantity) if true_cost is valid.
-                            if ($true_cost !== null) {
-                                if ($cheapest_any === null || $true_cost < $cheapest_any['true_cost']) {
-                                    $cheapest_any = [
-                                        'product'   => $product,
-                                        'true_cost' => $true_cost,
-                                        'label'     => $label,
-                                        'id'        => (string) $id,
-                                        'quantity'  => $quantity,
-                                    ];
-                                }
-                            }
-
-                            // Track cheapest *in stock* (quantity > 0 and valid true_cost).
-                            if ($true_cost !== null && $quantity !== null && $quantity > 0) {
-                                if ($cheapest_in_stock === null || $true_cost < $cheapest_in_stock['true_cost']) {
-                                    $cheapest_in_stock = [
-                                        'product'   => $product,
-                                        'true_cost' => $true_cost,
-                                        'label'     => $label,
-                                        'id'        => (string) $id,
-                                        'quantity'  => $quantity,
-                                    ];
-                                }
-                            }
-                        }
-                    } catch (\Throwable $e) {
-                        // Ignore this distributor on error; others may still succeed.
-                        continue;
-                    }
-                }
-
-                if (empty($carrier_distributors)) {
-                    $global_error = __('No products were found for this UPC in any connected distributor.', 'ffl-hub');
+                if (! $handler || ! method_exists($handler, 'get_payloads_for_upc')) {
+                    $global_error = __(
+                        'Distributor handler is not available for lookups.',
+                        'ffl-hub'
+                    );
                 } else {
-                    // Prefer cheapest in-stock source (quantity > 0 with valid true_cost).
-                    if ($cheapest_in_stock !== null) {
-                        $selected_product    = $cheapest_in_stock['product'];
-                        $selected_dist_label = $cheapest_in_stock['label'];
-                        $selected_dist_id    = $cheapest_in_stock['id'];
-                    } elseif ($cheapest_any !== null) {
-                        // Fall back to cheapest overall (even if quantity is 0).
-                        $selected_product    = $cheapest_any['product'];
-                        $selected_dist_label = $cheapest_any['label'];
-                        $selected_dist_id    = $cheapest_any['id'];
-                    } else {
-                        // Distributors carry it, but no valid true_costs.
-                        $global_error = __('Distributors carry this UPC, but no valid true cost was found.', 'ffl-hub');
-                        // Fallback: just pick the first carrier so the card still renders.
-                        $first = reset($carrier_distributors);
-                        if ($first && isset($first['payload']) && $first['payload'] instanceof DistributorProductPayload) {
-                            $selected_product    = $first['payload'];
-                            $selected_dist_label = $first['label'];
-                            $selected_dist_id    = array_key_first($carrier_distributors);
+                    try {
+                        $lookup = $handler->get_payloads_for_upc($upc);
+                    } catch (\Throwable $e) {
+                        $lookup       = null;
+                        $global_error = __(
+                            'An error occurred while fetching products from distributors.',
+                            'ffl-hub'
+                        );
+                    }
+
+                    if (is_array($lookup)) {
+                        $carrier_distributors = isset($lookup['carriers']) && is_array($lookup['carriers'])
+                            ? $lookup['carriers']
+                            : [];
+
+                        $cheapest_in_stock = $lookup['cheapest_in_stock'] ?? null;
+                        $cheapest_any      = $lookup['cheapest_any'] ?? null;
+                    }
+
+                    if (empty($carrier_distributors) && $global_error === '') {
+                        $global_error = __(
+                            'No products were found for this UPC in any connected distributor.',
+                            'ffl-hub'
+                        );
+                    } elseif (! empty($carrier_distributors)) {
+                        // Prefer cheapest in-stock source (quantity > 0 with valid true_cost).
+                        if ($cheapest_in_stock !== null) {
+                            $selected_product    = $cheapest_in_stock['product'];
+                            $selected_dist_label = $cheapest_in_stock['label'];
+                            $selected_dist_id    = $cheapest_in_stock['id'];
+                        } elseif ($cheapest_any !== null) {
+                            // Fall back to cheapest overall (even if quantity is 0).
+                            $selected_product    = $cheapest_any['product'];
+                            $selected_dist_label = $cheapest_any['label'];
+                            $selected_dist_id    = $cheapest_any['id'];
+                        } else {
+                            // Distributors carry it, but no valid true_costs.
+                            $global_error = __(
+                                'Distributors carry this UPC, but no valid true cost was found.',
+                                'ffl-hub'
+                            );
+                            // Fallback: just pick the first carrier so the card still renders.
+                            $first = reset($carrier_distributors);
+                            if ($first && isset($first['payload']) && $first['payload'] instanceof DistributorProductPayload) {
+                                $selected_product    = $first['payload'];
+                                $selected_dist_label = $first['label'];
+                                $selected_dist_id    = array_key_first($carrier_distributors);
+                            }
                         }
                     }
                 }
@@ -556,7 +512,6 @@ class DistributorProductsPage
         </div>
         <?php
     }
-
 
     /**
      * Helper to format a price value for display.

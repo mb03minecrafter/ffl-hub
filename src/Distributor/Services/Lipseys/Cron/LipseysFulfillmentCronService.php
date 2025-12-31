@@ -128,6 +128,9 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
         $dealer_email    = is_string( $dealer_email )    ? trim( $dealer_email )    : '';
         $dealer_password = is_string( $dealer_password ) ? trim( $dealer_password ) : '';
 
+        error_log("Dealer email: " . $dealer_email . "  Dealer password: " . $dealer_password);
+
+
         if ( $dealer_email === '' || $dealer_password === '' ) {
             error_log( "[FFLHub][Lipsey's Fulfillment Cron] ERROR: dealer_email or dealer_password not set." );
             $log_timing( 'Credentials retrieval (failed)', $t_creds );
