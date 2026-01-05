@@ -2,6 +2,7 @@
 
 namespace FFLHub\Admin;
 
+use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Product\ProductMeta;
 use WC_Product;
 use WP_Post;
@@ -12,7 +13,7 @@ if (! defined('ABSPATH')) {
 
 /**
  * Adds a meta box to WooCommerce products showing FFLHub metadata
- * and allowing FFL Required to be toggled.
+ * and allowing certain fields (FFL required + pricing mode) to be edited.
  */
 class ProductMetaBox
 {
@@ -20,11 +21,9 @@ class ProductMetaBox
     {
         add_action('add_meta_boxes', array(__CLASS__, 'add_meta_box'));
         add_action('save_post_product', array(__CLASS__, 'save_meta_box'));
+        add_action('woocommerce_process_product_meta', [\FFLHub\Distributor\Product\DistributorProductHelper::class, 'apply_admin_pricing_after_woo_save'], 999, 1);
     }
 
-    /**
-     * Register the meta box on WooCommerce product edit screens.
-     */
     public static function add_meta_box(): void
     {
         add_meta_box(
@@ -37,11 +36,6 @@ class ProductMetaBox
         );
     }
 
-    /**
-     * Render the meta box contents.
-     *
-     * @param WP_Post $post
-     */
     public static function render_meta_box(WP_Post $post): void
     {
         wp_nonce_field('fflhub_save_product_meta', 'ProductMeta_nonce');
@@ -56,7 +50,7 @@ class ProductMetaBox
             return;
         }
 
-        // Read-only fields (FFL required is rendered separately as a checkbox).
+        // Read-only fields (exclude pricing meta we are making editable below).
         $fields = array(
             ProductMeta::FFLHUB_MANAGED_META             => __('Managed by FFLHub', 'ffl-hub'),
             ProductMeta::FFLHUB_UPC_META                 => __('UPC', 'ffl-hub'),
@@ -67,8 +61,6 @@ class ProductMetaBox
             ProductMeta::FFLHUB_LAST_MSRP_META           => __('Last MSRP', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META => __('Last Computed Price', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_SYNC_META           => __('Last Sync At', 'ffl-hub'),
-            ProductMeta::FFLHUB_MARKUP_MODE_META         => __('Markup Mode', 'ffl-hub'),
-            ProductMeta::FFLHUB_MARKUP_PERCENT_META      => __('Markup Percent', 'ffl-hub'),
             ProductMeta::FFLHUB_NFA_ITEM_META            => __('NFA Item', 'ffl-hub'),
         );
 
@@ -79,8 +71,8 @@ class ProductMetaBox
 
             echo '<tr>';
             echo '<th style="text-align:left;padding:2px 4px;font-weight:600;font-size:11px;">' .
-                 esc_html($label) .
-                 '</th>';
+                esc_html($label) .
+                '</th>';
             echo '<td style="text-align:right;padding:2px 4px;font-size:11px;">';
 
             if ($value === '' && (string) $value !== '0') {
@@ -102,27 +94,119 @@ class ProductMetaBox
         echo '<div style="margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb;">';
         echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;">';
         echo '<input type="checkbox" name="fflhub_ffl_required" value="1" ' .
-             checked(true, $ffl_required, false) .
-             ' />';
+            checked(true, $ffl_required, false) .
+            ' />';
         echo '<span style="font-weight:600;">' .
-             esc_html__('FFL Required', 'ffl-hub') .
-             '</span>';
+            esc_html__('FFL Required', 'ffl-hub') .
+            '</span>';
         echo '</label>';
-        echo '<p style="margin:4px 0 0;font-size:11px;color:#6b7280;">' .
-             esc_html__('If checked, this product requires shipment to an FFL.', 'ffl-hub') .
-             '</p>';
         echo '</div>';
+
+        // 🆕 Editable pricing controls
+        $mode_raw = $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
+        $mode     = ($mode_raw === '' && (string) $mode_raw !== '0')
+            ? ProductMeta::MARKUP_MODE_GLOBAL
+            : (int) $mode_raw;
+
+        $pct_raw   = $product->get_meta(ProductMeta::FFLHUB_MARKUP_PERCENT_META, true);
+        $pct_value = is_numeric($pct_raw) ? (string) $pct_raw : '';
+
+        $fixed_raw   = $product->get_meta(ProductMeta::FFLHUB_FIXED_PRICE_META, true);
+        $fixed_value = is_numeric($fixed_raw) ? (string) $fixed_raw : '';
+
+        echo '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;">';
+        echo '<div style="font-size:11px;font-weight:700;margin-bottom:6px;">' .
+            esc_html__('FFLHub Pricing', 'ffl-hub') .
+            '</div>';
+
+        // Mode select
+        echo '<p style="margin:0 0 6px;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('Pricing Mode', 'ffl-hub') .
+            '</label>';
+
+        echo '<select id="fflhub_markup_mode" name="fflhub_markup_mode" style="width:100%;font-size:11px;">';
+
+        echo '<option value="' . esc_attr((string) ProductMeta::MARKUP_MODE_GLOBAL) . '" ' .
+            selected($mode, ProductMeta::MARKUP_MODE_GLOBAL, false) . '>' .
+            esc_html__('Global Markup', 'ffl-hub') .
+            '</option>';
+
+        echo '<option value="' . esc_attr((string) ProductMeta::MARKUP_MODE_FIXED_PCT) . '" ' .
+            selected($mode, ProductMeta::MARKUP_MODE_FIXED_PCT, false) . '>' .
+            esc_html__('Fixed Percent', 'ffl-hub') .
+            '</option>';
+
+        echo '<option value="' . esc_attr((string) ProductMeta::MARKUP_MODE_FIXED_PRICE) . '" ' .
+            selected($mode, ProductMeta::MARKUP_MODE_FIXED_PRICE, false) . '>' .
+            esc_html__('Fixed Price', 'ffl-hub') .
+            '</option>';
+
+        echo '</select>';
+        echo '</p>';
+
+        // Percent input
+        echo '<p style="margin:0 0 6px;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('Fixed Markup Percent', 'ffl-hub') .
+            '</label>';
+        echo '<input id="fflhub_markup_percent" type="number" step="0.01" min="0" ' .
+            'name="fflhub_markup_percent" value="' . esc_attr($pct_value) . '" ' .
+            'style="width:100%;font-size:11px;" />';
+        echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+            esc_html__('Used only in Fixed Percent mode (enter 25 for 25%).', 'ffl-hub') .
+            '</span>';
+        echo '</p>';
+
+        // Fixed price input
+        echo '<p style="margin:0;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('Fixed Price', 'ffl-hub') .
+            '</label>';
+        echo '<input id="fflhub_fixed_price" type="number" step="0.01" min="0" ' .
+            'name="fflhub_fixed_price" value="' . esc_attr($fixed_value) . '" ' .
+            'style="width:100%;font-size:11px;" />';
+        echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+            esc_html__('Used only in Fixed Price mode (final sell price).', 'ffl-hub') .
+            '</span>';
+        echo '</p>';
+
+        echo '</div>';
+
+        // 🆕 Inline JS: enable/disable fields immediately when mode changes
+?>
+        <script>
+            (function() {
+                function applyMode() {
+                    var modeEl = document.getElementById('fflhub_markup_mode');
+                    var pctEl = document.getElementById('fflhub_markup_percent');
+                    var fixedEl = document.getElementById('fflhub_fixed_price');
+                    if (!modeEl || !pctEl || !fixedEl) return;
+
+                    var mode = parseInt(modeEl.value, 10);
+                    var MODE_FIXED_PCT = <?php echo (int) ProductMeta::MARKUP_MODE_FIXED_PCT; ?>;
+                    var MODE_FIXED_PRICE = <?php echo (int) ProductMeta::MARKUP_MODE_FIXED_PRICE; ?>;
+
+                    pctEl.disabled = (mode !== MODE_FIXED_PCT);
+                    fixedEl.disabled = (mode !== MODE_FIXED_PRICE);
+                }
+
+                document.addEventListener('DOMContentLoaded', function() {
+                    applyMode();
+                    var modeEl = document.getElementById('fflhub_markup_mode');
+                    if (modeEl) {
+                        modeEl.addEventListener('change', applyMode);
+                    }
+                });
+            })();
+        </script>
+<?php
 
         echo '<p style="margin-top:6px;font-size:11px;color:#6b7280;">';
         esc_html_e('Most values are managed by FFLHub and updated automatically by sync jobs.', 'ffl-hub');
         echo '</p>';
     }
 
-    /**
-     * Save handler for the meta box.
-     *
-     * @param int $post_id
-     */
     public static function save_meta_box(int $post_id): void
     {
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
@@ -149,11 +233,61 @@ class ProductMetaBox
             return;
         }
 
-        // Checkbox: if not set in POST, it means unchecked.
+        // FFL Required checkbox
         $required = isset($_POST['fflhub_ffl_required']) ? 1 : 0;
-
-        // WC CRUD meta write + persist.
         $product->update_meta_data(ProductMeta::FFLHUB_FFL_REQUIRED_META, $required);
+
+        // 🆕 Pricing mode
+        $mode = isset($_POST['fflhub_markup_mode'])
+            ? (int) sanitize_text_field(wp_unslash($_POST['fflhub_markup_mode']))
+            : ProductMeta::MARKUP_MODE_GLOBAL;
+
+        if (! in_array($mode, [
+            ProductMeta::MARKUP_MODE_GLOBAL,
+            ProductMeta::MARKUP_MODE_FIXED_PCT,
+            ProductMeta::MARKUP_MODE_FIXED_PRICE,
+        ], true)) {
+            $mode = ProductMeta::MARKUP_MODE_GLOBAL;
+        }
+
+        $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, $mode);
+
+        // Percent (only meaningful for Fixed Percent)
+        if ($mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
+            $pct_raw = isset($_POST['fflhub_markup_percent'])
+                ? sanitize_text_field(wp_unslash($_POST['fflhub_markup_percent']))
+                : '';
+
+            $pct = is_numeric($pct_raw) ? (float) $pct_raw : 0.0;
+            if ($pct < 0) {
+                $pct = 0.0;
+            }
+
+            $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, $pct);
+        } else {
+            $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, 0);
+        }
+
+        // Fixed price (only meaningful for Fixed Price)
+        if ($mode === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
+            $fixed_raw = isset($_POST['fflhub_fixed_price'])
+                ? sanitize_text_field(wp_unslash($_POST['fflhub_fixed_price']))
+                : '';
+
+            $fixed = is_numeric($fixed_raw) ? (float) $fixed_raw : 0.0;
+            if ($fixed < 0) {
+                $fixed = 0.0;
+            }
+
+            $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, $fixed);
+        } else {
+            $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
+        }
         $product->save();
+        //DistributorProductHelper::apply_admin_pricing_to_woo_product($post_id);
+        error_log('regular=' . $product->get_regular_price() . ' price=' . $product->get_price() . ' sale=' . $product->get_sale_price());
     }
+
+
+    
 }

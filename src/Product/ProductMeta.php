@@ -42,14 +42,27 @@ class ProductMeta
     public const FFLHUB_LAST_MAP_META = '_fflhub_last_map'; //last MAP price of product : float
     public const FFLHUB_LAST_MSRP_META = '_fflhub_last_msrp'; //last MSRP price of product : float
     public const FFLHUB_LAST_COMPUTED_PRICE_META = '_fflhub_last_computed_price'; //last computed price (using our markup) of product : float
-    public const FFLHUB_MARKUP_MODE_META = '_fflhub_markup_mode'; //markup mode of the product : int (0 means global, 1 means use override percent)
-    public const FFLHUB_MARKUP_PERCENT_META = '_fflhub_markup_percent'; //markup percent of product for override: float
+   
 
     public const FFLHUB_NFA_ITEM_META = '_fflhub_nfa_item'; //markup percent of product for override: float
     public const FFLHUB_LAST_SYNC_META = '_fflhub_last_sync_at'; //markup percent of product for override: float
 
 
+    // Pricing META
+    public const FFLHUB_MARKUP_MODE_META = '_fflhub_markup_mode';
 
+    /**
+     * Markup mode values:
+     * 0 = Global Markup Percent (uses Options::get_global_markup())
+     * 1 = Fixed Percent (uses FFLHUB_MARKUP_PERCENT_META)
+     * 2 = Fixed Price (uses FFLHUB_FIXED_PRICE_META)
+     */
+    public const MARKUP_MODE_GLOBAL      = 0;
+    public const MARKUP_MODE_FIXED_PCT   = 1;
+    public const MARKUP_MODE_FIXED_PRICE = 2;
+
+    public const FFLHUB_MARKUP_PERCENT_META = '_fflhub_markup_percent'; // float, 0-100
+    public const FFLHUB_FIXED_PRICE_META    = '_fflhub_fixed_price';    // 🆕 float, final sell price
 
 
 

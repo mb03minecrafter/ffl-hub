@@ -6,7 +6,8 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-use FFlHub\Settings\Options;
+use FFLHub\Settings\Options;
+use FFLHub\Settings\SettingsRegistrar;
 
 use FFLHub\Admin\WPCronWarning;
 use FFLHub\Admin\DistributorProductsPage;
@@ -16,7 +17,6 @@ use FFLHub\Admin\OrderFFLPanel;
 use FFLHub\Admin\ProductMetaBox;
 
 use FFLHub\Distributor\DistributorHandler;
-use FFLHub\Distributor\Services\DistributorServiceHandler;
 
 
 
@@ -67,6 +67,8 @@ class Plugin
     private function __construct()
     {
 
+        SettingsRegistrar::init();
+
 
         $this->distributor_handler = new DistributorHandler();
         $this->distributor_handler->register_runtime_services();
@@ -94,25 +96,7 @@ class Plugin
         // 4. Hook into WordPress admin.
     }
 
-    
 
-    
-
-   
-
-    /**
-     * Let each distributor register its own settings.
-     */
-    /*public function register_distributor_settings(): void
-    {
-        foreach ($this->distributor_handler->get_distributors() as $dist) {
-            $dist->register_settings();
-        }
-    }*/
-
-    
-
-    
 
     /**
      * Create all required database tables.
@@ -124,11 +108,6 @@ class Plugin
         // FFL table.
         FFLTable::create_table();
 
-    }
-
-    private static function destroy_tables(): void
-    {
-        // Intentionally left blank for now.
     }
 
     /**
@@ -162,18 +141,7 @@ class Plugin
     {
         $handler = new DistributorHandler();
         $handler->on_deactivate();
-        // Cron classes clean themselves up.
-        //RSRFulfillmentCron::on_deactivation();
-        //RSRInventoryCron::on_deactivation();
-        //LipseysFulfilmentCron::on_deactivation();
-        //LipseysPricingQuantityCron::on_deactivation();
-        //DistributorProductSync::deactivate();
+        
     }
 }
 
-/**
- * Backwards compatibility:
- *
- * Allow legacy references to the global FFLHub_Plugin class name,
- * e.g. register_activation_hook(..., array('FFLHub_Plugin', 'activate')).
- */

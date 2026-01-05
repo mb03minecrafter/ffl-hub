@@ -8,6 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Settings\Options; 
 
 /**
  * WP-Cron job to refresh Lipsey's pricing/quantity feed hourly
@@ -100,13 +101,11 @@ final class LipseysInventoryCronService extends AbstractTableCronService
             );
         }
 
-        // Credentials.
-        $t_creds         = microtime( true );
-        $dealer_email    = get_option( 'fflhub_lipseys_dealer_email' );
-        $dealer_password = get_option( 'fflhub_lipseys_dealer_password' );
 
-        $dealer_email    = is_string( $dealer_email )    ? trim( $dealer_email )    : '';
-        $dealer_password = is_string( $dealer_password ) ? trim( $dealer_password ) : '';
+         // Credentials via centralized Options helper.
+        $t_creds         = microtime( true );
+        $dealer_email    = trim( Options::get_distributor_option( 'lipseys', 'dealer_email', '' ) );
+        $dealer_password = trim( Options::get_distributor_option( 'lipseys', 'dealer_password', '' ) );
 
         if ( $dealer_email === '' || $dealer_password === '' ) {
             error_log( "[FFLHub][Lipsey's Inventory Cron] ERROR: dealer_email or dealer_password not set." );

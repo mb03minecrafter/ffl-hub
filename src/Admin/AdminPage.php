@@ -7,8 +7,9 @@ if (! defined('ABSPATH')) {
 }
 
 use FFLHub\Plugin;
-use FFLHub\Distributor\DistributorBase;
 use FFLHub\Settings\Options;
+use FFLHub\Distributor\DistributorRegistry;
+use FFLHub\Distributor\DistributorModuleInterface;
 
 /**
  * Renders the main FFL Hub admin page and loads its assets.
@@ -49,143 +50,6 @@ class AdminPage
         add_action('admin_post_fflhub_toggle_distributor', [__CLASS__, 'handle_toggle_distributor']);
     }
 
-    /**
-     * Plugin's main page renderer, wired to the menu callback.
-     */
-    public static function render_page(): void
-    {
-        if (! current_user_can('manage_options')) {
-            wp_die(esc_html__('You do not have permission to access this page.', 'ffl-hub'));
-        }
-
-        // Get distributors from the plugin singleton.
-        $plugin   = Plugin::instance();
-        $handler  = $plugin->distributor_handler ?? null;
-        $distributors = $handler ? $handler->get_distributors() : [];
-
-        self::render($distributors);
-    }
-
-    /**
-     * Register the top-level "FFL Hub" menu item.
-     */
-    public static function register_menu_page(): void
-    {
-        add_menu_page(
-            __('FFL Hub Settings', 'ffl-hub'),
-            __('FFL Hub', 'ffl-hub'),
-            'manage_options',
-            self::PAGE_SLUG,
-            [__CLASS__, 'render_page'],
-            'dashicons-admin-generic',
-            56
-        );
-    }
-
-    /**
-     * Register global FFL Hub settings (non-distributor-specific),
-     * including the payment processor percent fee and global markup.
-     */
-    public static function register_global_settings(): void
-    {
-        $settings_group = 'fflhub_global_settings';
-
-        register_setting(
-            $settings_group,
-            'fflhub_payment_processor_fee_percent',
-            [
-                'type'              => 'string',
-                'sanitize_callback' => [__CLASS__, 'sanitize_payment_processor_fee_percent'],
-                'default'           => '2.9',
-            ]
-        );
-
-        register_setting(
-            $settings_group,
-            'fflhub_global_markup',
-            [
-                'type'              => 'string',
-                'sanitize_callback' => [__CLASS__, 'sanitize_payment_processor_fee_percent'],
-                'default'           => '10.0',
-            ]
-        );
-    }
-
-    /**
-     * Register settings for all distributors using their metadata.
-     */
-    public static function register_distributor_settings(): void
-    {
-        $handler = Plugin::instance()->distributor_handler ?? null;
-        if (! $handler) {
-            return;
-        }
-
-        $distributors = $handler->get_distributors();
-
-        foreach ($distributors as $distributor) {
-            $fields = $distributor->get_field_definitions();
-            if (empty($fields)) {
-                continue;
-            }
-
-            $group = 'fflhub_' . $distributor->get_id() . '_settings_group';
-
-            foreach ($fields as $key => $field) {
-                // We can't call protected methods from here, so replicate the option-name pattern:
-                $option_name = 'fflhub_' . $distributor->get_id() . '_' . $key;
-                register_setting($group, $option_name);
-            }
-        }
-    }
-
-    /**
-     * Handle enable/disable distributor actions (from modal).
-     */
-    public static function handle_toggle_distributor(): void
-    {
-        if (! current_user_can('manage_options')) {
-            wp_die(esc_html__('You do not have permission to perform this action.', 'ffl-hub'));
-        }
-
-        $id = isset($_POST['distributor_id'])
-            ? sanitize_text_field(wp_unslash($_POST['distributor_id']))
-            : '';
-
-        if ($id === '') {
-            wp_die(esc_html__('Invalid distributor ID.', 'ffl-hub'));
-        }
-
-        check_admin_referer('fflhub_toggle_distributor_' . $id);
-
-        $enable_flag = isset($_POST['enable']) ? (string) $_POST['enable'] : '0';
-        $enabled = ($enable_flag === '1');
-
-        Options::set_distributor_enabled($id, $enabled);
-
-        $redirect = add_query_arg(
-            [
-                'page'               => self::PAGE_SLUG,
-                'fflhub_toggle_done' => $id,
-            ],
-            admin_url('admin.php')
-        );
-
-        wp_safe_redirect($redirect);
-        exit;
-    }
-
-    /**
-     * Sanitize numeric percent fields (payment fee, markup, etc.).
-     *
-     * @param mixed $value Raw value from the form.
-     * @return string
-     */
-    public static function sanitize_payment_processor_fee_percent($value): string
-    {
-        $value = preg_replace('/[^0-9.]/', '', (string) $value);
-        return (string) (float) $value;
-    }
 
     /**
      * Enqueue CSS/JS only on our FFL Hub settings page.
@@ -215,24 +79,185 @@ class AdminPage
     }
 
     /**
-     * Entry point used internally once we have the distributors.
+     * Plugin's main page renderer, wired to the menu callback.
      */
-    public static function render(array $distributors): void
+    public static function render_page(): void
     {
         if (! current_user_can('manage_options')) {
             wp_die(esc_html__('You do not have permission to access this page.', 'ffl-hub'));
         }
 
-        $payment_fee_percent   = get_option('fflhub_payment_processor_fee_percent', '2.9');
-        $global_markup_percent = get_option('fflhub_global_markup', '10.0');
-        ?>
+        // IMPORTANT:
+        // Admin UI is module-driven so distributors never "disappear" when disabled.
+        $modules = DistributorRegistry::get_modules();
+
+        self::render($modules);
+    }
+
+    /**
+     * Register the top-level "FFL Hub" menu item.
+     */
+    public static function register_menu_page(): void
+    {
+        add_menu_page(
+            __('FFL Hub Settings', 'ffl-hub'),
+            __('FFL Hub', 'ffl-hub'),
+            'manage_options',
+            self::PAGE_SLUG,
+            [__CLASS__, 'render_page'],
+            'dashicons-admin-generic',
+            56
+        );
+    }
+
+    /**
+     * Register global FFL Hub settings (non-distributor-specific),
+     * including the payment processor percent fee and global markup.
+     */
+    public static function register_global_settings(): void
+    {
+        // Single source of truth for group + option names + defaults.
+        $settings_group = Options::global_settings_group();
+
+        register_setting(
+            $settings_group,
+            Options::OPTION_PAYMENT_PROCESSOR_FEE_PERCENT,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_payment_processor_fee_percent'],
+                'default'           => (string) Options::default_payment_processor_fee_percent(),
+            ]
+        );
+
+        register_setting(
+            $settings_group,
+            Options::OPTION_GLOBAL_MARKUP,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_payment_processor_fee_percent'],
+                'default'           => (string) Options::default_global_markup(),
+            ]
+        );
+    }
+
+    /**
+     * Register settings for all distributors using their MODULE schema.
+     *
+     * This is your "Settings Registrar" behavior, but module-driven:
+     * - Never depends on runtime distributor instances
+     * - Registers even if a distributor is disabled
+     *
+     * Option naming convention:
+     *  - group:       fflhub_{id}_settings_group
+     *  - option_name: fflhub_{id}_{key}
+     */
+    public static function register_distributor_settings(): void
+    {
+        $modules = DistributorRegistry::get_modules();
+
+        foreach ($modules as $module) {
+            if (! ($module instanceof DistributorModuleInterface)) {
+                continue;
+            }
+
+            $fields = $module->settings_schema();
+            if (empty($fields) || ! is_array($fields)) {
+                continue;
+            }
+
+            $id    = $module->id();
+            $group = Options::distributor_settings_group($id);
+
+            foreach ($fields as $key => $field) {
+                $option_name = Options::distributor_option_name($id, $key);
+
+                // Simple registration; can extend with per-field sanitizers later.
+                register_setting($group, $option_name);
+            }
+        }
+    }
+
+    /**
+     * Handle enable/disable distributor actions (from modal).
+     */
+    public static function handle_toggle_distributor(): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_die(esc_html__('You do not have permission to perform this action.', 'ffl-hub'));
+        }
+
+        $id = isset($_POST['distributor_id'])
+            ? sanitize_text_field(wp_unslash($_POST['distributor_id']))
+            : '';
+
+        if ($id === '') {
+            wp_die(esc_html__('Invalid distributor ID.', 'ffl-hub'));
+        }
+
+        check_admin_referer('fflhub_toggle_distributor_' . $id);
+
+        $enable_flag = isset($_POST['enable']) ? (string) $_POST['enable'] : '0';
+        $enabled     = ($enable_flag === '1');
+
+        // Centralize behavior in the handler so disabling halts cron/services.
+        $plugin  = Plugin::instance();
+        $handler = $plugin->distributor_handler ?? null;
+
+        if ($handler) {
+            // This method should persist enabled state AND start/stop services.
+            $handler->set_enabled($id, $enabled);
+        } else {
+            // Fallback.
+            Options::set_distributor_enabled($id, $enabled);
+        }
+
+        $redirect = add_query_arg(
+            [
+                'page'               => self::PAGE_SLUG,
+                'fflhub_toggle_done' => $id,
+            ],
+            admin_url('admin.php')
+        );
+
+        wp_safe_redirect($redirect);
+        exit;
+    }
+
+    /**
+     * Sanitize numeric percent fields (payment fee, markup, etc.).
+     *
+     * @param mixed $value Raw value from the form.
+     * @return string
+     */
+    public static function sanitize_payment_processor_fee_percent($value): string
+    {
+        $value = preg_replace('/[^0-9.]/', '', (string) $value);
+        return (string) (float) $value;
+    }
+
+
+
+    /**
+     * Entry point used internally once we have the modules.
+     *
+     * @param DistributorModuleInterface[] $modules
+     */
+    public static function render(array $modules): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_die(esc_html__('You do not have permission to access this page.', 'ffl-hub'));
+        }
+
+        $payment_fee_percent   = (string) Options::get_payment_processor_fee_percent();
+        $global_markup_percent = (string) Options::get_global_markup();
+?>
         <div class="wrap fflhub-wrap">
             <?php self::render_header(); ?>
             <?php self::render_global_settings_form($payment_fee_percent, $global_markup_percent); ?>
-            <?php self::render_distributor_grid($distributors); ?>
-            <?php self::render_modal($distributors); ?>
+            <?php self::render_distributor_grid($modules); ?>
+            <?php self::render_modal($modules); ?>
         </div>
-        <?php
+    <?php
     }
 
     /**
@@ -240,7 +265,7 @@ class AdminPage
      */
     private static function render_header(): void
     {
-        ?>
+    ?>
         <h1 class="fflhub-title"><?php esc_html_e('FFL Hub Settings', 'ffl-hub'); ?></h1>
         <p class="fflhub-description">
             <?php esc_html_e(
@@ -248,7 +273,7 @@ class AdminPage
                 'ffl-hub'
             ); ?>
         </p>
-        <?php
+    <?php
     }
 
     /**
@@ -258,7 +283,7 @@ class AdminPage
         string $payment_fee_percent,
         string $global_markup_percent
     ): void {
-        ?>
+    ?>
         <form method="post" action="options.php" class="fflhub-global-settings-form">
             <?php settings_fields('fflhub_global_settings'); ?>
 
@@ -316,26 +341,32 @@ class AdminPage
                 <?php submit_button(__('Save Global Settings', 'ffl-hub')); ?>
             </div>
         </form>
-        <?php
+    <?php
     }
 
     /**
      * Renders the clickable distributor cards.
      * These just open the modal; toggling happens inside the modal.
+     *
+     * @param DistributorModuleInterface[] $modules
      */
-    private static function render_distributor_grid(array $distributors): void
+    private static function render_distributor_grid(array $modules): void
     {
-        ?>
+    ?>
         <div class="fflhub-distributor-grid">
-            <?php foreach ($distributors as $distributor) :
-                $id          = $distributor->get_id();
-                $name        = $distributor->get_name();
-                $label       = $distributor->get_label();
-                $description = $distributor->get_description();
-                $icon_url    = $distributor->get_icon_url();
+            <?php foreach ($modules as $module) :
+                if (! ($module instanceof DistributorModuleInterface)) {
+                    continue;
+                }
+
+                $id          = $module->id();
+                $name        = $module->name();
+                $label       = $module->label();
+                $description = $module->description();
+                $icon_url    = $module->icon_url();
 
                 $enabled = Options::is_distributor_enabled($id);
-                ?>
+            ?>
                 <button
                     type="button"
                     class="fflhub-distributor-card <?php echo $enabled ? 'enabled' : 'disabled'; ?>"
@@ -377,15 +408,17 @@ class AdminPage
                 </button>
             <?php endforeach; ?>
         </div>
-        <?php
+    <?php
     }
 
     /**
      * Renders modal panels for each distributor.
+     *
+     * @param DistributorModuleInterface[] $modules
      */
-    private static function render_modal(array $distributors): void
+    private static function render_modal(array $modules): void
     {
-        ?>
+    ?>
         <div id="fflhub-modal" class="fflhub-modal" aria-hidden="true">
             <div class="fflhub-modal-overlay" data-fflhub-close="true"></div>
 
@@ -399,39 +432,43 @@ class AdminPage
                 </button>
 
                 <div class="fflhub-modal-content">
-                    <?php foreach ($distributors as $distributor) :
-                        $id = $distributor->get_id(); ?>
+                    <?php foreach ($modules as $module) :
+                        if (! ($module instanceof DistributorModuleInterface)) {
+                            continue;
+                        }
+
+                        $id = $module->id(); ?>
                         <div
                             id="fflhub-panel-<?php echo esc_attr($id); ?>"
                             class="fflhub-modal-panel"
                             aria-hidden="true">
-                            <?php self::render_distributor_settings_form($distributor); ?>
+                            <?php self::render_distributor_settings_form($module); ?>
                         </div>
                     <?php endforeach; ?>
                 </div>
             </div>
         </div>
-        <?php
+    <?php
     }
 
     /**
      * Render a full distributor settings form inside the modal,
      * including the Enable/Disable button.
      */
-    private static function render_distributor_settings_form($distributor): void
+    private static function render_distributor_settings_form(DistributorModuleInterface $module): void
     {
-        $id     = $distributor->get_id();
-        $name   = $distributor->get_name();
-        $fields = $distributor->get_field_definitions();
+        $id      = $module->id();
+        $name    = $module->name();
+        $fields  = $module->settings_schema();
         $enabled = Options::is_distributor_enabled($id);
 
-        $group = 'fflhub_' . $id . '_settings_group';
+        $group = Options::distributor_settings_group($id);
 
-        ?>
+    ?>
         <div class="fflhub-distributor-settings-wrapper">
             <h2>
                 <?php echo esc_html($name); ?>
-                <?php esc_html_e('Settings', 'ffl-hub'); ?>
+                <?php esc_html_e(' Settings', 'ffl-hub'); ?>
             </h2>
 
             <!-- Enable / Disable controls -->
@@ -455,11 +492,11 @@ class AdminPage
                     <input type="hidden" name="distributor_id" value="<?php echo esc_attr($id); ?>">
                     <input type="hidden" name="enable" value="<?php echo $enabled ? '0' : '1'; ?>">
 
-                    <?php if ($enabled): ?>
+                    <?php if ($enabled) : ?>
                         <button type="submit" class="button button-secondary">
                             <?php esc_html_e('Disable Distributor', 'ffl-hub'); ?>
                         </button>
-                    <?php else: ?>
+                    <?php else : ?>
                         <button type="submit" class="button button-primary">
                             <?php esc_html_e('Enable Distributor', 'ffl-hub'); ?>
                         </button>
@@ -467,7 +504,7 @@ class AdminPage
                 </form>
             </div>
 
-            <?php if (empty($fields)) : ?>
+            <?php if (empty($fields) || ! is_array($fields)) : ?>
                 <p><?php esc_html_e('No settings available for this distributor.', 'ffl-hub'); ?></p>
                 <?php return; ?>
             <?php endif; ?>
@@ -479,13 +516,15 @@ class AdminPage
                 <table class="form-table">
                     <tbody>
                         <?php foreach ($fields as $key => $field) :
-                            $option_name = 'fflhub_' . $id . '_' . $key;
+                            $option_name = Options::distributor_option_name($id, $key);
                             $type        = $field['type'] ?? 'text';
                             $label       = $field['label'] ?? $key;
                             $placeholder = $field['placeholder'] ?? '';
                             $desc        = $field['description'] ?? '';
-                            $value       = get_option($option_name, $field['default'] ?? '');
-                            ?>
+                            $default     = isset($field['default']) ? (string) $field['default'] : '';
+                            $value       = Options::get_distributor_option($id, $key, $default);
+
+                        ?>
                             <tr>
                                 <th scope="row">
                                     <label for="<?php echo esc_attr($option_name); ?>">
@@ -512,6 +551,6 @@ class AdminPage
                 <?php submit_button(__('Save Settings', 'ffl-hub')); ?>
             </form>
         </div>
-        <?php
+<?php
     }
 }

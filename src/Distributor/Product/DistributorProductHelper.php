@@ -1,26 +1,104 @@
 <?php
 
-
 namespace FFLHub\Distributor\Product;
 
 use FFLHub\Product\ProductMeta;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Settings\Options;
+use FFLHub\Plugin;
 
 use WP_Error;
 use WC_Product_Simple;
+use WP_Query;
 
-class DistributorProductHelper {
-
-
+class DistributorProductHelper
+{
+    /**
+     * Create a WooCommerce product from a selected distributor payload,
+     * while also importing images from all distributors that carry the UPC.
+     *
+     * ✅ CHANGED:
+     * - $carrier_distributors (old array shape) replaced with $offers map:
+     *   array<string, DistributorOffer>
+     *
+     * @param string                  $upc
+     * @param DistributorProductPayload $selected_product
+     * @param string                  $selected_dist_id
+     * @param string                  $selected_dist_label  (kept for compatibility; currently unused here)
+     * @param array<string, DistributorOffer> $offers
+     */
     public static function create_woo_product_from_payload(
         string $upc,
         DistributorProductPayload $selected_product,
         string $selected_dist_id,
         string $selected_dist_label,
-        array $carrier_distributors
+        array $offers // ✅ CHANGED
     ) {
-        // Check if a product already exists for this UPC.
+        // A) Guard: prevent duplicates (UPC already exists)
+        $existing_id = self::find_existing_product_id_by_upc($upc);
+        if ($existing_id !== null) {
+            return self::build_existing_product_response($existing_id);
+        }
+
+        // B) Compute retail price (based on selected payload)
+        $recommended_price = self::get_reccomended_price_from_payload($selected_product);
+
+        if ($recommended_price === null || $recommended_price <= 0) {
+            return new WP_Error(
+                'fflhub_no_price',
+                __('Could not compute a valid retail price for this product.', 'ffl-hub')
+            );
+        }
+
+        // C) Build WC product core fields (name/desc/sku/price/stock/status)
+        $product = self::build_wc_product_from_payload(
+            $upc,
+            $selected_product,
+            $recommended_price
+        );
+
+        // D) Apply categories (recommended_category path)
+        self::apply_categories_from_payload($product, $selected_product);
+
+        // E) Save product and get ID
+        $product_id = self::save_and_get_id($product);
+        if (! $product_id) {
+            return new WP_Error(
+                'fflhub_insert_failed',
+                __('Could not create WooCommerce product via CRUD API.', 'ffl-hub')
+            );
+        }
+
+        // F) Apply FFLHub meta (Option 2: map/msrp/qty/ffl from selected payload)
+        self::apply_fflhub_meta_from_payload(
+            $product,
+            $upc,
+            $selected_dist_id,
+            $selected_product,
+            $recommended_price
+        );
+
+        // G) Import images from all distributors (selected distributor marked primary)
+        self::import_images_from_offers( // ✅ CHANGED (renamed + signature)
+            $product_id,
+            $upc,
+            $offers,
+            $selected_dist_id
+        );
+
+        // Persist meta
+        $product->save();
+
+        // H) Return success response
+        return self::build_created_product_response($product_id);
+    }
+
+    /**
+     * A) Find existing product by UPC meta.
+     */
+    private static function find_existing_product_id_by_upc(string $upc): ?int
+    {
+
         $existing = get_posts(
             [
                 'post_type'      => 'product',
@@ -36,89 +114,48 @@ class DistributorProductHelper {
             ]
         );
 
-        if (! empty($existing)) {
-            $existing_id = (int) $existing[0];
-            $edit_link   = get_edit_post_link($existing_id, '');
-
-            $message = sprintf(
-                /* translators: 1: product ID, 2: edit URL */
-                __('A WooCommerce product already exists for this UPC (ID #%1$d). <a href="%2$s">Edit product</a>.', 'ffl-hub'),
-                $existing_id,
-                esc_url($edit_link)
-            );
-
-            return [
-                'message' => $message,
-                'type'    => 'warning',
-            ];
+        if (empty($existing)) {
+            return null;
         }
 
-        // Extract data from the selected payload.
-        $payload = get_object_vars($selected_product);
+        return (int) $existing[0];
+    }
 
-        $name        = $payload['name'] ?? '';
-        $sku         = $payload['sku'] ?? '';
-        $description = $payload['description'] ?? '';
+    private static function build_existing_product_response(int $existing_id): array
+    {
+        $edit_link = get_edit_post_link($existing_id, '');
 
-        $dealer_price = isset($payload['price']) ? (float) $payload['price'] : null;
-        $true_cost    = isset($payload['true_cost']) ? (float) $payload['true_cost'] : null;
+        $message = sprintf(
+            /* translators: 1: product ID, 2: edit URL */
+            __('A WooCommerce product already exists for this UPC (ID #%1$d). <a href="%2$s">Edit product</a>.', 'ffl-hub'),
+            $existing_id,
+            esc_url($edit_link)
+        );
 
-        // Aggregate MAP/MSRP and FFL flag across all carriers.
-        $max_map      = null;
-        $max_msrp     = null;
-        $qty_sum      = 0;
-        $ffl_required = false;
+        return [
+            'message' => $message,
+            'type'    => 'warning',
+        ];
+    }
 
-        foreach ($carrier_distributors as $info) {
-            $pl = get_object_vars($info['payload']);
-
-            if (isset($pl['map']) && is_numeric($pl['map'])) {
-                $val = (float) $pl['map'];
-                if ($max_map === null || $val > $max_map) {
-                    $max_map = $val;
-                }
-            }
-
-            if (isset($pl['msrp']) && is_numeric($pl['msrp'])) {
-                $val = (float) $pl['msrp'];
-                if ($max_msrp === null || $val > $max_msrp) {
-                    $max_msrp = $val;
-                }
-            }
-
-            if (isset($info['quantity']) && is_numeric($info['quantity'])) {
-                $qty_sum += (int) $info['quantity'];
-            }
-
-            if (isset($pl['ffl_required']) && $pl['ffl_required']) {
-                $ffl_required = true;
-            }
-        }
-
-        // Compute recommended retail price.
-        $markup_percent = Options::get_global_markup()/100; // e.g. 0.25 = 25%
-        $base_price     = ($true_cost !== null) ? $true_cost * (1 + $markup_percent) : $dealer_price;
-        $base_price     = (float) $base_price;
-        $recommended    = $base_price;
-
-        if ($max_map !== null && $max_map > $recommended) {
-            $recommended = $max_map;
-        }
-
-        // Basic safety: if we still somehow have no price, bail.
-        if ($recommended === null || $recommended <= 0) {
-            return new WP_Error(
-                'fflhub_no_price',
-                __('Could not compute a valid retail price for this product.', 'ffl-hub')
-            );
-        }
-
-        // Use WC CRUD to create a simple product:
+    /**
+     * C) Build the WC product core fields from the selected payload.
+     */
+    private static function build_wc_product_from_payload(
+        string $upc,
+        DistributorProductPayload $selected_product,
+        float $recommended_price
+    ): WC_Product_Simple {
         $product = new WC_Product_Simple();
+
+        $name        = $selected_product->name;
+        $sku         = $selected_product->sku;
+        $description = $selected_product->description;
+        $qty         = (int) $selected_product->quantity;
 
         // Title / Description
         $product->set_name($name ?: $sku ?: $upc);
-        $product->set_description($description); // full description
+        $product->set_description($description);
 
         // SKU
         $sku_to_use = $sku ?: $upc;
@@ -127,94 +164,189 @@ class DistributorProductHelper {
         }
 
         // Price
-        $product->set_regular_price(wc_format_decimal($recommended, 2));
+        $product->set_regular_price(wc_format_decimal($recommended_price, 2));
 
-        // Stock / inventory
+        // Stock / inventory (Option 2: selected distributor only)
         $product->set_manage_stock(true);
-        $product->set_stock_quantity((int) $qty_sum);
-        $product->set_stock_status($qty_sum > 0 ? 'instock' : 'outofstock');
+        $product->set_stock_quantity($qty);
+        $product->set_stock_status($qty > 0 ? 'instock' : 'outofstock');
 
         // Status / visibility
         $product->set_status('draft');
         $product->set_catalog_visibility('visible');
 
-        /**
-         * Set product categories from recommended_category path, if available.
-         *
-         * expected payload['recommended_category'] like:
-         *   [ 'Firearms', 'Handguns', 'Pistols' ]
-         */
-        if (
-            isset($payload['recommended_category']) &&
-            is_array($payload['recommended_category']) &&
-            ! empty($payload['recommended_category'])
-        ) {
-            $term_ids = CategoryInstaller::get_term_ids_for_path($payload['recommended_category']);
+        return $product;
+    }
 
-            if (! empty($term_ids) && is_array($term_ids)) {
-                // Ensure unique ints.
-                $term_ids = array_values(array_unique(array_map('intval', $term_ids)));
+    /**
+     * D) Apply recommended categories if recommended_category is a path array.
+     */
+    private static function apply_categories_from_payload(
+        WC_Product_Simple $product,
+        DistributorProductPayload $selected_product
+    ): void {
+        $recommended_category = $selected_product->recommended_category ?? null;
 
-                if (! empty($term_ids)) {
-                    // Attach all categories in the path (top, mid, leaf).
-                    $product->set_category_ids($term_ids);
-                }
-            }
+        if (! is_array($recommended_category) || empty($recommended_category)) {
+            return;
         }
 
-        // Save (creates the product post + saves core Woo data + categories)
+        $term_ids = CategoryInstaller::get_term_ids_for_path($recommended_category);
+
+        if (! is_array($term_ids) || empty($term_ids)) {
+            return;
+        }
+
+        $term_ids = array_values(array_unique(array_map('intval', $term_ids)));
+
+        if (! empty($term_ids)) {
+            $product->set_category_ids($term_ids);
+        }
+    }
+
+    /**
+     * E) Save and return product ID.
+     */
+    private static function save_and_get_id(WC_Product_Simple $product): int
+    {
         $product->save();
+        return (int) $product->get_id();
+    }
 
-        $product_id = $product->get_id();
+    /**
+     * F) Write all plugin meta (based on the selected payload; Option 2 behavior).
+     */
+    public static function apply_fflhub_meta_from_payload(
+        WC_Product_Simple $product,
+        string $upc,
+        string $selected_dist_id,
+        DistributorProductPayload $selected_product,
+        float $recommended_price
+    ): void {
+        $dealer_price = $selected_product->price;
+        $true_cost    = $selected_product->true_cost;
 
-        if (! $product_id) {
-            return new WP_Error(
-                'fflhub_insert_failed',
-                __('Could not create WooCommerce product via CRUD API.', 'ffl-hub')
-            );
-        }
+        // Option 2: selected distributor MAP/MSRP/FFL only
+        $map          = $selected_product->map;
+        $msrp         = $selected_product->msrp;
+        $ffl_required = $selected_product->ffl_required;
 
-        // Now set your custom metadata as before.
         $product->set_global_unique_id($upc);
+
         $product->update_meta_data(ProductMeta::FFLHUB_UPC_META, $upc);
         $product->update_meta_data(ProductMeta::FFLHUB_MANAGED_META, true);
         $product->update_meta_data(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id);
+
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_TRUE_COST_META, $true_cost);
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price);
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_MAP_META, $max_map);
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_MSRP_META, $max_msrp);
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended);
-        $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, 1);
-        $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, 0);
+
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_MAP_META, $map);
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp);
+
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended_price);
 
         $product->update_meta_data(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required ? 1 : 0);
         $product->update_meta_data(ProductMeta::FFLHUB_NFA_ITEM_META, 0);
 
+
+
+        $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, ProductMeta::MARKUP_MODE_GLOBAL);
+        $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, 0);
+        $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
+
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
+    }
 
-        // Import images from ALL distributors:
-        if (class_exists(DistributorProductImages::class)) {
-            foreach ($carrier_distributors as $dist_id => $info) {
-                if (
-                    empty($info['payload']) ||
-                    ! ($info['payload'] instanceof DistributorProductPayload)
-                ) {
-                    continue;
-                }
+    public static function update_fflhub_meta_from_payload_for_sync(
+        WC_Product_Simple $product,
+        string $selected_dist_id,
+        DistributorProductPayload $selected_product,
+        float $recommended_price
+    ): void {
+        $dealer_price = $selected_product->price;
+        $true_cost    = $selected_product->true_cost;
 
-                $is_primary = ((string) $dist_id === (string) $selected_dist_id);
+        // Option 2: selected distributor MAP/MSRP/FFL only
+        $map          = $selected_product->map;
+        $msrp         = $selected_product->msrp;
+        $ffl_required = $selected_product->ffl_required;
 
-                DistributorProductImages::import_images_for_distributor(
-                    $product_id,
-                    $upc,
-                    $info['payload'],
-                    (string) $dist_id,
-                    $is_primary
-                );
-            }
+        $product->update_meta_data(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id);
+
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_TRUE_COST_META, $true_cost);
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price);
+
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_MAP_META, $map);
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp);
+
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended_price);
+
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
+    }
+
+    /**
+     * G) Import images from all distributors (selected distributor marked primary).
+     *
+     * ✅ CHANGED:
+     * - old $carrier_distributors array shape removed
+     * - now accepts array<string, DistributorOffer>
+     * - uses $offer->product as the payload
+     */
+    private static function import_images_from_offers( // ✅ CHANGED (renamed)
+        int $product_id,
+        string $upc,
+        array $offers,          // ✅ CHANGED
+        string $selected_dist_id
+    ): void {
+        if (! class_exists(DistributorProductImages::class)) {
+            return;
         }
 
-        // Message / return
+        foreach ($offers as $dist_id => $offer) { // ✅ CHANGED
+            if (! ($offer instanceof DistributorOffer)) {
+                continue;
+            }
+
+            $payload = $offer->product;
+            if (! ($payload instanceof DistributorProductPayload)) {
+                continue;
+            }
+
+            $is_primary = ((string) $offer->distributor_id === (string) $selected_dist_id); // ✅ CHANGED
+
+            DistributorProductImages::import_images_for_distributor(
+                $product_id,
+                $upc,
+                $payload,                            // ✅ CHANGED
+                (string) $offer->distributor_id,      // ✅ CHANGED
+                $is_primary
+            );
+        }
+    }
+
+
+    public static function get_upc_lookup_result_from_distributors(string $upc): ?UpcLookupResult
+    {
+        $plugin  = Plugin::instance();
+        $handler = $plugin->distributor_handler ?? null;
+
+        if (! $handler || ! method_exists($handler, 'get_payloads_for_upc')) {
+            $global_error = __('Distributor handler is not available for lookups.', 'ffl-hub');
+            return null;
+        }
+
+        try {
+            $lookup = $handler->get_payloads_for_upc($upc); // ✅ CHANGED: expected UpcLookupResult
+        } catch (\Throwable $e) {
+            $global_error = __('An error occurred while fetching distributor data.', 'ffl-hub');
+            return null;
+        }
+
+        return ($lookup instanceof UpcLookupResult) ? $lookup : null;      // ✅ CHANGED
+    }
+
+    private static function build_created_product_response(int $product_id): array
+    {
         $edit_link = get_edit_post_link($product_id, '');
 
         $message = sprintf(
@@ -224,14 +356,293 @@ class DistributorProductHelper {
             esc_url($edit_link)
         );
 
-        $product->save(); // persist meta
-
         return [
             'message' => $message,
             'type'    => 'success',
         ];
     }
 
+    //for first time price set when we create a product from the distributor product page 
+    public static function get_reccomended_price_from_payload(DistributorProductPayload $selected_product): ?float
+    {
+        $dealer_price   = $selected_product->price;
+        $true_cost      = $selected_product->true_cost;
+        $markup_percent = Options::get_global_markup() / 100;
+
+        $base_price = ($true_cost !== null)
+            ? $true_cost * (1 + $markup_percent)
+            : $dealer_price;
+
+        $base_price = (float) $base_price;
+
+        // round up to nearest int, subtract a cent
+        $recommended_price = ceil($base_price) - 0.01;
+
+        return $recommended_price;
+    }
 
 
+
+    public static function compute_sell_price_for_product(
+        int $product_id,
+        DistributorProductPayload $payload
+    ): ?float {
+        $settings = self::get_pricing_settings_for_product($product_id);
+
+        // Mode 2: fixed price
+        if ($settings['mode'] === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
+            return $settings['fixed_price']; // could be null if not set
+        }
+
+        // Percent modes
+        $pct = $settings['effective_percent'];
+        if (! is_numeric($pct) || (float) $pct < 0) {
+            return null;
+        }
+
+        $base = (is_numeric($payload->true_cost) && (float) $payload->true_cost > 0)
+            ? (float) $payload->true_cost
+            : (float) $payload->price;
+
+        if ($base <= 0) {
+            return null;
+        }
+
+        $sell = $base * (1.0 + (float) $pct);
+
+        // Your rounding behavior: ceil to whole dollar then -0.01
+        $sell = ceil($sell) - 0.01;
+
+        return (float) $sell;
+    }
+
+    /**
+     * @return array{
+     *   mode:int,
+     *   percent:float|null,
+     *   fixed_price:float|null,
+     *   effective_percent:float|null
+     * }
+     */
+    public static function get_pricing_settings_for_product(int $product_id): array
+    {
+        $mode_raw = get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_MODE_META, true);
+        $mode     = ($mode_raw === '') ? ProductMeta::MARKUP_MODE_GLOBAL : (int) $mode_raw;
+
+        $percent_meta = get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_PERCENT_META, true);
+        $fixed_meta   = get_post_meta($product_id, ProductMeta::FFLHUB_FIXED_PRICE_META, true);
+
+        $percent = null;
+        if (is_numeric($percent_meta)) {
+            $p = (float) $percent_meta;
+            // Normalize: if user stored 25 treat as 25%
+            if ($p > 1.0) {
+                $p = $p / 100.0;
+            }
+            if ($p >= 0) {
+                $percent = $p;
+            }
+        }
+
+        $fixed_price = null;
+        if (is_numeric($fixed_meta)) {
+            $fp = (float) $fixed_meta;
+            if ($fp > 0) {
+                $fixed_price = $fp;
+            }
+        }
+
+        $effective_percent = null;
+        if ($mode === ProductMeta::MARKUP_MODE_GLOBAL) {
+            $g = (float) \FFLHub\Settings\Options::get_global_markup();
+            $effective_percent = ($g > 1.0) ? ($g / 100.0) : $g;
+        } elseif ($mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
+            $effective_percent = $percent;
+        } elseif ($mode === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
+            $effective_percent = null;
+        }
+
+        return [
+            'mode'             => $mode,
+            'percent'          => $percent,
+            'fixed_price'      => $fixed_price,
+            'effective_percent' => $effective_percent,
+        ];
+    }
+
+    public static function query_for_managed_products(int $limit)
+    {
+        $args = array(
+            'post_type'      => 'product',
+            'post_status'    => array('publish', 'draft', 'pending', 'private'),
+            'posts_per_page' => max(1, (int) $limit),
+            'fields'         => 'ids',
+            'meta_query'     => array(
+                array(
+                    'key'   => ProductMeta::FFLHUB_MANAGED_META,
+                    'value' => 1,
+                ),
+            ),
+            'meta_key'       => ProductMeta::FFLHUB_LAST_SYNC_META,
+            'orderby'        => 'meta_value',
+            'order'          => 'ASC',
+        );
+
+        return new WP_Query($args);
+    }
+
+
+
+    /**
+     * ADMIN-ONLY:
+     * Recompute and apply Woo regular price using existing FFLHub pricing meta.
+     * ❌ Does NOT modify any FFLHUB_LAST_* meta
+     */
+    public static function apply_admin_pricing_to_woo_product(int $product_id): void
+    {
+        $product = wc_get_product($product_id);
+        if (! $product) {
+            return;
+        }
+
+        $settings = self::get_pricing_settings_for_product($product_id);
+
+        // Mode 3: fixed price
+        if ($settings['mode'] === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
+            if (is_numeric($settings['fixed_price']) && $settings['fixed_price'] > 0) {
+
+                $product->set_regular_price($settings['fixed_price']);
+                error_log("FIXED PRICE IS ENABLED AT: " . $settings['fixed_price']);
+
+                $product->save();
+            }
+            error_log("EARLY EXITING SINCE FIXED PRICING IS ENABLED");
+
+            return;
+        }
+
+        // Percent-based modes
+        $pct = $settings['effective_percent'];
+        if (! is_numeric($pct) || $pct < 0) {
+            return;
+        }
+
+        // Cost basis from LAST_* snapshot meta
+        $true_cost = get_post_meta($product_id, ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
+        $dealer    = get_post_meta($product_id, ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
+
+        $base = null;
+        if (is_numeric($true_cost) && (float) $true_cost > 0) {
+            $base = (float) $true_cost;
+        } elseif (is_numeric($dealer) && (float) $dealer > 0) {
+            $base = (float) $dealer;
+        }
+
+        if (! is_numeric($base) || $base <= 0) {
+            return;
+        }
+
+        $sell = $base * (1.0 + (float) $pct);
+        $sell = ceil($sell) - 0.01;
+
+        if ($sell <= 0) {
+            return;
+        }
+
+        $product->set_regular_price(
+            wc_format_decimal($sell, 2)
+        );
+        $product->save();
+    }
+
+
+    public static function apply_admin_pricing_after_woo_save(int $product_id): void
+    {
+        // Only for FFLHub managed products (optional but recommended)
+        $managed = (int) get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_MANAGED_META, true);
+        if ($managed !== 1) {
+            return;
+        }
+
+        $product = wc_get_product($product_id);
+        if (! $product) {
+            return;
+        }
+
+        $mode_raw = get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_MARKUP_MODE_META, true);
+        $mode     = ($mode_raw === '' && (string) $mode_raw !== '0')
+            ? \FFLHub\Product\ProductMeta::MARKUP_MODE_GLOBAL
+            : (int) $mode_raw;
+
+        // Fixed Price mode
+        if ($mode === \FFLHub\Product\ProductMeta::MARKUP_MODE_FIXED_PRICE) {
+            $fixed_raw = get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_FIXED_PRICE_META, true);
+
+            if (! is_numeric($fixed_raw) || (float) $fixed_raw <= 0) {
+                return;
+            }
+
+            $price = (float) $fixed_raw;
+
+            // IMPORTANT: make price "stick" by setting both
+            $product->set_regular_price(wc_format_decimal($price, 2));
+            $product->set_sale_price(''); // avoid _price being driven by stale sale price
+            $product->set_price(wc_format_decimal($price, 2)); // ensures _price matches
+
+            $product->save();
+            return;
+        }
+
+        // Percent modes (global or fixed percent)
+        $pct = null;
+
+        if ($mode === \FFLHub\Product\ProductMeta::MARKUP_MODE_FIXED_PCT) {
+            $pct_raw = get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_MARKUP_PERCENT_META, true);
+            if (is_numeric($pct_raw)) {
+                $p = (float) $pct_raw;
+                if ($p > 1.0) {
+                    $p = $p / 100.0;
+                }
+                if ($p >= 0) {
+                    $pct = $p;
+                }
+            }
+        } else {
+            $g = (float) \FFLHub\Settings\Options::get_global_markup();
+            $pct = ($g > 1.0) ? ($g / 100.0) : $g;
+        }
+
+        if (! is_numeric($pct) || (float) $pct < 0) {
+            return;
+        }
+
+        // Basis: LAST true cost else LAST dealer
+        $true_cost_raw = get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
+        $dealer_raw    = get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
+
+        $base = null;
+        if (is_numeric($true_cost_raw) && (float) $true_cost_raw > 0) {
+            $base = (float) $true_cost_raw;
+        } elseif (is_numeric($dealer_raw) && (float) $dealer_raw > 0) {
+            $base = (float) $dealer_raw;
+        }
+
+        if (! is_numeric($base) || (float) $base <= 0) {
+            return;
+        }
+
+        $sell = (float) $base * (1.0 + (float) $pct);
+        $sell = ceil($sell) - 0.01;
+
+        if ($sell <= 0) {
+            return;
+        }
+
+        $sell = wc_format_decimal($sell, 2);
+
+        $product->set_regular_price($sell);
+        $product->set_sale_price('');
+        $product->set_price($sell);
+        $product->save();
+    }
 }

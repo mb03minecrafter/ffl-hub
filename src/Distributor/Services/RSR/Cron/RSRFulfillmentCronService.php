@@ -10,6 +10,7 @@ use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Distributor\Services\RSR\RSRFTPService;
 use FFLHub\Distributor\Services\RSR\RSRFulfillmentImporterService;
+use FFLHub\Settings\Options;
 
 /**
  * WP-Cron job to regularly download the RSR fulfillment catalog file
@@ -255,43 +256,41 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
     }
 
     /**
-     * Get FTP credentials for downloading RSR catalog/quantity files.
+     * Retrieve and validate FTP credentials from RSR distributor settings.
      *
-     * @return array|null {
-     *   @type string $host
-     *   @type string $username
-     *   @type string $password
-     *   @type bool   $use_ssl
-     * }
+     * Uses the centralized Options helper so we don't hard-code option names.
+     *
+     * @return array{host:string,username:string,password:string,use_ssl:bool}|null
      */
     public function get_ftp_credentials(): ?array
     {
-        $host     = get_option('fflhub_rsr_ftp_host');
-        $username = get_option('fflhub_rsr_ftp_username');
-        $password = get_option('fflhub_rsr_ftp_password');
-        $use_ssl  = get_option('fflhub_rsr_ftp_use_ssl');
+        // Values come from RSRModule::settings_schema() via SettingsRegistrar.
+        $host      = Options::get_distributor_option('rsr', 'ftp_host', '');
+        $username  = Options::get_distributor_option('rsr', 'ftp_username', '');
+        $password  = Options::get_distributor_option('rsr', 'ftp_password', '');
+        $use_ssl_s = Options::get_distributor_option('rsr', 'ftp_use_ssl', '');
 
-        $host     = is_string($host)     ? trim($host)     : '';
-        $username = is_string($username) ? trim($username) : '';
-        $password = is_string($password) ? trim($password) : '';
-        $use_ssl  = (is_string($use_ssl) ? trim($use_ssl) : '') !== '';
+        $host     = trim($host);
+        $username = trim($username);
+        $password = trim($password);
+        $use_ssl  = ($use_ssl_s !== '');
 
         if ($host === '' || $username === '' || $password === '') {
             error_log(
                 sprintf(
                     '[FFLHub][RSR Fulfillment Cron] Missing FTP credentials (host: %s, user: %s).',
-                    $host     !== '' ? 'set' : 'empty',
+                    $host !== '' ? 'set' : 'empty',
                     $username !== '' ? 'set' : 'empty'
                 )
             );
             return null;
         }
 
-        return array(
+        return [
             'host'     => $host,
             'username' => $username,
             'password' => $password,
             'use_ssl'  => $use_ssl,
-        );
+        ];
     }
 }

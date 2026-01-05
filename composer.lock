@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "8bd5c4da5f9611e350ad1b164258ab10",
+    "content-hash": "7072bd4fe3d126bd95f01c1b42ccf143",
     "packages": [
         {
             "name": "lipseys/apiintegration",

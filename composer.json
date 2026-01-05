@@ -1,4 +1,7 @@
 {
+  "name" : "mtbickham/fflhub",
+   "description": "FFL Hub WordPress plugin",
+  "type": "project",
   "require": {
     "lipseys/apiintegration": "^1.2"
   },
@@ -7,4 +10,6 @@
       "FFLHub\\": "src/"
     }
   }
+  
+  
 }

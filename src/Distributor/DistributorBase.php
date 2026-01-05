@@ -7,6 +7,7 @@ if (! defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Product\DistributorProductPayload;
+use FFLHub\Distributor\Product\DistributorOffer;
 use FFLHub\Distributor\Services\DistributorServicesInterface;
 use FFLHub\Distributor\Services\Tables\DistributorTableInterface;
 
@@ -15,63 +16,86 @@ use FFLHub\Distributor\Services\Tables\DistributorTableInterface;
  */
 abstract class DistributorBase implements DistributorInterface
 {
+
+    protected DistributorModuleInterface $module;
+
     /**
      * Optional services bundle for this distributor (tables, cron, etc.).
      */
     protected ?DistributorServicesInterface $services = null;
 
-    /**
-     * Children MUST implement these instance methods.
-     */
-    abstract public function get_id(): string;
-    abstract public function get_label(): string;
-    abstract public function get_name(): string;
-    abstract public function get_description(): string;
-    abstract public function get_section_description(): string;
-    abstract public function get_icon_url(): string;
-    abstract public function get_field_definitions(): array;
-
-    /**
-     * Optional DI-style constructor.
-     *
-     * You can call `new DistributorRSR()` with no args and inject
-     * services later via set_services(), or pass services here.
-     */
-    public function __construct(?DistributorServicesInterface $services = null)
+    public function __construct(DistributorModuleInterface $module, ?DistributorServicesInterface $services = null)
     {
+        $this->module = $module;
+
         if ($services !== null) {
             $this->services = $services;
         }
     }
 
     /**
-     * Inject or replace the services bundle at runtime.
+     * Access the module definition for this distributor.
      */
+    public function get_module(): DistributorModuleInterface
+    {
+        return $this->module;
+    }
+
+    /* ---- Metadata + schema delegate to module ---- */
+
+    public function get_id(): string
+    {
+        return $this->module->id();
+    }
+
+    public function get_label(): string
+    {
+        return $this->module->label();
+    }
+
+    public function get_name(): string
+    {
+        return $this->module->name();
+    }
+
+    public function get_description(): string
+    {
+        return $this->module->description();
+    }
+
+    public function get_section_description(): string
+    {
+        return $this->module->section_description();
+    }
+
+    public function get_icon_url(): string
+    {
+        return $this->module->icon_url();
+    }
+
+    public function get_field_definitions(): array
+    {
+        $schema = $this->module->settings_schema();
+        return is_array($schema) ? $schema : [];
+    }
+
+    /* ---- Services ---- */
+
     public function set_services(DistributorServicesInterface $services): void
     {
         $this->services = $services;
     }
 
-    /**
-     * Instance-level accessor required by DistributorInterface.
-     */
     public function get_services(): ?DistributorServicesInterface
     {
         return $this->services;
     }
 
-    /**
-     * Do we currently have a services bundle wired in?
-     */
     public function has_services(): bool
     {
         return $this->services instanceof DistributorServicesInterface;
     }
 
-    /**
-     * Convenience shortcut: the fulfillment table for this distributor,
-     * or null if no services are wired.
-     */
     protected function get_fulfillment_table(): ?DistributorTableInterface
     {
         if (! $this->services instanceof DistributorServicesInterface) {
@@ -81,7 +105,7 @@ abstract class DistributorBase implements DistributorInterface
         return $this->services->get_fulfillment_table();
     }
 
-    /* ---- Helpers for WordPress Settings API ---- */
+    /* ---- Helpers for WordPress option naming ---- */
 
     protected function get_option_group(): string
     {
@@ -108,103 +132,21 @@ abstract class DistributorBase implements DistributorInterface
         return 'fflhub_' . $this->get_id() . '_' . $field_key . '_field';
     }
 
-    /* ---- (Optional) Settings registration; still instance-based now ----
-    public function register_settings(): void
-    {
-        $fields = $this->get_field_definitions();
-
-        if ($this->get_id() === '' || empty($fields)) {
-            return;
-        }
-
-        $option_group  = $this->get_option_group();
-        $settings_page = $this->get_settings_page();
-        $section_id    = $this->get_section_id();
-
-        foreach ($fields as $key => $field) {
-            $option_name = $this->get_option_name($key);
-            register_setting($option_group, $option_name);
-        }
-
-        add_settings_section(
-            $section_id,
-            '',
-            [$this, 'render_section_intro'],
-            $settings_page
-        );
-
-        foreach ($fields as $key => $field) {
-            add_settings_field(
-                $this->get_field_id($key),
-                $field['label'] ?? $key,
-                [$this, 'render_field'],
-                $settings_page,
-                $section_id,
-                [
-                    'field_key' => $key,
-                ]
-            );
-        }
-    }
-
-    public function render_section_intro(): void
-    {
-        $desc = $this->get_section_description();
-        if ($desc !== '') {
-            echo '<p>' . esc_html($desc) . '</p>';
-        }
-    }
-
-    public function render_field($args): void
-    {
-        $key    = $args['field_key'] ?? '';
-        $fields = $this->get_field_definitions();
-
-        if ($key === '' || ! isset($fields[$key])) {
-            return;
-        }
-
-        $field       = $fields[$key];
-        $type        = $field['type']        ?? 'text';
-        $placeholder = $field['placeholder'] ?? '';
-        $description = $field['description'] ?? '';
-        $default     = $field['default']     ?? '';
-
-        $option_name = $this->get_option_name($key);
-        $value       = get_option($option_name, $default);
-        ?>
-        <input
-            type="<?php echo esc_attr($type); ?>"
-            name="<?php echo esc_attr($option_name); ?>"
-            value="<?php echo esc_attr($value); ?>"
-            class="regular-text"
-            <?php if ($placeholder) : ?>
-                placeholder="<?php echo esc_attr($placeholder); ?>"
-            <?php endif; ?>
-        />
-        <?php if ($description) : ?>
-            <p class="description"><?php echo esc_html($description); ?></p>
-        <?php endif; ?>
-        <?php
-    }
-
-    public function render_settings_panel(): void
-    {
-        ?>
-        <h2><?php echo esc_html($this->get_name()); ?> Settings</h2>
-
-        <form method="post" action="options.php">
-            <?php
-            settings_fields($this->get_option_group());
-            do_settings_sections($this->get_settings_page());
-            submit_button();
-            ?>
-        </form>
-        <?php
-    }
-    */
 
     /* ---- Default product / pricing implementations ---- */
+
+    public function get_offer_by_upc(string $upc): ?DistributorOffer
+    {
+        $product = $this->get_product_by_upc($upc);
+
+
+        return new DistributorOffer(
+            $this->get_id(),
+            $this->get_label(),
+            $product
+        );
+    }
+
 
     public function get_product_by_upc(string $upc): ?DistributorProductPayload
     {
@@ -309,6 +251,73 @@ abstract class DistributorBase implements DistributorInterface
             }
         }
         return null;
+    }
+
+
+    
+
+
+    protected function build_payload_from_row(
+        array $row,
+        array $map,
+        callable $category_mapper,
+        string $normalized_upc,
+        bool $include_images = true
+    ): DistributorProductPayload {
+        $sku         = $this->get_string_field($row, $map['sku']);
+        $upc         = $this->get_string_field($row, $map['upc']);
+        $name        = $this->get_string_field($row, $map['name']);
+        $description = $this->get_string_field($row, $map['description']);
+
+        $price    = $this->get_float_field($row, $map['price']);
+        $mapPrice = $this->get_float_field($row, $map['map']);
+        $msrp     = $this->get_float_field($row, $map['msrp']);
+        $quantity = $this->get_int_field($row, $map['quantity']);
+
+        $shipping  = $this->get_shipping_cost_by_upc($normalized_upc);
+        $true_cost = $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping);
+
+        $category = $category_mapper(
+            $this->get_string_field($row, $map['category'])
+        );
+
+        $image = $include_images && isset($map['image'])
+            ? $this->get_image_url_from_row($row, $map['image'])
+            : '';
+
+        $ffl_required = $this->get_int_field($row, $map['ffl_required']); // default; distributor can override later
+
+        return new DistributorProductPayload(
+            $upc ?: $normalized_upc,
+            $sku,
+            $name,
+            $description,
+            $price,
+            $mapPrice,
+            $msrp,
+            $quantity,
+            $shipping,
+            $true_cost,
+            $image,
+            $ffl_required,
+            $category,
+            $row
+        );
+    }
+
+
+    /**
+     * Resolve an image URL from a fulfillment row.
+     *
+     * Default behavior: no images.
+     * Distributors may override.
+     *
+     * @param array $row
+     * @param array|string $field
+     */
+    protected function get_image_url_from_row(array $row, $field): string
+    {
+        return '';
     }
 
     /* ---- True cost helpers ---- */
