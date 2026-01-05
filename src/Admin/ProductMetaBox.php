@@ -20,8 +20,14 @@ class ProductMetaBox
     public static function init(): void
     {
         add_action('add_meta_boxes', array(__CLASS__, 'add_meta_box'));
-        add_action('save_post_product', array(__CLASS__, 'save_meta_box'));
-        add_action('woocommerce_process_product_meta', [\FFLHub\Distributor\Product\DistributorProductHelper::class, 'apply_admin_pricing_after_woo_save'], 999, 1);
+
+        // ✅ Single admin-save entry point for your meta + pricing update
+        add_action(
+            'woocommerce_process_product_meta',
+            array(__CLASS__, 'save_meta_and_update_price'),
+            999,
+            1
+        );
     }
 
     public static function add_meta_box(): void
@@ -207,8 +213,9 @@ class ProductMetaBox
         echo '</p>';
     }
 
-    public static function save_meta_box(int $post_id): void
+    public static function save_meta_and_update_price(int $post_id): void
     {
+        // Woo admin save shouldn’t be autosave, but keep this guard anyway
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
             return;
         }
@@ -233,11 +240,15 @@ class ProductMetaBox
             return;
         }
 
+        // -----------------------------
+        // Save your editable meta fields
+        // -----------------------------
+
         // FFL Required checkbox
         $required = isset($_POST['fflhub_ffl_required']) ? 1 : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_FFL_REQUIRED_META, $required);
 
-        // 🆕 Pricing mode
+        // Pricing mode
         $mode = isset($_POST['fflhub_markup_mode'])
             ? (int) sanitize_text_field(wp_unslash($_POST['fflhub_markup_mode']))
             : ProductMeta::MARKUP_MODE_GLOBAL;
@@ -252,7 +263,7 @@ class ProductMetaBox
 
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, $mode);
 
-        // Percent (only meaningful for Fixed Percent)
+        // Fixed Percent value
         if ($mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
             $pct_raw = isset($_POST['fflhub_markup_percent'])
                 ? sanitize_text_field(wp_unslash($_POST['fflhub_markup_percent']))
@@ -268,7 +279,7 @@ class ProductMetaBox
             $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, 0);
         }
 
-        // Fixed price (only meaningful for Fixed Price)
+        // Fixed Price value
         if ($mode === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
             $fixed_raw = isset($_POST['fflhub_fixed_price'])
                 ? sanitize_text_field(wp_unslash($_POST['fflhub_fixed_price']))
@@ -283,11 +294,17 @@ class ProductMetaBox
         } else {
             $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
         }
+
+        // ✅ Save meta first
         $product->save();
-        //DistributorProductHelper::apply_admin_pricing_to_woo_product($post_id);
-        error_log('regular=' . $product->get_regular_price() . ' price=' . $product->get_price() . ' sale=' . $product->get_sale_price());
+
+        // ✅ Then update Woo regular price based on the meta we just saved
+        DistributorProductHelper::apply_admin_pricing_to_woo_product($post_id);
+
+        // Optional debug
+        $product = wc_get_product($post_id);
+        if ($product) {
+            error_log('AFTER PRICING: regular=' . $product->get_regular_price() . ' price=' . $product->get_price() . ' sale=' . $product->get_sale_price());
+        }
     }
-
-
-    
 }

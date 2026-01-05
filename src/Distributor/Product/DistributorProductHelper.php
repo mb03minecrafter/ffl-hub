@@ -507,142 +507,61 @@ class DistributorProductHelper
 
         $settings = self::get_pricing_settings_for_product($product_id);
 
-        // Mode 3: fixed price
-        if ($settings['mode'] === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
-            if (is_numeric($settings['fixed_price']) && $settings['fixed_price'] > 0) {
-
-                $product->set_regular_price($settings['fixed_price']);
-                error_log("FIXED PRICE IS ENABLED AT: " . $settings['fixed_price']);
-
-                $product->save();
-            }
-            error_log("EARLY EXITING SINCE FIXED PRICING IS ENABLED");
-
-            return;
-        }
-
-        // Percent-based modes
-        $pct = $settings['effective_percent'];
-        if (! is_numeric($pct) || $pct < 0) {
-            return;
-        }
-
-        // Cost basis from LAST_* snapshot meta
-        $true_cost = get_post_meta($product_id, ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
-        $dealer    = get_post_meta($product_id, ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
-
-        $base = null;
-        if (is_numeric($true_cost) && (float) $true_cost > 0) {
-            $base = (float) $true_cost;
-        } elseif (is_numeric($dealer) && (float) $dealer > 0) {
-            $base = (float) $dealer;
-        }
-
-        if (! is_numeric($base) || $base <= 0) {
-            return;
-        }
-
-        $sell = $base * (1.0 + (float) $pct);
-        $sell = ceil($sell) - 0.01;
-
-        if ($sell <= 0) {
-            return;
-        }
-
-        $product->set_regular_price(
-            wc_format_decimal($sell, 2)
-        );
-        $product->save();
-    }
-
-
-    public static function apply_admin_pricing_after_woo_save(int $product_id): void
-    {
-        // Only for FFLHub managed products (optional but recommended)
-        $managed = (int) get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_MANAGED_META, true);
-        if ($managed !== 1) {
-            return;
-        }
-
-        $product = wc_get_product($product_id);
-        if (! $product) {
-            return;
-        }
-
-        $mode_raw = get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_MARKUP_MODE_META, true);
-        $mode     = ($mode_raw === '' && (string) $mode_raw !== '0')
-            ? \FFLHub\Product\ProductMeta::MARKUP_MODE_GLOBAL
-            : (int) $mode_raw;
-
-        // Fixed Price mode
-        if ($mode === \FFLHub\Product\ProductMeta::MARKUP_MODE_FIXED_PRICE) {
-            $fixed_raw = get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_FIXED_PRICE_META, true);
-
-            if (! is_numeric($fixed_raw) || (float) $fixed_raw <= 0) {
+        // 1) Fixed price mode: set and exit.
+        if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
+            $fixed = self::to_positive_float($settings['fixed_price'] ?? null);
+            if ($fixed === null) {
                 return;
             }
 
-            $price = (float) $fixed_raw;
-
-            // IMPORTANT: make price "stick" by setting both
-            $product->set_regular_price(wc_format_decimal($price, 2));
-            $product->set_sale_price(''); // avoid _price being driven by stale sale price
-            $product->set_price(wc_format_decimal($price, 2)); // ensures _price matches
-
-            $product->save();
+            self::set_regular_price_and_save($product, $fixed);
             return;
         }
 
-        // Percent modes (global or fixed percent)
-        $pct = null;
-
-        if ($mode === \FFLHub\Product\ProductMeta::MARKUP_MODE_FIXED_PCT) {
-            $pct_raw = get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_MARKUP_PERCENT_META, true);
-            if (is_numeric($pct_raw)) {
-                $p = (float) $pct_raw;
-                if ($p > 1.0) {
-                    $p = $p / 100.0;
-                }
-                if ($p >= 0) {
-                    $pct = $p;
-                }
-            }
-        } else {
-            $g = (float) \FFLHub\Settings\Options::get_global_markup();
-            $pct = ($g > 1.0) ? ($g / 100.0) : $g;
-        }
-
+        // 2) Percent-based modes.
+        $pct = $settings['effective_percent'] ?? null;
         if (! is_numeric($pct) || (float) $pct < 0) {
             return;
         }
+        $pct = (float) $pct;
 
-        // Basis: LAST true cost else LAST dealer
-        $true_cost_raw = get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
-        $dealer_raw    = get_post_meta($product_id, \FFLHub\Product\ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
+        // Cost basis from LAST_* snapshot meta (prefer true cost, else dealer).
+        $base =
+            self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true))
+            ?? self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
 
-        $base = null;
-        if (is_numeric($true_cost_raw) && (float) $true_cost_raw > 0) {
-            $base = (float) $true_cost_raw;
-        } elseif (is_numeric($dealer_raw) && (float) $dealer_raw > 0) {
-            $base = (float) $dealer_raw;
-        }
-
-        if (! is_numeric($base) || (float) $base <= 0) {
+        if ($base === null) {
             return;
         }
 
-        $sell = (float) $base * (1.0 + (float) $pct);
+        $sell = $base * (1.0 + $pct);
         $sell = ceil($sell) - 0.01;
 
         if ($sell <= 0) {
             return;
         }
 
-        $sell = wc_format_decimal($sell, 2);
+        self::set_regular_price_and_save($product, $sell);
+    }
 
-        $product->set_regular_price($sell);
+    /** @return float|null */
+    private static function to_positive_float($value): ?float
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+        $f = (float) $value;
+        return $f > 0 ? $f : null;
+    }
+
+    private static function set_regular_price_and_save(\WC_Product $product, float $price): void
+    {
+        // Regular price should be formatted; also clear sale price to avoid display confusion.
+        $product->set_regular_price(wc_format_decimal($price, 2));
         $product->set_sale_price('');
-        $product->set_price($sell);
         $product->save();
     }
+
+
+    
 }
