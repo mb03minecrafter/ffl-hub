@@ -44,6 +44,8 @@ class DistributorRSR extends DistributorBase
             return null;
         }
 
+
+
         // Build the base payload from the common row→payload builder (no images here).
         $payload = $this->build_payload_from_row(
             $row,

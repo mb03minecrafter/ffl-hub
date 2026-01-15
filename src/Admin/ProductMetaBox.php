@@ -66,8 +66,9 @@ class ProductMetaBox
             ProductMeta::FFLHUB_LAST_MAP_META            => __('Last MAP', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_MSRP_META           => __('Last MSRP', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META => __('Last Computed Price', 'ffl-hub'),
-            ProductMeta::FFLHUB_LAST_SYNC_META           => __('Last Sync At', 'ffl-hub'),
             ProductMeta::FFLHUB_NFA_ITEM_META            => __('NFA Item', 'ffl-hub'),
+            ProductMeta::FFLHUB_LAST_SHIPPING_COST_META            => __('Shipping Cost', 'ffl-hub'),
+            ProductMeta::FFLHUB_LAST_SYNC_META           => __('Last Sync At', 'ffl-hub'),
         );
 
         echo '<table class="fflhub-meta-table" style="width:100%;border-collapse:collapse;">';

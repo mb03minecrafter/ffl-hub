@@ -65,5 +65,6 @@ class ProductMeta
     public const FFLHUB_FIXED_PRICE_META    = '_fflhub_fixed_price';    // 🆕 float, final sell price
 
 
+    public const FFLHUB_LAST_SHIPPING_COST_META = '_fflhub_last_shipping_cost';
 
 }

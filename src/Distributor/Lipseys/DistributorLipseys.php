@@ -55,6 +55,9 @@ class DistributorLipseys extends DistributorBase
             return null;
         }
 
+
+        $row['distributor_price'] *= 1.05; //BECAUSE I HAVE TO PAY SALES TAX ON LIPSEYS ITEMS  
+
         return $this->build_payload_from_row(
             $row,
             [

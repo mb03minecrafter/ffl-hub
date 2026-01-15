@@ -264,10 +264,15 @@ abstract class DistributorBase implements DistributorInterface
         string $normalized_upc,
         bool $include_images = true
     ): DistributorProductPayload {
+        
+
         $sku         = $this->get_string_field($row, $map['sku']);
         $upc         = $this->get_string_field($row, $map['upc']);
         $name        = $this->get_string_field($row, $map['name']);
         $description = $this->get_string_field($row, $map['description']);
+
+        $name = $name . " " . $description;
+        
 
         $price    = $this->get_float_field($row, $map['price']);
         $mapPrice = $this->get_float_field($row, $map['map']);
@@ -285,7 +290,16 @@ abstract class DistributorBase implements DistributorInterface
             ? $this->get_image_url_from_row($row, $map['image'])
             : '';
 
-        $ffl_required = $this->get_int_field($row, $map['ffl_required']); // default; distributor can override later
+
+        if($include_images == false) {
+                    error_log("RSR searching for item: " . $normalized_upc);
+
+        }
+
+        $ffl_required = isset($map['ffl_required']) ? $this->get_int_field($row, $map['ffl_required']) : false; // default; distributor can override later
+
+
+        
 
         return new DistributorProductPayload(
             $upc ?: $normalized_upc,
@@ -350,7 +364,7 @@ abstract class DistributorBase implements DistributorInterface
         float $distributor_cost,
         float $shipping_cost
     ): ?float {
-        $base_cost = $distributor_cost + $shipping_cost;
+        $base_cost = $distributor_cost;
 
         $fee_percent = (float) get_option('fflhub_payment_processor_fee_percent', '2.9');
         $fee_decimal = $fee_percent / 100.0;
@@ -359,6 +373,6 @@ abstract class DistributorBase implements DistributorInterface
             return $base_cost;
         }
 
-        return $base_cost / (1.0 - $fee_decimal);
+        return ($base_cost + 0.30) / (1.0 - $fee_decimal);
     }
 }

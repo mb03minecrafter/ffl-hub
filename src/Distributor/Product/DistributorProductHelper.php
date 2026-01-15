@@ -231,6 +231,8 @@ class DistributorProductHelper
         $msrp         = $selected_product->msrp;
         $ffl_required = $selected_product->ffl_required;
 
+        $ship_cost = $selected_product->shipping_cost ?? null;
+
         $product->set_global_unique_id($upc);
 
         $product->update_meta_data(ProductMeta::FFLHUB_UPC_META, $upc);
@@ -254,6 +256,9 @@ class DistributorProductHelper
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, 0);
         $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
 
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost);
+
+
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
     }
 
@@ -269,6 +274,8 @@ class DistributorProductHelper
         // Option 2: selected distributor MAP/MSRP/FFL only
         $map          = $selected_product->map;
         $msrp         = $selected_product->msrp;
+        $ship_cost = $selected_product->shipping_cost ?? null;
+
         $ffl_required = $selected_product->ffl_required;
 
         $product->update_meta_data(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id);
@@ -280,6 +287,7 @@ class DistributorProductHelper
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp);
 
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended_price);
+    $product->update_meta_data(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost);
 
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
     }
