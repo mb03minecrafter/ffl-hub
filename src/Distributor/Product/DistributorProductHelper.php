@@ -233,6 +233,8 @@ class DistributorProductHelper
 
         $ship_cost = $selected_product->shipping_cost ?? null;
 
+
+
         $product->set_global_unique_id($upc);
 
         $product->update_meta_data(ProductMeta::FFLHUB_UPC_META, $upc);
@@ -377,8 +379,10 @@ class DistributorProductHelper
         $true_cost      = $selected_product->true_cost;
         $markup_percent = Options::get_global_markup() / 100;
 
+        $cc_percent = Options::get_payment_processor_fee_percent()/100;
+
         $base_price = ($true_cost !== null)
-            ? $true_cost * (1 + $markup_percent)
+            ? $true_cost * (1 + $markup_percent + $cc_percent)
             : $dealer_price;
 
         $base_price = (float) $base_price;
@@ -462,7 +466,7 @@ class DistributorProductHelper
 
         $effective_percent = null;
         if ($mode === ProductMeta::MARKUP_MODE_GLOBAL) {
-            $g = (float) \FFLHub\Settings\Options::get_global_markup();
+            $g = (float) Options::get_global_markup() + (float)Options::get_payment_processor_fee_percent();
             $effective_percent = ($g > 1.0) ? ($g / 100.0) : $g;
         } elseif ($mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
             $effective_percent = $percent;

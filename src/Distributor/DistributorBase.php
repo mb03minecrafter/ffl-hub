@@ -372,7 +372,7 @@ abstract class DistributorBase implements DistributorInterface
         if ($fee_decimal >= 1.0) {
             return $base_cost;
         }
-
-        return ($base_cost + 0.30) / (1.0 - $fee_decimal);
+        //we dont do the crazy price calcs anymore, so now we just return actual price 
+        return ($base_cost);// + 0.30) / (1.0 - $fee_decimal);
     }
 }

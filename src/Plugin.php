@@ -29,6 +29,9 @@ use FFLHub\Checkout\FFLRequiredCartExtension;
 use FFLHub\FFL\FFLApi;
 use FFLHub\FFL\Tables\FFLTable;
 
+use FFLHub\Shipping\ShippingRegistrar;
+
+
 
 use FFLHub\Product\CategoryInstaller;
 /**
@@ -92,6 +95,9 @@ class Plugin
 
         // Product meta box.
         ProductMetaBox::init(); //REWORK
+
+        ShippingRegistrar::init();
+
 
         // 4. Hook into WordPress admin.
     }
