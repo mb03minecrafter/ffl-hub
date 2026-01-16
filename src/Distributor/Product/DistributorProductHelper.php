@@ -466,7 +466,7 @@ class DistributorProductHelper
 
         $effective_percent = null;
         if ($mode === ProductMeta::MARKUP_MODE_GLOBAL) {
-            $g = (float) Options::get_global_markup() + (float)Options::get_payment_processor_fee_percent();
+            $g = (float) Options::get_global_markup();
             $effective_percent = ($g > 1.0) ? ($g / 100.0) : $g;
         } elseif ($mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
             $effective_percent = $percent;

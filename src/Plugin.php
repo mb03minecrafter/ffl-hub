@@ -34,6 +34,8 @@ use FFLHub\Shipping\ShippingRegistrar;
 
 
 use FFLHub\Product\CategoryInstaller;
+use FFLHub\Product\MapPriceVisibility;
+
 /**
  * Main plugin class for FFL Hub.
  */
@@ -97,6 +99,9 @@ class Plugin
         ProductMetaBox::init(); //REWORK
 
         ShippingRegistrar::init();
+
+        MapPriceVisibility::init();
+
 
 
         // 4. Hook into WordPress admin.
