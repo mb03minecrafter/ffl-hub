@@ -24,20 +24,47 @@ class MapPriceVisibility
 
     private static function in_cart_flow(): bool
     {
-        // Treat checkout as “in-cart flow” (otherwise checkout would hide the price too)
         return (function_exists('is_cart') && is_cart())
             || (function_exists('is_checkout') && is_checkout());
     }
 
     private static function hidden_text(): string
     {
-        // You can filter this if you want different text later.
-        return (string) apply_filters('fflhub_map_hidden_price_text', __('Add to Cart to See Price!', 'ffl-hub'));
+        return (string) apply_filters(
+            'fflhub_map_hidden_price_text',
+            __('Add to cart to see price', 'ffl-hub')
+        );
     }
 
-    private static function is_map_restricted(WC_Product $product): bool
+    private static function is_fflhub_managed(WC_Product $product, ?WC_Product $parent = null): bool
     {
+        $val = $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
+
+        // variations may not carry the flag; allow parent to control
+        if (($val === '' || $val === null) && $parent instanceof WC_Product) {
+            $val = $parent->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
+        }
+
+        if (function_exists('wc_string_to_bool')) {
+            return wc_string_to_bool((string) $val);
+        }
+
+        // Fallback: treat common truthy values as true
+        return in_array((string) $val, ['1', 'true', 'yes', 'on'], true) || $val === true;
+    }
+
+    private static function is_map_restricted(WC_Product $product, ?WC_Product $parent = null): bool
+    {
+        // Only enforce MAP hiding on FFLHub-managed products
+        if (!self::is_fflhub_managed($product, $parent)) {
+            return false;
+        }
+
+        // MAP: prefer variation meta, fallback to parent meta
         $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
+        if ($map <= 0.0 && $parent instanceof WC_Product) {
+            $map = (float) $parent->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
+        }
         if ($map <= 0.0) {
             return false;
         }
@@ -48,16 +75,17 @@ class MapPriceVisibility
             return false;
         }
 
-        // “List price below MAP” => hide advertised price
+        // Price below MAP => hide advertised price
         return $price < $map;
     }
 
-    private static function should_hide_price(WC_Product $product): bool
+    private static function should_hide_price(WC_Product $product, ?WC_Product $parent = null): bool
     {
         if (self::in_cart_flow()) {
             return false;
         }
-        return self::is_map_restricted($product);
+
+        return self::is_map_restricted($product, $parent);
     }
 
     public static function filter_price_html(string $price_html, $product): string
@@ -66,7 +94,7 @@ class MapPriceVisibility
             return $price_html;
         }
 
-        if (!self::should_hide_price($product)) {
+        if (!self::should_hide_price($product, null)) {
             return $price_html;
         }
 
@@ -79,28 +107,20 @@ class MapPriceVisibility
             return $data;
         }
 
-        // Determine MAP: prefer variation meta, fall back to parent meta if needed
-        $map = (float) $variation->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
-        if ($map <= 0.0 && ($parent instanceof WC_Product)) {
-            $map = (float) $parent->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
-        }
+        $parent_product = ($parent instanceof WC_Product) ? $parent : null;
 
-        if ($map <= 0.0) {
+        if (!self::should_hide_price($variation, $parent_product)) {
             return $data;
         }
 
-        $price = (float) $variation->get_price();
-        if ($price > 0.0 && $price < $map) {
-            // Replace any variation price display HTML with the MAP message
-            $data['price_html'] = '<span class="fflhub-map-hidden-price">' . esc_html(self::hidden_text()) . '</span>';
+        $data['price_html'] = '<span class="fflhub-map-hidden-price">' . esc_html(self::hidden_text()) . '</span>';
 
-            // Optional hardening: prevent themes/JS from showing a numeric variation price
-            $data['display_price'] = 0;
-            $data['display_regular_price'] = 0;
-            $data['price'] = '';
-            $data['regular_price'] = '';
-            $data['sale_price'] = '';
-        }
+        // Optional hardening (prevents themes/JS from showing numbers)
+        $data['display_price'] = 0;
+        $data['display_regular_price'] = 0;
+        $data['price'] = '';
+        $data['regular_price'] = '';
+        $data['sale_price'] = '';
 
         return $data;
     }
@@ -111,8 +131,8 @@ class MapPriceVisibility
             return $offer;
         }
 
-        if (self::should_hide_price($product)) {
-            // Removes price/offer from structured data
+        if (self::should_hide_price($product, null)) {
+            // Remove price/offer from structured data
             return [];
         }
 
