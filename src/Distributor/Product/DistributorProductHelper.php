@@ -372,6 +372,18 @@ class DistributorProductHelper
         ];
     }
 
+
+    //WEEEE NEEEED TO FIX THIS SHIT ASAP
+    //WEEEE NEEEED TO FIX THIS SHIT ASAP
+    //WEEEE NEEEED TO FIX THIS SHIT ASAP
+    //WEEEE NEEEED TO FIX THIS SHIT ASAP
+    //WEEEE NEEEED TO FIX THIS SHIT ASAP
+    //WEEEE NEEEED TO FIX THIS SHIT ASAP
+    //WEEEE NEEEED TO FIX THIS SHIT ASAP
+    //WEEEE NEEEED TO FIX THIS SHIT ASAP
+    //WEEEE NEEEED TO FIX THIS SHIT ASAP
+    //WEEEE NEEEED TO FIX THIS SHIT ASAP
+
     //for first time price set when we create a product from the distributor product page 
     public static function get_reccomended_price_from_payload(DistributorProductPayload $selected_product): ?float
     {
@@ -379,10 +391,9 @@ class DistributorProductHelper
         $true_cost      = $selected_product->true_cost;
         $markup_percent = Options::get_global_markup() / 100;
 
-        $cc_percent = Options::get_payment_processor_fee_percent()/100;
 
         $base_price = ($true_cost !== null)
-            ? $true_cost * (1 + $markup_percent + $cc_percent)
+            ? $true_cost * (1 + $markup_percent)
             : $dealer_price;
 
         $base_price = (float) $base_price;
