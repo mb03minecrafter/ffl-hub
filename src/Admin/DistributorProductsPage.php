@@ -8,9 +8,9 @@ if (! defined('ABSPATH')) {
 
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Product\DistributorProductPayload;
-use FFLHub\Distributor\Product\DistributorOffer;          // 🆕 ADDED
-use FFLHub\Distributor\Product\UpcLookupResult;           // 🆕 ADDED
-use FFLHub\Plugin;
+use FFLHub\Distributor\Product\DistributorOffer;
+use FFLHub\Distributor\Product\UpcLookupResult;
+use WP_Error;
 
 /**
  * Admin page for searching distributor products by UPC.
@@ -77,7 +77,7 @@ class DistributorProductsPage
         }
 
         $state = self::handle_request();
-?>
+        ?>
         <div class="wrap">
             <h1><?php esc_html_e('Distributor Products', 'ffl-hub'); ?></h1>
 
@@ -101,11 +101,6 @@ class DistributorProductsPage
     /**
      * Handle POST, lookup, selection, and create flow.
      *
-     * Returns a single "state" array used by render methods.
-     *
-     * ✅ CHANGED: state now stores offers + UpcLookupResult-derived fields,
-     *            not the old "carriers" array of nested arrays.
-     *
      * @return array{
      *   action:string,
      *   upc_value:string,
@@ -124,8 +119,6 @@ class DistributorProductsPage
      */
     private static function handle_request(): array
     {
-        error_log('--- FFLHub handle_request START ---');
-
         $state = [
             'action' => '',
             'upc_value' => '',
@@ -133,11 +126,10 @@ class DistributorProductsPage
             'create_notice' => '',
             'create_notice_type' => 'success',
 
-            // ✅ CHANGED: replace carrier_distributors with offers
             'offers' => [],
             'cheapest_in_stock' => null,
             'cheapest_any' => null,
-            'selected_offer' => null,          // 🆕 ADDED
+            'selected_offer' => null,
 
             'selected_product' => null,
             'selected_dist_id' => '',
@@ -146,121 +138,84 @@ class DistributorProductsPage
             'posted_selected_dist_id' => '',
         ];
 
-        // 1️⃣ Detect action
+        // 1) Detect action
         $action = self::detect_action();
         $state['action'] = $action;
 
-        error_log('Action detected: ' . ($action ?: '[none]'));
+        self::log_debug("[FFLHub][DistributorProductsPage] Action detected: " . ($action ?: '[none]'));
 
         if ($action === '') {
-            error_log('No action detected → initial page load, returning empty state');
-            error_log('--- FFLHub handle_request END ---');
             return $state;
         }
 
-        // 2️⃣ Read UPC
+        // 2) Read UPC
         $upc = self::read_post_upc();
         $state['upc_value'] = $upc;
 
-        error_log('UPC read from POST: ' . ($upc ?: '[empty]'));
-
         if ($upc === '') {
             $state['global_error'] = __('Please enter a UPC.', 'ffl-hub');
-            error_log('ERROR: UPC empty, aborting');
-            error_log('--- FFLHub handle_request END ---');
             return $state;
         }
 
-        // 3️⃣ Nonce + create-only fields
+        // 3) Nonce + create-only fields
         if ($action === 'search') {
-            error_log('Action is SEARCH → checking search nonce');
             check_admin_referer('fflhub_distributor_products_search');
         } elseif ($action === 'create') {
-            error_log('Action is CREATE → checking create nonce');
             check_admin_referer('fflhub_distributor_products_create');
-
             $state['posted_selected_dist_id'] = self::read_post_selected_distributor();
-            error_log('Posted selected distributor ID: ' . ($state['posted_selected_dist_id'] ?: '[none]'));
         }
 
-        // 4️⃣ Lookup
-        error_log('Performing distributor lookup for UPC: ' . $upc);
+        // 4) Lookup (CHANGED: can return UpcLookupResult OR WP_Error)
+        $lookup_result = DistributorProductHelper::get_upc_lookup_result_from_distributors($upc);
 
-        $lookup_result = DistributorProductHelper::get_upc_lookup_result_from_distributors($upc); 
-
-        if (! ($lookup_result instanceof UpcLookupResult)) {               // ✅ CHANGED
-            error_log('Lookup FAILED');
-            error_log('Global error: ' . ($state['global_error'] ?: '[none]'));
-            error_log('--- FFLHub handle_request END ---');
+        if (is_wp_error($lookup_result)) {
+            $state['global_error'] = $lookup_result->get_error_message();
+            self::log_debug("[FFLHub][DistributorProductsPage] Lookup WP_Error: " . $state['global_error']);
             return $state;
         }
 
-        error_log('Lookup SUCCESS');
-
-        // 5️⃣ Extract lookup results
-        $state['offers'] = $lookup_result->offers();                       // ✅ CHANGED
-        $state['cheapest_in_stock'] = $lookup_result->cheapest_in_stock(); // ✅ CHANGED
-        $state['cheapest_any']      = $lookup_result->cheapest_any();      // ✅ CHANGED
-
-        error_log('Carrier distributor IDs: ' . implode(', ', array_keys($state['offers'])));
-
-        if ($state['cheapest_in_stock'] instanceof DistributorOffer) {
-            error_log('Cheapest IN-STOCK distributor: ' . $state['cheapest_in_stock']->distributor_id);
-        } else {
-            error_log('No cheapest_in_stock found');
+        if (! ($lookup_result instanceof UpcLookupResult)) {
+            $state['global_error'] = __('Lookup failed for an unknown reason.', 'ffl-hub');
+            self::log_debug("[FFLHub][DistributorProductsPage] Lookup failed: unexpected return type.");
+            return $state;
         }
 
-        if ($state['cheapest_any'] instanceof DistributorOffer) {
-            error_log('Cheapest ANY distributor: ' . $state['cheapest_any']->distributor_id);
-        } else {
-            error_log('No cheapest_any found');
-        }
+        // 5) Extract lookup results
+        $state['offers'] = $lookup_result->offers();
+        $state['cheapest_in_stock'] = $lookup_result->cheapest_in_stock();
+        $state['cheapest_any']      = $lookup_result->cheapest_any();
 
-        if (empty($state['offers']) && $state['global_error'] === '') {
+        if (empty($state['offers'])) {
             $state['global_error'] = __('No products were found for this UPC in any connected distributor.', 'ffl-hub');
-            error_log('ERROR: No offers returned');
-            error_log('--- FFLHub handle_request END ---');
+            self::log_debug("[FFLHub][DistributorProductsPage] No offers found for UPC {$upc}");
             return $state;
         }
 
-        // 6️⃣ Selection logic
-        error_log('Selecting product for display / create');
-        self::select_product_for_display($state); // ✅ CHANGED: now selects offer + payload
+        // 6) Selection logic
+        self::select_product_for_display($state);
 
-        if ($state['selected_product'] instanceof DistributorProductPayload) {
-            error_log('Selected distributor ID: ' . $state['selected_dist_id']);
-            error_log('Selected distributor label: ' . $state['selected_dist_label']);
-            error_log('Selected product UPC: ' . ($state['selected_product']->upc ?? '[none]'));
-        } else {
-            error_log('ERROR: No selected product after selection');
-            error_log('Global error: ' . ($state['global_error'] ?: '[none]'));
+        if (! ($state['selected_product'] instanceof DistributorProductPayload)) {
+            if ($state['global_error'] === '') {
+                $state['global_error'] = __('Distributors carry this UPC, but no valid product payload was found.', 'ffl-hub');
+            }
+            self::log_debug("[FFLHub][DistributorProductsPage] Selection failed for UPC {$upc}: " . $state['global_error']);
+            return $state;
         }
 
-        // 7️⃣ Early exit for search
+        // 7) Early exit for search
         if ($action === 'search') {
-            error_log('Action is SEARCH → skipping create step');
-            error_log('--- FFLHub handle_request END ---');
             return $state;
         }
 
-        // 8️⃣ Create Woo Product
-        error_log('Action is CREATE → evaluating create conditions');
-
-        if (
-            $state['selected_product'] instanceof DistributorProductPayload
-            && $state['global_error'] === ''
-        ) {
-            error_log('Create conditions met → creating Woo product');
-
-            self::create_woo_product($upc, $state);
-
-            error_log('Create notice type: ' . $state['create_notice_type']);
-            error_log('Create notice message: ' . ($state['create_notice'] ?: '[none]'));
-        } else {
-            error_log('Create skipped due to missing product or global error');
+        // 8) Create Woo Product
+        if ($state['global_error'] === '') {
+            $result = self::create_woo_product($upc, $state);
+            if (is_wp_error($result)) {
+                $state['create_notice']      = $result->get_error_message();
+                $state['create_notice_type'] = 'error';
+                return $state;
+            }
         }
-
-        error_log('--- FFLHub handle_request END ---');
 
         return $state;
     }
@@ -292,21 +247,17 @@ class DistributorProductsPage
         return sanitize_text_field(wp_unslash($_POST['fflhub_selected_distributor']));
     }
 
-    
-
     /**
      * Mutates $state: sets selected_offer/product/dist_id/dist_label.
+     *
      * Deterministic on create (honor posted_selected_dist_id if present),
      * otherwise cheapest-in-stock then cheapest-any then first offer.
-     *
-     * ✅ CHANGED: uses DistributorOffer instances instead of nested arrays.
      */
     private static function select_product_for_display(array &$state): void
     {
         /** @var array<string, DistributorOffer> $offers */
         $offers = (array) ($state['offers'] ?? []);
 
-        // Deterministic create: honor posted distributor if present and valid.
         if (
             $state['action'] === 'create'
             && $state['posted_selected_dist_id'] !== ''
@@ -315,66 +266,67 @@ class DistributorProductsPage
         ) {
             $offer = $offers[$state['posted_selected_dist_id']];
 
-            $state['selected_offer']     = $offer;                 // ✅ CHANGED
-            $state['selected_product']   = $offer->product;         // ✅ CHANGED
-            $state['selected_dist_id']   = $offer->distributor_id;  // ✅ CHANGED
-            $state['selected_dist_label']= $offer->label;           // ✅ CHANGED
+            $state['selected_offer']      = $offer;
+            $state['selected_product']    = $offer->product;
+            $state['selected_dist_id']    = $offer->distributor_id;
+            $state['selected_dist_label'] = $offer->label;
             return;
         }
 
-        // Normal selection: cheapest in-stock, else cheapest any.
         if ($state['cheapest_in_stock'] instanceof DistributorOffer) {
             $offer = $state['cheapest_in_stock'];
 
-            $state['selected_offer']      = $offer;                // ✅ CHANGED
-            $state['selected_product']    = $offer->product;        // ✅ CHANGED
-            $state['selected_dist_id']    = $offer->distributor_id; // ✅ CHANGED
-            $state['selected_dist_label'] = $offer->label;          // ✅ CHANGED
+            $state['selected_offer']      = $offer;
+            $state['selected_product']    = $offer->product;
+            $state['selected_dist_id']    = $offer->distributor_id;
+            $state['selected_dist_label'] = $offer->label;
             return;
         }
 
         if ($state['cheapest_any'] instanceof DistributorOffer) {
             $offer = $state['cheapest_any'];
 
-            $state['selected_offer']      = $offer;                // ✅ CHANGED
-            $state['selected_product']    = $offer->product;        // ✅ CHANGED
-            $state['selected_dist_id']    = $offer->distributor_id; // ✅ CHANGED
-            $state['selected_dist_label'] = $offer->label;          // ✅ CHANGED
+            $state['selected_offer']      = $offer;
+            $state['selected_product']    = $offer->product;
+            $state['selected_dist_id']    = $offer->distributor_id;
+            $state['selected_dist_label'] = $offer->label;
             return;
         }
 
-        // Absolute fallback: first offer if present.
         $first = reset($offers);
         if ($first instanceof DistributorOffer) {
-            $state['selected_offer']      = $first;                // ✅ CHANGED
-            $state['selected_product']    = $first->product;        // ✅ CHANGED
-            $state['selected_dist_id']    = $first->distributor_id; // ✅ CHANGED
-            $state['selected_dist_label'] = $first->label;          // ✅ CHANGED
+            $state['selected_offer']      = $first;
+            $state['selected_product']    = $first->product;
+            $state['selected_dist_id']    = $first->distributor_id;
+            $state['selected_dist_label'] = $first->label;
             return;
         }
 
         $state['global_error'] = __('Distributors carry this UPC, but no valid product payload was found.', 'ffl-hub');
     }
 
-    private static function create_woo_product(string $upc, array &$state): void
+    /**
+     * Create and return WP_Error on failure.
+     */
+    private static function create_woo_product(string $upc, array &$state)
     {
-        // ✅ CHANGED: carrier_distributors replaced by offers map
         $result = DistributorProductHelper::create_woo_product_from_payload(
             $upc,
             $state['selected_product'],
             $state['selected_dist_id'],
             $state['selected_dist_label'],
-            $state['offers'] // ✅ CHANGED: pass offers (you'll update helper signature accordingly)
+            $state['offers']
         );
 
         if (is_wp_error($result)) {
             $state['create_notice']      = $result->get_error_message();
             $state['create_notice_type'] = 'error';
-            return;
+            return $result;
         }
 
         $state['create_notice']      = $result['message'] ?? '';
         $state['create_notice_type'] = $result['type'] ?? 'success';
+        return $result;
     }
 
     private static function render_notices(array $state): void
@@ -427,7 +379,7 @@ class DistributorProductsPage
             );
             ?>
         </form>
-    <?php
+        <?php
     }
 
     private static function render_product_result(array $state): void
@@ -449,7 +401,9 @@ class DistributorProductsPage
         $p_shipping  = $selected_product->shipping_cost ?? null;
         $p_true_cost = $selected_product->true_cost ?? null;
 
-        $p_reccomended_price = DistributorProductHelper::get_reccomended_price_from_payload($selected_product);
+        // CHANGED: prefer correctly spelled wrapper for UI usage
+        $p_recommended_price = DistributorProductHelper::get_recommended_price_from_payload($selected_product);
+
         $p_image_url         = $selected_product->get_primary_image_url();
         $p_ffl_required      = (bool) ($selected_product->ffl_required ?? false);
 
@@ -466,9 +420,9 @@ class DistributorProductsPage
         $selected_dist_id    = (string) ($state['selected_dist_id'] ?? '');
 
         /** @var array<string, DistributorOffer> $offers */
-        $offers = (array) ($state['offers'] ?? []); // ✅ CHANGED
+        $offers = (array) ($state['offers'] ?? []);
 
-    ?>
+        ?>
         <hr />
 
         <h2>
@@ -551,8 +505,8 @@ class DistributorProductsPage
                         <?php echo ' ' . esc_html(self::format_price(is_numeric($p_true_cost) ? (float) $p_true_cost : null)); ?>
                     </p>
                     <p>
-                        <strong><?php esc_html_e('Reccomended Price:', 'ffl-hub'); ?></strong>
-                        <?php echo ' ' . esc_html(self::format_price(is_numeric($p_reccomended_price) ? (float) $p_reccomended_price : null)); ?>
+                        <strong><?php esc_html_e('Recommended Price:', 'ffl-hub'); ?></strong>
+                        <?php echo ' ' . esc_html(self::format_price(is_numeric($p_recommended_price) ? (float) $p_recommended_price : null)); ?>
                     </p>
                 </div>
 
@@ -593,7 +547,6 @@ class DistributorProductsPage
                     </p>
                 </div>
 
-                <!-- Create Woo Product button -->
                 <div class="fflhub-product-card-actions" style="margin-top: 12px;">
                     <form method="post" style="display:inline;">
                         <?php wp_nonce_field('fflhub_distributor_products_create'); ?>
@@ -612,17 +565,17 @@ class DistributorProductsPage
             </div>
         </div>
 
-        <?php if (! empty($offers)) : ?> <!-- ✅ CHANGED -->
+        <?php if (! empty($offers)) : ?>
             <h3><?php esc_html_e('Available From', 'ffl-hub'); ?></h3>
             <ul class="fflhub-product-carriers-list">
-                <?php foreach ($offers as $dist_id => $offer) : ?> <!-- ✅ CHANGED -->
+                <?php foreach ($offers as $dist_id => $offer) : ?>
                     <?php
                     if (! ($offer instanceof DistributorOffer)) {
                         continue;
                     }
 
-                    $label = (string) ($offer->label ?: $dist_id);     // ✅ CHANGED
-                    $payload_row = $offer->product;                    // ✅ CHANGED
+                    $label = (string) ($offer->label ?: $dist_id);
+                    $payload_row = $offer->product;
 
                     if (! ($payload_row instanceof DistributorProductPayload)) {
                         continue;
@@ -676,27 +629,16 @@ class DistributorProductsPage
                             </span>
                             <span>
                                 <strong><?php esc_html_e('FFL:', 'ffl-hub'); ?></strong>
-                                <?php
-                                echo ' ' . ($ffl_req_row
-                                    ? esc_html__('Required', 'ffl-hub')
-                                    : esc_html__('No', 'ffl-hub')
-                                );
-                                ?>
+                                <?php echo ' ' . ($ffl_req_row ? esc_html__('Required', 'ffl-hub') : esc_html__('No', 'ffl-hub')); ?>
                             </span>
                         </div>
                     </li>
                 <?php endforeach; ?>
             </ul>
         <?php endif; ?>
-<?php
+        <?php
     }
 
-    /**
-     * Helper to format a price value for display.
-     *
-     * @param float|null $price Price value.
-     * @return string
-     */
     private static function format_price(?float $price): string
     {
         if ($price === null) {
@@ -706,5 +648,14 @@ class DistributorProductsPage
         $formatted = number_format_i18n($price, 2);
 
         return '$' . $formatted;
+    }
+
+    private static function log_debug(string $message): void
+    {
+        // CHANGED: gated logging (no unconditional error_log spam)
+        if (! defined('FFLHUB_ADMIN_DEBUG') || FFLHUB_ADMIN_DEBUG !== true) {
+            return;
+        }
+        error_log($message);
     }
 }

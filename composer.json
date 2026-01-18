@@ -9,7 +9,8 @@
     "psr-4": {
       "FFLHub\\": "src/"
     }
+  },
+  "require-dev": {
+    "php-stubs/wp-cli-stubs": "^2.12"
   }
-  
-  
 }

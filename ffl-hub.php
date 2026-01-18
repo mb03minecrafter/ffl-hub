@@ -30,7 +30,7 @@ define('FFLHUB_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('FFLHUB_PLUGIN_VERSION', '1.0.0');
 
 define('FFLHUB_CRON_DEBUG', false);
-
+define('FFLHUB_ADMIN_DEBUG', true);
 /**
  * Load plugin text domain.
  */
@@ -43,6 +43,12 @@ add_action('init', function() {
  */
 register_activation_hook(FFLHUB_PLUGIN_FILE, [Plugin::class, 'activate']);
 register_deactivation_hook(FFLHUB_PLUGIN_FILE, [Plugin::class, 'deactivate']);
+
+
+WP_CLI::add_command('fflhub test-upc-lookups', \FFLHub\CLI\UpcLookupTestCommand::class);
+
+
+
 
 /**
  * Initialize main plugin after all plugins are loaded.
