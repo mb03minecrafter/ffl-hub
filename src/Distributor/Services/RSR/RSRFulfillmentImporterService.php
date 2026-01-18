@@ -43,7 +43,7 @@ class RSRFulfillmentImporterService
         $file_path = trailingslashit($base_dir) . 'fulfillment-inv-new.txt';
 
         if (! file_exists($file_path) || ! is_readable($file_path)) {
-            error_log('[FFLHub][RSR Import] File missing or unreadable at ' . $file_path);
+            $this->log_debug('[FFLHub][RSR Import] File missing or unreadable at ' . $file_path);
             return 0;
         }
 
@@ -64,7 +64,7 @@ class RSRFulfillmentImporterService
             if ($rows >= 0) {
                 return $rows;
             }
-            error_log('[FFLHub][RSR Import] LOAD DATA path failed, falling back to PHP importer.');
+            $this->log_debug('[FFLHub][RSR Import] LOAD DATA path failed, falling back to PHP importer.');
         }
 
         return $this->import_fulfillment_file_via_php($file_path);
@@ -85,7 +85,7 @@ class RSRFulfillmentImporterService
 
         $result = ($mysql_ok && $php_ok);
 
-        error_log(
+        $this->log_debug(
             sprintf(
                 '[FFLHub][RSR Import][DEBUG] LOAD DATA check: mysql_ok=%s, php_ok=%s, result=%s',
                 $mysql_ok ? 'true' : 'false',
@@ -114,11 +114,9 @@ class RSRFulfillmentImporterService
         $t_start = microtime(true);
 
         if (! file_exists($file_path) || ! is_readable($file_path)) {
-            error_log('[FFLHub][RSR Import][LOAD DATA] file missing or not readable at ' . $file_path);
+            $this->log_debug('[FFLHub][RSR Import][LOAD DATA] file missing or not readable at ' . $file_path);
             return -1;
         }
-
-
 
         $table_name = $this->table->get_staging_table_name();
 
@@ -148,9 +146,6 @@ class RSRFulfillmentImporterService
                 }
             }
         }
-
-        // Clean staging table first.
-        $wpdb->query("TRUNCATE TABLE {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         /**
          * Map each semicolon-separated column into @c0..@c75, then SET real columns.
@@ -255,22 +250,31 @@ class RSRFulfillmentImporterService
                 reserved_future       = TRIM(TRIM(BOTH '\\r' FROM @c75))
         ";
 
-        $prepared    = $wpdb->prepare($sql, $file_path);
-        $t_sql_start = microtime(true);
-        $result      = $wpdb->query($prepared);
-        $t_sql_ms    = (microtime(true) - $t_sql_start) * 1000;
+        try {
+            // Clean staging table first.
+            $wpdb->query("TRUNCATE TABLE {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
-        if ($result === false) {
-            error_log(
-                '[FFLHub][RSR Import][LOAD DATA] query failed: ' . $wpdb->last_error
-            );
+            $prepared    = $wpdb->prepare($sql, $file_path);
+            $t_sql_start = microtime(true);
+            $result      = $wpdb->query($prepared);
+            $t_sql_ms    = (microtime(true) - $t_sql_start) * 1000;
+
+            if ($result === false) {
+                $this->log_debug(
+                    '[FFLHub][RSR Import][LOAD DATA] query failed: ' . $wpdb->last_error
+                );
+                return -1;
+            }
+
+            // Post-clean: remove rows with empty UPC.
+            $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        } catch (\Throwable $e) {
+            $this->log_debug('[FFLHub][RSR Import][LOAD DATA] exception: ' . $e->getMessage());
             return -1;
         }
 
-        $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''");
-
         // Count rows actually loaded.
-        $rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}");
+        $rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         if ($rows > 0) {
             update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'), false);
@@ -279,7 +283,7 @@ class RSRFulfillmentImporterService
 
         $t_total_ms = (microtime(true) - $t_start) * 1000;
 
-        error_log(
+        $this->log_debug(
             sprintf(
                 '[FFLHub][RSR Import] import_fulfillment_file_via_load_data(): total=%.2f ms (sql=%.2f ms), rows=%d, ignore_lines=%d',
                 $t_total_ms,
@@ -310,8 +314,6 @@ class RSRFulfillmentImporterService
             return 0;
         }
 
-
-
         $table_name = $this->table->get_staging_table_name();
 
         // Allow long-running import if needed.
@@ -321,7 +323,7 @@ class RSRFulfillmentImporterService
 
         $handle = fopen($file_path, 'r');
         if (! $handle) {
-            error_log('[FFLHub] RSR fulfillment import: could not fopen ' . $file_path);
+            $this->log_debug('[FFLHub] RSR fulfillment import: could not fopen ' . $file_path);
             return 0;
         }
 
@@ -336,6 +338,9 @@ class RSRFulfillmentImporterService
         $total_import        = 0;
         $line_number         = 0;
         $skipped_missing_upc = 0;
+
+        $batch_flushes  = 0;
+        $batch_failures = 0;
 
         // Single source of truth for column order from the schema helper.
         $columns     = $this->table->get_schema()->get_insert_columns();
@@ -357,12 +362,15 @@ class RSRFulfillmentImporterService
             $num_cols,
             &$t_flush_total,
             $row_placeholder,
-            $insert_prefix
+            $insert_prefix,
+            &$batch_flushes,
+            &$batch_failures
         ) {
             if (empty($batch_rows)) {
                 return;
             }
 
+            $batch_flushes++;
             $t0 = microtime(true);
 
             $placeholders = array();
@@ -384,13 +392,14 @@ class RSRFulfillmentImporterService
             $result   = $wpdb->query($prepared);
 
             if ($result !== false) {
-                $total_import += count($batch_rows);
+                // IMPORTANT: $result is affected rows (actual inserted rows).
+                $total_import += (int) $result;
             } else {
-                error_log('[FFLHub][RSR Import] Batch INSERT failed: ' . $wpdb->last_error);
+                $batch_failures++;
+                $this->log_debug('[FFLHub][RSR Import] Batch INSERT failed: ' . $wpdb->last_error);
             }
 
             $batch_rows = array();
-
             $t_flush_total += (microtime(true) - $t0);
         };
 
@@ -442,17 +451,28 @@ class RSRFulfillmentImporterService
         $t_parse_ms        = $t_parse_total * 1000;
         $t_flush_ms        = $t_flush_total * 1000;
 
-        error_log(
+        $this->log_debug(
             sprintf(
-                '[FFLHub][RSR Import] import_fulfillment_file_via_php(): total=%.2f ms, parse+loop=%.2f ms, db_flush=%.2f ms, rows=%d, skipped_missing_upc=%d',
+                '[FFLHub][RSR Import] import_fulfillment_file_via_php(): total=%.2f ms, parse+loop=%.2f ms, db_flush=%.2f ms, inserted_rows=%d, skipped_missing_upc=%d, batch_flushes=%d, batch_failures=%d',
                 $t_import_total_ms,
                 $t_parse_ms,
                 $t_flush_ms,
                 $total_import,
-                $skipped_missing_upc
+                $skipped_missing_upc,
+                $batch_flushes,
+                $batch_failures
             )
         );
 
         return $total_import;
+    }
+
+    private function log_debug(string $message): void
+    {
+        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
+            return;
+        }
+
+        error_log($message);
     }
 }

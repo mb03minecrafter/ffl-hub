@@ -83,36 +83,48 @@ final class RSRInventoryCronService extends AbstractTableCronService
      */
     public function run(): void
     {
-        $t_start = microtime(true);
+        $t_start   = microtime(true);
+        $mem_start = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
-        $log_timing = function (string $label, float $t0): void {
+        $log_timing = function (string $label, float $t0) use ($t_start): void {
             $elapsed_ms = (microtime(true) - $t0) * 1000;
-            error_log(
+            $this->log_debug(
                 sprintf(
-                    '[FFLHub][RSR Inventory Cron] %s took %.2f ms',
+                    "[FFLHub][RSR Inventory Cron] %s took %.2f ms",
                     $label,
                     $elapsed_ms
                 )
             );
         };
 
-        error_log('[FFLHub][RSR Inventory Cron] ---- RUN START ----');
+        $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN START ----");
+
+        if ($mem_start > 0) {
+            $this->log_debug(
+                sprintf(
+                    "[FFLHub][RSR Inventory Cron] PHP PID=%d, memory_start=%d KB",
+                    function_exists('getmypid') ? getmypid() : 0,
+                    (int) round($mem_start / 1024)
+                )
+            );
+        }
 
         // 0) Get FTP credentials.
-        $t_creds_start = microtime(true);
-        $creds         = $this->get_ftp_credentials();
+        $t_creds = microtime(true);
+        $creds   = $this->get_ftp_credentials();
 
         if (! is_array($creds)) {
-            $log_timing('Credentials retrieval (failed)', $t_creds_start);
-            error_log('[FFLHub][RSR Inventory Cron] ---- RUN END (CREDS FAILED) ----');
+            $log_timing('Credentials retrieval (failed)', $t_creds);
+            $log_timing('Total cron run (credentials failed)', $t_start);
+            $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----");
             return;
         }
 
-        $log_timing('Credentials retrieval', $t_creds_start);
+        $log_timing('Credentials retrieval', $t_creds);
 
         $host     = $creds['host'];
         $username = $creds['username'];
@@ -124,39 +136,40 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $base_dir = trailingslashit($uploads['basedir']) . 'fflhub-rsr';
 
         if (! wp_mkdir_p($base_dir)) {
-            error_log('[FFLHub][RSR Inventory Cron] ERROR: failed to create base directory ' . $base_dir);
+            $this->log_debug("[FFLHub][RSR Inventory Cron] ERROR: failed to create base directory " . $base_dir);
             $log_timing('Total cron run (mkdir failed)', $t_start);
-            error_log('[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----');
+            $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----");
             return;
         }
 
         $file_name  = 'IM-QTY-CSV.csv';
         $local_path = trailingslashit($base_dir) . $file_name;
 
-        // Remote path on RSR FTP (leading slash to match fulfillment path style).
+        // Remote path on RSR FTP.
         $remote_path = '/ftpdownloads/IM-QTY-CSV.csv';
 
-        // 1) Download the file via the new instance-based FTP service.
-        $t_ftp_start = microtime(true);
+        // 1) Download the file via FTP.
+        $t_ftp = microtime(true);
 
         $ftp = new RSRFTPService($host, $username, $password, $use_ssl);
         if (! $ftp->is_connected()) {
             update_option('fflhub_rsr_inventory_last_download_error', current_time('mysql'));
-            error_log('[FFLHub][RSR Inventory Cron] FTP connection not available.');
-            $log_timing('Total (FTP connection failed)', $t_start);
-            error_log('[FFLHub][RSR Inventory Cron] ---- RUN END (FTP FAILED) ----');
+            $this->log_debug("[FFLHub][RSR Inventory Cron] ERROR: FTP connection not available.");
+            $log_timing('FTP connection (failed)', $t_ftp);
+            $log_timing('Total cron run (FTP connection failed)', $t_start);
+            $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----");
             return;
         }
 
         $ok = $ftp->download_file($remote_path, $local_path);
 
-        $log_timing('FTP download', $t_ftp_start);
+        $log_timing('FTP download', $t_ftp);
 
         if (! $ok) {
             update_option('fflhub_rsr_inventory_last_download_error', current_time('mysql'));
-            error_log('[FFLHub][RSR Inventory Cron] FTP download failed for ' . $remote_path);
-            $log_timing('Total (download failed)', $t_start);
-            error_log('[FFLHub][RSR Inventory Cron] ---- RUN END (DOWNLOAD FAILED) ----');
+            $this->log_debug("[FFLHub][RSR Inventory Cron] ERROR: FTP download failed for " . $remote_path);
+            $log_timing('Total cron run (download failed)', $t_start);
+            $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----");
             return;
         }
 
@@ -164,23 +177,46 @@ final class RSRInventoryCronService extends AbstractTableCronService
         delete_option('fflhub_rsr_inventory_last_download_error');
 
         // 2) Apply inventory updates to live table.
-        $t_apply_start = microtime(true);
+        $t_apply = microtime(true);
+        $processed_rows = 0;
 
-        $updated_rows = $this->apply_inventory_updates_from_file($local_path);
+        try {
+            $processed_rows = $this->apply_inventory_updates_from_file($local_path);
+        } catch (\Throwable $e) {
+            $this->log_debug("[FFLHub][RSR Inventory Cron] ERROR: exception applying inventory updates: " . $e->getMessage());
+            $log_timing('Apply inventory updates (failed)', $t_apply);
+            $log_timing('Total cron run (apply failed)', $t_start);
+            $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----");
+            return;
+        }
 
-        $log_timing('Apply inventory updates', $t_apply_start);
+        $log_timing('Apply inventory updates', $t_apply);
 
         update_option('fflhub_rsr_inventory_last_update', current_time('mysql'));
-        update_option('fflhub_rsr_inventory_last_update_count', $updated_rows);
+        update_option('fflhub_rsr_inventory_last_update_count', $processed_rows);
 
         $log_timing('Total cron run', $t_start);
-        error_log(
+
+        $mem_end = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
+        if ($mem_start > 0 && $mem_end > 0) {
+            $this->log_debug(
+                sprintf(
+                    "[FFLHub][RSR Inventory Cron] Memory usage summary: start=%d KB, end=%d KB, delta=%+d KB",
+                    (int) round($mem_start / 1024),
+                    (int) round($mem_end / 1024),
+                    (int) round(($mem_end - $mem_start) / 1024)
+                )
+            );
+        }
+
+        $this->log_debug(
             sprintf(
-                '[FFLHub][RSR Inventory Cron] ---- RUN END (SUCCESS, processed %d input rows) ----',
-                (int) $updated_rows
+                "[FFLHub][RSR Inventory Cron] ---- RUN END (SUCCESS, processed %d input rows) ----",
+                (int) $processed_rows
             )
         );
     }
+
 
     /**
      * Parse IM-QTY-CSV.csv and update inventory_quantity for rows in the live table.
@@ -206,11 +242,10 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $t_flush_total = 0.0;
 
         if (! file_exists($file_path) || ! is_readable($file_path)) {
-            error_log('[FFLHub][RSR Inventory Cron] IM-QTY-CSV file missing or unreadable at ' . $file_path);
+            $this->log_debug("[FFLHub][RSR Inventory Cron] IM-QTY-CSV file missing or unreadable at " . $file_path);
             return 0;
         }
 
-        // Use the injected double-buffer table to locate the LIVE table.
         $live_table = $this->table->get_live_table_name();
 
         if (function_exists('set_time_limit')) {
@@ -219,44 +254,44 @@ final class RSRInventoryCronService extends AbstractTableCronService
 
         $handle = fopen($file_path, 'r');
         if (! $handle) {
-            error_log('[FFLHub][RSR Inventory Cron] could not fopen ' . $file_path);
+            $this->log_debug("[FFLHub][RSR Inventory Cron] could not fopen " . $file_path);
             return 0;
         }
 
-        $total_rows    = 0;
-        $batch_size    = 200; // rows per UPDATE batch
+        $total_rows    = 0;      // input rows processed (matches your existing semantics)
+        $batch_size    = 200;
         $batch_updates = array();
 
         $wpdb->query('START TRANSACTION');
 
-        $flush_batch = function () use (&$batch_updates, &$total_rows, $live_table, $wpdb, &$t_flush_total) {
-            if (empty($batch_updates)) {
-                return;
-            }
+        try {
+            $flush_batch = function () use (&$batch_updates, &$total_rows, $live_table, $wpdb, &$t_flush_total) {
+                if (empty($batch_updates)) {
+                    return;
+                }
 
-            $t0 = microtime(true);
+                $t0 = microtime(true);
 
-            $when_sql        = array();
-            $case_values     = array();
-            $in_placeholders = array();
-            $in_values       = array();
+                $when_sql        = array();
+                $case_values     = array();
+                $in_placeholders = array();
+                $in_values       = array();
 
-            foreach ($batch_updates as $row) {
-                $rsr_stock_number = $row['rsr_stock_number'];
-                $qty_str          = $row['qty']; // already string
+                foreach ($batch_updates as $row) {
+                    $rsr_stock_number = $row['rsr_stock_number'];
+                    $qty_str          = $row['qty'];
 
-                // CASE rsr_stock_number WHEN %s THEN %s ...
-                $when_sql[]    = 'WHEN %s THEN %s';
-                $case_values[] = $rsr_stock_number;
-                $case_values[] = $qty_str;
+                    $when_sql[]    = 'WHEN %s THEN %s';
+                    $case_values[] = $rsr_stock_number;
+                    $case_values[] = $qty_str;
 
-                $in_placeholders[] = '%s';
-                $in_values[]       = $rsr_stock_number;
-            }
+                    $in_placeholders[] = '%s';
+                    $in_values[]       = $rsr_stock_number;
+                }
 
-            $all_values = array_merge($case_values, $in_values);
+                $all_values = array_merge($case_values, $in_values);
 
-            $sql = "
+                $sql = "
                 UPDATE {$live_table}
                 SET inventory_quantity = CASE rsr_stock_number
                     " . implode("\n                    ", $when_sql) . "
@@ -264,78 +299,82 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 WHERE rsr_stock_number IN (" . implode(', ', $in_placeholders) . ')
             ';
 
-            $prepared = $wpdb->prepare($sql, $all_values);
-            $result   = $wpdb->query($prepared);
+                $prepared = $wpdb->prepare($sql, $all_values);
+                $result   = $wpdb->query($prepared);
 
-            if ($result === false) {
-                error_log('[FFLHub][RSR Inventory Cron] batch UPDATE failed.');
-            }
+                if ($result === false) {
+                    // Let caller decide whether to rollback; throwing here keeps the transaction safe.
+                    throw new \RuntimeException('batch UPDATE failed: ' . (string) $wpdb->last_error);
+                }
 
-            $total_rows    += count($batch_updates);
-            $batch_updates  = array();
+                $total_rows   += count($batch_updates);
+                $batch_updates = array();
 
-            $t_flush_total += (microtime(true) - $t0);
-        };
+                $t_flush_total += (microtime(true) - $t0);
+            };
 
-        while (($line = fgets($handle)) !== false) {
-            $t0 = microtime(true);
+            while (($line = fgets($handle)) !== false) {
+                $t0 = microtime(true);
 
-            $line = trim($line);
-            if ($line === '') {
+                $line = trim($line);
+                if ($line === '') {
+                    $t_parse_total += (microtime(true) - $t0);
+                    continue;
+                }
+
+                $cols = explode(',', $line);
+                if (count($cols) < 2) {
+                    $t_parse_total += (microtime(true) - $t0);
+                    continue;
+                }
+
+                $rsr_stock_number_raw = trim((string) $cols[0]);
+                $qty_raw              = trim((string) $cols[1]);
+
+                if ($rsr_stock_number_raw === '') {
+                    $t_parse_total += (microtime(true) - $t0);
+                    continue;
+                }
+
+                if ($qty_raw === '') {
+                    $qty_int = 0;
+                } else {
+                    $digits  = preg_replace('/[^0-9]/', '', $qty_raw);
+                    $qty_int = ($digits === '') ? 0 : (int) $digits;
+                }
+
+                $qty_str = (string) $qty_int;
+
+                $batch_updates[] = array(
+                    'rsr_stock_number' => $rsr_stock_number_raw,
+                    'qty'              => $qty_str,
+                );
+
                 $t_parse_total += (microtime(true) - $t0);
-                continue;
+
+                if (count($batch_updates) >= $batch_size) {
+                    $flush_batch();
+                }
             }
 
-            // CSV is simple: RSR_STOCK_NUMBER,QUANTITY
-            $cols = explode(',', $line);
-            if (count($cols) < 2) {
-                $t_parse_total += (microtime(true) - $t0);
-                continue;
-            }
+            fclose($handle);
 
-            $rsr_stock_number_raw = trim((string) $cols[0]);
-            $qty_raw              = trim((string) $cols[1]);
+            // Flush remaining
+            $flush_batch();
 
-            if ($rsr_stock_number_raw === '') {
-                $t_parse_total += (microtime(true) - $t0);
-                continue;
-            }
-
-            // Quantity is zero-padded integer, e.g., '0000012'.
-            // Convert to plain int to normalize, then back to string (since column is VARCHAR).
-            if ($qty_raw === '') {
-                $qty_int = 0;
-            } else {
-                $digits  = preg_replace('/[^0-9]/', '', $qty_raw);
-                $qty_int = ($digits === '') ? 0 : (int) $digits;
-            }
-
-            $qty_str = (string) $qty_int;
-
-            $batch_updates[] = array(
-                'rsr_stock_number' => $rsr_stock_number_raw,
-                'qty'              => $qty_str,
-            );
-
-            $t_parse_total += (microtime(true) - $t0);
-
-            if (count($batch_updates) >= $batch_size) {
-                $flush_batch();
-            }
+            $wpdb->query('COMMIT');
+        } catch (\Throwable $e) {
+            fclose($handle);
+            $wpdb->query('ROLLBACK');
+            $this->log_debug("[FFLHub][RSR Inventory Cron] ERROR: rolled back transaction: " . $e->getMessage());
+            throw $e;
         }
-
-        fclose($handle);
-
-        // Flush any remaining rows.
-        $flush_batch();
-
-        $wpdb->query('COMMIT');
 
         $t_total_ms = (microtime(true) - $t_start) * 1000;
         $t_parse_ms = $t_parse_total * 1000;
         $t_flush_ms = $t_flush_total * 1000;
 
-        error_log(
+        $this->log_debug(
             sprintf(
                 '[FFLHub][RSR Inventory Cron] apply_inventory_updates_from_file(): total=%.2f ms, parse=%.2f ms, db_flush=%.2f ms, input_rows=%d',
                 $t_total_ms,
@@ -347,6 +386,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
 
         return $total_rows;
     }
+
 
     /**
      * Retrieve and validate FTP credentials from RSR distributor settings.
@@ -369,7 +409,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $use_ssl  = ($use_ssl_s !== '');
 
         if ($host === '' || $username === '' || $password === '') {
-            error_log(
+            $this->log_debug(
                 sprintf(
                     '[FFLHub][RSR Inventory Cron] Missing FTP credentials (host: %s, user: %s).',
                     $host !== '' ? 'set' : 'empty',
@@ -385,5 +425,15 @@ final class RSRInventoryCronService extends AbstractTableCronService
             'password' => $password,
             'use_ssl'  => $use_ssl,
         );
+    }
+
+
+    private function log_debug(string $message): void
+    {
+        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
+            return;
+        }
+
+        error_log($message);
     }
 }

@@ -73,7 +73,7 @@ class RSRFTPService {
 
         if ( $host === '' || $username === '' || $password === '' ) {
             $this->set_error( 'Empty host/username/password passed to FTP service constructor.' );
-            error_log( '[FFLHub] RSR FTP: empty host/username/password passed to constructor.' );
+            $this->log_debug( '[FFLHub] RSR FTP: empty host/username/password passed to constructor.' );
             return;
         }
 
@@ -88,14 +88,14 @@ class RSRFTPService {
 
         if ( ! $conn ) {
             $this->set_error( 'Could not connect to host ' . $host );
-            error_log( '[FFLHub] RSR FTP: could not connect to host ' . $host );
+            $this->log_debug( '[FFLHub] RSR FTP: could not connect to host ' . $host );
             return;
         }
 
         $logged_in = @ftp_login( $conn, $username, $password );
         if ( ! $logged_in ) {
             $this->set_error( 'Login failed for user ' . $username );
-            error_log( '[FFLHub] RSR FTP: login failed for user ' . $username );
+            $this->log_debug( '[FFLHub] RSR FTP: login failed for user ' . $username );
             @ftp_close( $conn );
             return;
         }
@@ -103,7 +103,7 @@ class RSRFTPService {
         // Passive mode is almost always required behind firewalls/NAT.
         if ( ! @ftp_pasv( $conn, true ) ) {
             // Not fatal, but worth logging.
-            error_log( '[FFLHub] RSR FTP: failed to enable passive mode.' );
+            $this->log_debug( '[FFLHub] RSR FTP: failed to enable passive mode.' );
         }
 
         $this->conn = $conn;
@@ -135,7 +135,7 @@ class RSRFTPService {
     public function download_file( string $remote_path, string $local_path ): bool {
         if ( ! $this->is_connected() ) {
             $this->set_error( 'download_file() called but FTP connection is not available.' );
-            error_log( '[FFLHub] RSR FTP: download_file() called but FTP connection is not available.' );
+            $this->log_debug( '[FFLHub] RSR FTP: download_file() called but FTP connection is not available.' );
             return false;
         }
 
@@ -164,7 +164,7 @@ class RSRFTPService {
     ): bool {
         if ( ! $this->is_connected() ) {
             $this->set_error( 'download_zip_file() called but FTP connection is not available.' );
-            error_log( '[FFLHub] RSR FTP: download_zip_file() called but FTP connection is not available.' );
+            $this->log_debug( '[FFLHub] RSR FTP: download_zip_file() called but FTP connection is not available.' );
             return false;
         }
 
@@ -203,7 +203,7 @@ class RSRFTPService {
         $dir = dirname( $local_path );
         if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) {
             $this->set_error( 'Failed to create directory ' . $dir );
-            error_log( '[FFLHub] RSR FTP: failed to create directory ' . $dir );
+            $this->log_debug( '[FFLHub] RSR FTP: failed to create directory ' . $dir );
             return false;
         }
 
@@ -221,7 +221,7 @@ class RSRFTPService {
         if ( ! $success ) {
             @unlink( $tmp_path );
             $this->set_error( sprintf( 'ftp_get failed for remote %s', $remote_path ) );
-            error_log(
+            $this->log_debug(
                 sprintf(
                     '[FFLHub] RSR FTP: ftp_get failed for remote %s (host %s, user %s)',
                     $remote_path,
@@ -238,7 +238,7 @@ class RSRFTPService {
             $size_mb    = $size_bytes / 1048576;
             $mbps       = $size_mb / max( $elapsed, 0.000001 );
 
-            error_log(
+            $this->log_debug(
                 sprintf(
                     '[FFLHub] RSR FTP: downloaded %.2f MB in %.2f s (%.2f MB/s) from %s',
                     $size_mb,
@@ -252,7 +252,7 @@ class RSRFTPService {
         if ( ! @rename( $tmp_path, $local_path ) ) {
             @unlink( $tmp_path );
             $this->set_error( 'Failed to rename tmp file to ' . $local_path );
-            error_log( '[FFLHub] RSR FTP: failed to rename tmp file to ' . $local_path );
+            $this->log_debug( '[FFLHub] RSR FTP: failed to rename tmp file to ' . $local_path );
             return false;
         }
 
@@ -287,20 +287,20 @@ class RSRFTPService {
         // Ensure extraction directory exists.
         if ( ! is_dir( $extract_to_dir ) && ! wp_mkdir_p( $extract_to_dir ) ) {
             $this->set_error( 'Failed to create extract directory ' . $extract_to_dir );
-            error_log( '[FFLHub] RSR FTP: failed to create extract directory ' . $extract_to_dir );
+            $this->log_debug( '[FFLHub] RSR FTP: failed to create extract directory ' . $extract_to_dir );
             return false;
         }
 
         if ( ! file_exists( $local_zip_path ) ) {
             $this->set_error( 'ZIP file does not exist at ' . $local_zip_path );
-            error_log( '[FFLHub] RSR FTP: ZIP file missing at ' . $local_zip_path );
+            $this->log_debug( '[FFLHub] RSR FTP: ZIP file missing at ' . $local_zip_path );
             return false;
         }
 
         // Use ZipArchive ONLY, no unzip_file / WP_Filesystem.
         if ( ! class_exists( \ZipArchive::class ) ) {
             $this->set_error( 'ZipArchive class not available; cannot unzip.' );
-            error_log(
+            $this->log_debug(
                 '[FFLHub] RSR FTP: ZipArchive not available for ' . $local_zip_path
             );
             return false;
@@ -311,7 +311,7 @@ class RSRFTPService {
 
         if ( $open_result !== true ) {
             $this->set_error( 'ZipArchive::open() failed with code ' . $open_result );
-            error_log(
+            $this->log_debug(
                 '[FFLHub] RSR FTP: ZipArchive::open() failed for ' . $local_zip_path .
                 ' (code ' . $open_result . ')'
             );
@@ -320,7 +320,7 @@ class RSRFTPService {
 
         if ( ! $zip->extractTo( $extract_to_dir ) ) {
             $this->set_error( 'ZipArchive::extractTo() failed.' );
-            error_log(
+            $this->log_debug(
                 '[FFLHub] RSR FTP: ZipArchive::extractTo() failed for ' . $local_zip_path .
                 ' -> ' . $extract_to_dir
             );
@@ -358,5 +358,15 @@ class RSRFTPService {
      */
     private function set_error( string $message ): void {
         $this->last_error = $message;
+    }
+
+
+    private function log_debug(string $message): void
+    {
+        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
+            return;
+        }
+
+        error_log($message);
     }
 }

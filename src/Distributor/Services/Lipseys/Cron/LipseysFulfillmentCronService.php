@@ -105,7 +105,7 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
 
         $log_timing = function (string $label, float $t0): void {
             $elapsed_ms = (microtime(true) - $t0) * 1000;
-            error_log(
+            $this->log_debug(
                 sprintf(
                     "[FFLHub][Lipsey's Fulfillment Cron] %s took %.2f ms",
                     $label,
@@ -114,14 +114,16 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
             );
         };
 
-        error_log("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN START ----");
-        error_log(
-            sprintf(
-                "[FFLHub][Lipsey's Fulfillment Cron] PHP PID=%d, memory_start=%d KB",
-                function_exists('getmypid') ? getmypid() : 0,
-                $mem_start > 0 ? (int) round($mem_start / 1024) : 0
-            )
-        );
+        $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN START ----");
+        if ($mem_start > 0) {
+            $this->log_debug(
+                sprintf(
+                    "[FFLHub][Lipsey's Fulfillment Cron] PHP PID=%d, memory_start=%d KB",
+                    function_exists('getmypid') ? getmypid() : 0,
+                    (int) round($mem_start / 1024)
+                )
+            );
+        }
 
         // 1) Pull credentials via centralized Options helper.
         $t_creds         = microtime(true);
@@ -129,10 +131,11 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
         $dealer_password = trim(Options::get_distributor_option('lipseys', 'dealer_password', ''));
 
         if ($dealer_email === '' || $dealer_password === '') {
-            error_log("[FFLHub][Lipsey's Fulfillment Cron] ERROR: dealer_email or dealer_password not set.");
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ERROR: dealer_email or dealer_password not set.");
             $log_timing('Credentials retrieval (failed)', $t_creds);
             $log_timing('Total cron run (credentials failed)', $t_start);
-            error_log("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
+            $this->log_memory_summary($mem_start);
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
             return;
         }
         $log_timing('Credentials retrieval', $t_creds);
@@ -145,12 +148,13 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
                 (string) $dealer_password
             );
         } catch (\Throwable $e) {
-            error_log(
+            $this->log_debug(
                 "[FFLHub][Lipsey's Fulfillment Cron] ERROR: exception creating LipseysClient: " . $e->getMessage()
             );
             $log_timing('Client creation (failed)', $t_client);
             $log_timing('Total cron run (client failed)', $t_start);
-            error_log("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
+            $this->log_memory_summary($mem_start);
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
             return;
         }
         $log_timing('Client creation', $t_client);
@@ -160,20 +164,22 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
         try {
             $result = $client->Catalog();
         } catch (\Throwable $e) {
-            error_log(
+            $this->log_debug(
                 "[FFLHub][Lipsey's Fulfillment Cron] ERROR: exception calling Catalog(): " . $e->getMessage()
             );
             $log_timing('Catalog() call (failed)', $t_catalog);
             $log_timing('Total cron run (Catalog failed)', $t_start);
-            error_log("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
+            $this->log_memory_summary($mem_start);
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
             return;
         }
         $log_timing('Catalog() call', $t_catalog);
 
         if (! is_array($result)) {
-            error_log("[FFLHub][Lipsey's Fulfillment Cron] ERROR: Catalog() did not return an array.");
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ERROR: Catalog() did not return an array.");
             $log_timing('Total cron run (bad Catalog result)', $t_start);
-            error_log("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
+            $this->log_memory_summary($mem_start);
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
             return;
         }
 
@@ -192,29 +198,44 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
         $items_count = is_array($items) ? count($items) : 0;
 
         $mem_mid = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
-        error_log(
-            sprintf(
-                "[FFLHub][Lipsey's Fulfillment Cron] Items extraction: count=%d, memory_now=%d KB",
-                $items_count,
-                $mem_mid > 0 ? (int) round($mem_mid / 1024) : 0
-            )
-        );
+        if ($mem_mid > 0) {
+            $this->log_debug(
+                sprintf(
+                    "[FFLHub][Lipsey's Fulfillment Cron] Items extraction: count=%d, memory_now=%d KB",
+                    $items_count,
+                    (int) round($mem_mid / 1024)
+                )
+            );
+        }
 
         $log_timing("Items extraction (count={$items_count})", $t_items);
 
         if (empty($items)) {
-            error_log("[FFLHub][Lipsey's Fulfillment Cron] ERROR: no items found in Catalog() response.");
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ERROR: no items found in Catalog() response.");
             $log_timing('Total cron run (no items)', $t_start);
-            error_log("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
+            $this->log_memory_summary($mem_start);
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
             return;
         }
 
         // 5) Import into the STAGING table via the importer service.
         $t_import = microtime(true);
-        $count    = $this->get_importer()->import_items_array($items);
+
+        $count = 0;
+        try {
+            $count = $this->get_importer()->import_items_array($items);
+        } catch (\Throwable $e) {
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ERROR: exception during import: " . $e->getMessage());
+            $log_timing('Import into staging (failed)', $t_import);
+            $log_timing('Total cron run (import exception)', $t_start);
+            $this->log_memory_summary($mem_start);
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
+            return;
+        }
+
         $log_timing('Import into staging', $t_import);
 
-        error_log(
+        $this->log_debug(
             sprintf(
                 "[FFLHub][Lipsey's Fulfillment Cron] Import result: requested_items=%d, imported_rows=%d",
                 $items_count,
@@ -223,39 +244,40 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
         );
 
         if ($count <= 0) {
-            error_log(
+            $this->log_debug(
                 "[FFLHub][Lipsey's Fulfillment Cron] WARNING: import completed but 0 rows processed, not swapping tables."
             );
             $log_timing('Total cron run (0 rows imported)', $t_start);
-            error_log("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (NO SWAP) ----");
+            $this->log_memory_summary($mem_start);
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (NO SWAP) ----");
             return;
         }
 
         // 6) Swap staging ↔ live using the injected table.
         $t_swap   = microtime(true);
-        $new_live = $this->table->swap_live_and_staging();
+        $new_live = '';
+        try {
+            $new_live = (string) $this->table->swap_live_and_staging();
+        } catch (\Throwable $e) {
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ERROR: exception during swap: " . $e->getMessage());
+            $log_timing('Swap staging ↔ live (failed)', $t_swap);
+            $log_timing('Total cron run (swap exception)', $t_start);
+            $this->log_memory_summary($mem_start);
+            $this->log_debug("[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (ERROR) ----");
+            return;
+        }
+
         $log_timing('Swap staging ↔ live', $t_swap);
 
         // Mark success.
         update_option('fflhub_lipseys_fulfillment_last_refresh', current_time('mysql'));
         update_option('fflhub_lipseys_fulfillment_last_refresh_count', (int) $count);
+        update_option('fflhub_lipseys_fulfillment_last_swap', current_time('mysql'));
 
-        // Total + memory delta.
-        $mem_end = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
         $log_timing('Total cron run', $t_start);
+        $this->log_memory_summary($mem_start);
 
-        if ($mem_start > 0 && $mem_end > 0) {
-            error_log(
-                sprintf(
-                    "[FFLHub][Lipsey's Fulfillment Cron] Memory usage summary: start=%d KB, end=%d KB, delta=%+d KB",
-                    (int) round($mem_start / 1024),
-                    (int) round($mem_end / 1024),
-                    (int) round(($mem_end - $mem_start) / 1024)
-                )
-            );
-        }
-
-        error_log(
+        $this->log_debug(
             sprintf(
                 "[FFLHub][Lipsey's Fulfillment Cron] ---- RUN END (SUCCESS, imported %d rows, new live=%s) ----",
                 (int) $count,
@@ -282,5 +304,29 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
         }
 
         return true;
+    }
+
+    private function log_memory_summary(int $mem_start): void
+    {
+        $mem_end = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
+        if ($mem_start > 0 && $mem_end > 0) {
+            $this->log_debug(
+                sprintf(
+                    "[FFLHub][Lipsey's Fulfillment Cron] Memory usage summary: start=%d KB, end=%d KB, delta=%+d KB",
+                    (int) round($mem_start / 1024),
+                    (int) round($mem_end / 1024),
+                    (int) round(($mem_end - $mem_start) / 1024)
+                )
+            );
+        }
+    }
+
+    private function log_debug(string $message): void
+    {
+        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
+            return;
+        }
+
+        error_log($message);
     }
 }
