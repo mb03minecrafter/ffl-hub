@@ -30,7 +30,7 @@ define('FFLHUB_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('FFLHUB_PLUGIN_VERSION', '1.0.0');
 
 define('FFLHUB_CRON_DEBUG', false);
-define('FFLHUB_ADMIN_DEBUG', true);
+define('FFLHUB_ADMIN_DEBUG', false);
 /**
  * Load plugin text domain.
  */
@@ -45,8 +45,9 @@ register_activation_hook(FFLHUB_PLUGIN_FILE, [Plugin::class, 'activate']);
 register_deactivation_hook(FFLHUB_PLUGIN_FILE, [Plugin::class, 'deactivate']);
 
 
-WP_CLI::add_command('fflhub test-upc-lookups', \FFLHub\CLI\UpcLookupTestCommand::class);
-
+if (defined('WP_CLI') && WP_CLI) {
+    \WP_CLI::add_command('fflhub test-upc-lookups', \FFLHub\CLI\UpcLookupTestCommand::class);
+}
 
 
 

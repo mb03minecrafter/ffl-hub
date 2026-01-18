@@ -135,10 +135,14 @@ abstract class DistributorBase implements DistributorInterface
 
     /* ---- Default product / pricing implementations ---- */
 
-    public function get_offer_by_upc(string $upc): ?DistributorOffer
+    public function get_offer_by_upc(string $upc, bool $include_images = true): ?DistributorOffer
     {
-        $product = $this->get_product_by_upc($upc);
-
+        // Fast-path: no image probing for cron/sync workloads.
+        if (! $include_images && method_exists($this, 'get_pricing_payload_by_upc')) {
+            $product = $this->get_pricing_payload_by_upc($upc);
+        } else {
+            $product = $this->get_product_by_upc($upc);
+        }
 
         return new DistributorOffer(
             $this->get_id(),
@@ -254,7 +258,7 @@ abstract class DistributorBase implements DistributorInterface
     }
 
 
-    
+
 
 
     protected function build_payload_from_row(
@@ -264,7 +268,7 @@ abstract class DistributorBase implements DistributorInterface
         string $normalized_upc,
         bool $include_images = true
     ): DistributorProductPayload {
-        
+
 
         $sku         = $this->get_string_field($row, $map['sku']);
         $upc         = $this->get_string_field($row, $map['upc']);
@@ -272,7 +276,7 @@ abstract class DistributorBase implements DistributorInterface
         $description = $this->get_string_field($row, $map['description']);
 
         $name = $name . " " . $description;
-        
+
 
         $price    = $this->get_float_field($row, $map['price']);
         $mapPrice = $this->get_float_field($row, $map['map']);
@@ -291,15 +295,12 @@ abstract class DistributorBase implements DistributorInterface
             : '';
 
 
-        if($include_images == false) {
-                    error_log("RSR searching for item: " . $normalized_upc);
 
-        }
 
         $ffl_required = isset($map['ffl_required']) ? $this->get_int_field($row, $map['ffl_required']) : false; // default; distributor can override later
 
 
-        
+
 
         return new DistributorProductPayload(
             $upc ?: $normalized_upc,
@@ -373,6 +374,6 @@ abstract class DistributorBase implements DistributorInterface
             return $base_cost;
         }
         //we dont do the crazy price calcs anymore, so now we just return actual price 
-        return ($base_cost);// + 0.30) / (1.0 - $fee_decimal);
+        return ($base_cost); // + 0.30) / (1.0 - $fee_decimal);
     }
 }

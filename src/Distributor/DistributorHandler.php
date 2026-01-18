@@ -142,7 +142,7 @@ class DistributorHandler
      * }
      */
 
-    public function get_payloads_for_upc(string $upc): UpcLookupResult
+    public function get_payloads_for_upc(string $upc, bool $include_images = true): UpcLookupResult
     {
         $upc = trim($upc);
         if ($upc === '') {
@@ -157,7 +157,7 @@ class DistributorHandler
             }
 
             try {
-                $offer = $distributor->get_offer_by_upc($upc); // default wrapper calls get_product_by_upc()
+                $offer = $distributor->get_offer_by_upc($upc, $include_images);
             } catch (\Throwable $e) {
                 continue;
             }

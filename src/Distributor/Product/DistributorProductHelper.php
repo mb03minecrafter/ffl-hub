@@ -382,7 +382,7 @@ class DistributorProductHelper
      *
      * @return UpcLookupResult|WP_Error
      */
-    public static function get_upc_lookup_result_from_distributors(string $upc)
+    public static function get_upc_lookup_result_from_distributors(string $upc, bool $include_images = true)
     {
         $plugin  = Plugin::instance();
         $handler = $plugin->distributor_handler ?? null;
@@ -395,7 +395,7 @@ class DistributorProductHelper
         }
 
         try {
-            $lookup = $handler->get_payloads_for_upc($upc);
+            $lookup = $handler->get_payloads_for_upc($upc, $include_images);
         } catch (\Throwable $e) {
             self::log_debug("[FFLHub][DistributorProductHelper] Lookup exception: " . $e->getMessage());
 
@@ -623,4 +623,10 @@ class DistributorProductHelper
         }
         error_log($message);
     }
+
+
+
+
+
+    
 }

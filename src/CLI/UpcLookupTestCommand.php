@@ -160,7 +160,7 @@ final class UpcLookupTestCommand
 
             $lookup = null;
             try {
-                $lookup = DistributorProductHelper::get_upc_lookup_result_from_distributors($upc);
+                $lookup = DistributorProductHelper::get_upc_lookup_result_from_distributors($upc, false);
             } catch (\Throwable $e) {
                 $lookup = null;
             }

@@ -40,7 +40,6 @@ class DistributorRSR extends DistributorBase
 
         $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
         if (! $row) {
-            error_log('FFLHub RSR: no fulfillment row found for UPC ' . $normalized_upc);
             return null;
         }
 
@@ -88,7 +87,6 @@ class DistributorRSR extends DistributorBase
         if (! empty($rsr_image_urls)) {
             $primary = (string) $rsr_image_urls[0];
 
-            error_log("Product image url: " . $primary);
 
             // Your payload type supports add_image_url(); we keep behavior the same.
             // If constructor already set one, add_image_url will dedupe if implemented.
@@ -98,7 +96,6 @@ class DistributorRSR extends DistributorBase
                 $payload->add_image_url($extra_url);
             }
 
-            error_log(implode(' ', $rsr_image_urls));
         }
 
         return $payload;
@@ -178,7 +175,6 @@ class DistributorRSR extends DistributorBase
 
         $product = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
         if (! $product) {
-            error_log('FFLHub RSR: no fulfillment row found for UPC ' . $normalized_upc);
             return null;
         }
 
