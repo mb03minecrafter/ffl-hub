@@ -9,6 +9,10 @@ if (! defined('ABSPATH')) {
 use FFLHub\Distributor\Product\DistributorProductPayload;
 use FFLHub\Distributor\Services\DistributorServicesInterface;
 
+
+use FFLHub\Distributor\Product\DistributorOrderRequest;
+use FFLHub\Distributor\Product\DistributorOrderResult;
+
 interface DistributorInterface
 {
     /** Machine-friendly ID/slug, e.g. "rsr". */
@@ -61,4 +65,22 @@ interface DistributorInterface
     public function get_distributor_price_by_upc(string $upc): ?float;
 
     public function get_shipping_cost_by_upc(string $upc): ?float;
+
+
+
+    /**
+     * Determine if this distributor can ship a UPC to a given US state.
+     *
+     * @param string $upc
+     * @param string $state_code Two-letter state code (e.g. "LA", "TX")
+     * @return bool|null
+     *   true  = explicitly allowed
+     *   false = explicitly blocked
+     *   null  = distributor does not provide restriction data
+     */
+    public function can_ship_to_state_by_upc(string $upc, string $state_code): ?bool;
+
+
+
+    public function place_order(DistributorOrderRequest $request): DistributorOrderResult;
 }

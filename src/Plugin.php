@@ -15,7 +15,6 @@ use FFLHub\Admin\AdminPage;
 use FFLHub\Admin\FFLImporterPage;
 use FFLHub\Admin\OrderFFLPanel;
 use FFLHub\Admin\ProductMetaBox;
-
 use FFLHub\Distributor\DistributorHandler;
 
 
@@ -23,6 +22,7 @@ use FFLHub\Distributor\DistributorHandler;
 use FFLHub\Checkout\CheckoutFields;
 use FFLHub\Checkout\CheckoutMap;
 use FFLHub\Checkout\FFLRequiredCartExtension;
+use FFLHub\Checkout\CartCompliance;
 
 
 
@@ -36,6 +36,8 @@ use FFLHub\Shipping\ShippingRegistrar;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Product\MapPriceVisibility;
 
+
+use FFLHub\Orders\OrderProcurementService;
 /**
  * Main plugin class for FFL Hub.
  */
@@ -102,6 +104,10 @@ class Plugin
 
         MapPriceVisibility::init();
 
+        CartCompliance::init();
+
+
+        OrderProcurementService::init();
 
 
         // 4. Hook into WordPress admin.

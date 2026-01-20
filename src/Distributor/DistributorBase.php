@@ -11,6 +11,10 @@ use FFLHub\Distributor\Product\DistributorOffer;
 use FFLHub\Distributor\Services\DistributorServicesInterface;
 use FFLHub\Distributor\Services\Tables\DistributorTableInterface;
 
+
+use FFLHub\Distributor\Product\DistributorOrderRequest;
+use FFLHub\Distributor\Product\DistributorOrderResult;
+
 /**
  * Base class for distributors with common functionality.
  */
@@ -375,5 +379,116 @@ abstract class DistributorBase implements DistributorInterface
         }
         //we dont do the crazy price calcs anymore, so now we just return actual price 
         return ($base_cost); // + 0.30) / (1.0 - $fee_decimal);
+    }
+
+
+
+
+
+
+
+    /* ---- Compliance helpers (shipping restrictions) ---- */
+
+    /**
+     * Determine if this distributor indicates a given UPC may ship to a US state.
+     *
+     * This is intended to be a lowest-common-denominator API that works across:
+     *  - Distributors with per-state flags in their fulfillment table (e.g., RSR)
+     *  - Distributors with no restriction data (e.g., Lipsey's today)
+     *
+     * Return values:
+     *  - true  => distributor data indicates it CAN ship to that state
+     *  - false => distributor data indicates it CANNOT ship to that state
+     *  - null  => distributor does not provide restriction data (unknown)
+     */
+    public function can_ship_to_state_by_upc(string $upc, string $state_code): ?bool
+    {
+        $state_code = $this->normalize_state_code($state_code);
+        if ($state_code === null) {
+            return null;
+        }
+
+        $normalized_upc = $this->normalize_upc($upc);
+        if ($normalized_upc === null) {
+            return null;
+        }
+
+        $table = $this->get_fulfillment_table();
+        if (! $table) {
+            return null;
+        }
+
+        $row = $table->get_row_by_upc($normalized_upc);
+        if (! is_array($row) || empty($row)) {
+            return null;
+        }
+
+        return $this->can_ship_row_to_state($row, $state_code);
+    }
+
+    /**
+     * Determine if the provided fulfillment-table row can ship to the given state.
+     *
+     * Default implementation looks for a per-state boolean flag key like:
+     *   ship_la, ship_tx, ship_ca, ...
+     *
+     * Distributors with different schemas can override this.
+     */
+    protected function can_ship_row_to_state(array $row, string $state_code): ?bool
+    {
+        $key = 'ship_' . strtolower($state_code);
+        if (! array_key_exists($key, $row)) {
+            return null;
+        }
+
+        $val = $row[$key];
+
+        // Normalize common truthy/falsey encodings.
+        if ($val === true || $val === 1 || $val === '1' || $val === 'Y' || $val === 'y' || $val === 'YES' || $val === 'yes') {
+            return false; //since a 1 value indicates there is a shipping block for distributors such as RSR 
+        }
+
+        if ($val === false || $val === 0 || $val === '0' || $val === 'N' || $val === 'n' || $val === 'NO' || $val === 'no') {
+            return true;
+        }
+
+        // If present but unrecognized, treat as unknown.
+        return null;
+    }
+
+    /**
+     * Normalize a US state code into a strict 2-letter uppercase string.
+     * Returns null if the input is invalid.
+     */
+    protected function normalize_state_code(string $state_code): ?string
+    {
+        $state_code = strtoupper(trim($state_code));
+        if ($state_code === '') {
+            return null;
+        }
+
+        // Accept only 2-letter codes.
+        if (! preg_match('/^[A-Z]{2}$/', $state_code)) {
+            return null;
+        }
+
+        return $state_code;
+    }
+
+
+
+
+
+
+
+
+
+    public function place_order(DistributorOrderRequest $request): DistributorOrderResult
+    {
+        return new DistributorOrderResult(
+            false,
+            'Ordering is not implemented for this distributor.',
+            []
+        );
     }
 }

@@ -6,26 +6,33 @@ use FFLHub\Product\ProductMeta;
 use WC_Shipping_Method;
 use WC_Product;
 
-if (!defined('ABSPATH')) {
+if (! defined('ABSPATH')) {
     exit;
 }
 
 /**
- * FFL Hub Shipping (Smooth Discount, per distributor)
+ * FFL Hub Shipping (per distributor, split FFL vs non-FFL, cart-level free shipping rule)
  *
- * For each distributor shipment:
- *   - S = max(_fflhub_last_shipping_cost) across items from that distributor (cost-to-you estimate)
- *   - P = net profit on those items (after processor % fee) computed using stored true cost meta
+ * RULES:
+ * 1) Group cart items by source distributor.
+ * 2) For each distributor group:
+ *    - Split items into two buckets:
+ *        a) FFL-required items
+ *        b) Non-FFL items
+ *    - Shipping cost for that distributor:
+ *        ship_dist = max(ship_cost among FFL items) + max(ship_cost among non-FFL items)
+ *      (empty bucket => 0)
+ * 3) Total shipping cost-to-you:
+ *      S_total = sum(ship_dist) across distributors.
  *
- * Smooth discount rule:
- *   r = P / S
- *   if r <= k0: customer pays full shipping (grossed-up): S/(1-f)
- *   if r >= k1: customer pays 0
- *   else: linearly interpolate between full and free:
- *         u = (r - k0) / (k1 - k0)  clamped to [0,1]
- *         customer_charge = (S/(1-f)) * (1 - u)
+ * FREE SHIPPING RULE:
+ * - Compute cart profit P_total (net after processor fee) using stored true cost meta.
+ * - If S_total < 2 * P_total, customer shipping = 0.
+ * - Else customer pays full shipping grossed-up so you net S_total after processor fee:
+ *      customer_charge = S_total / (1 - f)
  *
- * Total shipping = sum of customer charges across distributors.
+ * DEBUG:
+ * - Controlled by constant FFLHUB_SHIPPING_DEBUG (true/false).
  */
 class FFLHubShippingMethod extends WC_Shipping_Method
 {
@@ -34,7 +41,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $this->id                 = 'fflhub_shipping';
         $this->instance_id        = absint($instance_id);
         $this->method_title       = 'FFL Hub Shipping';
-        $this->method_description = 'Shipping based on FFL Hub product meta, grouped by distributor (smooth discount).';
+        $this->method_description = 'Shipping grouped by distributor, split into FFL vs non-FFL shipments, with cart-level free shipping rule.';
         $this->supports           = ['shipping-zones', 'instance-settings'];
 
         $this->init();
@@ -63,30 +70,8 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'default'     => 'Shipping',
             ],
 
-            // Smooth discount thresholds
-            'k0' => [
-                'title'       => 'k0 (discount starts)',
-                'type'        => 'number',
-                'description' => 'If Profit/Shipping <= k0, customer pays full shipping. Default: 1.0',
-                'default'     => '1.0',
-                'custom_attributes' => [
-                    'step' => '0.1',
-                    'min'  => '0',
-                ],
-            ],
-            'k1' => [
-                'title'       => 'k1 (free shipping)',
-                'type'        => 'number',
-                'description' => 'If Profit/Shipping >= k1, shipping is free. Default: 2.0',
-                'default'     => '2.0',
-                'custom_attributes' => [
-                    'step' => '0.1',
-                    'min'  => '0',
-                ],
-            ],
-
             'fallback_shipping' => [
-                'title'       => 'Fallback shipping (per distributor)',
+                'title'       => 'Fallback shipping (per bucket)',
                 'type'        => 'price',
                 'description' => 'Used when product shipping meta is missing/empty.',
                 'default'     => '15.00',
@@ -110,38 +95,61 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
     public function calculate_shipping($package = []): void
     {
+        $t0 = microtime(true);
+
         // Processor percent fee (e.g. 2.9)
         $fee_percent = (float) get_option('fflhub_payment_processor_fee_percent', '2.9');
         $f = $fee_percent / 100.0;
 
         // Clamp
-        if ($f < 0.0) $f = 0.0;
-        if ($f >= 0.99) $f = 0.99;
-
-        $k0 = (float) $this->get_option('k0', '1.0');
-        $k1 = (float) $this->get_option('k1', '2.0');
-
-        // Ensure k1 > k0; if misconfigured, force a sane gap.
-        if ($k1 <= $k0) {
-            $k1 = $k0 + 0.01;
+        if ($f < 0.0) {
+            $f = 0.0;
+        }
+        if ($f >= 0.99) {
+            $f = 0.99;
         }
 
         $fallback_ship = (float) $this->get_option('fallback_shipping', '15.00');
         $min_cart_ship = (float) $this->get_option('min_shipping', '0');
         $max_cart_ship = (float) $this->get_option('max_shipping', '0');
 
-        // dist_id => ['ship_max' => float, 'profit_net' => float]
+        $this->log_debug(
+            sprintf(
+                '[FFLHub][Shipping] START fee_percent=%.4f f=%.4f fallback=%.2f min=%.2f max=%.2f items=%d',
+                $fee_percent,
+                $f,
+                $fallback_ship,
+                $min_cart_ship,
+                $max_cart_ship,
+                is_array($package['contents'] ?? null) ? count($package['contents']) : 0
+            )
+        );
+
+        /**
+         * dist_id => [
+         *   'ffl_ship_max' => float,
+         *   'non_ship_max' => float,
+         * ]
+         */
         $by_dist = [];
 
-        foreach (($package['contents'] ?? []) as $item) {
+        // Cart-level profit (net after fee) across ALL items
+        $profit_net_total = 0.0;
+
+        foreach (($package['contents'] ?? []) as $item_key => $item) {
             if (empty($item['data']) || empty($item['quantity'])) {
+                $this->log_debug(sprintf('[FFLHub][Shipping] SKIP item_key=%s missing data/quantity', (string) $item_key));
                 continue;
             }
 
             /** @var WC_Product $product */
             $product = $item['data'];
             $qty     = (int) $item['quantity'];
-            if ($qty < 1) $qty = 1;
+            if ($qty < 1) {
+                $qty = 1;
+            }
+
+            $product_id = method_exists($product, 'get_id') ? (int) $product->get_id() : 0;
 
             // Distributor id (grouping key)
             $dist_id = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
@@ -149,81 +157,179 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 $dist_id = 'unknown';
             }
 
-            // Max shipping estimate per item (your "max possible they could charge")
-            $ship = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
-            $ship = ($ship === '' || $ship === null) ? $fallback_ship : (float) $ship;
+            // FFL bucket?
+            $ffl_required_raw = $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true);
+            $is_ffl = ! empty($ffl_required_raw) && (string) $ffl_required_raw !== '0';
 
+            // Shipping estimate for this item
+            $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
+            $ship = ($ship_raw === '' || $ship_raw === null) ? $fallback_ship : (float) $ship_raw;
+            if (! is_finite($ship) || $ship < 0) {
+                $ship = $fallback_ship;
+            }
 
-
-
-            // Stored true cost (break-even price grossed-up for % fee; no shipping)
-            $true_cost = $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
-            $true_cost = ($true_cost === '' || $true_cost === null) ? 0.0 : (float) $true_cost;
-
-            // Revenue ex-tax, qty-adjusted, after coupons
-            $line_revenue = isset($item['line_total']) ? (float) $item['line_total'] : 0.0;
-
-            // Net profit after processor % fee:
-            // If true_cost = cost/(1-f), net profit = (revenue - true_cost*qty) * (1-f)
-            $line_profit_net = ($line_revenue - ($true_cost * $qty)) * (1.0 - $f);
-
-            if (!isset($by_dist[$dist_id])) {
+            if (! isset($by_dist[$dist_id])) {
                 $by_dist[$dist_id] = [
-                    'ship_max'   => 0.0,
-                    'profit_net' => 0.0,
+                    'ffl_ship_max' => 0.0,
+                    'non_ship_max' => 0.0,
                 ];
             }
 
-            $by_dist[$dist_id]['ship_max']   = max($by_dist[$dist_id]['ship_max'], $ship);
-            $by_dist[$dist_id]['profit_net'] += $line_profit_net;
+            $prev_ffl = (float) $by_dist[$dist_id]['ffl_ship_max'];
+            $prev_non = (float) $by_dist[$dist_id]['non_ship_max'];
+
+            if ($is_ffl) {
+                $by_dist[$dist_id]['ffl_ship_max'] = max($prev_ffl, $ship);
+            } else {
+                $by_dist[$dist_id]['non_ship_max'] = max($prev_non, $ship);
+            }
+
+            // Stored true cost (used exactly like your previous method)
+            $true_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
+            $true_cost = ($true_cost_raw === '' || $true_cost_raw === null) ? 0.0 : (float) $true_cost_raw;
+
+            // Revenue ex-tax, after coupons (Woo line_total includes qty)
+            $line_revenue = isset($item['line_total']) ? (float) $item['line_total'] : 0.0;
+
+            // Net profit after processor % fee (same behavior as before)
+            $line_profit_net = ($line_revenue - ($true_cost * $qty)) * (1.0 - $f);
+            $profit_net_total += $line_profit_net;
+
+            $this->log_debug(
+                sprintf(
+                    '[FFLHub][Shipping] item product_id=%d dist=%s bucket=%s qty=%d ship=%.2f (raw=%s) revenue=%.2f true_cost=%.2f profit_net=%.2f',
+                    $product_id,
+                    $dist_id,
+                    $is_ffl ? 'FFL' : 'NON',
+                    $qty,
+                    $ship,
+                    ($ship_raw === '' || $ship_raw === null) ? 'fallback' : (string) $ship_raw,
+                    $line_revenue,
+                    $true_cost,
+                    $line_profit_net
+                )
+            );
         }
 
-        // Compute customer shipping using smooth discount per distributor
-        $total_shipping = 0.0;
+        // 1) Compute total shipping cost-to-you as sum of per-dist split maxima
+        $shipping_cost_total = 0.0;
 
         foreach ($by_dist as $dist_id => $g) {
-            $S = (float) $g['ship_max'];    // cost-to-you estimate (max)
-                        error_log("Shipping cost of: " . $S);
+            $ffl_max = (float) ($g['ffl_ship_max'] ?? 0.0);
+            $non_max = (float) ($g['non_ship_max'] ?? 0.0);
 
-            $P = (float) $g['profit_net'];  // net profit on items from this dist
+            $ship_dist = max(0.0, $ffl_max) + max(0.0, $non_max);
+            $shipping_cost_total += $ship_dist;
 
-            if ($S <= 0.0) {
-                // No shipping cost estimate => charge nothing (or you could charge fallback)
-                continue;
-            }
-
-            // Full customer charge to net S after fees
-            $full_charge = ($f >= 0.99) ? $S : ($S / (1.0 - $f));
-
-            // Profit-to-shipping ratio
-            $r = $P / $S;
-
-            // Smooth subsidy fraction u in [0,1]
-            $u = ($r - $k0) / ($k1 - $k0);
-            if ($u < 0.0) $u = 0.0;
-            if ($u > 1.0) $u = 1.0;
-
-            // Customer pays (1-u) of the full charge
-            $charge = $full_charge * (1.0 - $u);
-
-            // Never negative
-            if ($charge < 0.0) {
-                $charge = 0.0;
-            }
-
-            $total_shipping += $charge;
+            $this->log_debug(
+                sprintf(
+                    '[FFLHub][Shipping] dist=%s ffl_max=%.2f non_max=%.2f ship_dist=%.2f',
+                    (string) $dist_id,
+                    $ffl_max,
+                    $non_max,
+                    $ship_dist
+                )
+            );
         }
 
-        // Cart-level clamps
-        $total_shipping = max($min_cart_ship, $total_shipping);
+        // 2) Apply cart-level free shipping rule
+        $customer_charge = 0.0;
+
+        if ($shipping_cost_total <= 0.0) {
+            $customer_charge = 0.0;
+            $this->log_debug('[FFLHub][Shipping] shipping_cost_total <= 0, customer_charge=0');
+        } else {
+            $free_threshold = 0.5 * (float) $profit_net_total;
+
+            $this->log_debug(
+                sprintf(
+                    '[FFLHub][Shipping] totals profit_net_total=%.2f shipping_cost_total=%.2f free_threshold(0.5xprofit)=%.2f',
+                    $profit_net_total,
+                    $shipping_cost_total,
+                    $free_threshold
+                )
+            );
+
+            if ($profit_net_total > 0.0 && $shipping_cost_total < $free_threshold) {
+                $customer_charge = 0.0;
+                $this->log_debug('[FFLHub][Shipping] FREE SHIPPING applied (shipping_cost_total < .5x profit)');
+            } else {
+                $customer_charge = ($f >= 0.99) ? $shipping_cost_total : ($shipping_cost_total / (1.0 - $f));
+                $this->log_debug(
+                    sprintf(
+                        '[FFLHub][Shipping] charged full shipping grossed-up: customer_charge=%.2f (net_to_you=%.2f)',
+                        $customer_charge,
+                        $shipping_cost_total
+                    )
+                );
+            }
+        }
+
+        // 3) Cart-level clamps
+        $before_clamp = $customer_charge;
+
+        $customer_charge = max($min_cart_ship, $customer_charge);
         if ($max_cart_ship > 0.0) {
-            $total_shipping = min($max_cart_ship, $total_shipping);
+            $customer_charge = min($max_cart_ship, $customer_charge);
+        }
+
+        if (abs($customer_charge - $before_clamp) > 0.0001) {
+            $this->log_debug(
+                sprintf(
+                    '[FFLHub][Shipping] clamps applied: before=%.2f after=%.2f (min=%.2f max=%.2f)',
+                    $before_clamp,
+                    $customer_charge,
+                    $min_cart_ship,
+                    $max_cart_ship
+                )
+            );
         }
 
         $this->add_rate([
             'id'    => $this->id . ':' . $this->instance_id,
             'label' => $this->title,
-            'cost'  => wc_format_decimal($total_shipping, wc_get_price_decimals()),
+            'cost'  => wc_format_decimal($customer_charge, wc_get_price_decimals()),
+
+            // ✅ Internal meta that will be copied onto the order later
+            'meta_data' => [
+                // What YOU pay (net) for shipping this order, per your dist/bucket rule
+                'fflhub_shipping_cost_total' => (string) wc_format_decimal($shipping_cost_total, 4),
+
+                // What customer was charged at checkout for shipping (already in 'cost', but nice to have)
+                'fflhub_customer_shipping_charge' => (string) wc_format_decimal($customer_charge, 4),
+
+                // Profit net used in the decision
+                'fflhub_profit_net_total' => (string) wc_format_decimal($profit_net_total, 4),
+
+                // Processor fee percent used
+                'fflhub_processor_fee_percent' => (string) wc_format_decimal($fee_percent, 4),
+
+                // Full grouping details (dist -> ffl_max/non_max) for auditing + PO allocation later
+                'fflhub_shipping_by_dist' => wp_json_encode($by_dist),
+
+                // Optional: record whether free shipping rule triggered
+                'fflhub_free_shipping_applied' => ($customer_charge <= 0.0001) ? '1' : '0',
+            ],
         ]);
+
+
+        $elapsed_ms = (microtime(true) - $t0) * 1000.0;
+
+        $this->log_debug(
+            sprintf(
+                '[FFLHub][Shipping] END customer_charge=%.2f elapsed_ms=%.2f',
+                $customer_charge,
+                $elapsed_ms
+            )
+        );
+    }
+
+    private function log_debug(string $message): void
+    {
+        if (! defined('FFLHUB_SHIPPING_DEBUG') || FFLHUB_SHIPPING_DEBUG !== true) {
+            return;
+        }
+
+        error_log($message);
     }
 }

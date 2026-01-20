@@ -31,6 +31,18 @@ define('FFLHUB_PLUGIN_VERSION', '1.0.0');
 
 define('FFLHUB_CRON_DEBUG', false);
 define('FFLHUB_ADMIN_DEBUG', false);
+
+define('FFLHUB_SHIPPING_DEBUG', false);
+
+
+define('FFLHUB_CART_COMPLIANCE_DEBUG', false);
+
+define('FFLHUB_ORDERING_DRY_RUN', true);
+
+
+define('FFLHUB_ORDERING_DEBUG', true);
+
+
 /**
  * Load plugin text domain.
  */
@@ -45,7 +57,7 @@ register_activation_hook(FFLHUB_PLUGIN_FILE, [Plugin::class, 'activate']);
 register_deactivation_hook(FFLHUB_PLUGIN_FILE, [Plugin::class, 'deactivate']);
 
 
-if (defined('WP_CLI') && WP_CLI) {
+if (defined('WP_CLI')) {
     \WP_CLI::add_command('fflhub test-upc-lookups', \FFLHub\CLI\UpcLookupTestCommand::class);
 }
 
