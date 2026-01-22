@@ -142,12 +142,22 @@ class CheckoutFields
             return;
         }
 
-        if (! $wc_object instanceof WC_Order) {
-            // We only care about storing it on the order.
-            return;
+        $sanitized = strtoupper(trim(sanitize_text_field((string) $value)));
+
+        // ✅ Always persist to WC session so cart/checkout validators can read it consistently,
+        // regardless of whether $wc_object is WC_Order or WC_Customer.
+        if (function_exists('WC') && WC()->session) {
+            if ($sanitized === '') {
+                WC()->session->set('fflhub_receiving_ffl_number', null);
+            } else {
+                WC()->session->set('fflhub_receiving_ffl_number', $sanitized);
+            }
         }
 
-        $sanitized = strtoupper(trim(sanitize_text_field((string) $value)));
+        // If it's not an order, we stop here. (But session is already set.)
+        if (! $wc_object instanceof WC_Order) {
+            return;
+        }
 
         if ($sanitized === '') {
             // Clear both metas if field is empty.
@@ -163,10 +173,8 @@ class CheckoutFields
         $ffl_data = self::get_ffl_data_by_number($sanitized);
 
         if ($ffl_data) {
-            // Store the full structured record.
             $wc_object->update_meta_data(self::ORDER_META_KEY, $ffl_data);
         } else {
-            // Fallback: if somehow not found, at least store the number.
             $wc_object->update_meta_data(self::ORDER_META_KEY, $sanitized);
         }
     }

@@ -1,4 +1,5 @@
 <?php
+// File: src/Distributor/Lipseys/DistributorLipseys.php
 
 namespace FFLHub\Distributor\Lipseys;
 
@@ -13,6 +14,7 @@ use FFLHub\Distributor\Services\Lipseys\LipseysServices;
 use FFLHub\Distributor\DistributorModuleInterface;
 
 use FFLHub\Distributor\Product\DistributorOrderRequest;
+use FFLHub\Distributor\Product\DistributorOrderValidationResult;
 use FFLHub\Distributor\Product\DistributorOrderResult;
 use FFLHub\Distributor\Product\DistributorOrderLine;
 use FFLHub\Distributor\Product\DistributorShipTo;
@@ -24,6 +26,19 @@ use FFLHub\Distributor\Product\DistributorShipTo;
  */
 class DistributorLipseys extends DistributorBase
 {
+    private const VALIDATEITEM_CACHE_TTL_SECONDS = 60;
+    private const VALIDATEITEM_MAX_UNIQUE_ITEMS = 50;
+
+    /**
+     * Toggle Lipsey's validation debug logs.
+     *
+     * Enable by setting:
+     *   define('FFLHUB_LIPSEYS_DEBUG', true);
+     * in wp-config.php, OR env var:
+     *   FFLHUB_LIPSEYS_DEBUG=1
+     */
+    private const DEBUG_CONST = 'FFLHUB_LIPSEYS_DEBUG';
+
     public function __construct(DistributorModuleInterface $module, ?LipseysServices $services = null)
     {
         parent::__construct($module, $services);
@@ -47,6 +62,10 @@ class DistributorLipseys extends DistributorBase
      */
     public function get_product_by_upc(string $upc): ?DistributorProductPayload
     {
+        if (! $this->services) {
+            return null;
+        }
+
         $normalized_upc = $this->normalize_upc($upc);
         if ($normalized_upc === null) {
             return null;
@@ -87,6 +106,168 @@ class DistributorLipseys extends DistributorBase
     }
 
     /**
+     * Validate order request using Lipsey's ValidateItem.
+     *
+     * Goal: prevent partial orders by verifying near-real-time stock quantity.
+     *
+     * Behavior:
+     * - Aggregates required qty by UPC
+     * - Calls ValidateItem(UPC) for each unique UPC (cached for 60s)
+     * - Blocks if:
+     *    - API says blocked=true
+     *    - canDropship=false (recommended)
+     *    - allocated=true (recommended)
+     *    - qty < required
+     */
+    public function validate_order_request(DistributorOrderRequest $request): DistributorOrderValidationResult
+    {
+        if (! class_exists('\\lipseys\\ApiIntegration\\LipseysClient')) {
+            return DistributorOrderValidationResult::block(
+                'Lipseys API client not available (lipseys/apiintegration).',
+                ['LIPSEYS_CLIENT_MISSING']
+            );
+        }
+
+        if (empty($request->lines)) {
+            return DistributorOrderValidationResult::allow('No order lines to validate.');
+        }
+
+        $this->dbg('validate_order_request: start', [
+            'lines_count' => is_array($request->lines) ? count($request->lines) : 0,
+            'has_ship_to_customer' => ($request->ship_to_customer instanceof DistributorShipTo) ? 1 : 0,
+            'has_ship_to_ffl' => ($request->ship_to_ffl instanceof DistributorShipTo) ? 1 : 0,
+            'receiving_ffl_len' => strlen((string) $request->receiving_ffl_number),
+        ]);
+
+        $email = $this->get_dealer_email();
+        $password = $this->get_dealer_password();
+
+        if ($email === '' || $password === '') {
+            return DistributorOrderValidationResult::block(
+                'Missing Lipsey’s credentials (dealer_email / dealer_password).',
+                ['LIPSEYS_CREDS_MISSING']
+            );
+        }
+
+        $required_by_upc = $this->build_required_qty_by_upc($request->lines);
+
+        $this->dbg('validate_order_request: required_by_upc built', [
+            'unique' => count($required_by_upc),
+            'keys_tail4' => array_map(
+                fn($k) => (strlen((string)$k) >= 4 ? substr((string)$k, -4) : (string)$k),
+                array_keys($required_by_upc)
+            ),
+        ]);
+
+        if (empty($required_by_upc)) {
+            // This is the exact spot you were hitting.
+            return DistributorOrderValidationResult::allow('No valid UPC line items to validate.');
+        }
+
+        if (count($required_by_upc) > self::VALIDATEITEM_MAX_UNIQUE_ITEMS) {
+            return DistributorOrderValidationResult::block(
+                'Lipseys validation failed: too many unique items to validate in one checkout (' . count($required_by_upc) . ').',
+                ['LIPSEYS_VALIDATEITEM_TOO_MANY_UNIQUE'],
+                [
+                    'unique_count' => count($required_by_upc),
+                    'max_unique' => self::VALIDATEITEM_MAX_UNIQUE_ITEMS,
+                ]
+            );
+        }
+
+        $client_res = LipseysIntegrationAPI::create_client($email, $password);
+        if (! $client_res['ok']) {
+            return DistributorOrderValidationResult::block(
+                $client_res['message'],
+                ['LIPSEYS_CLIENT_INIT_FAILED']
+            );
+        }
+
+        /** @var \lipseys\ApiIntegration\LipseysClient $client */
+        $client = $client_res['client'];
+
+        $details = [
+            'required_by_upc' => $required_by_upc,
+            'items' => [],
+            'cache_ttl_seconds' => self::VALIDATEITEM_CACHE_TTL_SECONDS,
+        ];
+
+        $blocked_msgs = [];
+        $insufficient_msgs = [];
+
+        foreach ($required_by_upc as $upc => $requiredQty) {
+            $requiredQty = (int) $requiredQty;
+
+            $norm = $this->get_cached_validateitem($upc);
+
+            if (! is_array($norm)) {
+                $call = LipseysIntegrationAPI::validate_item($client, $upc);
+                $norm = $call['result'];
+                $this->set_cached_validateitem($upc, $norm);
+            }
+
+            $details['items'][$upc] = array_merge($norm, [
+                'requiredQty' => $requiredQty,
+            ]);
+
+            if (! ($norm['ok'] ?? false)) {
+                $blocked_msgs[] = "UPC={$upc}: " . (string) ($norm['message'] ?? 'ValidateItem failed');
+                continue;
+            }
+
+            if (($norm['blocked'] ?? false) === true) {
+                $blocked_msgs[] = "UPC={$upc} blocked=true";
+                continue;
+            }
+
+            // Recommended: enforce dropship eligibility
+            if (($norm['canDropship'] ?? null) === false) {
+                $blocked_msgs[] = "UPC={$upc} canDropship=false";
+                continue;
+            }
+
+            // Recommended: allocated items are not reliably available
+            if (($norm['allocated'] ?? false) === true) {
+                $blocked_msgs[] = "UPC={$upc} allocated=true";
+                continue;
+            }
+
+            $available = (int) ($norm['qty'] ?? 0);
+            if ($available < $requiredQty) {
+                $insufficient_msgs[] = "UPC={$upc} available={$available} required={$requiredQty}";
+            }
+        }
+
+        if (! empty($blocked_msgs)) {
+            $msg = 'Lipseys validation failed: ' . implode(' | ', array_slice($blocked_msgs, 0, 8));
+            if (count($blocked_msgs) > 8) {
+                $msg .= ' | ...';
+            }
+
+            return DistributorOrderValidationResult::block(
+                $msg,
+                ['LIPSEYS_VALIDATEITEM_BLOCKED'],
+                $details
+            );
+        }
+
+        if (! empty($insufficient_msgs)) {
+            $msg = 'Lipseys validation failed (insufficient stock): ' . implode(' | ', array_slice($insufficient_msgs, 0, 8));
+            if (count($insufficient_msgs) > 8) {
+                $msg .= ' | ...';
+            }
+
+            return DistributorOrderValidationResult::block(
+                $msg,
+                ['LIPSEYS_INSUFFICIENT_STOCK'],
+                $details
+            );
+        }
+
+        return DistributorOrderValidationResult::allow('Lipseys validation OK.', $details);
+    }
+
+    /**
      * Place Lipsey's orders.
      *
      * Your procurement layer can pass ONE request containing mixed lines (FFL + non-FFL).
@@ -119,52 +300,32 @@ class DistributorLipseys extends DistributorBase
             return new DistributorOrderResult(false, 'Missing Lipsey’s credentials (dealer_email / dealer_password).', []);
         }
 
-        // Split into two Lipsey's orders based on ffl_required.
-        $items_non = [];
-        $items_ffl = [];
+        // Split into two Lipsey's orders based on ffl_required (via request accessors).
+        $items_non = $this->build_lipseys_items($request->non_ffl_lines(), true);
+        if ($items_non instanceof DistributorOrderResult) {
+            return $items_non;
+        }
 
-        foreach ($request->lines as $line) {
-            if (! ($line instanceof DistributorOrderLine)) {
-                continue;
-            }
-
-            $upc = trim($line->upc);
-            if ($upc === '') {
-                continue;
-            }
-
-            $item_no = $this->lookup_item_number_by_upc($upc);
-            if ($item_no === null || $item_no === '') {
-                return new DistributorOrderResult(false, 'Cannot map UPC to Lipsey’s item number: ' . $upc, []);
-            }
-
-            $item = [
-                'ItemNo'   => $item_no,
-                'Quantity' => max(1, (int) $line->quantity),
-            ];
-
-            if ($line->ffl_required) {
-                $items_ffl[] = $item;
-            } else {
-                $items_non[] = $item;
-            }
+        $items_ffl = $this->build_lipseys_items($request->ffl_lines(), true);
+        if ($items_ffl instanceof DistributorOrderResult) {
+            return $items_ffl;
         }
 
         if (empty($items_non) && empty($items_ffl)) {
             return new DistributorOrderResult(false, 'No valid line items after normalization.', []);
         }
 
-        try {
-            $client = new \lipseys\ApiIntegration\LipseysClient($email, $password);
-        } catch (\Throwable $e) {
-            return new DistributorOrderResult(false, 'Failed to initialize Lipsey’s client: ' . $e->getMessage(), []);
+        $client_res = LipseysIntegrationAPI::create_client($email, $password);
+        if (! $client_res['ok']) {
+            return new DistributorOrderResult(false, $client_res['message'], []);
         }
+
+        /** @var \lipseys\ApiIntegration\LipseysClient $client */
+        $client = $client_res['client'];
 
         $external_ids = [];
         $errors = [];
 
-        // Use merchant_order_id as the base PO identifier.
-        // Lipsey's client validates ZIP/state/etc; keep PO short-ish and deterministic.
         $base_po = self::sanitize_po((string) $request->merchant_order_id);
         if ($base_po === '') {
             $base_po = 'FFLHUB';
@@ -175,28 +336,34 @@ class DistributorLipseys extends DistributorBase
             $po = $base_po . '-NON';
 
             $ship = $request->ship_to_customer;
+
             $payload = [
                 // Billing (Lipsey's requires these; we use customer info)
-                'BillingName'          => self::safe($ship->name),
-                'BillingAddressLine1'  => self::safe($ship->address1),
-                'BillingAddressCity'   => self::safe($ship->city),
-                'BillingAddressState'  => self::state2($ship->state),
-                'BillingAddressZip'    => self::zip5($ship->zip),
+                'BillingName'          => self::normalize_payload_string($ship->name),
+                'BillingAddressLine1'  => self::normalize_payload_string($ship->address1),
+                'BillingAddressCity'   => self::normalize_payload_string($ship->city),
+                'BillingAddressState'  => self::normalize_us_state_code_for_payload($ship->state),
+                'BillingAddressZip'    => self::format_us_zip5_for_payload($ship->zip),
 
                 // Shipping
-                'ShippingName'         => self::safe($ship->name),
-                'ShippingAddressLine1' => self::safe($ship->address1),
-                'ShippingAddressCity'  => self::safe($ship->city),
-                'ShippingAddressState' => self::state2($ship->state),
-                'ShippingAddressZip'   => self::zip5($ship->zip),
+                'ShippingName'         => self::normalize_payload_string($ship->name),
+                'ShippingAddressLine1' => self::normalize_payload_string($ship->address1),
+                'ShippingAddressCity'  => self::normalize_payload_string($ship->city),
+                'ShippingAddressState' => self::normalize_us_state_code_for_payload($ship->state),
+                'ShippingAddressZip'   => self::format_us_zip5_for_payload($ship->zip),
 
                 'PoNumber'             => $po,
                 'Items'                => $items_non,
             ];
 
-            $resp = $client->DropShipAccessories($payload);
-            $norm = $this->normalize_lipseys_response($resp, $po, 'DropShipAccessories');
+            try {
+                $resp = $client->DropShipAccessories($payload);
+            } catch (\Throwable $e) {
+                $errors[] = 'DropShipAccessories exception: ' . $e->getMessage();
+                $resp = null;
+            }
 
+            $norm = LipseysIntegrationAPI::normalize_order_response($resp, $po, 'DropShipAccessories');
             if ($norm['ok']) {
                 $external_ids[] = $norm['external_id'];
             } else {
@@ -206,7 +373,6 @@ class DistributorLipseys extends DistributorBase
 
         // 2) FFL -> DropShipFirearms
         if (! empty($items_ffl)) {
-            // Need receiving FFL number + ship_to_ffl for name/phone.
             $ffl_num = strtoupper(trim((string) $request->receiving_ffl_number));
             if ($ffl_num === '') {
                 $errors[] = 'Missing receiving FFL number for Lipsey’s firearm order.';
@@ -223,14 +389,19 @@ class DistributorLipseys extends DistributorBase
 
                 $payload = [
                     'Ffl'   => $ffl_num,
-                    'Name'  => self::safe($ffl_ship->name),
-                    'Phone' => self::safe($phone),
+                    'Name'  => self::normalize_payload_string($ffl_ship->name),
+                    'Phone' => self::normalize_payload_string($phone),
                     'Items' => $items_ffl,
                 ];
 
-                $resp = $client->DropShipFirearms($payload);
-                $norm = $this->normalize_lipseys_response($resp, $po, 'DropShipFirearms');
+                try {
+                    $resp = $client->DropShipFirearms($payload);
+                } catch (\Throwable $e) {
+                    $errors[] = 'DropShipFirearms exception: ' . $e->getMessage();
+                    $resp = null;
+                }
 
+                $norm = LipseysIntegrationAPI::normalize_order_response($resp, $po, 'DropShipFirearms');
                 if ($norm['ok']) {
                     $external_ids[] = $norm['external_id'];
                 } else {
@@ -239,13 +410,32 @@ class DistributorLipseys extends DistributorBase
             }
         }
 
-        // If ANY required subset failed, treat overall as failure.
         if (! empty($errors)) {
-            $msg = 'Lipseys order failed: ' . implode(' | ', $errors);
-            return new DistributorOrderResult(false, $msg, $external_ids);
+            return new DistributorOrderResult(false, 'Lipseys order failed: ' . implode(' | ', $errors), $external_ids);
         }
 
         return new DistributorOrderResult(true, 'Lipseys order submitted.', $external_ids);
+    }
+
+    /**
+     * Build Lipsey's Items[] payload from normalized order lines.
+     *
+     * @param DistributorOrderLine[] $lines
+     * @param bool $allow_empty
+     * @return array<int,array{ItemNo:string,Quantity:int}>|DistributorOrderResult
+     */
+    private function build_lipseys_items(array $lines, bool $allow_empty = false)
+    {
+        return $this->map_order_lines_to_items(
+            $lines,
+            fn (string $normalized_upc, string $raw_upc, DistributorOrderLine $line): ?string
+                => $this->lookup_item_number_by_upc($raw_upc),
+            fn (string $item_no, int $qty): array
+                => ['ItemNo' => $item_no, 'Quantity' => $qty],
+            'Cannot map UPC to Lipsey’s item number: %s',
+            ! $allow_empty,
+            'No valid Lipsey’s line items after normalization.'
+        );
     }
 
     /**
@@ -253,6 +443,10 @@ class DistributorLipseys extends DistributorBase
      */
     private function lookup_item_number_by_upc(string $upc): ?string
     {
+        if (! $this->services) {
+            return null;
+        }
+
         $normalized = $this->normalize_upc($upc);
         if ($normalized === null) {
             return null;
@@ -279,90 +473,6 @@ class DistributorLipseys extends DistributorBase
         return trim((string) get_option($this->get_option_name('dealer_password'), ''));
     }
 
-    /**
-     * Normalize Lipsey’s response shape (their client returns arrays with authorized/success/errors).
-     *
-     * @param mixed $resp
-     * @return array{ok:bool,message:string,external_id:string}
-     */
-    private function normalize_lipseys_response($resp, string $po, string $op): array
-    {
-        if (! is_array($resp)) {
-            return [
-                'ok' => false,
-                'message' => "{$op} returned non-array response.",
-                'external_id' => '',
-            ];
-        }
-
-        $authorized = isset($resp['authorized']) ? (bool) $resp['authorized'] : true;
-        $success = isset($resp['success']) ? (bool) $resp['success'] : false;
-
-        if (! $authorized) {
-            return [
-                'ok' => false,
-                'message' => "{$op} not authorized.",
-                'external_id' => '',
-            ];
-        }
-
-        if (! $success) {
-            $errors = '';
-            if (isset($resp['errors']) && is_array($resp['errors'])) {
-                $errors = implode(' | ', array_map('strval', $resp['errors']));
-            }
-            if ($errors === '') {
-                $errors = 'Unknown error';
-            }
-
-            return [
-                'ok' => false,
-                'message' => "{$op} failed: {$errors}",
-                'external_id' => '',
-            ];
-        }
-
-        // Lipsey’s responses vary; if we can’t find an order id, store PO.
-        $external = '';
-        foreach (['orderNumber', 'OrderNumber', 'order_no', 'OrderNo'] as $k) {
-            if (isset($resp[$k]) && is_string($resp[$k]) && trim($resp[$k]) !== '') {
-                $external = trim($resp[$k]);
-                break;
-            }
-        }
-        if ($external === '') {
-            $external = $po;
-        }
-
-        return [
-            'ok' => true,
-            'message' => "{$op} OK",
-            'external_id' => $external,
-        ];
-    }
-
-    private static function zip5(string $zip): string
-    {
-        $zip = trim($zip);
-        if ($zip === '') {
-            return '';
-        }
-
-        $digits = preg_replace('/\D+/', '', $zip);
-        $digits = is_string($digits) ? $digits : '';
-        if ($digits === '') {
-            return '';
-        }
-
-        return substr($digits, 0, 5);
-    }
-
-    private static function state2(string $state): string
-    {
-        $s = strtoupper(trim($state));
-        return preg_match('/^[A-Z]{2}$/', $s) ? $s : $s;
-    }
-
     private static function sanitize_po(string $po): string
     {
         $po = trim($po);
@@ -370,12 +480,10 @@ class DistributorLipseys extends DistributorBase
             return '';
         }
 
-        // Keep letters, numbers, dash; Lipsey’s usually tolerates this well.
         $po = preg_replace('/[^A-Za-z0-9\-]+/', '-', $po);
         $po = is_string($po) ? $po : '';
         $po = trim($po, '-');
 
-        // Keep it reasonable in length.
         if (strlen($po) > 24) {
             $po = substr($po, 0, 24);
         }
@@ -383,8 +491,176 @@ class DistributorLipseys extends DistributorBase
         return $po;
     }
 
-    private static function safe(string $s): string
+    /**
+     * Aggregate required quantities by normalized UPC.
+     *
+     * IMPORTANT:
+     * DistributorOrderLine may NOT expose public props. We therefore support:
+     *  - public properties: $line->upc, $line->qty
+     *  - accessors: upc(), qty(), get_upc(), get_qty(), getUpc(), getQty()
+     *
+     * @param DistributorOrderLine[] $lines
+     * @return array<string,int> map of UPC => requiredQty
+     */
+    private function build_required_qty_by_upc(array $lines): array
     {
-        return trim((string) $s);
+        $required = [];
+
+        foreach ($lines as $idx => $l) {
+            if (! ($l instanceof DistributorOrderLine)) {
+                $this->dbg('build_required_qty_by_upc: skipping non-DistributorOrderLine', [
+                    'idx' => (int) $idx,
+                    'type' => is_object($l) ? get_class($l) : gettype($l),
+                ]);
+                continue;
+            }
+
+            $raw_upc = $this->read_line_upc($l);
+            $qty = $this->read_line_qty($l);
+
+            $this->dbg('build_required_qty_by_upc: line read', [
+                'idx' => (int) $idx,
+                'line_class' => get_class($l),
+                'raw_upc_len' => strlen($raw_upc),
+                'raw_upc_tail4' => (strlen($raw_upc) >= 4 ? substr($raw_upc, -4) : $raw_upc),
+                'qty' => $qty,
+            ]);
+
+            $upc = $this->normalize_upc($raw_upc);
+            if ($upc === null) {
+                $this->dbg('build_required_qty_by_upc: line rejected (normalize_upc null)', [
+                    'idx' => (int) $idx,
+                    'raw_upc_tail4' => (strlen($raw_upc) >= 4 ? substr($raw_upc, -4) : $raw_upc),
+                ]);
+                continue;
+            }
+
+            if ($qty < 1) {
+                $this->dbg('build_required_qty_by_upc: line rejected (qty < 1)', [
+                    'idx' => (int) $idx,
+                    'upc_tail4' => (strlen($upc) >= 4 ? substr($upc, -4) : $upc),
+                    'qty' => $qty,
+                ]);
+                continue;
+            }
+
+            if (! isset($required[$upc])) {
+                $required[$upc] = 0;
+            }
+
+            $required[$upc] += $qty;
+        }
+
+        return $required;
     }
+
+    /**
+     * Try all common ways to read UPC from DistributorOrderLine.
+     */
+    private function read_line_upc(DistributorOrderLine $l): string
+    {
+        // 1) Accessors (preferred)
+        foreach (['upc', 'get_upc', 'getUpc'] as $m) {
+            if (method_exists($l, $m)) {
+                try {
+                    $v = $l->{$m}();
+                    $v = is_string($v) ? $v : (string) $v;
+                    $v = trim($v);
+                    if ($v !== '') {
+                        return $v;
+                    }
+                } catch (\Throwable $e) {
+                    // ignore and fall through
+                }
+            }
+        }
+
+        // 2) Public properties (fallback)
+        $raw = '';
+        if (isset($l->upc)) {
+            $raw = (string) $l->upc;
+        }
+        return trim($raw);
+    }
+
+    /**
+     * Try all common ways to read quantity from DistributorOrderLine.
+     */
+    private function read_line_qty(DistributorOrderLine $l): int
+    {
+        // 1) Accessors (preferred)
+        foreach (['qty', 'get_qty', 'getQty'] as $m) {
+            if (method_exists($l, $m)) {
+                try {
+                    $v = $l->{$m}();
+                    return max(0, (int) $v);
+                } catch (\Throwable $e) {
+                    // ignore and fall through
+                }
+            }
+        }
+
+        // 2) Public properties (fallback)
+        
+        if (isset($l->quantity)) {
+            return max(0, (int) $l->quantity);
+        }
+
+        return 0;
+    }
+
+    private function cache_key_validateitem(string $upc): string
+    {
+        return 'fflhub_lipseys_validateitem_' . md5($upc);
+    }
+
+    /**
+     * @return array|null
+     */
+    private function get_cached_validateitem(string $upc): ?array
+    {
+        $v = get_transient($this->cache_key_validateitem($upc));
+        return is_array($v) ? $v : null;
+    }
+
+    private function set_cached_validateitem(string $upc, array $value): void
+    {
+        set_transient($this->cache_key_validateitem($upc), $value, self::VALIDATEITEM_CACHE_TTL_SECONDS);
+    }
+
+    /* ---------------- Debug helpers ---------------- */
+
+    private function dbg_enabled(): bool
+    {
+        if (defined(self::DEBUG_CONST)) {
+            return (bool) constant(self::DEBUG_CONST);
+        }
+
+        $env = getenv(self::DEBUG_CONST);
+        if ($env !== false) {
+            $env = strtolower(trim((string) $env));
+            return in_array($env, ['1', 'true', 'yes', 'on'], true);
+        }
+
+        return false;
+    }
+
+    /**
+     * @param string $msg
+     * @param array<string,mixed> $ctx
+     */
+    private function dbg(string $msg, array $ctx = []): void
+    {
+        if (! $this->dbg_enabled()) {
+            return;
+        }
+        $prefix = '[FFLHub Lipseys] ';
+        if (! empty($ctx)) {
+            error_log($prefix . $msg . ' ' . wp_json_encode($ctx));
+        } else {
+            error_log($prefix . $msg);
+        }
+    }
+
+
 }

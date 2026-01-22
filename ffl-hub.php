@@ -35,13 +35,13 @@ define('FFLHUB_ADMIN_DEBUG', false);
 define('FFLHUB_SHIPPING_DEBUG', false);
 
 
-define('FFLHUB_CART_COMPLIANCE_DEBUG', false);
+define('FFLHUB_CART_COMPLIANCE_DEBUG', true);
 
-define('FFLHUB_ORDERING_DRY_RUN', true);
+define('FFLHUB_ORDERING_DRY_RUN', false);
 
 
-define('FFLHUB_ORDERING_DEBUG', true);
-
+define('FFLHUB_ORDERING_DEBUG', false);
+define('FFLHUB_LIPSEYS_DEBUG', true);
 
 /**
  * Load plugin text domain.
@@ -58,10 +58,21 @@ register_deactivation_hook(FFLHUB_PLUGIN_FILE, [Plugin::class, 'deactivate']);
 
 
 if (defined('WP_CLI')) {
-    \WP_CLI::add_command('fflhub test-upc-lookups', \FFLHub\CLI\UpcLookupTestCommand::class);
+    \WP_CLI::add_command('fflhub upc-lookup-test', \FFLHub\CLI\UpcLookupTestCommand::class);
 }
 
 
+if (defined('WP_CLI')) {
+    \WP_CLI::add_command('fflhub audit-upc-lookup', \FFLHub\CLI\LookupAuditCommand::class);
+}
+
+if (defined('WP_CLI')) {
+    \WP_CLI::add_command('fflhub audit-order-splitting', \FFLHub\CLI\OrderSplitAuditCommand::class);
+}
+
+if (defined('WP_CLI')) {
+    \WP_CLI::add_command('fflhub audit-cart-compliance', \FFLHub\CLI\ValidateOrderAuditCommand::class);
+}
 
 /**
  * Initialize main plugin after all plugins are loaded.

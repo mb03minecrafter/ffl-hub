@@ -42,6 +42,11 @@ final class DistributorOrderRequest
     public bool $contains_ffl_lines;
     public bool $contains_non_ffl_lines;
 
+    /* ---------------- Derived split cache ---------------- */
+
+    /** @var array{ffl: DistributorOrderLine[], non: DistributorOrderLine[]} | null */
+    private ?array $bucket_cache = null;
+
     /**
      * @param DistributorOrderLine[] $lines
      */
@@ -62,6 +67,7 @@ final class DistributorOrderRequest
         $this->dest_state = strtoupper(trim($dest_state));
         $this->receiving_ffl_number = strtoupper(trim($receiving_ffl_number));
 
+        // Keep existing booleans, but compute them in a single pass.
         $has_ffl = false;
         $has_non = false;
         foreach ($lines as $l) {
@@ -87,5 +93,123 @@ final class DistributorOrderRequest
             return $this->ship_to_ffl;
         }
         return $this->ship_to_customer;
+    }
+
+    /* ---------------- Derived accessors (FFL vs Non-FFL) ---------------- */
+
+    /**
+     * Returns true if the request contains any FFL-required lines.
+     */
+    public function has_ffl_lines(): bool
+    {
+        // Use the existing precomputed flag (fast).
+        return $this->contains_ffl_lines === true;
+    }
+
+    /**
+     * Returns true if the request contains any non-FFL lines.
+     */
+    public function has_non_ffl_lines(): bool
+    {
+        // Use the existing precomputed flag (fast).
+        return $this->contains_non_ffl_lines === true;
+    }
+
+    /**
+     * Returns only the FFL-required lines.
+     *
+     * @return DistributorOrderLine[]
+     */
+    public function ffl_lines(): array
+    {
+        return $this->lines_by_bucket()['ffl'];
+    }
+
+    /**
+     * Returns only the non-FFL lines.
+     *
+     * @return DistributorOrderLine[]
+     */
+    public function non_ffl_lines(): array
+    {
+        return $this->lines_by_bucket()['non'];
+    }
+
+    /**
+     * Returns lines split into FFL and non-FFL buckets.
+     *
+     * Notes:
+     * - Filters out non-DistributorOrderLine entries defensively.
+     * - Preserves original ordering within each bucket.
+     *
+     * @return array{ffl: DistributorOrderLine[], non: DistributorOrderLine[]}
+     */
+    public function lines_by_bucket(): array
+    {
+        if ($this->bucket_cache !== null) {
+            return $this->bucket_cache;
+        }
+
+        $ffl = [];
+        $non = [];
+
+        foreach ($this->lines as $l) {
+            if (! ($l instanceof DistributorOrderLine)) {
+                continue;
+            }
+            if ($l->ffl_required) {
+                $ffl[] = $l;
+            } else {
+                $non[] = $l;
+            }
+        }
+
+        $this->bucket_cache = [
+            'ffl' => $ffl,
+            'non' => $non,
+        ];
+
+        return $this->bucket_cache;
+    }
+
+    /**
+     * Returns the lines for a specific bucket.
+     *
+     * @param bool $ffl_required true => FFL bucket, false => non-FFL bucket
+     * @return DistributorOrderLine[]
+     */
+    public function lines_for_bucket(bool $ffl_required): array
+    {
+        return $ffl_required ? $this->ffl_lines() : $this->non_ffl_lines();
+    }
+
+    /**
+     * Ship-to resolved for a specific bucket (alias for ship_to_for()).
+     */
+    public function ship_to_for_bucket(bool $ffl_required): DistributorShipTo
+    {
+        return $this->ship_to_for($ffl_required);
+    }
+
+    /**
+     * All lines, normalized to only valid line objects.
+     * (Useful if callers passed a mixed array defensively.)
+     *
+     * @return DistributorOrderLine[]
+     */
+    public function valid_lines(): array
+    {
+        // If we've already bucketed, merge those (cheapest).
+        if ($this->bucket_cache !== null) {
+            return array_merge($this->bucket_cache['ffl'], $this->bucket_cache['non']);
+        }
+
+        $out = [];
+        foreach ($this->lines as $l) {
+            if ($l instanceof DistributorOrderLine) {
+                $out[] = $l;
+            }
+        }
+        return $out;
     }
 }

@@ -8,65 +8,45 @@ if (! defined('ABSPATH')) {
 
 /**
  * Normalized distributor product.
+ *
+ * IMPORTANT:
+ * - This object should be safe to construct even when distributor data is incomplete.
+ * - Keep constructor types strict, and ensure builders supply sane defaults.
  */
-class DistributorProductPayload
+final class DistributorProductPayload
 {
-    /** @var string */
-    public $upc;
+    public string $upc;
+    public string $sku;
+    public string $name;
+    public string $description;
 
-    /** @var string */
-    public $sku;
+    public float $price;
+    public float $map;
+    public float $msrp;
 
-    /** @var string */
-    public $name;
+    public int $quantity;
 
-    /** @var string */
-    public $description;
-
-    /** @var float */
-    public $price;
-
-    /** @var float */
-    public $map;
-
-    /** @var float */
-    public $msrp;
-
-    /** @var int */
-    public $quantity;
-
-    /** @var float */
-    public $shipping_cost;
-
-    /** @var float */
-    public $true_cost;
+    public float $shipping_cost;
+    public float $true_cost;
 
     /**
      * All available image URLs for this product from this distributor.
      *
-     * - The constructor-seeded $image_url (if non-empty) will be the first entry.
-     * - Distributors like RSR can append additional URLs (alternate angles, etc.)
-     *   via add_image_url().
-     * - Distributors like Lipsey's will typically only have a single URL.
-     *
      * @var string[]
      */
-    public $image_urls = array();
+    public array $image_urls = [];
 
-    /** @var bool */
-    public $ffl_required;
+    public bool $ffl_required;
 
     /**
      * Recommended unified category path for this product.
      *
      * Example:
      *   [ 'Firearms', 'Handguns', 'Pistols' ]
-     *   [ 'Magazines', 'Rifle' ]
-     *   [ 'Ammo' ]
      *
      * @var string[]|null
      */
-    public $recommended_category;
+    public ?array $recommended_category;
 
     /**
      * Arbitrary raw payload from the distributor.
@@ -75,22 +55,6 @@ class DistributorProductPayload
      */
     public $raw;
 
-    /**
-     * @param string        $upc
-     * @param string        $sku
-     * @param string        $name
-     * @param string        $description
-     * @param float         $price
-     * @param float         $map
-     * @param float         $msrp
-     * @param int           $quantity
-     * @param float         $shipping_cost
-     * @param float         $true_cost
-     * @param string        $image_url            Initial/primary image URL (optional; may be empty string).
-     * @param bool          $ffl_required
-     * @param string[]|null $recommended_category Unified category path, or null if unknown.
-     * @param mixed         $raw                  Original distributor payload (optional).
-     */
     public function __construct(
         string $upc,
         string $sku,
@@ -107,21 +71,25 @@ class DistributorProductPayload
         ?array $recommended_category,
         $raw = null
     ) {
-        $this->upc                  = $upc;
-        $this->sku                  = $sku;
-        $this->name                 = $name;
-        $this->description          = $description;
-        $this->price                = $price;
-        $this->map                  = $map;
-        $this->msrp                 = $msrp;
-        $this->quantity             = $quantity;
-        $this->shipping_cost        = $shipping_cost;
-        $this->true_cost            = $true_cost;
-        $this->ffl_required         = (bool) $ffl_required;
-        $this->recommended_category = $recommended_category;
-        $this->raw                  = $raw;
+        $this->upc = trim($upc);
+        $this->sku = trim($sku);
+        $this->name = trim($name);
+        $this->description = trim($description);
 
-        $this->image_urls = array();
+        $this->price = self::finite_float($price);
+        $this->map = self::finite_float($map);
+        $this->msrp = self::finite_float($msrp);
+
+        $this->quantity = max(0, (int) $quantity);
+
+        $this->shipping_cost = max(0.0, self::finite_float($shipping_cost));
+        $this->true_cost = max(0.0, self::finite_float($true_cost));
+
+        $this->ffl_required = (bool) $ffl_required;
+        $this->recommended_category = $recommended_category;
+        $this->raw = $raw;
+
+        $this->image_urls = [];
 
         // Seed image_urls with the constructor-passed image URL if present.
         $image_url = trim($image_url);
@@ -150,23 +118,26 @@ class DistributorProductPayload
     }
 
     /**
-     * Convenience helper: get the "primary" image URL,
+     * Convenience helper: get the primary image URL,
      * i.e., the first non-empty entry in image_urls.
      */
     public function get_primary_image_url(): ?string
     {
-        if (empty($this->image_urls) || ! is_array($this->image_urls)) {
-            return null;
-        }
-
         foreach ($this->image_urls as $url) {
             $url = trim((string) $url);
             if ($url !== '') {
                 return $url;
             }
         }
-
         return null;
     }
-}
 
+    private static function finite_float(float $v): float
+    {
+        // PHP has is_finite() but not always enabled depending on version; guard defensively.
+        if (! is_finite($v)) {
+            return 0.0;
+        }
+        return $v;
+    }
+}

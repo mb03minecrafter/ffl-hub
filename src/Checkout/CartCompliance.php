@@ -2,15 +2,27 @@
 
 namespace FFLHub\Checkout;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
 use FFLHub\Plugin;
-use FFLHub\Product\ProductMeta;
-use FFLHub\Admin\FFLImporterPage;
 use FFLHub\Settings\Options;
+use FFLHub\Distributor\Product\DistributorOrderRequest;
+use FFLHub\Distributor\Product\DistributorShipTo;
+use FFLHub\Distributor\Product\DistributorOrderValidationResult;
 
+/**
+ * Cart + checkout validation for distributor compliance rules.
+ *
+ * Design:
+ * - Build ONE DistributorOrderRequest (DOR) per distributor from the cart
+ * - Do NOT split into FFL/non-FFL here (distributors split internally via DOR->ffl_lines()/non_ffl_lines())
+ * - If cart contains ANY FFL-required lines for a distributor, we must have:
+ *     - receiving_ffl_number
+ *     - ship_to_ffl (resolved from imported FFL table)
+ *   Otherwise: block checkout (do not "pass" validation by validating only accessories).
+ */
 final class CartCompliance
 {
     /**
@@ -23,437 +35,407 @@ final class CartCompliance
      */
     private const DEBUG_CONST = 'FFLHUB_CART_COMPLIANCE_DEBUG';
 
+    /**
+     * WC session key (set by CheckoutFields::handle_set_additional_field_value()).
+     */
+    private const SESSION_KEY_RECEIVING_FFL = 'fflhub_receiving_ffl_number';
+
+    /**
+     * Blocks Additional Checkout Fields API field id.
+     */
+    private const FIELD_ID_RECEIVING_FFL = 'ffl-hub/receiving-ffl';
+
     public static function init(): void
     {
         // Cart + many checkout flows (classic + some Blocks paths).
-        add_action('woocommerce_check_cart_items', [__CLASS__, 'validate_cart_for_shipping_restrictions']);
+        add_action('woocommerce_check_cart_items', [__CLASS__, 'validate_cart_for_compliance']);
 
         // Blocks-safe: hard-stop checkout submission.
         add_action('woocommerce_after_checkout_validation', [__CLASS__, 'validate_checkout_submission'], 10, 2);
     }
 
-    /**
-     * Enforce distributor-provided per-state shipping restrictions (when available).
-     *
-     * Compliance policy:
-     * - For each item, check ALL enabled distributors.
-     * - If ANY distributor returns explicit FALSE => BLOCK.
-     * - TRUE means that distributor allows.
-     * - NULL means unknown/no data (ignored).
-     *
-     * Customer-facing output: only product name + state restriction.
-     */
-    public static function validate_cart_for_shipping_restrictions(): void
+    public static function validate_cart_for_compliance(): void
     {
-        if (! function_exists('WC') || ! WC()->cart) {
+        if (!function_exists('WC') || !WC()->cart) {
             self::debug_log('skip: WC/cart not available');
             return;
         }
 
-        $dest_state = self::resolve_destination_state();
-        if (! $dest_state) {
-            self::debug_log('skip: dest_state unresolved');
+        $handler = Plugin::instance()->distributor_handler ?? null;
+        if (!$handler || !method_exists($handler, 'get_distributor_by_id')) {
+            self::debug_log('skip: distributor handler missing');
             return;
         }
 
-        $handler = Plugin::instance()->distributor_handler;
-        $all_distributors = $handler->get_distributors(); // array<string, DistributorBase>
+        // Cart page: generally no checkout payload; use WC()->customer values where possible.
+        $checkout_data = [];
 
-        if (empty($all_distributors)) {
-            self::debug_log('skip: no distributors registered');
+        $ship_customer = CheckoutOrderRequestBuilder::build_ship_to_customer_or_null($checkout_data);
+        if (!($ship_customer instanceof DistributorShipTo)) {
+            self::debug_log('skip: customer ship-to incomplete (cart page)');
             return;
         }
 
-        self::debug_log('begin cart validation', [
-            'dest_state' => $dest_state,
-            'registered_distributors' => implode(',', array_keys($all_distributors)),
-        ]);
+        $receiving_ffl_number = CheckoutOrderRequestBuilder::resolve_receiving_ffl_number(
+            $checkout_data,
+            self::FIELD_ID_RECEIVING_FFL,
+            self::SESSION_KEY_RECEIVING_FFL,
+            [__CLASS__, 'debug_log']
+        );
 
-        $violations = self::evaluate_cart_violations($dest_state, $all_distributors);
-
-        self::debug_log('cart validation summary', [
-            'violations' => count($violations),
-        ]);
-
-        if (! empty($violations)) {
-            foreach ($violations as $v) {
-                wc_add_notice(
-                    sprintf(
-                        __('"%1$s" cannot be shipped to %2$s due to state restrictions.', 'ffl-hub'),
-                        $v['name'],
-                        strtoupper($dest_state)
-                    ),
-                    'error'
-                );
+        $ship_ffl = null;
+        if ($receiving_ffl_number) {
+            $ship_ffl = CheckoutOrderRequestBuilder::build_ship_to_ffl_or_null($receiving_ffl_number, [__CLASS__, 'debug_log']);
+            if (!($ship_ffl instanceof DistributorShipTo)) {
+                self::debug_log('cart validation: receiving FFL present but DB lookup failed', [
+                    'ffl_number' => CheckoutOrderRequestBuilder::dbg_val($receiving_ffl_number),
+                ]);
+                $ship_ffl = null;
             }
+        } else {
+            self::debug_log('cart validation: no receiving FFL resolved', [
+                'session_ffl' => CheckoutOrderRequestBuilder::dbg_val(
+                    CheckoutOrderRequestBuilder::get_session_receiving_ffl_number(self::SESSION_KEY_RECEIVING_FFL)
+                ),
+            ]);
+        }
+
+        $blocked = self::run_distributor_validations($handler, $ship_customer, $ship_ffl, $receiving_ffl_number);
+
+        foreach ($blocked as $b) {
+            $pretty = isset($b['pretty']) && is_array($b['pretty']) ? $b['pretty'] : [];
+
+            if (!empty($pretty)) {
+                foreach ($pretty as $msg) {
+                    wc_add_notice((string) $msg, 'error');
+                }
+                continue;
+            }
+
+            // fallback
+            wc_add_notice(
+                sprintf(
+                    __('Checkout blocked by %1$s validation: %2$s', 'ffl-hub'),
+                    (string) ($b['label'] ?? $b['id']),
+                    (string) ($b['message'] ?? 'Validation failed')
+                ),
+                'error'
+            );
         }
     }
 
-    /**
-     * Blocks-safe checkout submission validator.
-     *
-     * Uses WP_Error to hard-stop order placement in both Classic and Checkout Blocks.
-     *
-     * @param array $data Posted checkout data (varies by checkout type)
-     * @param \WP_Error $errors
-     */
     public static function validate_checkout_submission($data, $errors): void
     {
-        if (! function_exists('WC') || ! WC()->cart) {
+        if (!function_exists('WC') || !WC()->cart) {
             self::debug_log('checkout validation skip: WC/cart not available');
             return;
         }
 
-        $dest_state = self::resolve_destination_state_from_checkout_data(is_array($data) ? $data : []);
-        if (! $dest_state) {
-            self::debug_log('checkout validation skip: dest_state unresolved');
+        $handler = Plugin::instance()->distributor_handler ?? null;
+        if (!$handler || !method_exists($handler, 'get_distributor_by_id')) {
+            self::debug_log('checkout validation skip: distributor handler missing');
             return;
         }
 
-        $handler = Plugin::instance()->distributor_handler;
-        $all_distributors = $handler->get_distributors();
+        $checkout_data = is_array($data) ? $data : [];
 
-        if (empty($all_distributors)) {
-            self::debug_log('checkout validation skip: no distributors registered');
+        $ship_customer = CheckoutOrderRequestBuilder::build_ship_to_customer_or_null($checkout_data);
+        if (!($ship_customer instanceof DistributorShipTo)) {
+            self::debug_log('checkout validation skip: customer ship-to incomplete');
             return;
         }
 
-        self::debug_log('begin checkout submission validation', [
-            'dest_state' => $dest_state,
-            'registered_distributors' => implode(',', array_keys($all_distributors)),
-        ]);
+        // Resolve from $data/POST/REQUEST/session (in that order).
+        $receiving_ffl_number = CheckoutOrderRequestBuilder::resolve_receiving_ffl_number(
+            $checkout_data,
+            self::FIELD_ID_RECEIVING_FFL,
+            self::SESSION_KEY_RECEIVING_FFL,
+            [__CLASS__, 'debug_log']
+        );
 
-        $violations = self::evaluate_cart_violations($dest_state, $all_distributors);
+        // Persist for later cart-page validation.
+        CheckoutOrderRequestBuilder::persist_receiving_ffl_to_session(
+            $receiving_ffl_number,
+            self::SESSION_KEY_RECEIVING_FFL,
+            [__CLASS__, 'debug_log']
+        );
 
-        self::debug_log('checkout validation summary', [
-            'violations' => count($violations),
-        ]);
-
-        if (empty($violations)) {
-            return;
+        $ship_ffl = null;
+        if ($receiving_ffl_number) {
+            $ship_ffl = CheckoutOrderRequestBuilder::build_ship_to_ffl_or_null($receiving_ffl_number, [__CLASS__, 'debug_log']);
+            if (!($ship_ffl instanceof DistributorShipTo)) {
+                self::debug_log('checkout validation: receiving FFL provided but DB lookup failed', [
+                    'ffl_number' => CheckoutOrderRequestBuilder::dbg_val($receiving_ffl_number),
+                ]);
+                $ship_ffl = null;
+            }
+        } else {
+            self::debug_log('checkout validation: no receiving FFL resolved', [
+                'session_ffl' => CheckoutOrderRequestBuilder::dbg_val(
+                    CheckoutOrderRequestBuilder::get_session_receiving_ffl_number(self::SESSION_KEY_RECEIVING_FFL)
+                ),
+                'data_keys' => implode(',', array_keys($checkout_data)),
+            ]);
         }
 
-        foreach ($violations as $v) {
-            $errors->add(
-                'fflhub_shipping_restriction',
+        $blocked = self::run_distributor_validations($handler, $ship_customer, $ship_ffl, $receiving_ffl_number);
+
+        foreach ($blocked as $b) {
+            $pretty = isset($b['pretty']) && is_array($b['pretty']) ? $b['pretty'] : [];
+
+            if (!empty($pretty)) {
+                foreach ($pretty as $msg) {
+                    wc_add_notice((string) $msg, 'error');
+                }
+                continue;
+            }
+
+            // fallback
+            wc_add_notice(
                 sprintf(
-                    __('"%1$s" cannot be shipped to %2$s due to state restrictions.', 'ffl-hub'),
-                    $v['name'],
-                    strtoupper($dest_state)
-                )
+                    __('Checkout blocked by %1$s validation: %2$s', 'ffl-hub'),
+                    (string) ($b['label'] ?? $b['id']),
+                    (string) ($b['message'] ?? 'Validation failed')
+                ),
+                'error'
             );
         }
     }
 
     /**
-     * Returns violations for the current cart, deduped by UPC.
+     * One DOR per cart distributor (no split here).
      *
-     * Each violation: ['name' => string, 'upc' => string, 'blocked_by' => string]
-     * NOTE: 'blocked_by' is ONLY for internal/debug use; customer notices do not include it.
+     * NEW:
+     * - For each cart distributor DOR, validate it against ALL enabled distributors.
      *
-     * @param string $dest_state
-     * @param array<string,mixed> $all_distributors
-     * @return array<int,array{name:string,upc:string,blocked_by:string}>
+     * If any cart distributor has FFL-required lines and we can't resolve receiving FFL:
+     *   - block checkout with a clear message
+     *   - do NOT call any distributor validations for that DOR (otherwise we'd validate only accessories)
+     *
+     * @return array<int,array{id:string,label:string,message:string,codes:array,details:array,bucket:string,pretty?:array}>
      */
-    private static function evaluate_cart_violations(string $dest_state, array $all_distributors): array
+    private static function run_distributor_validations($handler, DistributorShipTo $ship_customer, ?DistributorShipTo $ship_ffl, ?string $receiving_ffl_number): array
     {
-        $violations = [];
-        $seen_upc = [];
-
-        foreach (WC()->cart->get_cart() as $cart_item_key => $cart_item) {
-            $product_id = isset($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
-            if ($product_id <= 0) {
+        $by_dist = CheckoutOrderRequestBuilder::build_lines_grouped_by_distributor_from_cart([__CLASS__, 'debug_log']);
+        if (empty($by_dist)) {
+            self::debug_log('skip: no FFLHub-managed cart items with source distributor');
+            return [];
+        }
+        // Pre-resolve the list of enabled distributor instances once.
+        $enabled_distributors = [];
+        foreach ($handler->get_distributors()  as $id => $d) { //CHANGED THIS
+            $id = strtolower(trim((string) $id));
+            if ($id === '') {
+                continue;
+            }
+            if (!Options::is_distributor_enabled($id)) {
+                continue;
+            }
+            if (!$d || !method_exists($d, 'validate_order_request')) {
                 continue;
             }
 
-            $product = wc_get_product($product_id);
-            if (! $product) {
+            $enabled_distributors[$id] = [
+                'instance' => $d,
+                'label'    => method_exists($d, 'label') ? (string) $d->label() : $id,
+            ];
+        }
+
+        if (empty($enabled_distributors)) {
+            self::debug_log('skip: no enabled distributors with validate_order_request');
+            return [];
+        }
+
+        $blocked = [];
+
+        foreach ($by_dist as $cart_dist_id => $ctx) {
+            $cart_dist_id = strtolower(trim((string) $cart_dist_id));
+            if ($cart_dist_id === '') {
                 continue;
             }
 
-            // Only enforce for FFLHub-managed products.
-            $managed = (int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
-            if ($managed !== 1) {
+            $lines   = isset($ctx['lines']) && is_array($ctx['lines']) ? $ctx['lines'] : [];
+            $has_ffl = !empty($ctx['has_ffl']);
+
+            if (empty($lines)) {
                 continue;
             }
 
-            $upc = trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true));
-            if ($upc === '') {
-                continue;
-            }
-
-            // Deduplicate by UPC so customers don't see duplicates.
-            if (isset($seen_upc[$upc])) {
-                continue;
-            }
-
-            // Optional debug-only context
-            $preferred_id = strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)));
-
-            self::debug_log('checking item (all distributors)', [
-                'product_id' => $product_id,
-                'name'       => $product->get_name(),
-                'upc'        => $upc,
-                'dest_state' => $dest_state,
-                'preferred'  => $preferred_id,
+            self::debug_log('cart dist summary', [
+                'cart_dist_id'   => $cart_dist_id,
+                'lines_count'    => count($lines),
+                'has_ffl_lines'  => $has_ffl ? 1 : 0,
+                'ffl_resolved'   => $receiving_ffl_number ? 1 : 0,
+                'ship_ffl_present' => ($ship_ffl instanceof DistributorShipTo) ? 1 : 0,
+                'enabled_dist_count' => count($enabled_distributors),
             ]);
 
-            $blocked_by = self::blocked_by_any_distributor($upc, $dest_state, $all_distributors);
-
-            if ($blocked_by !== null) {
-                $seen_upc[$upc] = true;
-
-                self::debug_log('violation (most restrictive wins)', [
-                    'product_id' => $product_id,
-                    'upc'        => $upc,
-                    'dest_state' => $dest_state,
-                    'blocked_by' => $blocked_by,
-                    'preferred'  => $preferred_id,
-                ]);
-
-                $violations[] = [
-                    'name'       => $product->get_name(),
-                    'upc'        => $upc,
-                    'blocked_by' => $blocked_by,
+            // If there are FFL-required lines, require receiving FFL + ship_to_ffl.
+            if ($has_ffl && (!$receiving_ffl_number || !($ship_ffl instanceof DistributorShipTo))) {
+                $blocked[] = [
+                    'id'      => $cart_dist_id,
+                    'label'   => $cart_dist_id,
+                    'message' => 'This cart contains items that must ship to a receiving FFL. Please select a receiving FFL to continue checkout.',
+                    'codes'   => ['FFLHUB_RECEIVING_FFL_REQUIRED'],
+                    'details' => [
+                        'has_ffl_lines' => true,
+                        'ffl_number_present' => $receiving_ffl_number ? 1 : 0,
+                        'ship_ffl_present' => ($ship_ffl instanceof DistributorShipTo) ? 1 : 0,
+                    ],
+                    'bucket'  => 'ffl_missing',
+                    'pretty'  => [
+                        'This cart contains items that must ship to a receiving FFL. Please select a receiving FFL to continue checkout.',
+                    ],
                 ];
-            }
-        }
 
-        return $violations;
-    }
+                self::debug_log('block: missing receiving FFL for cart dist', [
+                    'cart_dist_id' => $cart_dist_id,
+                    'session_ffl'  => CheckoutOrderRequestBuilder::dbg_val(
+                        CheckoutOrderRequestBuilder::get_session_receiving_ffl_number(self::SESSION_KEY_RECEIVING_FFL)
+                    ),
+                ]);
 
-    /**
-     * Check ALL enabled distributors for explicit blocking.
-     *
-     * Returns the distributor ID that blocked (first hit), or null if none explicitly block.
-     *
-     * @param string $upc
-     * @param string $dest_state
-     * @param array<string,mixed> $all_distributors
-     */
-    private static function blocked_by_any_distributor(
-        string $upc,
-        string $dest_state,
-        array $all_distributors
-    ): ?string {
-        foreach ($all_distributors as $id => $dist) {
-            $id = (string) $id;
-
-            // Only use enabled distributors (avoids stale/disabled feeds).
-            if (! Options::is_distributor_enabled($id)) {
-                self::debug_log('skip distributor (disabled)', ['id' => $id]);
+                // Don't validate this DOR against anyone (it would be incomplete).
                 continue;
             }
 
-            try {
-                $can_ship = $dist->can_ship_to_state_by_upc($upc, $dest_state);
-            } catch (\Throwable $e) {
-                self::debug_log('check threw', [
-                    'id'         => $id,
-                    'upc'        => $upc,
-                    'dest_state' => $dest_state,
-                    'error'      => $e->getMessage(),
+            // Choose destination state context.
+            $dest_state = strtoupper(trim((string) (
+                ($has_ffl && $ship_ffl instanceof DistributorShipTo) ? $ship_ffl->state : $ship_customer->state
+            )));
+
+            if (!preg_match('/^[A-Z]{2}$/', $dest_state)) {
+                self::debug_log('skip DOR (dest_state invalid)', [
+                    'cart_dist_id' => $cart_dist_id,
+                    'dest_state'   => $dest_state,
                 ]);
-                $can_ship = null;
+                continue;
             }
 
-            self::debug_log('check result', [
-                'id'         => $id,
-                'upc'        => $upc,
-                'dest_state' => $dest_state,
-                'can_ship'   => var_export($can_ship, true),
-            ]);
+            $merchant_order_id = CheckoutOrderRequestBuilder::current_merchant_order_id($cart_dist_id);
 
-            // Most restrictive wins: block immediately if any distributor says no.
-            if ($can_ship === false) {
-                return $id;
-            }
-        }
+            // Build the DOR ONCE, then feed to all distributors.
+            $req = new DistributorOrderRequest(
+                $lines,
+                $ship_customer,
+                ($ship_ffl instanceof DistributorShipTo) ? $ship_ffl : null,
+                $merchant_order_id,
+                $dest_state,
+                $receiving_ffl_number ? (string) $receiving_ffl_number : '',
+                'FFLHub checkout validation (single DOR; validate against all distributors)'
+            );
 
-        self::debug_log('no explicit block', [
-            'upc'        => $upc,
-            'dest_state' => $dest_state,
-        ]);
 
-        return null;
-    }
 
-    /**
-     * Destination state:
-     * - If cart requires FFL: try receiving FFL premise_state (best effort)
-     * - Else: customer shipping state
-     */
-    private static function resolve_destination_state(): ?string
-    {
-        $requires_ffl = self::cart_requires_ffl();
 
-        self::debug_log('resolve_destination_state', [
-            'requires_ffl' => $requires_ffl ? 1 : 0,
-        ]);
+            // Validate this DOR against ALL enabled distributors.
+            foreach ($enabled_distributors as $voter_id => $voter) {
+                $dist  = $voter['instance'];
+                $label = $voter['label'];
 
-        if ($requires_ffl) {
-            $ffl_number = self::read_receiving_ffl_number_from_request();
-            self::debug_log('ffl number from request', [
-                'ffl_number' => $ffl_number ?: '(none)',
-            ]);
-
-            if ($ffl_number) {
-                $state = self::lookup_ffl_premise_state($ffl_number);
-                self::debug_log('ffl premise state lookup', [
-                    'ffl_number' => $ffl_number,
-                    'state'      => $state ?: '(none)',
+                self::debug_log('validate voter', [
+                    'cart_dist_id' => $cart_dist_id,
+                    'voter_id'     => $voter_id,
+                    'merchant_order_id' => $merchant_order_id,
                 ]);
 
-                if ($state) {
-                    return $state;
+
+
+                $lines_for_voter = method_exists($dist, 'filter_lines_for_validation')
+                    ? $dist->filter_lines_for_validation($req->valid_lines())
+                    : $req->valid_lines();
+
+                if (empty($lines_for_voter)) {
+                    self::debug_log('skip voter (no validatable lines)', [
+                        'cart_dist_id' => $cart_dist_id,
+                        'voter_id' => $voter_id,
+                    ]);
+                    continue;
+                }
+
+                // Rebuild DOR for voter with filtered lines (keep ship-to contexts the same)
+                $voter_req = new DistributorOrderRequest(
+                    $lines_for_voter,
+                    $req->ship_to_customer,
+                    $req->ship_to_ffl,
+                    $req->merchant_order_id,
+                    $req->dest_state,
+                    $req->receiving_ffl_number,
+                    $req->notes
+                );
+
+                $res = self::call_validate($dist, $voter_id, $voter_req);
+                if ($res !== null && $res['blocked'] === true) {
+                    $pretty_msgs = CheckoutOrderRequestBuilder::build_pretty_validation_messages(
+                        $voter_id,
+                        $label,
+                        $res,
+                        'single',
+                        $ship_customer,
+                        $ship_ffl
+                    );
+
+                    $blocked[] = [
+                        'id'      => $voter_id,
+                        'label'   => $label,
+                        'message' => $res['message'],
+                        'codes'   => $res['codes'],
+                        'details' => $res['details'],
+                        'bucket'  => 'single',
+                        'pretty'  => $pretty_msgs,
+                        // helpful context for debugging
+                        'cart_dist_id' => $cart_dist_id,
+                    ];
                 }
             }
         }
 
-        if (! function_exists('WC') || ! WC()->customer) {
-            self::debug_log('resolve_destination_state: WC customer not available');
+        return $blocked;
+    }
+
+    /**
+     * @return array{blocked:bool,message:string,codes:array,details:array}|null
+     */
+    private static function call_validate($dist, string $dist_id, DistributorOrderRequest $req): ?array
+    {
+        try {
+            /** @var DistributorOrderValidationResult $vr */
+            $vr = $dist->validate_order_request($req);
+        } catch (\Throwable $e) {
+            self::debug_log('validate_order_request threw exception', [
+                'id' => $dist_id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'blocked' => true,
+                'message' => 'Validation error: ' . $e->getMessage(),
+                'codes'   => ['FFLHUB_VALIDATE_EXCEPTION'],
+                'details' => [],
+            ];
+        }
+
+        if (!($vr instanceof DistributorOrderValidationResult)) {
+            self::debug_log('validate_order_request returned unexpected type; skipping block', [
+                'id' => $dist_id,
+                'type' => is_object($vr) ? get_class($vr) : gettype($vr),
+            ]);
             return null;
         }
 
-        $raw = (string) WC()->customer->get_shipping_state();
-        $state = strtoupper(trim($raw));
-
-        self::debug_log('shipping state from customer', [
-            'raw'   => $raw,
-            'state' => $state,
+        self::debug_log('validation result', [
+            'id' => $dist_id,
+            'ok' => $vr->ok ? 'true' : 'false',
+            'message' => $vr->message,
+            'codes' => implode(',', is_array($vr->codes) ? $vr->codes : []),
         ]);
 
-        return preg_match('/^[A-Z]{2}$/', $state) ? $state : null;
-    }
-
-    /**
-     * Prefer reading state from posted checkout data when available.
-     * This helps when customer session state lags behind form state in some checkouts.
-     */
-    private static function resolve_destination_state_from_checkout_data(array $data): ?string
-    {
-        // If cart requires FFL, keep FFL-based destination first.
-        $requires_ffl = self::cart_requires_ffl();
-
-        if ($requires_ffl) {
-            $ffl_number = self::read_receiving_ffl_number_from_request();
-            if ($ffl_number) {
-                $state = self::lookup_ffl_premise_state($ffl_number);
-                if ($state) {
-                    return $state;
-                }
-            }
-        }
-
-        $candidates = [];
-
-        $candidates[] = $data['shipping_state'] ?? null;
-        $candidates[] = $data['billing_state'] ?? null;
-
-        if (isset($data['shipping']) && is_array($data['shipping'])) {
-            $candidates[] = $data['shipping']['state'] ?? null;
-        }
-        if (isset($data['billing']) && is_array($data['billing'])) {
-            $candidates[] = $data['billing']['state'] ?? null;
-        }
-
-        foreach ($candidates as $raw) {
-            $state = strtoupper(trim((string) $raw));
-            if (preg_match('/^[A-Z]{2}$/', $state)) {
-                self::debug_log('dest_state from checkout data', ['state' => $state]);
-                return $state;
-            }
-        }
-
-        // Fallback to customer session resolver.
-        return self::resolve_destination_state();
-    }
-
-    private static function cart_requires_ffl(): bool
-    {
-        if (! function_exists('WC') || ! WC()->cart) {
-            return false;
-        }
-
-        foreach (WC()->cart->get_cart() as $cart_item) {
-            $product_id = isset($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
-            if ($product_id <= 0) {
-                continue;
-            }
-
-            $product = wc_get_product($product_id);
-            if (! $product) {
-                continue;
-            }
-
-            $ffl_required = (int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true);
-            if ($ffl_required === 1) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Best-effort read of the receiving FFL number from checkout request payload.
-     * (Blocks payload varies; this tries multiple common shapes.)
-     */
-    private static function read_receiving_ffl_number_from_request(): ?string
-    {
-        $candidates = [];
-
-        if (isset($_POST['additional_fields']) && is_array($_POST['additional_fields'])) {
-            $candidates[] = $_POST['additional_fields']['ffl-hub/receiving-ffl'] ?? null;
-        }
-
-        if (isset($_POST['additional_fields']) && is_string($_POST['additional_fields'])) {
-            $decoded = json_decode((string) $_POST['additional_fields'], true);
-            if (is_array($decoded)) {
-                $candidates[] = $decoded['ffl-hub/receiving-ffl'] ?? null;
-            }
-        }
-
-        $candidates[] = $_POST['ffl-hub/receiving-ffl'] ?? null;
-        $candidates[] = $_REQUEST['ffl-hub/receiving-ffl'] ?? null;
-
-        foreach ($candidates as $raw) {
-            $val = strtoupper(trim(sanitize_text_field((string) $raw)));
-            if ($val !== '' && preg_match('/^[A-Z0-9-]+$/', $val)) {
-                return $val;
-            }
-        }
-
-        return null;
-    }
-
-    private static function lookup_ffl_premise_state(string $ffl_number): ?string
-    {
-        global $wpdb;
-
-        $ffl_number = strtoupper(trim(sanitize_text_field($ffl_number)));
-        if ($ffl_number === '') {
-            return null;
-        }
-
-        $table = FFLImporterPage::get_table_name_public();
-        if (! $table) {
-            self::debug_log('lookup_ffl_premise_state: missing table');
-            return null;
-        }
-
-        $sql = "
-            SELECT premise_state
-            FROM {$table}
-            WHERE ffl_number = %s
-            LIMIT 1
-        ";
-
-        $prepared = $wpdb->prepare($sql, $ffl_number);
-        $state = $wpdb->get_var($prepared);
-
-        $state = strtoupper(trim((string) $state));
-        return preg_match('/^[A-Z]{2}$/', $state) ? $state : null;
+        return [
+            'blocked' => !$vr->ok,
+            'message' => ($vr->message !== '' ? $vr->message : ($vr->ok ? 'OK' : 'Validation failed')),
+            'codes'   => is_array($vr->codes) ? $vr->codes : [],
+            'details' => is_array($vr->details) ? $vr->details : [],
+        ];
     }
 
     /* ---------------- Debug helpers ---------------- */
@@ -477,14 +459,14 @@ final class CartCompliance
      * @param string $msg
      * @param array<string,mixed> $context
      */
-    private static function debug_log(string $msg, array $context = []): void
+    public static function debug_log(string $msg, array $context = []): void
     {
-        if (! self::debug_enabled()) {
+        if (!self::debug_enabled()) {
             return;
         }
 
         $prefix = '[FFLHub CartCompliance] ';
-        if (! empty($context)) {
+        if (!empty($context)) {
             error_log($prefix . $msg . ' ' . wp_json_encode($context));
             return;
         }
