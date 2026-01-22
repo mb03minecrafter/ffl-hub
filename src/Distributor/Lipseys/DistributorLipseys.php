@@ -118,6 +118,14 @@ class DistributorLipseys extends DistributorBase
      *    - canDropship=false (recommended)
      *    - allocated=true (recommended)
      *    - qty < required
+     *
+     * Fallback (NEW):
+     * - If ANY ValidateItem call returns a quota / rate-limit style failure,
+     *   we defer to our local fulfillment table for stock verification.
+     * - Local fallback checks only:
+     *    - row exists
+     *    - inventory_quantity >= required
+     * - If local cannot prove availability -> BLOCK (fail safe).
      */
     public function validate_order_request(DistributorOrderRequest $request): DistributorOrderValidationResult
     {
@@ -160,7 +168,6 @@ class DistributorLipseys extends DistributorBase
         ]);
 
         if (empty($required_by_upc)) {
-            // This is the exact spot you were hitting.
             return DistributorOrderValidationResult::allow('No valid UPC line items to validate.');
         }
 
@@ -172,6 +179,13 @@ class DistributorLipseys extends DistributorBase
                     'unique_count' => count($required_by_upc),
                     'max_unique' => self::VALIDATEITEM_MAX_UNIQUE_ITEMS,
                 ]
+            );
+        }
+
+        if (! $this->services) {
+            return DistributorOrderValidationResult::block(
+                'Lipseys services not available; cannot access fulfillment table.',
+                ['LIPSEYS_SERVICES_MISSING']
             );
         }
 
@@ -190,10 +204,18 @@ class DistributorLipseys extends DistributorBase
             'required_by_upc' => $required_by_upc,
             'items' => [],
             'cache_ttl_seconds' => self::VALIDATEITEM_CACHE_TTL_SECONDS,
+            'local_fallback' => [
+                'used' => false,
+                'items' => [],
+                'reason' => '',
+            ],
         ];
 
         $blocked_msgs = [];
         $insufficient_msgs = [];
+
+        $quota_triggered = false;
+        $quota_msgs = [];
 
         foreach ($required_by_upc as $upc => $requiredQty) {
             $requiredQty = (int) $requiredQty;
@@ -203,13 +225,35 @@ class DistributorLipseys extends DistributorBase
             if (! is_array($norm)) {
                 $call = LipseysIntegrationAPI::validate_item($client, $upc);
                 $norm = $call['result'];
-                $this->set_cached_validateitem($upc, $norm);
+                if (is_array($norm)) {
+                    $this->set_cached_validateitem($upc, $norm);
+                } else {
+                    $norm = ['ok' => false, 'message' => 'ValidateItem returned invalid result'];
+                }
             }
 
             $details['items'][$upc] = array_merge($norm, [
                 'requiredQty' => $requiredQty,
             ]);
 
+            // Detect quota / rate-limit failures and trigger local fallback
+            $msg_lc = strtolower((string) ($norm['message'] ?? ''));
+            if (
+                ($norm['ok'] ?? false) === false &&
+                (
+                    str_contains($msg_lc, 'quota') ||
+                    str_contains($msg_lc, 'rate') ||
+                    str_contains($msg_lc, 'exceeded') ||
+                    str_contains($msg_lc, 'maximum admitted') ||
+                    str_contains($msg_lc, 'api calls')
+                )
+            ) {
+                $quota_triggered = true;
+                $quota_msgs[] = "UPC={$upc}: " . (string) ($norm['message'] ?? 'quota exceeded');
+                continue; // defer this UPC to local fallback pass
+            }
+
+            // Normal API enforcement
             if (! ($norm['ok'] ?? false)) {
                 $blocked_msgs[] = "UPC={$upc}: " . (string) ($norm['message'] ?? 'ValidateItem failed');
                 continue;
@@ -220,13 +264,11 @@ class DistributorLipseys extends DistributorBase
                 continue;
             }
 
-            // Recommended: enforce dropship eligibility
             if (($norm['canDropship'] ?? null) === false) {
                 $blocked_msgs[] = "UPC={$upc} canDropship=false";
                 continue;
             }
 
-            // Recommended: allocated items are not reliably available
             if (($norm['allocated'] ?? false) === true) {
                 $blocked_msgs[] = "UPC={$upc} allocated=true";
                 continue;
@@ -238,6 +280,76 @@ class DistributorLipseys extends DistributorBase
             }
         }
 
+        // If quota triggered anywhere, we switch to local table verification for ALL items (simple + deterministic)
+        if ($quota_triggered) {
+            $details['local_fallback']['used'] = true;
+            $details['local_fallback']['reason'] = 'ValidateItem quota/rate-limit exceeded';
+            $details['local_fallback']['quota_messages'] = $quota_msgs;
+
+            $this->dbg('validate_order_request: quota exceeded — local fulfillment fallback', [
+                'quota_msgs_count' => count($quota_msgs),
+                'unique_items' => count($required_by_upc),
+            ]);
+
+            $local_fail_msgs = [];
+
+            foreach ($required_by_upc as $upc => $requiredQty) {
+                $requiredQty = (int) $requiredQty;
+
+                $normalized_upc = $this->normalize_upc($upc);
+                if ($normalized_upc === null) {
+                    $local_fail_msgs[] = "UPC={$upc} invalid (normalize_upc null)";
+                    continue;
+                }
+
+                $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+                if (! $row || ! is_array($row)) {
+                    $local_fail_msgs[] = "UPC={$normalized_upc} not found in local fulfillment table";
+                    $details['local_fallback']['items'][$normalized_upc] = [
+                        'requiredQty' => $requiredQty,
+                        'local_qty' => null,
+                        'found' => 0,
+                    ];
+                    continue;
+                }
+
+                // Your table field is inventory_quantity (as used elsewhere)
+                $qty_raw = $this->get_string_field($row, ['inventory_quantity']);
+                $local_qty = is_numeric($qty_raw) ? (int) $qty_raw : null;
+
+                $details['local_fallback']['items'][$normalized_upc] = [
+                    'requiredQty' => $requiredQty,
+                    'local_qty' => $local_qty,
+                    'found' => 1,
+                ];
+
+                if ($local_qty === null) {
+                    $local_fail_msgs[] = "UPC={$normalized_upc} local_qty=UNKNOWN required={$requiredQty}";
+                    continue;
+                }
+
+                if ($local_qty < $requiredQty) {
+                    $local_fail_msgs[] = "UPC={$normalized_upc} local_available={$local_qty} required={$requiredQty}";
+                }
+            }
+
+            if (! empty($local_fail_msgs)) {
+                $msg = 'Lipseys validation failed (local fallback): ' . implode(' | ', array_slice($local_fail_msgs, 0, 8));
+                if (count($local_fail_msgs) > 8) {
+                    $msg .= ' | ...';
+                }
+
+                return DistributorOrderValidationResult::block(
+                    $msg,
+                    ['LIPSEYS_LOCAL_FALLBACK_BLOCKED'],
+                    $details
+                );
+            }
+
+            return DistributorOrderValidationResult::allow('Lipseys validation OK (local fallback).', $details);
+        }
+
+        // Normal path decision (no quota fallback)
         if (! empty($blocked_msgs)) {
             $msg = 'Lipseys validation failed: ' . implode(' | ', array_slice($blocked_msgs, 0, 8));
             if (count($blocked_msgs) > 8) {
@@ -266,6 +378,7 @@ class DistributorLipseys extends DistributorBase
 
         return DistributorOrderValidationResult::allow('Lipseys validation OK.', $details);
     }
+
 
     /**
      * Place Lipsey's orders.
@@ -428,10 +541,10 @@ class DistributorLipseys extends DistributorBase
     {
         return $this->map_order_lines_to_items(
             $lines,
-            fn (string $normalized_upc, string $raw_upc, DistributorOrderLine $line): ?string
-                => $this->lookup_item_number_by_upc($raw_upc),
-            fn (string $item_no, int $qty): array
-                => ['ItemNo' => $item_no, 'Quantity' => $qty],
+            fn(string $normalized_upc, string $raw_upc, DistributorOrderLine $line): ?string
+            => $this->lookup_item_number_by_upc($raw_upc),
+            fn(string $item_no, int $qty): array
+            => ['ItemNo' => $item_no, 'Quantity' => $qty],
             'Cannot map UPC to Lipsey’s item number: %s',
             ! $allow_empty,
             'No valid Lipsey’s line items after normalization.'
@@ -601,7 +714,7 @@ class DistributorLipseys extends DistributorBase
         }
 
         // 2) Public properties (fallback)
-        
+
         if (isset($l->quantity)) {
             return max(0, (int) $l->quantity);
         }
@@ -661,6 +774,4 @@ class DistributorLipseys extends DistributorBase
             error_log($prefix . $msg);
         }
     }
-
-
 }
