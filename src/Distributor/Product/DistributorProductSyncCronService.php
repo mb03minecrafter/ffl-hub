@@ -2,6 +2,9 @@
 
 namespace FFLHub\Distributor\Product;
 
+use FFLHub\Distributor\Models\DistributorOffer;
+use FFLHub\Distributor\Models\DistributorProductPayload;
+use FFLHub\Distributor\Models\UpcLookupResult;
 use WC_Product;
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
 use FFLHub\Product\ProductMeta;

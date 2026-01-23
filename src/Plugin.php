@@ -10,26 +10,30 @@ use FFLHub\Settings\Options;
 use FFLHub\Settings\SettingsRegistrar;
 
 use FFLHub\Admin\WPCronWarning;
-use FFLHub\Admin\DistributorProductsPage;
-use FFLHub\Admin\AdminPage;
-use FFLHub\Admin\FFLImporterPage;
-use FFLHub\Admin\OrderFFLPanel;
-use FFLHub\Admin\ProductMetaBox;
-use FFLHub\Distributor\DistributorHandler;
+
+use FFLHub\Admin\Pages\DistributorProductsPage;
+use FFLHub\Admin\Pages\AdminPage;
+use FFLHub\Admin\Pages\FFLImporterPage;
+
+use FFLHub\Admin\ProductMeta\OrderFFLPanel;
+use FFLHub\Admin\ProductMeta\ProductMetaBox;
+
+
+use FFLHub\Distributor\Core\DistributorHandler;
 
 
 
-use FFLHub\Checkout\CheckoutFields;
-use FFLHub\Checkout\CheckoutMap;
-use FFLHub\Checkout\FFLRequiredCartExtension;
-use FFLHub\Checkout\CartCompliance;
+use FFLHub\Checkout\Fields\CheckoutFields;
+use FFLHub\Checkout\Map\CheckoutMap;
+use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
+use FFLHub\Checkout\Compliance\CartCompliance;
 
 
 
-use FFLHub\FFL\FFLApi;
+use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLTable;
 
-use FFLHub\Shipping\ShippingRegistrar;
+use FFLHub\Shipping\Wordpress\ShippingRegistrar;
 
 
 

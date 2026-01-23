@@ -71,7 +71,7 @@ if (defined('WP_CLI')) {
 }
 
 if (defined('WP_CLI')) {
-    \WP_CLI::add_command('fflhub audit-cart-compliance', \FFLHub\CLI\ValidateOrderAuditCommand::class);
+    \WP_CLI::add_command('fflhub audit-validate-orders', \FFLHub\CLI\ValidateOrderAuditCommand::class);
 }
 
 /**

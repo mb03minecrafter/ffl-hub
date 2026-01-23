@@ -8,10 +8,11 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Plugin;
 use FFLHub\Settings\Options;
-use FFLHub\Distributor\Product\DistributorOrderLine;
-use FFLHub\Distributor\Product\DistributorOrderRequest;
-use FFLHub\Distributor\Product\DistributorShipTo;
-use FFLHub\Distributor\Product\DistributorOrderValidationResult;
+
+use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\DistributorOrderRequest;
+use FFLHub\Distributor\Models\DistributorShipTo;
+use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 
 /**
  * Cart compliance audit generator (dummy carts + vote-style validation).

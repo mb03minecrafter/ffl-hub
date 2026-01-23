@@ -6,7 +6,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-use FFLHub\Distributor\DistributorRegistry;
+use FFLHub\Distributor\Core\DistributorRegistry;
 
 /**
  * Central registry + helpers for all FFL Hub options.

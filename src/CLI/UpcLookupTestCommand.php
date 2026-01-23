@@ -4,8 +4,8 @@ declare(strict_types=1);
 namespace FFLHub\CLI;
 
 use FFLHub\Distributor\Product\DistributorProductHelper;
-use FFLHub\Distributor\Product\UpcLookupResult;
-use FFLHub\Distributor\Product\DistributorOffer;
+use FFLHub\Distributor\Models\UpcLookupResult;
+use FFLHub\Distributor\Models\DistributorOffer;
 
 if (! defined('ABSPATH')) {
     exit;

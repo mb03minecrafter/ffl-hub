@@ -2,6 +2,10 @@
 
 namespace FFLHub\Distributor\Product;
 
+use FFLHub\Distributor\Models\DistributorProductPayload;
+use FFLHub\Distributor\Models\DistributorOffer;
+use FFLHub\Distributor\Models\UpcLookupResult;
+
 use FFLHub\Product\ProductMeta;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Settings\Options;

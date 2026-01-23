@@ -6,9 +6,9 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-use FFLHub\Distributor\Product\DistributorOrderLine;
-use FFLHub\Distributor\Product\DistributorOrderRequest;
-use FFLHub\Distributor\Product\DistributorShipTo;
+use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\DistributorOrderRequest;
+use FFLHub\Distributor\Models\DistributorShipTo;
 
 class OrderSplitAuditCommand
 {

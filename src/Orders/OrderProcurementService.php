@@ -8,10 +8,10 @@ if (! defined('ABSPATH')) {
 
 use FFLHub\Plugin;
 use FFLHub\Product\ProductMeta;
-use FFLHub\Admin\FFLImporterPage;
+use FFLHub\Admin\Pages\FFLImporterPage;
 
-use FFLHub\Distributor\Product\DistributorOrderLine;
-use FFLHub\Distributor\Product\DistributorShipTo;
+use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\DistributorShipTo;
 
 /**
  * Submits distributor purchase orders when Woo orders are ready to fulfill.

@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Product;
 
+use FFLHub\Distributor\Models\DistributorProductPayload;
 use WC_Product;
 use WP_Error;
 

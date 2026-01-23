@@ -6,8 +6,8 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-use FFLHub\Distributor\DistributorRegistry;
-use FFLHub\Distributor\DistributorModuleInterface;
+use FFLHub\Distributor\Core\DistributorRegistry;
+use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 
 /**
  * Registers all FFLHub settings with the WP Settings API.
