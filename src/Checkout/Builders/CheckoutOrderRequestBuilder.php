@@ -12,24 +12,11 @@ use FFLHub\Product\ProductMeta;
 use FFLHub\Admin\Pages\FFLImporterPage;
 
 use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorShipTo;
 use WC_Product;
 
-/**
- * CheckoutOrderRequestBuilder
- *
- * Centralizes the “data assembly” logic that will be shared by:
- * - Cart compliance validation (current)
- * - Place-order execution (future)
- *
- * Responsibilities:
- * - Build DistributorShipTo for customer shipping address from checkout payload or WC()->customer
- * - Resolve receiving FFL number from multiple possible sources (Blocks, POST, REQUEST, WC session)
- * - Persist receiving FFL number into WC session (so cart-page checks can see it)
- * - Lookup receiving FFL address (ship_to_ffl) from imported FFL table
- * - Build normalized DistributorOrderLine sets from the current cart, grouped per distributor
- */
 final class CheckoutOrderRequestBuilder
 {
     /**
@@ -48,9 +35,6 @@ final class CheckoutOrderRequestBuilder
         return ['present' => 1, 'len' => strlen($s), 'tail4' => (string) $tail];
     }
 
-    /**
-     * Build a unique-ish merchant_order_id for validation/place-order.
-     */
     public static function current_merchant_order_id(string $dist_id): string
     {
         $session = (function_exists('WC') && WC()->session) ? (string) WC()->session->get_customer_id() : '';
@@ -60,19 +44,69 @@ final class CheckoutOrderRequestBuilder
     }
 
     /**
+     * Build a stable fingerprint for the current cart's FFL-required lines (FFLHub-managed only).
+     */
+    public static function current_cart_ffl_fingerprint(): string
+    {
+        if (!function_exists('WC') || !WC()->cart) {
+            return '';
+        }
+
+        $parts = [];
+
+        foreach (WC()->cart->get_cart() as $cart_item) {
+            if (!is_array($cart_item)) {
+                continue;
+            }
+
+            $product_id = isset($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
+            if ($product_id <= 0) {
+                continue;
+            }
+
+            $product = wc_get_product($product_id);
+            if (!($product instanceof WC_Product)) {
+                continue;
+            }
+
+            $managed = (int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
+            if ($managed !== 1) {
+                continue;
+            }
+
+            $ffl_required = ((int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true) === 1);
+            if (!$ffl_required) {
+                continue;
+            }
+
+            $dist_id = strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)));
+            if ($dist_id === '') {
+                continue;
+            }
+
+            $upc_raw = trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true));
+            $upc = self::digits_only($upc_raw);
+            if ($upc === '') {
+                continue;
+            }
+
+            $qty = isset($cart_item['quantity']) ? (int) $cart_item['quantity'] : 1;
+            $qty = max(1, $qty);
+
+            $parts[] = $dist_id . '|' . $upc . '|' . (string) $qty;
+        }
+
+        if (empty($parts)) {
+            return '';
+        }
+
+        sort($parts, SORT_STRING);
+
+        return sha1(implode(';', $parts));
+    }
+
+    /**
      * Build ONE set of lines per distributor from the current cart.
-     *
-     * Output shape:
-     *   [
-     *     'rsr' => [
-     *       'lines' => DistributorOrderLine[],
-     *       'has_ffl' => bool,
-     *     ],
-     *     ...
-     *   ]
-     *
-     * Notes:
-     * - Aggregates quantity by (UPC + ffl_required) so same UPC in different buckets stays separate.
      *
      * @param callable(string,array<string,mixed>):void|null $debug
      * @return array<string, array{lines: array<int,DistributorOrderLine>, has_ffl: bool}>
@@ -181,8 +215,61 @@ final class CheckoutOrderRequestBuilder
         return $out;
     }
 
+
+
+
+    
+
     /**
-     * Build customer ship-to using checkout payload (Blocks/classic) with WC()->customer fallback.
+     * Wrap per-distributor lines into DistributorOrderRequest objects.
+     *
+     * This is the seam where you stop doing Woo-specific work and start doing
+     * “domain work” (requests/buckets). From here on, you can use:
+     *   - $req->has_ffl_lines()
+     *   - $req->has_non_ffl_lines()
+     *   - $req->ffl_lines()
+     *   - $req->non_ffl_lines()
+     *
+     * @param array<string, array<int,DistributorOrderLine>> $lines_by_dist
+     * @return array<string,DistributorOrderRequest> keyed by distributor id
+     */
+    public static function build_requests_by_distributor(
+        array $lines_by_dist,
+        DistributorShipTo $ship_to_customer,
+        ?DistributorShipTo $ship_to_ffl,
+        string $merchant_order_id,
+        string $dest_state,
+        string $receiving_ffl_number = '',
+        string $notes = ''
+    ): array {
+        /** @var array<string,DistributorOrderRequest> $out */
+        $out = [];
+
+        foreach ($lines_by_dist as $dist_id => $lines) {
+            $dist_id = strtolower(trim((string) $dist_id));
+            if ($dist_id === '' || empty($lines)) {
+                continue;
+            }
+
+            $out[$dist_id] = new DistributorOrderRequest(
+                $lines,
+                $ship_to_customer,
+                $ship_to_ffl,
+                $merchant_order_id,
+                $dest_state,
+                $receiving_ffl_number,
+                $notes
+            );
+        }
+
+        return $out;
+    }
+
+    
+
+
+    /**
+     * Build customer ship-to using CART/CHECKOUT payload (Blocks/classic) with WC()->customer fallback.
      *
      * @param array<string,mixed> $checkout_data
      */
@@ -251,11 +338,84 @@ final class CheckoutOrderRequestBuilder
         return new DistributorShipTo($name, '', $addr1, $addr2, $city, $state, $zip, $phone, $email);
     }
 
+
     /**
-     * Build ship-to for the receiving FFL from the imported FFL table.
+     * Build customer ship-to from a WooCommerce order (shipping-first, billing fallback).
      *
-     * @param callable(string,array<string,mixed>):void|null $debug
+     * Mirrors build_ship_to_customer_or_null() semantics but uses ORDER data only
+     * (safe for async jobs / retries).
      */
+    public static function build_ship_to_customer_from_order_or_null(\WC_Order $order): ?\FFLHub\Distributor\Models\DistributorShipTo
+    {
+        // Name (prefer shipping, fallback billing)
+        $ship_name = trim((string) $order->get_shipping_first_name() . ' ' . (string) $order->get_shipping_last_name());
+        $bill_name = trim((string) $order->get_billing_first_name() . ' ' . (string) $order->get_billing_last_name());
+        $name = $ship_name !== '' ? $ship_name : $bill_name;
+        if ($name === '') {
+            $name = 'Customer';
+        }
+
+        // Company (prefer shipping, fallback billing)
+        $company = trim((string) $order->get_shipping_company());
+        if ($company === '') {
+            $company = trim((string) $order->get_billing_company());
+        }
+
+        // Address 1/2, city, state, zip (prefer shipping, fallback billing)
+        $addr1 = trim((string) $order->get_shipping_address_1());
+        if ($addr1 === '') $addr1 = trim((string) $order->get_billing_address_1());
+
+        $addr2 = trim((string) $order->get_shipping_address_2());
+        if ($addr2 === '') $addr2 = trim((string) $order->get_billing_address_2());
+
+        $city = trim((string) $order->get_shipping_city());
+        if ($city === '') $city = trim((string) $order->get_billing_city());
+
+        $state = strtoupper(trim((string) $order->get_shipping_state()));
+        if ($state === '') $state = strtoupper(trim((string) $order->get_billing_state()));
+
+        $zip = trim((string) $order->get_shipping_postcode());
+        if ($zip === '') $zip = trim((string) $order->get_billing_postcode());
+
+        // Phone/email are usually billing-centric in Woo.
+        $phone = trim((string) $order->get_billing_phone());
+        $email = trim((string) $order->get_billing_email());
+
+        // Require minimum viable address (same criteria as cart builder).
+        if ($addr1 === '' || $city === '' || !preg_match('/^[A-Z]{2}$/', $state) || $zip === '') {
+            return null;
+        }
+
+        return new \FFLHub\Distributor\Models\DistributorShipTo(
+            $name,
+            $company,
+            $addr1,
+            $addr2,
+            $city,
+            $state,
+            $zip,
+            $phone,
+            $email
+        );
+    }
+
+    /**
+     * Resolve receiving FFL number from order meta and build ship-to from the FFL table.
+     *
+     * @return array{0:?string,1:?DistributorShipTo} [ffl_number_or_null, ship_to_or_null]
+     */
+    public static function build_ship_to_ffl_from_order_or_null(\WC_Order $order, ?callable $debug = null): array
+    {
+        $ffl_number = strtoupper(trim((string) $order->get_meta('fflhub_receiving_ffl_number', true)));
+        if ($ffl_number === '') {
+            return [null, null];
+        }
+
+        $ship_to_ffl = self::build_ship_to_ffl_or_null($ffl_number, $debug);
+
+        return [$ffl_number, $ship_to_ffl instanceof DistributorShipTo ? $ship_to_ffl : null];
+    }
+
     public static function build_ship_to_ffl_or_null(string $ffl_number, ?callable $debug = null): ?DistributorShipTo
     {
         global $wpdb;
@@ -322,24 +482,17 @@ final class CheckoutOrderRequestBuilder
             $name = 'Receiving FFL';
         }
 
+        // NOTE: FFLs don't have address_2; keep empty.
         return new DistributorShipTo($name, $name, $addr1, '', $city, $state, $zip, $phone, '');
     }
 
     /**
      * Resolve receiving FFL number using WC session ONLY.
      *
-     * NOTE:
-     * - This assumes something else (Blocks handler / checkout field handler)
-     *   already persisted the FFL number into session.
-     *
      * @param callable(string,array<string,mixed>):void|null $debug
      */
-    public static function resolve_receiving_ffl_number(
-        string $session_key,
-        ?callable $debug = null
-    ): ?string {
-        // Unused in session-only mode, but kept for signature compatibility.
-
+    public static function resolve_receiving_ffl_number(string $session_key, ?callable $debug = null): ?string
+    {
         $raw = self::get_session_receiving_ffl_number_raw($session_key);
 
         if (is_callable($debug)) {
@@ -374,11 +527,6 @@ final class CheckoutOrderRequestBuilder
         return WC()->session->get($session_key);
     }
 
-    /**
-     * Persist receiving FFL number into WC session.
-     *
-     * @param callable(string,array<string,mixed>):void|null $debug
-     */
     public static function persist_receiving_ffl_to_session(?string $ffl_number, string $session_key, ?callable $debug = null): void
     {
         if (!function_exists('WC') || !WC()->session) {
@@ -474,10 +622,15 @@ final class CheckoutOrderRequestBuilder
         return '';
     }
 
-    /* ---------------- Pretty message helpers ---------------- */
+    /* ---------------- Pretty message helpers (RESTORED) ---------------- */
 
     /**
      * Build friendly, customer-facing messages from a distributor validation result.
+     *
+     * Expects (best effort) a details payload that may include:
+     * - ['non' => ['items' => [...]]]
+     * - ['ffl' => ['items' => [...]]]
+     * - or ['items' => [...]] directly
      *
      * @return string[] list of notices to show
      */
@@ -490,7 +643,7 @@ final class CheckoutOrderRequestBuilder
     ): array {
         $details = is_array($vr->details) ? $vr->details : [];
         if (empty($details)) {
-            return [sprintf('Cannot ship one or more items in your cart (via %s).', $label)];
+            return [sprintf(__('Cannot ship one or more items in your cart (via %s).', 'ffl-hub'), $label)];
         }
 
         $candidate = self::pick_bucket_details($details, $bucket);
@@ -509,16 +662,17 @@ final class CheckoutOrderRequestBuilder
             foreach ($upcs as $upc) {
                 $name = self::find_cart_item_name_by_upc($upc) ?: ('Item (UPC ' . $upc . ')');
                 $out[] = ($state !== '')
-                    ? sprintf('Cannot ship “%s” to your state of residence (%s).', $name, $state)
-                    : sprintf('Cannot ship “%s” to your state of residence.', $name);
+                    ? sprintf(__('Cannot ship “%s” to your state of residence (%s).', 'ffl-hub'), $name, $state)
+                    : sprintf(__('Cannot ship “%s” to your state of residence.', 'ffl-hub'), $name);
             }
             return $out;
         }
 
+        // No UPCs available in details: still give state-level restriction messaging.
         return [
             ($state !== '')
-                ? sprintf('Cannot ship one or more items in your cart to your state of residence (%s).', $state)
-                : 'Cannot ship one or more items in your cart to your state of residence.',
+                ? sprintf(__('Cannot ship one or more items in your cart to your state of residence (%s).', 'ffl-hub'), $state)
+                : __('Cannot ship one or more items in your cart to your state of residence.', 'ffl-hub'),
         ];
     }
 
@@ -561,7 +715,6 @@ final class CheckoutOrderRequestBuilder
 
     /**
      * Try to pull UPCs out of a distributor validation items[] payload.
-     * RSR check-catalog often includes UPC or UPCcode in each item row.
      *
      * @param array<int, mixed> $items
      * @return string[]

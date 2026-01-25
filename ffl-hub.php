@@ -35,13 +35,17 @@ define('FFLHUB_ADMIN_DEBUG', false);
 define('FFLHUB_SHIPPING_DEBUG', false);
 
 
-define('FFLHUB_CART_COMPLIANCE_DEBUG', true);
+define('FFLHUB_CART_COMPLIANCE_DEBUG', false);
 
 define('FFLHUB_ORDERING_DRY_RUN', false);
 
 
-define('FFLHUB_ORDERING_DEBUG', false);
-define('FFLHUB_LIPSEYS_DEBUG', true);
+define('FFLHUB_PLACE_ORCH_DEBUG', true);
+
+
+
+
+define('FFLHUB_LIPSEYS_DEBUG', false);
 
 /**
  * Load plugin text domain.
@@ -71,7 +75,7 @@ if (defined('WP_CLI')) {
 }
 
 if (defined('WP_CLI')) {
-    \WP_CLI::add_command('fflhub audit-validate-orders', \FFLHub\CLI\ValidateOrderAuditCommand::class);
+    \WP_CLI::add_command('fflhub audit-cart-compliance', \FFLHub\CLI\ValidateOrderAuditCommand::class);
 }
 
 /**

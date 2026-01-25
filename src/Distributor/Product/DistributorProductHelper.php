@@ -37,7 +37,6 @@ class DistributorProductHelper
         string $upc,
         DistributorProductPayload $selected_product,
         string $selected_dist_id,
-        string $selected_dist_label,
         array $offers
     ) {
         // A) Guard: prevent duplicates (UPC already exists)

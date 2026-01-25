@@ -176,6 +176,7 @@ class ValidateOrderAuditCommand
             return;
         }
 
+        // UPDATED header: include primary_code + retryable bit
         fputcsv($fh, [
             'timestamp_utc',
 
@@ -203,8 +204,10 @@ class ValidateOrderAuditCommand
             'voter_filter_applied',
 
             // result
-            'result', // ok|blocked|skipped
-            'codes',
+            'result',        // ok|blocked_fatal|blocked_retryable|skipped
+            'primary_code',  // ALLOW|BLOCK_FATAL|BLOCK_RETRYABLE (from $res->code)
+            'retryable',     // 1|0
+            'codes',         // secondary codes joined
             'message',
         ]);
 
@@ -218,6 +221,7 @@ class ValidateOrderAuditCommand
                 return;
             }
 
+            // UPDATED: include primary_code + retryable
             fputcsv($fh_fail, [
                 'timestamp_utc',
                 'cart_dist_id',
@@ -230,6 +234,8 @@ class ValidateOrderAuditCommand
                 'quantity',
                 'ffl_required',
                 'included_in_voter_validation',
+                'primary_code',
+                'retryable',
                 'codes',
                 'message',
             ]);
@@ -245,7 +251,6 @@ class ValidateOrderAuditCommand
             $cart_live_table = $this->find_latest_existing_table($cfg['live_table_prefix']);
             if ($cart_live_table === null) {
                 \WP_CLI::warning("{$cfg['label']}: No live table found for prefix {$cfg['live_table_prefix']}");
-                // still tick through steps? skip cleanly
                 for ($i = 1; $i <= $orders; $i++) {
                     foreach ($voters as $_) {
                         $progress->tick();
@@ -319,7 +324,7 @@ class ValidateOrderAuditCommand
                     $voter_inst  = $voter['instance'];
                     $voter_label = $voter['label'];
 
-                    // Apply per-voter filtering if available (prevents "RSR cannot map UPC..." from blocking unrelated carts)
+                    // Apply per-voter filtering if available
                     $filter_applied = false;
                     $lines_for_voter = $cart_lines;
 
@@ -329,17 +334,17 @@ class ValidateOrderAuditCommand
                             $filtered = $voter_inst->filter_lines_for_validation($cart_lines);
                             $lines_for_voter = is_array($filtered) ? $filtered : [];
                         } catch (\Throwable $e) {
-                            // If filter blows up, be conservative: validate nothing (skip) but record it.
                             $lines_for_voter = [];
                         }
                     }
 
+                    // Defaults for "skipped"
                     $result = 'skipped';
+                    $primary_code = '';
+                    $retryable = '0';
                     $codes  = '';
                     $msg    = 'Skipped: no lines to validate for this distributor.';
-                    $v_ok   = null;
 
-                    $voter_req = null;
                     $voter_ffl = 0;
                     $voter_non = 0;
 
@@ -359,29 +364,52 @@ class ValidateOrderAuditCommand
                         $voter_non = count($voter_req->non_ffl_lines());
 
                         try {
-                            /** @var DistributorOrderValidationResult $res */
                             $res = $voter_inst->validate_order_request($voter_req);
 
-                            $v_ok = (is_object($res) && property_exists($res, 'ok')) ? (bool)$res->ok : false;
-                            $msg  = (is_object($res) && property_exists($res, 'message')) ? (string)$res->message : 'No message';
-                            $carr = (is_object($res) && property_exists($res, 'codes') && is_array($res->codes)) ? $res->codes : [];
+                            // Normalize to your new result type, even if a distributor accidentally returns something else.
+                            if (!($res instanceof DistributorOrderValidationResult)) {
+                                $res = DistributorOrderValidationResult::block(
+                                    'Invalid validation result type returned by distributor.',
+                                    ['FFLHUB_VALIDATE_BAD_RESULT_TYPE'],
+                                    []
+                                );
+                            }
+
+                            $ok = (bool)$res->ok;
+                            $msg = (string)$res->message;
+
+                            $primary_code = is_string($res->code) ? (string)$res->code : '';
+                            if ($primary_code === '') {
+                                $primary_code = $ok
+                                    ? DistributorOrderValidationResult::CODE_ALLOW
+                                    : DistributorOrderValidationResult::CODE_BLOCK_FATAL;
+                            }
+
+                            $retryable = ($res->is_retryable()) ? '1' : '0';
+
+                            $carr = is_array($res->codes) ? $res->codes : [];
                             $codes = !empty($carr) ? implode('|', array_map('strval', $carr)) : '';
 
                             if ($msg === '') {
-                                $msg = $v_ok ? 'OK' : 'Blocked';
+                                $msg = $ok ? 'OK' : 'Blocked';
                             }
 
-                            $result = $v_ok ? 'ok' : 'blocked';
+                            if ($ok) {
+                                $result = 'ok';
+                            } else {
+                                $result = $res->is_retryable() ? 'blocked_retryable' : 'blocked_fatal';
+                            }
                         } catch (\Throwable $e) {
-                            $result = 'blocked';
+                            $result = 'blocked_retryable';
+                            $primary_code = DistributorOrderValidationResult::CODE_BLOCK_RETRYABLE;
+                            $retryable = '1';
                             $msg = 'Validate exception: ' . $e->getMessage();
                             $codes = 'FFLHUB_VALIDATE_EXCEPTION';
-                            $v_ok = false;
                         }
                     }
 
                     // Write failure lines only when voter actually validated and blocked
-                    if ($fh_fail && $result === 'blocked') {
+                    if ($fh_fail && ($result === 'blocked_fatal' || $result === 'blocked_retryable')) {
                         $this->write_validation_failures_for_voter(
                             $fh_fail,
                             $cart_dist_id,
@@ -391,6 +419,8 @@ class ValidateOrderAuditCommand
                             $dest_state,
                             $cart_lines,
                             $lines_for_voter,
+                            $primary_code,
+                            $retryable,
                             $codes,
                             $msg
                         );
@@ -419,6 +449,8 @@ class ValidateOrderAuditCommand
                         $filter_applied ? '1' : '0',
 
                         $result,
+                        $primary_code,
+                        $retryable,
                         $codes,
                         $msg,
                     ]);
@@ -450,7 +482,6 @@ class ValidateOrderAuditCommand
         $out = [];
 
         if (!method_exists($handler, 'get_distributors')) {
-            // fallback: try common patterns if you have them, otherwise just use get_distributor_by_id via known ids.
             return $out;
         }
 
@@ -487,6 +518,8 @@ class ValidateOrderAuditCommand
         string $dest_state,
         array $cart_lines,
         array $lines_for_voter,
+        string $primary_code,
+        string $retryable,
         string $codes,
         string $message
     ): void {
@@ -494,7 +527,6 @@ class ValidateOrderAuditCommand
             return;
         }
 
-        // Build a quick identity map so we can mark which lines were actually validated.
         $validated_keys = [];
         foreach ($lines_for_voter as $l) {
             if (!($l instanceof DistributorOrderLine)) {
@@ -513,8 +545,6 @@ class ValidateOrderAuditCommand
             $norm = $this->normalize_upc_digits_only($raw);
 
             $included = isset($validated_keys[$this->line_identity_key($l)]) ? '1' : '0';
-
-            // Only write rows for lines that were actually validated by this voter.
             if ($included !== '1') {
                 continue;
             }
@@ -531,6 +561,8 @@ class ValidateOrderAuditCommand
                 (int)$l->quantity,
                 $l->ffl_required ? '1' : '0',
                 $included,
+                $primary_code,
+                $retryable,
                 $codes,
                 $message,
             ]);
@@ -539,14 +571,10 @@ class ValidateOrderAuditCommand
 
     private function line_identity_key(DistributorOrderLine $l): string
     {
-        // normalize in a way that is stable across "sloppy UPC" variants
         $norm = $this->normalize_upc_digits_only((string)$l->upc) ?? '';
         return $norm . '|' . ((int)$l->quantity) . '|' . ($l->ffl_required ? '1' : '0');
     }
 
-    /**
-     * Turn a clean UPC into a “sloppy” variant to exercise trimming/cleanup paths.
-     */
     private function make_sloppy_upc(string $upc): string
     {
         $upc = trim($upc);
@@ -557,21 +585,16 @@ class ValidateOrderAuditCommand
         $digits = preg_replace('/\D+/', '', $upc);
         $digits = is_string($digits) ? $digits : $upc;
 
-        // sometimes insert dashes
         if (strlen($digits) >= 10 && mt_rand(1, 10) <= 5) {
             $digits = substr($digits, 0, 4) . '-' . substr($digits, 4, 4) . '-' . substr($digits, 8);
         }
 
-        // add padding
         $pad_left  = (mt_rand(0, 1) === 1) ? ' ' : '';
         $pad_right = (mt_rand(0, 1) === 1) ? ' ' : '';
 
         return $pad_left . $digits . $pad_right;
     }
 
-    /**
-     * Digits-only UPC normalization.
-     */
     private function normalize_upc_digits_only(string $upc): ?string
     {
         $normalized = preg_replace('/\D+/', '', (string)$upc);
@@ -584,10 +607,6 @@ class ValidateOrderAuditCommand
         return $normalized;
     }
 
-    /**
-     * Finds the latest existing table whose name begins with a prefix like "..._v"
-     * by checking v1..vMAX.
-     */
     private function find_latest_existing_table(string $prefix_with_v): ?string
     {
         global $wpdb;
@@ -609,15 +628,6 @@ class ValidateOrderAuditCommand
         return ($latest !== '') ? $latest : null;
     }
 
-    /**
-     * Fetch random in-stock rows from a live table.
-     *
-     * Returns:
-     *  [
-     *    ['upc' => '...', 'qty' => 10, 'ffl_required' => 0/1?],
-     *    ...
-     *  ]
-     */
     private function fetch_random_in_stock_rows(
         string $table,
         string $upc_col,
@@ -640,7 +650,6 @@ class ValidateOrderAuditCommand
 
         $col_sql = implode(', ', $cols);
 
-        // ORDER BY RAND() is fine here: audit use only.
         $sql = "
             SELECT {$col_sql}
             FROM {$table}

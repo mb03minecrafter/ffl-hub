@@ -67,18 +67,7 @@ interface DistributorInterface
 
 
 
-    /**
-     * Determine if this distributor can ship a UPC to a given US state.
-     *
-     * @param string $upc
-     * @param string $state_code Two-letter state code (e.g. "LA", "TX")
-     * @return bool|null
-     *   true  = explicitly allowed
-     *   false = explicitly blocked
-     *   null  = distributor does not provide restriction data
-     */
-    public function can_ship_to_state_by_upc(string $upc, string $state_code): ?bool;
-
+   
 
 
     public function place_order(DistributorOrderRequest $request): DistributorOrderResult;

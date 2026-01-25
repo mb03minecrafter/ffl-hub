@@ -314,7 +314,6 @@ class DistributorProductsPage
             $upc,
             $state['selected_product'],
             $state['selected_dist_id'],
-            $state['selected_dist_label'],
             $state['offers']
         );
 

@@ -18,40 +18,16 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 
 use FFLHub\Checkout\Builders\CheckoutOrderRequestBuilder;
 
-/**
- * Cart + checkout validation for distributor compliance rules.
- *
- * Design:
- * - Build ONE DistributorOrderRequest (DOR) per distributor from the cart
- * - Do NOT split into FFL/non-FFL here (distributors split internally via DOR->ffl_lines()/non_ffl_lines())
- * - If cart contains ANY FFL-required lines for a distributor, we must have:
- *     - receiving_ffl_number
- *     - ship_to_ffl (resolved from imported FFL table)
- *   Otherwise: block checkout (do not "pass" validation by validating only accessories).
- */
 final class CartCompliance
 {
-    /**
-     * Toggle debug logs.
-     *
-     * Enable by setting:
-     *   define('FFLHUB_CART_COMPLIANCE_DEBUG', true);
-     * in wp-config.php (preferred), OR set env var:
-     *   FFLHUB_CART_COMPLIANCE_DEBUG=1
-     */
     private const DEBUG_CONST = 'FFLHUB_CART_COMPLIANCE_DEBUG';
 
-    /**
-     * WC session key (set by CheckoutFields::handle_set_additional_field_value()).
-     */
     private const SESSION_KEY_RECEIVING_FFL = 'fflhub_receiving_ffl_number';
+    private const SESSION_KEY_RECEIVING_FFL_FP = 'fflhub_receiving_ffl_cart_fp';
 
     public static function init(): void
     {
-        // Cart + many checkout flows (classic + some Blocks paths).
         add_action('woocommerce_check_cart_items', [__CLASS__, 'validate_cart_for_compliance']);
-
-        // Blocks-safe: hard-stop checkout submission.
         add_action('woocommerce_after_checkout_validation', [__CLASS__, 'validate_checkout_submission'], 10, 2);
     }
 
@@ -68,16 +44,14 @@ final class CartCompliance
             return;
         }
 
-        // Cart page: generally no checkout payload; use WC()->customer values where possible.
         $checkout_data = [];
 
         $ship_customer = CheckoutOrderRequestBuilder::build_ship_to_customer_or_null($checkout_data);
         if (!($ship_customer instanceof DistributorShipTo)) {
-            // Customer hasn't entered enough shipping info yet (common on cart page).
             return;
         }
 
-        [$receiving_ffl_number, $ship_ffl] = self::resolve_ffl_context($checkout_data, false);
+        [$receiving_ffl_number, $ship_ffl] = self::resolve_ffl_context(true);
 
         $blocked = self::run_distributor_validations($handler, $ship_customer, $ship_ffl, $receiving_ffl_number);
 
@@ -85,8 +59,6 @@ final class CartCompliance
     }
 
     /**
-     * Woo passes $data (array) and $errors (WP_Error) here.
-     *
      * @param array<string,mixed> $data
      */
     public static function validate_checkout_submission(array $data, \WP_Error $errors): void
@@ -102,16 +74,13 @@ final class CartCompliance
             return;
         }
 
-        $checkout_data = $data;
-
-        $ship_customer = CheckoutOrderRequestBuilder::build_ship_to_customer_or_null($checkout_data);
+        $ship_customer = CheckoutOrderRequestBuilder::build_ship_to_customer_or_null($data);
         if (!($ship_customer instanceof DistributorShipTo)) {
             self::debug_log('checkout validation skip: customer ship-to incomplete');
             return;
         }
 
-        // Resolve (session-first in your new builder) + persist for later cart-page validation.
-        [$receiving_ffl_number, $ship_ffl] = self::resolve_ffl_context($checkout_data, true);
+        [$receiving_ffl_number, $ship_ffl] = self::resolve_ffl_context(true);
 
         $blocked = self::run_distributor_validations($handler, $ship_customer, $ship_ffl, $receiving_ffl_number);
 
@@ -119,20 +88,18 @@ final class CartCompliance
     }
 
     /**
-     * Resolve receiving FFL number + ship_to_ffl (if present/valid).
+     * Session-only resolution (intended).
      *
-     * @param array<string,mixed> $checkout_data
      * @return array{0:?string,1:?DistributorShipTo}
      */
-    private static function resolve_ffl_context(array $checkout_data, bool $persist_to_session): array
+    private static function resolve_ffl_context(bool $verify_session): array
     {
-        // NOTE: You changed CheckoutOrderRequestBuilder::resolve_receiving_ffl_number() to session-only.
         $receiving_ffl_number = CheckoutOrderRequestBuilder::resolve_receiving_ffl_number(
             self::SESSION_KEY_RECEIVING_FFL,
             [__CLASS__, 'debug_log']
         );
 
-        if ($persist_to_session) {
+        if ($verify_session) {
             CheckoutOrderRequestBuilder::persist_receiving_ffl_to_session(
                 $receiving_ffl_number,
                 self::SESSION_KEY_RECEIVING_FFL,
@@ -154,21 +121,12 @@ final class CartCompliance
                 ]);
                 $ship_ffl = null;
             }
-        } else {
-            self::debug_log('no receiving FFL resolved', [
-                'session_ffl' => CheckoutOrderRequestBuilder::dbg_val(
-                    CheckoutOrderRequestBuilder::get_session_receiving_ffl_number(self::SESSION_KEY_RECEIVING_FFL)
-                ),
-                'data_keys' => !empty($checkout_data) ? implode(',', array_keys($checkout_data)) : '',
-            ]);
         }
 
         return [$receiving_ffl_number !== null ? (string) $receiving_ffl_number : null, $ship_ffl];
     }
 
     /**
-     * Emit blocked messages as WC notices, and (when possible) also attach to checkout errors object.
-     *
      * @param array<int,array{id:string,label:string,message:string,codes:array,details:array,bucket:string,pretty?:array}> $blocked
      */
     private static function emit_blocked_notices(array $blocked, ?\WP_Error $errors = null): void
@@ -180,8 +138,6 @@ final class CartCompliance
                 foreach ($pretty as $msg) {
                     $msg = (string) $msg;
                     wc_add_notice($msg, 'error');
-
-                    // Some checkout flows (esp Blocks) prefer errors->add().
                     if ($errors instanceof \WP_Error) {
                         $errors->add('fflhub_cart_compliance', $msg);
                     }
@@ -189,12 +145,7 @@ final class CartCompliance
                 continue;
             }
 
-            $fallback = sprintf(
-                __('Checkout blocked by %1$s validation: %2$s', 'ffl-hub'),
-                (string) ($b['label'] ?? $b['id']),
-                (string) ($b['message'] ?? 'Validation failed')
-            );
-
+            $fallback = __('We couldn’t validate one or more items in your cart. Please contact us for help.', 'ffl-hub');
             wc_add_notice($fallback, 'error');
             if ($errors instanceof \WP_Error) {
                 $errors->add('fflhub_cart_compliance', $fallback);
@@ -203,15 +154,6 @@ final class CartCompliance
     }
 
     /**
-     * One DOR per cart distributor (no split here).
-     *
-     * NEW:
-     * - For each cart distributor DOR, validate it against ALL enabled distributors.
-     *
-     * If any cart distributor has FFL-required lines and we can't resolve receiving FFL:
-     *   - block checkout with a clear message
-     *   - do NOT call any distributor validations for that DOR (otherwise we'd validate only accessories)
-     *
      * @return array<int,array{id:string,label:string,message:string,codes:array,details:array,bucket:string,pretty?:array}>
      */
     private static function run_distributor_validations(
@@ -226,13 +168,46 @@ final class CartCompliance
             return [];
         }
 
-        // Pre-resolve the list of enabled distributor instances once.
         $enabled_distributors = $handler->get_enabled_distributors_for_validation();
-
         if (empty($enabled_distributors)) {
             self::debug_log('skip: no enabled distributors with validate_order_request');
             return [];
         }
+
+        // Determine if cart has any FFL-required items (any distributor)
+        $cart_has_any_ffl = false;
+        foreach ($by_dist as $ctx) {
+            if (!empty($ctx['has_ffl'])) {
+                $cart_has_any_ffl = true;
+                break;
+            }
+        }
+
+        // --- stale session guard (requires the fp to have been set at selection-time) ---
+        $fp_now = CheckoutOrderRequestBuilder::current_cart_ffl_fingerprint();
+        $fp_set = (function_exists('WC') && WC()->session) ? (string) WC()->session->get(self::SESSION_KEY_RECEIVING_FFL_FP) : '';
+
+        if ($cart_has_any_ffl) {
+            if ($fp_now !== '' && $fp_set === '') {
+                self::debug_log('ffl fp missing (cart has ffl) -> treating session ffl as missing', [
+                    'ffl_in_session' => CheckoutOrderRequestBuilder::dbg_val($receiving_ffl_number),
+                    'fp_now_tail8' => substr($fp_now, -8),
+                ]);
+                $receiving_ffl_number = null;
+                $ship_ffl = null;
+            }
+
+            if ($fp_now !== '' && $fp_set !== '' && !hash_equals($fp_set, $fp_now)) {
+                self::debug_log('ffl fp mismatch -> treating session ffl as missing', [
+                    'ffl_in_session' => CheckoutOrderRequestBuilder::dbg_val($receiving_ffl_number),
+                    'fp_set_tail8' => substr($fp_set, -8),
+                    'fp_now_tail8' => substr($fp_now, -8),
+                ]);
+                $receiving_ffl_number = null;
+                $ship_ffl = null;
+            }
+        }
+        // ------------------------------------------------------------------------------
 
         $blocked = [];
 
@@ -254,22 +229,17 @@ final class CartCompliance
                 $blocked[] = [
                     'id'      => $cart_dist_id,
                     'label'   => $cart_dist_id,
-                    'message' => 'This cart contains items that must ship to a receiving FFL. Please select a receiving FFL to continue checkout.',
+                    'message' => 'FFL required but not selected',
                     'codes'   => ['FFLHUB_RECEIVING_FFL_REQUIRED'],
-                    'details' => [
-                        'has_ffl_lines'      => true,
-                        'ffl_number_present' => $receiving_ffl_number ? 1 : 0,
-                        'ship_ffl_present'   => ($ship_ffl instanceof DistributorShipTo) ? 1 : 0,
-                    ],
+                    'details' => [],
                     'bucket'  => 'ffl_missing',
                     'pretty'  => [
-                        'This cart contains items that must ship to a receiving FFL. Please select a receiving FFL to continue checkout.',
+                        __('This cart contains items that must ship to a receiving FFL. Please select a receiving FFL to continue checkout.', 'ffl-hub'),
                     ],
                 ];
                 continue;
             }
 
-            // Choose destination state context.
             $dest_state = strtoupper(trim((string) (
                 ($has_ffl && $ship_ffl instanceof DistributorShipTo) ? $ship_ffl->state : $ship_customer->state
             )));
@@ -284,7 +254,6 @@ final class CartCompliance
 
             $merchant_order_id = CheckoutOrderRequestBuilder::current_merchant_order_id($cart_dist_id);
 
-            // Build the DOR ONCE, then feed to all distributors.
             $req = new DistributorOrderRequest(
                 $lines,
                 $ship_customer,
@@ -295,7 +264,6 @@ final class CartCompliance
                 'FFLHub checkout validation (single DOR; validate against all distributors)'
             );
 
-            // Validate this DOR against ALL enabled distributors.
             foreach ($enabled_distributors as $voter_id => $voter) {
                 $dist = $voter['instance'] ?? null;
                 if (!($dist instanceof DistributorBase)) {
@@ -324,8 +292,6 @@ final class CartCompliance
 
                 $vr = self::call_validate($dist, $voter_req);
                 if (!($vr instanceof DistributorOrderValidationResult)) {
-                    // If validation hard-failed and we returned null, skip silently.
-                    // (If you prefer: convert this into a block with a generic message.)
                     continue;
                 }
 
@@ -333,39 +299,116 @@ final class CartCompliance
                     continue;
                 }
 
-                // ✅ No “result-to-array” helper: use the object directly.
-                $message = ($vr->message !== '' ? (string) $vr->message : 'Validation failed');
-                $codes   = is_array($vr->codes) ? $vr->codes : [];
-                $details = is_array($vr->details) ? $vr->details : [];
+                // ✅ NEW: ignore "out of stock" votes unless the voter is the cart's source distributor.
+                if (self::should_ignore_vote_for_cart_source($cart_dist_id, (string) $voter_id, $vr)) {
+                    self::debug_log('ignored vote (OOS on non-source voter)', [
+                        'cart_dist_id' => $cart_dist_id,
+                        'voter_id'     => (string) $voter_id,
+                        'codes'        => implode(',', is_array($vr->codes) ? $vr->codes : []),
+                    ]);
+                    continue;
+                }
 
-                $pretty_msgs = CheckoutOrderRequestBuilder::build_pretty_validation_messages(
-                    $label,
-                    $vr,
-                    'single',
-                    $ship_customer,
-                    $ship_ffl
-                );
+                // ✅ vague only for system-ish failures; otherwise show pretty restriction messaging
+                if (self::should_use_vague_customer_message($vr)) {
+                    $blocked[] = [
+                        'id'      => (string) $voter_id,
+                        'label'   => $label,
+                        'message' => (string) ($vr->message ?: 'Validation failed'),
+                        'codes'   => is_array($vr->codes) ? $vr->codes : [],
+                        'details' => [],
+                        'bucket'  => 'single',
+                        'pretty'  => [
+                            __('We couldn’t validate one or more items in your cart. Please contact us for help.', 'ffl-hub'),
+                        ],
+                    ];
+                    continue;
+                }
 
-                $blocked[] = [
-                    'id'      => (string) $voter_id,
-                    'label'   => $label,
-                    'message' => $message,
-                    'codes'   => $codes,
-                    'details' => $details,
-                    'bucket'  => 'single',
-                    'pretty'  => $pretty_msgs,
-                ];
+                $buckets = self::resolve_buckets_for_pretty($vr, $voter_req);
+
+                foreach ($buckets as $bucket) {
+                    $pretty_msgs = CheckoutOrderRequestBuilder::build_pretty_validation_messages(
+                        $label,
+                        $vr,
+                        $bucket,
+                        $ship_customer,
+                        $ship_ffl
+                    );
+
+                    $blocked[] = [
+                        'id'      => (string) $voter_id,
+                        'label'   => $label,
+                        'message' => (string) ($vr->message ?: 'Validation failed'),
+                        'codes'   => is_array($vr->codes) ? $vr->codes : [],
+                        'details' => is_array($vr->details) ? $vr->details : [],
+                        'bucket'  => $bucket,
+                        'pretty'  => $pretty_msgs,
+                    ];
+                }
             }
         }
 
         return $blocked;
     }
 
+    private static function should_use_vague_customer_message(DistributorOrderValidationResult $vr): bool
+    {
+        $codes = is_array($vr->codes) ? $vr->codes : [];
+        $msg   = strtolower((string) ($vr->message ?? ''));
+
+        if (in_array('FFLHUB_VALIDATE_EXCEPTION', $codes, true)) {
+            return true;
+        }
+
+        foreach ($codes as $c) {
+            $c = (string) $c;
+            if (stripos($c, 'TIMEOUT') !== false) return true;
+            if (stripos($c, 'NETWORK') !== false) return true;
+            if (stripos($c, 'REMOTE') !== false) return true;
+            if (stripos($c, 'HTTP_5') !== false) return true;
+            if (stripos($c, 'SERVER_ERROR') !== false) return true;
+            if (stripos($c, 'TEMP') !== false) return true;
+        }
+
+        if (str_contains($msg, 'exception')) return true;
+        if (str_contains($msg, 'timeout')) return true;
+        if (str_contains($msg, 'temporar')) return true;
+        if (str_contains($msg, 'try again')) return true;
+
+        return false;
+    }
+
     /**
-     * Validate against a distributor, returning the raw validation result object (or null).
-     *
-     * Keeping try/catch here prevents a single distributor exception from hard-fataling checkout.
+     * @return string[] each of: 'non'|'ffl'
      */
+    private static function resolve_buckets_for_pretty(
+        DistributorOrderValidationResult $vr,
+        DistributorOrderRequest $voter_req
+    ): array {
+        $details = is_array($vr->details) ? $vr->details : [];
+
+        $out = [];
+        if (isset($details['non']) && is_array($details['non'])) {
+            $out[] = 'non';
+        }
+        if (isset($details['ffl']) && is_array($details['ffl'])) {
+            $out[] = 'ffl';
+        }
+
+        if (!empty($out)) {
+            return array_values(array_unique($out));
+        }
+
+        $has_non = !empty($voter_req->non_ffl_lines());
+        $has_ffl = !empty($voter_req->ffl_lines());
+
+        if ($has_ffl && !$has_non) return ['ffl'];
+        if ($has_non && !$has_ffl) return ['non'];
+
+        return ['non', 'ffl'];
+    }
+
     private static function call_validate(
         DistributorBase $dist,
         DistributorOrderRequest $req
@@ -378,14 +421,12 @@ final class CartCompliance
                 'error' => $e->getMessage(),
             ]);
 
-            // Best-effort: return a blocked result (so the batch fails).
-            $synthetic = new DistributorOrderValidationResult(
-                false, 
-                'Validation error: ' . $e->getMessage(), 
-                ['FFLHUB_VALIDATE_EXCEPTION'], 
-                []);
-            
-            return $synthetic;
+            return new DistributorOrderValidationResult(
+                false,
+                'Validation error: ' . $e->getMessage(),
+                ['FFLHUB_VALIDATE_EXCEPTION'],
+                []
+            );
         }
 
         self::debug_log('validation result', [
@@ -397,8 +438,6 @@ final class CartCompliance
 
         return $vr;
     }
-
-    /* ---------------- Debug helpers ---------------- */
 
     private static function debug_enabled(): bool
     {
@@ -431,5 +470,69 @@ final class CartCompliance
         }
 
         error_log($prefix . $msg);
+    }
+
+
+
+    /**
+     * Returns true if this validation result represents an out-of-stock condition.
+     *
+     * We detect via machine codes (preferred) and also tolerate common variations.
+     */
+    private static function is_out_of_stock_vote(DistributorOrderValidationResult $vr): bool
+    {
+        $codes = is_array($vr->codes) ? $vr->codes : [];
+        foreach ($codes as $c) {
+            $c = strtoupper(trim((string) $c));
+            if ($c === '') {
+                continue;
+            }
+
+            // Common patterns you may already use across distributors
+            // (keep broad so it works across RSR/Lipseys/etc without hardcoding every code)
+            if (
+                str_contains($c, 'OUT_OF_STOCK') ||
+                str_contains($c, 'OOS') ||
+                str_contains($c, 'NO_STOCK') ||
+                str_contains($c, 'INSUFFICIENT_STOCK') ||
+                str_contains($c, 'QTY_UNAVAILABLE')
+            ) {
+                return true;
+            }
+        }
+
+        // Optional: if you ever put a structured hint in details
+        $details = is_array($vr->details) ? $vr->details : [];
+        if (isset($details['reason'])) {
+            $r = strtoupper(trim((string) $details['reason']));
+            if ($r === 'OUT_OF_STOCK' || $r === 'OOS') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * For non-source voters, ignore OOS blocks entirely.
+     */
+    private static function should_ignore_vote_for_cart_source(
+        string $cart_dist_id,
+        string $voter_id,
+        DistributorOrderValidationResult $vr
+    ): bool {
+        $cart_dist_id = strtolower(trim($cart_dist_id));
+        $voter_id     = strtolower(trim($voter_id));
+
+        if ($cart_dist_id === '' || $voter_id === '') {
+            return false;
+        }
+
+        // Only ignore OUT_OF_STOCK when voter is NOT the source distributor.
+        if ($cart_dist_id !== $voter_id && self::is_out_of_stock_vote($vr)) {
+            return true;
+        }
+
+        return false;
     }
 }

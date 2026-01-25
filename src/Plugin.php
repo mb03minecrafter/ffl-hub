@@ -6,6 +6,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
+use FFLHub\Admin\Orders\OrderPlacementMetaBox;
 use FFLHub\Settings\Options;
 use FFLHub\Settings\SettingsRegistrar;
 
@@ -27,9 +28,7 @@ use FFLHub\Checkout\Fields\CheckoutFields;
 use FFLHub\Checkout\Map\CheckoutMap;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Compliance\CartCompliance;
-
-
-
+use FFLHub\Distributor\Orders\OrderPlacementOrchestrator;
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLTable;
 
@@ -55,6 +54,7 @@ class Plugin
     private static $instance = null;
 
     public DistributorHandler $distributor_handler;
+    public ?OrderPlacementOrchestrator $order_orchestrator = null;
 
     /**
      * Get the single instance of the class.
@@ -110,10 +110,10 @@ class Plugin
 
         CartCompliance::init();
 
+        OrderPlacementMetaBox::init();
 
-        OrderProcurementService::init();
-
-
+        $this->order_orchestrator = new OrderPlacementOrchestrator();  // ✅ store it
+        $this->order_orchestrator->register();
         // 4. Hook into WordPress admin.
     }
 

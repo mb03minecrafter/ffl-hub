@@ -10,8 +10,12 @@ class ShippingRegistrar
 {
     public static function init(): void
     {
+        // No require_once needed when using autoloading.
         add_action('woocommerce_shipping_init', function () {
-            require_once __DIR__ . '/FFLHubShippingMethod.php';
+            // Touch the class to ensure autoload triggers, if desired:
+            if (!class_exists(FFLHubShippingMethod::class)) {
+                // If this ever happens, your autoload mapping is broken.
+            }
         });
 
         add_filter('woocommerce_shipping_methods', function ($methods) {

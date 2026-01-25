@@ -1,4 +1,5 @@
 <?php
+// File: src/Distributor/Integrations/RSR/RSRDirectConnectAPI.php
 
 namespace FFLHub\Distributor\Integrations\RSR;
 
@@ -17,25 +18,31 @@ if (!defined('ABSPATH')) {
  *  - response decode + StatusCode/StatusMssg parsing
  *  - standard return shape
  *  - RSR payload rules / formatting helpers (PO rules, ship context)
- *  - RSR image URL generation + probing (to keep DistributorRSR smaller)
+ *  - RSR image URL generation + probing
+ *
+ * NOTE:
+ * This file threads `http_status` through responses so job workers
+ * can reliably classify retryable vs fatal conditions.
  */
 final class RSRDirectConnectAPI
 {
     public const DEFAULT_API_BASE_URL = 'https://www.rsrgroup.com';
 
-    // Endpoints (paths)
     public const PLACE_ORDER_PATH    = '/api/rsrbridge/1.0/pos/place-order';
     public const CHECK_CATALOG_PATH  = '/api/rsrbridge/1.0/pos/check-catalog';
-
-    /* ============================================================
-     * Endpoint wrappers
-     * ============================================================
-     */
 
     /**
      * Place order wrapper.
      *
-     * @return array{ok:bool,message:string,external_id:string,raw:array|null}
+     * @return array{
+     *   ok:bool,
+     *   message:string,
+     *   external_id:string,
+     *   raw:array|null,
+     *   http_status:int,
+     *   rsr_status_code:string,
+     *   rsr_status_msg:string
+     * }
      */
     public static function place_order(array $payload, ?string $base_url = null, int $timeout = 60): array
     {
@@ -50,7 +57,8 @@ final class RSRDirectConnectAPI
      *   ok:bool,
      *   message:string,
      *   items:array<int,array<string,mixed>>,
-     *   raw:array|null
+     *   raw:array|null,
+     *   http_status:int
      * }
      */
     public static function check_catalog(array $payload, ?string $base_url = null, int $timeout = 60): array
@@ -64,6 +72,7 @@ final class RSRDirectConnectAPI
                 'message' => $res['message'],
                 'items' => [],
                 'raw' => $res['raw'],
+                'http_status' => isset($res['http_status']) ? (int) $res['http_status'] : 0,
             ];
         }
 
@@ -74,6 +83,7 @@ final class RSRDirectConnectAPI
                 'message' => 'Invalid JSON response from RSR.',
                 'items' => [],
                 'raw' => null,
+                'http_status' => isset($res['http_status']) ? (int) $res['http_status'] : 0,
             ];
         }
 
@@ -101,7 +111,9 @@ final class RSRDirectConnectAPI
                 $m    = (string)($bad['StatusMssg'] ?? '');
                 $p    = (string)($bad['PartNum'] ?? '');
                 $u    = (string)($bad['UPC'] ?? '');
-                $msg_parts[] = trim("[$code] $m (PartNum=$p UPC=$u)");
+
+                $u_tail = self::tail4($u);
+                $msg_parts[] = trim("[$code] $m (PartNum=$p UPC=**$u_tail)");
             }
 
             $msg = 'RSR check-catalog restriction: ' . implode(' | ', $msg_parts);
@@ -109,11 +121,22 @@ final class RSRDirectConnectAPI
                 $msg .= ' | ...';
             }
 
+            // Hint retryability for maintenance/fatal ("87") scenarios (spec: try again later)
+            // so higher layers that use string heuristics will treat this as retryable.
+            foreach ($invalid as $bad) {
+                $code = (string)($bad['StatusCode'] ?? '');
+                if (trim($code) === '87') {
+                    $msg = 'RSR check-catalog temporary maintenance/fatal error (try again later): ' . $msg;
+                    break;
+                }
+            }
+
             return [
                 'ok' => false,
                 'message' => $msg,
                 'items' => $normalized,
                 'raw' => $decoded,
+                'http_status' => isset($res['http_status']) ? (int) $res['http_status'] : 0,
             ];
         }
 
@@ -122,13 +145,9 @@ final class RSRDirectConnectAPI
             'message' => 'OK',
             'items' => $normalized,
             'raw' => $decoded,
+            'http_status' => isset($res['http_status']) ? (int) $res['http_status'] : 0,
         ];
     }
-
-    /* ============================================================
-     * Response normalization helpers
-     * ============================================================
-     */
 
     /**
      * @param array<int,mixed> $items
@@ -175,19 +194,24 @@ final class RSRDirectConnectAPI
         return ($status_code === '00' || $status_code === '01');
     }
 
-    /* ============================================================
-     * HTTP helpers
-     * ============================================================
-     */
-
     /**
-     * Generic JSON POST for RSR endpoints that return the standard StatusCode/StatusMssg format.
+     * Generic JSON POST for RSR endpoints that return standard StatusCode/StatusMssg.
      *
-     * @return array{ok:bool,message:string,external_id:string,raw:array|null}
+     * @return array{
+     *   ok:bool,
+     *   message:string,
+     *   external_id:string,
+     *   raw:array|null,
+     *   http_status:int,
+     *   rsr_status_code:string,
+     *   rsr_status_msg:string
+     * }
      */
     public static function post_json_and_parse_standard_response(string $url, array $payload, int $timeout = 60): array
     {
         $res = self::post_json($url, $payload, $timeout);
+
+        $http_status = isset($res['http_status']) ? (int) $res['http_status'] : 0;
 
         if (!$res['ok']) {
             return [
@@ -195,6 +219,9 @@ final class RSRDirectConnectAPI
                 'message' => $res['message'],
                 'external_id' => '',
                 'raw' => $res['raw'],
+                'http_status' => $http_status,
+                'rsr_status_code' => '',
+                'rsr_status_msg' => '',
             ];
         }
 
@@ -205,13 +232,15 @@ final class RSRDirectConnectAPI
                 'message' => 'Invalid JSON response from RSR.',
                 'external_id' => '',
                 'raw' => null,
+                'http_status' => $http_status,
+                'rsr_status_code' => '',
+                'rsr_status_msg' => '',
             ];
         }
 
         $status_code = isset($decoded['StatusCode']) ? (string) $decoded['StatusCode'] : '';
         $status_msg  = isset($decoded['StatusMssg']) ? (string) $decoded['StatusMssg'] : '';
 
-        // Some wrappers might nest.
         if ($status_code === '' && isset($decoded['Response']) && is_array($decoded['Response'])) {
             $maybe = $decoded['Response'];
             if (isset($maybe['StatusCode'])) {
@@ -241,6 +270,9 @@ final class RSRDirectConnectAPI
                 'message' => $msg,
                 'external_id' => '',
                 'raw' => $decoded,
+                'http_status' => $http_status,
+                'rsr_status_code' => (string) $status_code,
+                'rsr_status_msg' => (string) $status_msg,
             ];
         }
 
@@ -254,13 +286,24 @@ final class RSRDirectConnectAPI
             'message' => 'OK',
             'external_id' => $external,
             'raw' => $decoded,
+            'http_status' => $http_status,
+            'rsr_status_code' => (string) $status_code,
+            'rsr_status_msg' => (string) $status_msg,
         ];
     }
 
     /**
      * Low-level JSON POST.
      *
-     * @return array{ok:bool,message:string,raw:array|null}
+     * NOTE: Even on non-2xx, attempt to decode JSON so callers can inspect structured errors.
+     *
+     * @return array{
+     *   ok:bool,
+     *   message:string,
+     *   raw:array|null,
+     *   http_status:int,
+     *   body_snippet:string
+     * }
      */
     public static function post_json(string $url, array $payload, int $timeout = 60): array
     {
@@ -279,26 +322,41 @@ final class RSRDirectConnectAPI
                 'ok' => false,
                 'message' => 'HTTP error: ' . $res->get_error_message(),
                 'raw' => null,
+                'http_status' => 0,
+                'body_snippet' => '',
             ];
         }
 
-        $code = wp_remote_retrieve_response_code($res);
-        $body = wp_remote_retrieve_body($res);
+        $code = (int) wp_remote_retrieve_response_code($res);
+        $body = (string) wp_remote_retrieve_body($res);
+        $snippet = $body !== '' ? substr($body, 0, 300) : '';
+
+        // Try decode regardless of status code (helps diagnostics on 4xx/5xx).
+        $decoded = null;
+        if ($body !== '') {
+            $tmp = json_decode((string) $body, true);
+            if (is_array($tmp)) {
+                $decoded = $tmp;
+            }
+        }
 
         if ($code < 200 || $code >= 300) {
             return [
                 'ok' => false,
-                'message' => 'HTTP status ' . (string) $code . ': ' . substr((string) $body, 0, 300),
-                'raw' => null,
+                'message' => 'HTTP status ' . (string) $code . ': ' . $snippet,
+                'raw' => $decoded, // may be null
+                'http_status' => $code,
+                'body_snippet' => $snippet,
             ];
         }
 
-        $decoded = json_decode((string) $body, true);
         if (!is_array($decoded)) {
             return [
                 'ok' => false,
                 'message' => 'Invalid JSON response from RSR.',
                 'raw' => null,
+                'http_status' => $code,
+                'body_snippet' => $snippet,
             ];
         }
 
@@ -306,6 +364,8 @@ final class RSRDirectConnectAPI
             'ok' => true,
             'message' => 'OK',
             'raw' => $decoded,
+            'http_status' => $code,
+            'body_snippet' => $snippet,
         ];
     }
 
@@ -322,9 +382,6 @@ final class RSRDirectConnectAPI
         return $base . $path;
     }
 
-    /**
-     * Pulls the best candidate confirmation/reference id from typical RSR responses.
-     */
     public static function extract_external_id(array $decoded): string
     {
         foreach (['ConfirmResp', 'WebRef'] as $k) {
@@ -341,13 +398,9 @@ final class RSRDirectConnectAPI
     }
 
     /* ============================================================
-     * RSR payload rules & validation (moved from DistributorRSR)
-     * ============================================================
-     */
+     * RSR payload helpers
+     * ============================================================ */
 
-    /**
-     * PONum max 22 chars. Only allow letters/numbers/space/dash.
-     */
     public static function sanitize_rsr_po(string $po): string
     {
         $po = trim($po);
@@ -376,45 +429,56 @@ final class RSRDirectConnectAPI
         return $po;
     }
 
-    /**
-     * Build the shared “drop-ship / geolocation” ship context payload used by RSR endpoints.
-     *
-     * @return array<string,string>
-     */
     public static function build_ship_context_payload(DistributorShipTo $dest_ship, DistributorShipTo $customer_identity): array
     {
-        $customer_name  = trim((string) $customer_identity->name);
-        $customer_phone = trim((string) $customer_identity->phone);
+        // Spec limits:
+        // - Storename/StoreName: 25
+        // - ContactNum: 20
+        // - ShipAddress/ShipAddress2: 35
+        // - ShipCity: 25
+        // - ShipState: 2
+        // - ShipZip: 10 (formatted 12345 or 12345-6789)
+        $customer_name  = self::normalize_payload_string($customer_identity->name, 25);
+        $customer_phone = self::normalize_payload_string($customer_identity->phone, 20);
 
         if ($customer_name === '') {
             $customer_name = 'Customer';
         }
 
         return [
+            // RSR docs are inconsistent on casing: include both.
             'StoreName'  => $customer_name,
+            'Storename'  => $customer_name,
+
             'ContactNum' => $customer_phone,
 
-            'ShipAddress'  => self::normalize_payload_string($dest_ship->address1),
-            'ShipAddress2' => self::normalize_payload_string($dest_ship->address2),
-            'ShipCity'     => self::normalize_payload_string($dest_ship->city),
+            'ShipAddress'  => self::normalize_payload_string($dest_ship->address1, 35),
+            'ShipAddress2' => self::normalize_payload_string($dest_ship->address2, 35),
+            'ShipCity'     => self::normalize_payload_string($dest_ship->city, 25),
             'ShipState'    => self::normalize_us_state_code_for_payload($dest_ship->state),
             'ShipZip'      => self::format_us_zip5_or_zip9_with_dash_for_payload($dest_ship->zip),
         ];
     }
 
     /**
-     * Validate the minimum ship-to fields required for RSR geolocation / drop-ship checks.
-     *
      * @return array{ok:bool,message:string}
      */
     public static function validate_ship_to_required_fields(DistributorShipTo $dest_ship): array
     {
         $missing = [];
 
-        if (trim((string) $dest_ship->address1) === '') { $missing[] = 'ShipAddress'; }
-        if (trim((string) $dest_ship->city) === '')     { $missing[] = 'ShipCity'; }
-        if (trim((string) $dest_ship->state) === '')    { $missing[] = 'ShipState'; }
-        if (trim((string) $dest_ship->zip) === '')      { $missing[] = 'ShipZip'; }
+        if (trim((string) $dest_ship->address1) === '') {
+            $missing[] = 'ShipAddress';
+        }
+        if (trim((string) $dest_ship->city) === '') {
+            $missing[] = 'ShipCity';
+        }
+        if (trim((string) $dest_ship->state) === '') {
+            $missing[] = 'ShipState';
+        }
+        if (trim((string) $dest_ship->zip) === '') {
+            $missing[] = 'ShipZip';
+        }
 
         if (!empty($missing)) {
             return ['ok' => false, 'message' => 'Missing required ship-to fields: ' . implode(', ', $missing)];
@@ -424,8 +488,6 @@ final class RSRDirectConnectAPI
     }
 
     /**
-     * For firearm drop ship, RSR requires end-consumer phone (StatusCode 82 otherwise).
-     *
      * @return array{ok:bool,message:string}
      */
     public static function validate_customer_identity_for_firearm_dropship(DistributorShipTo $customer): array
@@ -437,22 +499,18 @@ final class RSRDirectConnectAPI
         return ['ok' => true, 'message' => 'OK'];
     }
 
-    /* ============================================================
-     * Simple payload normalization helpers (API-side)
-     * ============================================================
-     */
-
-    public static function normalize_payload_string(?string $s): string
+    public static function normalize_payload_string(?string $s, int $max_len = 0): string
     {
         $s = is_string($s) ? trim($s) : '';
-        // Keep it simple; RSR has field length limits but we won't hard-truncate here unless you want it.
+        if ($max_len > 0 && $s !== '' && strlen($s) > $max_len) {
+            $s = substr($s, 0, $max_len);
+        }
         return $s;
     }
 
     public static function normalize_us_state_code_for_payload(?string $state): string
     {
         $state = is_string($state) ? strtoupper(trim($state)) : '';
-        // If someone passed "Louisiana", the API will likely reject; we keep 2-char behavior.
         if (strlen($state) > 2) {
             $state = substr($state, 0, 2);
         }
@@ -466,7 +524,6 @@ final class RSRDirectConnectAPI
             return '';
         }
 
-        // Remove everything except digits
         $digits = preg_replace('/\D+/', '', $zip);
         $digits = is_string($digits) ? $digits : '';
 
@@ -478,22 +535,26 @@ final class RSRDirectConnectAPI
             return substr($digits, 0, 5);
         }
 
-        // If it’s weird, return original trimmed value (RSR may reject, but we preserve intent)
-        return $zip;
+        // Worst-case fallback (but cap to 10 chars per spec)
+        return (strlen($zip) > 10) ? substr($zip, 0, 10) : $zip;
+    }
+
+    /**
+     * Return last 4 digits/characters (for log-safe identifiers).
+     */
+    private static function tail4(string $s): string
+    {
+        $s = trim((string) $s);
+        if ($s === '') {
+            return '';
+        }
+        return (strlen($s) >= 4) ? substr($s, -4) : $s;
     }
 
     /* ============================================================
-     * RSR image URL generation + probing (moved from DistributorRSR)
-     * ============================================================
-     */
+     * Image helpers
+     * ============================================================ */
 
-    /**
-     * Given an RSR image_name like "LAS981-0054_1.jpg", generate all real
-     * product image URLs for that item, stopping when we hit the generic
-     * "image coming soon" placeholder (110x85).
-     *
-     * @return string[]
-     */
     public static function build_image_urls_from_image_name(string $image_name): array
     {
         $image_name = trim($image_name);
@@ -532,10 +593,6 @@ final class RSRDirectConnectAPI
         return array_values(array_unique($urls));
     }
 
-    /**
-     * Check whether the given RSR image URL is a real product image
-     * and NOT the generic "image coming soon" placeholder.
-     */
     public static function is_real_image_url(string $url): bool
     {
         $url = trim($url);

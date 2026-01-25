@@ -3,6 +3,7 @@
 namespace FFLHub\Checkout\Fields;
 
 use FFLHub\Admin\Pages\FFLImporterPage;
+use FFLHub\Checkout\Builders\CheckoutOrderRequestBuilder;
 use WC_Order;
 use WC_Data;
 use WP_Error;
@@ -11,40 +12,21 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-/**
- * Registers FFL-related additional checkout fields for the Checkout Block.
- *
- * Uses the "Additional Checkout Fields" API (WooCommerce 8.9+) and conditional
- * visibility via JSON Schema (WooCommerce 9.9+).
- */
 class CheckoutFields
 {
-    /**
-     * Additional field ID (namespace/name).
-     *
-     * This is the ID used by the Additional Checkout Fields API.
-     */
     private const FIELD_ID = 'ffl-hub/receiving-ffl';
 
-    /**
-     * Order meta key where we store the selected FFL value.
-     */
     private const ORDER_META_KEY = 'fflhub_receiving_ffl';
-
-    /**
-     * Order meta key where we store just the FFL number (string).
-     */
     private const ORDER_META_KEY_NUMBER = 'fflhub_receiving_ffl_number';
 
-    /**
-     * Bootstrap hooks.
-     */
+    // Session keys used by CartCompliance / Builder
+    private const SESSION_KEY_RECEIVING_FFL = 'fflhub_receiving_ffl_number';
+    private const SESSION_KEY_RECEIVING_FFL_FP = 'fflhub_receiving_ffl_cart_fp';
+
     public static function init(): void
     {
-        // Register the additional checkout field.
         add_action('woocommerce_init', array(__CLASS__, 'register_additional_fields'));
 
-        // Persist the field value to order meta when checkout is submitted.
         add_action(
             'woocommerce_set_additional_field_value',
             array(__CLASS__, 'handle_set_additional_field_value'),
@@ -53,28 +35,19 @@ class CheckoutFields
         );
     }
 
-    /**
-     * Register the "Receiving FFL" checkout field.
-     *
-     * This uses the Additional Checkout Fields API so the field appears in the
-     * Checkout Block UI automatically.
-     */
     public static function register_additional_fields(): void
     {
         if (! function_exists('woocommerce_register_additional_checkout_field')) {
-            // Older WooCommerce – API not available.
             return;
         }
 
-        // Field will show in the "Order information" step.
         woocommerce_register_additional_checkout_field(
             array(
                 'id'       => self::FIELD_ID,
                 'label'    => __('Receiving FFL (Dealer Number)', 'ffl-hub'),
-                'location' => 'order', // "Order information" section.
+                'location' => 'order',
                 'type'     => 'text',
                 'required' => array(
-                    // JSON Schema condition: required when cart.extensions['ffl-hub'].requires_ffl === true
                     'cart' => array(
                         'properties' => array(
                             'extensions' => array(
@@ -92,7 +65,6 @@ class CheckoutFields
                     ),
                 ),
                 'hidden'   => array(
-                    // Hide the field when requires_ffl === false
                     'cart' => array(
                         'properties' => array(
                             'extensions' => array(
@@ -109,15 +81,11 @@ class CheckoutFields
                         ),
                     ),
                 ),
-                // Optional: placeholder + attributes.
                 'placeholder' => '',
                 'attributes'  => array(
                     'autocomplete'                    => 'off',
-                    // Custom attribute so JS can find this exact field:
                     'data-fflhub-receiving-ffl-input' => '1',
                 ),
-
-                // Optional sanitization/validation.
                 'sanitize_callback' => function ($value) {
                     return sanitize_text_field((string) $value);
                 },
@@ -126,16 +94,6 @@ class CheckoutFields
         );
     }
 
-    /**
-     * Save additional checkout field values to order meta.
-     *
-     * Hook: woocommerce_set_additional_field_value (WC 8.9+).
-     *
-     * @param string         $field_id  The additional field ID ("namespace/name").
-     * @param mixed          $value     The raw field value.
-     * @param string         $group     Group name ("billing", "shipping", "other").
-     * @param WC_Data|object $wc_object WC_Order or WC_Customer object being updated.
-     */
     public static function handle_set_additional_field_value($field_id, $value, $group, $wc_object): void
     {
         if ($field_id !== self::FIELD_ID) {
@@ -144,32 +102,33 @@ class CheckoutFields
 
         $sanitized = strtoupper(trim(sanitize_text_field((string) $value)));
 
-        // ✅ Always persist to WC session so cart/checkout validators can read it consistently,
-        // regardless of whether $wc_object is WC_Order or WC_Customer.
+        // ✅ Always persist to WC session so cart/checkout validators can read it consistently.
         if (function_exists('WC') && WC()->session) {
             if ($sanitized === '') {
-                WC()->session->set('fflhub_receiving_ffl_number', null);
+                WC()->session->set(self::SESSION_KEY_RECEIVING_FFL, null);
+                WC()->session->set(self::SESSION_KEY_RECEIVING_FFL_FP, null);
             } else {
-                WC()->session->set('fflhub_receiving_ffl_number', $sanitized);
+                WC()->session->set(self::SESSION_KEY_RECEIVING_FFL, $sanitized);
+
+                // ✅ Bind this FFL selection to the cart fingerprint at selection-time
+                // so CartCompliance can detect stale values after cart changes.
+                $fp = CheckoutOrderRequestBuilder::current_cart_ffl_fingerprint();
+                WC()->session->set(self::SESSION_KEY_RECEIVING_FFL_FP, $fp !== '' ? $fp : null);
             }
         }
 
-        // If it's not an order, we stop here. (But session is already set.)
         if (! $wc_object instanceof WC_Order) {
             return;
         }
 
         if ($sanitized === '') {
-            // Clear both metas if field is empty.
             $wc_object->delete_meta_data(self::ORDER_META_KEY);
             $wc_object->delete_meta_data(self::ORDER_META_KEY_NUMBER);
             return;
         }
 
-        // Always store the plain FFL number for quick reference / search.
         $wc_object->update_meta_data(self::ORDER_META_KEY_NUMBER, $sanitized);
 
-        // Try to fetch full FFL data from our DB.
         $ffl_data = self::get_ffl_data_by_number($sanitized);
 
         if ($ffl_data) {
@@ -179,15 +138,6 @@ class CheckoutFields
         }
     }
 
-    /**
-     * Validate that the Receiving FFL field is non-empty (when required)
-     * and that the value corresponds to a real FFL in our SQL database.
-     *
-     * This is used as the `validate_callback` for the Additional Checkout Field.
-     *
-     * @param mixed $value Raw field value from the Checkout Block.
-     * @return true|WP_Error
-     */
     public static function validate_receiving_ffl($value)
     {
         $value = strtoupper(trim((string) $value));
@@ -214,21 +164,6 @@ class CheckoutFields
         return true;
     }
 
-    /**
-     * Look up an FFL row in our SQL table by FFL number.
-     *
-     * Returns an array shaped like our public FFL API response:
-     * [
-     *   'ffl_number' => '...',
-     *   'name'       => '...',
-     *   'premise'    => [ 'street', 'city', 'state', 'zip' ],
-     *   'mailing'    => [ 'street', 'city', 'state', 'zip' ],
-     *   'phone'      => '...',
-     * ]
-     *
-     * @param string $ffl_number
-     * @return array|null
-     */
     private static function get_ffl_data_by_number(string $ffl_number): ?array
     {
         if ($ffl_number === '') {
