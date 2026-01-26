@@ -204,7 +204,7 @@ class DistributorRSR extends DistributorBase
         // NON-FFL bucket
         // -----------------------------
         if (! empty($lines_non)) {
-            $po = RSRDirectConnectAPI::truncate_po($base_po . '-NON');
+            $po = RSRDirectConnectAPI::truncate_po($base_po);
 
             $items = $this->build_rsr_items_from_lines($lines_non);
             if ($items instanceof DistributorOrderResult) {
@@ -253,7 +253,7 @@ class DistributorRSR extends DistributorBase
         // FFL bucket
         // -----------------------------
         if (! empty($lines_ffl)) {
-            $po = RSRDirectConnectAPI::truncate_po($base_po . '-FFL');
+            $po = RSRDirectConnectAPI::truncate_po($base_po);
 
             $items = $this->build_rsr_items_from_lines($lines_ffl);
             if ($items instanceof DistributorOrderResult) {

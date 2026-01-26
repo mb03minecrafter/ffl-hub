@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Plugin Name: FFL Hub
  * Description: A WooCommerce extension for firearm-friendly dropshipping, starting with RSR and Lipsey's.
@@ -36,22 +37,28 @@ define('FFLHUB_SHIPPING_DEBUG', false);
 
 
 define('FFLHUB_CART_COMPLIANCE_DEBUG', false);
+define('FFLHUB_CART_COMPLIANCE_PROFILE', false);
 
 define('FFLHUB_ORDERING_DRY_RUN', false);
 
 
 define('FFLHUB_PLACE_ORCH_DEBUG', true);
 
+define('FFLHUB_RSR_API_DEBUG', false);
+define('FFLHUB_RSR_API_DEBUG_RAW', false);
 
 
 
 define('FFLHUB_LIPSEYS_DEBUG', false);
 
 /**
- * Load plugin text domain.
+ * Load plugin text domain. And also require phone number in the checkout fields, since our distributors sometimes require a phone number 
  */
-add_action('init', function() {
+add_action('init', function () {
     load_plugin_textdomain('ffl-hub', false, dirname(plugin_basename(__FILE__)) . '/languages');
+    if (get_option('woocommerce_checkout_phone_field') !== 'required') {
+        update_option('woocommerce_checkout_phone_field', 'required');
+    }
 });
 
 /**
@@ -84,5 +91,5 @@ if (defined('WP_CLI')) {
 add_action('plugins_loaded', function () {
     if (class_exists(Plugin::class)) {
         Plugin::instance();
-    } 
+    }
 });

@@ -33,7 +33,17 @@ class CheckoutFields
             10,
             4
         );
+
+
+        
+
+
+        //filter to remo0ve the optional text from the phone number field
+        
     }
+
+
+
 
     public static function register_additional_fields(): void
     {

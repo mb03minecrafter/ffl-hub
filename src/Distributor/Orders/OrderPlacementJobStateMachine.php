@@ -27,8 +27,8 @@ final class OrderPlacementJobStateMachine
         DistributorOrderValidationResult $vr,
         int $attempt_n
     ): array {
-        OrderPlacementStore::set_job_last_step($order, $job_key, 'validate');
-        OrderPlacementStore::set_job_last_error_codes($order, $job_key, is_array($vr->codes) ? $vr->codes : []);
+        OrderPlacementJobsStore::set_job_last_step($order, $job_key, 'validate');
+        OrderPlacementJobsStore::set_job_last_error_codes($order, $job_key, is_array($vr->codes) ? $vr->codes : []);
 
         if ($vr->ok && $vr->code === DistributorOrderValidationResult::CODE_ALLOW) {
             return ['action' => 'continue'];
@@ -65,8 +65,8 @@ final class OrderPlacementJobStateMachine
         DistributorOrderResult $or,
         int $attempt_n
     ): array {
-        OrderPlacementStore::set_job_last_step($order, $job_key, 'place');
-        OrderPlacementStore::set_job_last_error_codes($order, $job_key, is_array($or->codes) ? $or->codes : []);
+        OrderPlacementJobsStore::set_job_last_step($order, $job_key, 'place');
+        OrderPlacementJobsStore::set_job_last_error_codes($order, $job_key, is_array($or->codes) ? $or->codes : []);
 
         if ($or->ok && $or->code === DistributorOrderResult::CODE_OK) {
             return ['action' => 'continue'];
@@ -119,18 +119,16 @@ final class OrderPlacementJobStateMachine
 
         $run_at_iso = gmdate('c', $run_at_unix);
 
-        // Persist job state (single source of truth in meta)
-        OrderPlacementStore::mark_job_retry_scheduled($order, $job_key, $run_at_iso, $reason, $codes, $step);
+        // Persist job state (table-backed)
+        OrderPlacementJobsStore::mark_job_retry_scheduled($order, $job_key, $run_at_iso, $reason, $codes, $step);
 
         // action_id reflects "currently pending retry" (if any)
         if ($action_id !== '') {
-            OrderPlacementStore::set_job_action_id($order, $job_key, $action_id);
+            OrderPlacementJobsStore::set_job_action_id($order, $job_key, $action_id);
         } else {
             // If AS missing, keep action_id empty; job will require manual retry
-            OrderPlacementStore::set_job_action_id($order, $job_key, '');
+            OrderPlacementJobsStore::clear_job_action_id($order, $job_key);
         }
-
-        $order->save();
 
         error_log(self::LOG_PREFIX . " retry scheduled key={$job_key} order=" . (int) $order->get_id()
             . " step={$step} attempt={$attempt_n} delay={$delay}s run_at={$run_at_iso} action_id={$action_id}");
@@ -146,16 +144,14 @@ final class OrderPlacementJobStateMachine
         array $codes,
         string $step
     ): array {
-        OrderPlacementStore::set_job_last_step($order, $job_key, $step);
-        OrderPlacementStore::set_job_last_error_codes($order, $job_key, $codes);
+        OrderPlacementJobsStore::set_job_last_step($order, $job_key, $step);
+        OrderPlacementJobsStore::set_job_last_error_codes($order, $job_key, $codes);
 
         // Terminal failure
-        OrderPlacementStore::mark_job_failed($order, $job_key, $reason);
+        OrderPlacementJobsStore::mark_job_failed($order, $job_key, $reason);
 
         // No pending action anymore
-        OrderPlacementStore::set_job_action_id($order, $job_key, '');
-
-        $order->save();
+        OrderPlacementJobsStore::clear_job_action_id($order, $job_key);
 
         error_log(self::LOG_PREFIX . " failed key={$job_key} order=" . (int) $order->get_id()
             . " step={$step} reason={$reason}");
@@ -191,7 +187,7 @@ final class OrderPlacementJobStateMachine
      *
      * IMPORTANT:
      * - We do NOT introspect Action Scheduler's schedule object because API differs by version.
-     * - Our single source of truth for "next run" is the order meta we write.
+     * - Our single source of truth for "next run" is the job table we write.
      *
      * @return array{0:string,1:int} [action_id, run_at_unix]
      */
@@ -220,7 +216,7 @@ final class OrderPlacementJobStateMachine
 
             if (is_numeric($existing) && (int) $existing > 0) {
                 // We cannot reliably fetch its schedule time across AS versions.
-                // Keep our desired time as the canonical meta time.
+                // Keep our desired time as the canonical stored time.
                 return [(string) (int) $existing, $desired_run_at_unix];
             }
         }

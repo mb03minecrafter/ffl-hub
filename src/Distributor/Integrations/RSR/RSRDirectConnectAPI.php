@@ -307,6 +307,17 @@ final class RSRDirectConnectAPI
      */
     public static function post_json(string $url, array $payload, int $timeout = 60): array
     {
+
+
+        // Log the exact structure being sent (as PHP array -> pretty JSON)
+        self::log_request_payload($url, $payload);
+
+        $json_body = wp_json_encode($payload);
+
+        // Optional: log the exact final JSON string being sent (RAW only)
+        if (is_string($json_body)) {
+            self::log_request_body_json($json_body);
+        }
         $args = [
             'timeout' => $timeout,
             'headers' => [
@@ -636,5 +647,145 @@ final class RSRDirectConnectAPI
         }
 
         return true;
+    }
+
+
+
+
+    /**
+     * Enable RSR request payload logging.
+     *
+     * In wp-config.php (preferred):
+     *   define('FFLHUB_RSR_API_DEBUG', true);
+     *
+     * Optional (dangerous): log raw payload (no redaction).
+     *   define('FFLHUB_RSR_API_DEBUG_RAW', true);
+     *
+     * Or env vars:
+     *   FFLHUB_RSR_API_DEBUG=1
+     *   FFLHUB_RSR_API_DEBUG_RAW=1
+     */
+    private const DEBUG_CONST     = 'FFLHUB_RSR_API_DEBUG';
+    private const DEBUG_RAW_CONST = 'FFLHUB_RSR_API_DEBUG_RAW';
+
+    private static function debug_enabled(): bool
+    {
+        if (defined(self::DEBUG_CONST) && constant(self::DEBUG_CONST)) {
+            return true;
+        }
+
+        $env = getenv('FFLHUB_RSR_API_DEBUG');
+        return ($env !== false && $env !== '' && $env !== '0');
+    }
+
+    private static function debug_raw_enabled(): bool
+    {
+        if (defined(self::DEBUG_RAW_CONST) && constant(self::DEBUG_RAW_CONST)) {
+            return true;
+        }
+
+        $env = getenv('FFLHUB_RSR_API_DEBUG_RAW');
+        return ($env !== false && $env !== '' && $env !== '0');
+    }
+
+    /**
+     * Pretty JSON for logs (stable + readable).
+     */
+    private static function json_for_log($value): string
+    {
+        $json = wp_json_encode(
+            $value,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        );
+
+        return is_string($json) ? $json : '(json_encode_failed)';
+    }
+
+    /**
+     * Redact sensitive keys recursively (creds + obvious PII).
+     * Default behavior: redact. You can opt into RAW logging for local debugging.
+     */
+    private static function redact_payload_for_log(array $payload): array
+    {
+        // Keys to redact wherever they appear (case-insensitive).
+        $redact_keys = [
+            'Username',
+            'Password',
+
+            // Customer identity / address-ish fields
+            'ContactNum',
+            'ShipAddress',
+            'ShipAddress2',
+            'ShipCity',
+            'ShipState',
+            'ShipZip',
+            'StoreName',
+            'Storename',
+
+            // If you ever pass these:
+            'Email',
+            'Phone',
+        ];
+
+        $out = $payload;
+
+        $walk = function (&$node) use (&$walk, $redact_keys) {
+            if (!is_array($node)) {
+                return;
+            }
+
+            foreach ($node as $k => &$v) {
+                if (is_string($k)) {
+                    foreach ($redact_keys as $rk) {
+                        if (strcasecmp($k, $rk) === 0) {
+                            if (is_string($v) && $v !== '') {
+                                $v = '[REDACTED len=' . strlen($v) . ']';
+                            } elseif (!empty($v)) {
+                                $v = '[REDACTED]';
+                            } else {
+                                $v = '[REDACTED]';
+                            }
+                            continue 2;
+                        }
+                    }
+                }
+
+                if (is_array($v)) {
+                    $walk($v);
+                }
+            }
+        };
+
+        $walk($out);
+
+        return $out;
+    }
+
+    private static function log_request_payload(string $url, array $payload): void
+    {
+        if (!self::debug_enabled()) {
+            return;
+        }
+
+        $raw = self::debug_raw_enabled();
+
+        $to_log = $raw ? $payload : self::redact_payload_for_log($payload);
+
+        error_log('[FFLHub RSR API] POST ' . $url);
+        error_log('[FFLHub RSR API] Payload' . ($raw ? ' (RAW)' : ' (REDACTED)') . ":\n" . self::json_for_log($to_log));
+    }
+
+    private static function log_request_body_json(string $json_body): void
+    {
+        if (!self::debug_enabled()) {
+            return;
+        }
+
+        // Only log the final JSON body if RAW logging is enabled (otherwise it may contain PII/creds).
+        if (!self::debug_raw_enabled()) {
+            return;
+        }
+
+        error_log("[FFLHub RSR API] Body JSON (RAW):\n" . $json_body);
     }
 }

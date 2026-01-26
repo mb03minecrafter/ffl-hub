@@ -29,6 +29,8 @@ use FFLHub\Checkout\Map\CheckoutMap;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Distributor\Orders\OrderPlacementOrchestrator;
+use FFLHub\Distributor\Orders\Shipping\OrderPlacementShippingPoller;
+use FFLHub\Distributor\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLTable;
 
@@ -41,6 +43,7 @@ use FFLHub\Product\MapPriceVisibility;
 
 
 use FFLHub\Orders\OrderProcurementService;
+
 /**
  * Main plugin class for FFL Hub.
  */
@@ -88,7 +91,7 @@ class Plugin
         AdminPage::init();
         DistributorProductsPage::init();
 
-       // Woo store API integration.
+        // Woo store API integration.
         FFLRequiredCartExtension::init(); //REWORK
 
         // FFL importer + REST API + admin order panel.
@@ -112,8 +115,17 @@ class Plugin
 
         OrderPlacementMetaBox::init();
 
-        $this->order_orchestrator = new OrderPlacementOrchestrator();  // ✅ store it
+
+
+
+
+        $this->order_orchestrator = new OrderPlacementOrchestrator();  
         $this->order_orchestrator->register();
+
+
+
+        OrderPlacementShippingPoller::register();
+
         // 4. Hook into WordPress admin.
     }
 
@@ -128,7 +140,7 @@ class Plugin
     {
         // FFL table.
         FFLTable::create_table();
-
+        OrderPlacementJobsTable::create_table();
     }
 
     /**
@@ -148,8 +160,6 @@ class Plugin
 
         $handler = new DistributorHandler();
         $handler->on_activate();
-
-
     }
 
     /**
@@ -162,7 +172,5 @@ class Plugin
     {
         $handler = new DistributorHandler();
         $handler->on_deactivate();
-        
     }
 }
-

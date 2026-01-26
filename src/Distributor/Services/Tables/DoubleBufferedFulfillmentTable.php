@@ -129,6 +129,7 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
      */
     public function createTables(): void
     {
+
         global $wpdb;
 
         $table_v1 = $this->get_table_name_with_suffix('v1');

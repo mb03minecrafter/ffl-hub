@@ -3,7 +3,9 @@
 namespace FFLHub\Admin\Orders;
 
 use FFLHub\Distributor\Orders\OrderPlacementKeys;
-use FFLHub\Distributor\Orders\OrderPlacementStore;
+use FFLHub\Distributor\Orders\OrderPlacementJobsStore;
+use FFLHub\Distributor\Orders\OrderPlacementOrchestrator;
+use FFLHub\Distributor\Orders\Tables\OrderPlacementJobsTable;
 use WC_Order;
 
 if (!defined('ABSPATH')) {
@@ -23,7 +25,7 @@ final class OrderPlacementMetaBox
         // CSS for the “pretty boxes”
         add_action('admin_enqueue_scripts', [self::class, 'enqueue_assets']);
 
-
+        // Manual retry action (admin-post)
         add_action('admin_post_fflhub_retry_order_job', [self::class, 'handle_retry_job_post']);
     }
 
@@ -68,13 +70,13 @@ final class OrderPlacementMetaBox
             return;
         }
 
-        // Prefer Store helpers where it makes sense (types normalized)
-        $started    = OrderPlacementStore::get_pipeline_started($order);
-        $started_at = OrderPlacementStore::get_pipeline_started_at($order);
-        $started_by = OrderPlacementStore::get_pipeline_started_by($order);
+        // Pipeline meta still lives on the WC order
+        $started    = OrderPlacementJobsStore::get_pipeline_started($order);
+        $started_at = OrderPlacementJobsStore::get_pipeline_started_at($order);
+        $started_by = OrderPlacementJobsStore::get_pipeline_started_by($order);
 
-        $job_keys   = OrderPlacementStore::get_jobs_index($order);
-        $index_json = (string) $order->get_meta(OrderPlacementKeys::META_JOBS_INDEX, true);
+        // Jobs index is now derived from the jobs table
+        $job_keys = OrderPlacementJobsStore::get_jobs_index($order);
 
         echo '<div class="fflhub-wrap">';
 
@@ -92,11 +94,7 @@ final class OrderPlacementMetaBox
         echo '<div class="fflhub-card">';
         echo '<div class="fflhub-card-title">Jobs Index</div>';
         if (empty($job_keys)) {
-            echo '<div class="fflhub-muted">No jobs found (index empty).</div>';
-            if ($index_json !== '') {
-                echo '<details class="fflhub-details"><summary>Raw index JSON</summary><pre class="fflhub-pre">'
-                    . esc_html($index_json) . '</pre></details>';
-            }
+            echo '<div class="fflhub-muted">No jobs found (table empty).</div>';
         } else {
             echo '<div class="fflhub-badges">';
             foreach ($job_keys as $k) {
@@ -108,7 +106,7 @@ final class OrderPlacementMetaBox
 
         // Job cards
         foreach ($job_keys as $job_key) {
-            self::render_job_card($order, $job_key);
+            self::render_job_card($order, (string) $job_key);
         }
 
         echo '</div>'; // wrap
@@ -116,30 +114,21 @@ final class OrderPlacementMetaBox
 
     private static function render_job_card(WC_Order $order, string $job_key): void
     {
-        $keys = OrderPlacementStore::job_meta_keys($job_key);
+        $job_key = trim((string) $job_key);
+        if ($job_key === '') return;
 
-        $status   = (string) $order->get_meta($keys['status'], true);
-        $attempts = (string) $order->get_meta($keys['attempts'], true);
-        $created  = (string) $order->get_meta($keys['created'], true);
-        $done_at  = (string) $order->get_meta($keys['done_at'], true);
-        $actionid = (string) $order->get_meta($keys['action_id'], true);
-        $last_err = (string) $order->get_meta($keys['last_error'], true);
-        $payload  = (string) $order->get_meta($keys['payload'], true);
+        $row = self::get_job_row_for_admin((int) $order->get_id(), $job_key);
 
+        $status   = isset($row['status']) ? (string) $row['status'] : '';
+        $attempts = isset($row['attempts']) ? (string) $row['attempts'] : '';
+        $created  = isset($row['created_at']) ? (string) $row['created_at'] : '';
+        $done_at  = isset($row['done_at']) ? (string) $row['done_at'] : '';
+        $actionid = isset($row['action_id']) ? (string) $row['action_id'] : '';
+        $last_err = isset($row['last_error']) ? (string) $row['last_error'] : '';
+        $payload  = isset($row['payload_json']) ? (string) $row['payload_json'] : '';
 
-        if (strtolower(trim($status)) === 'failed') {
-            echo self::render_retry_button($order, $job_key);
-        }
-
-        // ✅ Validation result (stored as JSON string)
-        $validate_raw = isset($keys['validate_result'])
-            ? (string) $order->get_meta($keys['validate_result'], true)
-            : '';
-
-        // ✅ Place result (stored as JSON string)
-        $place_raw = isset($keys['place_result'])
-            ? (string) $order->get_meta($keys['place_result'], true)
-            : '';
+        $validate_raw = isset($row['validate_result_json']) ? (string) $row['validate_result_json'] : '';
+        $place_raw    = isset($row['place_result_json']) ? (string) $row['place_result_json'] : '';
 
         $pill = self::pill($status !== '' ? $status : '—', self::status_class($status));
 
@@ -148,6 +137,11 @@ final class OrderPlacementMetaBox
         echo '<div class="fflhub-job-title">' . esc_html($job_key) . '</div>';
         echo '<div>' . $pill . '</div>';
         echo '</div>';
+
+        // Retry button (only if failed)
+        if (strtolower(trim($status)) === 'failed') {
+            echo self::render_retry_button($order, $job_key);
+        }
 
         echo '<div class="fflhub-kv">';
         echo self::kv('Attempts', $attempts !== '' ? esc_html($attempts) : '<span class="fflhub-muted">0</span>');
@@ -163,7 +157,7 @@ final class OrderPlacementMetaBox
             echo '</div>';
         }
 
-        // ✅ Validation section
+        // Validation section
         echo '<div class="fflhub-subcard">';
         echo '<div class="fflhub-subcard-title">Validation</div>';
 
@@ -222,7 +216,7 @@ final class OrderPlacementMetaBox
 
         echo '</div>'; // subcard (validation)
 
-        // ✅ Place section
+        // Place section
         echo '<div class="fflhub-subcard">';
         echo '<div class="fflhub-subcard-title">Place</div>';
 
@@ -290,7 +284,7 @@ final class OrderPlacementMetaBox
 
         echo '</div>'; // subcard (place)
 
-        // Payload: show prettified JSON if possible
+        // Payload
         if ($payload !== '') {
             $pretty = self::pretty_json($payload);
             echo '<details class="fflhub-details">';
@@ -301,7 +295,43 @@ final class OrderPlacementMetaBox
             echo '<div class="fflhub-muted">No payload stored.</div>';
         }
 
-        echo '</div>';
+        echo '</div>'; // card
+    }
+
+    /**
+     * Admin-only table read for fields that don't have public getters on the store.
+     *
+     * @return array<string,mixed>
+     */
+    private static function get_job_row_for_admin(int $order_id, string $job_key): array
+    {
+        global $wpdb;
+
+        $table = OrderPlacementJobsTable::get_table_name();
+        $job_key = strtolower(trim((string) $job_key));
+
+        $sql = "
+            SELECT
+              status,
+              attempts,
+              created_at,
+              done_at,
+              action_id,
+              last_error,
+              payload_json,
+              validate_result_json,
+              place_result_json
+            FROM {$table}
+            WHERE order_id = %d AND job_key = %s
+            LIMIT 1
+        ";
+
+        $row = $wpdb->get_row(
+            $wpdb->prepare($sql, $order_id, $job_key),
+            ARRAY_A
+        );
+
+        return is_array($row) ? $row : [];
     }
 
     private static function resolve_order($post_or_order): ?WC_Order
@@ -378,12 +408,10 @@ final class OrderPlacementMetaBox
             return 'success';
         }
 
-        // If your place_order uses CODE_BLOCK_RETRYABLE, show warning
         if ($code_u === 'BLOCK_RETRYABLE') {
             return 'warning';
         }
 
-        // Heuristic: if any code looks like rate/quota/timeout, show warning
         $codes_lc = array_map('strtolower', array_map('strval', $codes));
         foreach ($codes_lc as $c) {
             if (strpos($c, 'rate') !== false || strpos($c, 'quota') !== false || strpos($c, 'timeout') !== false) {
@@ -393,7 +421,6 @@ final class OrderPlacementMetaBox
 
         return 'danger';
     }
-
 
     private static function render_retry_button(WC_Order $order, string $job_key): string
     {
@@ -435,73 +462,23 @@ final class OrderPlacementMetaBox
             wp_die('Order not found.');
         }
 
-        // Ensure this job is actually part of the job index
-        $job_keys = OrderPlacementStore::get_jobs_index($order);
+        // Ensure this job exists in the TABLE-derived index
+        $job_keys = OrderPlacementJobsStore::get_jobs_index($order);
         if (!in_array($job_key, $job_keys, true)) {
             wp_die('Job key not found on this order.');
         }
 
         // Only allow retry if terminally failed
-        $status = OrderPlacementStore::get_job_status($order, $job_key);
+        $status = OrderPlacementJobsStore::get_job_status($order, $job_key);
         if (strtolower(trim($status)) !== 'failed') {
             self::redirect_back($order_id, $job_key, 'not_failed');
             return;
         }
 
-        // Schedule retry (idempotent: if one is already pending, reuse it)
-        $action_id = self::schedule_retry_action($order, $job_key);
-
-        // Update meta to reflect "scheduled" immediately
-        if ($action_id !== '') {
-            OrderPlacementStore::set_job_action_id($order, $job_key, $action_id);
-        } else {
-            OrderPlacementStore::set_job_action_id($order, $job_key, '');
-        }
-
-        OrderPlacementStore::set_job_status($order, $job_key, OrderPlacementKeys::JOB_STATUS_SCHEDULED);
-        OrderPlacementStore::set_job_next_run_at($order, $job_key, gmdate('c', time() + 5));
-        OrderPlacementStore::set_job_last_error($order, $job_key, '');
-        OrderPlacementStore::set_job_last_error_codes($order, $job_key, []);
-
-        $order->save();
+        // ✅ Delegate scheduling + table updates to orchestrator (single source of truth)
+        $action_id = OrderPlacementOrchestrator::manual_reschedule_job($order, $job_key, 5, 'admin_retry');
 
         self::redirect_back($order_id, $job_key, $action_id !== '' ? 'scheduled' : 'as_missing');
-    }
-
-    private static function schedule_retry_action(WC_Order $order, string $job_key): string
-    {
-        if (!function_exists('as_schedule_single_action')) {
-            return '';
-        }
-
-        $args = [
-            'order_id' => (int) $order->get_id(),
-            'job_key'  => (string) $job_key,
-        ];
-
-        // If already pending, reuse it (strong idempotency)
-        if (function_exists('as_next_scheduled_action')) {
-            $existing = as_next_scheduled_action(
-                OrderPlacementKeys::AS_HOOK,
-                $args,
-                OrderPlacementKeys::AS_GROUP
-            );
-            if (is_numeric($existing) && (int) $existing > 0) {
-                return (string) (int) $existing;
-            }
-        }
-
-        // Small delay helps avoid “immediate same-request” weirdness
-        $run_at = time() + 5;
-
-        $action_id = as_schedule_single_action(
-            $run_at,
-            OrderPlacementKeys::AS_HOOK,
-            $args,
-            OrderPlacementKeys::AS_GROUP
-        );
-
-        return is_numeric($action_id) ? (string) (int) $action_id : '';
     }
 
     private static function redirect_back(int $order_id, string $job_key, string $result): void
@@ -519,7 +496,6 @@ final class OrderPlacementMetaBox
         wp_safe_redirect($ref);
         exit;
     }
-
 
     private static function css(): string
     {

@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
  * Orchestrates the Order Placement pipeline:
  *  - detect trigger (order status)
  *  - build per-(dist×bucket) jobs
- *  - persist durable job metadata
+ *  - persist durable job state (table)
  *  - schedule Action Scheduler actions
  *
  * 🚨 Does NOT contain per-job execution logic. That lives in OrderPlacementJobRunner.
@@ -59,8 +59,8 @@ final class OrderPlacementOrchestrator
             return;
         }
 
-        // Idempotency on the pipeline start
-        if (OrderPlacementStore::get_pipeline_started($order)) {
+        // Idempotency on the pipeline start (pipeline meta is still on the order)
+        if (OrderPlacementJobsStore::get_pipeline_started($order)) {
             $this->debug('skip: pipeline already started', ['order_id' => $order_id_i]);
             return;
         }
@@ -76,11 +76,11 @@ final class OrderPlacementOrchestrator
         $started_at = gmdate('c');
 
         // Mark started + persist jobs + schedule (durable)
-        OrderPlacementStore::set_pipeline_started($order, true, $started_at, 'status_processing');
-        $this->persist_bucket_jobs_meta($order, $bucket_jobs);
+        OrderPlacementJobsStore::set_pipeline_started($order, true, $started_at, 'status_processing');
+        $this->persist_bucket_jobs_table($order, $bucket_jobs);
         $this->schedule_bucket_jobs($order, $bucket_jobs);
 
-        // One save for the pipeline started keys (persist + schedule do their own saves, but this is safe)
+        // Save only needed for pipeline meta (jobs are table-backed and persist immediately)
         $order->save();
 
         $this->debug('pipeline started + jobs scheduled', [
@@ -200,10 +200,10 @@ final class OrderPlacementOrchestrator
         return $jobs;
     }
 
-    /* ===================== Persist meta ===================== */
+    /* ===================== Persist jobs (TABLE) ===================== */
 
     /**
-     * Persist job registry + payloads on the order (durable).
+     * Persist per-job rows in the table (durable).
      *
      * @param array<string, array{
      *   order_id:int,
@@ -212,28 +212,21 @@ final class OrderPlacementOrchestrator
      *   lines:array<int,array{upc:string,qty:int}>
      * }> $bucket_jobs
      */
-    private function persist_bucket_jobs_meta(WC_Order $order, array $bucket_jobs): void
+    private function persist_bucket_jobs_table(WC_Order $order, array $bucket_jobs): void
     {
-        $job_keys = [];
+        $count = 0;
 
         foreach ($bucket_jobs as $job_key => $job) {
             if (!is_string($job_key) || $job_key === '' || !is_array($job)) {
                 continue;
             }
 
-            $job_keys[] = $job_key;
-
-            // Initialize status/attempts/created if missing (idempotent) + always store payload
-            OrderPlacementStore::init_job_meta($order, $job_key, $job);
+            // Initialize job row if missing (idempotent) + always store payload_json
+            OrderPlacementJobsStore::init_job_meta($order, $job_key, $job);
+            $count++;
         }
 
-        $job_keys = array_values(array_unique($job_keys));
-        sort($job_keys);
-
-        OrderPlacementStore::set_jobs_index($order, $job_keys);
-        $order->save();
-
-        error_log(self::LOG_PREFIX . ' Persisted job meta: jobs=' . count($job_keys));
+        error_log(self::LOG_PREFIX . ' Persisted job rows: jobs=' . (int) $count);
     }
 
     /* ===================== Scheduling ===================== */
@@ -257,7 +250,7 @@ final class OrderPlacementOrchestrator
                 continue;
             }
 
-            $status = OrderPlacementStore::get_job_status($order, $job_key);
+            $status = OrderPlacementJobsStore::get_job_status($order, $job_key);
 
             // Never schedule successful jobs.
             if ($status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
@@ -273,13 +266,13 @@ final class OrderPlacementOrchestrator
             if (function_exists('as_next_scheduled_action')) {
                 $next = as_next_scheduled_action(OrderPlacementKeys::AS_HOOK, $args, OrderPlacementKeys::AS_GROUP);
                 if (is_numeric($next) && (int) $next > 0) {
-                    // Optional: keep meta in sync if missing
-                    if (OrderPlacementStore::get_job_action_id($order, $job_key) === '') {
-                        OrderPlacementStore::set_job_action_id($order, $job_key, (string) $next);
+                    // Optional: keep DB in sync if action_id missing
+                    if (OrderPlacementJobsStore::get_job_action_id($order, $job_key) === '') {
+                        OrderPlacementJobsStore::set_job_action_id($order, $job_key, (string) $next);
                     }
                     // Mark scheduled if not already
                     if ($status === '' || $status === OrderPlacementKeys::JOB_STATUS_QUEUED) {
-                        OrderPlacementStore::set_job_status($order, $job_key, OrderPlacementKeys::JOB_STATUS_SCHEDULED);
+                        OrderPlacementJobsStore::set_job_status($order, $job_key, OrderPlacementKeys::JOB_STATUS_SCHEDULED);
                     }
                     continue;
                 }
@@ -288,16 +281,13 @@ final class OrderPlacementOrchestrator
             // Schedule immediately
             $action_id = as_schedule_single_action(time(), OrderPlacementKeys::AS_HOOK, $args, OrderPlacementKeys::AS_GROUP);
 
-            // Persist action id + status
-            OrderPlacementStore::set_job_action_id($order, $job_key, (string) $action_id);
-            OrderPlacementStore::set_job_status($order, $job_key, OrderPlacementKeys::JOB_STATUS_SCHEDULED);
+            // Persist action id + status (table-backed)
+            OrderPlacementJobsStore::set_job_action_id($order, $job_key, (string) $action_id);
+            OrderPlacementJobsStore::set_job_status($order, $job_key, OrderPlacementKeys::JOB_STATUS_SCHEDULED);
 
             error_log(self::LOG_PREFIX . " Scheduled job key={$job_key} action_id={$action_id}");
         }
-
-        $order->save();
     }
-
 
     /* ===================== Worker entrypoint (delegate) ===================== */
 
@@ -328,6 +318,84 @@ final class OrderPlacementOrchestrator
             error_log('[FFLHUB][AS] ' . $e->getTraceAsString());
             throw $e; // keep AS marking it failed
         }
+    }
+
+    /* ===================== Manual reschedule (ADMIN) ===================== */
+
+    /**
+     * Manual reschedule hook used by admin UI.
+     *
+     * Single source of truth for:
+     * - AS action scheduling / idempotency
+     * - table-backed job fields (status, next_run_at, action_id, clearing errors)
+     *
+     * Returns action_id string, or '' if Action Scheduler unavailable.
+     */
+    public static function manual_reschedule_job(WC_Order $order, string $job_key, int $delay_seconds = 5, string $reason = 'admin_retry'): string
+    {
+        $job_key = trim((string) $job_key);
+        if ($job_key === '') {
+            return '';
+        }
+
+        $delay_seconds = max(0, (int) $delay_seconds);
+        $desired_run_at = time() + $delay_seconds;
+
+        if (!function_exists('as_schedule_single_action')) {
+            // Can't schedule. Leave job as failed; UI will show as_missing.
+            error_log(self::LOG_PREFIX . " Manual reschedule failed: Action Scheduler missing order=" . (int) $order->get_id() . " job={$job_key}");
+            return '';
+        }
+
+        $args = [
+            'order_id' => (int) $order->get_id(),
+            'job_key'  => (string) $job_key,
+        ];
+
+        // Strong idempotency: reuse pending action if one already exists
+        $action_id = '';
+        if (function_exists('as_next_scheduled_action')) {
+            $existing = as_next_scheduled_action(
+                OrderPlacementKeys::AS_HOOK,
+                $args,
+                OrderPlacementKeys::AS_GROUP
+            );
+            if (is_numeric($existing) && (int) $existing > 0) {
+                $action_id = (string) (int) $existing;
+            }
+        }
+
+        if ($action_id === '') {
+            $aid = as_schedule_single_action(
+                $desired_run_at,
+                OrderPlacementKeys::AS_HOOK,
+                $args,
+                OrderPlacementKeys::AS_GROUP
+            );
+            $action_id = is_numeric($aid) ? (string) (int) $aid : '';
+        }
+
+        // Update table-backed job state to reflect "scheduled now"
+        OrderPlacementJobsStore::set_job_status($order, $job_key, OrderPlacementKeys::JOB_STATUS_SCHEDULED);
+        OrderPlacementJobsStore::set_job_next_run_at($order, $job_key, gmdate('c', $desired_run_at));
+        OrderPlacementJobsStore::set_job_last_error($order, $job_key, '');
+        OrderPlacementJobsStore::set_job_last_error_codes($order, $job_key, []);
+
+        if ($action_id !== '') {
+            OrderPlacementJobsStore::set_job_action_id($order, $job_key, $action_id);
+        } else {
+            // If schedule failed for some reason, don't show a stale action id
+            if (method_exists(OrderPlacementJobsStore::class, 'clear_job_action_id')) {
+                OrderPlacementJobsStore::clear_job_action_id($order, $job_key);
+            } else {
+                OrderPlacementJobsStore::set_job_action_id($order, $job_key, '');
+            }
+        }
+
+        error_log(self::LOG_PREFIX . " Manual reschedule scheduled order=" . (int) $order->get_id()
+            . " job={$job_key} run_at=" . gmdate('c', $desired_run_at) . " action_id={$action_id} reason={$reason}");
+
+        return $action_id;
     }
 
     /* ===================== Helpers ===================== */

@@ -34,22 +34,19 @@ final class OrderPlacementJobRunner
         $job_key  = (string) $job_key;
 
         // Idempotency
-        if (OrderPlacementStore::get_job_status($order, $job_key) === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
+        if (OrderPlacementJobsStore::get_job_status($order, $job_key) === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
             return;
         }
 
-        // Mark running + bump attempts (Store should clear next_run_at and ideally action_id here)
-        $attempt_n = OrderPlacementStore::increment_job_attempts_and_mark_running($order, $job_key);
+        // Mark running + bump attempts (Store clears next_run_at and action_id)
+        $attempt_n = OrderPlacementJobsStore::increment_job_attempts_and_mark_running($order, $job_key);
 
-        // Runner-level safety: clear action_id at run start so action_id always means "pending retry"
-        // (Even if Store doesn't do it yet.)
-        OrderPlacementStore::set_job_action_id($order, $job_key, '');
-
-        $order->save();
+        // Runner-level safety: ensure action_id never means "currently running"
+        OrderPlacementJobsStore::clear_job_action_id($order, $job_key);
 
         error_log(self::LOG_PREFIX . " running key={$job_key} order={$order_id} attempt={$attempt_n}");
 
-        $payload = OrderPlacementStore::get_job_payload($order, $job_key);
+        $payload = OrderPlacementJobsStore::get_job_payload($order, $job_key);
         if (!is_array($payload)) {
             $this->fail_job($order, $job_key, 'Missing/invalid payload for job');
             return;
@@ -83,7 +80,28 @@ final class OrderPlacementJobRunner
                 ? (string) $ship_ffl->state
                 : (string) $ship_customer->state;
 
-            $merchant_order_id = 'wc-' . $order_id . '-' . $dist_id . '-' . $bucket;
+            // ---------------- Correlation ID (merchant PO) ----------------
+            // We store this early as a correlation id (recommended).
+            // It only "corresponds to a real distributor order" once validation passes AND place succeeds.
+            $merchant_order_id = $this->build_merchant_po(
+                $order_id,
+                (string) $dist_id,
+                (string) $bucket,
+                1 // no indexing just yet
+            );
+
+            // Persist correlation id (idempotent: first writer wins)
+            if ($merchant_order_id !== '') {
+                OrderPlacementJobsStore::set_job_merchant_po($order, $job_key, $merchant_order_id, false);
+            }
+
+            if ($this->debug_enabled()) {
+                error_log(self::LOG_PREFIX . " Customer " . $ship_customer->to_debug_string());
+                if ($ffl_required && ($ship_ffl instanceof DistributorShipTo)) {
+                    error_log(self::LOG_PREFIX . " FFL " . $ship_ffl->to_debug_string());
+                }
+                error_log(self::LOG_PREFIX . " MERCHANT ORDER ID (correlation): " . $merchant_order_id);
+            }
 
             // ---------------- Build request ----------------
             $req = new DistributorOrderRequest(
@@ -126,14 +144,11 @@ final class OrderPlacementJobRunner
             // State machine decides what to do with validation outcome
             $dec = $sm->apply_validation_result($order, $job_key, $vr, $attempt_n);
             if (($dec['action'] ?? '') === 'exit') {
-                // retry_scheduled or failed — state machine already persisted status/meta
+                // retry_scheduled or failed — state machine already persisted status/fields
                 return;
             }
 
             // ---------------- Place order ----------------
-            // IMPORTANT: do NOT pre-write last_step=place here.
-            // place_and_persist_result() + state machine will set last_step consistently.
-
             $or = $this->place_and_persist_result($order, $job_key, $dist, $req, [
                 'order_id' => $order_id,
                 'job_key'  => $job_key,
@@ -148,8 +163,7 @@ final class OrderPlacementJobRunner
             }
 
             // OK path: mark success
-            OrderPlacementStore::mark_job_success($order, $job_key, gmdate('c'));
-            $order->save();
+            OrderPlacementJobsStore::mark_job_success($order, $job_key, gmdate('c'));
 
             error_log(self::LOG_PREFIX . " success key={$job_key} order={$order_id}");
             return;
@@ -160,7 +174,7 @@ final class OrderPlacementJobRunner
     }
 
     /* ======================================================
-     * Validation snapshot (unchanged)
+     * Validation snapshot
      * ====================================================== */
 
     /**
@@ -176,47 +190,6 @@ final class OrderPlacementJobRunner
 
         $vr = $dist->validate_order_request($req);
 
-        // ---------------- SIMULATION MODE ----------------
-        // Random roll 1–5
-        /*$roll = random_int(1, 5);
-
-        switch ($roll) {
-            case 1:
-            case 2:
-                // Allow
-                $vr = DistributorOrderValidationResult::allow(
-                    "SIM: Validation OK (roll={$roll})"
-                );
-                break;
-
-            case 3:
-                // Retryable block
-                $vr = DistributorOrderValidationResult::block_retryable(
-                    "SIM: Validation retryable (roll={$roll})",
-                    ['SIM_VALIDATE_RETRY']
-                );
-                break;
-
-            case 4:
-                // Fatal block
-                $vr = DistributorOrderValidationResult::block(
-                    "SIM: Validation fatal (roll={$roll})",
-                    ['SIM_VALIDATE_FATAL']
-                );
-                break;
-
-            case 5:
-            default:
-                // Another retry flavor
-                $vr = DistributorOrderValidationResult::block_retryable(
-                    "SIM: Validation timeout (roll={$roll})",
-                    ['SIM_VALIDATE_TIMEOUT']
-                );
-                break;
-        }*/
-
-
-
         if (!($vr instanceof DistributorOrderValidationResult)) {
             $snap = [
                 'ok'      => false,
@@ -227,34 +200,31 @@ final class OrderPlacementJobRunner
                 'at'      => gmdate('c'),
                 'ctx'     => $this->sanitize_meta_ctx($ctx),
             ];
-            OrderPlacementStore::set_job_validation_result($order, $job_key, $snap);
+            OrderPlacementJobsStore::set_job_validation_result($order, $job_key, $snap);
 
             // quick-glance
-            OrderPlacementStore::set_job_last_step($order, $job_key, 'validate');
-            OrderPlacementStore::set_job_last_error_codes($order, $job_key, $snap['codes']);
+            OrderPlacementJobsStore::set_job_last_step($order, $job_key, 'validate');
+            OrderPlacementJobsStore::set_job_last_error_codes($order, $job_key, $snap['codes']);
 
-            $order->save();
             throw new \RuntimeException($snap['message']);
         }
 
         $snap = $this->snapshot_validation_result($vr, $ctx);
-        OrderPlacementStore::set_job_validation_result($order, $job_key, $snap);
+        OrderPlacementJobsStore::set_job_validation_result($order, $job_key, $snap);
 
         // quick-glance
-        OrderPlacementStore::set_job_last_step($order, $job_key, 'validate');
-        OrderPlacementStore::set_job_last_error_codes($order, $job_key, is_array($vr->codes) ? $vr->codes : []);
-
-        $order->save();
+        OrderPlacementJobsStore::set_job_last_step($order, $job_key, 'validate');
+        OrderPlacementJobsStore::set_job_last_error_codes($order, $job_key, is_array($vr->codes) ? $vr->codes : []);
 
         return $vr;
     }
 
     /* ======================================================
-     * Place-order snapshot (new helper you already started)
+     * Place-order snapshot
      * ====================================================== */
 
     /**
-     * Place order and persist a compact snapshot to job meta.
+     * Place order and persist a compact snapshot to job storage.
      *
      * @param array<string,mixed> $ctx
      */
@@ -265,68 +235,24 @@ final class OrderPlacementJobRunner
         DistributorOrderRequest $req,
         array $ctx = []
     ): DistributorOrderResult {
-        // TODO: replace stub with:
-
-
-        // USE THIS LINE IF YOU WANT TO ENABLE LIVE ORDERING... BEWARE DO NOT DO THIS UNTIL THE SITE IS LIVE AND UP 
+        // USE THIS LINE IF YOU WANT TO ENABLE LIVE ORDERING... BEWARE DO NOT DO THIS UNTIL THE SITE IS LIVE AND UP
         // $or = $dist->place_order($req);
-        $or = DistributorOrderResult::ok('stub: place_order not implemented yet', []);
 
+        $or = null; //DistributorOrderResult::ok('stub: place_order not implemented yet', []);
 
-        /*$roll = random_int(1, 5);
+        $roll = rand(0, 2);
+
         switch ($roll) {
+            case 0:
+                $or = DistributorOrderResult::block_fatal('test run of FATAL block', []);
+                break;
             case 1:
-                // Success
-                $or = DistributorOrderResult::ok(
-                    'SIM: OK (roll=1)',
-                    ['SIM-' . $roll . '-' . time()],
-                    ['roll' => $roll]
-                );
+                $or = DistributorOrderResult::block_retryable('test run of RETRYABLE block', []);
                 break;
-
             case 2:
-                // Retryable failure
-                $or = DistributorOrderResult::block_retryable(
-                    'SIM: Retryable error (roll=2)',
-                    ['SIM_RETRY'],
-                    ['roll' => $roll],
-                    429,
-                    'RATE_LIMIT'
-                );
+                $or = DistributorOrderResult::ok('test run of OK', []);
                 break;
-
-            case 3:
-                // Fatal failure
-                $or = DistributorOrderResult::block_fatal(
-                    'SIM: Fatal error (roll=3)',
-                    ['SIM_FATAL'],
-                    ['roll' => $roll],
-                    500,
-                    'FATAL'
-                );
-                break;
-
-            case 4:
-                // Dry run (treated as non-ok but CODE_OK)
-                $or = DistributorOrderResult::ok(
-                    'SIM: OK (roll=1)',
-                    ['SIM-' . $roll . '-' . time()],
-                    ['roll' => $roll]
-                );
-                break;
-
-            case 5:
-            default:
-                // Another retry flavor (timeout / upstream)
-                $or = DistributorOrderResult::block_retryable(
-                    'SIM: Timeout retry (roll=5)',
-                    ['SIM_TIMEOUT'],
-                    ['roll' => $roll],
-                    504,
-                    'TIMEOUT'
-                );
-                break;
-        }*/
+        }
 
         if (!($or instanceof DistributorOrderResult)) {
             $snap = [
@@ -340,24 +266,21 @@ final class OrderPlacementJobRunner
                 'ctx'     => $this->sanitize_meta_ctx($ctx),
             ];
 
-            OrderPlacementStore::set_job_place_result($order, $job_key, $snap);
+            OrderPlacementJobsStore::set_job_place_result($order, $job_key, $snap);
 
             // quick-glance
-            OrderPlacementStore::set_job_last_step($order, $job_key, 'place');
-            OrderPlacementStore::set_job_last_error_codes($order, $job_key, $snap['codes']);
+            OrderPlacementJobsStore::set_job_last_step($order, $job_key, 'place');
+            OrderPlacementJobsStore::set_job_last_error_codes($order, $job_key, $snap['codes']);
 
-            $order->save();
             throw new \RuntimeException($snap['message']);
         }
 
         $snap = $this->snapshot_place_result($or, $ctx);
-        OrderPlacementStore::set_job_place_result($order, $job_key, $snap);
+        OrderPlacementJobsStore::set_job_place_result($order, $job_key, $snap);
 
         // quick-glance
-        OrderPlacementStore::set_job_last_step($order, $job_key, 'place');
-        OrderPlacementStore::set_job_last_error_codes($order, $job_key, is_array($or->codes) ? $or->codes : []);
-
-        $order->save();
+        OrderPlacementJobsStore::set_job_last_step($order, $job_key, 'place');
+        OrderPlacementJobsStore::set_job_last_error_codes($order, $job_key, is_array($or->codes) ? $or->codes : []);
 
         // Optional debug
         if ($or->ok && $or->code === DistributorOrderResult::CODE_OK) {
@@ -374,7 +297,7 @@ final class OrderPlacementJobRunner
     }
 
     /* ======================================================
-     * Snapshots + helpers (unchanged from your current runner)
+     * Snapshots + helpers (unchanged)
      * ====================================================== */
 
     /**
@@ -634,13 +557,87 @@ final class OrderPlacementJobRunner
 
     private function fail_job(WC_Order $order, string $job_key, string $reason): void
     {
-        OrderPlacementStore::mark_job_failed($order, $job_key, $reason);
+        OrderPlacementJobsStore::mark_job_failed($order, $job_key, $reason);
 
         // Terminal failures should not show a pending action id
-        OrderPlacementStore::set_job_action_id($order, $job_key, '');
-
-        $order->save();
+        OrderPlacementJobsStore::clear_job_action_id($order, $job_key);
 
         error_log(self::LOG_PREFIX . " failed key={$job_key} order=" . (int) $order->get_id() . " reason={$reason}");
+    }
+
+    /**
+     * Build a canonical merchant PO / external reference.
+     *
+     * Format:
+     *   FH-{DIST}-{ORDER}-{B}{i}
+     *   Example: FH-RSR-286-N1
+     *
+     * @param int|string $order_id
+     * @param string $dist_id
+     * @param string $bucket      "non" | "ffl"
+     * @param int $split_index    default = 1
+     */
+    private function build_merchant_po($order_id, string $dist_id, string $bucket, int $split_index = 1): string
+    {
+        $order_id = (int) $order_id;
+        if ($order_id <= 0) {
+            $order_id = 0;
+        }
+
+        // Raw distributor id (uppercase, trimmed)
+        $dist = strtoupper(trim($dist_id));
+        if ($dist === '') {
+            $dist = 'DIST';
+        }
+
+        // Bucket => single letter
+        $b = strtolower(trim($bucket));
+        if ($b === 'ffl') {
+            $bucket_code = 'F';
+        } elseif ($b === 'non') {
+            $bucket_code = 'N';
+        } else {
+            $bucket_code = 'U';
+        }
+
+        // Split index
+        $i = (int) $split_index;
+        if ($i < 1) {
+            $i = 1;
+        }
+
+        $po = sprintf('FH-%s-%d-%s%d', $dist, $order_id, $bucket_code, $i);
+
+        return $this->sanitize_po($po, 22);
+    }
+
+    /**
+     * Sanitize PO to allowed chars and max length.
+     * Allowed: A–Z a–z 0–9 space dash
+     */
+    private function sanitize_po(string $po, int $max_len = 22): string
+    {
+        $po = trim($po);
+        if ($po === '') {
+            return '';
+        }
+
+        // Replace illegal chars with dash
+        $po = preg_replace('/[^A-Za-z0-9 \-]+/', '-', $po);
+        $po = is_string($po) ? $po : '';
+
+        // Collapse whitespace
+        $po = preg_replace('/\s+/', ' ', $po);
+        $po = is_string($po) ? trim($po) : '';
+
+        // Collapse repeated dashes
+        $po = preg_replace('/\-{2,}/', '-', $po);
+        $po = is_string($po) ? trim($po, '-') : '';
+
+        if ($max_len > 0 && strlen($po) > $max_len) {
+            $po = substr($po, 0, $max_len);
+        }
+
+        return $po;
     }
 }
