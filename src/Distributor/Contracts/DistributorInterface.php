@@ -11,6 +11,7 @@ use FFLHub\Distributor\Services\DistributorServicesInterface;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorOrderResult;
+use FFLHub\Distributor\Models\DistributorShipment;
 
 interface DistributorInterface
 {
@@ -67,8 +68,18 @@ interface DistributorInterface
 
 
 
-   
+
 
 
     public function place_order(DistributorOrderRequest $request): DistributorOrderResult;
+
+
+
+
+    /**
+     * Fetch shipment info for a PO number.
+     *
+     * Returns null if shipment not yet known.
+     */
+    public function get_shipment_by_po(string $po_number): ?DistributorShipment;
 }

@@ -28,9 +28,9 @@ use FFLHub\Checkout\Fields\CheckoutFields;
 use FFLHub\Checkout\Map\CheckoutMap;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Compliance\CartCompliance;
-use FFLHub\Distributor\Orders\OrderPlacementOrchestrator;
-use FFLHub\Distributor\Orders\Shipping\OrderPlacementShippingPoller;
-use FFLHub\Distributor\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Distributor\Services\Orders\OrderPlacementOrchestrator;
+use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
+
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLTable;
 
@@ -42,7 +42,6 @@ use FFLHub\Product\CategoryInstaller;
 use FFLHub\Product\MapPriceVisibility;
 
 
-use FFLHub\Orders\OrderProcurementService;
 
 /**
  * Main plugin class for FFL Hub.
@@ -58,6 +57,8 @@ class Plugin
 
     public DistributorHandler $distributor_handler;
     public ?OrderPlacementOrchestrator $order_orchestrator = null;
+
+
 
     /**
      * Get the single instance of the class.
@@ -124,7 +125,6 @@ class Plugin
 
 
 
-        OrderPlacementShippingPoller::register();
 
         // 4. Hook into WordPress admin.
     }

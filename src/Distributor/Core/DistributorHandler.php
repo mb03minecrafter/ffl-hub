@@ -9,10 +9,11 @@ use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Settings\Options;
 
 
-use FFLHub\Distributor\Product\DistributorProductSyncCronService;
+use FFLHub\Distributor\Services\ProductSync\DistributorProductSyncCronService;
 
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
+use FFLHub\Distributor\Services\Orders\Shipping\OrderPlacementShippingPollCronService;
 
 /**
  * Central place to build and expose distributor instances.
@@ -28,6 +29,7 @@ class DistributorHandler
     private array $distributors = [];
 
     private DistributorProductSyncCronService $productSyncCronService;
+    private OrderPlacementShippingPollCronService $orderShippingCronService;
 
     public function __construct()
     {
@@ -42,6 +44,7 @@ class DistributorHandler
         }
 
         $this->productSyncCronService = new DistributorProductSyncCronService();
+        $this->orderShippingCronService = new OrderPlacementShippingPollCronService();
     }
 
     /**
@@ -104,6 +107,7 @@ class DistributorHandler
         }
 
         $this->productSyncCronService->on_activation();
+        $this->orderShippingCronService->on_activation();
     }
 
     public function on_deactivate(): void
@@ -116,6 +120,8 @@ class DistributorHandler
         }
 
         $this->productSyncCronService->on_deactivation();
+        $this->orderShippingCronService->on_deactivation();
+
     }
 
     public function register_runtime_services(): void
@@ -132,6 +138,7 @@ class DistributorHandler
         }
 
         $this->productSyncCronService->register();
+        $this->orderShippingCronService->register();
     }
 
     /**

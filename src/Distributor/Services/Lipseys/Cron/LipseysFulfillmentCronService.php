@@ -54,13 +54,7 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
         return self::CRON_HOOK;
     }
 
-    /**
-     * Schedule key used in cron_schedules.
-     */
-    protected function get_schedule_key(): string
-    {
-        return 'fflhub_four_hours_lipseys';
-    }
+   
 
     /**
      * Interval length in seconds.
@@ -70,12 +64,9 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
         return 4 * HOUR_IN_SECONDS;
     }
 
-    /**
-     * Human-readable schedule label.
-     */
-    protected function get_interval_display(): string
+    public function get_action_group(): string
     {
-        return "Every 4 hours (FFLHub Lipsey's)";
+        return 'fflhub_catalog';
     }
 
     /**

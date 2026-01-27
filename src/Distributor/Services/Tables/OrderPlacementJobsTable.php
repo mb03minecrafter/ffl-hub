@@ -1,6 +1,6 @@
 <?php
 
-namespace FFLHub\Distributor\Orders\Tables;
+namespace FFLHub\Distributor\Services\Tables;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -59,6 +59,7 @@ tracking_numbers_json TEXT NULL,
 invoice_numbers_json TEXT NULL,
 shipping_service VARCHAR(64) NULL,
 shipping_weight VARCHAR(32) NULL,
+shipment_raw_json LONGTEXT NULL,
 last_shipping_poll_at DATETIME NULL,
 PRIMARY KEY (id),
 UNIQUE KEY uq_order_job (order_id, job_key),

@@ -1,6 +1,6 @@
 <?php
 
-namespace FFLHub\Distributor\Orders;
+namespace FFLHub\Distributor\Services\Orders;
 
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorOrderResult;

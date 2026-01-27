@@ -19,6 +19,7 @@ use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
+use FFLHub\Distributor\Models\DistributorShipment;
 
 /**
  * Base class for distributors with common functionality.
@@ -553,12 +554,12 @@ abstract class DistributorBase implements DistributorInterface
 
 
     public function place_order(DistributorOrderRequest $request): DistributorOrderResult
-{
-    return DistributorOrderResult::block_fatal(
-        'Ordering is not implemented for this distributor.',
-        [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED]
-    );
-}
+    {
+        return DistributorOrderResult::block_fatal(
+            'Ordering is not implemented for this distributor.',
+            [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED]
+        );
+    }
 
 
 
@@ -601,5 +602,12 @@ abstract class DistributorBase implements DistributorInterface
         }
 
         return $out;
+    }
+
+
+
+    public function get_shipment_by_po(string $po_number): ?DistributorShipment
+    {
+        return null;
     }
 }

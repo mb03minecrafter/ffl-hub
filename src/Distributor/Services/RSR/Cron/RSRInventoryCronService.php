@@ -43,14 +43,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
         return self::CRON_HOOK;
     }
 
-    /**
-     * Schedule key used in cron_schedules.
-     * (Kept as 'fflhub_five_minutes' to avoid breaking existing schedules.)
-     */
-    protected function get_schedule_key(): string
-    {
-        return 'fflhub_five_minutes';
-    }
+    
 
     /**
      * Interval length in seconds.
@@ -60,12 +53,10 @@ final class RSRInventoryCronService extends AbstractTableCronService
         return 5 * MINUTE_IN_SECONDS;
     }
 
-    /**
-     * Human-readable schedule label.
-     */
-    protected function get_interval_display(): string
+
+    public function get_action_group(): string
     {
-        return 'Every 5 minutes (FFLHub RSR inventory)';
+        return 'fflhub_catalog';
     }
 
     /**

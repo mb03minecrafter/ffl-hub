@@ -1,9 +1,9 @@
 <?php
 
-namespace FFLHub\Distributor\Orders;
+namespace FFLHub\Distributor\Services\Orders;
 
 use WC_Order;
-use FFLHub\Distributor\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
 
 if (!defined('ABSPATH')) {
     exit;

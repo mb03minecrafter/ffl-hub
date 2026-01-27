@@ -1,10 +1,11 @@
 <?php
 
-namespace FFLHub\Distributor\Product;
+namespace FFLHub\Distributor\Services\ProductSync;
 
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
+use FFLHub\Distributor\Product\DistributorProductHelper;
 use WC_Product;
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
 use FFLHub\Product\ProductMeta;
@@ -40,20 +41,18 @@ class DistributorProductSyncCronService extends AbstractCronService
         return self::CRON_HOOK;
     }
 
-    protected function get_schedule_key(): string
-    {
-        return 'fflhub_every_five_minutes';
-    }
 
     protected function get_interval_seconds(): int
     {
         return 5 * MINUTE_IN_SECONDS;
     }
 
-    protected function get_interval_display(): string
+    public function get_action_group(): string
     {
-        return __('Every 5 minutes (FFLHub Product Sync)', 'ffl-hub');
+        return 'fflhub_product_sync';
     }
+
+    
 
     protected function get_initial_delay_seconds(): int
     {

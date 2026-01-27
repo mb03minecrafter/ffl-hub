@@ -1,6 +1,6 @@
 <?php
 
-namespace FFLHub\Distributor\Orders;
+namespace FFLHub\Distributor\Services\Orders;
 
 use FFLHub\Plugin;
 use FFLHub\Distributor\Core\DistributorHandler;
@@ -12,7 +12,7 @@ use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorShipTo;
 
-use FFLHub\Distributor\Orders\OrderPlacementJobStateMachine;
+use FFLHub\Distributor\Services\Orders\OrderPlacementJobStateMachine;
 
 use FFLHub\Checkout\Builders\CheckoutOrderRequestBuilder;
 use FFLHub\Settings\Options;
@@ -236,23 +236,11 @@ final class OrderPlacementJobRunner
         array $ctx = []
     ): DistributorOrderResult {
         // USE THIS LINE IF YOU WANT TO ENABLE LIVE ORDERING... BEWARE DO NOT DO THIS UNTIL THE SITE IS LIVE AND UP
-        // $or = $dist->place_order($req);
+        //$or = $dist->place_order($req);
 
-        $or = null; //DistributorOrderResult::ok('stub: place_order not implemented yet', []);
+        $or = DistributorOrderResult::ok('stub: place_order not implemented yet', []);
 
-        $roll = rand(0, 2);
-
-        switch ($roll) {
-            case 0:
-                $or = DistributorOrderResult::block_fatal('test run of FATAL block', []);
-                break;
-            case 1:
-                $or = DistributorOrderResult::block_retryable('test run of RETRYABLE block', []);
-                break;
-            case 2:
-                $or = DistributorOrderResult::ok('test run of OK', []);
-                break;
-        }
+        
 
         if (!($or instanceof DistributorOrderResult)) {
             $snap = [

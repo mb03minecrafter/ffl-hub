@@ -34,14 +34,6 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         return self::CRON_HOOK;
     }
 
-    /**
-     * Schedule key used in cron_schedules.
-     * (Kept as 'fflhub_one_hour' to avoid breaking existing schedules.)
-     */
-    protected function get_schedule_key(): string
-    {
-        return 'fflhub_one_hour';
-    }
 
     /**
      * Interval length in seconds.
@@ -51,14 +43,13 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         return HOUR_IN_SECONDS;
     }
 
-    /**
-     * Human-readable schedule label.
-     */
-    protected function get_interval_display(): string
+
+    public function get_action_group(): string
     {
-        return 'Every hour (FFLHub Lipsey\'s Pricing/Quantity)';
+        return 'fflhub_catalog';
     }
 
+    
     /**
      * Delay before first run (keeps your old 5-minute initial delay).
      */

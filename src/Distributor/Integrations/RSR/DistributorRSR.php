@@ -14,6 +14,7 @@ use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\DistributorShipTo;
 
 if (! defined('ABSPATH')) {
@@ -452,6 +453,137 @@ class DistributorRSR extends DistributorBase
         }
 
         return DistributorOrderValidationResult::allow('RSR validation OK.', $details);
+    }
+
+
+    public function get_shipment_by_po(string $po_number): ?DistributorShipment
+    {
+        $po_number = trim((string) $po_number);
+        if ($po_number === '') {
+            return null;
+        }
+
+        $auth = $this->get_rsr_auth_payload();
+        if (!is_array($auth) || empty($auth['ok'])) {
+            return null;
+        }
+
+        $api_base_url = $this->get_api_base_url();
+
+        $resp = RSRDirectConnectAPI::check_order_report_all(
+            $auth['payload'],
+            $po_number,
+            $api_base_url,
+            60
+        );
+
+
+
+        
+
+
+
+        if (!is_array($resp) || empty($resp['ok'])) {
+            return null;
+        }
+
+        $items = $resp['items'] ?? [];
+        if (!is_array($items) || empty($items)) {
+            return null;
+        }
+
+        /**
+         * RSR may return CSV fields:
+         *  - TrackingNum: "1Z...,7259..."
+         *  - Invoices:    "400...,401..."
+         *  - DateShipped: "YYYYMMDD,YYYYMMDD"
+         *
+         * We'll normalize into lists and return a single DistributorShipment
+         * containing all unique tracking/invoice numbers seen across all rows.
+         */
+
+        $tracking_numbers = [];
+        $invoice_numbers  = [];
+
+        // Optional "nice to have" rollups (not in DTO yet, but useful to keep in raw)
+        $date_shipped_values = [];
+        $warehouses          = [];
+
+        foreach ($items as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            // Tracking numbers (CSV)
+            $tracking_raw = trim((string) ($row['TrackingNum'] ?? ''));
+            if ($tracking_raw !== '') {
+                foreach (preg_split('/\s*,\s*/', $tracking_raw) as $t) {
+                    $t = trim((string) $t);
+                    if ($t !== '') {
+                        $tracking_numbers[] = $t;
+                    }
+                }
+            }
+
+            // Invoice numbers (CSV)
+            $invoice_raw = trim((string) ($row['Invoices'] ?? ''));
+            if ($invoice_raw !== '') {
+                foreach (preg_split('/\s*,\s*/', $invoice_raw) as $inv) {
+                    $inv = trim((string) $inv);
+                    if ($inv !== '') {
+                        $invoice_numbers[] = $inv;
+                    }
+                }
+            }
+
+            // Date shipped (CSV-ish too)
+            $date_raw = trim((string) ($row['DateShipped'] ?? ''));
+            if ($date_raw !== '') {
+                foreach (preg_split('/\s*,\s*/', $date_raw) as $d) {
+                    $d = trim((string) $d);
+                    if ($d !== '') {
+                        $date_shipped_values[] = $d;
+                    }
+                }
+            }
+
+            $wh = trim((string) ($row['Warehouse'] ?? ''));
+            if ($wh !== '') {
+                $warehouses[] = $wh;
+            }
+        }
+
+        // Dedupe while preserving order
+        $tracking_numbers = array_values(array_unique($tracking_numbers));
+        $invoice_numbers  = array_values(array_unique($invoice_numbers));
+        $date_shipped_values = array_values(array_unique($date_shipped_values));
+        $warehouses = array_values(array_unique($warehouses));
+
+        // If no tracking yet, treat as "not shipped"
+        if (empty($tracking_numbers)) {
+            return null;
+        }
+
+        // Deterministic output ordering (helps debug, diff, idempotency)
+        sort($tracking_numbers, SORT_STRING);
+        sort($invoice_numbers, SORT_STRING);
+        sort($date_shipped_values, SORT_STRING);
+        sort($warehouses, SORT_STRING);
+
+        return new DistributorShipment(
+            $tracking_numbers,
+            $invoice_numbers,
+            null,   // shipping_service (RSR response doesn't provide)
+            null,   // shipping_weight  (RSR response doesn't provide)
+            [
+                'po_number'   => $po_number,
+                'raw_items'   => $items,
+                'raw'         => $resp['raw'] ?? null,
+                'http_status' => isset($resp['http_status']) ? (int) $resp['http_status'] : 0,
+                'date_shipped_values' => $date_shipped_values,
+                'warehouses'          => $warehouses,
+            ]
+        );
     }
 
     /**
@@ -910,7 +1042,7 @@ class DistributorRSR extends DistributorBase
         return $email;
     }
 
-    
+
     /**
      * For validation (check-catalog) failures: determine whether this is retryable.
      */

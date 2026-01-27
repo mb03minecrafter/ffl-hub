@@ -37,14 +37,6 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         return self::CRON_HOOK;
     }
 
-    /**
-     * Schedule key used in cron_schedules.
-     * (Kept as 'fflhub_two_hours' to avoid breaking existing schedules.)
-     */
-    protected function get_schedule_key(): string
-    {
-        return 'fflhub_two_hours';
-    }
 
     /**
      * Interval length in seconds.
@@ -54,13 +46,12 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         return 2 * HOUR_IN_SECONDS;
     }
 
-    /**
-     * Human-readable schedule label.
-     */
-    protected function get_interval_display(): string
+    public function get_action_group(): string
     {
-        return 'Every 2 hours (FFLHub RSR)';
+        return 'fflhub_catalog';
     }
+
+
 
     /**
      * Delay before first run (keeps your old 5-minute initial delay).

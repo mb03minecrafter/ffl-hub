@@ -18,6 +18,7 @@ use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\DistributorShipTo;
 
 /**
@@ -610,6 +611,107 @@ class DistributorLipseys extends DistributorBase
 
         return DistributorOrderResult::ok('Lipseys order submitted.', $external_ids);
     }
+
+
+
+
+
+
+    public function get_shipment_by_po(string $po_number): ?DistributorShipment
+    {
+        $po_number = trim((string) $po_number);
+        if ($po_number === '') {
+            return null;
+        }
+
+        $services = $this->get_services();
+
+        // Only Lipsey's currently supports shipment tables.
+        if (! $services instanceof \FFLHub\Distributor\Services\Lipseys\LipseysServices) {
+            return null;
+        }
+
+        $table = $services->get_shipment_table();
+        if (! $table) {
+            return null;
+        }
+
+        $rows = $table->get_rows_by_po($po_number);
+        if (empty($rows) || !is_array($rows)) {
+            return null;
+        }
+
+        // Deterministic order (helps stable outputs / debugging).
+        usort(
+            $rows,
+            static function ($a, $b): int {
+                $ta = trim((string) ($a['tracking_number'] ?? ''));
+                $tb = trim((string) ($b['tracking_number'] ?? ''));
+                return strcmp($ta, $tb);
+            }
+        );
+
+        $tracking_numbers = [];
+        $invoice_numbers  = [];
+
+        $shipping_service = null;
+        $shipping_weight  = null;
+
+        foreach ($rows as $r) {
+            if (!is_array($r)) {
+                continue;
+            }
+
+            $t = trim((string) ($r['tracking_number'] ?? ''));
+            if ($t !== '') {
+                $tracking_numbers[] = $t;
+            }
+
+            $inv = trim((string) ($r['invoice_number'] ?? ''));
+            if ($inv !== '') {
+                $invoice_numbers[] = $inv;
+            }
+
+            // Pick first non-empty values for these (good enough for now).
+            if ($shipping_service === null) {
+                $svc = trim((string) ($r['shipping_service'] ?? ''));
+                if ($svc !== '') {
+                    $shipping_service = $svc;
+                }
+            }
+
+            if ($shipping_weight === null) {
+                $w = trim((string) ($r['weight'] ?? ''));
+                if ($w !== '') {
+                    $shipping_weight = $w;
+                }
+            }
+        }
+
+        // Dedupe while preserving order
+        $tracking_numbers = array_values(array_unique($tracking_numbers));
+        $invoice_numbers  = array_values(array_unique($invoice_numbers));
+
+        // If we have no tracking at all, treat as "no shipment yet"
+        if (empty($tracking_numbers)) {
+            return null;
+        }
+
+        return new DistributorShipment(
+            $tracking_numbers,
+            $invoice_numbers,
+            $shipping_service,
+            $shipping_weight,
+            [
+                'po_number' => $po_number,
+                // Preserve all cartons / raw rows for auditing & debugging.
+                'rows' => $rows,
+            ]
+        );
+    }
+
+
+
 
 
     /**

@@ -12,7 +12,10 @@ use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Services\Lipseys\LipseysServices;
 use FFLHub\Distributor\Services\Lipseys\Cron\LipseysFulfillmentCronService;
 use FFLHub\Distributor\Services\Lipseys\Cron\LipseysInventoryCronService;
+use FFLHub\Distributor\Services\Lipseys\Cron\LipseysShipmentsDailyCronService;
 use FFLHub\Distributor\Services\Lipseys\Tables\LipseysFulfillmentSchema;
+use FFLHub\Distributor\Services\Lipseys\Tables\LipseysShipmentSchema;
+use FFLHub\Distributor\Services\Lipseys\Tables\LipseysShipmentTable;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 
 final class LipseysModule implements DistributorModuleInterface
@@ -56,19 +59,27 @@ final class LipseysModule implements DistributorModuleInterface
     public function build_distributor(): DistributorBase
     {
         $schema = new LipseysFulfillmentSchema();
+        $shipmentSchema = new LipseysShipmentSchema();
 
         $table = new DoubleBufferedFulfillmentTable(
             $schema,
             'fflhub_lipseys_fulfillment_last_swap'
         );
 
+        $shipmentTable = new LipseysShipmentTable($shipmentSchema);
+
         $fulfillmentCron = new LipseysFulfillmentCronService($table);
         $inventoryCron   = new LipseysInventoryCronService($table);
+
+
+        $shipmentCron = new LipseysShipmentsDailyCronService($shipmentTable);
 
         $services = new LipseysServices(
             $table,
             $fulfillmentCron,
-            $inventoryCron
+            $inventoryCron,
+            $shipmentTable,
+            $shipmentCron
         );
 
         return new DistributorLipseys($this, $services);

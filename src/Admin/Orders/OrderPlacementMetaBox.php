@@ -2,10 +2,10 @@
 
 namespace FFLHub\Admin\Orders;
 
-use FFLHub\Distributor\Orders\OrderPlacementKeys;
-use FFLHub\Distributor\Orders\OrderPlacementJobsStore;
-use FFLHub\Distributor\Orders\OrderPlacementOrchestrator;
-use FFLHub\Distributor\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Distributor\Services\Orders\OrderPlacementKeys;
+use FFLHub\Distributor\Services\Orders\OrderPlacementJobsStore;
+use FFLHub\Distributor\Services\Orders\OrderPlacementOrchestrator;
+use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
 use WC_Order;
 
 if (!defined('ABSPATH')) {
@@ -130,6 +130,15 @@ final class OrderPlacementMetaBox
         $validate_raw = isset($row['validate_result_json']) ? (string) $row['validate_result_json'] : '';
         $place_raw    = isset($row['place_result_json']) ? (string) $row['place_result_json'] : '';
 
+        // shipment fields (new structure)
+        $shipped_at         = isset($row['shipped_at']) ? (string) $row['shipped_at'] : '';
+        $tracking_json      = isset($row['tracking_numbers_json']) ? (string) $row['tracking_numbers_json'] : '';
+        $invoice_json       = isset($row['invoice_numbers_json']) ? (string) $row['invoice_numbers_json'] : '';
+        $ship_service       = isset($row['shipping_service']) ? (string) $row['shipping_service'] : '';
+        $ship_weight        = isset($row['shipping_weight']) ? (string) $row['shipping_weight'] : '';
+        $ship_poll_at       = isset($row['last_shipping_poll_at']) ? (string) $row['last_shipping_poll_at'] : '';
+        $shipment_raw_json  = isset($row['shipment_raw_json']) ? (string) $row['shipment_raw_json'] : '';
+
         $pill = self::pill($status !== '' ? $status : '—', self::status_class($status));
 
         echo '<div class="fflhub-card fflhub-job">';
@@ -157,7 +166,7 @@ final class OrderPlacementMetaBox
             echo '</div>';
         }
 
-        // Validation section
+        // ---------------- Validation section ----------------
         echo '<div class="fflhub-subcard">';
         echo '<div class="fflhub-subcard-title">Validation</div>';
 
@@ -216,7 +225,7 @@ final class OrderPlacementMetaBox
 
         echo '</div>'; // subcard (validation)
 
-        // Place section
+        // ---------------- Place section ----------------
         echo '<div class="fflhub-subcard">';
         echo '<div class="fflhub-subcard-title">Place</div>';
 
@@ -284,6 +293,64 @@ final class OrderPlacementMetaBox
 
         echo '</div>'; // subcard (place)
 
+        // ---------------- Shipment section ----------------
+        echo '<div class="fflhub-subcard">';
+        echo '<div class="fflhub-subcard-title">Shipment</div>';
+
+        // Helper to decode small json arrays (tracking/invoice)
+        $tracking_list = self::decode_string_list_json($tracking_json);
+        $invoice_list  = self::decode_string_list_json($invoice_json);
+
+        $has_shipment = false;
+        if ($shipped_at !== '' && $shipped_at !== '0000-00-00 00:00:00') $has_shipment = true;
+        if (!empty($tracking_list) || !empty($invoice_list)) $has_shipment = true;
+        if ($ship_poll_at !== '' && $ship_poll_at !== '0000-00-00 00:00:00') $has_shipment = true;
+
+        if (!$has_shipment) {
+            echo '<div class="fflhub-muted">No shipment data yet.</div>';
+        } else {
+            echo '<div class="fflhub-kv">';
+
+            $ship_pill = ($shipped_at !== '' && $shipped_at !== '0000-00-00 00:00:00')
+                ? self::pill('shipped', 'success')
+                : self::pill('pending', 'muted');
+
+            echo self::kv('Status', $ship_pill);
+            echo self::kv('Shipped at', ($shipped_at !== '' && $shipped_at !== '0000-00-00 00:00:00') ? esc_html($shipped_at) : '<span class="fflhub-muted">—</span>');
+            echo self::kv('Last poll', ($ship_poll_at !== '' && $ship_poll_at !== '0000-00-00 00:00:00') ? esc_html($ship_poll_at) : '<span class="fflhub-muted">—</span>');
+
+            if (!empty($tracking_list)) {
+                $t_str = implode(', ', array_slice($tracking_list, 0, 8));
+                if (count($tracking_list) > 8) $t_str .= ', …';
+                echo self::kv('Tracking', '<span class="fflhub-mono">' . esc_html($t_str) . '</span>');
+            } else {
+                echo self::kv('Tracking', '<span class="fflhub-muted">—</span>');
+            }
+
+            if (!empty($invoice_list)) {
+                $i_str = implode(', ', array_slice($invoice_list, 0, 8));
+                if (count($invoice_list) > 8) $i_str .= ', …';
+                echo self::kv('Invoices', '<span class="fflhub-mono">' . esc_html($i_str) . '</span>');
+            } else {
+                echo self::kv('Invoices', '<span class="fflhub-muted">—</span>');
+            }
+
+            echo self::kv('Service', $ship_service !== '' ? '<span class="fflhub-mono">' . esc_html($ship_service) . '</span>' : '<span class="fflhub-muted">—</span>');
+            echo self::kv('Weight', $ship_weight !== '' ? '<span class="fflhub-mono">' . esc_html($ship_weight) . '</span>' : '<span class="fflhub-muted">—</span>');
+
+            echo '</div>'; // kv
+
+            if ($shipment_raw_json !== '') {
+                $pretty_ship = self::pretty_json($shipment_raw_json);
+                echo '<details class="fflhub-details">';
+                echo '<summary>Raw shipment JSON</summary>';
+                echo '<pre class="fflhub-pre">' . esc_html($pretty_ship) . '</pre>';
+                echo '</details>';
+            }
+        }
+
+        echo '</div>'; // subcard (shipment)
+
         // Payload
         if ($payload !== '') {
             $pretty = self::pretty_json($payload);
@@ -320,7 +387,14 @@ final class OrderPlacementMetaBox
               last_error,
               payload_json,
               validate_result_json,
-              place_result_json
+              place_result_json,
+              shipped_at,
+              tracking_numbers_json,
+              invoice_numbers_json,
+              shipping_service,
+              shipping_weight,
+              shipment_raw_json,
+              last_shipping_poll_at
             FROM {$table}
             WHERE order_id = %d AND job_key = %s
             LIMIT 1
@@ -378,6 +452,28 @@ final class OrderPlacementMetaBox
     private static function kv(string $k, string $v_html): string
     {
         return '<div class="fflhub-row"><div class="fflhub-key">' . esc_html($k) . '</div><div class="fflhub-val">' . $v_html . '</div></div>';
+    }
+
+    /**
+     * Decode a JSON array into list of strings.
+     *
+     * @return array<int,string>
+     */
+    private static function decode_string_list_json(string $raw_json): array
+    {
+        $raw_json = trim((string) $raw_json);
+        if ($raw_json === '') return [];
+
+        $decoded = json_decode($raw_json, true);
+        if (!is_array($decoded)) return [];
+
+        $out = [];
+        foreach ($decoded as $v) {
+            $s = trim((string) $v);
+            if ($s !== '') $out[] = $s;
+        }
+
+        return $out;
     }
 
     private static function pretty_json(string $raw): string

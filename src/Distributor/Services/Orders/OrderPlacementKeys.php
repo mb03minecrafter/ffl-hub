@@ -1,6 +1,6 @@
 <?php
 
-namespace FFLHub\Distributor\Orders;
+namespace FFLHub\Distributor\Services\Orders;
 
 if (!defined('ABSPATH')) { exit; }
 

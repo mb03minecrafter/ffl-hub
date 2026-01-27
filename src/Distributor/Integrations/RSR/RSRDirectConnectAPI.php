@@ -30,6 +30,7 @@ final class RSRDirectConnectAPI
 
     public const PLACE_ORDER_PATH    = '/api/rsrbridge/1.0/pos/place-order';
     public const CHECK_CATALOG_PATH  = '/api/rsrbridge/1.0/pos/check-catalog';
+    public const CHECK_ORDER_PATH = '/api/rsrbridge/1.0/pos/check-order';
 
     /**
      * Place order wrapper.
@@ -145,6 +146,80 @@ final class RSRDirectConnectAPI
             'message' => 'OK',
             'items' => $normalized,
             'raw' => $decoded,
+            'http_status' => isset($res['http_status']) ? (int) $res['http_status'] : 0,
+        ];
+    }
+
+
+
+    /**
+     * check-order wrapper (ReportAll = Y).
+     *
+     * @return array{
+     *   ok:bool,
+     *   message:string,
+     *   items:array<int,array<string,mixed>>,
+     *   raw:array|null,
+     *   http_status:int
+     * }
+     */
+    public static function check_order_report_all(
+        array $auth_payload,
+        string $po_number,
+        ?string $base_url = null,
+        int $timeout = 60
+    ): array {
+        $url = self::build_url($base_url, self::CHECK_ORDER_PATH);
+
+        $payload = array_merge(
+            $auth_payload,
+            [
+                'PONum'     => $po_number,
+                'ReportAll' => 'Y',
+            ]
+        );
+
+        $res = self::post_json($url, $payload, $timeout);
+        if (! $res['ok']) {
+            return [
+                'ok'          => false,
+                'message'     => $res['message'],
+                'items'       => [],
+                'raw'         => $res['raw'],
+                'http_status' => isset($res['http_status']) ? (int) $res['http_status'] : 0,
+            ];
+        }
+
+        $decoded = $res['raw'];
+        if (! is_array($decoded)) {
+            return [
+                'ok'          => false,
+                'message'     => 'Invalid JSON response from RSR check-order.',
+                'items'       => [],
+                'raw'         => null,
+                'http_status' => isset($res['http_status']) ? (int) $res['http_status'] : 0,
+            ];
+        }
+
+        // RSR response shapes vary wildly — normalize defensively.
+        $items = [];
+
+        if (isset($decoded['Items']) && is_array($decoded['Items'])) {
+            $items = $decoded['Items'];
+        } elseif (
+            isset($decoded['Response']) &&
+            is_array($decoded['Response']) &&
+            isset($decoded['Response']['Items']) &&
+            is_array($decoded['Response']['Items'])
+        ) {
+            $items = $decoded['Response']['Items'];
+        }
+
+        return [
+            'ok'          => true,
+            'message'     => 'OK',
+            'items'       => is_array($items) ? $items : [],
+            'raw'         => $decoded,
             'http_status' => isset($res['http_status']) ? (int) $res['http_status'] : 0,
         ];
     }

@@ -14,6 +14,7 @@ if (! defined('ABSPATH')) {
 }
 
 use FFLHub\Plugin;
+use FFLHub\Woo\Emails\FFLHubPartialShipment;
 
 /**
  * Autoload Composer dependencies if present.
@@ -42,7 +43,7 @@ define('FFLHUB_CART_COMPLIANCE_PROFILE', false);
 define('FFLHUB_ORDERING_DRY_RUN', false);
 
 
-define('FFLHUB_PLACE_ORCH_DEBUG', true);
+define('FFLHUB_PLACE_ORCH_DEBUG', false);
 
 define('FFLHUB_RSR_API_DEBUG', false);
 define('FFLHUB_RSR_API_DEBUG_RAW', false);
@@ -60,6 +61,19 @@ add_action('init', function () {
         update_option('woocommerce_checkout_phone_field', 'required');
     }
 });
+
+add_filter('woocommerce_email_classes', function (array $emails): array {
+
+    // Force mailer load safety isn’t needed here, but this ensures correct keying.
+    $class = \FFLHub\Woo\Emails\FFLHubPartialShipment::class;
+
+    if (!isset($emails[$class])) {
+        $emails[$class] = new \FFLHub\Woo\Emails\FFLHubPartialShipment();
+    }
+
+    return $emails;
+});
+
 
 /**
  * Activation / Deactivation hooks.
