@@ -3,7 +3,14 @@
 namespace FFLHub\Distributor\Services\Orders;
 
 use WC_Order;
+
+use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\OrderPlacementJobRow;
+use FFLHub\Distributor\Models\DistributorShipment;
+use FFLHub\Distributor\Models\ShippingUpdateResult;
+
 use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
+use FFLHub\Distributor\Services\Orders\Shipping\OrderPlacementShippingService;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -318,7 +325,7 @@ final class OrderPlacementJobsStore
     public static function set_job_last_step(WC_Order $order, string $job_key, string $step): void
     {
         $step = strtolower(trim($step));
-        if ($step !== 'validate' && $step !== 'place') $step = '';
+        if ($step !== 'validate' && $step !== 'place' && $step !== 'shipped') $step = '';
 
         self::update_job_fields((int) $order->get_id(), $job_key, [
             'last_step' => $step,
@@ -456,7 +463,7 @@ final class OrderPlacementJobsStore
         return isset($row['merchant_po']) ? (string) $row['merchant_po'] : '';
     }
 
-    /* ===================== New: external order ids (ONLY on successful place) ===================== */
+    /* ===================== External order ids (ONLY on successful place) ===================== */
 
     /**
      * Persist distributor order identifiers for this job.
@@ -540,6 +547,195 @@ final class OrderPlacementJobsStore
         self::set_job_external_order_ids($order, $job_key, $external_ids, false);
     }
 
+    /* ===================== Shipping: DB-backed fields on jobs table ===================== */
+
+    public static function touch_last_shipping_poll_at(int $order_id, string $job_key): void
+    {
+        self::update_job_fields((int) $order_id, (string) $job_key, [
+            'last_shipping_poll_at' => self::now_mysql_utc(),
+        ]);
+    }
+
+    public static function set_external_order_id(int $order_id, string $job_key, string $external_order_id): void
+    {
+        $external_order_id = trim((string) $external_order_id);
+
+        self::update_job_fields((int) $order_id, (string) $job_key, [
+            'external_order_id' => ($external_order_id !== '') ? $external_order_id : null,
+        ]);
+    }
+
+    /**
+     * Mark a job as shipped (merge tracking/invoices; keep earliest shipped_at; do not clobber existing service/weight/raw).
+     */
+    public static function mark_job_shipped(int $order_id, string $job_key, DistributorShipment $shipment): ShippingUpdateResult
+    {
+        $order_id = (int) $order_id;
+        $job_key  = self::normalize_job_key($job_key);
+
+        // Load existing fields needed for merge/patch decisions
+        $existing = self::get_job_row($order_id, $job_key, [
+            'shipped_at',
+            'tracking_numbers_json',
+            'invoice_numbers_json',
+            'shipping_service',
+            'shipping_weight',
+            'shipment_raw_json',
+            'last_shipping_poll_at',
+        ]);
+
+        if (!is_array($existing) || empty($existing)) {
+            error_log('[FFLHUB][JobsStore] mark_job_shipped missing row order=' . $order_id . ' job=' . $job_key);
+            return new ShippingUpdateResult([], [], [], []);
+        }
+
+        $now = self::now_mysql_utc();
+
+        // Pure business rules
+        $patch = OrderPlacementShippingService::compute_patch($existing, $shipment, $now);
+
+        // Always touch poll timestamps (even if no tracking found)
+        $write = isset($patch['write']) && is_array($patch['write']) ? $patch['write'] : [];
+        $write['last_shipping_poll_at'] = $now;
+        $write['last_step'] = 'shipped';
+
+        // Apply patch (safe partial update)
+        if (!empty($write)) {
+            self::update_job_fields($order_id, $job_key, $write);
+        }
+
+        return isset($patch['result']) && ($patch['result'] instanceof ShippingUpdateResult)
+            ? $patch['result']
+            : new ShippingUpdateResult([], [], [], []);
+    }
+
+    public static function are_all_success_jobs_shipped(int $order_id): bool
+    {
+        global $wpdb;
+
+        $table = OrderPlacementJobsTable::get_table_name();
+        $order_id = (int) $order_id;
+
+        $sql = $wpdb->prepare("
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN tracking_numbers_json IS NOT NULL AND tracking_numbers_json <> '' THEN 1 ELSE 0 END) AS shipped
+            FROM {$table}
+            WHERE order_id = %d AND status = %s
+        ", $order_id, OrderPlacementKeys::JOB_STATUS_SUCCESS);
+
+        $row = $wpdb->get_row($sql, ARRAY_A);
+        if (!is_array($row)) return false;
+
+        $total   = (int) ($row['total'] ?? 0);
+        $shipped = (int) ($row['shipped'] ?? 0);
+
+        return ($total > 0 && $shipped >= $total);
+    }
+
+    /**
+     * Returns DistributorOrderLine[] from the job payload.
+     *
+     * @return DistributorOrderLine[]
+     */
+    public static function get_job_payload_lines(int $order_id, string $job_key): array
+    {
+        $row = self::get_job_row((int) $order_id, (string) $job_key, ['payload_json']);
+        $payload_json = isset($row['payload_json']) ? (string) $row['payload_json'] : '';
+        if ($payload_json === '') return [];
+
+        $payload = json_decode($payload_json, true);
+        if (!is_array($payload)) return [];
+
+        $bucket = isset($payload['bucket']) ? strtolower(trim((string) $payload['bucket'])) : '';
+        $ffl_required = ($bucket === 'ffl');
+
+        $lines = $payload['lines'] ?? [];
+        if (!is_array($lines) || empty($lines)) return [];
+
+        $out = [];
+        foreach ($lines as $line) {
+            if (!is_array($line)) continue;
+
+            $upc = isset($line['upc']) ? trim((string) $line['upc']) : '';
+            if ($upc === '') continue;
+
+            $qty = isset($line['qty']) ? (int) $line['qty'] : 0;
+
+            $out[] = new DistributorOrderLine($upc, $qty, $ffl_required);
+        }
+
+        return $out;
+    }
+
+    /**
+     * Select jobs eligible for shipping polling.
+     *
+     * @return OrderPlacementJobRow[]
+     */
+    public static function find_jobs_for_shipping_poll(
+        string $status,
+        string $poll_cutoff_mysql_utc,
+        string $ship_cutoff_mysql_utc,
+        int $limit
+    ): array {
+        global $wpdb;
+
+        $table = OrderPlacementJobsTable::get_table_name();
+
+        $sql = $wpdb->prepare(
+            "
+            SELECT
+                id, order_id, job_key, dist_id, bucket, status,
+                attempts, created_at, updated_at,
+                action_id, next_run_at,
+                last_step, last_error, last_codes_json,
+                done_at,
+                payload_json, validate_result_json, place_result_json,
+                merchant_po, external_order_ids_json, external_order_id,
+                shipped_at, tracking_numbers_json, invoice_numbers_json,
+                last_shipping_poll_at, shipping_service, shipping_weight, shipment_raw_json
+            FROM {$table}
+            WHERE
+                status = %s
+                AND merchant_po IS NOT NULL
+                AND merchant_po <> ''
+                AND (
+                    last_shipping_poll_at IS NULL
+                    OR last_shipping_poll_at = '0000-00-00 00:00:00'
+                    OR last_shipping_poll_at < %s
+                )
+                AND (
+                    shipped_at IS NULL
+                    OR shipped_at = '0000-00-00 00:00:00'
+                    OR shipped_at >= %s
+                )
+            ORDER BY
+                last_shipping_poll_at IS NULL DESC,
+                last_shipping_poll_at ASC,
+                id ASC
+            LIMIT %d
+            ",
+            $status,
+            $poll_cutoff_mysql_utc,
+            $ship_cutoff_mysql_utc,
+            $limit
+        );
+
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $out[] = new OrderPlacementJobRow($row);
+            }
+        }
+
+        return $out;
+    }
+
     /* ===================== Internal helpers ===================== */
 
     /**
@@ -566,11 +762,36 @@ final class OrderPlacementJobsStore
         }
 
         $allowed = [
-            'id','order_id','job_key','dist_id','bucket','status','attempts',
-            'created_at','updated_at','action_id','next_run_at',
-            'last_step','last_error','last_codes_json','done_at',
-            'payload_json','validate_result_json','place_result_json',
-            'merchant_po','external_order_ids_json',
+            'id',
+            'order_id',
+            'job_key',
+            'dist_id',
+            'bucket',
+            'status',
+            'attempts',
+            'created_at',
+            'updated_at',
+            'action_id',
+            'next_run_at',
+            'last_step',
+            'last_error',
+            'last_codes_json',
+            'done_at',
+            'payload_json',
+            'validate_result_json',
+            'place_result_json',
+            'merchant_po',
+            'external_order_ids_json',
+            'external_order_id',
+
+            // shipping fields
+            'shipped_at',
+            'tracking_numbers_json',
+            'invoice_numbers_json',
+            'shipping_service',
+            'shipping_weight',
+            'shipment_raw_json',
+            'last_shipping_poll_at',
         ];
 
         $sel = [];
@@ -609,11 +830,32 @@ final class OrderPlacementJobsStore
         $fields['updated_at'] = self::now_mysql_utc();
 
         $allowed = [
-            'dist_id','bucket','status','attempts',
-            'action_id','next_run_at',
-            'last_step','last_error','last_codes_json','done_at',
-            'payload_json','validate_result_json','place_result_json',
-            'merchant_po','external_order_ids_json',
+            'dist_id',
+            'bucket',
+            'status',
+            'attempts',
+            'action_id',
+            'next_run_at',
+            'last_step',
+            'last_error',
+            'last_codes_json',
+            'done_at',
+            'payload_json',
+            'validate_result_json',
+            'place_result_json',
+            'merchant_po',
+            'external_order_ids_json',
+            'external_order_id',
+
+            // shipping fields
+            'shipped_at',
+            'tracking_numbers_json',
+            'invoice_numbers_json',
+            'shipping_service',
+            'shipping_weight',
+            'shipment_raw_json',
+            'last_shipping_poll_at',
+
             'updated_at',
         ];
 
@@ -626,7 +868,10 @@ final class OrderPlacementJobsStore
 
         $has_null = false;
         foreach ($data as $v) {
-            if ($v === null) { $has_null = true; break; }
+            if ($v === null) {
+                $has_null = true;
+                break;
+            }
         }
 
         if (!$has_null) {
@@ -641,7 +886,7 @@ final class OrderPlacementJobsStore
                 $data,
                 ['order_id' => $order_id, 'job_key' => $job_key],
                 $format,
-                ['%d','%s']
+                ['%d', '%s']
             );
             return;
         }
@@ -725,5 +970,119 @@ final class OrderPlacementJobsStore
         if ($ts === false) return '';
 
         return gmdate('c', $ts);
+    }
+
+
+
+    /**
+     * Get action_id values for jobs that represent FUTURE work we can cancel.
+     * We deliberately avoid cancelling "running" work.
+     *
+     * @return int[]
+     */
+    public static function get_future_action_ids_for_order(int $order_id): array
+    {
+        global $wpdb;
+
+        $table = OrderPlacementJobsTable::get_table_name();
+        $order_id = (int) $order_id;
+        if ($order_id <= 0) return [];
+
+        // Define which statuses represent "future scheduled work"
+        $future_statuses = [
+            OrderPlacementKeys::JOB_STATUS_QUEUED,
+            OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED,
+        ];
+
+        $placeholders = implode(',', array_fill(0, count($future_statuses), '%s'));
+
+        $sql = $wpdb->prepare(
+            "
+            SELECT action_id
+            FROM {$table}
+            WHERE order_id = %d
+              AND action_id IS NOT NULL
+              AND action_id > 0
+              AND status IN ({$placeholders})
+            ",
+            array_merge([$order_id], $future_statuses)
+        );
+
+        $rows = $wpdb->get_col($sql);
+
+        $out = [];
+        if (is_array($rows)) {
+            foreach ($rows as $v) {
+                $i = (int) $v;
+                if ($i > 0) $out[] = $i;
+            }
+        }
+
+        $out = array_values(array_unique($out));
+        return $out;
+    }
+
+    /**
+     * Clear action bookkeeping for an order so your admin UI reflects
+     * that nothing is scheduled anymore.
+     */
+    public static function clear_actions_for_order(int $order_id, string $reason = ''): void
+    {
+        global $wpdb;
+
+        $table = OrderPlacementJobsTable::get_table_name();
+        $order_id = (int) $order_id;
+        if ($order_id <= 0) return;
+
+        $now = self::now_mysql_utc();
+
+        // Only clear for statuses that represent future work
+        $future_statuses = [
+            OrderPlacementKeys::JOB_STATUS_QUEUED,
+            OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED,
+        ];
+
+        $placeholders = implode(',', array_fill(0, count($future_statuses), '%s'));
+
+        // Keep semantics clean: DON'T change status.
+        // Just clear scheduling fields + optionally annotate last_error.
+        $sql = "
+            UPDATE {$table}
+            SET action_id = NULL,
+                next_run_at = NULL,
+                updated_at = %s
+            WHERE order_id = %d
+              AND status IN ({$placeholders})
+        ";
+
+        $args = array_merge([$now, $order_id], $future_statuses);
+        $wpdb->query($wpdb->prepare($sql, $args));
+
+        if (is_string($reason) && trim($reason) !== '') {
+            // Optional: stamp last_error for visibility (still no status changes)
+            $sql2 = "
+                UPDATE {$table}
+                SET last_error = %s,
+                    updated_at = %s
+                WHERE order_id = %d
+                  AND status IN ({$placeholders})
+            ";
+            $args2 = array_merge([trim($reason), $now, $order_id], $future_statuses);
+            $wpdb->query($wpdb->prepare($sql2, $args2));
+        }
+    }
+
+    /**
+     * Permanent delete: remove ALL job rows for this order.
+     */
+    public static function delete_jobs_for_order(int $order_id): void
+    {
+        global $wpdb;
+
+        $table = OrderPlacementJobsTable::get_table_name();
+        $order_id = (int) $order_id;
+        if ($order_id <= 0) return;
+
+        $wpdb->delete($table, ['order_id' => $order_id], ['%d']);
     }
 }

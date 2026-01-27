@@ -6,25 +6,24 @@ if (!defined('ABSPATH')) {
 }
 
 /** @var WC_Order $order */
-/** @var array<string,mixed> $context */
+/** @var \FFLHub\Distributor\Models\PartialShipmentEmailContext $context */
 
 use FFLHub\Product\ProductMeta;
 
 // -----------------------------
 // Build "items in this shipment update" based on job payload UPCs
-// context['lines'] should be: [ ['upc'=>'...', 'qty'=>1], ... ]
+// context->lines is DistributorOrderLine[]
 // -----------------------------
-$lines = (isset($context['lines']) && is_array($context['lines'])) ? $context['lines'] : [];
+$lines = (isset($context->lines) && is_array($context->lines)) ? $context->lines : [];
 
 $upc_set = [];
 foreach ($lines as $ln) {
-    if (!is_array($ln)) continue;
-    $u = trim((string) ($ln['upc'] ?? ''));
+    if (!($ln instanceof \FFLHub\Distributor\Models\DistributorOrderLine)) continue;
+    $u = trim((string) $ln->upc);
     if ($u !== '') $upc_set[$u] = true;
 }
 
 $shipment_items = [];
-
 foreach ($order->get_items() as $item_id => $item) {
     if (!($item instanceof WC_Order_Item_Product)) continue;
 
@@ -42,12 +41,36 @@ if (empty($shipment_items)) {
     $shipment_items = $order->get_items();
 }
 
+$added_tracking = (isset($context->update) && isset($context->update->added_tracking) && is_array($context->update->added_tracking))
+    ? $context->update->added_tracking
+    : [];
+
+$added_invoices = (isset($context->update) && isset($context->update->added_invoices) && is_array($context->update->added_invoices))
+    ? $context->update->added_invoices
+    : [];
+
+$shipping_service = (isset($context->shipment) && property_exists($context->shipment, 'shipping_service'))
+    ? (string) ($context->shipment->shipping_service ?? '')
+    : '';
+
+$shipping_weight = (isset($context->shipment) && property_exists($context->shipment, 'shipping_weight'))
+    ? (string) ($context->shipment->shipping_weight ?? '')
+    : '';
+
+$po_number = (isset($context->job) && isset($context->job->merchant_po))
+    ? (string) ($context->job->merchant_po ?? '')
+    : '';
+
+$dist_id = (isset($context->job) && isset($context->job->dist_id))
+    ? (string) ($context->job->dist_id ?? '')
+    : '';
+
 echo "Hi " . $order->get_billing_first_name() . ",\n\n";
 echo "We have a shipment update for your order #" . $order->get_order_number() . ".\n\n";
 
-if (!empty($context['added_tracking'])) {
+if (!empty($added_tracking)) {
     echo "New tracking numbers:\n";
-    foreach ((array) $context['added_tracking'] as $t) {
+    foreach ($added_tracking as $t) {
         $t = trim((string) $t);
         if ($t !== '') {
             echo " - {$t}\n";
@@ -56,9 +79,9 @@ if (!empty($context['added_tracking'])) {
     echo "\n";
 }
 
-if (!empty($context['added_invoices'])) {
+if (!empty($added_invoices)) {
     echo "New invoice numbers:\n";
-    foreach ((array) $context['added_invoices'] as $inv) {
+    foreach ($added_invoices as $inv) {
         $inv = trim((string) $inv);
         if ($inv !== '') {
             echo " - {$inv}\n";
@@ -67,20 +90,20 @@ if (!empty($context['added_invoices'])) {
     echo "\n";
 }
 
-if (!empty($context['shipping_service'])) {
-    echo "Carrier/Service: " . (string) $context['shipping_service'] . "\n";
+if ($shipping_service !== '') {
+    echo "Carrier/Service: " . $shipping_service . "\n";
 }
 
-if (!empty($context['shipping_weight'])) {
-    echo "Shipment weight: " . (string) $context['shipping_weight'] . "\n";
+if ($shipping_weight !== '') {
+    echo "Shipment weight: " . $shipping_weight . "\n";
 }
 
-if (!empty($context['po_number'])) {
-    echo "Reference: " . (string) $context['po_number'] . "\n";
+if ($po_number !== '') {
+    echo "Reference: " . $po_number . "\n";
 }
 
-if (!empty($context['dist_id'])) {
-    echo "Distributor: " . (string) $context['dist_id'] . "\n";
+if ($dist_id !== '') {
+    echo "Distributor: " . $dist_id . "\n";
 }
 
 echo "\nItems in this shipment update:\n";

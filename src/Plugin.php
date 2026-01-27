@@ -29,6 +29,7 @@ use FFLHub\Checkout\Map\CheckoutMap;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Distributor\Services\Orders\OrderPlacementOrchestrator;
+use FFLHub\Distributor\Services\Orders\OrderTrashJobsService;
 use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
 
 use FFLHub\FFL\API\FFLApi;
@@ -123,7 +124,7 @@ class Plugin
         $this->order_orchestrator = new OrderPlacementOrchestrator();  
         $this->order_orchestrator->register();
 
-
+        OrderTrashJobsService::init();
 
 
         // 4. Hook into WordPress admin.
