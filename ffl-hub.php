@@ -31,10 +31,9 @@ define('FFLHUB_PLUGIN_PATH', plugin_dir_path(__FILE__));
 define('FFLHUB_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('FFLHUB_PLUGIN_VERSION', '1.0.0');
 
-define('FFLHUB_CRON_DEBUG', false);
+define('FFLHUB_CRON_DEBUG', true);
 define('FFLHUB_ADMIN_DEBUG', false);
 
-define('FFLHUB_SHIPPING_DEBUG', false);
 
 
 define('FFLHUB_CART_COMPLIANCE_DEBUG', false);
@@ -43,7 +42,6 @@ define('FFLHUB_CART_COMPLIANCE_PROFILE', false);
 define('FFLHUB_ORDERING_DRY_RUN', false);
 
 
-define('FFLHUB_PLACE_ORCH_DEBUG', false);
 
 define('FFLHUB_RSR_API_DEBUG', false);
 define('FFLHUB_RSR_API_DEBUG_RAW', false);
@@ -51,6 +49,18 @@ define('FFLHUB_RSR_API_DEBUG_RAW', false);
 
 
 define('FFLHUB_LIPSEYS_DEBUG', false);
+
+
+define('FFLHUB_PLACE_ORCH_DEBUG', false);
+define('FFLHUB_DEBUG_PLACE_DISPATCH', false);
+define('FFLHUB_STATE_MACHINE_DEBUG', false);
+define('FFLHUB_PLACE_ORDER_JOB_RUNNER_DEBUG', false);
+define('FFLHUB_TRASH_ORDER_JOBS_DEBUG', false);
+
+
+
+
+define('FFLHUB_DEBUG_SHIPPING', false);
 
 /**
  * Load plugin text domain. And also require phone number in the checkout fields, since our distributors sometimes require a phone number 
@@ -97,6 +107,11 @@ if (defined('WP_CLI')) {
 
 if (defined('WP_CLI')) {
     \WP_CLI::add_command('fflhub audit-cart-compliance', \FFLHub\CLI\ValidateOrderAuditCommand::class);
+}
+
+
+if (defined('WP_CLI')) {
+    \WP_CLI::add_command('fflhub seed-orders', \FFLHub\CLI\SeedOrdersCommand::class);
 }
 
 /**

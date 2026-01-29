@@ -108,35 +108,25 @@ class DistributorLipseys extends DistributorBase
         return 10.0;
     }
 
-    public function validate_order_request(DistributorOrderRequest $request): DistributorOrderValidationResult
+    public function validate_order_request(DistributorOrderRequest $request, bool $local_only = false): DistributorOrderValidationResult
     {
-
-
         if (empty($request->lines)) {
             return DistributorOrderValidationResult::allow('No order lines to validate.');
         }
 
         $this->dbg('validate_order_request: start', [
+            'local_only' => $local_only ? 1 : 0,
             'lines_count' => is_array($request->lines) ? count($request->lines) : 0,
             'has_ship_to_customer' => ($request->ship_to_customer instanceof DistributorShipTo) ? 1 : 0,
             'has_ship_to_ffl' => ($request->ship_to_ffl instanceof DistributorShipTo) ? 1 : 0,
             'receiving_ffl_len' => strlen((string) $request->receiving_ffl_number),
         ]);
 
-        $email = $this->get_dealer_email();
-        $password = $this->get_dealer_password();
-
-        if ($email === '' || $password === '') {
-            return DistributorOrderValidationResult::block(
-                'Missing Lipsey’s credentials (dealer_email / dealer_password).',
-                ['LIPSEYS_CREDS_MISSING']
-            );
-        }
-
         $required_by_upc = $this->build_required_qty_by_upc($request->lines);
 
         $this->dbg('validate_order_request: required_by_upc built', [
             'unique' => count($required_by_upc),
+            'local_only' => $local_only ? 1 : 0,
         ]);
 
         if (empty($required_by_upc)) {
@@ -150,6 +140,7 @@ class DistributorLipseys extends DistributorBase
                 [
                     'unique_count' => count($required_by_upc),
                     'max_unique' => self::VALIDATEITEM_MAX_UNIQUE_ITEMS,
+                    'local_only' => $local_only ? 1 : 0,
                 ]
             );
         }
@@ -157,7 +148,98 @@ class DistributorLipseys extends DistributorBase
         if (! $this->services) {
             return DistributorOrderValidationResult::block(
                 'Lipseys services not available; cannot access fulfillment table.',
-                ['LIPSEYS_SERVICES_MISSING']
+                ['LIPSEYS_SERVICES_MISSING'],
+                ['local_only' => $local_only ? 1 : 0]
+            );
+        }
+
+        // -----------------------------
+        // LOCAL-ONLY MODE:
+        // Do NOT call the Lipseys API. Only check local fulfillment table stock.
+        // -----------------------------
+        if ($local_only) {
+            $details = [
+                'required_by_upc' => $required_by_upc,
+                'items' => [],
+                'cache_ttl_seconds' => self::VALIDATEITEM_CACHE_TTL_SECONDS,
+                'local_only' => true,
+                'local_fallback' => [
+                    'used' => true,
+                    'reason' => 'local_only=true (skipping ValidateItem API)',
+                    'items' => [],
+                ],
+            ];
+
+            $local_fail_msgs = [];
+
+            foreach ($required_by_upc as $upc => $requiredQty) {
+                $requiredQty = (int) $requiredQty;
+
+                $normalized_upc = $this->normalize_upc($upc);
+                if ($normalized_upc === null) {
+                    $local_fail_msgs[] = "UPC={$upc} invalid (normalize_upc null)";
+                    continue;
+                }
+
+                $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+                if (! $row || ! is_array($row)) {
+                    $local_fail_msgs[] = "UPC={$normalized_upc} not found in local fulfillment table";
+                    $details['local_fallback']['items'][$normalized_upc] = [
+                        'requiredQty' => $requiredQty,
+                        'local_qty' => null,
+                        'found' => 0,
+                    ];
+                    continue;
+                }
+
+                $qty_raw = $this->get_string_field($row, ['inventory_quantity']);
+                $local_qty = is_numeric($qty_raw) ? (int) $qty_raw : null;
+
+                $details['local_fallback']['items'][$normalized_upc] = [
+                    'requiredQty' => $requiredQty,
+                    'local_qty' => $local_qty,
+                    'found' => 1,
+                ];
+
+                if ($local_qty === null) {
+                    // Unknown local qty -> treat as a block (safer) OR allow (optimistic).
+                    // Keeping your existing fallback behavior: UNKNOWN => block.
+                    $local_fail_msgs[] = "UPC={$normalized_upc} local_qty=UNKNOWN required={$requiredQty}";
+                    continue;
+                }
+
+                if ($local_qty < $requiredQty) {
+                    $local_fail_msgs[] = "UPC={$normalized_upc} local_available={$local_qty} required={$requiredQty}";
+                }
+            }
+
+            if (! empty($local_fail_msgs)) {
+                $msg = 'Lipseys validation failed (local_only): ' . implode(' | ', array_slice($local_fail_msgs, 0, 8));
+                if (count($local_fail_msgs) > 8) {
+                    $msg .= ' | ...';
+                }
+
+                return DistributorOrderValidationResult::block(
+                    $msg,
+                    ['LIPSEYS_LOCAL_ONLY_BLOCKED'],
+                    $details
+                );
+            }
+
+            return DistributorOrderValidationResult::allow('Lipseys validation OK (local_only).', $details);
+        }
+
+        // -----------------------------
+        // REMOTE MODE (existing behavior)
+        // -----------------------------
+
+        $email = $this->get_dealer_email();
+        $password = $this->get_dealer_password();
+
+        if ($email === '' || $password === '') {
+            return DistributorOrderValidationResult::block(
+                'Missing Lipsey’s credentials (dealer_email / dealer_password).',
+                ['LIPSEYS_CREDS_MISSING']
             );
         }
 
@@ -177,6 +259,7 @@ class DistributorLipseys extends DistributorBase
             'required_by_upc' => $required_by_upc,
             'items' => [],
             'cache_ttl_seconds' => self::VALIDATEITEM_CACHE_TTL_SECONDS,
+            'local_only' => false,
             'local_fallback' => [
                 'used' => false,
                 'items' => [],
@@ -368,6 +451,7 @@ class DistributorLipseys extends DistributorBase
 
         return DistributorOrderValidationResult::allow('Lipseys validation OK.', $details);
     }
+
 
 
     /**

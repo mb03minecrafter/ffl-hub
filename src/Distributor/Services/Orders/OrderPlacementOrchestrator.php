@@ -2,10 +2,20 @@
 
 namespace FFLHub\Distributor\Services\Orders;
 
-use FFLHub\Product\ProductMeta;
 use WC_Order;
 use WC_Product;
 use WC_Order_Item_Product;
+
+use FFLHub\Product\ProductMeta;
+use FFLHub\Distributor\Models\OrderPlacementJobPatch;
+use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifecycle;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
+
+use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -16,21 +26,23 @@ if (!defined('ABSPATH')) {
  *  - detect trigger (order status)
  *  - build per-(dist×bucket) jobs
  *  - persist durable job state (table)
- *  - schedule Action Scheduler actions
+ *  - mark jobs eligible for processing (DB queue)
  *
- * 🚨 Does NOT contain per-job execution logic. That lives in OrderPlacementJobRunner.
+ * NOTE:
+ * We no longer schedule 1 Action Scheduler action per job.
+ * A separate recurring dispatcher will batch-pull eligible rows (e.g., 50) and execute.
+ *
+ * Does NOT contain per-job execution logic. That lives in OrderPlacementJobRunner (invoked by dispatcher).
  */
 final class OrderPlacementOrchestrator
 {
     private const LOG_PREFIX  = '[FFLHUB][OrderPlacementOrchestrator]';
     private const DEBUG_CONST = 'FFLHUB_PLACE_ORCH_DEBUG';
 
-    // PHP 7.0+ compatible (no typed properties)
     private static $hooks_registered = false;
 
     public function register(): void
     {
-        // Guard across ALL instances created in this PHP request.
         if (self::$hooks_registered) {
             return;
         }
@@ -38,16 +50,30 @@ final class OrderPlacementOrchestrator
 
         add_action('woocommerce_order_status_changed', [$this, 'handle_status_changed'], 10, 4);
 
-        // Action Scheduler worker hook: delegate to runner (this file orchestrates only)
-        add_action(OrderPlacementKeys::AS_HOOK, [$this, 'handle_bucket_job'], 10, 2);
+      
     }
 
     public function handle_status_changed($order_id, $old_status, $new_status, $order): void
     {
-        $order_id_i = (int) $order_id;
+        $started = microtime(true);
 
-        // Only when entering processing (your current trigger while testing)
-        if ((string) $new_status !== 'processing') {
+        $order_id_i = (int) $order_id;
+        $old_s = (string) $old_status;
+        $new_s = (string) $new_status;
+
+        $this->log_ctx('status_changed', [
+            'order_id'    => $order_id_i,
+            'old_status'  => $old_s,
+            'new_status'  => $new_s,
+            'order_is_wc' => ($order instanceof WC_Order) ? '1' : '0',
+        ]);
+
+        if ($new_s !== 'processing') {
+            $this->log_ctx('status_ignored', [
+                'order_id'    => $order_id_i,
+                'reason'      => 'new_status_not_processing',
+                'new_status'  => $new_s,
+            ]);
             return;
         }
 
@@ -55,70 +81,106 @@ final class OrderPlacementOrchestrator
             $order = wc_get_order($order_id_i);
         }
         if (!($order instanceof WC_Order)) {
-            error_log(self::LOG_PREFIX . " status_changed->processing but order not found: {$order_id_i}");
+            $this->log_ctx('order_not_found', [
+                'order_id' => $order_id_i,
+                'reason'   => 'wc_get_order_failed',
+            ]);
             return;
         }
 
-        // Idempotency on the pipeline start (pipeline meta is still on the order)
-        if (OrderPlacementJobsStore::get_pipeline_started($order)) {
-            $this->debug('skip: pipeline already started', ['order_id' => $order_id_i]);
+        $oid = (int) $order->get_id();
+
+        if (OrderPlacementPipelineMetaStore::get_pipeline_started($order)) {
+            $this->log_ctx('pipeline_already_started_skip', [
+                'order_id' => $oid,
+                'status'   => (string) $order->get_status(),
+            ]);
             return;
         }
 
-        // Build per-(dist×bucket) jobs first (so we don't "start" a pipeline that has no jobs)
         $bucket_jobs = $this->build_bucket_jobs_from_order($order);
-
         if (empty($bucket_jobs)) {
-            error_log(self::LOG_PREFIX . ' No bucket jobs produced for order ' . (int) $order->get_id());
+            $this->log_ctx('no_bucket_jobs', [
+                'order_id' => $oid,
+                'status'   => (string) $order->get_status(),
+                'total'    => (string) $order->get_total(),
+                'reason'   => 'no_fflhub_managed_products_or_missing_meta',
+            ]);
             return;
         }
 
         $started_at = gmdate('c');
 
-        // Mark started + persist jobs + schedule (durable)
-        OrderPlacementJobsStore::set_pipeline_started($order, true, $started_at, 'status_processing');
-        $this->persist_bucket_jobs_table($order, $bucket_jobs);
-        $this->schedule_bucket_jobs($order, $bucket_jobs);
-
-        // Save only needed for pipeline meta (jobs are table-backed and persist immediately)
-        $order->save();
-
-        $this->debug('pipeline started + jobs scheduled', [
-            'order_id' => (int) $order->get_id(),
-            'jobs'     => array_keys($bucket_jobs),
+        $this->log_ctx('pipeline_starting', [
+            'order_id'    => $oid,
+            'started_at'  => $started_at,
+            'job_keys'    => array_keys($bucket_jobs),
+            'job_count'   => count($bucket_jobs),
         ]);
 
-        error_log(self::LOG_PREFIX . ' Pipeline started: ' . wp_json_encode([
-            'order_id'   => (int) $order->get_id(),
+        // Mark started + persist jobs + mark eligible (DB queue)
+        OrderPlacementPipelineMetaStore::set_pipeline_started($order, true, $started_at, 'status_processing');
+
+        $this->persist_bucket_jobs_table($order, $bucket_jobs);
+        $this->mark_jobs_eligible_for_processing($order, $bucket_jobs);
+
+        try {
+            $order->save();
+        } catch (\Throwable $e) {
+            $this->log_ctx('order_save_exception', [
+                'order_id' => $oid,
+                'err'      => $e->getMessage(),
+                'file'     => $e->getFile(),
+                'line'     => $e->getLine(),
+            ]);
+        }
+
+        $this->log_ctx('pipeline_started', [
+            'order_id'   => $oid,
             'started_at' => $started_at,
             'status'     => (string) $order->get_status(),
             'total'      => (string) $order->get_total(),
-        ]));
+            'job_count'  => count($bucket_jobs),
+            'elapsed_ms' => (int) round((microtime(true) - $started) * 1000),
+        ]);
     }
 
-    /* ===================== Job build ===================== */
-
     /**
-     * Build minimal per-(distributor×bucket) job payloads from a WooCommerce order.
-     *
      * @return array<string, array{
      *   order_id:int,
      *   dist_id:string,
      *   bucket:string,
      *   lines:array<int,array{upc:string,qty:int}>
-     * }> keyed by "dist|bucket"
+     * }>
      */
     private function build_bucket_jobs_from_order(WC_Order $order): array
     {
         $oid = (int) $order->get_id();
 
+        $this->log_ctx('build_jobs_start', [
+            'order_id'     => $oid,
+            'items_total'  => method_exists($order, 'get_item_count') ? (int) $order->get_item_count() : null,
+        ]);
+
         /** @var array<string, array<string, array<string,int>>> $agg dist => bucket => upc => qty */
         $agg = [];
 
-        $line_items = $order->get_items('line_item');
+        $seen = [
+            'items_iterated'     => 0,
+            'items_not_product'  => 0,
+            'product_missing'    => 0,
+            'not_managed'        => 0,
+            'missing_dist'       => 0,
+            'invalid_bucket'     => 0,
+            'missing_upc'        => 0,
+            'accepted'           => 0,
+        ];
 
-        foreach ($line_items as $item) {
+        foreach ($order->get_items('line_item') as $item) {
+            $seen['items_iterated']++;
+
             if (!($item instanceof WC_Order_Item_Product)) {
+                $seen['items_not_product']++;
                 continue;
             }
 
@@ -130,36 +192,57 @@ final class OrderPlacementOrchestrator
                 $vid = (int) $item->get_variation_id();
                 $product = $vid > 0 ? wc_get_product($vid) : wc_get_product($pid);
                 if (!($product instanceof WC_Product)) {
+                    $seen['product_missing']++;
                     continue;
                 }
             }
 
-            // Only FFLHub-managed products.
-            if ((int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true) !== 1) {
+            $managed = (int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
+            if ($managed !== 1) {
+                $seen['not_managed']++;
                 continue;
             }
 
-            $dist_id = strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)));
+            $dist_raw = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
+            $dist_id  = OrderPlacementKeysUtil::normalize_dist_id($dist_raw);
             if ($dist_id === '') {
+                $seen['missing_dist']++;
+                $this->log_ctx('skip_line_missing_dist', [
+                    'order_id'   => $oid,
+                    'product_id' => (int) $product->get_id(),
+                    'dist_raw'   => $dist_raw,
+                ]);
                 continue;
             }
 
             $ffl_required = ((int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true) === 1);
-            $bucket = $ffl_required ? 'ffl' : 'non';
+            $bucket = OrderPlacementKeysUtil::normalize_bucket($ffl_required ? 'ffl' : 'non');
 
-            // UPC: prefer global_unique_id, then fallback meta.
-            $upc_raw = '';
-            if (method_exists($product, 'get_global_unique_id')) {
-                $upc_raw = trim((string) $product->get_global_unique_id());
-            }
-            if ($upc_raw === '') {
-                $upc_raw = trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true));
-            }
-
-            $upc = self::digits_only($upc_raw);
-            if ($upc === '') {
+            if (!OrderPlacementKeysUtil::is_valid_bucket($bucket)) {
+                $seen['invalid_bucket']++;
+                $this->log_ctx('skip_line_invalid_bucket', [
+                    'order_id'     => $oid,
+                    'product_id'   => (int) $product->get_id(),
+                    'dist_id'      => $dist_id,
+                    'bucket'       => $bucket,
+                    'ffl_required' => $ffl_required ? '1' : '0',
+                ]);
                 continue;
             }
+
+            $upc = OrderPlacementProductUtil::extract_upc_from_product($product);
+            if ($upc === '') {
+                $seen['missing_upc']++;
+                $this->log_ctx('skip_line_missing_upc', [
+                    'order_id'   => $oid,
+                    'product_id' => (int) $product->get_id(),
+                    'dist_id'    => $dist_id,
+                    'bucket'     => $bucket,
+                ]);
+                continue;
+            }
+
+            $seen['accepted']++;
 
             if (!isset($agg[$dist_id])) {
                 $agg[$dist_id] = ['non' => [], 'ffl' => []];
@@ -167,14 +250,19 @@ final class OrderPlacementOrchestrator
             if (!isset($agg[$dist_id][$bucket][$upc])) {
                 $agg[$dist_id][$bucket][$upc] = 0;
             }
+
             $agg[$dist_id][$bucket][$upc] += $qty;
         }
 
-        /** @var array<string, array{order_id:int,dist_id:string,bucket:string,lines:array<int,array{upc:string,qty:int}>}> $jobs */
         $jobs = [];
 
         foreach ($agg as $dist_id => $buckets) {
             foreach (['non', 'ffl'] as $bucket) {
+                $bucket = OrderPlacementKeysUtil::normalize_bucket($bucket);
+                if (!OrderPlacementKeysUtil::is_valid_bucket($bucket)) {
+                    continue;
+                }
+
                 $by_upc = $buckets[$bucket] ?? [];
                 if (empty($by_upc)) {
                     continue;
@@ -185,7 +273,15 @@ final class OrderPlacementOrchestrator
                     $lines[] = ['upc' => (string) $upc, 'qty' => max(1, (int) $qty)];
                 }
 
-                $job_key = $dist_id . '|' . $bucket;
+                $job_key = OrderPlacementKeysUtil::build_job_key($dist_id, $bucket);
+                if ($job_key === '') {
+                    $this->log_ctx('skip_job_key_build_failed', [
+                        'order_id' => $oid,
+                        'dist_id'  => $dist_id,
+                        'bucket'   => $bucket,
+                    ]);
+                    continue;
+                }
 
                 $jobs[$job_key] = [
                     'order_id' => $oid,
@@ -197,273 +293,132 @@ final class OrderPlacementOrchestrator
         }
 
         ksort($jobs);
+
+        $this->log_ctx('build_jobs_finish', [
+            'order_id'  => $oid,
+            'job_count' => count($jobs),
+            'job_keys'  => array_keys($jobs),
+            'stats'     => $seen,
+        ]);
+
         return $jobs;
     }
 
-    /* ===================== Persist jobs (TABLE) ===================== */
-
-    /**
-     * Persist per-job rows in the table (durable).
-     *
-     * @param array<string, array{
-     *   order_id:int,
-     *   dist_id:string,
-     *   bucket:string,
-     *   lines:array<int,array{upc:string,qty:int}>
-     * }> $bucket_jobs
-     */
+    /** @param array<string,mixed> $bucket_jobs */
     private function persist_bucket_jobs_table(WC_Order $order, array $bucket_jobs): void
     {
+        $oid = (int) $order->get_id();
         $count = 0;
+        $skipped = 0;
+
+        $this->log_ctx('persist_jobs_start', [
+            'order_id'  => $oid,
+            'job_count' => is_array($bucket_jobs) ? count($bucket_jobs) : 0,
+        ]);
 
         foreach ($bucket_jobs as $job_key => $job) {
-            if (!is_string($job_key) || $job_key === '' || !is_array($job)) {
+            $job_key = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
+            if ($job_key === '' || !is_array($job)) {
+                $skipped++;
                 continue;
             }
 
-            // Initialize job row if missing (idempotent) + always store payload_json
-            OrderPlacementJobsStore::init_job_meta($order, $job_key, $job);
-            $count++;
+            try {
+                OrderPlacementJobLifecycle::init_job_meta($order, $job_key, $job);
+                $count++;
+            } catch (\Throwable $e) {
+                $this->log_ctx('persist_job_exception', [
+                    'order_id' => $oid,
+                    'job_key'  => $job_key,
+                    'err'      => $e->getMessage(),
+                    'file'     => $e->getFile(),
+                    'line'     => $e->getLine(),
+                ]);
+                $skipped++;
+            }
         }
 
-        error_log(self::LOG_PREFIX . ' Persisted job rows: jobs=' . (int) $count);
+        $this->log_ctx('persist_jobs_finish', [
+            'order_id'  => $oid,
+            'persisted' => $count,
+            'skipped'   => $skipped,
+        ]);
     }
 
-    /* ===================== Scheduling ===================== */
-
     /**
-     * Schedule 1 Action Scheduler action per job.
+     * Mark DB-backed job rows as eligible for the dispatcher to process.
+     *
+     * Legacy behavior scheduled an Action Scheduler action per job.
+     * New behavior:
+     *  - Writes status + next_run_at so the recurring dispatcher can batch-pull.
+     *  - Does NOT create/lookup Action Scheduler actions.
      *
      * @param array<string, array{order_id:int,dist_id:string,bucket:string,lines:array<int,array{upc:string,qty:int}>}> $bucket_jobs
      */
-    private function schedule_bucket_jobs(WC_Order $order, array $bucket_jobs): void
+    private function mark_jobs_eligible_for_processing(WC_Order $order, array $bucket_jobs): void
     {
-        if (!function_exists('as_schedule_single_action')) {
-            error_log(self::LOG_PREFIX . ' Action Scheduler not available: as_schedule_single_action() missing');
-            return;
-        }
-
         $oid = (int) $order->get_id();
 
-        foreach ($bucket_jobs as $job_key => $job) {
-            if (!is_string($job_key) || $job_key === '') {
+        $this->log_ctx('mark_eligible_start', [
+            'order_id'  => $oid,
+            'job_count' => is_array($bucket_jobs) ? count($bucket_jobs) : 0,
+        ]);
+
+        $marked = 0;
+        $skipped = 0;
+
+        foreach ($bucket_jobs as $job_key => $_job) {
+            $job_key_norm = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
+            if ($job_key_norm === '') {
+                $skipped++;
+                $this->log_ctx('mark_eligible_skip_invalid_job_key', [
+                    'order_id'    => $oid,
+                    'job_key_raw' => (string) $job_key,
+                ]);
                 continue;
             }
 
-            $status = OrderPlacementJobsStore::get_job_status($order, $job_key);
+            $status = (string) OrderPlacementJobLifecycle::get_job_status($order, $job_key_norm);
 
-            // Never schedule successful jobs.
+            // If already succeeded, don't re-queue.
             if ($status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
+                $skipped++;
+                $this->log_ctx('mark_eligible_skip_already_success', [
+                    'order_id' => $oid,
+                    'job_key'  => $job_key_norm,
+                ]);
                 continue;
             }
 
-            $args = [
+            // "scheduled" now means: eligible in DB for dispatcher (not "AS action exists").
+            $patch = OrderPlacementJobPatch::empty()
+                ->with_action_id(null) // no per-job Action Scheduler action
+                ->with_status(OrderPlacementKeys::JOB_STATUS_SCHEDULED)
+                ->with_next_run_at_mysql(OrderPlacementTimeUtil::now_mysql_utc());
+
+            OrderPlacementJobWriter::apply_patch_for_order($order, $job_key_norm, $patch);
+            $marked++;
+
+            $this->log_ctx('mark_eligible_marked', [
                 'order_id' => $oid,
-                'job_key'  => (string) $job_key,
-            ];
-
-            // Strong idempotency: if there's already a pending scheduled action for this job, skip.
-            if (function_exists('as_next_scheduled_action')) {
-                $next = as_next_scheduled_action(OrderPlacementKeys::AS_HOOK, $args, OrderPlacementKeys::AS_GROUP);
-                if (is_numeric($next) && (int) $next > 0) {
-                    // Optional: keep DB in sync if action_id missing
-                    if (OrderPlacementJobsStore::get_job_action_id($order, $job_key) === '') {
-                        OrderPlacementJobsStore::set_job_action_id($order, $job_key, (string) $next);
-                    }
-                    // Mark scheduled if not already
-                    if ($status === '' || $status === OrderPlacementKeys::JOB_STATUS_QUEUED) {
-                        OrderPlacementJobsStore::set_job_status($order, $job_key, OrderPlacementKeys::JOB_STATUS_SCHEDULED);
-                    }
-                    continue;
-                }
-            }
-
-            // Schedule immediately
-            $action_id = as_schedule_single_action(time(), OrderPlacementKeys::AS_HOOK, $args, OrderPlacementKeys::AS_GROUP);
-
-            // Persist action id + status (table-backed)
-            OrderPlacementJobsStore::set_job_action_id($order, $job_key, (string) $action_id);
-            OrderPlacementJobsStore::set_job_status($order, $job_key, OrderPlacementKeys::JOB_STATUS_SCHEDULED);
-
-            error_log(self::LOG_PREFIX . " Scheduled job key={$job_key} action_id={$action_id}");
+                'job_key'  => $job_key_norm,
+                'status'   => OrderPlacementKeys::JOB_STATUS_SCHEDULED,
+                'run_at'   => gmdate('c'),
+            ]);
         }
+
+        $this->log_ctx('mark_eligible_finish', [
+            'order_id' => $oid,
+            'marked'   => $marked,
+            'skipped'  => $skipped,
+        ]);
     }
 
-    /* ===================== Worker entrypoint (delegate) ===================== */
+    
 
-    /**
-     * Action Scheduler entrypoint for a single job.
-     *
-     * Orchestrator delegates actual per-job execution to OrderPlacementJobRunner.
-     *
-     * @param int|string $order_id
-     * @param string $job_key
-     */
-    public function handle_bucket_job($order_id, string $job_key): void
+    /** @param array<string,mixed> $ctx */
+    private function log_ctx(string $msg, array $ctx): void
     {
-        $order_id_i = (int) $order_id;
-        $job_key_s  = (string) $job_key;
-
-        $order = wc_get_order($order_id_i);
-        if (!($order instanceof WC_Order)) {
-            error_log(self::LOG_PREFIX . " Worker: order not found order_id={$order_id_i}");
-            return;
-        }
-
-        try {
-            $runner = new OrderPlacementJobRunner();
-            $runner->run($order, $job_key_s);
-        } catch (\Throwable $e) {
-            error_log('[FFLHUB][AS] job failed: ' . $e->getMessage());
-            error_log('[FFLHUB][AS] ' . $e->getTraceAsString());
-            throw $e; // keep AS marking it failed
-        }
-    }
-
-    /* ===================== Manual reschedule (ADMIN) ===================== */
-
-    /**
-     * Manual reschedule hook used by admin UI.
-     *
-     * Single source of truth for:
-     * - AS action scheduling / idempotency
-     * - table-backed job fields (status, next_run_at, action_id, clearing errors)
-     *
-     * Returns action_id string, or '' if Action Scheduler unavailable.
-     */
-    public static function manual_reschedule_job(WC_Order $order, string $job_key, int $delay_seconds = 5, string $reason = 'admin_retry'): string
-    {
-        $job_key = trim((string) $job_key);
-        if ($job_key === '') {
-            return '';
-        }
-
-        $delay_seconds = max(0, (int) $delay_seconds);
-        $desired_run_at = time() + $delay_seconds;
-
-        if (!function_exists('as_schedule_single_action')) {
-            // Can't schedule. Leave job as failed; UI will show as_missing.
-            error_log(self::LOG_PREFIX . " Manual reschedule failed: Action Scheduler missing order=" . (int) $order->get_id() . " job={$job_key}");
-            return '';
-        }
-
-        $args = [
-            'order_id' => (int) $order->get_id(),
-            'job_key'  => (string) $job_key,
-        ];
-
-        // Strong idempotency: reuse pending action if one already exists
-        $action_id = '';
-        if (function_exists('as_next_scheduled_action')) {
-            $existing = as_next_scheduled_action(
-                OrderPlacementKeys::AS_HOOK,
-                $args,
-                OrderPlacementKeys::AS_GROUP
-            );
-            if (is_numeric($existing) && (int) $existing > 0) {
-                $action_id = (string) (int) $existing;
-            }
-        }
-
-        if ($action_id === '') {
-            $aid = as_schedule_single_action(
-                $desired_run_at,
-                OrderPlacementKeys::AS_HOOK,
-                $args,
-                OrderPlacementKeys::AS_GROUP
-            );
-            $action_id = is_numeric($aid) ? (string) (int) $aid : '';
-        }
-
-        // Update table-backed job state to reflect "scheduled now"
-        OrderPlacementJobsStore::set_job_status($order, $job_key, OrderPlacementKeys::JOB_STATUS_SCHEDULED);
-        OrderPlacementJobsStore::set_job_next_run_at($order, $job_key, gmdate('c', $desired_run_at));
-        OrderPlacementJobsStore::set_job_last_error($order, $job_key, '');
-        OrderPlacementJobsStore::set_job_last_error_codes($order, $job_key, []);
-
-        if ($action_id !== '') {
-            OrderPlacementJobsStore::set_job_action_id($order, $job_key, $action_id);
-        } else {
-            // If schedule failed for some reason, don't show a stale action id
-            if (method_exists(OrderPlacementJobsStore::class, 'clear_job_action_id')) {
-                OrderPlacementJobsStore::clear_job_action_id($order, $job_key);
-            } else {
-                OrderPlacementJobsStore::set_job_action_id($order, $job_key, '');
-            }
-        }
-
-        error_log(self::LOG_PREFIX . " Manual reschedule scheduled order=" . (int) $order->get_id()
-            . " job={$job_key} run_at=" . gmdate('c', $desired_run_at) . " action_id={$action_id} reason={$reason}");
-
-        return $action_id;
-    }
-
-    /* ===================== Helpers ===================== */
-
-    private static function digits_only(string $value): string
-    {
-        $value = trim((string) $value);
-        if ($value !== '' && ctype_digit($value)) {
-            return $value;
-        }
-        return preg_replace('/\D+/', '', $value) ?? '';
-    }
-
-    private function debug_enabled(): bool
-    {
-        if (defined(self::DEBUG_CONST)) {
-            return (bool) constant(self::DEBUG_CONST);
-        }
-        $env = getenv('FFLHUB_PLACE_ORCH_DEBUG');
-        if (is_string($env) && $env !== '') {
-            return ($env === '1' || strtolower($env) === 'true' || strtolower($env) === 'yes');
-        }
-        return false; // default OFF now
-    }
-
-    /**
-     * @param array<string,mixed> $ctx
-     */
-    private function debug(string $msg, array $ctx = []): void
-    {
-        if (!$this->debug_enabled()) {
-            return;
-        }
-        $line = self::LOG_PREFIX . ' ' . $msg;
-        if (!empty($ctx)) {
-            $line .= ' ' . wp_json_encode($this->sanitize_ctx($ctx));
-        }
-        error_log($line);
-    }
-
-    /**
-     * Keep debug contexts small (prevents log spam).
-     *
-     * @param array<string,mixed> $ctx
-     * @return array<string,mixed>
-     */
-    private function sanitize_ctx(array $ctx): array
-    {
-        $out = [];
-        foreach ($ctx as $k => $v) {
-            if (is_object($v)) {
-                $out[$k] = 'object:' . get_class($v);
-                continue;
-            }
-            if (is_resource($v)) {
-                $out[$k] = 'resource';
-                continue;
-            }
-            if (is_array($v)) {
-                $out[$k] = (count($v) <= 15) ? $v : array_slice($v, 0, 15);
-                continue;
-            }
-            if (is_string($v)) {
-                $out[$k] = (strlen($v) <= 250) ? $v : substr($v, 0, 250) . '…';
-                continue;
-            }
-            $out[$k] = $v;
-        }
-        return $out;
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
     }
 }

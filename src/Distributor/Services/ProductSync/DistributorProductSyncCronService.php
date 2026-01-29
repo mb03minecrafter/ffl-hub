@@ -6,10 +6,13 @@ use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
 use FFLHub\Distributor\Product\DistributorProductHelper;
-use WC_Product;
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Settings\Options;
+use FFLHub\Util\DebugLogUtil;
+
+use WC_Product;
+use WC_Product_Simple;
 
 use function current_time;
 use function get_post_meta;
@@ -25,22 +28,29 @@ if (! defined('ABSPATH')) {
 /**
  * Handles ongoing pricing and quantity synchronization for FFLHub-managed products.
  *
- * CHANGE: If computed sell price violates profit-floor rule:
- *   sell_price < true_cost * (1 + transaction_fee_percent)
- * then force product OUT OF STOCK (qty=0) instead of updating price/stock normally.
+ * Optimization:
+ * - Always bump LAST_SYNC (rotation key) each run.
+ * - Only call $product->save() (heavy) when stock/price/meta actually changed.
+ *
+ * PROFIT FLOOR RULE:
+ * If sell price would be below true_cost + transaction fee percent,
+ * force product OUT OF STOCK (qty=0) and skip price/meta update.
  */
-class DistributorProductSyncCronService extends AbstractCronService
+final class DistributorProductSyncCronService extends AbstractCronService
 {
-    /**
-     * Cron hook name for syncing managed products.
-     */
     private const CRON_HOOK = 'fflhub_sync_managed_products';
+
+    /**
+     * Debug constant + prefix for DebugLogUtil.
+     * (Adjust constant name if yours differs; keeping existing global switch too.)
+     */
+    private const DEBUG_CONST = 'FFLHUB_CRON_DEBUG';
+    private const LOG_PREFIX  = '[FFLHUB][ProductSync]';
 
     public function get_cron_hook_name(): string
     {
         return self::CRON_HOOK;
     }
-
 
     protected function get_interval_seconds(): int
     {
@@ -52,8 +62,6 @@ class DistributorProductSyncCronService extends AbstractCronService
         return 'fflhub_product_sync';
     }
 
-    
-
     protected function get_initial_delay_seconds(): int
     {
         return 300; // 5 minutes
@@ -64,29 +72,56 @@ class DistributorProductSyncCronService extends AbstractCronService
         $this->sync_batch(50);
     }
 
-    /**
-     * Sync a batch of FFLHub-managed products.
-     *
-     * @param int $limit
-     */
     public function sync_batch(int $limit = 50): void
     {
-        $t_start = microtime(true);
+        $t_start   = microtime(true);
+        $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
-        $this->log_debug('[FFLHub][Product Sync] ---- RUN START ----');
+        $this->log_ctx('---- RUN START ----', array(
+            'limit'        => (int) $limit,
+            'memory_kb'    => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
+            'hook'         => self::CRON_HOOK,
+            'group'        => $this->get_action_group(),
+            'interval_sec' => $this->get_interval_seconds(),
+        ));
 
-        $t_q = microtime(true);
+        $t_q   = microtime(true);
         $query = DistributorProductHelper::query_for_managed_products($limit);
-        $this->log_timing('query_for_managed_products', $t_q);
+        $posts = ($query && isset($query->posts) && is_array($query->posts)) ? count($query->posts) : 0;
 
-        if (! $query->have_posts()) {
-            $this->log_debug('[FFLHub][Product Sync] sync_batch: no managed products found.');
-            $this->log_debug('[FFLHub][Product Sync] ---- RUN END (NOOP) ----');
+        $this->profile('query_for_managed_products', $t_q, array(
+            'limit' => (int) $limit,
+            'posts' => (int) $posts,
+        ));
+
+        if (! $query || ! $query->have_posts()) {
+            $this->log('sync_batch: no managed products found.');
+            $this->log_ctx('---- RUN END (NOOP) ----', array('elapsed_ms' => $this->ms_since($t_start)));
             return;
         }
 
         $processed = 0;
         $errors    = 0;
+
+        // Outcome counters
+        $stats = array(
+            'skipped_trash'             => 0,
+            'missing_upc'               => 0,
+            'lookup_invalid'            => 0,
+            'no_offers_oos'             => 0,
+            'no_selected_offer'         => 0,
+            'bad_payload'               => 0,
+            'bad_price_stock_only'      => 0,
+            'forced_oos_profit_floor'   => 0,
+            'updated_normal'            => 0,
+            'noop_bump_only'            => 0,
+        );
+
+        // Timing aggregates
+        $lookup_ms_sum = 0.0;
+        $lookup_ms_max = 0.0;
+        $write_ms_sum  = 0.0;
+        $write_ms_max  = 0.0;
 
         foreach ($query->posts as $product_id) {
             $product_id = (int) $product_id;
@@ -97,266 +132,319 @@ class DistributorProductSyncCronService extends AbstractCronService
             $t_one = microtime(true);
 
             try {
-                $this->sync_single_product($product_id);
+                $result = $this->sync_single_product($product_id);
                 $processed++;
+
+                if (is_array($result)) {
+                    $outcome = isset($result['outcome']) ? (string) $result['outcome'] : '';
+
+                    switch ($outcome) {
+                        case 'SKIP_TRASH':               $stats['skipped_trash']++; break;
+                        case 'MISSING_UPC':              $stats['missing_upc']++; break;
+                        case 'LOOKUP_INVALID':           $stats['lookup_invalid']++; break;
+                        case 'NO_OFFERS_OOS':            $stats['no_offers_oos']++; break;
+                        case 'NO_SELECTED_OFFER':        $stats['no_selected_offer']++; break;
+                        case 'BAD_PAYLOAD':              $stats['bad_payload']++; break;
+                        case 'BAD_PRICE_STOCK_ONLY':     $stats['bad_price_stock_only']++; break;
+                        case 'FORCED_OOS_PROFIT_FLOOR':  $stats['forced_oos_profit_floor']++; break;
+                        case 'UPDATED_NORMAL':           $stats['updated_normal']++; break;
+                        case 'NOOP_BUMP_ONLY':           $stats['noop_bump_only']++; break;
+                    }
+
+                    $lms = isset($result['lookup_ms']) ? (float) $result['lookup_ms'] : 0.0;
+                    $wms = isset($result['write_ms']) ? (float) $result['write_ms'] : 0.0;
+
+                    if ($lms > 0) {
+                        $lookup_ms_sum += $lms;
+                        $lookup_ms_max = max($lookup_ms_max, $lms);
+                    }
+                    if ($wms > 0) {
+                        $write_ms_sum += $wms;
+                        $write_ms_max = max($write_ms_max, $wms);
+                    }
+                }
             } catch (\Throwable $e) {
                 $errors++;
-                $this->log_debug(
-                    sprintf(
-                        '[FFLHub][Product Sync] sync_batch: exception syncing product %d: %s',
-                        $product_id,
-                        $e->getMessage()
-                    )
-                );
-                continue;
+                $this->log_ctx('sync_batch: exception syncing product', array(
+                    'product_id' => $product_id,
+                    'error'      => $e->getMessage(),
+                ));
             } finally {
-                $this->log_timing('sync_single_product product_id=' . $product_id, $t_one);
+                $this->profile('sync_single_product', $t_one, array('product_id' => $product_id));
             }
         }
 
-        $elapsed_ms = (microtime(true) - $t_start) * 1000.0;
+        $lookup_avg = ($processed > 0) ? ($lookup_ms_sum / (float) $processed) : 0.0;
+        $write_avg  = ($processed > 0) ? ($write_ms_sum / (float) $processed) : 0.0;
 
-        $this->log_debug(
-            sprintf(
-                '[FFLHub][Product Sync] ---- RUN END (processed=%d, errors=%d, total_ms=%.2f) ----',
-                $processed,
-                $errors,
-                $elapsed_ms
-            )
-        );
+        $this->profile('Run summary', $t_start, array_merge(array(
+            'limit'         => (int) $limit,
+            'processed'     => (int) $processed,
+            'errors'        => (int) $errors,
+            'lookup_avg_ms' => (float) $lookup_avg,
+            'lookup_max_ms' => (float) $lookup_ms_max,
+            'write_avg_ms'  => (float) $write_avg,
+            'write_max_ms'  => (float) $write_ms_max,
+            'total_ms'      => (float) $this->ms_since($t_start),
+        ), $stats));
+
+        $this->profile('Total cron run', $t_start, array(
+            'status'    => ($errors > 0 ? 'PARTIAL' : 'SUCCESS'),
+            'processed' => (int) $processed,
+            'errors'    => (int) $errors,
+        ));
+
+        $mem_end = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        if ($mem_start > 0 && $mem_end > 0) {
+            $this->log_ctx('Memory usage summary', array(
+                'start_kb' => (int) round($mem_start / 1024),
+                'end_kb'   => (int) round($mem_end / 1024),
+                'delta_kb' => (int) round(($mem_end - $mem_start) / 1024),
+            ));
+        }
+
+        $this->log('---- RUN END ----');
     }
 
     /**
-     * Sync pricing and quantity for a single FFLHub-managed WooCommerce product.
+     * Sync pricing and quantity for a single managed WooCommerce product.
      *
-     * @param int $product_id
+     * @return array{outcome:string,lookup_ms:float,write_ms:float}
      */
-    public function sync_single_product(int $product_id): void
+    public function sync_single_product(int $product_id): array
     {
-        $t_start = microtime(true);
+        $t_start  = microtime(true);
+        $t_lookup = 0.0;
+        $t_write  = 0.0;
 
-        if ($product_id <= 0) {
-            return;
+        $now_mysql = current_time('mysql');
+
+        if ($product_id <= 0 || ! function_exists('wc_get_product')) {
+            return array('outcome' => 'LOOKUP_INVALID', 'lookup_ms' => 0.0, 'write_ms' => 0.0);
         }
 
-        if (! function_exists('wc_get_product')) {
-            return;
-        }
-
-        $t_load = microtime(true);
+        $t0 = microtime(true);
         $product = wc_get_product($product_id);
-        $this->log_timing("wc_get_product product_id={$product_id}", $t_load);
+        $this->profile('wc_get_product', $t0, array('product_id' => $product_id));
 
         if (! $product instanceof WC_Product) {
-            $this->log_debug("[FFLHub][Product Sync] product_id={$product_id}: wc_get_product returned non-product");
-            return;
+            $this->log_ctx('wc_get_product returned non-product', array('product_id' => $product_id));
+            return array('outcome' => 'LOOKUP_INVALID', 'lookup_ms' => 0.0, 'write_ms' => 0.0);
         }
 
-        // Skip trashed products.
-        $t_status = microtime(true);
+        $t0 = microtime(true);
         $post_status = get_post_status($product_id);
-        $this->log_timing("get_post_status product_id={$product_id}", $t_status);
+        $this->profile('get_post_status', $t0, array('product_id' => $product_id, 'status' => (string) $post_status));
 
         if ('trash' === $post_status) {
-            $this->log_debug("[FFLHub][Product Sync] product_id={$product_id}: skipped (trash)");
-            return;
+            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+
+            $this->profile('TOTAL product', $t_start, array(
+                'product_id' => $product_id,
+                'outcome'    => 'SKIP_TRASH',
+            ));
+
+            return array('outcome' => 'SKIP_TRASH', 'lookup_ms' => 0.0, 'write_ms' => 0.0);
         }
 
-        // Per-product header snapshot
-        $current_stock        = $product->get_stock_quantity();
-        $current_stock_status = $product->get_stock_status();
-        $current_regular      = $product->get_regular_price();
+        $this->log_ctx('Product START', array(
+            'product_id'    => $product_id,
+            'status'        => (string) $post_status,
+            'stock'         => $product->get_stock_quantity(),
+            'stock_status'  => (string) $product->get_stock_status(),
+            'regular_price' => (string) $product->get_regular_price(),
+        ));
 
-        $this->log_debug(
-            sprintf(
-                '[FFLHub][Product Sync] product_id=%d START status=%s stock=%s stock_status=%s regular_price=%s',
-                $product_id,
-                (string) $post_status,
-                ($current_stock === null ? 'null' : (string) $current_stock),
-                (string) $current_stock_status,
-                ($current_regular === '' ? '[empty]' : (string) $current_regular)
-            )
-        );
-
-        $t_upc = microtime(true);
-        $upc = (string) get_post_meta($product_id, ProductMeta::FFLHUB_UPC_META, true);
-        $upc = trim($upc);
-        $this->log_timing("get_post_meta upc product_id={$product_id}", $t_upc);
+        $t0 = microtime(true);
+        $upc = trim((string) get_post_meta($product_id, ProductMeta::FFLHUB_UPC_META, true));
+        $this->profile('get_post_meta_upc', $t0, array('product_id' => $product_id, 'has_upc' => ($upc !== '')));
 
         if ($upc === '') {
-            $this->log_debug("[FFLHub][Product Sync] product_id={$product_id}: missing UPC meta; stamping last_sync and exiting");
-            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
-            $this->log_timing("TOTAL product_id={$product_id}", $t_start);
-            return;
+            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+
+            $this->profile('TOTAL product', $t_start, array(
+                'product_id' => $product_id,
+                'outcome'    => 'MISSING_UPC',
+            ));
+
+            return array('outcome' => 'MISSING_UPC', 'lookup_ms' => 0.0, 'write_ms' => 0.0);
         }
 
         // Lookup
-        $t_lookup = microtime(true);
+        $t0 = microtime(true);
         $lookup = null;
+
         try {
             $lookup = DistributorProductHelper::get_upc_lookup_result_from_distributors($upc, false);
         } catch (\Throwable $e) {
             $lookup = null;
-            $this->log_debug(
-                sprintf(
-                    '[FFLHub][Product Sync] product_id=%d upc=%s lookup EXCEPTION: %s',
-                    $product_id,
-                    $upc,
-                    $e->getMessage()
-                )
-            );
+            $this->log_ctx('distributor_lookup exception', array(
+                'product_id' => $product_id,
+                'upc'        => $upc,
+                'error'      => $e->getMessage(),
+            ));
         }
-        $this->log_timing("distributor_lookup upc={$upc}", $t_lookup);
+
+        $t_lookup = $this->ms_since($t0);
+
+        $this->profile('distributor_lookup', $t0, array(
+            'product_id' => $product_id,
+            'upc'        => $upc,
+            'ok'         => ($lookup instanceof UpcLookupResult),
+        ));
 
         if (! ($lookup instanceof UpcLookupResult)) {
-            $this->log_debug("[FFLHub][Product Sync] product_id={$product_id} upc={$upc}: lookup returned null/invalid; stamping last_sync");
-            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
-            $this->log_timing("TOTAL product_id={$product_id}", $t_start);
-            return;
+            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+
+            $this->profile('TOTAL product', $t_start, array(
+                'product_id' => $product_id,
+                'outcome'    => 'LOOKUP_INVALID',
+            ));
+
+            return array('outcome' => 'LOOKUP_INVALID', 'lookup_ms' => $t_lookup, 'write_ms' => 0.0);
         }
 
         /** @var array<string, DistributorOffer> $offers */
         $offers = $lookup->offers();
-        $offers_count = is_array($offers) ? count($offers) : 0;
+        $cis    = $lookup->cheapest_in_stock();
+        $ca     = $lookup->cheapest_any();
 
-        $cis = $lookup->cheapest_in_stock();
-        $ca  = $lookup->cheapest_any();
+        $this->log_ctx('Lookup summary', array(
+            'product_id'        => $product_id,
+            'upc'               => $upc,
+            'offers'            => is_array($offers) ? count($offers) : 0,
+            'cheapest_in_stock' => ($cis instanceof DistributorOffer) ? (string) $cis->distributor_id : null,
+            'cheapest_any'      => ($ca instanceof DistributorOffer) ? (string) $ca->distributor_id : null,
+        ));
 
-        $this->log_debug(
-            sprintf(
-                '[FFLHub][Product Sync] product_id=%d upc=%s offers=%d cheapest_in_stock=%s cheapest_any=%s',
-                $product_id,
-                $upc,
-                (int) $offers_count,
-                ($cis instanceof DistributorOffer) ? (string) $cis->distributor_id : '[none]',
-                ($ca instanceof DistributorOffer) ? (string) $ca->distributor_id : '[none]'
-            )
-        );
-
-        // No distributors currently carry this UPC => mark OOS but keep price unchanged.
         if (empty($offers)) {
-            $t_write = microtime(true);
+            $t0 = microtime(true);
 
-            $product->set_manage_stock(true);
-            $product->set_stock_quantity(0);
-            $product->set_stock_status('outofstock');
+            $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
+            $cur_status = (string) $product->get_stock_status();
+            $needs_save = ($cur_qty !== 0) || ($cur_status !== 'outofstock');
 
-            $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
-            $product->save();
+            if ($needs_save) {
+                $product->set_manage_stock(true);
+                $product->set_stock_quantity(0);
+                $product->set_stock_status('outofstock');
+                $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+                $product->save();
+            } else {
+                update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            }
 
-            $this->log_timing("write_oos_no_offers product_id={$product_id}", $t_write);
-            $this->log_debug("[FFLHub][Product Sync] product_id={$product_id} upc={$upc}: set OOS (no offers)");
-            $this->log_timing("TOTAL product_id={$product_id}", $t_start);
-            return;
+            $t_write = $this->ms_since($t0);
+
+            $this->profile('write_oos_no_offers', $t0, array(
+                'product_id' => $product_id,
+                'upc'        => $upc,
+                'saved'      => $needs_save ? 1 : 0,
+            ));
+
+            $this->profile('TOTAL product', $t_start, array(
+                'product_id' => $product_id,
+                'outcome'    => 'NO_OFFERS_OOS',
+            ));
+
+            return array('outcome' => 'NO_OFFERS_OOS', 'lookup_ms' => $t_lookup, 'write_ms' => $t_write);
         }
 
-        // Choose best offer: cheapest in stock, else cheapest any, else first.
-        $t_select = microtime(true);
+        // Select offer
+        $t0 = microtime(true);
         $selected_offer = $cis ?: $ca;
-
         if (! ($selected_offer instanceof DistributorOffer)) {
             $first = reset($offers);
             $selected_offer = ($first instanceof DistributorOffer) ? $first : null;
         }
-        $this->log_timing("select_offer upc={$upc}", $t_select);
+        $this->profile('select_offer', $t0, array(
+            'product_id' => $product_id,
+            'upc'        => $upc,
+            'selected'   => ($selected_offer instanceof DistributorOffer) ? (string) $selected_offer->distributor_id : null,
+        ));
 
         if (! ($selected_offer instanceof DistributorOffer)) {
-            $t_write = microtime(true);
-            $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
-            $product->save();
-            $this->log_timing("write_last_sync_no_offer product_id={$product_id}", $t_write);
-            $this->log_debug("[FFLHub][Product Sync] product_id={$product_id} upc={$upc}: no valid selected offer; exiting");
-            $this->log_timing("TOTAL product_id={$product_id}", $t_start);
-            return;
+            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+
+            $this->profile('TOTAL product', $t_start, array(
+                'product_id' => $product_id,
+                'outcome'    => 'NO_SELECTED_OFFER',
+            ));
+
+            return array('outcome' => 'NO_SELECTED_OFFER', 'lookup_ms' => $t_lookup, 'write_ms' => 0.0);
         }
 
         $selected_payload = $selected_offer->product;
         if (! ($selected_payload instanceof DistributorProductPayload)) {
-            $t_write = microtime(true);
-            $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
-            $product->save();
-            $this->log_timing("write_last_sync_bad_payload product_id={$product_id}", $t_write);
-            $this->log_debug(
-                sprintf(
-                    '[FFLHub][Product Sync] product_id=%d upc=%s selected_offer=%s: missing/invalid payload; exiting',
-                    $product_id,
-                    $upc,
-                    (string) $selected_offer->distributor_id
-                )
-            );
-            $this->log_timing("TOTAL product_id={$product_id}", $t_start);
-            return;
+            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+
+            $this->profile('TOTAL product', $t_start, array(
+                'product_id' => $product_id,
+                'outcome'    => 'BAD_PAYLOAD',
+            ));
+
+            return array('outcome' => 'BAD_PAYLOAD', 'lookup_ms' => $t_lookup, 'write_ms' => 0.0);
         }
 
         $selected_dist_id = (string) $selected_offer->distributor_id;
 
-        $qty        = (int) ($selected_payload->quantity ?? 0);
-        $true_cost  = (is_numeric($selected_payload->true_cost) && (float) $selected_payload->true_cost > 0)
+        $qty = (int) ($selected_payload->quantity ?? 0);
+        $true_cost = (is_numeric($selected_payload->true_cost) && (float) $selected_payload->true_cost > 0)
             ? (float) $selected_payload->true_cost
             : null;
-        $dealer     = (is_numeric($selected_payload->price) && (float) $selected_payload->price > 0)
-            ? (float) $selected_payload->price
-            : null;
-        $ship_cost  = (is_numeric($selected_payload->shipping_cost) && (float) $selected_payload->shipping_cost >= 0)
-            ? (float) $selected_payload->shipping_cost
-            : null;
-        $map        = (is_numeric($selected_payload->map) && (float) $selected_payload->map > 0)
-            ? (float) $selected_payload->map
-            : null;
 
-        $this->log_debug(
-            sprintf(
-                '[FFLHub][Product Sync] product_id=%d upc=%s selected=%s qty=%d true_cost=%s dealer=%s ship=%s map=%s',
-                $product_id,
-                $upc,
-                $selected_dist_id,
-                $qty,
-                ($true_cost === null ? 'null' : sprintf('%.2f', $true_cost)),
-                ($dealer === null ? 'null' : sprintf('%.2f', $dealer)),
-                ($ship_cost === null ? 'null' : sprintf('%.2f', $ship_cost)),
-                ($map === null ? 'null' : sprintf('%.2f', $map))
-            )
-        );
-
-        // Compute sell price using your per-product pricing settings.
-        $t_price = microtime(true);
+        // Compute sell price
+        $t0 = microtime(true);
         $recommended_price = DistributorProductHelper::compute_sell_price_for_product($product_id, $selected_payload);
-        $this->log_timing("compute_sell_price product_id={$product_id}", $t_price);
+        $this->profile('compute_sell_price', $t0, array(
+            'product_id' => $product_id,
+            'selected'   => $selected_dist_id,
+            'ok'         => (is_numeric($recommended_price) && (float) $recommended_price > 0),
+        ));
 
-        // If we can't compute a valid price, do NOT set the Woo price to 0.
         if (! is_numeric($recommended_price) || (float) $recommended_price <= 0) {
-            $this->log_debug(
-                sprintf(
-                    '[FFLHub][Product Sync] product_id=%d upc=%s selected=%s: could not compute sell price (skipping price update)',
-                    $product_id,
-                    $upc,
-                    $selected_dist_id
-                )
-            );
+            $t0 = microtime(true);
 
-            $t_write = microtime(true);
+            $desired_qty    = $qty;
+            $desired_status = ($qty > 0 ? 'instock' : 'outofstock');
 
-            // Still update stock + last sync.
-            $product->set_manage_stock(true);
-            $product->set_stock_quantity($qty);
-            $product->set_stock_status($qty > 0 ? 'instock' : 'outofstock');
+            $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
+            $cur_status = (string) $product->get_stock_status();
 
-            $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
-            $product->save();
+            $needs_save = ($cur_qty !== (int) $desired_qty) || ($cur_status !== (string) $desired_status);
 
-            $this->log_timing("write_stock_only_bad_price product_id={$product_id}", $t_write);
-            $this->log_timing("TOTAL product_id={$product_id}", $t_start);
-            return;
+            if ($needs_save) {
+                $product->set_manage_stock(true);
+                $product->set_stock_quantity($desired_qty);
+                $product->set_stock_status($desired_status);
+                $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+                $product->save();
+            } else {
+                update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            }
+
+            $t_write = $this->ms_since($t0);
+
+            $this->profile('write_stock_only_bad_price', $t0, array(
+                'product_id' => $product_id,
+                'upc'        => $upc,
+                'selected'   => $selected_dist_id,
+                'qty'        => $desired_qty,
+                'saved'      => $needs_save ? 1 : 0,
+            ));
+
+            $this->profile('TOTAL product', $t_start, array(
+                'product_id' => $product_id,
+                'outcome'    => 'BAD_PRICE_STOCK_ONLY',
+            ));
+
+            return array('outcome' => 'BAD_PRICE_STOCK_ONLY', 'lookup_ms' => $t_lookup, 'write_ms' => $t_write);
         }
 
         $recommended_price = (float) $recommended_price;
 
-        /**
-         * PROFIT FLOOR RULE:
-         * If sell price would be below true_cost + transaction fee percent,
-         * force product OUT OF STOCK (qty=0) and skip price/meta update.
-         */
-        $t_floor = microtime(true);
+        // Profit floor
+        $t0 = microtime(true);
 
         $fee_raw = Options::get_payment_processor_fee_percent();
         $fee_pct = is_numeric($fee_raw) ? (float) $fee_raw : 0.0;
@@ -367,96 +455,152 @@ class DistributorProductSyncCronService extends AbstractCronService
             $min_profitable_price = $true_cost * (1.0 + $fee_pct);
         }
 
-        $this->log_timing("profit_floor_calc product_id={$product_id}", $t_floor);
-
-        $this->log_debug(
-            sprintf(
-                '[FFLHub][Product Sync] product_id=%d upc=%s sell=%.2f floor=%s (true_cost=%s fee_pct=%.4f)',
-                $product_id,
-                $upc,
-                $recommended_price,
-                ($min_profitable_price === null ? 'null' : sprintf('%.2f', $min_profitable_price)),
-                ($true_cost === null ? 'null' : sprintf('%.2f', $true_cost)),
-                $fee_pct
-            )
-        );
+        $this->profile('profit_floor_calc', $t0, array(
+            'product_id' => $product_id,
+            'fee_pct'    => $fee_pct,
+            'true_cost'  => $true_cost,
+            'floor'      => $min_profitable_price,
+        ));
 
         if ($min_profitable_price !== null && $recommended_price < $min_profitable_price) {
-            $t_write = microtime(true);
+            $t0 = microtime(true);
 
-            $product->set_manage_stock(true);
-            $product->set_stock_quantity(0);
-            $product->set_stock_status('outofstock');
+            $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
+            $cur_status = (string) $product->get_stock_status();
+            $needs_save = ($cur_qty !== 0) || ($cur_status !== 'outofstock');
 
-            $this->log_debug(
-                sprintf(
-                    '[FFLHub][Product Sync] product_id=%d upc=%s selected=%s forced OOS: sell=%.2f < floor=%.2f (true_cost=%.2f fee_pct=%.4f)',
-                    $product_id,
-                    $upc,
-                    $selected_dist_id,
-                    $recommended_price,
-                    $min_profitable_price,
-                    (float) $true_cost,
-                    $fee_pct
-                )
-            );
+            if ($needs_save) {
+                $product->set_manage_stock(true);
+                $product->set_stock_quantity(0);
+                $product->set_stock_status('outofstock');
+                $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+                $product->save();
+            } else {
+                update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            }
 
-            $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
-            $product->save();
+            $t_write = $this->ms_since($t0);
 
-            $this->log_timing("write_forced_oos_floor product_id={$product_id}", $t_write);
-            $this->log_timing("TOTAL product_id={$product_id}", $t_start);
-            return;
+            $this->profile('write_forced_oos_floor', $t0, array(
+                'product_id' => $product_id,
+                'upc'        => $upc,
+                'selected'   => $selected_dist_id,
+                'sell'       => $recommended_price,
+                'floor'      => $min_profitable_price,
+                'saved'      => $needs_save ? 1 : 0,
+            ));
+
+            $this->profile('TOTAL product', $t_start, array(
+                'product_id' => $product_id,
+                'outcome'    => 'FORCED_OOS_PROFIT_FLOOR',
+            ));
+
+            return array('outcome' => 'FORCED_OOS_PROFIT_FLOOR', 'lookup_ms' => $t_lookup, 'write_ms' => $t_write);
         }
 
-        // Normal update path (stock + price + meta)
-        $t_write = microtime(true);
+        // Normal diff-aware write
+        $t0 = microtime(true);
 
-        $product->set_manage_stock(true);
-        $product->set_stock_quantity($qty);
-        $product->set_stock_status($qty > 0 ? 'instock' : 'outofstock');
+        $desired_qty    = (int) $qty;
+        $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
+        $desired_price  = (string) wc_format_decimal($recommended_price, 2);
 
-        $product->set_regular_price(wc_format_decimal($recommended_price, 2));
+        $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
+        $cur_status = (string) $product->get_stock_status();
+        $cur_price  = (string) $product->get_regular_price();
 
-        DistributorProductHelper::update_fflhub_meta_from_payload_for_sync(
-            $product,
+        $stock_changed = ($cur_qty !== $desired_qty) || ($cur_status !== $desired_status);
+        $price_changed = ($cur_price !== $desired_price);
+
+        if ($stock_changed) {
+            $product->set_manage_stock(true);
+            $product->set_stock_quantity($desired_qty);
+            $product->set_stock_status($desired_status);
+        }
+
+        if ($price_changed) {
+            $product->set_regular_price($desired_price);
+        }
+
+        // You said you updated this helper; it should now return bool $meta_changed.
+        $meta_changed = (bool) DistributorProductHelper::update_fflhub_meta_from_payload_for_sync(
+            ($product instanceof WC_Product_Simple) ? $product : $product,
             $selected_dist_id,
             $selected_payload,
-            $recommended_price
+            (float) $recommended_price
         );
 
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
-        $product->save();
+        $needs_save = ($stock_changed || $price_changed || $meta_changed);
 
-        $this->log_timing("write_stock_price_meta product_id={$product_id}", $t_write);
-
-        $this->log_debug(
-            sprintf(
-                '[FFLHub][Product Sync] product_id=%d END upc=%s selected=%s final_qty=%d final_status=%s final_regular=%.2f',
-                $product_id,
-                $upc,
-                $selected_dist_id,
-                $qty,
-                ($qty > 0 ? 'instock' : 'outofstock'),
-                $recommended_price
-            )
-        );
-
-        $this->log_timing("TOTAL product_id={$product_id}", $t_start);
-    }
-
-    private function log_timing(string $label, float $t0): void
-    {
-        $elapsed_ms = (microtime(true) - $t0) * 1000.0;
-        $this->log_debug(sprintf('[FFLHub][Product Sync][TIMING] %s took %.2f ms', $label, $elapsed_ms));
-    }
-
-    private function log_debug(string $message): void
-    {
-        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
-            return;
+        if ($needs_save) {
+            // Helper already sets LAST_SYNC meta, but we also set it here to guarantee rotation.
+            $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            $product->save();
+        } else {
+            // Keep rotation without heavy save().
+            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
         }
 
-        error_log($message);
+        $t_write = $this->ms_since($t0);
+
+        $this->profile('write_decision', $t0, array(
+            'product_id'    => $product_id,
+            'upc'           => $upc,
+            'selected'      => $selected_dist_id,
+            'qty'           => $desired_qty,
+            'sell'          => $recommended_price,
+            'stock_changed' => $stock_changed ? 1 : 0,
+            'price_changed' => $price_changed ? 1 : 0,
+            'meta_changed'  => $meta_changed ? 1 : 0,
+            'saved'         => $needs_save ? 1 : 0,
+        ));
+
+        $this->log_ctx('Product END', array(
+            'product_id'   => $product_id,
+            'upc'          => $upc,
+            'selected'     => $selected_dist_id,
+            'final_qty'    => $desired_qty,
+            'final_status' => $desired_status,
+            'final_regular'=> $desired_price,
+            'saved'        => $needs_save ? 1 : 0,
+        ));
+
+        $this->profile('TOTAL product', $t_start, array(
+            'product_id' => $product_id,
+            'outcome'    => $needs_save ? 'UPDATED_NORMAL' : 'NOOP_BUMP_ONLY',
+        ));
+
+        return array(
+            'outcome'   => $needs_save ? 'UPDATED_NORMAL' : 'NOOP_BUMP_ONLY',
+            'lookup_ms' => (float) $t_lookup,
+            'write_ms'  => (float) $t_write,
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // DebugLogUtil wrappers (your real API)
+    // ---------------------------------------------------------------------
+
+    private function log(string $msg): void
+    {
+        DebugLogUtil::log(self::DEBUG_CONST, self::LOG_PREFIX, $msg);
+    }
+
+    /** @param array<string,mixed> $ctx */
+    private function log_ctx(string $msg, array $ctx): void
+    {
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
+    }
+
+    /** @param array<string,mixed> $ctx */
+    private function profile(string $label, float $t0, array $ctx = array()): void
+    {
+        $ctx['elapsed_ms'] = number_format($this->ms_since($t0), 2, '.', '');
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, 'PROFILE: ' . $label, $ctx);
+    }
+
+    private function ms_since(float $t0): float
+    {
+        return (microtime(true) - $t0) * 1000.0;
     }
 }

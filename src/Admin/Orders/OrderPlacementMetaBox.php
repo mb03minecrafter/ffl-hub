@@ -2,8 +2,13 @@
 
 namespace FFLHub\Admin\Orders;
 
+use FFLHub\Distributor\Models\OrderPlacementJobPatch;
+use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifecycle;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
+use FFLHub\Distributor\Services\Orders\OrderPlacementDispatchCronService;
 use FFLHub\Distributor\Services\Orders\OrderPlacementKeys;
-use FFLHub\Distributor\Services\Orders\OrderPlacementJobsStore;
 use FFLHub\Distributor\Services\Orders\OrderPlacementOrchestrator;
 use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
 use WC_Order;
@@ -71,12 +76,12 @@ final class OrderPlacementMetaBox
         }
 
         // Pipeline meta still lives on the WC order
-        $started    = OrderPlacementJobsStore::get_pipeline_started($order);
-        $started_at = OrderPlacementJobsStore::get_pipeline_started_at($order);
-        $started_by = OrderPlacementJobsStore::get_pipeline_started_by($order);
+        $started    = OrderPlacementPipelineMetaStore::get_pipeline_started($order);
+        $started_at = OrderPlacementPipelineMetaStore::get_pipeline_started_at($order);
+        $started_by = OrderPlacementPipelineMetaStore::get_pipeline_started_by($order);
 
         // Jobs index is now derived from the jobs table
-        $job_keys = OrderPlacementJobsStore::get_jobs_index($order);
+        $job_keys = OrderPlacementJobsRepository::get_jobs_index($order);
 
         echo '<div class="fflhub-wrap">';
 
@@ -559,23 +564,56 @@ final class OrderPlacementMetaBox
         }
 
         // Ensure this job exists in the TABLE-derived index
-        $job_keys = OrderPlacementJobsStore::get_jobs_index($order);
+        $job_keys = OrderPlacementJobsRepository::get_jobs_index($order);
         if (!in_array($job_key, $job_keys, true)) {
             wp_die('Job key not found on this order.');
         }
 
         // Only allow retry if terminally failed
-        $status = OrderPlacementJobsStore::get_job_status($order, $job_key);
-        if (strtolower(trim($status)) !== 'failed') {
+        $status = OrderPlacementJobLifecycle::get_job_status($order, $job_key);
+        if (strtolower(trim((string) $status)) !== 'failed') {
             self::redirect_back($order_id, $job_key, 'not_failed');
             return;
         }
 
-        // ✅ Delegate scheduling + table updates to orchestrator (single source of truth)
-        $action_id = OrderPlacementOrchestrator::manual_reschedule_job($order, $job_key, 5, 'admin_retry');
+        // ----------------------------
+        // NEW: table-based "retry"
+        // ----------------------------
+        $delay_seconds = 0;
 
-        self::redirect_back($order_id, $job_key, $action_id !== '' ? 'scheduled' : 'as_missing');
+        // Set next_run_at + status + clear error so the poller will pick it up
+        $patch = OrderPlacementJobPatch::empty()
+            ->with_status('retry_scheduled')
+            ->with_next_run_at_mysql(gmdate('Y-m-d H:i:s', time() + $delay_seconds));
+
+        OrderPlacementJobWriter::apply_patch($order_id, $job_key, $patch);
+
+        // Best-effort: kick the poller so you don’t wait for the next cron tick.
+        // If your poller is already running frequently via system cron, this is still nice for UX.
+
+        if (function_exists('as_schedule_single_action')) {
+            $hook  = OrderPlacementDispatchCronService::CRON_HOOK; // fflhub_place_order_poll
+            $group = 'fflhub_place';
+
+            
+
+            
+            as_schedule_single_action(time() + 1, $hook, [], $group);
+            
+        }
+        self::redirect_back($order_id, $job_key, 'scheduled');
     }
+
+    /**
+     * Helper: returns UTC mysql datetime string for now + N seconds.
+     * Keep consistent with your existing now_mysql_utc() style.
+     */
+    private static function now_mysql_utc_plus(int $seconds): string
+    {
+        $ts = time() + max(0, $seconds);
+        return gmdate('Y-m-d H:i:s', $ts);
+    }
+
 
     private static function redirect_back(int $order_id, string $job_key, string $result): void
     {

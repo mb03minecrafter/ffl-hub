@@ -25,6 +25,49 @@ final class OrderPlacementJobsTable
     }
 
     /**
+     * Return the set of writable column names for safe partial updates.
+     *
+     * Writer/patch should use this to avoid schema drift.
+     *
+     * @return string[]
+     */
+    public static function writable_columns(): array
+    {
+        // NOTE: exclude id/order_id/job_key/created_at (identifiers or managed elsewhere)
+        // include updated_at since writer stamps it.
+        return [
+            'dist_id',
+            'bucket',
+            'status',
+            'attempts',
+            'action_id',
+            'next_run_at',
+            'last_step',
+            'last_error',
+            'last_codes_json',
+            'done_at',
+            'payload_json',
+            'validate_result_json',
+            'place_result_json',
+            'merchant_po',
+            'external_order_ids_json',
+            'external_order_id',
+
+            // shipping fields
+            'shipped_at',
+            'tracking_numbers_json',
+            'invoice_numbers_json',
+            'shipping_service',
+            'shipping_weight',
+            'shipment_raw_json',
+            'last_shipping_poll_at',
+
+            // writer-stamped
+            'updated_at',
+        ];
+    }
+
+    /**
      * @return string[]
      */
     private static function columns(): array

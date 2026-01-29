@@ -1,4 +1,5 @@
 <?php
+
 namespace FFLHub\Distributor\Core;
 
 if (! defined('ABSPATH')) {
@@ -13,6 +14,7 @@ use FFLHub\Distributor\Services\ProductSync\DistributorProductSyncCronService;
 
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
+use FFLHub\Distributor\Services\Orders\OrderPlacementDispatchCronService;
 use FFLHub\Distributor\Services\Orders\Shipping\OrderPlacementShippingPollCronService;
 
 /**
@@ -30,6 +32,7 @@ class DistributorHandler
 
     private DistributorProductSyncCronService $productSyncCronService;
     private OrderPlacementShippingPollCronService $orderShippingCronService;
+    private OrderPlacementDispatchCronService $orderPlacementCronService;
 
     public function __construct()
     {
@@ -45,6 +48,7 @@ class DistributorHandler
 
         $this->productSyncCronService = new DistributorProductSyncCronService();
         $this->orderShippingCronService = new OrderPlacementShippingPollCronService();
+        $this->orderPlacementCronService = new OrderPlacementDispatchCronService();
     }
 
     /**
@@ -108,6 +112,7 @@ class DistributorHandler
 
         $this->productSyncCronService->on_activation();
         $this->orderShippingCronService->on_activation();
+        $this->orderPlacementCronService->on_activation();
     }
 
     public function on_deactivate(): void
@@ -121,7 +126,7 @@ class DistributorHandler
 
         $this->productSyncCronService->on_deactivation();
         $this->orderShippingCronService->on_deactivation();
-
+        $this->orderPlacementCronService->on_deactivation();
     }
 
     public function register_runtime_services(): void
@@ -139,6 +144,7 @@ class DistributorHandler
 
         $this->productSyncCronService->register();
         $this->orderShippingCronService->register();
+        $this->orderPlacementCronService->register();
     }
 
     /**

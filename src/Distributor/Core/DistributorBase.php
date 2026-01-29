@@ -565,8 +565,10 @@ abstract class DistributorBase implements DistributorInterface
 
     /**
      * Default behavior: allow (some distributors won’t support a preflight API).
+     *
+     * @param bool $local_only  If true, perform only local stock checks (no remote API).
      */
-    public function validate_order_request(DistributorOrderRequest $request): DistributorOrderValidationResult
+    public function validate_order_request(DistributorOrderRequest $request,  bool $local_only = false): DistributorOrderValidationResult
     {
         return DistributorOrderValidationResult::allow('No distributor-specific validation implemented.');
     }

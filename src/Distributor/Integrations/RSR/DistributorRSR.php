@@ -340,21 +340,16 @@ class DistributorRSR extends DistributorBase
 
     /**
      * Validate an order request against RSR shipping/restriction rules using check-catalog.
+     *
+     * If $local_only=true, we ONLY do a lightweight local fulfillment-table stock check
+     * and skip ALL remote check-catalog calls.
      */
-    public function validate_order_request(DistributorOrderRequest $request): DistributorOrderValidationResult
+    public function validate_order_request(DistributorOrderRequest $request, bool $local_only = false): DistributorOrderValidationResult
     {
         if (! $this->services) {
             return DistributorOrderValidationResult::block(
                 'RSR services not available; cannot access fulfillment table.',
                 ['RSR_SERVICES_MISSING']
-            );
-        }
-
-        $auth = $this->get_rsr_auth_payload();
-        if (! $auth['ok']) {
-            return DistributorOrderValidationResult::block(
-                (string) $auth['message'],
-                ['RSR_AUTH_MISSING']
             );
         }
 
@@ -365,6 +360,159 @@ class DistributorRSR extends DistributorBase
             return DistributorOrderValidationResult::allow('No valid order lines to validate.');
         }
 
+        // -----------------------------------------
+        // LOCAL-ONLY MODE: stock-only local check
+        // -----------------------------------------
+        if ($local_only) {
+            $details = [
+                'local_only' => true,
+                'non' => [
+                    'ok' => true,
+                    'kind' => 'local_only',
+                    'message' => 'local_only=true (skipping RSR check-catalog)',
+                    'items' => [],
+                ],
+                'ffl' => [
+                    'ok' => true,
+                    'kind' => 'local_only',
+                    'message' => 'local_only=true (skipping RSR check-catalog)',
+                    'items' => [],
+                ],
+            ];
+
+            $local_fail_msgs = [];
+            $table = $this->services->get_fulfillment_table();
+
+            $check_lines = function (array $lines, string $bucket_key) use (&$details, &$local_fail_msgs, $table): void {
+                foreach ($lines as $line) {
+                    // Try to extract a UPC and required quantity without assuming too much.
+                    $upc_raw = '';
+                    if (is_array($line)) {
+                        $upc_raw = (string) ($line['upc'] ?? $line['UPC'] ?? $line['Upc'] ?? $line['product_upc'] ?? '');
+                    } elseif (is_object($line)) {
+                        // common DTO patterns
+                        if (isset($line->upc)) {
+                            $upc_raw = (string) $line->upc;
+                        } elseif (method_exists($line, 'upc')) {
+                            $upc_raw = (string) $line->upc();
+                        }
+                    }
+
+                    $qty_req = 1;
+                    if (is_array($line)) {
+                        $qty_req = (int) ($line['qty'] ?? $line['quantity'] ?? 1);
+                    } elseif (is_object($line)) {
+                        if (isset($line->qty)) {
+                            $qty_req = (int) $line->qty;
+                        } elseif (isset($line->quantity)) {
+                            $qty_req = (int) $line->quantity;
+                        } elseif (method_exists($line, 'qty')) {
+                            $qty_req = (int) $line->qty();
+                        } elseif (method_exists($line, 'quantity')) {
+                            $qty_req = (int) $line->quantity();
+                        }
+                    }
+                    if ($qty_req <= 0) {
+                        $qty_req = 1;
+                    }
+
+                    $normalized_upc = $this->normalize_upc($upc_raw);
+                    if ($normalized_upc === null || $normalized_upc === '') {
+                        $local_fail_msgs[] = "UPC={$upc_raw} invalid (normalize_upc null/empty)";
+                        $details[$bucket_key]['items'][$upc_raw] = [
+                            'requiredQty' => $qty_req,
+                            'local_qty' => null,
+                            'found' => 0,
+                            'reason' => 'invalid_upc',
+                        ];
+                        continue;
+                    }
+
+                    $row = $table->get_row_by_upc($normalized_upc);
+                    if (! $row || ! is_array($row)) {
+                        $local_fail_msgs[] = "UPC={$normalized_upc} not found in local fulfillment table";
+                        $details[$bucket_key]['items'][$normalized_upc] = [
+                            'requiredQty' => $qty_req,
+                            'local_qty' => null,
+                            'found' => 0,
+                            'reason' => 'not_found',
+                        ];
+                        continue;
+                    }
+
+                    $qty_raw = $this->get_string_field($row, ['inventory_quantity', 'qty', 'quantity', 'available', 'on_hand']);
+                    $local_qty = is_numeric($qty_raw) ? (int) $qty_raw : null;
+
+                    $details[$bucket_key]['items'][$normalized_upc] = [
+                        'requiredQty' => $qty_req,
+                        'local_qty' => $local_qty,
+                        'found' => 1,
+                    ];
+
+                    // Keeping parity with Lipseys local fallback:
+                    // UNKNOWN => block (safer, avoids placing into unknown inventory)
+                    if ($local_qty === null) {
+                        $local_fail_msgs[] = "UPC={$normalized_upc} local_qty=UNKNOWN required={$qty_req}";
+                        continue;
+                    }
+
+                    if ($local_qty < $qty_req) {
+                        $local_fail_msgs[] = "UPC={$normalized_upc} local_available={$local_qty} required={$qty_req}";
+                    }
+                }
+            };
+
+            if (! empty($lines_non)) {
+                $check_lines($lines_non, 'non');
+            }
+            if (! empty($lines_ffl)) {
+                // Still enforce required FFL info even in local_only mode (cheap + prevents nonsense)
+                if (! ($request->ship_to_ffl instanceof DistributorShipTo)) {
+                    return DistributorOrderValidationResult::block(
+                        'RSR validation failed (FFL items): missing ship_to_ffl (transfer dealer address required).',
+                        ['RSR_FFL_ADDRESS_MISSING'],
+                        $details
+                    );
+                }
+                if (trim((string) $request->receiving_ffl_number) === '') {
+                    return DistributorOrderValidationResult::block(
+                        'RSR validation failed (FFL items): missing receiving FFL number (ShipFFL required).',
+                        ['RSR_SHIPFFL_MISSING'],
+                        $details
+                    );
+                }
+
+                $check_lines($lines_ffl, 'ffl');
+            }
+
+            if (! empty($local_fail_msgs)) {
+                $msg = 'RSR validation failed (local_only): ' . implode(' | ', array_slice($local_fail_msgs, 0, 8));
+                if (count($local_fail_msgs) > 8) {
+                    $msg .= ' | ...';
+                }
+
+                return DistributorOrderValidationResult::block(
+                    $msg,
+                    ['RSR_LOCAL_ONLY_BLOCKED'],
+                    $details
+                );
+            }
+
+            return DistributorOrderValidationResult::allow('RSR validation OK (local_only).', $details);
+        }
+
+        // -----------------------------------------
+        // REMOTE MODE (existing behavior)
+        // -----------------------------------------
+
+        $auth = $this->get_rsr_auth_payload();
+        if (! $auth['ok']) {
+            return DistributorOrderValidationResult::block(
+                (string) $auth['message'],
+                ['RSR_AUTH_MISSING']
+            );
+        }
+
         $details = [];
 
         if (! empty($lines_non)) {
@@ -372,18 +520,16 @@ class DistributorRSR extends DistributorBase
             $details['non'] = $res_non;
 
             if (! $res_non['ok']) {
-
-
-                $kind = isset($res_non['kind']) ? (string)$res_non['kind'] : '';
-
+                $kind = isset($res_non['kind']) ? (string) $res_non['kind'] : '';
 
                 if ($kind === 'out_of_stock') {
                     return DistributorOrderValidationResult::block(
-                        'RSR out of stock (non-FFL items): ' . (string)($res_non['message'] ?? 'Out of stock'),
+                        'RSR out of stock (non-FFL items): ' . (string) ($res_non['message'] ?? 'Out of stock'),
                         ['RSR_OUT_OF_STOCK'],
                         $details
                     );
                 }
+
                 $http = isset($res_non['http_status']) ? (int) $res_non['http_status'] : 0;
                 $msg  = (string) ($res_non['message'] ?? 'Unknown');
 
@@ -424,15 +570,16 @@ class DistributorRSR extends DistributorBase
             $details['ffl'] = $res_ffl;
 
             if (! $res_ffl['ok']) {
+                $kind = isset($res_ffl['kind']) ? (string) $res_ffl['kind'] : '';
 
-                $kind = isset($res_ffl['kind']) ? (string)$res_ffl['kind'] : '';
                 if ($kind === 'out_of_stock') {
                     return DistributorOrderValidationResult::block(
-                        'RSR out of stock (FFL items): ' . (string)($res_ffl['message'] ?? 'Out of stock'),
+                        'RSR out of stock (FFL items): ' . (string) ($res_ffl['message'] ?? 'Out of stock'),
                         ['RSR_OUT_OF_STOCK'],
                         $details
                     );
                 }
+
                 $http = isset($res_ffl['http_status']) ? (int) $res_ffl['http_status'] : 0;
                 $msg  = (string) ($res_ffl['message'] ?? 'Unknown');
 
@@ -454,6 +601,7 @@ class DistributorRSR extends DistributorBase
 
         return DistributorOrderValidationResult::allow('RSR validation OK.', $details);
     }
+
 
 
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
@@ -479,7 +627,7 @@ class DistributorRSR extends DistributorBase
 
 
 
-        
+
 
 
 

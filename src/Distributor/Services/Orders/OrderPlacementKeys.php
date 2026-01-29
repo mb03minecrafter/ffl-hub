@@ -2,7 +2,9 @@
 
 namespace FFLHub\Distributor\Services\Orders;
 
-if (!defined('ABSPATH')) { exit; }
+if (!defined('ABSPATH')) {
+    exit;
+}
 
 final class OrderPlacementKeys
 {
@@ -49,10 +51,10 @@ final class OrderPlacementKeys
     public const JOB_STATUS_SUCCESS         = 'success';
     public const JOB_STATUS_FAILED          = 'failed';
     public const JOB_STATUS_RETRY_SCHEDULED = 'retry_scheduled';
+    public const JOB_STATUS_PAUSED = 'paused';
 
     /* ===================== Action Scheduler ===================== */
 
-    public const AS_HOOK  = 'fflhub_place_distributor_bucket';
     public const AS_GROUP = 'fflhub_order_placement';
 
     /* ===================== Helpers ===================== */

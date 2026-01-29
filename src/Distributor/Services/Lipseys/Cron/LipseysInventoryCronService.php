@@ -2,13 +2,14 @@
 
 namespace FFLHub\Distributor\Services\Lipseys\Cron;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Settings\Options;
+use FFLHub\Util\DebugLogUtil;
 
 /**
  * WP-Cron job to refresh Lipsey's pricing/quantity feed hourly
@@ -20,6 +21,16 @@ final class LipseysInventoryCronService extends AbstractTableCronService
      * Cron hook name for Lipsey's pricing/quantity refresh.
      */
     public const CRON_HOOK = 'fflhub_lipseys_pricing_quantity_update';
+
+    /**
+     * Debug gate constant (define('FFLHUB_CRON_DEBUG', true);).
+     */
+    private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
+
+    /**
+     * Log prefix.
+     */
+    private const LOG_PREFIX = '[FFLHUB][LipseysInventoryCron]';
 
     public function __construct(DoubleBufferedFulfillmentTable $table)
     {
@@ -34,7 +45,6 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         return self::CRON_HOOK;
     }
 
-
     /**
      * Interval length in seconds.
      */
@@ -43,13 +53,11 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         return HOUR_IN_SECONDS;
     }
 
-
     public function get_action_group(): string
     {
         return 'fflhub_catalog';
     }
 
-    
     /**
      * Delay before first run (keeps your old 5-minute initial delay).
      */
@@ -69,43 +77,35 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         global $wpdb;
 
         $t_start   = microtime(true);
-        $mem_start = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
+        $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
-        $log_timing = function (string $label, float $t0): void {
-            $elapsed_ms = (microtime(true) - $t0) * 1000;
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][Lipsey's Inventory Cron] %s took %.2f ms",
-                    $label,
-                    $elapsed_ms
-                )
-            );
-        };
-
-        $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN START ----");
-        if ($mem_start > 0) {
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][Lipsey's Inventory Cron] PHP PID=%d, memory_start=%d KB",
-                    function_exists('getmypid') ? getmypid() : 0,
-                    (int) round($mem_start / 1024)
-                )
-            );
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
         }
+
+        $this->log('---- RUN START ----', [
+            'pid'          => function_exists('getmypid') ? (int) getmypid() : 0,
+            'memory_kb'    => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
+            'hook'         => self::CRON_HOOK,
+            'group'        => $this->get_action_group(),
+            'interval_sec' => $this->get_interval_seconds(),
+        ]);
 
         // Credentials via centralized Options helper.
         $t_creds         = microtime(true);
-        $dealer_email    = trim(Options::get_distributor_option('lipseys', 'dealer_email', ''));
-        $dealer_password = trim(Options::get_distributor_option('lipseys', 'dealer_password', ''));
+        $dealer_email    = trim((string) Options::get_distributor_option('lipseys', 'dealer_email', ''));
+        $dealer_password = trim((string) Options::get_distributor_option('lipseys', 'dealer_password', ''));
+
+        $this->profile('Credentials retrieval', $t_creds, [
+            'has_email'    => ($dealer_email !== ''),
+            'has_password' => ($dealer_password !== ''),
+        ]);
 
         if ($dealer_email === '' || $dealer_password === '') {
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ERROR: dealer_email or dealer_password not set.");
-            $log_timing('Credentials retrieval (failed)', $t_creds);
-            $log_timing('Total cron run (credentials failed)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: dealer_email or dealer_password not set.');
+            $this->finalize_run($t_start, $mem_start, 'ERROR (missing credentials)');
             return;
         }
-        $log_timing('Credentials retrieval', $t_creds);
 
         // Client creation.
         $t_client = microtime(true);
@@ -115,81 +115,76 @@ final class LipseysInventoryCronService extends AbstractTableCronService
                 (string) $dealer_password
             );
         } catch (\Throwable $e) {
-            $this->log_debug(
-                "[FFLHub][Lipsey's Inventory Cron] ERROR: exception creating LipseysClient: " . $e->getMessage()
-            );
-            $log_timing('Client creation (failed)', $t_client);
-            $log_timing('Total cron run (client failed)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: exception creating LipseysClient', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->profile('Client creation (failed)', $t_client);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (client creation)');
             return;
         }
-        $log_timing('Client creation', $t_client);
+        $this->profile('Client creation', $t_client);
 
         // PricingAndQuantity().
         $t_paq = microtime(true);
         try {
             $result = $client->PricingAndQuantity();
         } catch (\Throwable $e) {
-            $this->log_debug(
-                "[FFLHub][Lipsey's Inventory Cron] ERROR: exception calling PricingAndQuantity(): " . $e->getMessage()
-            );
-            $log_timing('PricingAndQuantity() call (failed)', $t_paq);
-            $log_timing('Total cron run (PricingAndQuantity failed)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: exception calling PricingAndQuantity()', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->profile('PricingAndQuantity() call (failed)', $t_paq);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (PricingAndQuantity exception)');
             return;
         }
-        $log_timing('PricingAndQuantity() call', $t_paq);
+        $this->profile('PricingAndQuantity() call', $t_paq);
 
-        if (! is_array($result)) {
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ERROR: PricingAndQuantity() did not return an array.");
-            $log_timing('Total cron run (bad result)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+        if (!is_array($result)) {
+            $this->log('ERROR: PricingAndQuantity() did not return an array.', [
+                'type' => is_object($result) ? get_class($result) : gettype($result),
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (bad result type)');
             return;
         }
 
-        // Validate.
+        // Validate response and extract items.
         $t_validate = microtime(true);
+
         $success    = isset($result['success']) ? (bool) $result['success'] : false;
         $authorized = isset($result['authorized']) ? (bool) $result['authorized'] : false;
 
-        if (! $success || ! $authorized) {
-            $errors = isset($result['errors']) && is_array($result['errors'])
+        if (!$success || !$authorized) {
+            $errors = (isset($result['errors']) && is_array($result['errors']))
                 ? implode('; ', array_map('strval', $result['errors']))
                 : '';
-            $this->log_debug(
-                "[FFLHub][Lipsey's Inventory Cron] ERROR: API response not successful/authorized. "
-                    . 'success=' . ($success ? '1' : '0')
-                    . ' authorized=' . ($authorized ? '1' : '0')
-                    . ' errors=' . $errors
-            );
-            $log_timing('Response validation (failed)', $t_validate);
-            $log_timing('Total cron run (validation failed)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+
+            $this->log('ERROR: API response not successful/authorized', [
+                'success'    => $success ? 1 : 0,
+                'authorized' => $authorized ? 1 : 0,
+                'errors'     => $errors,
+            ]);
+
+            $this->profile('Response validation (failed)', $t_validate);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (validation failed)');
             return;
         }
 
-        if (! isset($result['data']) || ! is_array($result['data'])) {
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ERROR: response missing data object.");
-            $log_timing('Response validation (missing data)', $t_validate);
-            $log_timing('Total cron run (missing data)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+        if (!isset($result['data']) || !is_array($result['data'])) {
+            $this->log('ERROR: response missing data object.');
+            $this->profile('Response validation (missing data)', $t_validate);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (missing data)');
             return;
         }
 
         $data = $result['data'];
 
         if (isset($data['nextUpdate'])) {
-            update_option(
-                'fflhub_lipseys_pricing_quantity_next_update',
-                (string) $data['nextUpdate']
-            );
+            update_option('fflhub_lipseys_pricing_quantity_next_update', (string) $data['nextUpdate']);
         }
 
-        if (! isset($data['items']) || ! is_array($data['items'])) {
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ERROR: data.items missing or not array.");
-            $log_timing('Response validation (items missing)', $t_validate);
-            $log_timing('Total cron run (items missing)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+        if (!isset($data['items']) || !is_array($data['items'])) {
+            $this->log('ERROR: data.items missing or not array.');
+            $this->profile('Response validation (items missing)', $t_validate);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (items missing)');
             return;
         }
 
@@ -197,38 +192,33 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         $items_count = count($items);
 
         if (empty($items)) {
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ERROR: data.items is empty.");
-            $log_timing('Response validation (empty items)', $t_validate);
-            $log_timing('Total cron run (empty items)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: data.items is empty.');
+            $this->profile('Response validation (empty items)', $t_validate);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (empty items)');
             return;
         }
 
-        $log_timing(
-            "Response validation + items extraction (count={$items_count})",
-            $t_validate
-        );
+        $mem_after_extract = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
-        $table_name = $this->table->get_live_table_name();
-        if (! is_string($table_name) || $table_name === '') {
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ERROR: could not resolve live table name.");
-            $log_timing('Total cron run (no table)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+        $this->profile('Response validation + items extraction', $t_validate, [
+            'count'         => (int) $items_count,
+            'memory_kb_now' => $mem_after_extract > 0 ? (int) round($mem_after_extract / 1024) : 0,
+        ]);
+
+        $table_name = (string) $this->table->get_live_table_name();
+        if ($table_name === '') {
+            $this->log('ERROR: could not resolve live table name.');
+            $this->finalize_run($t_start, $mem_start, 'ERROR (no table)');
             return;
         }
-
-        if (function_exists('set_time_limit')) {
-            @set_time_limit(0);
-        }
-
-        $t_loop = microtime(true);
 
         // Normalize only the delta fields we actually want to update.
         // Keyed by lipseys_item_number.
+        $t_normalize = microtime(true);
         $rows = array();
 
         foreach ($items as $item) {
-            if (! is_array($item)) {
+            if (!is_array($item)) {
                 continue;
             }
 
@@ -251,27 +241,31 @@ final class LipseysInventoryCronService extends AbstractTableCronService
             );
         }
 
+        $this->profile('Normalize items → delta rows', $t_normalize, [
+            'input_items'      => (int) $items_count,
+            'normalized_rows'  => (int) count($rows),
+        ]);
+
         if (empty($rows)) {
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ERROR: no usable items after normalization.");
-            $log_timing('Update loop (empty normalized rows)', $t_loop);
-            $log_timing('Total cron run (no rows)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: no usable items after normalization.', [
+                'input_items' => (int) $items_count,
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (no normalized rows)');
             return;
         }
 
-        $this->log_debug(
-            sprintf(
-                "[FFLHub][Lipsey's Inventory Cron] Normalized items: input_items=%d, normalized_rows=%d",
-                (int) $items_count,
-                (int) count($rows)
-            )
-        );
-
         // Transaction via table helper.
+        $t_updates = microtime(true);
+
         $this->table->begin_transaction();
 
         $rows_changed_total = 0;
         $rows_matched_total = 0;
+
+        // Batch timing aggregation (keeps logs tight).
+        $batch_count = 0;
+        $batch_ms_total = 0.0;
+        $batch_ms_max = 0.0;
 
         try {
             $batch_size = 200;
@@ -282,6 +276,9 @@ final class LipseysInventoryCronService extends AbstractTableCronService
                     continue;
                 }
 
+                $batch_count++;
+                $t_batch = microtime(true);
+
                 // Matched rows (truth), vs changed rows (wpdb/query result).
                 $item_numbers = array_keys($batch);
                 $matched_rows = $this->count_lipseys_matched_rows($table_name, $item_numbers);
@@ -289,27 +286,23 @@ final class LipseysInventoryCronService extends AbstractTableCronService
 
                 $sql = $this->build_lipseys_case_update_sql($table_name, $batch);
                 if ($sql === '') {
-                    $this->log_debug(
-                        sprintf(
-                            "[FFLHub][Lipsey's Inventory Cron] Batch %d skipped (empty SQL) (batch_items=%d, matched_rows=%d)",
-                            (int) ($batch_index + 1),
-                            (int) count($batch),
-                            (int) $matched_rows
-                        )
-                    );
+                    $this->log('Batch skipped (empty SQL)', [
+                        'batch'        => (int) ($batch_index + 1),
+                        'batch_items'  => (int) count($batch),
+                        'matched_rows' => (int) $matched_rows,
+                    ]);
                     continue;
                 }
 
                 $q = $wpdb->query($sql);
 
                 if ($q === false) {
-                    $this->log_debug(
-                        sprintf(
-                            "[FFLHub][Lipsey's Inventory Cron] SQL ERROR (batch %d): %s",
-                            (int) ($batch_index + 1),
-                            (string) $wpdb->last_error
-                        )
-                    );
+                    $this->log('SQL ERROR during batch', [
+                        'batch'       => (int) ($batch_index + 1),
+                        'batch_items' => (int) count($batch),
+                        'matched_rows'=> (int) $matched_rows,
+                        'last_error'  => (string) $wpdb->last_error,
+                    ]);
                     continue;
                 }
 
@@ -317,85 +310,74 @@ final class LipseysInventoryCronService extends AbstractTableCronService
                 $changed_rows = (int) $q;
                 $rows_changed_total += $changed_rows;
 
-                $this->log_debug(
-                    sprintf(
-                        "[FFLHub][Lipsey's Inventory Cron] Batch %d updated (batch_items=%d, matched_rows=%d, changed_rows=%d)",
-                        (int) ($batch_index + 1),
-                        (int) count($batch),
-                        (int) $matched_rows,
-                        (int) $changed_rows
-                    )
-                );
+                $batch_ms = (microtime(true) - $t_batch) * 1000.0;
+                $batch_ms_total += $batch_ms;
+                if ($batch_ms > $batch_ms_max) {
+                    $batch_ms_max = $batch_ms;
+                }
+
+                // Keep per-batch logging concise (still useful when this job is the thing you're diagnosing).
+                $this->log('Batch updated', [
+                    'batch'        => (int) ($batch_index + 1),
+                    'batch_items'  => (int) count($batch),
+                    'matched_rows' => (int) $matched_rows,
+                    'changed_rows' => (int) $changed_rows,
+                    'elapsed_ms'   => number_format($batch_ms, 2, '.', ''),
+                ]);
             }
 
             $this->table->commit_transaction();
         } catch (\Throwable $e) {
             $this->table->rollback_transaction();
 
-            $this->log_debug(
-                "[FFLHub][Lipsey's Inventory Cron] ERROR: exception during batched updates, rolled back transaction: "
-                    . $e->getMessage()
-            );
+            $this->log('ERROR: exception during batched updates (rolled back transaction)', [
+                'error' => $e->getMessage(),
+            ]);
 
-            $log_timing('Update loop (failed)', $t_loop);
-            $log_timing('Total cron run (update loop exception)', $t_start);
-            $this->log_debug("[FFLHub][Lipsey's Inventory Cron] ---- RUN END (ERROR) ----");
+            $this->profile('Batched DB updates (failed)', $t_updates, [
+                'items'               => (int) $items_count,
+                'normalized_rows'     => (int) count($rows),
+                'matched_rows_total'  => (int) $rows_matched_total,
+                'changed_rows_total'  => (int) $rows_changed_total,
+                'batches_seen'        => (int) $batch_count,
+            ]);
+
+            $this->finalize_run($t_start, $mem_start, 'ERROR (update loop exception)');
             return;
         }
 
-        $t_loop_ms     = (microtime(true) - $t_loop) * 1000;
-        $items_per_sec = $t_loop_ms > 0 ? ($items_count / ($t_loop_ms / 1000)) : 0;
+        $updates_ms     = (microtime(true) - $t_updates) * 1000.0;
+        $items_per_sec  = $updates_ms > 0 ? ($items_count / ($updates_ms / 1000.0)) : 0.0;
+        $avg_batch_ms   = $batch_count > 0 ? ($batch_ms_total / $batch_count) : 0.0;
 
-        $this->log_debug(
-            sprintf(
-                "[FFLHub][Lipsey's Inventory Cron] Batched DB updates took %.2f ms (items=%d, matched_rows_total=%d, changed_rows_total=%d, ~%.0f items/sec)",
-                $t_loop_ms,
-                (int) $items_count,
-                (int) $rows_matched_total,
-                (int) $rows_changed_total,
-                (float) $items_per_sec
-            )
-        );
+        $this->profile('Batched DB updates', $t_updates, [
+            'table'              => (string) $table_name,
+            'items'              => (int) $items_count,
+            'normalized_rows'    => (int) count($rows),
+            'batch_size'         => 200,
+            'batches'            => (int) $batch_count,
+            'avg_batch_ms'       => number_format($avg_batch_ms, 2, '.', ''),
+            'max_batch_ms'       => number_format($batch_ms_max, 2, '.', ''),
+            'matched_rows_total' => (int) $rows_matched_total,
+            'changed_rows_total' => (int) $rows_changed_total,
+            'items_per_sec'      => number_format($items_per_sec, 0, '.', ''),
+        ]);
 
-        update_option(
-            'fflhub_lipseys_pricing_quantity_last_sync',
-            current_time('mysql')
-        );
+        update_option('fflhub_lipseys_pricing_quantity_last_sync', current_time('mysql'));
 
         // Keep existing meaning for the stored count: "changed rows" total.
-        update_option(
-            'fflhub_lipseys_pricing_quantity_last_sync_count',
-            (int) $rows_changed_total
-        );
+        update_option('fflhub_lipseys_pricing_quantity_last_sync_count', (int) $rows_changed_total);
 
-        // Optional extra visibility: matched rows total (not required, but helpful).
-        update_option(
-            'fflhub_lipseys_pricing_quantity_last_sync_matched_count',
-            (int) $rows_matched_total
-        );
+        // Optional extra visibility: matched rows total.
+        update_option('fflhub_lipseys_pricing_quantity_last_sync_matched_count', (int) $rows_matched_total);
 
-        $log_timing('Total cron run', $t_start);
-
-        $mem_end = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
-        if ($mem_start > 0 && $mem_end > 0) {
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][Lipsey's Inventory Cron] Memory usage summary: start=%d KB, end=%d KB, delta=%+d KB",
-                    (int) round($mem_start / 1024),
-                    (int) round($mem_end / 1024),
-                    (int) round(($mem_end - $mem_start) / 1024)
-                )
-            );
-        }
-
-        $this->log_debug(
-            sprintf(
-                "[FFLHub][Lipsey's Inventory Cron] ---- RUN END (SUCCESS, changed_rows_total %d (matched %d) across %d items) ----",
-                (int) $rows_changed_total,
-                (int) $rows_matched_total,
-                (int) $items_count
-            )
-        );
+        $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
+            'items'              => (int) $items_count,
+            'normalized_rows'    => (int) count($rows),
+            'matched_rows_total' => (int) $rows_matched_total,
+            'changed_rows_total' => (int) $rows_changed_total,
+            'batches'            => (int) $batch_count,
+        ]);
     }
 
     /**
@@ -453,7 +435,7 @@ final class LipseysInventoryCronService extends AbstractTableCronService
      * Count how many rows in the LIVE table match the given lipseys_item_number list.
      * This is "matched rows" (truth), separate from "changed rows" returned by UPDATE.
      *
-     * @param string        $table_name
+     * @param string            $table_name
      * @param array<int,string> $ids Raw (unescaped) item numbers
      */
     private function count_lipseys_matched_rows(string $table_name, array $ids): int
@@ -485,7 +467,7 @@ final class LipseysInventoryCronService extends AbstractTableCronService
 
     private function to_int_or_null(array $item, string $key): ?int
     {
-        if (! isset($item[$key])) {
+        if (!isset($item[$key])) {
             return null;
         }
         $val = $item[$key];
@@ -494,7 +476,7 @@ final class LipseysInventoryCronService extends AbstractTableCronService
 
     private function to_decimal_or_null(array $item, string $key): ?float
     {
-        if (! isset($item[$key])) {
+        if (!isset($item[$key])) {
             return null;
         }
         $val = $item[$key];
@@ -503,7 +485,7 @@ final class LipseysInventoryCronService extends AbstractTableCronService
 
     private function to_bool_flag(array $item, string $key): int
     {
-        if (! isset($item[$key])) {
+        if (!isset($item[$key])) {
             return 0;
         }
 
@@ -525,15 +507,55 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         return 0;
     }
 
-    /**
-     * All cron logging (including "ERROR: ...") is gated behind this constant.
-     */
-    private function log_debug(string $message): void
+    // --------------------------------------------------
+    // Debug / profiling helpers (DebugLogUtil)
+    // --------------------------------------------------
+
+    /** @param array<string,mixed> $ctx */
+    private function log(string $msg, array $ctx = []): void
     {
-        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
+        if (empty($ctx)) {
+            DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $msg);
             return;
         }
 
-        error_log($message);
+        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $msg, $ctx);
+    }
+
+    /** @param array<string,mixed> $ctx */
+    private function profile(string $label, float $t0, array $ctx = []): void
+    {
+        $elapsed_ms = (microtime(true) - $t0) * 1000.0;
+
+        $ctx = array_merge($ctx, [
+            // string avoids float-repr noise like 0.28999999998
+            'elapsed_ms' => number_format($elapsed_ms, 2, '.', ''),
+        ]);
+
+        $this->log("PROFILE: {$label}", $ctx);
+    }
+
+    /** @param array<string,mixed> $ctx */
+    private function finalize_run(float $t_start, int $mem_start, string $status, array $ctx = []): void
+    {
+        $this->profile('Total cron run', $t_start, [
+            'status' => (string) $status,
+        ]);
+
+        $mem_end = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+
+        if ($mem_start > 0 && $mem_end > 0) {
+            $this->log('Memory usage summary', [
+                'start_kb' => (int) round($mem_start / 1024),
+                'end_kb'   => (int) round($mem_end / 1024),
+                'delta_kb' => (int) round(($mem_end - $mem_start) / 1024),
+            ]);
+        }
+
+        if (!empty($ctx)) {
+            $this->log("---- RUN END ({$status}) ----", $ctx);
+        } else {
+            $this->log("---- RUN END ({$status}) ----");
+        }
     }
 }

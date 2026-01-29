@@ -9,7 +9,7 @@ if (!defined('ABSPATH')) {
 /**
  * Represents a row from the Order Placement Jobs table (fflhub_place_jobs).
  *
- * PHP 7 compatible: no enums, no typed properties beyond scalar/property types.
+ * PHP 7 compatible.
  */
 final class OrderPlacementJobRow
 {
@@ -54,8 +54,14 @@ final class OrderPlacementJobRow
     public ?string $shipping_weight;
     public ?string $shipment_raw_json;
 
+
+
+    /** @var array<string,mixed>|null */
+    private $payload_cache = null;
     /**
      * Construct from a DB row (ARRAY_A).
+     *
+     * @param array<string,mixed> $row
      */
     public function __construct(array $row)
     {
@@ -99,9 +105,16 @@ final class OrderPlacementJobRow
         $this->shipment_raw_json = self::norm_nullable_string($row['shipment_raw_json'] ?? null);
     }
 
+    /* ===================== Convenience booleans ===================== */
+
     public function is_ffl_bucket(): bool
     {
         return strtolower(trim($this->bucket)) === 'ffl';
+    }
+
+    public function is_non_ffl_bucket(): bool
+    {
+        return strtolower(trim($this->bucket)) === 'non';
     }
 
     public function has_merchant_po(): bool
@@ -109,31 +122,180 @@ final class OrderPlacementJobRow
         return $this->merchant_po !== null && $this->merchant_po !== '';
     }
 
+    public function has_external_order_id(): bool
+    {
+        return $this->external_order_id !== null && $this->external_order_id !== '';
+    }
+
+    public function has_tracking(): bool
+    {
+        return !empty($this->tracking_numbers());
+    }
+
+    public function is_shipped(): bool
+    {
+        return $this->has_tracking() || $this->has_shipped_at();
+    }
+
+
+    public function primary_tracking(): string
+    {
+        $t = $this->tracking_numbers();
+        return !empty($t) ? (string) $t[0] : '';
+    }
+
+    /* ===================== Payload helpers ===================== */
+
+    /**
+     * @return array<string,mixed>
+     */
     public function payload(): array
     {
+        if ($this->payload_cache !== null) {
+            return $this->payload_cache;
+        }
         $a = json_decode($this->payload_json, true);
-        return is_array($a) ? $a : [];
+        $this->payload_cache = is_array($a) ? $a : [];
+        return $this->payload_cache;
     }
 
+    public function payload_dist_id(): string
+    {
+        $p = $this->payload();
+        $v = isset($p['dist_id']) ? strtolower(trim((string) $p['dist_id'])) : '';
+        return $v !== '' ? $v : strtolower(trim((string) $this->dist_id));
+    }
+
+    public function payload_bucket(): string
+    {
+        $p = $this->payload();
+        $v = isset($p['bucket']) ? strtolower(trim((string) $p['bucket'])) : '';
+        return $v !== '' ? $v : strtolower(trim((string) $this->bucket));
+    }
+
+    /**
+     * Convert payload['lines'] into DistributorOrderLine[]
+     *
+     * @return DistributorOrderLine[]
+     */
+    public function payload_lines(): array
+    {
+        $p = $this->payload();
+        $bucket = $this->payload_bucket();
+        $ffl_required = ($bucket === 'ffl');
+
+        $lines = $p['lines'] ?? [];
+        if (!is_array($lines) || empty($lines)) return [];
+
+        $out = [];
+        foreach ($lines as $line) {
+            if (!is_array($line)) continue;
+
+            $upc_raw = isset($line['upc']) ? trim((string) $line['upc']) : '';
+            $upc = self::digits_only($upc_raw);
+            if ($upc === '') continue;
+
+            $qty = isset($line['qty']) ? (int) $line['qty'] : 0;
+            $qty = max(1, $qty);
+
+            $out[] = new DistributorOrderLine($upc, $qty, $ffl_required);
+        }
+
+        return $out;
+    }
+
+    private static function digits_only(string $value): string
+    {
+        $value = trim((string) $value);
+        if ($value !== '' && ctype_digit($value)) return $value;
+        $v = preg_replace('/\D+/', '', $value);
+        return is_string($v) ? $v : '';
+    }
+
+
+    /* ===================== JSON list fields ===================== */
+
+    /** @return string[] */
     public function tracking_numbers(): array
     {
-        if (!$this->tracking_numbers_json) return [];
-        $a = json_decode($this->tracking_numbers_json, true);
-        return is_array($a) ? $a : [];
+        return self::decode_string_list_json($this->tracking_numbers_json);
     }
 
+    /** @return string[] */
     public function invoice_numbers(): array
     {
-        if (!$this->invoice_numbers_json) return [];
-        $a = json_decode($this->invoice_numbers_json, true);
-        return is_array($a) ? $a : [];
+        return self::decode_string_list_json($this->invoice_numbers_json);
     }
 
+    /** @return string[] */
     public function external_order_ids(): array
     {
-        if (!$this->external_order_ids_json) return [];
-        $a = json_decode($this->external_order_ids_json, true);
-        return is_array($a) ? $a : [];
+        return self::decode_string_list_json($this->external_order_ids_json);
+    }
+
+    /** @return string[] */
+    public function last_codes(): array
+    {
+        return self::decode_string_list_json($this->last_codes_json);
+    }
+
+    /* ===================== JSON blobs ===================== */
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    public function shipment_raw(): ?array
+    {
+        if (!$this->shipment_raw_json) return null;
+        $a = json_decode($this->shipment_raw_json, true);
+        return is_array($a) ? $a : null;
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    public function validate_snapshot(): ?array
+    {
+        if (!$this->validate_result_json) return null;
+        $a = json_decode($this->validate_result_json, true);
+        return is_array($a) ? $a : null;
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    public function place_snapshot(): ?array
+    {
+        if (!$this->place_result_json) return null;
+        $a = json_decode($this->place_result_json, true);
+        return is_array($a) ? $a : null;
+    }
+
+    /* ===================== Internal helpers ===================== */
+
+    /** @return string[] */
+    private static function decode_string_list_json(?string $json): array
+    {
+        if (!is_string($json) || trim($json) === '') return [];
+
+        $a = json_decode($json, true);
+        if (!is_array($a)) return [];
+
+        $out = [];
+        foreach ($a as $v) {
+            $s = trim((string) $v);
+            if ($s !== '') $out[] = $s;
+        }
+
+        // unique + preserve order
+        $set = [];
+        $uniq = [];
+        foreach ($out as $s) {
+            if (isset($set[$s])) continue;
+            $set[$s] = true;
+            $uniq[] = $s;
+        }
+        return $uniq;
     }
 
     private static function norm_nullable_string($v): ?string
@@ -147,7 +309,8 @@ final class OrderPlacementJobRow
     {
         if ($v === null) return null;
         if ($v === '') return null;
-        return (int) $v;
+        $i = (int) $v;
+        return $i > 0 ? $i : null;
     }
 
     private static function norm_mysql_datetime($v): ?string
@@ -156,5 +319,88 @@ final class OrderPlacementJobRow
         $s = trim((string) $v);
         if ($s === '' || $s === self::ZERO_DATE) return null;
         return $s;
+    }
+
+
+    public function job_key_norm(): string
+    {
+        return strtolower(trim((string) $this->job_key));
+    }
+
+    public function dist_id_norm(): string
+    {
+        $v = strtolower(trim((string) $this->dist_id));
+        return $v !== '' ? $v : $this->payload_dist_id();
+    }
+
+    public function bucket_norm(): string
+    {
+        $v = strtolower(trim((string) $this->bucket));
+        return $v !== '' ? $v : $this->payload_bucket();
+    }
+
+    public function merchant_po_or_empty(): string
+    {
+        return trim((string) ($this->merchant_po ?? ''));
+    }
+
+    public function external_order_id_or_empty(): string
+    {
+        return trim((string) ($this->external_order_id ?? ''));
+    }
+
+    public function shipping_service_or_empty(): string
+    {
+        return trim((string) ($this->shipping_service ?? ''));
+    }
+
+    public function shipping_weight_or_empty(): string
+    {
+        return trim((string) ($this->shipping_weight ?? ''));
+    }
+
+    public function has_shipped_at(): bool
+    {
+        return $this->shipped_at !== null && $this->shipped_at !== '';
+    }
+
+    public function shipped_at_or_empty(): string
+    {
+        return (string) ($this->shipped_at ?? '');
+    }
+
+    public function ffl_required(): bool
+    {
+        return $this->payload_bucket() === 'ffl';
+    }
+
+    /** @return int */
+    public function payload_lines_count(): int
+    {
+        $lines = $this->payload_lines();
+        return is_array($lines) ? count($lines) : 0;
+    }
+
+    /**
+     * Build a small, stable context payload for snapshots/logging.
+     *
+     * If $attempt_n is omitted (null), uses the attempts value already on this row.
+     *
+     * @param int|null $attempt_n Attempt number for the current run (optional).
+     * @return array<string,mixed>
+     */
+    public function ctx(?int $attempt_n = null): array
+    {
+        $attempt = ($attempt_n === null) ? (int) $this->attempts : (int) $attempt_n;
+
+        return [
+            'order_id' => (int) $this->order_id,
+            'job_id'   => (int) $this->id,
+            'job_key'  => (string) $this->job_key_norm(),
+            'dist_id'  => (string) $this->dist_id_norm(),
+            'bucket'   => (string) $this->bucket_norm(),
+            'lines'    => (int) $this->payload_lines_count(),
+            'attempt'  => $attempt,
+        ];
     }
 }

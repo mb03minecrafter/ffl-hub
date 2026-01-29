@@ -10,7 +10,7 @@ use FFLHub\Product\ProductMeta;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Settings\Options;
 use FFLHub\Plugin;
-
+use FFLHub\Util\DebugLogUtil;
 use WP_Error;
 use WC_Product_Simple;
 use WP_Query;
@@ -269,38 +269,73 @@ class DistributorProductHelper
 
     /**
      * Sync-time update of LAST_* snapshot meta.
+     *
+     * Returns true if ANY snapshot/meta value changed (excluding LAST_SYNC).
      */
     public static function update_fflhub_meta_from_payload_for_sync(
         WC_Product_Simple $product,
         string $selected_dist_id,
         DistributorProductPayload $selected_product,
         float $recommended_price
-    ): void {
+    ): bool {
+        $changed = false;
+
         $dealer_price = $selected_product->price;
         $true_cost    = $selected_product->true_cost;
 
-        $map      = $selected_product->map;
-        $msrp     = $selected_product->msrp;
+        $map       = $selected_product->map;
+        $msrp      = $selected_product->msrp;
         $ship_cost = $selected_product->shipping_cost ?? null;
 
-        // (9) CHANGED: also sync ffl_required so the snapshot stays accurate
-        $ffl_required = $selected_product->ffl_required;
+        $ffl_required = $selected_product->ffl_required ? 1 : 0;
 
-        $product->update_meta_data(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id);
+        // Helper: only update meta if different (string-compare to avoid float noise)
+        $set_meta_if_diff = function (string $key, $new_val, int $precision = 4) use ($product, &$changed): void {
+            $normalize = function ($v) use ($precision): string {
+                if ($v === null) {
+                    return '';
+                }
 
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_TRUE_COST_META, $true_cost);
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price);
+                if (is_bool($v)) {
+                    return $v ? '1' : '0';
+                }
 
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_MAP_META, $map);
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp);
+                // Handle numeric strings too
+                if (is_int($v) || is_float($v) || (is_string($v) && is_numeric($v))) {
+                    return (string) wc_format_decimal((float) $v, $precision);
+                }
 
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended_price);
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost);
+                // Strings: trim for stability
+                return trim((string) $v);
+            };
 
-        $product->update_meta_data(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required ? 1 : 0);
+            $new_norm = $normalize($new_val);
+            $cur_norm = $normalize($product->get_meta($key, true));
 
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
+            if ($cur_norm !== $new_norm) {
+                DebugLogUtil::log_ctx('FFLHUB_CRON_DEBUG', "TEST", 'Meta changed', [
+                    'product_id' => $product->get_id(),
+                    'key'        => $key,
+                    'cur'        => $cur_norm,
+                    'new'        => $new_norm,
+                ]);
+                $product->update_meta_data($key, $new_norm);
+                $changed = true;
+            }
+        };
+
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_TRUE_COST_META, $true_cost, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_MAP_META, $map, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended_price, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id, 0); // precision ignored for strings
+        $set_meta_if_diff(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required, 0);
+
+        return $changed;
     }
+
 
     /**
      * G) Import images from all distributors (selected distributor marked primary).
@@ -626,10 +661,4 @@ class DistributorProductHelper
         }
         error_log($message);
     }
-
-
-
-
-
-    
 }

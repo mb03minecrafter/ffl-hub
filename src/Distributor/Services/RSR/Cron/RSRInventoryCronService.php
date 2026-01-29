@@ -2,7 +2,7 @@
 
 namespace FFLHub\Distributor\Services\RSR\Cron;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
@@ -10,6 +10,7 @@ use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Distributor\Services\RSR\RSRFTPService;
 use FFLHub\Settings\Options;
+use FFLHub\Util\DebugLogUtil;
 
 /**
  * Cron job for real-time inventory updates using RSR's IM-QTY-CSV.csv file.
@@ -21,11 +22,20 @@ use FFLHub\Settings\Options;
  */
 final class RSRInventoryCronService extends AbstractTableCronService
 {
-
     /**
      * Cron hook name for RSR inventory refresh.
      */
     public const CRON_HOOK = 'fflhub_rsr_pricing_quantity_update';
+
+    /**
+     * Debug gate constant (define('FFLHUB_CRON_DEBUG', true);).
+     */
+    private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
+
+    /**
+     * Log prefix.
+     */
+    private const LOG_PREFIX = '[FFLHUB][RSRInventoryCron]';
 
     /**
      * Inject the double-buffered fulfillment table.
@@ -43,8 +53,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
         return self::CRON_HOOK;
     }
 
-    
-
     /**
      * Interval length in seconds.
      */
@@ -52,7 +60,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
     {
         return 5 * MINUTE_IN_SECONDS;
     }
-
 
     public function get_action_group(): string
     {
@@ -75,61 +82,53 @@ final class RSRInventoryCronService extends AbstractTableCronService
     public function run(): void
     {
         $t_start   = microtime(true);
-        $mem_start = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
+        $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
-        $log_timing = function (string $label, float $t0) use ($t_start): void {
-            $elapsed_ms = (microtime(true) - $t0) * 1000;
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][RSR Inventory Cron] %s took %.2f ms",
-                    $label,
-                    $elapsed_ms
-                )
-            );
-        };
-
-        $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN START ----");
-
-        if ($mem_start > 0) {
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][RSR Inventory Cron] PHP PID=%d, memory_start=%d KB",
-                    function_exists('getmypid') ? getmypid() : 0,
-                    (int) round($mem_start / 1024)
-                )
-            );
-        }
+        $this->log('---- RUN START ----', [
+            'pid'          => function_exists('getmypid') ? (int) getmypid() : 0,
+            'memory_kb'    => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
+            'hook'         => self::CRON_HOOK,
+            'group'        => $this->get_action_group(),
+            'interval_sec' => $this->get_interval_seconds(),
+        ]);
 
         // 0) Get FTP credentials.
         $t_creds = microtime(true);
         $creds   = $this->get_ftp_credentials();
 
-        if (! is_array($creds)) {
-            $log_timing('Credentials retrieval (failed)', $t_creds);
-            $log_timing('Total cron run (credentials failed)', $t_start);
-            $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----");
+        $this->profile('Credentials retrieval', $t_creds, [
+            'ok'      => is_array($creds),
+            'has_host'=> is_array($creds) ? (bool) ($creds['host'] ?? '') : false,
+            'has_user'=> is_array($creds) ? (bool) ($creds['username'] ?? '') : false,
+            'has_ssl' => is_array($creds) ? (bool) ($creds['use_ssl'] ?? false) : false,
+        ]);
+
+        if (!is_array($creds)) {
+            $this->finalize_run($t_start, $mem_start, 'ERROR (missing credentials)');
             return;
         }
 
-        $log_timing('Credentials retrieval', $t_creds);
-
-        $host     = $creds['host'];
-        $username = $creds['username'];
-        $password = $creds['password'];
-        $use_ssl  = $creds['use_ssl'];
+        $host     = (string) $creds['host'];
+        $username = (string) $creds['username'];
+        $password = (string) $creds['password'];
+        $use_ssl  = (bool) $creds['use_ssl'];
 
         // Local path for the quantity file.
         $uploads  = wp_upload_dir();
         $base_dir = trailingslashit($uploads['basedir']) . 'fflhub-rsr';
 
-        if (! wp_mkdir_p($base_dir)) {
-            $this->log_debug("[FFLHub][RSR Inventory Cron] ERROR: failed to create base directory " . $base_dir);
-            $log_timing('Total cron run (mkdir failed)', $t_start);
-            $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----");
+        $t_paths = microtime(true);
+
+        if (!wp_mkdir_p($base_dir)) {
+            $this->log('ERROR: failed to create base directory', [
+                'base_dir' => (string) $base_dir,
+            ]);
+            $this->profile('Prepare local paths (mkdir failed)', $t_paths);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (mkdir failed)');
             return;
         }
 
@@ -139,28 +138,46 @@ final class RSRInventoryCronService extends AbstractTableCronService
         // Remote path on RSR FTP.
         $remote_path = '/ftpdownloads/IM-QTY-CSV.csv';
 
+        $this->profile('Prepare local paths', $t_paths, [
+            'base_dir'     => (string) $base_dir,
+            'remote_csv'   => (string) $remote_path,
+            'local_csv'    => (string) $local_path,
+            'live_table'   => (string) $this->table->get_live_table_name(),
+        ]);
+
         // 1) Download the file via FTP.
         $t_ftp = microtime(true);
 
         $ftp = new RSRFTPService($host, $username, $password, $use_ssl);
-        if (! $ftp->is_connected()) {
+        if (!$ftp->is_connected()) {
             update_option('fflhub_rsr_inventory_last_download_error', current_time('mysql'));
-            $this->log_debug("[FFLHub][RSR Inventory Cron] ERROR: FTP connection not available.");
-            $log_timing('FTP connection (failed)', $t_ftp);
-            $log_timing('Total cron run (FTP connection failed)', $t_start);
-            $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: FTP connection not available.', [
+                'host'    => $host,
+                'use_ssl' => $use_ssl ? 1 : 0,
+            ]);
+            $this->profile('FTP connection (failed)', $t_ftp);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (FTP connection failed)');
             return;
         }
 
+        $csv_kb_before = file_exists($local_path) ? (int) round(((int) filesize($local_path)) / 1024) : 0;
+
         $ok = $ftp->download_file($remote_path, $local_path);
 
-        $log_timing('FTP download', $t_ftp);
+        $csv_kb_after = file_exists($local_path) ? (int) round(((int) filesize($local_path)) / 1024) : 0;
 
-        if (! $ok) {
+        $this->profile('FTP download', $t_ftp, [
+            'ok'            => $ok ? 1 : 0,
+            'csv_kb_before' => (int) $csv_kb_before,
+            'csv_kb_after'  => (int) $csv_kb_after,
+        ]);
+
+        if (!$ok) {
             update_option('fflhub_rsr_inventory_last_download_error', current_time('mysql'));
-            $this->log_debug("[FFLHub][RSR Inventory Cron] ERROR: FTP download failed for " . $remote_path);
-            $log_timing('Total cron run (download failed)', $t_start);
-            $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: FTP download failed', [
+                'remote_csv' => (string) $remote_path,
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (download failed)');
             return;
         }
 
@@ -169,108 +186,116 @@ final class RSRInventoryCronService extends AbstractTableCronService
 
         // 2) Apply inventory updates to live table.
         $t_apply = microtime(true);
+
         $processed_rows = 0;
+        $apply_stats    = [];
 
         try {
-            $processed_rows = $this->apply_inventory_updates_from_file($local_path);
+            // returns ['processed_rows'=>int,'input_rows'=>int,'batches'=>int,'parse_ms'=>float,'db_flush_ms'=>float,'total_ms'=>float]
+            $apply_stats = $this->apply_inventory_updates_from_file_profiled($local_path);
+            $processed_rows = (int) ($apply_stats['processed_rows'] ?? 0);
         } catch (\Throwable $e) {
-            $this->log_debug("[FFLHub][RSR Inventory Cron] ERROR: exception applying inventory updates: " . $e->getMessage());
-            $log_timing('Apply inventory updates (failed)', $t_apply);
-            $log_timing('Total cron run (apply failed)', $t_start);
-            $this->log_debug("[FFLHub][RSR Inventory Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: exception applying inventory updates', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->profile('Apply inventory updates (failed)', $t_apply);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (apply failed)');
             return;
         }
 
-        $log_timing('Apply inventory updates', $t_apply);
+        $this->profile('Apply inventory updates', $t_apply, $apply_stats);
 
         update_option('fflhub_rsr_inventory_last_update', current_time('mysql'));
-        update_option('fflhub_rsr_inventory_last_update_count', $processed_rows);
+        update_option('fflhub_rsr_inventory_last_update_count', (int) $processed_rows);
 
-        $log_timing('Total cron run', $t_start);
-
-        $mem_end = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
-        if ($mem_start > 0 && $mem_end > 0) {
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][RSR Inventory Cron] Memory usage summary: start=%d KB, end=%d KB, delta=%+d KB",
-                    (int) round($mem_start / 1024),
-                    (int) round($mem_end / 1024),
-                    (int) round(($mem_end - $mem_start) / 1024)
-                )
-            );
-        }
-
-        $this->log_debug(
-            sprintf(
-                "[FFLHub][RSR Inventory Cron] ---- RUN END (SUCCESS, processed %d input rows) ----",
-                (int) $processed_rows
-            )
-        );
+        $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
+            'processed_rows' => (int) $processed_rows,
+        ]);
     }
 
-
     /**
-     * Parse IM-QTY-CSV.csv and update inventory_quantity for rows in the live table.
+     * Profiled wrapper around the existing apply logic.
      *
-     * Actual format (from sample):
-     *   17912WH-1-SBL-R,0000012
-     *   17913WH-1-SBL-A,0000011
-     *   ...
-     *
-     * No header line, comma-separated, 2 columns:
-     *   [0] RSR Stock Number (rsr_stock_number)
-     *   [1] Quantity (zero-padded string)
-     *
-     * @param string $file_path
-     * @return int Number of input rows processed (not exact DB rows changed).
+     * @return array<string,mixed>
      */
-    protected function apply_inventory_updates_from_file(string $file_path): int
+    private function apply_inventory_updates_from_file_profiled(string $file_path): array
     {
         global $wpdb;
 
-        $t_start       = microtime(true);
+        $t_start = microtime(true);
+
         $t_parse_total = 0.0;
         $t_flush_total = 0.0;
 
-        if (! file_exists($file_path) || ! is_readable($file_path)) {
-            $this->log_debug("[FFLHub][RSR Inventory Cron] IM-QTY-CSV file missing or unreadable at " . $file_path);
-            return 0;
+        if (!file_exists($file_path) || !is_readable($file_path)) {
+            $this->log('ERROR: IM-QTY-CSV file missing or unreadable', [
+                'file_path' => (string) $file_path,
+            ]);
+            return [
+                'processed_rows' => 0,
+                'input_rows'     => 0,
+                'batches'        => 0,
+                'parse_ms'       => '0.00',
+                'db_flush_ms'    => '0.00',
+                'total_ms'       => '0.00',
+            ];
         }
 
-        $live_table = $this->table->get_live_table_name();
+        $live_table = (string) $this->table->get_live_table_name();
+        if ($live_table === '') {
+            $this->log('ERROR: could not resolve live table name');
+            return [
+                'processed_rows' => 0,
+                'input_rows'     => 0,
+                'batches'        => 0,
+                'parse_ms'       => '0.00',
+                'db_flush_ms'    => '0.00',
+                'total_ms'       => '0.00',
+            ];
+        }
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
         $handle = fopen($file_path, 'r');
-        if (! $handle) {
-            $this->log_debug("[FFLHub][RSR Inventory Cron] could not fopen " . $file_path);
-            return 0;
+        if (!$handle) {
+            $this->log('ERROR: could not fopen file', [
+                'file_path' => (string) $file_path,
+            ]);
+            return [
+                'processed_rows' => 0,
+                'input_rows'     => 0,
+                'batches'        => 0,
+                'parse_ms'       => '0.00',
+                'db_flush_ms'    => '0.00',
+                'total_ms'       => '0.00',
+            ];
         }
 
-        $total_rows    = 0;      // input rows processed (matches your existing semantics)
-        $batch_size    = 200;
-        $batch_updates = array();
+        $input_rows     = 0; // raw lines that parse into an update row
+        $batch_size     = 200;
+        $batch_updates  = [];
+        $flushes        = 0;
 
         $wpdb->query('START TRANSACTION');
 
         try {
-            $flush_batch = function () use (&$batch_updates, &$total_rows, $live_table, $wpdb, &$t_flush_total) {
+            $flush_batch = function () use (&$batch_updates, $live_table, $wpdb, &$t_flush_total, &$input_rows, &$flushes): void {
                 if (empty($batch_updates)) {
                     return;
                 }
 
                 $t0 = microtime(true);
 
-                $when_sql        = array();
-                $case_values     = array();
-                $in_placeholders = array();
-                $in_values       = array();
+                $when_sql        = [];
+                $case_values     = [];
+                $in_placeholders = [];
+                $in_values       = [];
 
                 foreach ($batch_updates as $row) {
-                    $rsr_stock_number = $row['rsr_stock_number'];
-                    $qty_str          = $row['qty'];
+                    $rsr_stock_number = (string) $row['rsr_stock_number'];
+                    $qty_str          = (string) $row['qty'];
 
                     $when_sql[]    = 'WHEN %s THEN %s';
                     $case_values[] = $rsr_stock_number;
@@ -294,13 +319,13 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 $result   = $wpdb->query($prepared);
 
                 if ($result === false) {
-                    // Let caller decide whether to rollback; throwing here keeps the transaction safe.
                     throw new \RuntimeException('batch UPDATE failed: ' . (string) $wpdb->last_error);
                 }
 
-                $total_rows   += count($batch_updates);
-                $batch_updates = array();
+                $input_rows += count($batch_updates);
+                $batch_updates = [];
 
+                $flushes++;
                 $t_flush_total += (microtime(true) - $t0);
             };
 
@@ -334,12 +359,10 @@ final class RSRInventoryCronService extends AbstractTableCronService
                     $qty_int = ($digits === '') ? 0 : (int) $digits;
                 }
 
-                $qty_str = (string) $qty_int;
-
-                $batch_updates[] = array(
+                $batch_updates[] = [
                     'rsr_stock_number' => $rsr_stock_number_raw,
-                    'qty'              => $qty_str,
-                );
+                    'qty'              => (string) $qty_int,
+                ];
 
                 $t_parse_total += (microtime(true) - $t0);
 
@@ -357,27 +380,30 @@ final class RSRInventoryCronService extends AbstractTableCronService
         } catch (\Throwable $e) {
             fclose($handle);
             $wpdb->query('ROLLBACK');
-            $this->log_debug("[FFLHub][RSR Inventory Cron] ERROR: rolled back transaction: " . $e->getMessage());
+            $this->log('ERROR: rolled back transaction', [
+                'error' => $e->getMessage(),
+            ]);
             throw $e;
         }
 
-        $t_total_ms = (microtime(true) - $t_start) * 1000;
-        $t_parse_ms = $t_parse_total * 1000;
-        $t_flush_ms = $t_flush_total * 1000;
+        $t_total_ms = (microtime(true) - $t_start) * 1000.0;
 
-        $this->log_debug(
-            sprintf(
-                '[FFLHub][RSR Inventory Cron] apply_inventory_updates_from_file(): total=%.2f ms, parse=%.2f ms, db_flush=%.2f ms, input_rows=%d',
-                $t_total_ms,
-                $t_parse_ms,
-                $t_flush_ms,
-                $total_rows
-            )
-        );
+        $stats = [
+            // keep prior semantics: "processed_rows" = input rows processed (not DB changed)
+            'processed_rows' => (int) $input_rows,
+            'input_rows'     => (int) $input_rows,
+            'batch_size'     => (int) $batch_size,
+            'batches'        => (int) $flushes,
+            'parse_ms'       => number_format($t_parse_total * 1000.0, 2, '.', ''),
+            'db_flush_ms'    => number_format($t_flush_total * 1000.0, 2, '.', ''),
+            'total_ms'       => number_format($t_total_ms, 2, '.', ''),
+        ];
 
-        return $total_rows;
+        // Keep existing detailed log too (useful if you grep legacy logs)
+        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, 'PROFILE: apply_inventory_updates_from_file() breakdown', $stats);
+
+        return $stats;
     }
-
 
     /**
      * Retrieve and validate FTP credentials from RSR distributor settings.
@@ -394,37 +420,77 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $password  = Options::get_distributor_option('rsr', 'ftp_password', '');
         $use_ssl_s = Options::get_distributor_option('rsr', 'ftp_use_ssl', '');
 
-        $host     = trim($host);
-        $username = trim($username);
-        $password = trim($password);
+        $host     = trim((string) $host);
+        $username = trim((string) $username);
+        $password = trim((string) $password);
         $use_ssl  = ($use_ssl_s !== '');
 
         if ($host === '' || $username === '' || $password === '') {
-            $this->log_debug(
-                sprintf(
-                    '[FFLHub][RSR Inventory Cron] Missing FTP credentials (host: %s, user: %s).',
-                    $host !== '' ? 'set' : 'empty',
-                    $username !== '' ? 'set' : 'empty'
-                )
-            );
+            $this->log('Missing FTP credentials', [
+                'host' => $host !== '' ? 'set' : 'empty',
+                'user' => $username !== '' ? 'set' : 'empty',
+            ]);
             return null;
         }
 
-        return array(
+        return [
             'host'     => $host,
             'username' => $username,
             'password' => $password,
             'use_ssl'  => $use_ssl,
-        );
+        ];
     }
 
+    // --------------------------------------------------
+    // Debug / profiling helpers (DebugLogUtil)
+    // --------------------------------------------------
 
-    private function log_debug(string $message): void
+    /** @param array<string,mixed> $ctx */
+    private function log(string $msg, array $ctx = []): void
     {
-        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
+        if (empty($ctx)) {
+            DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $msg);
             return;
         }
 
-        error_log($message);
+        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $msg, $ctx);
     }
+
+    /** @param array<string,mixed> $ctx */
+    private function profile(string $label, float $t0, array $ctx = []): void
+    {
+        $elapsed_ms = (microtime(true) - $t0) * 1000.0;
+
+        $ctx = array_merge($ctx, [
+            'elapsed_ms' => number_format($elapsed_ms, 2, '.', ''),
+        ]);
+
+        $this->log("PROFILE: {$label}", $ctx);
+    }
+
+    /** @param array<string,mixed> $ctx */
+    private function finalize_run(float $t_start, int $mem_start, string $status, array $ctx = []): void
+    {
+        $this->profile('Total cron run', $t_start, [
+            'status' => (string) $status,
+        ]);
+
+        $mem_end = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+
+        if ($mem_start > 0 && $mem_end > 0) {
+            $this->log('Memory usage summary', [
+                'start_kb' => (int) round($mem_start / 1024),
+                'end_kb'   => (int) round($mem_end / 1024),
+                'delta_kb' => (int) round(($mem_end - $mem_start) / 1024),
+            ]);
+        }
+
+        if (!empty($ctx)) {
+            $this->log("---- RUN END ({$status}) ----", $ctx);
+        } else {
+            $this->log("---- RUN END ({$status}) ----");
+        }
+    }
+
+    
 }

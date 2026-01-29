@@ -2,18 +2,29 @@
 
 namespace FFLHub\Distributor\Services\Orders\Shipping;
 
+use WC_Order;
+
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
+
 use FFLHub\Distributor\Services\Orders\OrderPlacementKeys;
-use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
-use FFLHub\Distributor\Registry\DistributorRegistry;
+
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\PartialShipmentEmailContext;
-use FFLHub\Distributor\Services\Orders\OrderPlacementJobsStore;
+use FFLHub\Distributor\Models\DistributorOrderLine;
+
 use FFLHub\Distributor\Services\Orders\OrderTrashJobsService;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
+use FFLHub\Distributor\Services\Orders\Shipping\OrderPlacementShippingJobStore;
+
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
+
 use FFLHub\Plugin;
 use FFLHub\Settings\Options;
+
+use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -27,7 +38,8 @@ if (!defined('ABSPATH')) {
  */
 final class OrderPlacementShippingPollCronService extends AbstractCronService
 {
-    private const LOG_PREFIX = '[FFLHUB][ShippingPoller]';
+    private const LOG_PREFIX  = '[FFLHUB][ShippingPoller]';
+    private const DEBUG_CONST = 'FFLHUB_DEBUG_SHIPPING';
 
     /**
      * Action Scheduler hook name.
@@ -81,110 +93,273 @@ final class OrderPlacementShippingPollCronService extends AbstractCronService
      */
     public function run(): void
     {
-        // Poll spacing per row
-        $min_interval_seconds = self::JOB_MIN_POLL_INTERVAL_MINUTES * 60;
-        $cutoff_unix          = time() - $min_interval_seconds;
-        $cutoff_mysql_utc     = gmdate('Y-m-d H:i:s', $cutoff_unix);
+        $run_started = microtime(true);
 
-        $limit = self::BATCH_LIMIT;
+        // Poll spacing per row
+        $min_interval_seconds = (int) (self::JOB_MIN_POLL_INTERVAL_MINUTES * 60);
+        $cutoff_unix          = time() - max(0, $min_interval_seconds);
+        $cutoff_mysql_utc     = OrderPlacementTimeUtil::unix_to_mysql_utc($cutoff_unix);
+
+        $limit = max(1, (int) self::BATCH_LIMIT);
 
         // Optional: stop polling after X days since first shipment detected
         $max_days_after_first_ship = 14;
-        $ship_cutoff_unix      = time() - ($max_days_after_first_ship * DAY_IN_SECONDS);
-        $ship_cutoff_mysql_utc = gmdate('Y-m-d H:i:s', $ship_cutoff_unix);
+        $ship_cutoff_unix      = time() - ((int) $max_days_after_first_ship * DAY_IN_SECONDS);
+        $ship_cutoff_mysql_utc = OrderPlacementTimeUtil::unix_to_mysql_utc($ship_cutoff_unix);
 
-        $jobs = OrderPlacementJobsStore::find_jobs_for_shipping_poll(
-            OrderPlacementKeys::JOB_STATUS_SUCCESS,
-            $cutoff_mysql_utc,
-            $ship_cutoff_mysql_utc,
-            $limit
-        );
+        $this->log_ctx('run_start', [
+            'hook'                  => self::CRON_HOOK,
+            'group'                 => $this->get_action_group(),
+            'interval_seconds'      => $this->get_interval_seconds(),
+            'initial_delay_seconds' => $this->get_initial_delay_seconds(),
+            'min_poll_interval_min' => self::JOB_MIN_POLL_INTERVAL_MINUTES,
+            'poll_cutoff_mysql_utc' => $cutoff_mysql_utc,
+            'ship_cutoff_mysql_utc' => $ship_cutoff_mysql_utc,
+            'batch_limit'           => $limit,
+            'status_filter'         => OrderPlacementKeys::JOB_STATUS_SUCCESS,
+        ]);
 
-        if (empty($jobs)) {
-            $this->log_debug('no jobs eligible for shipping poll');
+        $jobs = [];
+        $repo_started = microtime(true);
+        try {
+            $jobs = OrderPlacementJobsRepository::find_jobs_for_shipping_poll(
+                OrderPlacementKeys::JOB_STATUS_SUCCESS,
+                $cutoff_mysql_utc,
+                $ship_cutoff_mysql_utc,
+                $limit
+            );
+            $this->log_ctx('repo_done', [
+                'op'      => 'find_jobs_for_shipping_poll',
+                'rows'    => is_array($jobs) ? count($jobs) : 0,
+                'repo_ms' => (int) round((microtime(true) - $repo_started) * 1000),
+            ]);
+        } catch (\Throwable $e) {
+            $this->log_ctx('repo_exception', [
+                'op'      => 'find_jobs_for_shipping_poll',
+                'err'     => $e->getMessage(),
+                'file'    => $e->getFile(),
+                'line'    => $e->getLine(),
+                'repo_ms' => (int) round((microtime(true) - $repo_started) * 1000),
+            ]);
             return;
         }
 
-        $this->log_debug(
-            sprintf(
-                'eligible jobs=%d cutoff=%s',
-                count($jobs),
-                $cutoff_mysql_utc
-            )
-        );
+        if (empty($jobs)) {
+            $this->log('no jobs eligible for shipping poll');
+            $this->log_ctx('run_finish', [
+                'eligible_jobs' => 0,
+                'elapsed_ms'    => (int) round((microtime(true) - $run_started) * 1000),
+            ]);
+            return;
+        }
+
+        $this->log_ctx('eligible_jobs', [
+            'count'  => count($jobs),
+            'cutoff' => $cutoff_mysql_utc,
+            'limit'  => $limit,
+        ]);
+
+        $stats = [
+            'total'                => 0,
+            'skipped_invalid'       => 0,
+            'skipped_suspended'     => 0,
+            'skipped_no_handler'    => 0,
+            'skipped_disabled_dist' => 0,
+            'skipped_missing_dist'  => 0,
+            'skipped_no_lookup'     => 0,
+            'skipped_no_po'         => 0,
+            'lookup_ok'             => 0,
+            'lookup_null'           => 0,
+            'lookup_exception'      => 0,
+            'persist_ok'            => 0,
+            'persist_exception'     => 0,
+            'email_fired'           => 0,
+            'order_completed'       => 0,
+        ];
 
         foreach ($jobs as $job) {
-            $order_id = (int) $job->order_id;
-            $job_key  = strtolower(trim((string) $job->job_key));
+            $job_started = microtime(true);
+            $stats['total']++;
 
-            $dist_id  = (string) $job->dist_id;
-            $bucket   = (string) $job->bucket;
+            $seg = [
+                'parse_ms'         => 0,
+                'suspended_ms'     => 0,
+                'handler_ms'       => 0,
+                'enabled_ms'       => 0,
+                'dist_lookup_ms'   => 0,
+                'touch_ms'         => 0,
+                'shipment_ms'      => 0,
+                'persist_ms'       => 0,
+                'payload_lines_ms' => 0,
+                'wc_mailer_ms'     => 0,
+                'email_ms'         => 0,
+                'all_shipped_ms'   => 0,
+                'wc_order_ms'      => 0,
+                'wc_complete_ms'   => 0,
+            ];
+
+            $order_id = (int) ($job->order_id ?? 0);
+            $job_key  = OrderPlacementKeysUtil::normalize_job_key((string) ($job->job_key ?? ''));
+
+            $dist_id  = (string) ($job->dist_id ?? '');
+            $bucket   = (string) ($job->bucket ?? '');
             $po       = (string) ($job->merchant_po ?? '');
             $ext      = (string) ($job->external_order_id ?? '');
 
+            $seg['parse_ms'] = (int) round((microtime(true) - $job_started) * 1000);
+
+            if ($order_id <= 0 || $job_key === '' || $dist_id === '') {
+                $stats['skipped_invalid']++;
+                $this->log_ctx('skip_invalid_job_row', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'bucket'   => $bucket,
+                    'po'       => $po,
+                    'external' => $ext,
+                    'segments' => $seg,
+                ]);
+                continue;
+            }
+
+            if ($po === '') {
+                $stats['skipped_no_po']++;
+                $this->log_ctx('skip_missing_po', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'bucket'   => $bucket,
+                    'external' => $ext,
+                    'segments' => $seg,
+                ]);
+                continue;
+            }
 
             // Skip trashed/suspended orders (order-level gate)
-            if (OrderTrashJobsService::is_order_suspended($order_id)) {
-                $this->log_debug("skip suspended order={$order_id} job={$job_key}");
+            $suspended_started = microtime(true);
+            $is_suspended = OrderTrashJobsService::is_order_suspended($order_id);
+            $seg['suspended_ms'] = (int) round((microtime(true) - $suspended_started) * 1000);
+
+            if ($is_suspended) {
+                $stats['skipped_suspended']++;
+                $this->log_ctx('skip_suspended_order', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'bucket'   => $bucket,
+                    'po'       => $po,
+                    'segments' => $seg,
+                ]);
                 continue;
             }
 
-
-
-            // Stamp last_shipping_poll_at now (even if we fail later)
-            OrderPlacementJobsStore::touch_last_shipping_poll_at(
-                $order_id,
-                $job_key
-            );
-
-            // ---------------- Distributor lookup (same pattern as job runner) ----------------
+            // ---------------- Distributor lookup ----------------
+            $handler_started = microtime(true);
             $handler = Plugin::instance()->distributor_handler ?? null;
+            $seg['handler_ms'] = (int) round((microtime(true) - $handler_started) * 1000);
+
             if (!($handler instanceof DistributorHandler)) {
-                $this->log_debug('distributor handler not available');
+                $stats['skipped_no_handler']++;
+                $this->log_ctx('skip_no_distributor_handler', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'segments' => $seg,
+                ]);
                 continue;
             }
 
-            if (!Options::is_distributor_enabled($dist_id)) {
-                $this->log_debug('distributor disabled: ' . $dist_id);
+            $enabled_started = microtime(true);
+            $enabled = Options::is_distributor_enabled($dist_id);
+            $seg['enabled_ms'] = (int) round((microtime(true) - $enabled_started) * 1000);
+
+            if (!$enabled) {
+                $stats['skipped_disabled_dist']++;
+                $this->log_ctx('skip_distributor_disabled', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'segments' => $seg,
+                ]);
                 continue;
             }
 
+            $dist_lookup_started = microtime(true);
             $dist = $handler->get_distributor_by_id($dist_id);
+            $seg['dist_lookup_ms'] = (int) round((microtime(true) - $dist_lookup_started) * 1000);
+
             if (!($dist instanceof DistributorBase)) {
-                $this->log_debug('distributor not found: ' . $dist_id);
+                $stats['skipped_missing_dist']++;
+                $this->log_ctx('skip_distributor_not_found', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'segments' => $seg,
+                ]);
                 continue;
             }
+
+            if (!method_exists($dist, 'get_shipment_by_po')) {
+                $stats['skipped_no_lookup']++;
+                $this->log_ctx('skip_no_shipment_lookup', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'po'       => $po,
+                    'segments' => $seg,
+                ]);
+                continue;
+            }
+
+            // At this point, we are actually going to poll → touch timestamp here (not earlier)
+            $touch_started = microtime(true);
+            try {
+                OrderPlacementShippingJobStore::touch_last_shipping_poll_at($order_id, $job_key);
+            } catch (\Throwable $e) {
+                // Non-fatal, but worth logging because it breaks pacing
+                $this->log_ctx('touch_last_poll_failed', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'err'      => $e->getMessage(),
+                ]);
+            }
+            $seg['touch_ms'] = (int) round((microtime(true) - $touch_started) * 1000);
+
+            $this->log_ctx('poll_start', [
+                'order_id' => $order_id,
+                'job_key'  => $job_key,
+                'dist_id'  => $dist_id,
+                'bucket'   => $bucket,
+                'po'       => $po,
+                'external' => $ext,
+            ]);
 
             // ---------------- Shipment lookup ----------------
-            if (!method_exists($dist, 'get_shipment_by_po')) {
-                $this->log_debug("distributor {$dist_id} does not support shipment lookup");
-                continue;
-            }
-
-            $this->log_debug(
-                sprintf(
-                    'polling shipment order=%d job=%s dist=%s po=%s external=%s',
-                    $order_id,
-                    $job_key,
-                    $dist_id,
-                    $po,
-                    $ext
-                )
-            );
+            $shipment = null;
+            $shipment_started = microtime(true);
 
             try {
                 $shipment = $dist->get_shipment_by_po($po);
+                $stats['lookup_ok']++;
             } catch (\Throwable $e) {
-                $this->log_debug(
-                    sprintf(
-                        'shipment lookup threw exception dist=%s po=%s err=%s',
-                        $dist_id,
-                        $po,
-                        $e->getMessage()
-                    )
-                );
+                $seg['shipment_ms'] = (int) round((microtime(true) - $shipment_started) * 1000);
+                $stats['lookup_exception']++;
+                $this->log_ctx('shipment_lookup_exception', [
+                    'order_id'  => $order_id,
+                    'job_key'   => $job_key,
+                    'dist_id'   => $dist_id,
+                    'po'        => $po,
+                    'err'       => $e->getMessage(),
+                    'file'      => $e->getFile(),
+                    'line'      => $e->getLine(),
+                    'segments'  => $seg,
+                    'elapsed_ms'=> (int) round((microtime(true) - $job_started) * 1000),
+                ]);
                 continue;
             }
+
+            $seg['shipment_ms'] = (int) round((microtime(true) - $shipment_started) * 1000);
 
             // TEMP TEST BLOCK — REMOVE AFTER VERIFYING EMAIL FLOW
             $shipment = new DistributorShipment(
@@ -196,22 +371,82 @@ final class OrderPlacementShippingPollCronService extends AbstractCronService
             );
 
             if (!$shipment) {
-                $this->log_debug(
-                    sprintf(
-                        'no shipment found dist=%s po=%s',
-                        $dist_id,
-                        $po
-                    )
-                );
+                $stats['lookup_null']++;
+                $this->log_ctx('no_shipment_found', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'po'       => $po,
+                    'segments' => $seg,
+                ]);
                 continue;
             }
 
-            // ---------------- Persist shipment ----------------
-            $result = OrderPlacementJobsStore::mark_job_shipped($order_id, $job_key, $shipment);
+            $this->log_ctx('shipment_found', [
+                'order_id' => $order_id,
+                'job_key'  => $job_key,
+                'dist_id'  => $dist_id,
+                'po'       => $po,
+                'has_tracking_numbers' => (property_exists($shipment, 'tracking_numbers') && is_array($shipment->tracking_numbers))
+                    ? (!empty($shipment->tracking_numbers) ? '1' : '0')
+                    : 'unknown',
+                'tracking_count' => (property_exists($shipment, 'tracking_numbers') && is_array($shipment->tracking_numbers))
+                    ? count($shipment->tracking_numbers)
+                    : null,
+                'has_invoice_numbers' => (property_exists($shipment, 'invoice_numbers') && is_array($shipment->invoice_numbers))
+                    ? (!empty($shipment->invoice_numbers) ? '1' : '0')
+                    : 'unknown',
+                'invoice_count' => (property_exists($shipment, 'invoice_numbers') && is_array($shipment->invoice_numbers))
+                    ? count($shipment->invoice_numbers)
+                    : null,
+                'segments' => $seg,
+            ]);
 
-            if ($result->has_changes()) {
+            // ---------------- Persist shipment ----------------
+            $persist_started = microtime(true);
+            try {
+                $result = OrderPlacementShippingJobStore::mark_job_shipped($order_id, $job_key, $shipment);
+                $stats['persist_ok']++;
+            } catch (\Throwable $e) {
+                $seg['persist_ms'] = (int) round((microtime(true) - $persist_started) * 1000);
+                $stats['persist_exception']++;
+                $this->log_ctx('persist_exception', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'po'       => $po,
+                    'err'      => $e->getMessage(),
+                    'file'     => $e->getFile(),
+                    'line'     => $e->getLine(),
+                    'segments' => $seg,
+                ]);
+                continue;
+            }
+            $seg['persist_ms'] = (int) round((microtime(true) - $persist_started) * 1000);
+
+            $this->log_ctx('persist_result', [
+                'order_id'    => $order_id,
+                'job_key'     => $job_key,
+                'dist_id'     => $dist_id,
+                'po'          => $po,
+                'has_changes' => method_exists($result, 'has_changes') ? ($result->has_changes() ? '1' : '0') : 'unknown',
+                'segments'    => $seg,
+            ]);
+
+            if (method_exists($result, 'has_changes') && $result->has_changes()) {
                 /** @var DistributorOrderLine[] $lines */
-                $lines = OrderPlacementJobsStore::get_job_payload_lines($order_id, $job_key);
+                $lines = [];
+                $payload_lines_started = microtime(true);
+                try {
+                    $lines = OrderPlacementJobsRepository::get_job_payload_lines($order_id, $job_key);
+                } catch (\Throwable $e) {
+                    $this->log_ctx('payload_lines_exception', [
+                        'order_id' => $order_id,
+                        'job_key'  => $job_key,
+                        'err'      => $e->getMessage(),
+                    ]);
+                }
+                $seg['payload_lines_ms'] = (int) round((microtime(true) - $payload_lines_started) * 1000);
 
                 $ctx = new PartialShipmentEmailContext(
                     $job,
@@ -221,49 +456,135 @@ final class OrderPlacementShippingPollCronService extends AbstractCronService
                 );
 
                 // ensure Woo email classes loaded
-                if (function_exists('WC') && WC()) {
-                    WC()->mailer()->get_emails();
+                $wc_mailer_started = microtime(true);
+                try {
+                    if (function_exists('WC') && WC()) {
+                        WC()->mailer()->get_emails();
+                    }
+                } catch (\Throwable $e) {
+                    $this->log_ctx('wc_mailer_exception', [
+                        'order_id' => $order_id,
+                        'job_key'  => $job_key,
+                        'err'      => $e->getMessage(),
+                    ]);
                 }
+                $seg['wc_mailer_ms'] = (int) round((microtime(true) - $wc_mailer_started) * 1000);
 
+                $this->log_ctx('email_trigger', [
+                    'hook'     => 'fflhub_trigger_partial_shipment_email',
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'lines'    => is_array($lines) ? count($lines) : 0,
+                    'segments' => $seg,
+                ]);
+
+                $email_started = microtime(true);
                 do_action('fflhub_trigger_partial_shipment_email', $order_id, $ctx);
+                $seg['email_ms'] = (int) round((microtime(true) - $email_started) * 1000);
+
+                $stats['email_fired']++;
             }
 
-            if (OrderPlacementJobsStore::are_all_success_jobs_shipped($order_id)) {
+            // Complete order if all shipped
+            $all_shipped = false;
+            $all_shipped_started = microtime(true);
+            try {
+                $all_shipped = OrderPlacementJobsRepository::are_all_success_jobs_shipped($order_id);
+            } catch (\Throwable $e) {
+                $this->log_ctx('are_all_shipped_exception', [
+                    'order_id' => $order_id,
+                    'err'      => $e->getMessage(),
+                ]);
+            }
+            $seg['all_shipped_ms'] = (int) round((microtime(true) - $all_shipped_started) * 1000);
+
+            if ($all_shipped) {
+                $wc_order_started = microtime(true);
                 $order = wc_get_order($order_id);
-                if ($order instanceof \WC_Order && $order->has_status(['processing', 'on-hold'])) {
-                    $order->update_status('completed', 'FFL Hub: all distributor jobs have tracking numbers.');
+                $seg['wc_order_ms'] = (int) round((microtime(true) - $wc_order_started) * 1000);
+
+                if ($order instanceof WC_Order) {
+                    $this->log_ctx('all_jobs_shipped', [
+                        'order_id'        => $order_id,
+                        'current_status'  => method_exists($order, 'get_status') ? (string) $order->get_status() : 'unknown',
+                        'segments'        => $seg,
+                    ]);
+
+                    if ($order->has_status(['processing', 'on-hold'])) {
+                        $complete_started = microtime(true);
+                        $order->update_status('completed', 'FFL Hub: all distributor jobs have tracking numbers.');
+                        $seg['wc_complete_ms'] = (int) round((microtime(true) - $complete_started) * 1000);
+
+                        $stats['order_completed']++;
+
+                        $this->log_ctx('order_completed', [
+                            'order_id'     => $order_id,
+                            'from_status'  => 'processing/on-hold',
+                            'to_status'    => 'completed',
+                            'segments'     => $seg,
+                        ]);
+                    } else {
+                        $this->log_ctx('order_not_completed_due_to_status', [
+                            'order_id' => $order_id,
+                            'status'   => method_exists($order, 'get_status') ? (string) $order->get_status() : 'unknown',
+                            'segments' => $seg,
+                        ]);
+                    }
+                } else {
+                    $this->log_ctx('wc_order_not_found', [
+                        'order_id' => $order_id,
+                        'segments' => $seg,
+                    ]);
                 }
+            } else {
+                $this->log_ctx('not_all_jobs_shipped', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'segments' => $seg,
+                ]);
             }
 
             $primary_tracking = method_exists($shipment, 'tracking_number')
                 ? (string) ($shipment->tracking_number() ?? '')
                 : '';
 
-            $this->log_debug(
-                sprintf(
-                    'shipment recorded dist=%s po=%s tracking=%s tracking_count=%d',
-                    $dist_id,
-                    $po,
-                    $primary_tracking,
-                    (property_exists($shipment, 'tracking_numbers') && is_array($shipment->tracking_numbers))
-                        ? count($shipment->tracking_numbers)
-                        : 0
-                )
-            );
+            $tracking_count = (property_exists($shipment, 'tracking_numbers') && is_array($shipment->tracking_numbers))
+                ? count($shipment->tracking_numbers)
+                : 0;
+
+            $this->log_ctx('poll_finish', [
+                'order_id'       => $order_id,
+                'job_key'        => $job_key,
+                'dist_id'        => $dist_id,
+                'po'             => $po,
+                'primary_track'  => $primary_tracking,
+                'tracking_count' => $tracking_count,
+                'segments'       => $seg,
+                'elapsed_ms'     => (int) round((microtime(true) - $job_started) * 1000),
+            ]);
         }
+
+        $this->log_ctx('run_finish', [
+            'eligible_jobs' => count($jobs),
+            'stats'         => $stats,
+            'elapsed_ms'    => (int) round((microtime(true) - $run_started) * 1000),
+        ]);
     }
 
+    // --------------------------------------------------
+    // Logging helpers (use DebugLogUtil)
+    // --------------------------------------------------
 
-
-
-
-    /**
-     * Debug logger.
-     */
-    private function log_debug(string $message): void
+    private function log(string $msg): void
     {
+        DebugLogUtil::log(self::DEBUG_CONST, self::LOG_PREFIX, $msg);
+    }
 
-
-        error_log(self::LOG_PREFIX . ' ' . $message);
+    /** @param array<string,mixed> $ctx */
+    private function log_ctx(string $msg, array $ctx): void
+    {
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
     }
 }

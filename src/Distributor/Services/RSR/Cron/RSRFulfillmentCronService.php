@@ -2,7 +2,7 @@
 
 namespace FFLHub\Distributor\Services\RSR\Cron;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
@@ -11,6 +11,7 @@ use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Distributor\Services\RSR\RSRFTPService;
 use FFLHub\Distributor\Services\RSR\RSRFulfillmentImporterService;
 use FFLHub\Settings\Options;
+use FFLHub\Util\DebugLogUtil;
 
 /**
  * WP-Cron job to regularly download the RSR fulfillment catalog file
@@ -23,6 +24,16 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
      * Cron hook name for RSR fulfillment refresh.
      */
     public const CRON_HOOK = 'fflhub_rsr_fulfillment_update';
+
+    /**
+     * Debug gate constant (define('FFLHUB_CRON_DEBUG', true);).
+     */
+    private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
+
+    /**
+     * Log prefix.
+     */
+    private const LOG_PREFIX = '[FFLHUB][RSRFulfillmentCron]';
 
     public function __construct(DoubleBufferedFulfillmentTable $table)
     {
@@ -37,7 +48,6 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         return self::CRON_HOOK;
     }
 
-
     /**
      * Interval length in seconds.
      */
@@ -50,8 +60,6 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
     {
         return 'fflhub_catalog';
     }
-
-
 
     /**
      * Delay before first run (keeps your old 5-minute initial delay).
@@ -70,63 +78,54 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
     public function run(): void
     {
         $t_start   = microtime(true);
-        $mem_start = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
+        $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
         // Allow long-running download/import if needed.
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
-        $log_timing = function (string $label, float $t0): void {
-            $elapsed_ms = (microtime(true) - $t0) * 1000;
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][RSR Fulfillment Cron] %s took %.2f ms",
-                    $label,
-                    $elapsed_ms
-                )
-            );
-        };
-
-        $this->log_debug("[FFLHub][RSR Fulfillment Cron] ---- RUN START ----");
-        if ($mem_start > 0) {
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][RSR Fulfillment Cron] PHP PID=%d, memory_start=%d KB",
-                    function_exists('getmypid') ? getmypid() : 0,
-                    (int) round($mem_start / 1024)
-                )
-            );
-        }
+        $this->log('---- RUN START ----', [
+            'pid'          => function_exists('getmypid') ? (int) getmypid() : 0,
+            'memory_kb'    => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
+            'hook'         => self::CRON_HOOK,
+            'group'        => $this->get_action_group(),
+            'interval_sec' => $this->get_interval_seconds(),
+        ]);
 
         // 0) Load FTP credentials.
         $t_creds = microtime(true);
         $creds   = $this->get_ftp_credentials();
 
-        if (! is_array($creds)) {
-            $log_timing('Credentials retrieval (failed)', $t_creds);
-            $log_timing('Total cron run (credentials failed)', $t_start);
-            $this->log_memory_summary($mem_start);
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ---- RUN END (ERROR) ----");
+        $this->profile('Credentials retrieval', $t_creds, [
+            'ok'      => is_array($creds),
+            'has_host'=> is_array($creds) ? (bool) ($creds['host'] ?? '') : false,
+            'has_user'=> is_array($creds) ? (bool) ($creds['username'] ?? '') : false,
+            'has_ssl' => is_array($creds) ? (bool) ($creds['use_ssl'] ?? false) : false,
+        ]);
+
+        if (!is_array($creds)) {
+            $this->finalize_run($t_start, $mem_start, 'ERROR (missing credentials)');
             return;
         }
 
-        $log_timing('Credentials retrieval', $t_creds);
-
-        $host     = $creds['host'];
-        $username = $creds['username'];
-        $password = $creds['password'];
-        $use_ssl  = $creds['use_ssl'];
+        $host     = (string) $creds['host'];
+        $username = (string) $creds['username'];
+        $password = (string) $creds['password'];
+        $use_ssl  = (bool) $creds['use_ssl'];
 
         // Where to save the file locally.
         $uploads  = wp_upload_dir();
         $base_dir = trailingslashit($uploads['basedir']) . 'fflhub-rsr';
 
-        if (! wp_mkdir_p($base_dir)) {
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ERROR: failed to create base directory " . $base_dir);
-            $log_timing('Total cron run (mkdir failed)', $t_start);
-            $this->log_memory_summary($mem_start);
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ---- RUN END (ERROR) ----");
+        $t_paths = microtime(true);
+
+        if (!wp_mkdir_p($base_dir)) {
+            $this->log('ERROR: failed to create base directory', [
+                'base_dir' => (string) $base_dir,
+            ]);
+            $this->profile('Prepare local paths (mkdir failed)', $t_paths);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (mkdir failed)');
             return;
         }
 
@@ -138,20 +137,33 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         // Remote path on RSR FTP.
         $remote_path = '/ftpdownloads/fulfillment-inv-new.zip';
 
+        $this->profile('Prepare local paths', $t_paths, [
+            'base_dir'        => (string) $base_dir,
+            'remote_zip'      => (string) $remote_path,
+            'local_zip_path'  => (string) $local_zip_path,
+            'local_txt_path'  => (string) $local_path,
+        ]);
+
         // 1) Download the file.
         $t_download = microtime(true);
 
         $ftp = new RSRFTPService($host, $username, $password, $use_ssl);
 
-        if (! $ftp->is_connected()) {
+        if (!$ftp->is_connected()) {
             update_option('fflhub_rsr_fulfillment_last_download_error', current_time('mysql'));
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ERROR: FTP connection not available.");
-            $log_timing('FTP connection (failed)', $t_download);
-            $log_timing('Total cron run (FTP connection failed)', $t_start);
-            $this->log_memory_summary($mem_start);
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ---- RUN END (ERROR) ----");
+
+            $this->log('ERROR: FTP connection not available.', [
+                'host'    => $host,
+                'use_ssl' => $use_ssl ? 1 : 0,
+            ]);
+
+            $this->profile('FTP connection (failed)', $t_download);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (FTP connection failed)');
             return;
         }
+
+        // Optional: size before download (helps detect stale/partial files)
+        $zip_size_before = file_exists($local_zip_path) ? (int) filesize($local_zip_path) : 0;
 
         $ok = $ftp->download_zip_file(
             $remote_path,
@@ -159,14 +171,20 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             $base_dir
         );
 
-        $log_timing('FTP download', $t_download);
+        $zip_size_after = file_exists($local_zip_path) ? (int) filesize($local_zip_path) : 0;
+        $txt_exists     = file_exists($local_path);
 
-        if (! $ok) {
+        $this->profile('FTP download', $t_download, [
+            'ok'              => $ok ? 1 : 0,
+            'zip_kb_before'   => $zip_size_before > 0 ? (int) round($zip_size_before / 1024) : 0,
+            'zip_kb_after'    => $zip_size_after > 0 ? (int) round($zip_size_after / 1024) : 0,
+            'txt_extracted'   => $txt_exists ? 1 : 0,
+        ]);
+
+        if (!$ok) {
             update_option('fflhub_rsr_fulfillment_last_download_error', current_time('mysql'));
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ERROR: download failed – aborting import and swap.");
-            $log_timing('Total cron run (download failed)', $t_start);
-            $this->log_memory_summary($mem_start);
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: download failed – aborting import and swap.');
+            $this->finalize_run($t_start, $mem_start, 'ERROR (download failed)');
             return;
         }
 
@@ -174,9 +192,11 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         update_option('fflhub_rsr_fulfillment_last_download', current_time('mysql'));
         delete_option('fflhub_rsr_fulfillment_last_download_error');
 
-        // (Optional) sanity check that extracted TXT exists
-        if (! file_exists($local_path)) {
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] WARNING: expected extracted TXT not found at " . $local_path);
+        if (!$txt_exists) {
+            $this->log('WARNING: expected extracted TXT not found after download', [
+                'local_txt_path' => (string) $local_path,
+            ]);
+            // keep going; importer may still find a path depending on its own logic
         }
 
         // 2) Import the downloaded file into the staging table.
@@ -185,23 +205,23 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         $count = 0;
         try {
             $importer = new RSRFulfillmentImporterService($this->table);
-            $count    = $importer->import_from_downloaded_file();
+            $count    = (int) $importer->import_from_downloaded_file();
         } catch (\Throwable $e) {
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ERROR: exception during import: " . $e->getMessage());
-            $log_timing('Import into staging (failed)', $t_import);
-            $log_timing('Total cron run (import exception)', $t_start);
-            $this->log_memory_summary($mem_start);
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: exception during import', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->profile('Import into staging (failed)', $t_import);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (import exception)');
             return;
         }
 
-        $log_timing('Import into staging', $t_import);
+        $this->profile('Import into staging', $t_import, [
+            'imported_rows' => (int) $count,
+        ]);
 
         if ($count <= 0) {
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ERROR: import completed but 0 rows processed, not swapping.");
-            $log_timing('Total cron run (0 rows imported)', $t_start);
-            $this->log_memory_summary($mem_start);
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: import completed but 0 rows processed, not swapping.');
+            $this->finalize_run($t_start, $mem_start, 'ERROR (0 rows imported)');
             return;
         }
 
@@ -212,31 +232,26 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         try {
             $new_live = (string) $this->table->swap_live_and_staging();
         } catch (\Throwable $e) {
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ERROR: exception during swap: " . $e->getMessage());
-            $log_timing('Swap staging ↔ live (failed)', $t_swap);
-            $log_timing('Total cron run (swap exception)', $t_start);
-            $this->log_memory_summary($mem_start);
-            $this->log_debug("[FFLHub][RSR Fulfillment Cron] ---- RUN END (ERROR) ----");
+            $this->log('ERROR: exception during swap', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->profile('Swap staging ↔ live (failed)', $t_swap);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (swap exception)');
             return;
         }
 
-        $log_timing('Swap staging ↔ live', $t_swap);
-
-        $this->log_debug(
-            sprintf(
-                "[FFLHub][RSR Fulfillment Cron] Completed: imported %d rows, new live table: %s",
-                (int) $count,
-                (string) $new_live
-            )
-        );
+        $this->profile('Swap staging ↔ live', $t_swap, [
+            'new_live' => (string) $new_live,
+        ]);
 
         update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'));
         update_option('fflhub_rsr_fulfillment_last_import_count', (int) $count);
         update_option('fflhub_rsr_fulfillment_last_swap', current_time('mysql'));
 
-        $log_timing('Total cron run', $t_start);
-        $this->log_memory_summary($mem_start);
-        $this->log_debug("[FFLHub][RSR Fulfillment Cron] ---- RUN END (SUCCESS) ----");
+        $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
+            'imported_rows' => (int) $count,
+            'new_live'      => (string) $new_live,
+        ]);
     }
 
     /**
@@ -254,18 +269,18 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         $password  = Options::get_distributor_option('rsr', 'ftp_password', '');
         $use_ssl_s = Options::get_distributor_option('rsr', 'ftp_use_ssl', '');
 
-        $host     = trim($host);
-        $username = trim($username);
-        $password = trim($password);
+        $host     = trim((string) $host);
+        $username = trim((string) $username);
+        $password = trim((string) $password);
         $use_ssl  = ($use_ssl_s !== '');
 
         if ($host === '' || $username === '' || $password === '') {
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][RSR Fulfillment Cron] Missing FTP credentials (host: %s, user: %s).",
-                    $host !== '' ? 'set' : 'empty',
-                    $username !== '' ? 'set' : 'empty'
-                )
+            $this->log(
+                'Missing FTP credentials',
+                [
+                    'host' => $host !== '' ? 'set' : 'empty',
+                    'user' => $username !== '' ? 'set' : 'empty',
+                ]
             );
             return null;
         }
@@ -278,9 +293,77 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         ];
     }
 
+    // --------------------------------------------------
+    // Debug / profiling helpers (DebugLogUtil)
+    // --------------------------------------------------
+
+    /** @param array<string,mixed> $ctx */
+    private function log(string $msg, array $ctx = []): void
+    {
+        if (empty($ctx)) {
+            DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $msg);
+            return;
+        }
+
+        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $msg, $ctx);
+    }
+
+    /** @param array<string,mixed> $ctx */
+    private function profile(string $label, float $t0, array $ctx = []): void
+    {
+        $elapsed_ms = (microtime(true) - $t0) * 1000.0;
+
+        $ctx = array_merge($ctx, [
+            'elapsed_ms' => number_format($elapsed_ms, 2, '.', ''),
+        ]);
+
+        $this->log("PROFILE: {$label}", $ctx);
+    }
+
+    /** @param array<string,mixed> $ctx */
+    private function finalize_run(float $t_start, int $mem_start, string $status, array $ctx = []): void
+    {
+        $this->profile('Total cron run', $t_start, [
+            'status' => (string) $status,
+        ]);
+
+        $mem_end = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+
+        if ($mem_start > 0 && $mem_end > 0) {
+            $this->log('Memory usage summary', [
+                'start_kb' => (int) round($mem_start / 1024),
+                'end_kb'   => (int) round($mem_end / 1024),
+                'delta_kb' => (int) round(($mem_end - $mem_start) / 1024),
+            ]);
+        }
+
+        if (!empty($ctx)) {
+            $this->log("---- RUN END ({$status}) ----", $ctx);
+        } else {
+            $this->log("---- RUN END ({$status}) ----");
+        }
+    }
+
+    /**
+     * Legacy method retained for compatibility if other code calls it.
+     * (No longer used by this class after migrating to DebugLogUtil.)
+     */
+    private function log_debug(string $message): void
+    {
+        if (!defined(self::DEBUG_FLAG) || constant(self::DEBUG_FLAG) !== true) {
+            return;
+        }
+
+        error_log($message);
+    }
+
+    /**
+     * Legacy method retained for compatibility if other code calls it.
+     * (No longer used by this class after migrating to DebugLogUtil.)
+     */
     private function log_memory_summary(int $mem_start): void
     {
-        $mem_end = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
+        $mem_end = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
         if ($mem_start > 0 && $mem_end > 0) {
             $this->log_debug(
                 sprintf(
@@ -291,14 +374,5 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
                 )
             );
         }
-    }
-
-    private function log_debug(string $message): void
-    {
-        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
-            return;
-        }
-
-        error_log($message);
     }
 }

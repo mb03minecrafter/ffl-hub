@@ -40,7 +40,6 @@ final class FFLHubPartialShipment extends WC_Email
      */
     public function trigger($order_id, $ctx = null)
     {
-        error_log('[FFLHUB][Email] trigger called order_id=' . (int)$order_id . ' ctx_type=' . (is_object($ctx) ? get_class($ctx) : gettype($ctx)));
 
         $order_id = (int) $order_id;
 
@@ -52,7 +51,6 @@ final class FFLHubPartialShipment extends WC_Email
         // log deltas
         $at = (isset($ctx->update) && isset($ctx->update->added_tracking) && is_array($ctx->update->added_tracking)) ? count($ctx->update->added_tracking) : -1;
         $ai = (isset($ctx->update) && isset($ctx->update->added_invoices) && is_array($ctx->update->added_invoices)) ? count($ctx->update->added_invoices) : -1;
-        error_log('[FFLHUB][Email] deltas added_tracking=' . $at . ' added_invoices=' . $ai);
 
         if (method_exists($ctx, 'should_send') && !$ctx->should_send()) {
             error_log('[FFLHUB][Email] abort: ctx->should_send() = false');
@@ -68,7 +66,6 @@ final class FFLHubPartialShipment extends WC_Email
         $this->object    = $order;
         $this->recipient = $order->get_billing_email();
 
-        error_log('[FFLHUB][Email] enabled=' . (int)$this->is_enabled() . ' recipient=' . (string)$this->recipient);
 
         if (!$this->is_enabled() || !$this->get_recipient()) {
             error_log('[FFLHUB][Email] abort: disabled or empty recipient');
@@ -83,7 +80,6 @@ final class FFLHubPartialShipment extends WC_Email
 
         // Force render once so we can see if template returns empty
         $html = $this->get_content_html($ctx);
-        error_log('[FFLHUB][Email] rendered html_len=' . strlen((string)$html));
 
         $sent = $this->send(
             $this->get_recipient(),
@@ -93,7 +89,6 @@ final class FFLHubPartialShipment extends WC_Email
             $this->get_attachments()
         );
 
-        error_log('[FFLHUB][Email] send() returned=' . var_export($sent, true));
 
         $this->restore_locale();
     }
