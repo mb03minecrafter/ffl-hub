@@ -6,6 +6,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
+use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorOffer;
@@ -22,19 +23,27 @@ class DistributorProductsPage
      */
     private const PAGE_SLUG = 'fflhub-distributor-products';
 
+
+
+    private DistributorHandler $handler;
+
+    public function __construct(DistributorHandler $handler)
+    {
+        $this->handler = $handler;
+    }
     /**
      * Initialize hooks.
      */
-    public static function init(): void
+    public function register(): void
     {
-        add_action('admin_menu', [__CLASS__, 'register_menu_page']);
-        add_action('admin_enqueue_scripts', [__CLASS__, 'enqueue_assets']);
+        add_action('admin_menu', [$this, 'register_menu_page']);
+        add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
     }
 
     /**
      * Register the "Distributor Products" menu item under the FFL Hub menu.
      */
-    public static function register_menu_page(): void
+    public function register_menu_page(): void
     {
         add_submenu_page(
             AdminPage::get_page_slug(),
@@ -42,7 +51,7 @@ class DistributorProductsPage
             __('Distributor Products', 'ffl-hub'),
             'manage_options',
             self::PAGE_SLUG,
-            [__CLASS__, 'render_page']
+            [$this, 'render_page']
         );
     }
 
@@ -51,7 +60,7 @@ class DistributorProductsPage
      *
      * @param string $hook
      */
-    public static function enqueue_assets(string $hook): void
+    public function enqueue_assets(string $hook): void
     {
         if (false === strpos($hook, self::PAGE_SLUG)) {
             return;
@@ -70,14 +79,14 @@ class DistributorProductsPage
     /**
      * Render the Distributor Products page.
      */
-    public static function render_page(): void
+    public function render_page(): void
     {
         if (! current_user_can('manage_options')) {
             wp_die(esc_html__('You do not have permission to access this page.', 'ffl-hub'));
         }
 
         $state = self::handle_request();
-        ?>
+?>
         <div class="wrap">
             <h1><?php esc_html_e('Distributor Products', 'ffl-hub'); ?></h1>
 
@@ -117,7 +126,7 @@ class DistributorProductsPage
      *   posted_selected_dist_id:string
      * }
      */
-    private static function handle_request(): array
+    private function handle_request(): array
     {
         $state = [
             'action' => '',
@@ -166,13 +175,9 @@ class DistributorProductsPage
         }
 
         // 4) Lookup (CHANGED: can return UpcLookupResult OR WP_Error)
-        $lookup_result = DistributorProductHelper::get_upc_lookup_result_from_distributors($upc);
+        $lookup_result =  $this->handler->get_payloads_for_upc($upc);;
 
-        if (is_wp_error($lookup_result)) {
-            $state['global_error'] = $lookup_result->get_error_message();
-            self::log_debug("[FFLHub][DistributorProductsPage] Lookup WP_Error: " . $state['global_error']);
-            return $state;
-        }
+        
 
         if (! ($lookup_result instanceof UpcLookupResult)) {
             $state['global_error'] = __('Lookup failed for an unknown reason.', 'ffl-hub');
@@ -220,7 +225,7 @@ class DistributorProductsPage
         return $state;
     }
 
-    private static function detect_action(): string
+    private function detect_action(): string
     {
         if (isset($_POST['fflhub_distributor_search'])) {
             return 'search';
@@ -231,7 +236,7 @@ class DistributorProductsPage
         return '';
     }
 
-    private static function read_post_upc(): string
+    private function read_post_upc(): string
     {
         if (! isset($_POST['fflhub_distributor_upc'])) {
             return '';
@@ -239,7 +244,7 @@ class DistributorProductsPage
         return sanitize_text_field(wp_unslash($_POST['fflhub_distributor_upc']));
     }
 
-    private static function read_post_selected_distributor(): string
+    private function read_post_selected_distributor(): string
     {
         if (! isset($_POST['fflhub_selected_distributor'])) {
             return '';
@@ -253,7 +258,7 @@ class DistributorProductsPage
      * Deterministic on create (honor posted_selected_dist_id if present),
      * otherwise cheapest-in-stock then cheapest-any then first offer.
      */
-    private static function select_product_for_display(array &$state): void
+    private function select_product_for_display(array &$state): void
     {
         /** @var array<string, DistributorOffer> $offers */
         $offers = (array) ($state['offers'] ?? []);
@@ -308,7 +313,7 @@ class DistributorProductsPage
     /**
      * Create and return WP_Error on failure.
      */
-    private static function create_woo_product(string $upc, array &$state)
+    private function create_woo_product(string $upc, array &$state)
     {
         $result = DistributorProductHelper::create_woo_product_from_payload(
             $upc,
@@ -328,7 +333,7 @@ class DistributorProductsPage
         return $result;
     }
 
-    private static function render_notices(array $state): void
+    private function render_notices(array $state): void
     {
         if (! empty($state['global_error'])) : ?>
             <div class="notice notice-error">
@@ -343,7 +348,7 @@ class DistributorProductsPage
         <?php endif;
     }
 
-    private static function render_search_form(array $state): void
+    private function render_search_form(array $state): void
     {
         ?>
         <form method="post">
@@ -378,10 +383,10 @@ class DistributorProductsPage
             );
             ?>
         </form>
-        <?php
+    <?php
     }
 
-    private static function render_product_result(array $state): void
+    private function render_product_result(array $state): void
     {
         $selected_product = $state['selected_product'];
         if (! ($selected_product instanceof DistributorProductPayload)) {
@@ -421,7 +426,7 @@ class DistributorProductsPage
         /** @var array<string, DistributorOffer> $offers */
         $offers = (array) ($state['offers'] ?? []);
 
-        ?>
+    ?>
         <hr />
 
         <h2>
@@ -635,10 +640,10 @@ class DistributorProductsPage
                 <?php endforeach; ?>
             </ul>
         <?php endif; ?>
-        <?php
+<?php
     }
 
-    private static function format_price(?float $price): string
+    private function format_price(?float $price): string
     {
         if ($price === null) {
             return __('N/A', 'ffl-hub');
@@ -649,7 +654,7 @@ class DistributorProductsPage
         return '$' . $formatted;
     }
 
-    private static function log_debug(string $message): void
+    private function log_debug(string $message): void
     {
         // CHANGED: gated logging (no unconditional error_log spam)
         if (! defined('FFLHUB_ADMIN_DEBUG') || FFLHUB_ADMIN_DEBUG !== true) {

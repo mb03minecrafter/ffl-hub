@@ -114,6 +114,11 @@ if (defined('WP_CLI')) {
     \WP_CLI::add_command('fflhub seed-orders', \FFLHub\CLI\SeedOrdersCommand::class);
 }
 
+
+if (defined('WP_CLI')) {
+    \WP_CLI::add_command('fflhub stress-create-products', \FFLHub\CLI\StressCreateProductsCommand::class);
+}
+
 /**
  * Initialize main plugin after all plugins are loaded.
  */

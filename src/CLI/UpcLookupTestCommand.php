@@ -6,6 +6,7 @@ namespace FFLHub\CLI;
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Models\UpcLookupResult;
 use FFLHub\Distributor\Models\DistributorOffer;
+use FFLHub\Plugin;
 
 if (! defined('ABSPATH')) {
     exit;
@@ -160,7 +161,7 @@ final class UpcLookupTestCommand
 
             $lookup = null;
             try {
-                $lookup = DistributorProductHelper::get_upc_lookup_result_from_distributors($upc, false);
+                $lookup = DistributorProductHelper::get_upc_lookup_result_from_distributors(Plugin::instance()->distributor_handler, $upc, false);
             } catch (\Throwable $e) {
                 $lookup = null;
             }

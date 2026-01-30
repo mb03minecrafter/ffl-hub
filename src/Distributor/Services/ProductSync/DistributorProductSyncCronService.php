@@ -2,11 +2,13 @@
 
 namespace FFLHub\Distributor\Services\ProductSync;
 
+use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
+use FFLHub\Plugin;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -47,6 +49,15 @@ final class DistributorProductSyncCronService extends AbstractCronService
     private const DEBUG_CONST = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX  = '[FFLHUB][ProductSync]';
 
+
+
+    private DistributorHandler $handler;
+
+    public function __construct(DistributorHandler $handler)
+    {
+        $this->handler = $handler;
+    }
+
     public function get_cron_hook_name(): string
     {
         return self::CRON_HOOK;
@@ -69,7 +80,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
     public function run(): void
     {
-        $this->sync_batch(50);
+        $this->sync_batch(1000);
     }
 
     public function sync_batch(int $limit = 50): void
@@ -139,16 +150,36 @@ final class DistributorProductSyncCronService extends AbstractCronService
                     $outcome = isset($result['outcome']) ? (string) $result['outcome'] : '';
 
                     switch ($outcome) {
-                        case 'SKIP_TRASH':               $stats['skipped_trash']++; break;
-                        case 'MISSING_UPC':              $stats['missing_upc']++; break;
-                        case 'LOOKUP_INVALID':           $stats['lookup_invalid']++; break;
-                        case 'NO_OFFERS_OOS':            $stats['no_offers_oos']++; break;
-                        case 'NO_SELECTED_OFFER':        $stats['no_selected_offer']++; break;
-                        case 'BAD_PAYLOAD':              $stats['bad_payload']++; break;
-                        case 'BAD_PRICE_STOCK_ONLY':     $stats['bad_price_stock_only']++; break;
-                        case 'FORCED_OOS_PROFIT_FLOOR':  $stats['forced_oos_profit_floor']++; break;
-                        case 'UPDATED_NORMAL':           $stats['updated_normal']++; break;
-                        case 'NOOP_BUMP_ONLY':           $stats['noop_bump_only']++; break;
+                        case 'SKIP_TRASH':
+                            $stats['skipped_trash']++;
+                            break;
+                        case 'MISSING_UPC':
+                            $stats['missing_upc']++;
+                            break;
+                        case 'LOOKUP_INVALID':
+                            $stats['lookup_invalid']++;
+                            break;
+                        case 'NO_OFFERS_OOS':
+                            $stats['no_offers_oos']++;
+                            break;
+                        case 'NO_SELECTED_OFFER':
+                            $stats['no_selected_offer']++;
+                            break;
+                        case 'BAD_PAYLOAD':
+                            $stats['bad_payload']++;
+                            break;
+                        case 'BAD_PRICE_STOCK_ONLY':
+                            $stats['bad_price_stock_only']++;
+                            break;
+                        case 'FORCED_OOS_PROFIT_FLOOR':
+                            $stats['forced_oos_profit_floor']++;
+                            break;
+                        case 'UPDATED_NORMAL':
+                            $stats['updated_normal']++;
+                            break;
+                        case 'NOOP_BUMP_ONLY':
+                            $stats['noop_bump_only']++;
+                            break;
                     }
 
                     $lms = isset($result['lookup_ms']) ? (float) $result['lookup_ms'] : 0.0;
@@ -275,7 +306,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $lookup = null;
 
         try {
-            $lookup = DistributorProductHelper::get_upc_lookup_result_from_distributors($upc, false);
+            $lookup = $this->handler->get_payloads_for_upc($upc, false); // returns UpcLookupResult
         } catch (\Throwable $e) {
             $lookup = null;
             $this->log_ctx('distributor_lookup exception', array(
@@ -561,7 +592,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'selected'     => $selected_dist_id,
             'final_qty'    => $desired_qty,
             'final_status' => $desired_status,
-            'final_regular'=> $desired_price,
+            'final_regular' => $desired_price,
             'saved'        => $needs_save ? 1 : 0,
         ));
 

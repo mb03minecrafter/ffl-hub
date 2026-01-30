@@ -31,6 +31,7 @@ class DistributorHandler
     private array $distributors = [];
 
     private DistributorProductSyncCronService $productSyncCronService;
+
     private OrderPlacementShippingPollCronService $orderShippingCronService;
     private OrderPlacementDispatchCronService $orderPlacementCronService;
 
@@ -46,7 +47,7 @@ class DistributorHandler
             $this->distributors[$module->id()] = $dist;
         }
 
-        $this->productSyncCronService = new DistributorProductSyncCronService();
+        $this->productSyncCronService = new DistributorProductSyncCronService($this);
         $this->orderShippingCronService = new OrderPlacementShippingPollCronService();
         $this->orderPlacementCronService = new OrderPlacementDispatchCronService();
     }

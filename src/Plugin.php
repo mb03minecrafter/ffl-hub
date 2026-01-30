@@ -57,8 +57,11 @@ class Plugin
     private static $instance = null;
 
     public DistributorHandler $distributor_handler;
-    public ?OrderPlacementOrchestrator $order_orchestrator = null;
+    public OrderPlacementOrchestrator $order_orchestrator;
 
+
+    //Admin Classes
+    public DistributorProductsPage $distributor_products_page;
 
 
     /**
@@ -75,60 +78,50 @@ class Plugin
         return self::$instance;
     }
 
-    /**
-     * Constructor: set up includes, services, and hooks.
-     *
-     * Private because we want to enforce the singleton via instance().
-     */
     private function __construct()
     {
-
+        // Always-on: settings, core services, async/job hooks
         SettingsRegistrar::init();
-
 
         $this->distributor_handler = new DistributorHandler();
         $this->distributor_handler->register_runtime_services();
 
-        WPCronWarning::init(); //REWORK
-        AdminPage::init();
-        DistributorProductsPage::init();
-
-        // Woo store API integration.
-        FFLRequiredCartExtension::init(); //REWORK
-
-        // FFL importer + REST API + admin order panel.
-        FFLImporterPage::init(); //REWORK
-        FFLApi::init(); //REWORK
-        OrderFFLPanel::init(); //REWORK
-
-
-        // Checkout fields + map UI.
-        CheckoutFields::init(); //REWORK
-        CheckoutMap::init(); //REWORK
-
-        // Product meta box.
-        ProductMetaBox::init(); //REWORK
-
         ShippingRegistrar::init();
-
         MapPriceVisibility::init();
 
+        // Cart compliance typically affects frontend + Store API; keep always-on unless proven heavy
         CartCompliance::init();
+        FFLRequiredCartExtension::init();
 
-        OrderPlacementMetaBox::init();
-
-
-
-
-
-        $this->order_orchestrator = new OrderPlacementOrchestrator();  
+        // Order placement/jobs must be available in cron/AS contexts too
+        $this->order_orchestrator = new OrderPlacementOrchestrator();
         $this->order_orchestrator->register();
 
         OrderTrashJobsService::init();
 
+        // Context-specific: admin
+        if (is_admin()) {
+            WPCronWarning::init();
+            AdminPage::init();
+            
+            $this->distributor_products_page = new DistributorProductsPage($this->distributor_handler);
+            $this->distributor_products_page->register();
 
-        // 4. Hook into WordPress admin.
+            FFLImporterPage::init();
+            FFLApi::init();
+            OrderFFLPanel::init();
+
+            ProductMetaBox::init();
+            OrderPlacementMetaBox::init();
+
+            return; // optional: bail early to avoid accidental frontend init below
+        }
+
+        // Context-specific: frontend UI
+        CheckoutFields::init();
+        CheckoutMap::init();
     }
+
 
 
 

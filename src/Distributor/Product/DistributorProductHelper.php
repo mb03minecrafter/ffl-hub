@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Product;
 
+use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\UpcLookupResult;
@@ -420,11 +421,9 @@ class DistributorProductHelper
      *
      * @return UpcLookupResult|WP_Error
      */
-    public static function get_upc_lookup_result_from_distributors(string $upc, bool $include_images = true)
+    public static function get_upc_lookup_result_from_distributors(DistributorHandler $handler, string $upc, bool $include_images = true)
     {
-        $plugin  = Plugin::instance();
-        $handler = $plugin->distributor_handler ?? null;
-
+        
         if (! $handler || ! method_exists($handler, 'get_payloads_for_upc')) {
             return new WP_Error(
                 'fflhub_lookup_handler_missing',
