@@ -8,7 +8,6 @@ use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
-use FFLHub\Distributor\Services\Orders\Shipping\OrderPlacementShippingService;
 
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
@@ -37,7 +36,7 @@ if (!defined('ABSPATH')) {
  * - ShippingUpdateResult is returned so the poller can decide whether to trigger emails.
  * - This store does NOT decide eligibility for polling; that’s a query responsibility.
  */
-final class OrderPlacementShippingJobStore
+final class ShippingJobStore
 {
     /**
      * Stamp last_shipping_poll_at to “now” (UTC MySQL) for a specific job.
@@ -121,7 +120,7 @@ final class OrderPlacementShippingJobStore
         $now = OrderPlacementTimeUtil::now_mysql_utc();
 
         // Compute a safe patch (shipping merge rules live here)
-        $patch = OrderPlacementShippingService::compute_patch($job, $shipment, $now);
+        $patch = ShippingService::compute_patch($job, $shipment, $now);
 
         if (!($patch instanceof OrderPlacementJobPatch)) {
             // Defensive: compute_patch should always return a patch

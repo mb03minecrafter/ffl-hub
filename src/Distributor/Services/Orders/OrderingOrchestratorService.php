@@ -10,6 +10,7 @@ use FFLHub\Product\ProductMeta;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifecycle;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
@@ -34,23 +35,15 @@ if (!defined('ABSPATH')) {
  *
  * Does NOT contain per-job execution logic. That lives in OrderPlacementJobRunner (invoked by dispatcher).
  */
-final class OrderPlacementOrchestrator
+final class OrderingOrchestratorService
 {
     private const LOG_PREFIX  = '[FFLHUB][OrderPlacementOrchestrator]';
     private const DEBUG_CONST = 'FFLHUB_PLACE_ORCH_DEBUG';
 
-    private static $hooks_registered = false;
 
     public function register(): void
     {
-        if (self::$hooks_registered) {
-            return;
-        }
-        self::$hooks_registered = true;
-
-        add_action('woocommerce_order_status_changed', [$this, 'handle_status_changed'], 10, 4);
-
-      
+        add_action('woocommerce_order_status_changed', [$this, 'handle_status_changed'], 10, 4);      
     }
 
     public function handle_status_changed($order_id, $old_status, $new_status, $order): void

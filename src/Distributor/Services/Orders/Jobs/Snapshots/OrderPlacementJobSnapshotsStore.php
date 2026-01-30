@@ -7,7 +7,7 @@ use WC_Order;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
-use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -17,19 +17,18 @@ if (!defined('ABSPATH')) {
  * OrderPlacementJobSnapshotsStore
  *
  * Responsibility:
- * - Persist and retrieve structured “snapshot” JSON payloads for:
- *     - validation results (validate_result_json)
- *     - place-order results (place_result_json)
+ * - Persist and retrieve structured snapshot JSON payloads stored on the job row:
+ *     - validate_result_json (validation results)
+ *     - place_result_json    (place-order results)
  *
- * These snapshots are meant to be:
- * - machine-readable (for debugging and for future analytics)
- * - safe to store (callers should already sanitize/redact secrets)
- * - stable enough for admin UI to display and for logs to reference
+ * Snapshot characteristics:
+ * - Machine-readable (debugging, support, future analytics).
+ * - Callers are responsible for sanitizing/redacting secrets before writing.
+ * - This store does NOT interpret business meaning of snapshots; it only stores/reads them.
  *
  * Notes:
- * - Writes go through the patch writer (preferred).
- * - Reads are “read-only helpers” that decode the JSON column.
- * - This store intentionally does NOT interpret business meaning of snapshots.
+ * - Writes go through OrderPlacementJobWriter via patches (preferred).
+ * - Reads decode the JSON column into arrays; invalid/missing JSON returns null.
  */
 final class OrderPlacementJobSnapshotsStore
 {
@@ -42,13 +41,18 @@ final class OrderPlacementJobSnapshotsStore
     /**
      * Persist the validation snapshot JSON for a job.
      *
-     * @param WC_Order $order WooCommerce order.
-     * @param string $job_key Job key (dist|bucket).
-     * @param array<string,mixed> $snapshot Structured snapshot array (will be JSON-encoded).
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key     Job key (dist|bucket). Normalized downstream.
+     * @param array<string,mixed>     $snapshot    Structured snapshot array (JSON-encoded).
      */
-    public static function set_job_validation_result(WC_Order $order, string $job_key, array $snapshot): void
-    {
-        $json = wp_json_encode(is_array($snapshot) ? $snapshot : []);
+    public static function set_job_validation_result(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        array $snapshot
+    ): void {
+        $json = wp_json_encode($snapshot);
         if (!is_string($json) || $json === '') {
             $json = '[]';
         }
@@ -56,19 +60,23 @@ final class OrderPlacementJobSnapshotsStore
         $patch = OrderPlacementJobPatch::empty()
             ->with_field('validate_result_json', $json);
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
     /**
      * Retrieve the validation snapshot for a job.
      *
-     * @param WC_Order $order WooCommerce order.
-     * @param string $job_key Job key.
-     * @return array<string,mixed>|null Snapshot array, or null if none/invalid.
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key     Job key (dist|bucket). Normalized downstream.
+     * @return array<string,mixed>|null Snapshot array, or null if missing/invalid.
      */
-    public static function get_job_validation_result(WC_Order $order, string $job_key): ?array
-    {
-        $json = self::read_job_snapshot_json((int) $order->get_id(), $job_key, 'validate_result_json');
+    public static function get_job_validation_result(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): ?array {
+        $json = self::read_job_snapshot_json($jobs_table, (int) $order->get_id(), $job_key, 'validate_result_json');
         if ($json === '') {
             return null;
         }
@@ -84,13 +92,18 @@ final class OrderPlacementJobSnapshotsStore
     /**
      * Persist the place-order snapshot JSON for a job.
      *
-     * @param WC_Order $order WooCommerce order.
-     * @param string $job_key Job key.
-     * @param array<string,mixed> $snapshot Structured snapshot array (will be JSON-encoded).
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key     Job key (dist|bucket). Normalized downstream.
+     * @param array<string,mixed>     $snapshot    Structured snapshot array (JSON-encoded).
      */
-    public static function set_job_place_result(WC_Order $order, string $job_key, array $snapshot): void
-    {
-        $json = wp_json_encode(is_array($snapshot) ? $snapshot : []);
+    public static function set_job_place_result(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        array $snapshot
+    ): void {
+        $json = wp_json_encode($snapshot);
         if (!is_string($json) || $json === '') {
             $json = '[]';
         }
@@ -98,19 +111,23 @@ final class OrderPlacementJobSnapshotsStore
         $patch = OrderPlacementJobPatch::empty()
             ->with_field('place_result_json', $json);
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
     /**
      * Retrieve the place-order snapshot for a job.
      *
-     * @param WC_Order $order WooCommerce order.
-     * @param string $job_key Job key.
-     * @return array<string,mixed>|null Snapshot array, or null if none/invalid.
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key     Job key (dist|bucket). Normalized downstream.
+     * @return array<string,mixed>|null Snapshot array, or null if missing/invalid.
      */
-    public static function get_job_place_result(WC_Order $order, string $job_key): ?array
-    {
-        $json = self::read_job_snapshot_json((int) $order->get_id(), $job_key, 'place_result_json');
+    public static function get_job_place_result(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): ?array {
+        $json = self::read_job_snapshot_json($jobs_table, (int) $order->get_id(), $job_key, 'place_result_json');
         if ($json === '') {
             return null;
         }
@@ -126,14 +143,24 @@ final class OrderPlacementJobSnapshotsStore
     /**
      * Read a snapshot JSON column from the jobs table.
      *
-     * @param int $order_id Woo order id.
-     * @param string $job_key Job key.
-     * @param string $column One of: validate_result_json | place_result_json
-     * @return string Raw JSON string, or empty string if missing.
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param int                     $order_id   Woo order ID.
+     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
+     * @param string                  $column     One of: validate_result_json | place_result_json
+     * @return string Raw JSON string, or empty string if missing/invalid inputs.
      */
-    private static function read_job_snapshot_json(int $order_id, string $job_key, string $column): string
-    {
+    private static function read_job_snapshot_json(
+        OrderPlacementJobsTable $jobs_table,
+        int $order_id,
+        string $job_key,
+        string $column
+    ): string {
         global $wpdb;
+
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return '';
+        }
 
         $order_id = (int) $order_id;
         if ($order_id <= 0) {
@@ -145,6 +172,7 @@ final class OrderPlacementJobSnapshotsStore
             return '';
         }
 
+        // Hard allowlist for safety: only these columns may be read via interpolation.
         $allowed_cols = [
             'validate_result_json',
             'place_result_json',
@@ -153,8 +181,6 @@ final class OrderPlacementJobSnapshotsStore
         if (!in_array($column, $allowed_cols, true)) {
             return '';
         }
-
-        $table = OrderPlacementJobsTable::get_table_name();
 
         // Column is allowlisted; safe to interpolate.
         $sql = $wpdb->prepare(

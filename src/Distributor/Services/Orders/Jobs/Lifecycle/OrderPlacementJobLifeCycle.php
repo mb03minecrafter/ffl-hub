@@ -6,10 +6,10 @@ use WC_Order;
 
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
-use FFLHub\Distributor\Services\Orders\OrderPlacementKeys;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
-use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -19,13 +19,13 @@ if (!defined('ABSPATH')) {
  * OrderPlacementJobLifecycle
  *
  * Responsibility:
- * - Job creation/upsert (init)
- * - Core lifecycle state transitions used heavily by JobRunner + StateMachine:
- *     - queued/scheduled/running/success/failed/retry_scheduled
- *     - attempt counting
- *     - schedule/action id clearing in terminal/running transitions
+ * - Job row init/upsert (create if missing; keep identifiers stable).
+ * - Core lifecycle transitions used by JobRunner/StateMachine:
+ *   - queued/scheduled/running/success/failed/retry_scheduled
+ *   - attempt counting and atomic "claim" for running
+ *   - schedule/action id clearing in terminal/running transitions
  *
- * Non-responsibilities (deliberately NOT here):
+ * Non-responsibilities:
  * - Reading DTOs (repository)
  * - Arbitrary column writes (writer)
  * - Snapshots (validate/place)
@@ -33,9 +33,9 @@ if (!defined('ABSPATH')) {
  * - Cancellation/trash/delete helpers
  *
  * Notes:
- * - This class *does* contain some SQL because init/upsert and atomic increments are
- *   lifecycle-specific and need to be strongly consistent.
- * - Patch writes are delegated to OrderPlacementJobWriter.
+ * - This class contains some SQL where atomicity/consistency matters
+ *   (init/upsert + atomic attempts increment + claim).
+ * - Patch-style updates are delegated to OrderPlacementJobWriter.
  */
 final class OrderPlacementJobLifecycle
 {
@@ -46,12 +46,23 @@ final class OrderPlacementJobLifecycle
     /**
      * Initialize a job row if missing; always overwrite payload_json.
      *
-     * @param WC_Order $order The WooCommerce order owning the job rows.
-     * @param string $job_key Job key (dist|bucket).
-     * @param array<string,mixed> $payload Minimal payload used by JobRunner (dist_id, bucket, lines, etc).
+     * Behavior:
+     * - INSERT if missing (creates row with status=queued, attempts=0).
+     * - If the row already exists (UNIQUE order_id+job_key), updates ONLY:
+     *     payload_json, updated_at, dist_id, bucket
+     *   (does NOT overwrite status/attempts/etc).
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order owning the job row.
+     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
+     * @param array<string,mixed>     $payload    Minimal payload used by JobRunner (dist_id, bucket, lines, etc).
      */
-    public static function init_job_meta(WC_Order $order, string $job_key, array $payload): void
-    {
+    public static function init_job_meta(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        array $payload
+    ): void {
         global $wpdb;
 
         $oid = (int) $order->get_id();
@@ -59,7 +70,10 @@ final class OrderPlacementJobLifecycle
             return;
         }
 
-        $table = OrderPlacementJobsTable::get_table_name();
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return;
+        }
 
         $job_key = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
         if ($job_key === '') {
@@ -91,8 +105,7 @@ final class OrderPlacementJobLifecycle
 
         $payload_json = wp_json_encode($payload);
         if (!is_string($payload_json) || $payload_json === '') {
-            // Extremely defensive fallback: never write invalid JSON.
-            $payload_json = wp_json_encode([]);
+            $payload_json = '[]';
         }
 
         $sql = "
@@ -122,9 +135,9 @@ final class OrderPlacementJobLifecycle
                 0,
                 $now,
                 $now,
-                '',
-                '',
-                wp_json_encode([]),
+                '',               // last_step
+                '',               // last_error
+                wp_json_encode([]),// last_codes_json
                 $payload_json
             )
         );
@@ -134,15 +147,35 @@ final class OrderPlacementJobLifecycle
      * Status
      * ============================================================ */
 
-    public static function set_job_status(WC_Order $order, string $job_key, string $status): void
-    {
+    /**
+     * Patch-write: set status for a job row.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $status     New status.
+     */
+    public static function set_job_status(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $status
+    ): void {
         $patch = OrderPlacementJobPatch::empty()
             ->with_status((string) $status);
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
-    public static function get_job_status(WC_Order $order, string $job_key): string
+    /**
+     * Read-only: get current status for a job row.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
+     * @return string Status, or empty string if missing/invalid.
+     */
+    public static function get_job_status(OrderPlacementJobsTable $jobs_table, WC_Order $order, string $job_key): string
     {
         global $wpdb;
 
@@ -156,7 +189,10 @@ final class OrderPlacementJobLifecycle
             return '';
         }
 
-        $table = OrderPlacementJobsTable::get_table_name();
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return '';
+        }
 
         $status = $wpdb->get_var(
             $wpdb->prepare(
@@ -166,15 +202,31 @@ final class OrderPlacementJobLifecycle
             )
         );
 
-        return is_string($status) ? (string) $status : '';
+        return is_string($status) ? $status : '';
     }
 
     /* ============================================================
      * Attempts + running transition
      * ============================================================ */
 
-    public static function increment_job_attempts_and_mark_running(WC_Order $order, string $job_key): int
-    {
+    /**
+     * Atomically claim a job for execution:
+     * - increments attempts
+     * - transitions status to RUNNING
+     * - clears next_run_at and action_id
+     *
+     * Only succeeds if current status is scheduled or retry_scheduled.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
+     * @return int Attempts after increment; 0 if not claimed.
+     */
+    public static function increment_job_attempts_and_mark_running(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): int {
         global $wpdb;
 
         $oid = (int) $order->get_id();
@@ -187,10 +239,13 @@ final class OrderPlacementJobLifecycle
             return 0;
         }
 
-        $table = OrderPlacementJobsTable::get_table_name();
-        $now   = OrderPlacementTimeUtil::now_mysql_utc();
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return 0;
+        }
 
-        // Only claim if currently eligible.
+        $now = OrderPlacementTimeUtil::now_mysql_utc();
+
         $eligible = [
             (string) OrderPlacementKeys::JOB_STATUS_SCHEDULED,
             (string) OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED,
@@ -199,18 +254,18 @@ final class OrderPlacementJobLifecycle
         $in_placeholders = implode(',', array_fill(0, count($eligible), '%s'));
 
         $sql = "
-        UPDATE {$table}
-        SET
-            attempts   = attempts + 1,
-            status     = %s,
-            next_run_at = NULL,
-            action_id  = NULL,
-            updated_at = %s
-        WHERE
-            order_id = %d
-            AND job_key = %s
-            AND status IN ({$in_placeholders})
-    ";
+            UPDATE {$table}
+            SET
+                attempts    = attempts + 1,
+                status      = %s,
+                next_run_at = NULL,
+                action_id   = NULL,
+                updated_at  = %s
+            WHERE
+                order_id = %d
+                AND job_key = %s
+                AND status IN ({$in_placeholders})
+        ";
 
         $params = array_merge(
             [(string) OrderPlacementKeys::JOB_STATUS_RUNNING, (string) $now, $oid, (string) $job_key],
@@ -218,13 +273,10 @@ final class OrderPlacementJobLifecycle
         );
 
         $affected = $wpdb->query($wpdb->prepare($sql, $params));
-
-        // If we didn't claim it, someone else has it (or it's not eligible anymore).
         if (!is_numeric($affected) || (int) $affected !== 1) {
             return 0;
         }
 
-        // Best-effort read-back of attempts for logging/backoff decisions.
         $attempts = $wpdb->get_var(
             $wpdb->prepare(
                 "SELECT attempts FROM {$table} WHERE order_id = %d AND job_key = %s LIMIT 1",
@@ -236,13 +288,16 @@ final class OrderPlacementJobLifecycle
         return is_numeric($attempts) ? (int) $attempts : 0;
     }
 
-
     /* ============================================================
      * Terminal transitions
      * ============================================================ */
 
-    public static function mark_job_success(WC_Order $order, string $job_key, string $done_at = ''): void
-    {
+    public static function mark_job_success(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $done_at = ''
+    ): void {
         $done_mysql = ($done_at !== '')
             ? OrderPlacementTimeUtil::iso_to_mysql_utc((string) $done_at)
             : OrderPlacementTimeUtil::now_mysql_utc();
@@ -258,20 +313,25 @@ final class OrderPlacementJobLifecycle
             ->with_last_codes([])
             ->clear_action_and_schedule();
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
-    public static function mark_job_failed(WC_Order $order, string $job_key, string $error_message): void
-    {
+    public static function mark_job_failed(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $error_message
+    ): void {
         $patch = OrderPlacementJobPatch::empty()
             ->with_status(OrderPlacementKeys::JOB_STATUS_FAILED)
             ->with_last_error((string) $error_message)
             ->clear_action_and_schedule();
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
     public static function mark_job_retry_scheduled(
+        OrderPlacementJobsTable $jobs_table,
         WC_Order $order,
         string $job_key,
         string $next_run_at_iso,
@@ -294,6 +354,6 @@ final class OrderPlacementJobLifecycle
             ->with_last_step($step)
             ->with_action_id(null);
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 }

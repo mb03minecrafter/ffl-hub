@@ -14,8 +14,14 @@ use FFLHub\Distributor\Services\ProductSync\DistributorProductSyncCronService;
 
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
-use FFLHub\Distributor\Services\Orders\OrderPlacementDispatchCronService;
-use FFLHub\Distributor\Services\Orders\Shipping\OrderPlacementShippingPollCronService;
+
+use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
+use FFLHub\Distributor\Services\Orders\OrderingOrchestratorService;
+use FFLHub\Distributor\Services\Orders\OrderTrashJobsService;
+
+use FFLHub\Distributor\Services\Orders\Shipping\Cron\ShippingCronService;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsSchema;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
 /**
  * Central place to build and expose distributor instances.
@@ -32,12 +38,35 @@ class DistributorHandler
 
     private DistributorProductSyncCronService $productSyncCronService;
 
-    private OrderPlacementShippingPollCronService $orderShippingCronService;
-    private OrderPlacementDispatchCronService $orderPlacementCronService;
+
+
+    private OrderPlacementJobsSchema $orderSchema;
+    private OrderPlacementJobsTable $ordering_jobs_table;
+
+    private OrderingOrchestratorService $orderPlacementOrchestratorService;
+    private ShippingCronService $orderShippingCronService;
+    private OrderingCronService $orderPlacementCronService;
+
+
+    private OrderTrashJobsService $orderTrashJobsService;
 
     public function __construct()
     {
         $this->register_distributors();
+
+
+
+
+        $this->productSyncCronService = new DistributorProductSyncCronService($this); //requires handler to get product info for posted products
+
+        $this->orderSchema = new OrderPlacementJobsSchema();
+        $this->ordering_jobs_table = new OrderPlacementJobsTable($this->orderSchema);
+
+        $this->orderPlacementOrchestratorService = new OrderingOrchestratorService();
+        $this->orderPlacementCronService = new OrderingCronService($this,$this->ordering_jobs_table); //needs handler to get distributors to call the place and validate functions for ordering
+        $this->orderShippingCronService = new ShippingCronService($this); //requires handler to get shipping info from each dist
+
+        $this->orderTrashJobsService = new OrderTrashJobsService($this->ordering_jobs_table);
     }
 
     private function register_distributors(): void
@@ -46,10 +75,6 @@ class DistributorHandler
             $dist = $module->build_distributor();
             $this->distributors[$module->id()] = $dist;
         }
-
-        $this->productSyncCronService = new DistributorProductSyncCronService($this);
-        $this->orderShippingCronService = new OrderPlacementShippingPollCronService();
-        $this->orderPlacementCronService = new OrderPlacementDispatchCronService();
     }
 
     /**
@@ -112,8 +137,14 @@ class DistributorHandler
         }
 
         $this->productSyncCronService->on_activation();
+
+
+        $this->ordering_jobs_table->createTables();
+
         $this->orderShippingCronService->on_activation();
         $this->orderPlacementCronService->on_activation();
+
+        //no activate or deactivate code required for the orderTrashJobs service since its not a cron job, dont need to descheudle since theres no cron job, etc
     }
 
     public function on_deactivate(): void
@@ -144,8 +175,12 @@ class DistributorHandler
         }
 
         $this->productSyncCronService->register();
+
+        $this->orderPlacementOrchestratorService->register();
         $this->orderShippingCronService->register();
         $this->orderPlacementCronService->register();
+
+        $this->orderTrashJobsService->register();
     }
 
     /**

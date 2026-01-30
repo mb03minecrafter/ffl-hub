@@ -8,7 +8,7 @@ use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
-use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -18,25 +18,32 @@ if (!defined('ABSPATH')) {
  * OrderPlacementJobDiagnosticsStore
  *
  * Responsibility:
- * - “Quick glance” operational fields on the job row:
- *     - last_step
- *     - last_error
- *     - last_codes_json
- *     - next_run_at
- *     - action_id
+ * - Maintain "quick glance" operational / diagnostic fields on the job row:
+ *   - last_step        (e.g. validate|place|'' depending on your state machine)
+ *   - last_error       (human-readable message for operators/logs)
+ *   - last_codes_json  (machine-friendly string[] codes)
+ *   - next_run_at      (scheduler hint; MySQL UTC DATETIME)
+ *   - action_id        (Action Scheduler action ID, if applicable)
  *
- * These fields are NOT business outcomes (like merchant_po, external IDs, shipping merges, etc.).
- * They exist primarily for:
- * - retries / scheduling / observability
- * - admin UI debugging
- * - runner/state-machine bookkeeping
+ * These fields are NOT business outcomes:
+ * - Not correlation identifiers (merchant_po / external IDs).
+ * - Not shipping merges/tracking.
+ * - Not snapshots of validate/place responses.
+ *
+ * Primary use cases:
+ * - Retry scheduling/backoff coordination
+ * - Runner/state-machine bookkeeping
+ * - Admin UI and operational debugging
  *
  * Write strategy:
- * - Uses OrderPlacementJobWriter::apply_patch_for_order() (preferred).
+ * - Uses OrderPlacementJobWriter patch application (preferred; allowlist + updated_at stamping).
  *
  * Read strategy:
- * - Lightweight scalar reads directly from the jobs table to avoid pulling full DTO rows.
- *   (Once OrderPlacementJobsRepository exists, you can swap reads to the repo if desired.)
+ * - Scalar reads directly from the jobs table to avoid fetching full DTO rows.
+ *   (You can swap to repository-based reads later if you decide the DTO cost is acceptable.)
+ *
+ * Dependency:
+ * - Requires an instantiated OrderPlacementJobsTable manager for table name resolution.
  */
 final class OrderPlacementJobDiagnosticsStore
 {
@@ -44,35 +51,81 @@ final class OrderPlacementJobDiagnosticsStore
      * last_error
      * ============================================================ */
 
-    public static function set_job_last_error(WC_Order $order, string $job_key, string $message): void
-    {
+    /**
+     * Persist last_error for a job.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $message    Error message (caller should avoid secrets).
+     */
+    public static function set_job_last_error(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $message
+    ): void {
         $patch = OrderPlacementJobPatch::empty()
             ->with_last_error((string) $message);
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
-    public static function get_job_last_error(WC_Order $order, string $job_key): string
-    {
-        $v = self::read_job_scalar((int) $order->get_id(), $job_key, 'last_error');
-        return is_string($v) ? (string) $v : '';
+    /**
+     * Read last_error for a job.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @return string Last error message, or '' if none/missing.
+     */
+    public static function get_job_last_error(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): string {
+        $v = self::read_job_scalar($jobs_table, (int) $order->get_id(), $job_key, 'last_error');
+        return is_string($v) ? trim((string) $v) : '';
     }
 
     /* ============================================================
      * last_codes_json
      * ============================================================ */
 
-    public static function set_job_last_error_codes(WC_Order $order, string $job_key, array $codes): void
-    {
+    /**
+     * Persist last_codes_json (error code list) for a job.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @param array<int,mixed>        $codes      Code list; will be normalized by patch writer.
+     */
+    public static function set_job_last_error_codes(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        array $codes
+    ): void {
         $patch = OrderPlacementJobPatch::empty()
             ->with_last_codes(is_array($codes) ? $codes : []);
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
-    public static function get_job_last_error_codes(WC_Order $order, string $job_key): array
-    {
-        $json = self::read_job_scalar((int) $order->get_id(), $job_key, 'last_codes_json');
+    /**
+     * Read last_codes_json (error codes) for a job.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @return string[] Normalized, unique, capped list of codes.
+     */
+    public static function get_job_last_error_codes(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): array {
+        $json = self::read_job_scalar($jobs_table, (int) $order->get_id(), $job_key, 'last_codes_json');
 
         if (!is_string($json) || trim($json) === '') {
             return [];
@@ -83,7 +136,7 @@ final class OrderPlacementJobDiagnosticsStore
             return [];
         }
 
-        // Normalize as string[]
+        // Normalize as string[].
         $out = [];
         foreach ($decoded as $v) {
             $s = trim((string) $v);
@@ -104,37 +157,83 @@ final class OrderPlacementJobDiagnosticsStore
      * last_step
      * ============================================================ */
 
-    public static function set_job_last_step(WC_Order $order, string $job_key, string $step): void
-    {
+    /**
+     * Persist last_step for a job.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $step       Step label (e.g. validate|place|'').
+     */
+    public static function set_job_last_step(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $step
+    ): void {
         $patch = OrderPlacementJobPatch::empty()
             ->with_last_step((string) $step);
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
-    public static function get_job_last_step(WC_Order $order, string $job_key): string
-    {
-        $v = self::read_job_scalar((int) $order->get_id(), $job_key, 'last_step');
-        return is_string($v) ? (string) $v : '';
+    /**
+     * Read last_step for a job.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @return string Step label, or '' if missing.
+     */
+    public static function get_job_last_step(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): string {
+        $v = self::read_job_scalar($jobs_table, (int) $order->get_id(), $job_key, 'last_step');
+        return is_string($v) ? trim((string) $v) : '';
     }
 
     /* ============================================================
      * next_run_at
      * ============================================================ */
 
-    public static function set_job_next_run_at(WC_Order $order, string $job_key, string $next_run_at_iso): void
-    {
+    /**
+     * Persist next_run_at for a job (from ISO -> MySQL UTC).
+     *
+     * @param OrderPlacementJobsTable $jobs_table      Table manager instance.
+     * @param WC_Order                $order           WooCommerce order.
+     * @param string                  $job_key         Job key (dist|bucket).
+     * @param string                  $next_run_at_iso ISO 8601 timestamp; invalid/empty clears next_run_at.
+     */
+    public static function set_job_next_run_at(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $next_run_at_iso
+    ): void {
         $mysql = OrderPlacementTimeUtil::iso_to_mysql_utc($next_run_at_iso);
 
         $patch = OrderPlacementJobPatch::empty()
             ->with_next_run_at_mysql(($mysql !== '') ? $mysql : null);
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
-    public static function get_job_next_run_at(WC_Order $order, string $job_key): string
-    {
-        $mysql = self::read_job_scalar((int) $order->get_id(), $job_key, 'next_run_at');
+    /**
+     * Read next_run_at for a job (MySQL UTC -> ISO).
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @return string ISO timestamp, or '' if missing.
+     */
+    public static function get_job_next_run_at(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): string {
+        $mysql = self::read_job_scalar($jobs_table, (int) $order->get_id(), $job_key, 'next_run_at');
         if (!is_string($mysql) || trim($mysql) === '') {
             return '';
         }
@@ -146,20 +245,43 @@ final class OrderPlacementJobDiagnosticsStore
      * action_id
      * ============================================================ */
 
-    public static function set_job_action_id(WC_Order $order, string $job_key, string $action_id): void
-    {
+    /**
+     * Persist Action Scheduler action_id for a job.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $action_id  Action ID string (digits). Invalid/empty clears action_id.
+     */
+    public static function set_job_action_id(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $action_id
+    ): void {
         $aid = trim((string) $action_id);
         $aid_i = ($aid !== '' && ctype_digit($aid)) ? (int) $aid : 0;
 
         $patch = OrderPlacementJobPatch::empty()
             ->with_action_id(($aid_i > 0) ? $aid_i : null);
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
-    public static function get_job_action_id(WC_Order $order, string $job_key): string
-    {
-        $v = self::read_job_scalar((int) $order->get_id(), $job_key, 'action_id');
+    /**
+     * Read Action Scheduler action_id for a job.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @return string Action ID as string, or '' if missing.
+     */
+    public static function get_job_action_id(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): string {
+        $v = self::read_job_scalar($jobs_table, (int) $order->get_id(), $job_key, 'action_id');
 
         if ($v === null) {
             return '';
@@ -169,21 +291,53 @@ final class OrderPlacementJobDiagnosticsStore
         return ($i > 0) ? (string) $i : '';
     }
 
-    public static function clear_job_action_id(WC_Order $order, string $job_key): void
-    {
+    /**
+     * Clear action_id for a job.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      WooCommerce order.
+     * @param string                  $job_key    Job key (dist|bucket).
+     */
+    public static function clear_job_action_id(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): void {
         $patch = OrderPlacementJobPatch::empty()
             ->with_action_id(null);
 
-        OrderPlacementJobWriter::apply_patch_for_order($order, $job_key, $patch);
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
     /* ============================================================
      * Internal helpers (lightweight reads)
      * ============================================================ */
 
-    private static function read_job_scalar(int $order_id, string $job_key, string $column)
-    {
+    /**
+     * Lightweight scalar read from the jobs table.
+     *
+     * Safety:
+     * - Column name is hard-allowlisted to prevent SQL injection.
+     * - job_key is normalized.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param int                     $order_id   Woo order ID.
+     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $column     Allowlisted column name.
+     * @return mixed Scalar value or null if missing/invalid.
+     */
+    private static function read_job_scalar(
+        OrderPlacementJobsTable $jobs_table,
+        int $order_id,
+        string $job_key,
+        string $column
+    ) {
         global $wpdb;
+
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return null;
+        }
 
         $order_id = (int) $order_id;
         if ($order_id <= 0) {
@@ -207,8 +361,6 @@ final class OrderPlacementJobDiagnosticsStore
         if (!in_array($column, $allowed, true)) {
             return null;
         }
-
-        $table = OrderPlacementJobsTable::get_table_name();
 
         // Column is allowlisted; safe to interpolate.
         $sql = $wpdb->prepare(

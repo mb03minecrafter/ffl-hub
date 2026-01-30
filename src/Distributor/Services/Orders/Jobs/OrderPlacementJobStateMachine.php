@@ -1,6 +1,6 @@
 <?php
 
-namespace FFLHub\Distributor\Services\Orders;
+namespace FFLHub\Distributor\Services\Orders\Jobs;
 
 use WC_Order;
 

@@ -1,10 +1,9 @@
 <?php
 
-namespace FFLHub\Distributor\Services\Orders;
+namespace FFLHub\Distributor\Services\Orders\Jobs;
 
 use WC_Order;
 
-use FFLHub\Plugin;
 use FFLHub\Settings\Options;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Core\DistributorBase;
@@ -35,7 +34,7 @@ final class OrderPlacementJobRunner
     private const LOG_PREFIX  = '[FFLHUB][OrderPlacementJobRunner]';
     private const DEBUG_CONST = 'FFLHUB_PLACE_ORDER_JOB_RUNNER_DEBUG';
 
-    public function run(WC_Order $order, string $job_key): void
+    public static function run(WC_Order $order, string $job_key, DistributorHandler $handler): void
     {
         $run_started = microtime(true);
 
@@ -83,7 +82,7 @@ final class OrderPlacementJobRunner
         $meta['order_id'] = $order_id;
         $meta['job_key']  = $job_key;
 
-        $this->log_ctx('run_start', [
+        self::log_ctx('run_start', [
             'order_id'      => $order_id,
             'job_key_in'    => $job_key_in,
             'job_key'       => $job_key,
@@ -93,7 +92,7 @@ final class OrderPlacementJobRunner
 
         if ($order_id <= 0 || $job_key === '') {
             $meta['exit_stage'] = 'exit_invalid_inputs';
-            $this->log_ctx('exit_invalid_inputs', [
+            self::log_ctx('exit_invalid_inputs', [
                 'order_id'  => $order_id,
                 'job_key'   => $job_key,
                 'elapsed_ms' => (int) round((microtime(true) - $run_started) * 1000),
@@ -112,7 +111,7 @@ final class OrderPlacementJobRunner
 
         if ($existing_status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
             $meta['exit_stage'] = 'exit_already_success';
-            $this->log_ctx('exit_already_success', [
+            self::log_ctx('exit_already_success', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'job_status' => $existing_status,
@@ -134,7 +133,7 @@ final class OrderPlacementJobRunner
             $seg['mark_running_ms'] = (int) round((microtime(true) - $t2) * 1000);
 
             $meta['exit_stage'] = 'lifecycle_mark_running_exception';
-            $this->log_ctx('lifecycle_mark_running_exception', [
+            self::log_ctx('lifecycle_mark_running_exception', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'mark_running_ms' => $seg['mark_running_ms'],
@@ -151,7 +150,7 @@ final class OrderPlacementJobRunner
 
         $meta['attempt_n'] = $attempt_n;
 
-        $this->log_ctx('marked_running', [
+        self::log_ctx('marked_running', [
             'order_id'        => $order_id,
             'job_key'         => $job_key,
             'attempt_n'       => $attempt_n,
@@ -169,7 +168,7 @@ final class OrderPlacementJobRunner
         } catch (\Throwable $e) {
             $seg['repo_get_job_ms'] = (int) round((microtime(true) - $t3) * 1000);
 
-            $this->log_ctx('repo_get_job_exception', [
+            self::log_ctx('repo_get_job_exception', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'repo_get_job_ms' => $seg['repo_get_job_ms'],
@@ -184,7 +183,7 @@ final class OrderPlacementJobRunner
         if (!($job instanceof OrderPlacementJobRow)) {
             $meta['exit_stage'] = 'job_row_not_found';
 
-            $this->log_ctx('job_row_not_found', [
+            self::log_ctx('job_row_not_found', [
                 'order_id'        => $order_id,
                 'job_key'         => $job_key,
                 'repo_get_job_ms' => $seg['repo_get_job_ms'],
@@ -194,7 +193,7 @@ final class OrderPlacementJobRunner
             try {
                 OrderPlacementJobLifecycle::mark_job_failed($order, $job_key, 'Job row not found for order/job_key');
             } catch (\Throwable $e) {
-                $this->log_ctx('lifecycle_mark_failed_exception', [
+                self::log_ctx('lifecycle_mark_failed_exception', [
                     'order_id' => $order_id,
                     'job_key'  => $job_key,
                     'err'      => $e->getMessage(),
@@ -202,7 +201,7 @@ final class OrderPlacementJobRunner
             }
             $seg['mark_failed_ms'] = (int) round((microtime(true) - $t_fail) * 1000);
 
-            $this->log_ctx('run_finish', [
+            self::log_ctx('run_finish', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'attempt_n'  => $attempt_n,
@@ -224,7 +223,7 @@ final class OrderPlacementJobRunner
         $meta['dist_id'] = $dist_id;
         $meta['bucket']  = $bucket;
 
-        $this->log_ctx('job_row_loaded', [
+        self::log_ctx('job_row_loaded', [
             'order_id'     => $order_id,
             'job_key'      => $job_key,
             'dist_id'      => $dist_id,
@@ -243,7 +242,7 @@ final class OrderPlacementJobRunner
             $bucket_ok = ($job->is_ffl_bucket() || $job->is_non_ffl_bucket());
 
             if ($dist_id === '' || !$bucket_ok) {
-                $this->log_ctx('invalid_job_row', [
+                self::log_ctx('invalid_job_row', [
                     'order_id'  => $order_id,
                     'job_key'   => $job_key,
                     'dist_id'   => $dist_id,
@@ -259,7 +258,7 @@ final class OrderPlacementJobRunner
             $line_count = is_array($lines) ? count($lines) : 0;
 
             if (empty($lines)) {
-                $this->log_ctx('invalid_payload_no_lines', [
+                self::log_ctx('invalid_payload_no_lines', [
                     'order_id'    => $order_id,
                     'job_key'     => $job_key,
                     'dist_id'     => $dist_id,
@@ -279,7 +278,7 @@ final class OrderPlacementJobRunner
             $ship_customer_ms = (int) round((microtime(true) - $t_ship_customer) * 1000);
 
             if (!($ship_customer instanceof DistributorShipTo)) {
-                $this->log_ctx('ship_customer_invalid', [
+                self::log_ctx('ship_customer_invalid', [
                     'order_id' => $order_id,
                     'job_key'  => $job_key,
                     'dist_id'  => $dist_id,
@@ -288,7 +287,7 @@ final class OrderPlacementJobRunner
                 throw new \RuntimeException('Customer ship-to incomplete on order');
             }
 
-            $this->log_ctx('ship_customer_resolved', [
+            self::log_ctx('ship_customer_resolved', [
                 'order_id' => $order_id,
                 'job_key'  => $job_key,
                 'dist_id'  => $dist_id,
@@ -301,12 +300,12 @@ final class OrderPlacementJobRunner
             // -----------------------------
             $t_ffl = microtime(true);
 
-            [$ship_ffl, $receiving_ffl_number] = $this->resolve_ship_to_ffl_if_needed($order, $ffl_required);
+            [$ship_ffl, $receiving_ffl_number] = self::resolve_ship_to_ffl_if_needed($order, $ffl_required);
 
             $ffl_resolve_ms = (int) round((microtime(true) - $t_ffl) * 1000);
 
             if ($ffl_required) {
-                $this->log_ctx('ffl_bucket_resolved', [
+                self::log_ctx('ffl_bucket_resolved', [
                     'order_id' => $order_id,
                     'job_key'  => $job_key,
                     'dist_id'  => $dist_id,
@@ -316,7 +315,7 @@ final class OrderPlacementJobRunner
                     'ffl_resolve_ms' => $ffl_resolve_ms,
                 ]);
             } else {
-                $this->log_ctx('non_ffl_bucket', [
+                self::log_ctx('non_ffl_bucket', [
                     'order_id' => $order_id,
                     'job_key'  => $job_key,
                     'dist_id'  => $dist_id,
@@ -340,7 +339,7 @@ final class OrderPlacementJobRunner
 
             $po_ms = (int) round((microtime(true) - $t_po) * 1000);
 
-            $this->log_ctx('merchant_po', [
+            self::log_ctx('merchant_po', [
                 'order_id'          => $order_id,
                 'job_key'           => $job_key,
                 'dist_id'           => $dist_id,
@@ -368,7 +367,7 @@ final class OrderPlacementJobRunner
 
             $req_ms = (int) round((microtime(true) - $t_req) * 1000);
 
-            $this->log_ctx('req_built', [
+            self::log_ctx('req_built', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'dist_id'    => $dist_id,
@@ -382,20 +381,11 @@ final class OrderPlacementJobRunner
             // -----------------------------
             $t_dist = microtime(true);
 
-            $handler = Plugin::instance()->distributor_handler ?? null;
-            if (!($handler instanceof DistributorHandler)) {
-                $dist_resolve_ms = (int) round((microtime(true) - $t_dist) * 1000);
-                $this->log_ctx('dist_handler_missing', [
-                    'order_id' => $order_id,
-                    'job_key'  => $job_key,
-                    'dist_resolve_ms' => $dist_resolve_ms,
-                ]);
-                throw new \RuntimeException('Distributor handler not available');
-            }
+            
 
             if (!Options::is_distributor_enabled($dist_id)) {
                 $dist_resolve_ms = (int) round((microtime(true) - $t_dist) * 1000);
-                $this->log_ctx('dist_disabled', [
+                self::log_ctx('dist_disabled', [
                     'order_id' => $order_id,
                     'job_key'  => $job_key,
                     'dist_id'  => $dist_id,
@@ -407,7 +397,7 @@ final class OrderPlacementJobRunner
             $dist = $handler->get_distributor_by_id($dist_id);
             if (!($dist instanceof DistributorBase)) {
                 $dist_resolve_ms = (int) round((microtime(true) - $t_dist) * 1000);
-                $this->log_ctx('dist_not_found', [
+                self::log_ctx('dist_not_found', [
                     'order_id' => $order_id,
                     'job_key'  => $job_key,
                     'dist_id'  => $dist_id,
@@ -418,7 +408,7 @@ final class OrderPlacementJobRunner
 
             $dist_resolve_ms = (int) round((microtime(true) - $t_dist) * 1000);
 
-            $this->log_ctx('dist_resolved', [
+            self::log_ctx('dist_resolved', [
                 'order_id'    => $order_id,
                 'job_key'     => $job_key,
                 'dist_id'     => $dist_id,
@@ -431,12 +421,12 @@ final class OrderPlacementJobRunner
             // -----------------------------
             $t_validate_total = microtime(true);
 
-            $vr = $this->validate_and_persist_result($order, $job, $dist, $req, $attempt_n);
+            $vr = self::validate_and_persist_result($order, $job, $dist, $req, $attempt_n);
 
             $seg['validate_total_ms'] = (int) round((microtime(true) - $t_validate_total) * 1000);
 
             $vr_code = is_object($vr) ? (string) ($vr->code ?? '') : '';
-            $this->log_ctx('validation_done', [
+            self::log_ctx('validation_done', [
                 'order_id'    => $order_id,
                 'job_key'     => $job_key,
                 'dist_id'     => $dist_id,
@@ -455,7 +445,7 @@ final class OrderPlacementJobRunner
 
             $seg['sm_after_validate_ms'] = (int) round((microtime(true) - $t_sm1) * 1000);
 
-            $this->log_ctx('sm_after_validation', [
+            self::log_ctx('sm_after_validation', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'dist_id'    => $dist_id,
@@ -466,7 +456,7 @@ final class OrderPlacementJobRunner
 
             if (($dec['action'] ?? '') === 'exit') {
                 $meta['exit_stage'] = 'exit_after_validation';
-                $this->log_ctx('exit_after_validation', [
+                self::log_ctx('exit_after_validation', [
                     'order_id'   => $order_id,
                     'job_key'    => $job_key,
                     'dist_id'    => $dist_id,
@@ -482,11 +472,11 @@ final class OrderPlacementJobRunner
             // -----------------------------
             $t_place_total = microtime(true);
 
-            $or = $this->place_and_persist_result($order, $job, $dist, $req, $attempt_n);
+            $or = self::place_and_persist_result($order, $job, $dist, $req, $attempt_n);
 
             $seg['place_total_ms'] = (int) round((microtime(true) - $t_place_total) * 1000);
 
-            $this->log_ctx('place_done', [
+            self::log_ctx('place_done', [
                 'order_id'  => $order_id,
                 'job_key'   => $job_key,
                 'dist_id'   => $dist_id,
@@ -505,7 +495,7 @@ final class OrderPlacementJobRunner
 
             $seg['sm_after_place_ms'] = (int) round((microtime(true) - $t_sm2) * 1000);
 
-            $this->log_ctx('sm_after_place', [
+            self::log_ctx('sm_after_place', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'dist_id'    => $dist_id,
@@ -516,7 +506,7 @@ final class OrderPlacementJobRunner
 
             if (($dec2['action'] ?? '') === 'exit') {
                 $meta['exit_stage'] = 'exit_after_place';
-                $this->log_ctx('exit_after_place', [
+                self::log_ctx('exit_after_place', [
                     'order_id'   => $order_id,
                     'job_key'    => $job_key,
                     'dist_id'    => $dist_id,
@@ -538,7 +528,7 @@ final class OrderPlacementJobRunner
 
             $meta['exit_stage'] = 'mark_success';
 
-            $this->log_ctx('mark_success', [
+            self::log_ctx('mark_success', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'dist_id'    => $dist_id,
@@ -550,7 +540,7 @@ final class OrderPlacementJobRunner
         } catch (\Throwable $e) {
             $meta['exit_stage'] = 'exception';
 
-            $this->log_ctx('exception', [
+            self::log_ctx('exception', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'dist_id'    => $meta['dist_id'],
@@ -567,7 +557,7 @@ final class OrderPlacementJobRunner
             try {
                 OrderPlacementJobLifecycle::mark_job_failed($order, $job_key, $e->getMessage());
             } catch (\Throwable $e2) {
-                $this->log_ctx('mark_failed_exception', [
+                self::log_ctx('mark_failed_exception', [
                     'order_id'  => $order_id,
                     'job_key'   => $job_key,
                     'attempt_n' => $attempt_n,
@@ -577,7 +567,7 @@ final class OrderPlacementJobRunner
             $seg['mark_failed_ms'] = (int) round((microtime(true) - $t_fail) * 1000);
 
             // Always finish-line log for failures too (easy grepping)
-            $this->log_ctx('run_finish', [
+            self::log_ctx('run_finish', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'dist_id'    => $meta['dist_id'],
@@ -591,7 +581,7 @@ final class OrderPlacementJobRunner
         }
     }
 
-    private function validate_and_persist_result(
+    private static function validate_and_persist_result(
         WC_Order $order,
         OrderPlacementJobRow $job,
         DistributorBase $dist,
@@ -605,7 +595,7 @@ final class OrderPlacementJobRunner
         $t_total = microtime(true);
         $t_call  = microtime(true);
 
-        $this->log_ctx('validate_start', [
+        self::log_ctx('validate_start', [
             'order_id'  => $order_id,
             'job_key'   => $job_key,
             'attempt_n' => $attempt_n,
@@ -619,7 +609,7 @@ final class OrderPlacementJobRunner
         } catch (\Throwable $e) {
             $call_ms = (int) round((microtime(true) - $t_call) * 1000);
 
-            $this->log_ctx('validate_exception', [
+            self::log_ctx('validate_exception', [
                 'order_id'  => $order_id,
                 'job_key'   => $job_key,
                 'attempt_n' => $attempt_n,
@@ -634,7 +624,7 @@ final class OrderPlacementJobRunner
             OrderPlacementJobSnapshotsStore::set_job_validation_result($order, $job_key, $snap);
             $persist_ms = (int) round((microtime(true) - $t_persist) * 1000);
 
-            $this->log_ctx('validate_exception_snapshot_persisted', [
+            self::log_ctx('validate_exception_snapshot_persisted', [
                 'order_id'  => $order_id,
                 'job_key'   => $job_key,
                 'attempt_n' => $attempt_n,
@@ -647,7 +637,7 @@ final class OrderPlacementJobRunner
         $call_ms = (int) round((microtime(true) - $t_call) * 1000);
 
         if (!($vr instanceof DistributorOrderValidationResult)) {
-            $this->log_ctx('validate_invalid_return', [
+            self::log_ctx('validate_invalid_return', [
                 'order_id'       => $order_id,
                 'job_key'        => $job_key,
                 'attempt_n'      => $attempt_n,
@@ -660,7 +650,7 @@ final class OrderPlacementJobRunner
             OrderPlacementJobSnapshotsStore::set_job_validation_result($order, $job_key, $snap);
             $persist_ms = (int) round((microtime(true) - $t_persist) * 1000);
 
-            $this->log_ctx('validate_invalid_snapshot_persisted', [
+            self::log_ctx('validate_invalid_snapshot_persisted', [
                 'order_id'  => $order_id,
                 'job_key'   => $job_key,
                 'attempt_n' => $attempt_n,
@@ -682,7 +672,7 @@ final class OrderPlacementJobRunner
 
         $total_ms = (int) round((microtime(true) - $t_total) * 1000);
 
-        $this->log_ctx('validate_persisted', [
+        self::log_ctx('validate_persisted', [
             'order_id'   => $order_id,
             'job_key'    => $job_key,
             'attempt_n'  => $attempt_n,
@@ -696,7 +686,7 @@ final class OrderPlacementJobRunner
         return $vr;
     }
 
-    private function place_and_persist_result(
+    private static function place_and_persist_result(
         WC_Order $order,
         OrderPlacementJobRow $job,
         DistributorBase $dist,
@@ -710,7 +700,7 @@ final class OrderPlacementJobRunner
         $t_total = microtime(true);
         $t_call  = microtime(true);
 
-        $this->log_ctx('place_start', [
+        self::log_ctx('place_start', [
             'order_id'  => $order_id,
             'job_key'   => $job_key,
             'attempt_n' => $attempt_n,
@@ -736,7 +726,7 @@ final class OrderPlacementJobRunner
         } catch (\Throwable $e) {
             $call_ms = (int) round((microtime(true) - $t_call) * 1000);
 
-            $this->log_ctx('place_exception', [
+            self::log_ctx('place_exception', [
                 'order_id'  => $order_id,
                 'job_key'   => $job_key,
                 'attempt_n' => $attempt_n,
@@ -751,7 +741,7 @@ final class OrderPlacementJobRunner
             OrderPlacementJobSnapshotsStore::set_job_place_result($order, $job_key, $snap);
             $persist_ms = (int) round((microtime(true) - $t_persist) * 1000);
 
-            $this->log_ctx('place_exception_snapshot_persisted', [
+            self::log_ctx('place_exception_snapshot_persisted', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'attempt_n'  => $attempt_n,
@@ -764,7 +754,7 @@ final class OrderPlacementJobRunner
         $call_ms = (int) round((microtime(true) - $t_call) * 1000);
 
         if (!($or instanceof DistributorOrderResult)) {
-            $this->log_ctx('place_invalid_return', [
+            self::log_ctx('place_invalid_return', [
                 'order_id'       => $order_id,
                 'job_key'        => $job_key,
                 'attempt_n'      => $attempt_n,
@@ -777,7 +767,7 @@ final class OrderPlacementJobRunner
             OrderPlacementJobSnapshotsStore::set_job_place_result($order, $job_key, $snap);
             $persist_ms = (int) round((microtime(true) - $t_persist) * 1000);
 
-            $this->log_ctx('place_invalid_snapshot_persisted', [
+            self::log_ctx('place_invalid_snapshot_persisted', [
                 'order_id'   => $order_id,
                 'job_key'    => $job_key,
                 'attempt_n'  => $attempt_n,
@@ -799,7 +789,7 @@ final class OrderPlacementJobRunner
 
         $total_ms = (int) round((microtime(true) - $t_total) * 1000);
 
-        $this->log_ctx('place_persisted', [
+        self::log_ctx('place_persisted', [
             'order_id'   => $order_id,
             'job_key'    => $job_key,
             'attempt_n'  => $attempt_n,
@@ -814,7 +804,7 @@ final class OrderPlacementJobRunner
     }
 
     /** @return array{0:?DistributorShipTo,1:string} */
-    private function resolve_ship_to_ffl_if_needed(WC_Order $order, bool $ffl_required): array
+    private static function resolve_ship_to_ffl_if_needed(WC_Order $order, bool $ffl_required): array
     {
         $order_id = (int) $order->get_id();
 
@@ -824,13 +814,13 @@ final class OrderPlacementJobRunner
 
         $receiving_ffl_number = strtoupper(trim((string) $order->get_meta('fflhub_receiving_ffl_number', true)));
         if ($receiving_ffl_number === '') {
-            $this->log_ctx('ffl_missing_number', [
+            self::log_ctx('ffl_missing_number', [
                 'order_id' => $order_id,
             ]);
             throw new \RuntimeException('FFL bucket but missing receiving FFL number on order');
         }
 
-        $this->log_ctx('ffl_lookup_start', [
+        self::log_ctx('ffl_lookup_start', [
             'order_id'              => $order_id,
             'receiving_ffl_number'  => $receiving_ffl_number,
         ]);
@@ -846,7 +836,7 @@ final class OrderPlacementJobRunner
         $lookup_ms = (int) round((microtime(true) - $t_lookup) * 1000);
 
         if (!($ship_ffl instanceof DistributorShipTo)) {
-            $this->log_ctx('ffl_lookup_failed', [
+            self::log_ctx('ffl_lookup_failed', [
                 'order_id'             => $order_id,
                 'receiving_ffl_number' => $receiving_ffl_number,
                 'lookup_ms'            => $lookup_ms,
@@ -854,7 +844,7 @@ final class OrderPlacementJobRunner
             throw new \RuntimeException('FFL bucket but failed to resolve ship_to_ffl from DB');
         }
 
-        $this->log_ctx('ffl_lookup_ok', [
+        self::log_ctx('ffl_lookup_ok', [
             'order_id'             => $order_id,
             'receiving_ffl_number' => $receiving_ffl_number,
             'lookup_ms'            => $lookup_ms,
@@ -868,13 +858,10 @@ final class OrderPlacementJobRunner
     // Logging helpers (use DebugLogUtil)
     // --------------------------------------------------
 
-    private function log(string $msg): void
-    {
-        DebugLogUtil::log(self::DEBUG_CONST, self::LOG_PREFIX, $msg);
-    }
+    
 
     /** @param array<string,mixed> $ctx */
-    private function log_ctx(string $msg, array $ctx): void
+    private static function log_ctx(string $msg, array $ctx): void
     {
         DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
     }

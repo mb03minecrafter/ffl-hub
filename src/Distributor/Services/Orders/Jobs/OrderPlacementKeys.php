@@ -1,6 +1,6 @@
 <?php
 
-namespace FFLHub\Distributor\Services\Orders;
+namespace FFLHub\Distributor\Services\Orders\Jobs;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -8,13 +8,15 @@ if (!defined('ABSPATH')) {
 
 final class OrderPlacementKeys
 {
-    private function __construct() {}
 
     /* ===================== Pipeline meta (order-level) ===================== */
 
     public const META_PIPELINE_STARTED     = 'fflhub_place_pipeline_started';
     public const META_PIPELINE_STARTED_AT  = 'fflhub_place_pipeline_started_at';
     public const META_PIPELINE_STARTED_BY  = 'fflhub_place_pipeline_started_by';
+
+    //we use this to suspend jobs if the order is put into the trash can or if we wanna pause the pipeline for the jobs on this order
+    public const META_ORDER_SUSPENDED = 'fflhub_order_jobs_suspended'; 
 
     /* ===================== Job registry (order-level) ===================== */
 

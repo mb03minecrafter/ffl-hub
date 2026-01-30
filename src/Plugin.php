@@ -57,7 +57,6 @@ class Plugin
     private static $instance = null;
 
     public DistributorHandler $distributor_handler;
-    public OrderPlacementOrchestrator $order_orchestrator;
 
 
     //Admin Classes
@@ -92,12 +91,6 @@ class Plugin
         // Cart compliance typically affects frontend + Store API; keep always-on unless proven heavy
         CartCompliance::init();
         FFLRequiredCartExtension::init();
-
-        // Order placement/jobs must be available in cron/AS contexts too
-        $this->order_orchestrator = new OrderPlacementOrchestrator();
-        $this->order_orchestrator->register();
-
-        OrderTrashJobsService::init();
 
         // Context-specific: admin
         if (is_admin()) {

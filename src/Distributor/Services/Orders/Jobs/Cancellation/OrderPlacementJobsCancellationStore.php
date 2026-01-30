@@ -2,9 +2,9 @@
 
 namespace FFLHub\Distributor\Services\Orders\Jobs\Cancellation;
 
-use FFLHub\Distributor\Services\Orders\OrderPlacementKeys;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
-use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -14,26 +14,35 @@ if (!defined('ABSPATH')) {
  * OrderPlacementJobsCancellationStore
  *
  * Responsibility:
- * - Table-side helpers used when an order is trashed/restored/deleted:
- *     - find Action Scheduler action_ids that represent FUTURE work we can cancel
- *     - clear action_id + next_run_at fields for those rows
- *     - delete job rows for an order on permanent delete
+ * - Table-side helpers used when a WooCommerce order is trashed/restored/deleted:
+ *   - locate Action Scheduler action_ids representing FUTURE work we can cancel
+ *   - clear action_id + next_run_at for those future-work rows
+ *   - delete job rows for an order on permanent deletion
  *
- * Important semantics:
- * - We only consider certain statuses "future work" (queued, retry_scheduled).
- * - We deliberately avoid cancelling "running" work.
+ * Semantics:
+ * - Only certain statuses represent "future work" that is safe to cancel:
+ *   - queued
+ *   - retry_scheduled
+ * - We intentionally do NOT cancel "running" work to avoid interrupting in-flight execution.
  *
- * This store is used by OrderTrashJobsService (order-level trash policy).
+ * Notes:
+ * - This class performs direct SQL updates because we need atomic, set-based operations
+ *   across multiple rows for a single order.
+ * - Used by OrderTrashJobsService (order-level trash policy).
+ *
+ * Dependency:
+ * - Requires an instantiated OrderPlacementJobsTable manager for table name resolution.
  */
 final class OrderPlacementJobsCancellationStore
 {
     /**
-     * Get action_id values for jobs that represent FUTURE work we can cancel.
+     * Get Action Scheduler action_ids for jobs that represent FUTURE work we can cancel.
      *
-     * @param int $order_id WooCommerce order id.
-     * @return int[] Unique positive Action Scheduler action ids.
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param int                     $order_id   WooCommerce order ID.
+     * @return int[] Unique positive Action Scheduler action IDs.
      */
-    public static function get_future_action_ids_for_order(int $order_id): array
+    public static function get_future_action_ids_for_order(OrderPlacementJobsTable $jobs_table, int $order_id): array
     {
         global $wpdb;
 
@@ -42,7 +51,10 @@ final class OrderPlacementJobsCancellationStore
             return [];
         }
 
-        $table = OrderPlacementJobsTable::get_table_name();
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return [];
+        }
 
         // Statuses that represent future work which is safe to cancel.
         $future_statuses = [
@@ -76,17 +88,23 @@ final class OrderPlacementJobsCancellationStore
             }
         }
 
-        $out = array_values(array_unique($out));
-        return $out;
+        return array_values(array_unique($out));
     }
 
     /**
      * Clear action scheduling fields for an order's future-status jobs.
      *
-     * @param int $order_id WooCommerce order id.
-     * @param string $reason Optional reason to store as last_error.
+     * What it does:
+     * - Sets action_id = NULL
+     * - Sets next_run_at = NULL
+     * - Stamps updated_at = now (UTC)
+     * - Optionally stores a human-readable reason in last_error (for admin UI visibility)
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param int                     $order_id   WooCommerce order ID.
+     * @param string                  $reason     Optional reason stored in last_error.
      */
-    public static function clear_actions_for_order(int $order_id, string $reason = ''): void
+    public static function clear_actions_for_order(OrderPlacementJobsTable $jobs_table, int $order_id, string $reason = ''): void
     {
         global $wpdb;
 
@@ -95,8 +113,12 @@ final class OrderPlacementJobsCancellationStore
             return;
         }
 
-        $table = OrderPlacementJobsTable::get_table_name();
-        $now   = OrderPlacementTimeUtil::now_mysql_utc();
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return;
+        }
+
+        $now = OrderPlacementTimeUtil::now_mysql_utc();
 
         $future_statuses = [
             OrderPlacementKeys::JOB_STATUS_QUEUED,
@@ -105,7 +127,7 @@ final class OrderPlacementJobsCancellationStore
 
         $placeholders = implode(',', array_fill(0, count($future_statuses), '%s'));
 
-        // Clear schedule metadata first.
+        // Clear schedule metadata.
         $sql = "
             UPDATE {$table}
             SET action_id = NULL,
@@ -135,11 +157,12 @@ final class OrderPlacementJobsCancellationStore
     }
 
     /**
-     * Delete ALL job rows for an order.
+     * Delete ALL job rows for an order (used on permanent deletion).
      *
-     * @param int $order_id WooCommerce order id.
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param int                     $order_id   WooCommerce order ID.
      */
-    public static function delete_jobs_for_order(int $order_id): void
+    public static function delete_jobs_for_order(OrderPlacementJobsTable $jobs_table, int $order_id): void
     {
         global $wpdb;
 
@@ -148,7 +171,10 @@ final class OrderPlacementJobsCancellationStore
             return;
         }
 
-        $table = OrderPlacementJobsTable::get_table_name();
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return;
+        }
 
         $wpdb->delete($table, ['order_id' => $order_id], ['%d']);
     }

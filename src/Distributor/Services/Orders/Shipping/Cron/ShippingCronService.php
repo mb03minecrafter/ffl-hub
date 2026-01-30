@@ -1,27 +1,25 @@
 <?php
 
-namespace FFLHub\Distributor\Services\Orders\Shipping;
+namespace FFLHub\Distributor\Services\Orders\Shipping\Cron;
 
 use WC_Order;
 
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
 
-use FFLHub\Distributor\Services\Orders\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
 
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\PartialShipmentEmailContext;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 
-use FFLHub\Distributor\Services\Orders\OrderTrashJobsService;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
-use FFLHub\Distributor\Services\Orders\Shipping\OrderPlacementShippingJobStore;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
 
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
-
-use FFLHub\Plugin;
+use FFLHub\Distributor\Services\Orders\Shipping\ShippingJobStore;
 use FFLHub\Settings\Options;
 
 use FFLHub\Util\DebugLogUtil;
@@ -36,7 +34,7 @@ if (!defined('ABSPATH')) {
  * Selects eligible placement jobs and polls distributor APIs
  * to determine if shipments have been created yet.
  */
-final class OrderPlacementShippingPollCronService extends AbstractCronService
+final class ShippingCronService extends AbstractCronService
 {
     private const LOG_PREFIX  = '[FFLHUB][ShippingPoller]';
     private const DEBUG_CONST = 'FFLHUB_DEBUG_SHIPPING';
@@ -55,6 +53,15 @@ final class OrderPlacementShippingPollCronService extends AbstractCronService
      * How many jobs to process per run.
      */
     private const BATCH_LIMIT = 50;
+
+
+
+    private DistributorHandler $handler;
+
+    public function __construct(DistributorHandler $handler)
+    {
+        $this->handler = $handler;
+    }
 
     /**
      * Unique cron hook name.
@@ -237,7 +244,7 @@ final class OrderPlacementShippingPollCronService extends AbstractCronService
 
             // Skip trashed/suspended orders (order-level gate)
             $suspended_started = microtime(true);
-            $is_suspended = OrderTrashJobsService::is_order_suspended($order_id);
+            $is_suspended = OrderPlacementPipelineMetaStore::is_order_suspended($order_id);
             $seg['suspended_ms'] = (int) round((microtime(true) - $suspended_started) * 1000);
 
             if ($is_suspended) {
@@ -255,10 +262,9 @@ final class OrderPlacementShippingPollCronService extends AbstractCronService
 
             // ---------------- Distributor lookup ----------------
             $handler_started = microtime(true);
-            $handler = Plugin::instance()->distributor_handler ?? null;
             $seg['handler_ms'] = (int) round((microtime(true) - $handler_started) * 1000);
 
-            if (!($handler instanceof DistributorHandler)) {
+            if (!($this->handler instanceof DistributorHandler)) {
                 $stats['skipped_no_handler']++;
                 $this->log_ctx('skip_no_distributor_handler', [
                     'order_id' => $order_id,
@@ -285,7 +291,7 @@ final class OrderPlacementShippingPollCronService extends AbstractCronService
             }
 
             $dist_lookup_started = microtime(true);
-            $dist = $handler->get_distributor_by_id($dist_id);
+            $dist = $this->handler->get_distributor_by_id($dist_id);
             $seg['dist_lookup_ms'] = (int) round((microtime(true) - $dist_lookup_started) * 1000);
 
             if (!($dist instanceof DistributorBase)) {
@@ -314,7 +320,7 @@ final class OrderPlacementShippingPollCronService extends AbstractCronService
             // At this point, we are actually going to poll → touch timestamp here (not earlier)
             $touch_started = microtime(true);
             try {
-                OrderPlacementShippingJobStore::touch_last_shipping_poll_at($order_id, $job_key);
+                ShippingJobStore::touch_last_shipping_poll_at($order_id, $job_key);
             } catch (\Throwable $e) {
                 // Non-fatal, but worth logging because it breaks pacing
                 $this->log_ctx('touch_last_poll_failed', [
@@ -405,7 +411,7 @@ final class OrderPlacementShippingPollCronService extends AbstractCronService
             // ---------------- Persist shipment ----------------
             $persist_started = microtime(true);
             try {
-                $result = OrderPlacementShippingJobStore::mark_job_shipped($order_id, $job_key, $shipment);
+                $result = ShippingJobStore::mark_job_shipped($order_id, $job_key, $shipment);
                 $stats['persist_ok']++;
             } catch (\Throwable $e) {
                 $seg['persist_ms'] = (int) round((microtime(true) - $persist_started) * 1000);

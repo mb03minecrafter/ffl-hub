@@ -3,7 +3,6 @@
 namespace FFLHub\Distributor\Services\Orders\Jobs;
 
 use WC_Order;
-use FFLHub\Distributor\Services\Orders\OrderPlacementKeys;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -83,6 +82,18 @@ final class OrderPlacementPipelineMetaStore
                 $order->update_meta_data(OrderPlacementKeys::META_PIPELINE_STARTED_BY, $started_by);
             }
         }
+    }
+
+
+    public static function is_order_suspended(int $order_id): bool
+    {
+        $order_id = (int) $order_id;
+        if ($order_id <= 0) {
+            return false;
+        }
+
+        $val = (string) get_post_meta($order_id, OrderPlacementKeys::META_ORDER_SUSPENDED, true);
+        return ($val === '1');
     }
 
     /**

@@ -5,9 +5,9 @@ namespace FFLHub\Distributor\Services\Orders\Jobs;
 use WC_Order;
 
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
-use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -21,8 +21,14 @@ if (!defined('ABSPATH')) {
  * - Applies patches (preferred) and performs partial field updates (internal).
  *
  * Rules:
- * - This class does NOT contain business logic (success/fail/retry/shipping rules).
- * - It only knows how to persist changes safely, including NULL-safe updates.
+ * - No business logic (success/fail/retry/shipping rules). This layer is persistence only.
+ * - Enforces schema allowlist via OrderPlacementJobsTable::get_writable_columns().
+ * - Always stamps updated_at (UTC) for observability.
+ * - Supports NULL-safe partial updates (wpdb->update() does not reliably write NULL).
+ *
+ * Dependency:
+ * - Requires an instantiated OrderPlacementJobsTable (table manager).
+ *   This centralizes table naming/prefixing and the writable column allowlist.
  */
 final class OrderPlacementJobWriter
 {
@@ -31,14 +37,19 @@ final class OrderPlacementJobWriter
      * ============================================================ */
 
     /**
-     * Apply a patch to a job row.
+     * Apply a patch to a job row identified by (order_id, job_key).
      *
-     * @param int $order_id Woo order id.
-     * @param string $job_key Job key (dist|bucket).
-     * @param OrderPlacementJobPatch $patch The patch representing changes to persist.
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param int                     $order_id   Woo order ID.
+     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
+     * @param OrderPlacementJobPatch  $patch      Patch representing changes to persist.
      */
-    public static function apply_patch(int $order_id, string $job_key, OrderPlacementJobPatch $patch): void
-    {
+    public static function apply_patch(
+        OrderPlacementJobsTable $jobs_table,
+        int $order_id,
+        string $job_key,
+        OrderPlacementJobPatch $patch
+    ): void {
         $order_id = (int) $order_id;
         if ($order_id <= 0) {
             return;
@@ -54,19 +65,24 @@ final class OrderPlacementJobWriter
             return; // nothing to write
         }
 
-        self::update_job_fields($order_id, $job_key, $fields);
+        self::update_job_fields($jobs_table, $order_id, $job_key, $fields);
     }
 
     /**
      * Convenience: apply a patch using a WC_Order object.
      *
-     * @param WC_Order $order Woo order object.
-     * @param string $job_key Job key (dist|bucket).
-     * @param OrderPlacementJobPatch $patch Patch representing changes to persist.
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param WC_Order                $order      Woo order object.
+     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
+     * @param OrderPlacementJobPatch  $patch      Patch representing changes to persist.
      */
-    public static function apply_patch_for_order(WC_Order $order, string $job_key, OrderPlacementJobPatch $patch): void
-    {
-        self::apply_patch((int) $order->get_id(), (string) $job_key, $patch);
+    public static function apply_patch_for_order(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        OrderPlacementJobPatch $patch
+    ): void {
+        self::apply_patch($jobs_table, (int) $order->get_id(), (string) $job_key, $patch);
     }
 
     /* ============================================================
@@ -76,15 +92,27 @@ final class OrderPlacementJobWriter
     /**
      * Update fields on a job row (partial update). NULL-safe.
      *
-     * @param int $order_id Woo order id.
-     * @param string $job_key Normalized job key.
-     * @param array<string,mixed> $fields Partial column => value map.
+     * - Filters updates to allowlisted writable columns from the table manager.
+     * - Always stamps updated_at (UTC).
+     * - Uses wpdb->update() when no NULLs are present, otherwise builds a manual UPDATE.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param int                     $order_id   Woo order ID.
+     * @param string                  $job_key    Normalized job key.
+     * @param array<string,mixed>     $fields     Partial column => value map.
      */
-    private static function update_job_fields(int $order_id, string $job_key, array $fields): void
-    {
+    private static function update_job_fields(
+        OrderPlacementJobsTable $jobs_table,
+        int $order_id,
+        string $job_key,
+        array $fields
+    ): void {
         global $wpdb;
 
-        $table = OrderPlacementJobsTable::get_table_name();
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return;
+        }
 
         $order_id = (int) $order_id;
         if ($order_id <= 0) {
@@ -96,7 +124,6 @@ final class OrderPlacementJobWriter
             return;
         }
 
-        $fields = is_array($fields) ? $fields : [];
         if (empty($fields)) {
             return;
         }
@@ -104,12 +131,19 @@ final class OrderPlacementJobWriter
         // Always stamp updated_at for observability + UI freshness.
         $fields['updated_at'] = OrderPlacementTimeUtil::now_mysql_utc();
 
-        // Filter to allowlisted columns (single source of truth: table schema helper).
-        $allowed = OrderPlacementJobsTable::writable_columns();
+        // Filter to allowlisted columns (single source of truth: table manager/schema).
+        $allowed = $jobs_table->get_writable_columns();
+        if (!is_array($allowed) || empty($allowed)) {
+            return;
+        }
+
         $allowed_set = array_fill_keys($allowed, true);
 
         $data = [];
         foreach ($fields as $k => $v) {
+            if (!is_string($k) || $k === '') {
+                continue;
+            }
             if (!isset($allowed_set[$k])) {
                 continue;
             }
@@ -133,7 +167,12 @@ final class OrderPlacementJobWriter
         if (!$has_null) {
             $format = [];
             foreach ($data as $v) {
-                $format[] = is_int($v) ? '%d' : '%s';
+                // Treat ints and digit-only numeric strings as integers for formatting.
+                if (is_int($v) || (is_string($v) && ctype_digit($v))) {
+                    $format[] = '%d';
+                } else {
+                    $format[] = '%s';
+                }
             }
 
             $wpdb->update(
@@ -155,19 +194,29 @@ final class OrderPlacementJobWriter
         $args = [];
 
         foreach ($data as $k => $v) {
+            // Allowlist already protects identifiers; this is just extra hardening.
+            $col = preg_replace('/[^a-zA-Z0-9_]/', '', $k);
+            if ($col === '') {
+                continue;
+            }
+
             if ($v === null) {
-                $sets[] = "{$k} = NULL";
+                $sets[] = "{$col} = NULL";
                 continue;
             }
 
-            if (is_int($v)) {
-                $sets[] = "{$k} = %d";
-                $args[] = $v;
+            if (is_int($v) || (is_string($v) && ctype_digit($v))) {
+                $sets[] = "{$col} = %d";
+                $args[] = (int) $v;
                 continue;
             }
 
-            $sets[] = "{$k} = %s";
+            $sets[] = "{$col} = %s";
             $args[] = (string) $v;
+        }
+
+        if (empty($sets)) {
+            return;
         }
 
         // WHERE clause args

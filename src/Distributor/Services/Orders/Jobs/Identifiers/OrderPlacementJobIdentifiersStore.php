@@ -8,7 +8,8 @@ use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
-use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
+
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -19,18 +20,22 @@ if (!defined('ABSPATH')) {
  *
  * Responsibility:
  * - Persist and retrieve correlation identifiers for a placement job:
- *     - merchant_po (our canonical external reference / correlation id)
- *     - external_order_ids_json (array of external ids from distributor)
+ *   - merchant_po             (our canonical external reference / correlation id)
+ *   - external_order_ids_json (JSON array of external IDs from the distributor)
  *
  * Semantics:
- * - Default behavior is “first writer wins”:
- *     - set_job_merchant_po(..., force=false) will only write if merchant_po is empty.
- *     - set_job_external_order_ids(..., force=false) will only write if external ids are empty/[].
- * - force=true overrides and will overwrite existing values.
+ * - Default behavior is "first writer wins":
+ *   - set_job_merchant_po(..., force=false) writes ONLY if merchant_po is empty.
+ *   - set_job_external_order_ids(..., force=false) writes ONLY if external IDs are empty / [].
+ * - force=true overrides and overwrites existing values.
  *
  * Notes:
- * - These are persisted directly via SQL to support “first-writer-wins” atomically.
- * - Callers should only persist external_order_ids on a successful place-order path.
+ * - Uses direct SQL UPDATE statements so the "first-writer-wins" check + write is atomic
+ *   (single statement with a WHERE predicate that requires emptiness).
+ * - Callers should only persist external IDs on a successful place-order path.
+ *
+ * Dependency:
+ * - Requires an instantiated OrderPlacementJobsTable manager for table name resolution.
  */
 final class OrderPlacementJobIdentifiersStore
 {
@@ -38,8 +43,13 @@ final class OrderPlacementJobIdentifiersStore
      * Correlation ID: merchant_po
      * ============================================================ */
 
-    public static function set_job_merchant_po(WC_Order $order, string $job_key, string $merchant_po, bool $force = false): void
-    {
+    public static function set_job_merchant_po(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $merchant_po,
+        bool $force = false
+    ): void {
         global $wpdb;
 
         $oid = (int) $order->get_id();
@@ -57,11 +67,15 @@ final class OrderPlacementJobIdentifiersStore
             return;
         }
 
-        $table = OrderPlacementJobsTable::get_table_name();
-        $now   = OrderPlacementTimeUtil::now_mysql_utc();
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return;
+        }
+
+        $now = OrderPlacementTimeUtil::now_mysql_utc();
 
         if ($force) {
-            // Unconditional overwrite
+            // Unconditional overwrite.
             $wpdb->query(
                 $wpdb->prepare(
                     "UPDATE {$table}
@@ -76,7 +90,7 @@ final class OrderPlacementJobIdentifiersStore
             return;
         }
 
-        // First-writer-wins: only set if empty
+        // First-writer-wins: only set if empty.
         $wpdb->query(
             $wpdb->prepare(
                 "UPDATE {$table}
@@ -91,9 +105,12 @@ final class OrderPlacementJobIdentifiersStore
         );
     }
 
-    public static function get_job_merchant_po(WC_Order $order, string $job_key): string
-    {
-        $job = OrderPlacementJobsRepository::get_job_for_order($order, $job_key);
+    public static function get_job_merchant_po(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): string {
+        $job = OrderPlacementJobsRepository::get_job_for_order($jobs_table, $order, $job_key);
         return $job ? $job->merchant_po_or_empty() : '';
     }
 
@@ -101,8 +118,13 @@ final class OrderPlacementJobIdentifiersStore
      * External IDs: external_order_ids_json
      * ============================================================ */
 
-    public static function set_job_external_order_ids(WC_Order $order, string $job_key, array $external_ids, bool $force = false): void
-    {
+    public static function set_job_external_order_ids(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        array $external_ids,
+        bool $force = false
+    ): void {
         global $wpdb;
 
         $oid = (int) $order->get_id();
@@ -115,7 +137,7 @@ final class OrderPlacementJobIdentifiersStore
             return;
         }
 
-        // Pass D requirement: normalize external ids via util (Pass C lives in ProductUtil per your note).
+        // Normalize and de-dupe external IDs.
         $external_ids = OrderPlacementProductUtil::normalize_external_ids($external_ids);
         if (empty($external_ids)) {
             return;
@@ -126,11 +148,15 @@ final class OrderPlacementJobIdentifiersStore
             $json = '[]';
         }
 
-        $table = OrderPlacementJobsTable::get_table_name();
-        $now   = OrderPlacementTimeUtil::now_mysql_utc();
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return;
+        }
+
+        $now = OrderPlacementTimeUtil::now_mysql_utc();
 
         if ($force) {
-            // Unconditional overwrite
+            // Unconditional overwrite.
             $wpdb->query(
                 $wpdb->prepare(
                     "UPDATE {$table}
@@ -145,7 +171,7 @@ final class OrderPlacementJobIdentifiersStore
             return;
         }
 
-        // First-writer-wins: only set if empty
+        // First-writer-wins: only set if empty.
         $wpdb->query(
             $wpdb->prepare(
                 "UPDATE {$table}
@@ -164,15 +190,28 @@ final class OrderPlacementJobIdentifiersStore
         );
     }
 
-    public static function get_job_external_order_ids(WC_Order $order, string $job_key): array
-    {
-        $job = OrderPlacementJobsRepository::get_job_for_order($order, $job_key);
+    public static function get_job_external_order_ids(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key
+    ): array {
+        $job = OrderPlacementJobsRepository::get_job_for_order($jobs_table, $order, $job_key);
         return $job ? $job->external_order_ids() : [];
     }
 
-    public static function persist_success_ids(WC_Order $order, string $job_key, string $merchant_po, array $external_ids): void
-    {
-        self::set_job_merchant_po($order, $job_key, $merchant_po, false);
-        self::set_job_external_order_ids($order, $job_key, $external_ids, false);
+    /**
+     * Convenience: persist correlation IDs from a successful place-order call.
+     *
+     * First-writer-wins semantics are used (force=false).
+     */
+    public static function persist_success_ids(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $merchant_po,
+        array $external_ids
+    ): void {
+        self::set_job_merchant_po($jobs_table, $order, $job_key, $merchant_po, false);
+        self::set_job_external_order_ids($jobs_table, $order, $job_key, $external_ids, false);
     }
 }

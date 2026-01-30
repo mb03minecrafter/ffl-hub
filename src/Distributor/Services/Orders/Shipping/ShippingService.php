@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-final class OrderPlacementShippingService
+final class ShippingService
 {
     /**
      * Compute a safe DB patch for shipping fields + a ShippingUpdateResult.

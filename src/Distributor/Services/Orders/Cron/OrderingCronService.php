@@ -1,14 +1,21 @@
 <?php
 
-namespace FFLHub\Distributor\Services\Orders;
+namespace FFLHub\Distributor\Services\Orders\Cron;
 
+use FFLHub\Distributor\Core\DistributorHandler;
 use WC_Order;
 
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
+
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
+
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobRunner;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
@@ -21,7 +28,7 @@ if (!defined('ABSPATH')) {
  * Pulls DB-marked jobs (scheduled / retry_scheduled) that are ready to run,
  * ordered by next_run_at ASC, and executes them via OrderPlacementJobRunner.
  */
-final class OrderPlacementDispatchCronService extends AbstractCronService
+final class OrderingCronService extends AbstractCronService
 {
     private const LOG_PREFIX  = '[FFLHUB][PlaceDispatcher]';
     private const DEBUG_CONST = 'FFLHUB_DEBUG_PLACE_DISPATCH';
@@ -35,6 +42,17 @@ final class OrderPlacementDispatchCronService extends AbstractCronService
      * How many jobs to process per run.
      */
     private const BATCH_LIMIT = 50;
+
+
+    private DistributorHandler $handler;
+    private OrderPlacementJobsTable $jobs_table;
+
+    public function __construct(DistributorHandler $handler, OrderPlacementJobsTable $jobs_table)
+    {
+        $this->handler = $handler;
+        $this->jobs_table = $jobs_table;
+    }
+
 
     /**
      * How often the dispatcher runs.
@@ -110,6 +128,7 @@ final class OrderPlacementDispatchCronService extends AbstractCronService
         $jobs = [];
         try {
             $jobs = OrderPlacementJobsRepository::find_jobs_ready_for_processing(
+                $this->jobs_table,
                 $eligible_statuses,
                 $now_mysql_utc,
                 $limit
@@ -197,7 +216,9 @@ final class OrderPlacementDispatchCronService extends AbstractCronService
             // -----------------------------
             $t_susp = microtime(true);
 
-            $is_suspended = OrderTrashJobsService::is_order_suspended($order_id);
+
+            //TODO: move this fucntion and the key associated with it to the keys file????
+            $is_suspended = OrderPlacementPipelineMetaStore::is_order_suspended($order_id);
 
             $susp_ms = (int) round((microtime(true) - $t_susp) * 1000);
             $perf['job_suspend_ms_total'] += $susp_ms;
@@ -265,7 +286,7 @@ final class OrderPlacementDispatchCronService extends AbstractCronService
             $t_runner = microtime(true);
 
             try {
-                (new OrderPlacementJobRunner())->run($order, $job_key);
+                OrderPlacementJobRunner::run($order, $job_key, $this->handler);
                 $stats['runner_ok']++;
             } catch (\Throwable $e) {
                 $stats['runner_exception']++;
