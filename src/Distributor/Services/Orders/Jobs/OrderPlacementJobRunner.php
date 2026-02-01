@@ -258,13 +258,8 @@ final class OrderPlacementJobRunner
         $job_key = $job->job_key_norm();
 
         try {
-            // TODO: Replace with: $or = $dist->place_order($req);
-            $roll = rand(1, 2);
-            $or = DistributorOrderResult::ok('DEBUG: FAKE SUCCESS/OK', []);
-
-            if ($roll === 2) {
-                $or = DistributorOrderResult::block_fatal('DEBUG: FAKE FATAL BLOCK', []);
-            }
+            $or = $dist->place_order($req);
+            
 
 
             ///WE NEED TO CHANGE THIS TO ORDER FOR REAL WHEN WE GO TO PROD

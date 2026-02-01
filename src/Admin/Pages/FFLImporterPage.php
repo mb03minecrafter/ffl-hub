@@ -29,6 +29,7 @@ final class FFLImporterPage
 
     private static function log(string $msg, array $ctx = []): void
     {
+        return; //silence the logger
         if (!empty($ctx)) {
             error_log(self::LOG_PREFIX . ' ' . $msg . ' ' . wp_json_encode($ctx));
             return;
