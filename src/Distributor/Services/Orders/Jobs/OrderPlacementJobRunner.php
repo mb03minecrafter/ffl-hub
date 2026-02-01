@@ -25,6 +25,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementPOUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementSnapshotUtil;
 
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\FFL\Tables\FFLTable;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -49,6 +50,7 @@ final class OrderPlacementJobRunner
      */
     public static function run(
         OrderPlacementJobsTable $jobs_table,
+        FFLTable $ffl_table,
         WC_Order $order,
         string $job_key,
         DistributorHandler $handler
@@ -129,7 +131,7 @@ final class OrderPlacementJobRunner
             }
 
             // Resolve FFL ship-to (if needed).
-            [$ship_ffl, $receiving_ffl_number] = self::resolve_ship_to_ffl_if_needed($order, $ffl_required);
+            [$ship_ffl, $receiving_ffl_number] = self::resolve_ship_to_ffl_if_needed($ffl_table, $order, $ffl_required);
 
             $dest_state = $ffl_required && ($ship_ffl instanceof DistributorShipTo)
                 ? (string) $ship_ffl->state
@@ -296,7 +298,7 @@ final class OrderPlacementJobRunner
      * @return array{0:?DistributorShipTo,1:string}
      * @throws \RuntimeException
      */
-    private static function resolve_ship_to_ffl_if_needed(WC_Order $order, bool $ffl_required): array
+    private static function resolve_ship_to_ffl_if_needed(FFLTable $ffl_table, WC_Order $order, bool $ffl_required): array
     {
         if (!$ffl_required) {
             return [null, ''];
@@ -308,6 +310,7 @@ final class OrderPlacementJobRunner
         }
 
         $ship_ffl = CheckoutOrderRequestBuilder::build_ship_to_ffl_or_null(
+            $ffl_table,
             $receiving_ffl_number,
             function (): void {
                 // silent

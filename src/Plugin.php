@@ -115,7 +115,7 @@ final class Plugin
         $this->ffl_api->register();
 
         // Distributor handler + runtime services (tables, jobs, registries, etc).
-        $this->distributor_handler = new DistributorHandler();
+        $this->distributor_handler = new DistributorHandler($this->ffl_table);
         $this->distributor_handler->register_runtime_services();
 
         // Shipping + MAP visibility are always-on.
@@ -179,7 +179,7 @@ final class Plugin
         $ffl_table->createTables();
 
         // Allow distributor handler to provision its own tables/state.
-        $handler = new DistributorHandler();
+        $handler = new DistributorHandler($ffl_table);
         $handler->on_activate();
     }
 
@@ -191,7 +191,12 @@ final class Plugin
      */
     public static function deactivate(): void
     {
-        $handler = new DistributorHandler();
+        // Create core FFL tables.
+        $ffl_table_schema = new FFLSchema();
+        $ffl_table        = new FFLTable($ffl_table_schema);
+        $ffl_table->createTables();
+
+        $handler = new DistributorHandler($ffl_table);
         $handler->on_deactivate();
     }
 }

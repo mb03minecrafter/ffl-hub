@@ -16,6 +16,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobRunner;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\FFL\Tables\FFLTable;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -41,11 +42,13 @@ final class OrderingCronService extends AbstractCronService
 
     private DistributorHandler $handler;
     private OrderPlacementJobsTable $jobs_table;
+    private FFLTable $ffl_table;
 
-    public function __construct(DistributorHandler $handler, OrderPlacementJobsTable $jobs_table)
+    public function __construct(DistributorHandler $handler, OrderPlacementJobsTable $jobs_table, FFLTable $ffl_table)
     {
         $this->handler   = $handler;
         $this->jobs_table = $jobs_table;
+        $this->ffl_table = $ffl_table;
     }
 
     protected function get_interval_seconds(): int
@@ -115,7 +118,7 @@ final class OrderingCronService extends AbstractCronService
             }
 
             try {
-                OrderPlacementJobRunner::run($this->jobs_table, $order, $job_key, $this->handler);
+                OrderPlacementJobRunner::run($this->jobs_table, $this->ffl_table, $order, $job_key, $this->handler);
             } catch (\Throwable $e) {
                 // Intentionally do not rethrow; keep draining other rows.
                 // Optionally: error_log('[FFLHUB][PlaceDispatcher] runner exception: ' . $e->getMessage());

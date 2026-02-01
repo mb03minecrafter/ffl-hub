@@ -16,6 +16,7 @@ use FFLHub\Distributor\Services\Orders\Shipping\Cron\ShippingCronService;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsSchema;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Distributor\Services\ProductSync\DistributorProductSyncCronService;
+use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Settings\Options;
 
 /**
@@ -69,8 +70,18 @@ class DistributorHandler
     // ---------------------------------------------------------------------
     private OrderTrashJobsService $orderTrashJobsService;
 
-    public function __construct()
+
+
+    // ---------------------------------------------------------------------
+    // FFL Table
+    // ---------------------------------------------------------------------
+    private FFLTable $ffl_table;
+
+    public function __construct(FFLTable $ffl_table)
     {
+
+        $this->ffl_table = $ffl_table;
+
         // Build distributor instances from module registry first.
         $this->register_distributors();
 
@@ -87,7 +98,7 @@ class DistributorHandler
         $this->orderPlacementOrchestratorService = new OrderingOrchestratorService($this->ordering_jobs_table);
 
         // Cron services require handler to reach distributor implementations.
-        $this->orderPlacementCronService = new OrderingCronService($this, $this->ordering_jobs_table);
+        $this->orderPlacementCronService = new OrderingCronService($this, $this->ordering_jobs_table, $this->ffl_table);
         $this->orderShippingCronService  = new ShippingCronService($this, $this->ordering_jobs_table);
 
         // Order trash hooks (not cron-based; no scheduling lifecycle needed).
