@@ -2,50 +2,103 @@
 
 namespace FFLHub\Distributor\Models;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
 /**
- * Result of a UPC lookup across distributors.
+ * UpcLookupResult
  *
- * Holds all offers plus precomputed cheapest offers.
+ * Value object representing the result of a UPC lookup across multiple distributors.
+ *
+ * Responsibilities:
+ * - Hold the set of offers keyed by distributor_id.
+ * - Precompute (once) the cheapest offer overall and the cheapest offer that is in stock.
+ * - Provide a deterministic "best default" selection for UI/business logic.
+ *
+ * Notes / invariants:
+ * - Offers are expected to be a map of distributor_id => DistributorOffer.
+ * - Computation uses DistributorOffer::get_true_cost() for comparisons.
+ * - Offers with missing/invalid true_cost are ignored for "cheapest" computations.
+ * - "In stock" is defined by DistributorOffer::is_in_stock().
+ * - No sorting or mutation of the offers map is performed.
  */
 final class UpcLookupResult
 {
-    /** @var array<string, DistributorOffer> */
+    /**
+     * Map of distributor_id => offer.
+     *
+     * @var array<string,DistributorOffer>
+     */
     private array $offers;
 
+    /**
+     * Cheapest offer by true_cost among all offers (may include out-of-stock offers).
+     */
     private ?DistributorOffer $cheapest_any = null;
+
+    /**
+     * Cheapest offer by true_cost among offers currently in stock.
+     */
     private ?DistributorOffer $cheapest_in_stock = null;
 
     /**
-     * @param array<string, DistributorOffer> $offers Map of distributor_id => offer
+     * @param array<string,DistributorOffer> $offers Map of distributor_id => offer
      */
     public function __construct(array $offers)
     {
-        $this->offers = $offers;
+        // Defensive: keep only valid offers and normalize keys.
+        $clean = [];
+        foreach ($offers as $dist_id => $offer) {
+            if (!$offer instanceof DistributorOffer) {
+                continue;
+            }
+
+            $k = is_string($dist_id) ? strtolower(trim($dist_id)) : '';
+            if ($k === '') {
+                // If a caller passed a weird key, don't drop the offer—stash under its own id.
+                $k = strtolower(trim((string) $offer->distributor_id));
+            }
+            if ($k === '') {
+                // Last-resort: keep it but avoid empty key collisions.
+                $k = 'unknown_' . spl_object_hash($offer);
+            }
+
+            $clean[$k] = $offer;
+        }
+
+        $this->offers = $clean;
         $this->compute_cheapest();
     }
 
-    /** @return array<string, DistributorOffer> */
+    /**
+     * All offers keyed by distributor_id.
+     *
+     * @return array<string,DistributorOffer>
+     */
     public function offers(): array
     {
         return $this->offers;
     }
 
+    /**
+     * Cheapest offer by true_cost (may be out of stock), or null if none were comparable.
+     */
     public function cheapest_any(): ?DistributorOffer
     {
         return $this->cheapest_any;
     }
 
+    /**
+     * Cheapest in-stock offer by true_cost, or null if none are in stock/comparable.
+     */
     public function cheapest_in_stock(): ?DistributorOffer
     {
         return $this->cheapest_in_stock;
     }
 
     /**
-     * Your current UI preference order:
+     * UI preference order:
      * cheapest_in_stock → cheapest_any → first offer → null
      */
     public function best_default(): ?DistributorOffer
@@ -62,10 +115,22 @@ final class UpcLookupResult
         return ($first instanceof DistributorOffer) ? $first : null;
     }
 
+    /**
+     * Compute cheapest offers once.
+     *
+     * Comparison key:
+     * - DistributorOffer::get_true_cost() (null => not comparable)
+     *
+     * In-stock determination:
+     * - DistributorOffer::is_in_stock()
+     */
     private function compute_cheapest(): void
     {
+        $this->cheapest_any = null;
+        $this->cheapest_in_stock = null;
+
         foreach ($this->offers as $offer) {
-            if (! $offer instanceof DistributorOffer) {
+            if (!$offer instanceof DistributorOffer) {
                 continue;
             }
 
@@ -74,18 +139,20 @@ final class UpcLookupResult
                 continue;
             }
 
-            if (
-                $this->cheapest_any === null
-                || $true_cost < (float) $this->cheapest_any->get_true_cost()
-            ) {
+            $best_any_cost = ($this->cheapest_any instanceof DistributorOffer)
+                ? $this->cheapest_any->get_true_cost()
+                : null;
+
+            if ($this->cheapest_any === null || ($best_any_cost !== null && $true_cost < (float) $best_any_cost)) {
                 $this->cheapest_any = $offer;
             }
 
             if ($offer->is_in_stock()) {
-                if (
-                    $this->cheapest_in_stock === null
-                    || $true_cost < (float) $this->cheapest_in_stock->get_true_cost()
-                ) {
+                $best_stock_cost = ($this->cheapest_in_stock instanceof DistributorOffer)
+                    ? $this->cheapest_in_stock->get_true_cost()
+                    : null;
+
+                if ($this->cheapest_in_stock === null || ($best_stock_cost !== null && $true_cost < (float) $best_stock_cost)) {
                     $this->cheapest_in_stock = $offer;
                 }
             }

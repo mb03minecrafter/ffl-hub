@@ -1,5 +1,4 @@
 <?php
-
 declare(strict_types=1);
 
 namespace FFLHub\Checkout\Builders;
@@ -9,12 +8,16 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Product\ProductMeta;
-use FFLHub\Admin\Pages\FFLImporterPage;
+
+use FFLHub\FFL\Data\FFLRepository;
+use FFLHub\FFL\Data\FFLRowMapper;
+use FFLHub\FFL\Tables\FFLTable;
 
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorShipTo;
+
 use WC_Product;
 
 final class CheckoutOrderRequestBuilder
@@ -38,7 +41,7 @@ final class CheckoutOrderRequestBuilder
     public static function current_merchant_order_id(string $dist_id): string
     {
         $session = (function_exists('WC') && WC()->session) ? (string) WC()->session->get_customer_id() : '';
-        $suffix = $session !== '' ? substr((string) preg_replace('/[^A-Za-z0-9]/', '', $session), 0, 10) : 'nosess';
+        $suffix  = $session !== '' ? substr((string) preg_replace('/[^A-Za-z0-9]/', '', $session), 0, 10) : 'nosess';
 
         return 'WC-REQ-' . $dist_id . '-' . gmdate('YmdHis') . '-' . $suffix;
     }
@@ -85,7 +88,7 @@ final class CheckoutOrderRequestBuilder
             }
 
             $upc_raw = trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true));
-            $upc = self::digits_only($upc_raw);
+            $upc     = self::digits_only($upc_raw);
             if ($upc === '') {
                 continue;
             }
@@ -162,18 +165,18 @@ final class CheckoutOrderRequestBuilder
 
             if (is_callable($debug)) {
                 $debug('cart item picked', [
-                    'product_id' => $product_id,
-                    'managed' => $managed,
-                    'dist_id' => $dist_id,
-                    'upc' => $upc,
-                    'ffl_required' => $ffl_required ? 1 : 0,
-                    'qty' => $qty,
+                    'product_id'    => $product_id,
+                    'managed'       => $managed,
+                    'dist_id'       => $dist_id,
+                    'upc'           => $upc,
+                    'ffl_required'  => $ffl_required ? 1 : 0,
+                    'qty'           => $qty,
                 ]);
             }
 
             if (!isset($agg[$dist_id])) {
                 $agg[$dist_id] = [
-                    'by_key' => [],
+                    'by_key'  => [],
                     'has_ffl' => false,
                 ];
             }
@@ -206,7 +209,7 @@ final class CheckoutOrderRequestBuilder
 
             if (!empty($lines)) {
                 $out[$dist_id] = [
-                    'lines' => $lines,
+                    'lines'   => $lines,
                     'has_ffl' => (bool) ($row['has_ffl'] ?? false),
                 ];
             }
@@ -215,20 +218,8 @@ final class CheckoutOrderRequestBuilder
         return $out;
     }
 
-
-
-
-    
-
     /**
      * Wrap per-distributor lines into DistributorOrderRequest objects.
-     *
-     * This is the seam where you stop doing Woo-specific work and start doing
-     * “domain work” (requests/buckets). From here on, you can use:
-     *   - $req->has_ffl_lines()
-     *   - $req->has_non_ffl_lines()
-     *   - $req->ffl_lines()
-     *   - $req->non_ffl_lines()
      *
      * @param array<string, array<int,DistributorOrderLine>> $lines_by_dist
      * @return array<string,DistributorOrderRequest> keyed by distributor id
@@ -264,9 +255,6 @@ final class CheckoutOrderRequestBuilder
 
         return $out;
     }
-
-    
-
 
     /**
      * Build customer ship-to using CART/CHECKOUT payload (Blocks/classic) with WC()->customer fallback.
@@ -338,30 +326,26 @@ final class CheckoutOrderRequestBuilder
         return new DistributorShipTo($name, '', $addr1, $addr2, $city, $state, $zip, $phone, $email);
     }
 
-
     /**
      * Build customer ship-to from a WooCommerce order (shipping-first, billing fallback).
      *
      * Mirrors build_ship_to_customer_or_null() semantics but uses ORDER data only
      * (safe for async jobs / retries).
      */
-    public static function build_ship_to_customer_from_order_or_null(\WC_Order $order): ?\FFLHub\Distributor\Models\DistributorShipTo
+    public static function build_ship_to_customer_from_order_or_null(\WC_Order $order): ?DistributorShipTo
     {
-        // Name (prefer shipping, fallback billing)
         $ship_name = trim((string) $order->get_shipping_first_name() . ' ' . (string) $order->get_shipping_last_name());
         $bill_name = trim((string) $order->get_billing_first_name() . ' ' . (string) $order->get_billing_last_name());
-        $name = $ship_name !== '' ? $ship_name : $bill_name;
+        $name      = $ship_name !== '' ? $ship_name : $bill_name;
         if ($name === '') {
             $name = 'Customer';
         }
 
-        // Company (prefer shipping, fallback billing)
         $company = trim((string) $order->get_shipping_company());
         if ($company === '') {
             $company = trim((string) $order->get_billing_company());
         }
 
-        // Address 1/2, city, state, zip (prefer shipping, fallback billing)
         $addr1 = trim((string) $order->get_shipping_address_1());
         if ($addr1 === '') $addr1 = trim((string) $order->get_billing_address_1());
 
@@ -377,16 +361,14 @@ final class CheckoutOrderRequestBuilder
         $zip = trim((string) $order->get_shipping_postcode());
         if ($zip === '') $zip = trim((string) $order->get_billing_postcode());
 
-        // Phone/email are usually billing-centric in Woo.
         $phone = trim((string) $order->get_billing_phone());
         $email = trim((string) $order->get_billing_email());
 
-        // Require minimum viable address (same criteria as cart builder).
         if ($addr1 === '' || $city === '' || !preg_match('/^[A-Z]{2}$/', $state) || $zip === '') {
             return null;
         }
 
-        return new \FFLHub\Distributor\Models\DistributorShipTo(
+        return new DistributorShipTo(
             $name,
             $company,
             $addr1,
@@ -404,68 +386,60 @@ final class CheckoutOrderRequestBuilder
      *
      * @return array{0:?string,1:?DistributorShipTo} [ffl_number_or_null, ship_to_or_null]
      */
-    public static function build_ship_to_ffl_from_order_or_null(\WC_Order $order, ?callable $debug = null): array
-    {
-        $ffl_number = strtoupper(trim((string) $order->get_meta('fflhub_receiving_ffl_number', true)));
+    public static function build_ship_to_ffl_from_order_or_null(
+        FFLTable $ffl_table,
+        \WC_Order $order,
+        ?callable $debug = null
+    ): array {
+        $ffl_number = FFLRowMapper::normalize_ffl_number((string) $order->get_meta('fflhub_receiving_ffl_number', true));
         if ($ffl_number === '') {
             return [null, null];
         }
 
-        $ship_to_ffl = self::build_ship_to_ffl_or_null($ffl_number, $debug);
+        $ship_to_ffl = self::build_ship_to_ffl_or_null($ffl_table, $ffl_number, $debug);
 
         return [$ffl_number, $ship_to_ffl instanceof DistributorShipTo ? $ship_to_ffl : null];
     }
 
-    public static function build_ship_to_ffl_or_null(string $ffl_number, ?callable $debug = null): ?DistributorShipTo
-    {
-        global $wpdb;
-
-        $ffl_number = strtoupper(trim(sanitize_text_field($ffl_number)));
+    /**
+     * Build ship-to for an FFL from the registry table (repo-based; no raw SQL here).
+     *
+     * @param callable(string,array<string,mixed>):void|null $debug
+     */
+    public static function build_ship_to_ffl_or_null(
+        FFLTable $ffl_table,
+        string $ffl_number,
+        ?callable $debug = null
+    ): ?DistributorShipTo {
+        $ffl_number = FFLRowMapper::normalize_ffl_number($ffl_number);
         if ($ffl_number === '') {
             return null;
         }
 
-        $table = FFLImporterPage::get_table_name_public();
-        if (!$table) {
+        $ffl = FFLRepository::find_by_number($ffl_table, $ffl_number);
+        if (!is_array($ffl)) {
             if (is_callable($debug)) {
-                $debug('build_ship_to_ffl: missing ffl table', []);
+                $debug('build_ship_to_ffl: not found in registry', [
+                    'ffl_number' => $ffl_number,
+                ]);
             }
             return null;
         }
 
-        $sql = "
-            SELECT
-                license_name,
-                premise_street,
-                premise_city,
-                premise_state,
-                premise_zip,
-                mail_street,
-                mail_city,
-                mail_state,
-                mail_zip,
-                voice_phone
-            FROM {$table}
-            WHERE ffl_number = %s
-            LIMIT 1
-        ";
+        $name = trim((string) ($ffl['name'] ?? ''));
 
-        $row = $wpdb->get_row($wpdb->prepare($sql, $ffl_number), ARRAY_A);
-        if (!is_array($row) || empty($row)) {
-            return null;
-        }
+        $premise = isset($ffl['premise']) && is_array($ffl['premise']) ? $ffl['premise'] : [];
+        $mailing = isset($ffl['mailing']) && is_array($ffl['mailing']) ? $ffl['mailing'] : [];
 
-        $name = trim((string) ($row['license_name'] ?? ''));
+        $prem_street = trim((string) ($premise['street'] ?? ''));
+        $prem_city   = trim((string) ($premise['city'] ?? ''));
+        $prem_state  = strtoupper(trim((string) ($premise['state'] ?? '')));
+        $prem_zip    = trim((string) ($premise['zip'] ?? ''));
 
-        $prem_street = trim((string) ($row['premise_street'] ?? ''));
-        $prem_city   = trim((string) ($row['premise_city'] ?? ''));
-        $prem_state  = strtoupper(trim((string) ($row['premise_state'] ?? '')));
-        $prem_zip    = trim((string) ($row['premise_zip'] ?? ''));
-
-        $mail_street = trim((string) ($row['mail_street'] ?? ''));
-        $mail_city   = trim((string) ($row['mail_city'] ?? ''));
-        $mail_state  = strtoupper(trim((string) ($row['mail_state'] ?? '')));
-        $mail_zip    = trim((string) ($row['mail_zip'] ?? ''));
+        $mail_street = trim((string) ($mailing['street'] ?? ''));
+        $mail_city   = trim((string) ($mailing['city'] ?? ''));
+        $mail_state  = strtoupper(trim((string) ($mailing['state'] ?? '')));
+        $mail_zip    = trim((string) ($mailing['zip'] ?? ''));
 
         $addr1 = $prem_street !== '' ? $prem_street : $mail_street;
         $city  = $prem_city !== '' ? $prem_city : $mail_city;
@@ -473,16 +447,24 @@ final class CheckoutOrderRequestBuilder
         $zip   = $prem_zip !== '' ? $prem_zip : $mail_zip;
 
         if ($addr1 === '' || $city === '' || !preg_match('/^[A-Z]{2}$/', $state) || $zip === '') {
+            if (is_callable($debug)) {
+                $debug('build_ship_to_ffl: invalid address fields', [
+                    'ffl_number' => $ffl_number,
+                    'addr1' => $addr1,
+                    'city'  => $city,
+                    'state' => $state,
+                    'zip'   => $zip,
+                ]);
+            }
             return null;
         }
 
-        $phone = trim((string) ($row['voice_phone'] ?? ''));
+        $phone = trim((string) ($ffl['phone'] ?? ''));
 
         if ($name === '') {
             $name = 'Receiving FFL';
         }
 
-        // NOTE: FFLs don't have address_2; keep empty.
         return new DistributorShipTo($name, $name, $addr1, '', $city, $state, $zip, $phone, '');
     }
 
@@ -513,7 +495,7 @@ final class CheckoutOrderRequestBuilder
     public static function get_session_receiving_ffl_number(string $session_key): ?string
     {
         $raw = self::get_session_receiving_ffl_number_raw($session_key);
-        $v = strtoupper(trim((string) $raw));
+        $v   = strtoupper(trim((string) $raw));
 
         return ($v !== '' && preg_match('/^[A-Z0-9-]+$/', $v)) ? $v : null;
     }
@@ -627,11 +609,6 @@ final class CheckoutOrderRequestBuilder
     /**
      * Build friendly, customer-facing messages from a distributor validation result.
      *
-     * Expects (best effort) a details payload that may include:
-     * - ['non' => ['items' => [...]]]
-     * - ['ffl' => ['items' => [...]]]
-     * - or ['items' => [...]] directly
-     *
      * @return string[] list of notices to show
      */
     public static function build_pretty_validation_messages(
@@ -668,7 +645,6 @@ final class CheckoutOrderRequestBuilder
             return $out;
         }
 
-        // No UPCs available in details: still give state-level restriction messaging.
         return [
             ($state !== '')
                 ? sprintf(__('Cannot ship one or more items in your cart to your state of residence (%s).', 'ffl-hub'), $state)
@@ -776,7 +752,7 @@ final class CheckoutOrderRequestBuilder
                 continue;
             }
 
-            $raw = (string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true);
+            $raw  = (string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true);
             $have = self::digits_only($raw);
 
             if ($have !== '' && $have === $needle) {

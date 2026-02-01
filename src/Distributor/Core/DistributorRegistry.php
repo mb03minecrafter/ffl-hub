@@ -2,17 +2,31 @@
 
 namespace FFLHub\Distributor\Core;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
-use FFLHub\Distributor\Integrations\RSR\RSRModule;
 use FFLHub\Distributor\Integrations\Lipseys\LipseysModule;
+use FFLHub\Distributor\Integrations\RSR\RSRModule;
 
+/**
+ * Static registry for distributor modules.
+ *
+ * This is the single source of truth for which distributors exist in the plugin.
+ *
+ * Notes:
+ * - We return module *instances* (not class names) because modules may encapsulate
+ *   schema defaults, labels, and build logic.
+ * - Current implementation constructs new module instances on each call.
+ *   That is acceptable because modules are lightweight; if that changes later,
+ *   this can be memoized without changing external call sites.
+ */
 final class DistributorRegistry
 {
     /**
+     * Get all distributor modules supported by this plugin.
+     *
      * @return DistributorModuleInterface[]
      */
     public static function get_modules(): array
@@ -23,6 +37,11 @@ final class DistributorRegistry
         ];
     }
 
+    /**
+     * Find a module by id.
+     *
+     * @return DistributorModuleInterface|null
+     */
     public static function get_module_by_id(string $id): ?DistributorModuleInterface
     {
         $id = trim($id);
@@ -40,14 +59,18 @@ final class DistributorRegistry
     }
 
     /**
+     * Get all distributor ids.
+     *
      * @return string[]
      */
     public static function get_distributor_ids(): array
     {
         $ids = [];
+
         foreach (self::get_modules() as $module) {
             $ids[] = $module->id();
         }
+
         return $ids;
     }
 }

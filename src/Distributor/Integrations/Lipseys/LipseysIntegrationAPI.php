@@ -3,56 +3,85 @@
 
 namespace FFLHub\Distributor\Integrations\Lipseys;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
 /**
  * Lipsey's Integration API helper (static).
  *
- * Centralizes:
- *  - client creation
- *  - ValidateItem call + normalization
- *  - order response normalization (DropShip / DropShipFirearm)
+ * Purpose:
+ * - Centralize all direct interactions with the Lipsey's PHP client:
+ *     - Client creation (auth/session init)
+ *     - ValidateItem call + normalization
+ *     - Order call response normalization (DropShip / DropShipFirearm)
  *
- * Performance / stability notes:
- *  - Debug logging is gated and compact (no massive JSON dumps).
- *  - Normalizers avoid expensive serialization unless debug is enabled.
+ * Design goals:
+ * - Keep distributor implementation (DistributorLipseys) focused on business logic
+ *   and treat this as the protocol / shape adapter layer.
+ * - Normalize all provider responses into small predictable arrays so higher layers
+ *   can do deterministic classification (retryable vs fatal).
+ * - Debug logging must never explode logs:
+ *     - all logs are gated behind a constant
+ *     - payloads are compacted (keys + small tails)
+ *
+ * IMPORTANT:
+ * - We intentionally do NOT attempt to infer HTTP status from the vendor client here,
+ *   because the library does not reliably provide it. Callers may still classify by message.
  */
 final class LipseysIntegrationAPI
 {
     /**
+     * Create an authenticated Lipsey's client instance.
+     *
      * @return array{ok:bool,message:string,client:object|null}
      */
     public static function create_client(string $email, string $password): array
     {
-        if (! class_exists('\\lipseys\\ApiIntegration\\LipseysClient')) {
+        // Hard dependency: the vendor package must be installed.
+        if (!class_exists('\\lipseys\\ApiIntegration\\LipseysClient')) {
             return [
-                'ok' => false,
+                'ok'      => false,
                 'message' => 'Lipseys API client not available (lipseys/apiintegration).',
-                'client' => null,
+                'client'  => null,
             ];
         }
 
         try {
+            // Vendor client typically performs auth/session setup in constructor.
             $client = new \lipseys\ApiIntegration\LipseysClient($email, $password);
         } catch (\Throwable $e) {
+            // Treat constructor failures as "client init failed".
+            // Higher layers decide retryable vs fatal (many failures are transient).
             return [
-                'ok' => false,
+                'ok'      => false,
                 'message' => 'Failed to initialize Lipsey’s client: ' . $e->getMessage(),
-                'client' => null,
+                'client'  => null,
             ];
         }
 
         return [
-            'ok' => true,
+            'ok'      => true,
             'message' => 'OK',
-            'client' => $client,
+            'client'  => $client,
         ];
     }
 
     /**
-     * ValidateItem wrapper (query can be Lipsey's item#, MFG model#, or UPC).
+     * ValidateItem wrapper.
+     *
+     * Lipsey's ValidateItem accepts multiple query types:
+     * - Lipsey's item number
+     * - Manufacturer model number
+     * - UPC
+     *
+     * We treat it as an availability + policy probe returning:
+     * - qty
+     * - blocked / allocated flags
+     * - canDropship flag (critical)
+     *
+     * Return shape is intentionally redundant:
+     * - ok/message repeat the normalized "result" top-level for convenience.
      *
      * @return array{
      *   ok:bool,
@@ -65,41 +94,68 @@ final class LipseysIntegrationAPI
     public static function validate_item($client, string $query): array
     {
         try {
+            // Vendor call. May throw for transport/auth errors.
             $resp = $client->ValidateItem($query);
         } catch (\Throwable $e) {
+            // Normalize as if response were missing/invalid, then annotate error.
             $norm = self::normalize_validateitem_response(null, $query);
 
             $msg = 'ValidateItem exception: ' . $e->getMessage();
             $norm['ok'] = false;
             $norm['message'] = $msg;
 
+            // Keep logs safe: don’t dump massive payloads, just tails.
             self::debug_log('ValidateItem exception', [
-                'query_tail4' => self::tail4($query),
-                'error_tail120' => self::tail120($e->getMessage()),
+                'query_tail4'     => self::tail4($query),
+                'error_tail120'   => self::tail120($e->getMessage()),
             ]);
 
             return [
-                'ok' => false,
-                'message' => $msg,
-                'result' => $norm,
-                'http_status' => 0,
-                'provider_error_code' => self::infer_provider_error_code_from_message($e->getMessage()),
+                'ok'                 => false,
+                'message'            => $msg,
+                'result'             => $norm,
+                // Library does not consistently expose HTTP status; keep 0.
+                'http_status'        => 0,
+                // Best-effort code to help higher layers classify.
+                'provider_error_code'=> self::infer_provider_error_code_from_message($e->getMessage()),
             ];
         }
 
+        // Successful call (meaning: it returned a payload, not necessarily success=true).
         $norm = self::normalize_validateitem_response($resp, $query);
 
         return [
-            'ok' => (bool) ($norm['ok'] ?? false),
-            'message' => (string) ($norm['message'] ?? 'OK'),
-            'result' => $norm,
-            'http_status' => 0,
+            'ok'                  => (bool) ($norm['ok'] ?? false),
+            'message'             => (string) ($norm['message'] ?? 'OK'),
+            'result'              => $norm,
+            'http_status'         => 0,
             'provider_error_code' => isset($norm['provider_error_code']) ? (string) $norm['provider_error_code'] : '',
         ];
     }
 
     /**
-     * Normalize Lipsey’s ValidateItem response per observed/expected schema.
+     * Normalize Lipsey’s ValidateItem response into a predictable shape.
+     *
+     * Observed vendor patterns:
+     * - Response may be object or array.
+     * - Top-level keys often include:
+     *     authorized: bool
+     *     success: bool
+     *     errors: string[] (sometimes)
+     *     data: object|array (either associative "row" or list of rows)
+     *
+     * Normalized keys (guaranteed to exist):
+     * - ok: bool
+     * - message: string
+     * - qty: int
+     * - price: float|null
+     * - blocked: bool
+     * - allocated: bool
+     * - itemNumber: string
+     * - canDropship: bool|null
+     * - http_status: int (0 here)
+     * - provider_error_code: string (best-effort)
+     * - raw: array|null (compact)
      *
      * @param mixed $resp
      * @return array{
@@ -118,105 +174,113 @@ final class LipseysIntegrationAPI
      */
     public static function normalize_validateitem_response($resp, string $queryValue): array
     {
+        // Vendor client often returns stdClass; convert shallowly to array.
         if (is_object($resp)) {
-            // Avoid expensive deep conversions unless needed; wp_json_encode handles stdClass ok.
+            // wp_json_encode handles stdClass well; decode to associative array.
             $resp = json_decode(wp_json_encode($resp), true);
         }
 
+        // Compact debug log (gated).
         self::debug_log('ValidateItem raw (compact)', [
             'query_tail4' => self::tail4($queryValue),
-            'resp' => self::compact_value($resp),
+            'resp'        => self::compact_value($resp),
         ]);
 
-        if (! is_array($resp)) {
+        // If response isn't a map, it’s invalid/unexpected.
+        if (!is_array($resp)) {
             return [
-                'ok' => false,
-                'message' => "ValidateItem returned non-array response for {$queryValue}.",
-                'qty' => 0,
-                'price' => null,
-                'blocked' => false,
-                'allocated' => false,
-                'itemNumber' => '',
-                'canDropship' => null,
-                'http_status' => 0,
-                'provider_error_code' => '',
-                'raw' => null,
+                'ok'                 => false,
+                'message'            => "ValidateItem returned non-array response for {$queryValue}.",
+                'qty'                => 0,
+                'price'              => null,
+                'blocked'            => false,
+                'allocated'          => false,
+                'itemNumber'         => '',
+                'canDropship'        => null,
+                'http_status'        => 0,
+                'provider_error_code'=> '',
+                'raw'                => null,
             ];
         }
 
+        // Vendor conventions:
+        // - If "authorized" exists and is false => auth failure (fatal credentials).
+        // - If "success" false => error (quota/rate-limit/validation/etc).
         $authorized = array_key_exists('authorized', $resp) ? (bool) $resp['authorized'] : true;
         $success    = array_key_exists('success', $resp) ? (bool) $resp['success'] : false;
 
-        if (! $authorized) {
+        if (!$authorized) {
             $errors = self::implode_errors($resp);
 
             self::debug_log('ValidateItem not authorized', [
-                'query_tail4' => self::tail4($queryValue),
-                'errors_tail200' => self::tail200($errors),
+                'query_tail4'     => self::tail4($queryValue),
+                'errors_tail200'  => self::tail200($errors),
             ]);
 
             return [
-                'ok' => false,
-                'message' => "ValidateItem not authorized: " . ($errors !== '' ? $errors : 'Not authorized'),
-                'qty' => 0,
-                'price' => null,
-                'blocked' => false,
-                'allocated' => false,
-                'itemNumber' => '',
-                'canDropship' => null,
-                'http_status' => 0,
-                'provider_error_code' => 'NOT_AUTHORIZED',
-                'raw' => self::compact_raw_array($resp),
+                'ok'                 => false,
+                'message'            => "ValidateItem not authorized: " . ($errors !== '' ? $errors : 'Not authorized'),
+                'qty'                => 0,
+                'price'              => null,
+                'blocked'            => false,
+                'allocated'          => false,
+                'itemNumber'         => '',
+                'canDropship'        => null,
+                'http_status'        => 0,
+                'provider_error_code'=> 'NOT_AUTHORIZED',
+                'raw'                => self::compact_raw_array($resp),
             ];
         }
 
-        if (! $success) {
+        if (!$success) {
             $errors = self::implode_errors($resp);
             if ($errors === '') {
                 $errors = 'Unknown error';
             }
 
             self::debug_log('ValidateItem failed', [
-                'query_tail4' => self::tail4($queryValue),
-                'errors_tail200' => self::tail200($errors),
+                'query_tail4'     => self::tail4($queryValue),
+                'errors_tail200'  => self::tail200($errors),
             ]);
 
             return [
-                'ok' => false,
-                'message' => "ValidateItem failed: {$errors}",
-                'qty' => 0,
-                'price' => null,
-                'blocked' => false,
-                'allocated' => false,
-                'itemNumber' => '',
-                'canDropship' => null,
-                'http_status' => 0,
-                'provider_error_code' => self::infer_provider_error_code_from_message($errors),
-                'raw' => self::compact_raw_array($resp),
+                'ok'                 => false,
+                'message'            => "ValidateItem failed: {$errors}",
+                'qty'                => 0,
+                'price'              => null,
+                'blocked'            => false,
+                'allocated'          => false,
+                'itemNumber'         => '',
+                'canDropship'        => null,
+                'http_status'        => 0,
+                'provider_error_code'=> self::infer_provider_error_code_from_message($errors),
+                'raw'                => self::compact_raw_array($resp),
             ];
         }
 
-        if (! isset($resp['data'])) {
+        // success=true but no data => schema drift or vendor bug.
+        if (!isset($resp['data'])) {
             self::debug_log('ValidateItem success but missing data', [
                 'query_tail4' => self::tail4($queryValue),
-                'resp_keys' => array_slice(array_keys($resp), 0, 20),
+                'resp_keys'   => array_slice(array_keys($resp), 0, 20),
             ]);
 
             return [
-                'ok' => false,
-                'message' => 'ValidateItem returned success but no data payload.',
-                'qty' => 0,
-                'price' => null,
-                'blocked' => false,
-                'allocated' => false,
-                'itemNumber' => '',
-                'canDropship' => null,
-                'http_status' => 0,
-                'provider_error_code' => 'MISSING_DATA',
-                'raw' => self::compact_raw_array($resp),
+                'ok'                 => false,
+                'message'            => 'ValidateItem returned success but no data payload.',
+                'qty'                => 0,
+                'price'              => null,
+                'blocked'            => false,
+                'allocated'          => false,
+                'itemNumber'         => '',
+                'canDropship'        => null,
+                'http_status'        => 0,
+                'provider_error_code'=> 'MISSING_DATA',
+                'raw'                => self::compact_raw_array($resp),
             ];
         }
 
+        // Normalize the "data" container.
         $data = $resp['data'];
         if (is_object($data)) {
             $data = json_decode(wp_json_encode($data), true);
@@ -224,75 +288,93 @@ final class LipseysIntegrationAPI
 
         $row = null;
 
-        // data as associative object
-        if (is_array($data) && ! self::is_list_array($data)) {
+        // data as associative object (single row)
+        if (is_array($data) && !self::is_list_array($data)) {
             $row = $data;
         }
-        // data as list
+        // data as list (take first row)
         elseif (is_array($data) && self::is_list_array($data)) {
-            $row = isset($data[0]) && is_array($data[0]) ? $data[0] : null;
+            $row = (isset($data[0]) && is_array($data[0])) ? $data[0] : null;
         }
 
-        if (! is_array($row) || empty($row)) {
+        if (!is_array($row) || empty($row)) {
             self::debug_log('ValidateItem invalid data row', [
                 'query_tail4' => self::tail4($queryValue),
-                'data_type' => gettype($resp['data']),
-                'resp_keys' => array_slice(array_keys($resp), 0, 20),
+                'data_type'   => gettype($resp['data']),
+                'resp_keys'   => array_slice(array_keys($resp), 0, 20),
             ]);
 
             return [
-                'ok' => false,
-                'message' => 'ValidateItem returned invalid data row.',
-                'qty' => 0,
-                'price' => null,
-                'blocked' => false,
-                'allocated' => false,
-                'itemNumber' => '',
-                'canDropship' => null,
-                'http_status' => 0,
-                'provider_error_code' => 'INVALID_DATA_ROW',
-                'raw' => self::compact_raw_array($resp),
+                'ok'                 => false,
+                'message'            => 'ValidateItem returned invalid data row.',
+                'qty'                => 0,
+                'price'              => null,
+                'blocked'            => false,
+                'allocated'          => false,
+                'itemNumber'         => '',
+                'canDropship'        => null,
+                'http_status'        => 0,
+                'provider_error_code'=> 'INVALID_DATA_ROW',
+                'raw'                => self::compact_raw_array($resp),
             ];
         }
 
+        // Extract fields with conservative defaults.
         $qty = (isset($row['qty']) && (is_int($row['qty']) || is_numeric($row['qty']))) ? (int) $row['qty'] : 0;
+
         $price = (isset($row['price']) && (is_float($row['price']) || is_int($row['price']) || is_numeric($row['price'])))
             ? (float) $row['price']
             : null;
 
-        $blocked = isset($row['blocked']) ? (bool) $row['blocked'] : false;
-        $allocated = isset($row['allocated']) ? (bool) $row['allocated'] : false;
+        $blocked    = isset($row['blocked']) ? (bool) $row['blocked'] : false;
+        $allocated  = isset($row['allocated']) ? (bool) $row['allocated'] : false;
         $itemNumber = isset($row['itemNumber']) ? (string) $row['itemNumber'] : '';
+
+        // canDropship is critical, but may be absent in some schemas.
         $canDropship = array_key_exists('canDropship', $row) ? (bool) $row['canDropship'] : null;
 
         self::debug_log('ValidateItem normalized', [
-            'query_tail4' => self::tail4($queryValue),
-            'qty' => $qty,
-            'blocked' => $blocked ? 1 : 0,
-            'allocated' => $allocated ? 1 : 0,
-            'itemNumber_tail4' => self::tail4($itemNumber),
-            'canDropship' => ($canDropship === null ? 'null' : ($canDropship ? 'true' : 'false')),
+            'query_tail4'        => self::tail4($queryValue),
+            'qty'               => $qty,
+            'blocked'           => $blocked ? 1 : 0,
+            'allocated'         => $allocated ? 1 : 0,
+            'itemNumber_tail4'  => self::tail4($itemNumber),
+            'canDropship'       => ($canDropship === null ? 'null' : ($canDropship ? 'true' : 'false')),
         ]);
 
         return [
-            'ok' => true,
-            'message' => 'OK',
-            'qty' => $qty,
-            'price' => $price,
-            'blocked' => $blocked,
-            'allocated' => $allocated,
-            'itemNumber' => $itemNumber,
-            'canDropship' => $canDropship,
-            'http_status' => 0,
-            'provider_error_code' => '',
-            'raw' => self::compact_raw_array($resp),
+            'ok'                 => true,
+            'message'            => 'OK',
+            'qty'                => $qty,
+            'price'              => $price,
+            'blocked'            => $blocked,
+            'allocated'          => $allocated,
+            'itemNumber'         => $itemNumber,
+            'canDropship'        => $canDropship,
+            'http_status'        => 0,
+            'provider_error_code'=> '',
+            'raw'                => self::compact_raw_array($resp),
         ];
     }
 
     /**
-     * Normalize Lipsey’s order response shape (their client returns arrays with authorized/success/errors).
+     * Normalize Lipsey’s order response shape.
      *
-     * Docs show orderNumber living under data.orderNumber (not top-level).
+     * Vendor pattern (observed):
+     * - Top-level:
+     *     authorized: bool
+     *     success: bool
+     *     errors: string[] (optional)
+     *     data: object|array (often contains orderNumber)
+     *
+     * We return:
+     * - ok/message
+     * - external_id: Lipsey’s order number when available; else fall back to our PO
+     * - provider_error_code: best-effort based on error text
+     *
+     * NOTE:
+     * - We do not treat "missing order number" as failure; Lipsey sometimes
+     *   returns success but omits it depending on endpoint/shape drift.
      *
      * @param mixed $resp
      * @return array{
@@ -312,56 +394,57 @@ final class LipseysIntegrationAPI
 
         self::debug_log($op . ' raw (compact)', [
             'po_tail6' => self::tail6($po),
-            'resp' => self::compact_value($resp),
+            'resp'     => self::compact_value($resp),
         ]);
 
-        if (! is_array($resp)) {
+        if (!is_array($resp)) {
             return [
-                'ok' => false,
-                'message' => "{$op} returned non-array response.",
-                'external_id' => '',
-                'http_status' => 0,
-                'provider_error_code' => '',
-                'raw' => null,
+                'ok'                 => false,
+                'message'            => "{$op} returned non-array response.",
+                'external_id'        => '',
+                'http_status'        => 0,
+                'provider_error_code'=> '',
+                'raw'                => null,
             ];
         }
 
         $authorized = isset($resp['authorized']) ? (bool) $resp['authorized'] : true;
-        $success = isset($resp['success']) ? (bool) $resp['success'] : false;
+        $success    = isset($resp['success']) ? (bool) $resp['success'] : false;
 
-        if (! $authorized) {
+        if (!$authorized) {
             $errors = self::implode_errors($resp);
             if ($errors === '') {
                 $errors = 'Not authorized';
             }
 
             return [
-                'ok' => false,
-                'message' => "{$op} not authorized: {$errors}",
-                'external_id' => '',
-                'http_status' => 0,
-                'provider_error_code' => 'NOT_AUTHORIZED',
-                'raw' => self::compact_raw_array($resp),
+                'ok'                 => false,
+                'message'            => "{$op} not authorized: {$errors}",
+                'external_id'        => '',
+                'http_status'        => 0,
+                'provider_error_code'=> 'NOT_AUTHORIZED',
+                'raw'                => self::compact_raw_array($resp),
             ];
         }
 
-        if (! $success) {
+        if (!$success) {
             $errors = self::implode_errors($resp);
             if ($errors === '') {
                 $errors = 'Unknown error';
             }
 
             return [
-                'ok' => false,
-                'message' => "{$op} failed: {$errors}",
-                'external_id' => '',
-                'http_status' => 0,
-                'provider_error_code' => self::infer_provider_error_code_from_message($errors),
-                'raw' => self::compact_raw_array($resp),
+                'ok'                 => false,
+                'message'            => "{$op} failed: {$errors}",
+                'external_id'        => '',
+                'http_status'        => 0,
+                'provider_error_code'=> self::infer_provider_error_code_from_message($errors),
+                'raw'                => self::compact_raw_array($resp),
             ];
         }
 
-        // Extract order number: prefer data.orderNumber (per docs), then fall back.
+        // Extract order number:
+        // Docs show data.orderNumber (not top-level), but we tolerate variants.
         $external = '';
 
         $data = $resp['data'] ?? null;
@@ -370,11 +453,9 @@ final class LipseysIntegrationAPI
         }
 
         if (is_array($data)) {
-            // Some shapes are { orderNumber, ... } and some are { lineItems:[], orderNumber, ... }
             foreach (['orderNumber', 'OrderNumber', 'order_no', 'OrderNo'] as $k) {
                 if (isset($data[$k]) && (is_string($data[$k]) || is_int($data[$k]) || is_numeric($data[$k]))) {
-                    $external = (string) $data[$k];
-                    $external = trim($external);
+                    $external = trim((string) $data[$k]);
                     if ($external !== '') {
                         break;
                     }
@@ -382,12 +463,11 @@ final class LipseysIntegrationAPI
             }
         }
 
-        // Very last-resort fallbacks (older/odd variants)
+        // Last-resort: some responses might surface the order number at top-level.
         if ($external === '') {
             foreach (['orderNumber', 'OrderNumber', 'order_no', 'OrderNo'] as $k) {
                 if (isset($resp[$k]) && (is_string($resp[$k]) || is_int($resp[$k]) || is_numeric($resp[$k]))) {
-                    $external = (string) $resp[$k];
-                    $external = trim($external);
+                    $external = trim((string) $resp[$k]);
                     if ($external !== '') {
                         break;
                     }
@@ -395,24 +475,30 @@ final class LipseysIntegrationAPI
             }
         }
 
+        // If we still don't have it, keep something deterministic.
         if ($external === '') {
             $external = $po;
         }
 
         return [
-            'ok' => true,
-            'message' => "{$op} OK",
-            'external_id' => $external,
-            'http_status' => 0,
-            'provider_error_code' => '',
-            'raw' => self::compact_raw_array($resp),
+            'ok'                 => true,
+            'message'            => "{$op} OK",
+            'external_id'        => $external,
+            'http_status'        => 0,
+            'provider_error_code'=> '',
+            'raw'                => self::compact_raw_array($resp),
         ];
     }
 
-    /* ---------------------------------------------
-     * Small helpers
-     * ------------------------------------------- */
+    /* -------------------------------------------------------------------------
+     * Small helpers (errors, codes, logging, safe trimming)
+     * ---------------------------------------------------------------------- */
 
+    /**
+     * Flatten vendor error array into a compact string.
+     *
+     * We cap to 8 parts to prevent huge strings.
+     */
     private static function implode_errors(array $resp): string
     {
         if (isset($resp['errors']) && is_array($resp['errors'])) {
@@ -431,6 +517,13 @@ final class LipseysIntegrationAPI
         return '';
     }
 
+    /**
+     * Best-effort provider error coding based on message content.
+     *
+     * This is intentionally shallow:
+     * - Higher layers should still do "message heuristics" for classification.
+     * - Codes here are used mostly for metrics / logs / quicker branching.
+     */
     private static function infer_provider_error_code_from_message(string $message): string
     {
         $m = strtolower(trim($message));
@@ -478,8 +571,8 @@ final class LipseysIntegrationAPI
         }
         if (is_array($v)) {
             return [
-                'type' => 'array',
-                'keys' => array_slice(array_keys($v), 0, 20),
+                'type'  => 'array',
+                'keys'  => array_slice(array_keys($v), 0, 20),
                 'count' => count($v),
             ];
         }
@@ -504,7 +597,7 @@ final class LipseysIntegrationAPI
             }
         }
 
-        // If errors is huge, trim it.
+        // If errors is huge, trim.
         if (isset($out['errors']) && is_array($out['errors'])) {
             $out['errors'] = array_slice($out['errors'], 0, 10);
         }
@@ -519,21 +612,31 @@ final class LipseysIntegrationAPI
         return $out;
     }
 
+    /**
+     * Debug logging for Lipsey's integration.
+     *
+     * IMPORTANT:
+     * - This is intentionally independent from DistributorLipseys::dbg_enabled().
+     * - If you want unified gating, you can later route both to a shared DebugLogUtil.
+     */
     private static function debug_log(string $message, array $context = []): void
     {
-        if (! defined('FFLHUB_LIPSEYS_DEBUG') || constant('FFLHUB_LIPSEYS_DEBUG') !== true) {
+        // Explicit constant gate; avoids calling getenv() repeatedly in hot paths.
+        if (!defined('FFLHUB_LIPSEYS_DEBUG') || constant('FFLHUB_LIPSEYS_DEBUG') !== true) {
             return;
         }
 
         $prefix = '[FFLHub Lipseys] ';
 
-        if (! empty($context)) {
+        if (!empty($context)) {
             error_log($prefix . $message . ' ' . wp_json_encode($context));
             return;
         }
 
         error_log($prefix . $message);
     }
+
+    /* --- tail helpers: keep logs safe --- */
 
     private static function tail4(string $s): string
     {
@@ -587,6 +690,9 @@ final class LipseysIntegrationAPI
 
     /**
      * True if $arr is a numeric list (0..n-1).
+     *
+     * Note: PHP 8.1+ has array_is_list(). If you ever bump minimum PHP,
+     * you can replace this with array_is_list($arr).
      */
     private static function is_list_array(array $arr): bool
     {

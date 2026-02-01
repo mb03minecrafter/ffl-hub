@@ -1,9 +1,9 @@
 <?php
+declare(strict_types=1);
 
 namespace FFLHub\Distributor\Services\Orders\Jobs;
 
 use WC_Order;
-
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
@@ -16,33 +16,31 @@ if (!defined('ABSPATH')) {
 /**
  * OrderPlacementJobWriter
  *
- * Responsibility:
- * - The ONLY low-level write primitive for the Order Placement Jobs table.
- * - Applies patches (preferred) and performs partial field updates (internal).
+ * Single low-level write primitive for the Order Placement Jobs table.
  *
- * Rules:
- * - No business logic (success/fail/retry/shipping rules). This layer is persistence only.
- * - Enforces schema allowlist via OrderPlacementJobsTable::get_writable_columns().
- * - Always stamps updated_at (UTC) for observability.
- * - Supports NULL-safe partial updates (wpdb->update() does not reliably write NULL).
- *
- * Dependency:
- * - Requires an instantiated OrderPlacementJobsTable (table manager).
- *   This centralizes table naming/prefixing and the writable column allowlist.
+ * See earlier notes: allowlist enforced, NULL-safe updates, stamps updated_at.
  */
 final class OrderPlacementJobWriter
 {
-    /* ============================================================
-     * Patch apply (public API)
-     * ============================================================ */
+    /**
+     * Columns that should be written as integers when non-null.
+     *
+     * NOTE:
+     * - order_id is part of the WHERE clause, not a writable column here.
+     * - action_id is BIGINT, but %d is still correct in wpdb for numeric values.
+     */
+    private const INT_COLUMNS = [
+        'attempts'   => true,
+        'action_id'  => true,
+    ];
 
     /**
      * Apply a patch to a job row identified by (order_id, job_key).
      *
-     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
-     * @param int                     $order_id   Woo order ID.
-     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
-     * @param OrderPlacementJobPatch  $patch      Patch representing changes to persist.
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param int $order_id
+     * @param string $job_key
+     * @param OrderPlacementJobPatch $patch
      */
     public static function apply_patch(
         OrderPlacementJobsTable $jobs_table,
@@ -55,26 +53,26 @@ final class OrderPlacementJobWriter
             return;
         }
 
-        $job_key = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
-        if ($job_key === '') {
+        $job_key_norm = OrderPlacementKeysUtil::normalize_job_key($job_key);
+        if ($job_key_norm === '') {
             return;
         }
 
         $fields = $patch->to_write_array();
-        if (!is_array($fields) || empty($fields)) {
-            return; // nothing to write
+        if (empty($fields)) {
+            return;
         }
 
-        self::update_job_fields($jobs_table, $order_id, $job_key, $fields);
+        self::update_job_fields($jobs_table, $order_id, $job_key_norm, $fields);
     }
 
     /**
-     * Convenience: apply a patch using a WC_Order object.
+     * Convenience wrapper using WC_Order.
      *
-     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
-     * @param WC_Order                $order      Woo order object.
-     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
-     * @param OrderPlacementJobPatch  $patch      Patch representing changes to persist.
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param WC_Order $order
+     * @param string $job_key
+     * @param OrderPlacementJobPatch $patch
      */
     public static function apply_patch_for_order(
         OrderPlacementJobsTable $jobs_table,
@@ -82,69 +80,49 @@ final class OrderPlacementJobWriter
         string $job_key,
         OrderPlacementJobPatch $patch
     ): void {
-        self::apply_patch($jobs_table, (int) $order->get_id(), (string) $job_key, $patch);
+        self::apply_patch($jobs_table, (int) $order->get_id(), $job_key, $patch);
     }
 
-    /* ============================================================
-     * Internal update primitive (NULL-safe)
-     * ============================================================ */
-
     /**
-     * Update fields on a job row (partial update). NULL-safe.
+     * NULL-safe partial update keyed by (order_id, job_key).
      *
-     * - Filters updates to allowlisted writable columns from the table manager.
-     * - Always stamps updated_at (UTC).
-     * - Uses wpdb->update() when no NULLs are present, otherwise builds a manual UPDATE.
-     *
-     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
-     * @param int                     $order_id   Woo order ID.
-     * @param string                  $job_key    Normalized job key.
-     * @param array<string,mixed>     $fields     Partial column => value map.
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param int $order_id
+     * @param string $job_key_norm Normalized non-empty job key.
+     * @param array<string,mixed> $fields
      */
     private static function update_job_fields(
         OrderPlacementJobsTable $jobs_table,
         int $order_id,
-        string $job_key,
+        string $job_key_norm,
         array $fields
     ): void {
         global $wpdb;
 
-        $table = $jobs_table->get_table_name();
-        if (!is_string($table) || $table === '') {
+        $table = (string) $jobs_table->get_table_name();
+        if ($table === '') {
             return;
         }
 
-        $order_id = (int) $order_id;
-        if ($order_id <= 0) {
+        if ($order_id <= 0 || $job_key_norm === '' || empty($fields)) {
             return;
         }
 
-        $job_key = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
-        if ($job_key === '') {
-            return;
-        }
-
-        if (empty($fields)) {
-            return;
-        }
-
-        // Always stamp updated_at for observability + UI freshness.
+        // Always stamp updated_at.
         $fields['updated_at'] = OrderPlacementTimeUtil::now_mysql_utc();
 
-        // Filter to allowlisted columns (single source of truth: table manager/schema).
+        // Filter to schema allowlist.
         $allowed = $jobs_table->get_writable_columns();
-        if (!is_array($allowed) || empty($allowed)) {
+        if (empty($allowed)) {
             return;
         }
 
-        $allowed_set = array_fill_keys($allowed, true);
+        $allowed_set = array_fill_keys(array_map('strval', $allowed), true);
 
+        /** @var array<string,mixed> $data */
         $data = [];
         foreach ($fields as $k => $v) {
-            if (!is_string($k) || $k === '') {
-                continue;
-            }
-            if (!isset($allowed_set[$k])) {
+            if (!is_string($k) || $k === '' || !isset($allowed_set[$k])) {
                 continue;
             }
             $data[$k] = $v;
@@ -154,7 +132,7 @@ final class OrderPlacementJobWriter
             return;
         }
 
-        // Detect whether any field is NULL (wpdb->update doesn't support NULL cleanly).
+        // Check for NULLs.
         $has_null = false;
         foreach ($data as $v) {
             if ($v === null) {
@@ -163,22 +141,24 @@ final class OrderPlacementJobWriter
             }
         }
 
-        // Fast path: no NULLs => use $wpdb->update().
+        // Fast path: no NULLs => wpdb->update.
         if (!$has_null) {
             $format = [];
-            foreach ($data as $v) {
-                // Treat ints and digit-only numeric strings as integers for formatting.
-                if (is_int($v) || (is_string($v) && ctype_digit($v))) {
-                    $format[] = '%d';
+            foreach ($data as $col => $v) {
+                $format[] = isset(self::INT_COLUMNS[$col]) ? '%d' : '%s';
+
+                // Normalize ints for int columns.
+                if (isset(self::INT_COLUMNS[$col])) {
+                    $data[$col] = (int) $v;
                 } else {
-                    $format[] = '%s';
+                    $data[$col] = (string) $v;
                 }
             }
 
             $wpdb->update(
                 $table,
                 $data,
-                ['order_id' => $order_id, 'job_key' => $job_key],
+                ['order_id' => $order_id, 'job_key' => $job_key_norm],
                 $format,
                 ['%d', '%s']
             );
@@ -186,42 +166,32 @@ final class OrderPlacementJobWriter
             return;
         }
 
-        /**
-         * NULL-safe path:
-         * Build a manual UPDATE statement that writes "col = NULL" where needed.
-         */
+        // NULL-safe manual UPDATE.
         $sets = [];
         $args = [];
 
-        foreach ($data as $k => $v) {
-            // Allowlist already protects identifiers; this is just extra hardening.
-            $col = preg_replace('/[^a-zA-Z0-9_]/', '', $k);
-            if ($col === '') {
-                continue;
-            }
-
+        foreach ($data as $col => $v) {
+            // Column name is allowlisted, safe to interpolate.
             if ($v === null) {
                 $sets[] = "{$col} = NULL";
                 continue;
             }
 
-            if (is_int($v) || (is_string($v) && ctype_digit($v))) {
+            if (isset(self::INT_COLUMNS[$col])) {
                 $sets[] = "{$col} = %d";
                 $args[] = (int) $v;
-                continue;
+            } else {
+                $sets[] = "{$col} = %s";
+                $args[] = (string) $v;
             }
-
-            $sets[] = "{$col} = %s";
-            $args[] = (string) $v;
         }
 
         if (empty($sets)) {
             return;
         }
 
-        // WHERE clause args
         $args[] = $order_id;
-        $args[] = $job_key;
+        $args[] = $job_key_norm;
 
         $sql = "UPDATE {$table} SET " . implode(', ', $sets) . " WHERE order_id = %d AND job_key = %s";
         $wpdb->query($wpdb->prepare($sql, $args));

@@ -6,27 +6,29 @@ use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
-use FFLHub\Util\DebugLogUtil;
-
 if (!defined('ABSPATH')) {
     exit;
 }
 
 /**
- * DB-queue model:
- * - Trashed order => suspend order (order meta) + pause all job rows (status=paused, next_run_at=NULL)
- * - Untrashed order => unsuspend + resume paused rows (status=scheduled, next_run_at=now)
- * - Permanently deleted => delete job rows for order_id
+ * OrderTrashJobsService
  *
- * No Action Scheduler per-job cancellation anymore.
+ * DB-queue model (no per-job Action Scheduler actions):
+ * - Trashed order:
+ *   - set order meta "suspended"
+ *   - pause all job rows (status=paused, next_run_at=NULL)
+ * - Untrashed order:
+ *   - remove "suspended"
+ *   - resume paused rows (status=scheduled, next_run_at=now)
+ * - Permanently deleted order:
+ *   - delete all job rows for order_id
+ *
+ * Notes:
+ * - This service is intentionally quiet (no verbose logging).
+ * - Failures are best-effort; if DB writes fail, we log only when WP_DEBUG is enabled.
  */
 final class OrderTrashJobsService
 {
-    private const LOG_PREFIX  = '[FFLHUB][OrderTrashJobs]';
-    private const DEBUG_CONST = 'FFLHUB_TRASH_ORDER_JOBS_DEBUG';
-
-
-    
     private OrderPlacementJobsTable $jobs_table;
 
     public function __construct(OrderPlacementJobsTable $jobs_table)
@@ -34,20 +36,15 @@ final class OrderTrashJobsService
         $this->jobs_table = $jobs_table;
     }
 
-
-
     /**
-     * Order meta flag: when set, this order is ineligible for polling / dispatch.
+     * Register WooCommerce hooks.
      */
-
     public function register(): void
     {
-        add_action('woocommerce_trash_order', [$this, 'handle_post_trashed'], 10, 1);
-        add_action('woocommerce_untrash_order', [$this, 'handle_post_untrashed'], 10, 1);
-        add_action('woocommerce_before_delete_order', [$this, 'handle_post_deleted_permanently'], 10, 1);
+        add_action('woocommerce_trash_order', [$this, 'handle_order_trashed'], 10, 1);
+        add_action('woocommerce_untrash_order', [$this, 'handle_order_untrashed'], 10, 1);
+        add_action('woocommerce_before_delete_order', [$this, 'handle_order_deleted_permanently'], 10, 1);
     }
-
-    
 
     /**
      * Trash behavior: suspend order and pause DB rows.
@@ -56,31 +53,29 @@ final class OrderTrashJobsService
     {
         $order_id = (int) $order_id;
         if ($order_id <= 0) {
-            $this->log_ctx('suspend_skip_invalid_order_id', ['order_id' => $order_id, 'reason' => $reason]);
             return;
         }
 
         update_post_meta($order_id, OrderPlacementKeys::META_ORDER_SUSPENDED, '1');
-        $paused = $this->pause_all_jobs_for_order($order_id, $reason);
+        $this->pause_all_jobs_for_order($order_id, $reason);
     }
 
     /**
-     * Untrash behavior: unsuspend order and resume DB rows.
+     * Untrash behavior: unsuspend order and resume paused DB rows.
      */
     public function unsuspend_order_and_resume_jobs(int $order_id, string $reason = 'Order restored from trash'): void
     {
         $order_id = (int) $order_id;
         if ($order_id <= 0) {
-            $this->log_ctx('unsuspend_skip_invalid_order_id', ['order_id' => $order_id, 'reason' => $reason]);
             return;
         }
 
         delete_post_meta($order_id, OrderPlacementKeys::META_ORDER_SUSPENDED);
-        $resumed = $this->resume_paused_jobs_for_order($order_id, $reason);
+        $this->resume_paused_jobs_for_order($order_id, $reason);
     }
 
     /**
-     * Permanent delete behavior: delete DB rows.
+     * Permanent delete behavior: delete DB job rows.
      */
     public function delete_jobs_for_order(int $order_id): void
     {
@@ -88,99 +83,93 @@ final class OrderTrashJobsService
 
         $order_id = (int) $order_id;
         if ($order_id <= 0) {
-            $this->log_ctx('delete_jobs_skip_invalid_order_id', ['order_id' => $order_id]);
             return;
         }
 
         $table = $this->jobs_table->get_table_name();
-        $deleted = 0;
+        if (!is_string($table) || $table === '') {
+            return;
+        }
 
         try {
-            $deleted = (int) $wpdb->query(
+            $wpdb->query(
                 $wpdb->prepare(
                     "DELETE FROM {$table} WHERE order_id = %d",
                     $order_id
                 )
             );
         } catch (\Throwable $e) {
-            $this->log_ctx('delete_jobs_exception', [
-                'order_id' => $order_id,
-                'err'      => $e->getMessage(),
-                'file'     => $e->getFile(),
-                'line'     => $e->getLine(),
-            ]);
-            return;
+            $this->debug_error('delete_jobs_failed', $order_id, $e);
         }
     }
 
-    /* ============================ WP hooks ============================ */
+    /* ============================ Woo hooks ============================ */
 
-    public function handle_post_trashed(int $post_id): void
+    /**
+     * Hook: order moved to trash.
+     *
+     * @param int $order_id Woo order ID.
+     */
+    public function handle_order_trashed(int $order_id): void
     {
-        $post_id = (int) $post_id;
-        if ($post_id <= 0) {
-            $this->log_ctx('hook_trash_skip_invalid_id', ['post_id' => $post_id]);
+        $order_id = (int) $order_id;
+        if ($order_id <= 0) {
             return;
         }
 
-        if (!$this->is_shop_order_post($post_id)) {
-            $this->log_ctx('hook_trash_skip_not_order', [
-                'post_id'   => $post_id,
-                'post_type' => (string) get_post_type($post_id),
-            ]);
+        // In Woo this should already be an order, but keep a cheap guard.
+        if (!$this->is_shop_order_post($order_id)) {
             return;
         }
-        $this->suspend_order_and_pause_jobs($post_id, 'Order trashed');
+
+        $this->suspend_order_and_pause_jobs($order_id, 'Order trashed');
     }
 
-    public function handle_post_untrashed(int $post_id): void
+    /**
+     * Hook: order restored from trash.
+     *
+     * @param int $order_id Woo order ID.
+     */
+    public function handle_order_untrashed(int $order_id): void
     {
-        $post_id = (int) $post_id;
-        if ($post_id <= 0) {
-            $this->log_ctx('hook_untrash_skip_invalid_id', ['post_id' => $post_id]);
+        $order_id = (int) $order_id;
+        if ($order_id <= 0) {
             return;
         }
 
-        if (!$this->is_shop_order_post($post_id)) {
-            $this->log_ctx('hook_untrash_skip_not_order', [
-                'post_id'   => $post_id,
-                'post_type' => (string) get_post_type($post_id),
-            ]);
+        if (!$this->is_shop_order_post($order_id)) {
             return;
         }
-        $this->unsuspend_order_and_resume_jobs($post_id, 'Order untrashed');
+
+        $this->unsuspend_order_and_resume_jobs($order_id, 'Order untrashed');
     }
 
-    public function handle_post_deleted_permanently(int $post_id): void
+    /**
+     * Hook: order permanently deleted.
+     *
+     * @param int $order_id Woo order ID.
+     */
+    public function handle_order_deleted_permanently(int $order_id): void
     {
-        $post_id = (int) $post_id;
-        if ($post_id <= 0) {
-            $this->log_ctx('hook_delete_skip_invalid_id', ['post_id' => $post_id]);
+        $order_id = (int) $order_id;
+        if ($order_id <= 0) {
             return;
         }
 
-        if (!$this->is_shop_order_post($post_id)) {
-            $this->log_ctx('hook_delete_skip_not_order', [
-                'post_id'   => $post_id,
-                'post_type' => (string) get_post_type($post_id),
-            ]);
+        if (!$this->is_shop_order_post($order_id)) {
             return;
         }
-        $this->delete_jobs_for_order($post_id);
+
+        $this->delete_jobs_for_order($order_id);
     }
 
+    /**
+     * Very small guard: ensure the underlying post type looks like a Woo order.
+     */
     private function is_shop_order_post(int $post_id): bool
     {
         $post_type = (string) get_post_type($post_id);
-
-        if ($post_type === 'shop_order') {
-            return true;
-        }
-        if ($post_type === 'shop_order_placehold') {
-            return true;
-        }
-
-        return false;
+        return ($post_type === 'shop_order' || $post_type === 'shop_order_placehold');
     }
 
     /* ============================ DB mutations ============================ */
@@ -188,7 +177,12 @@ final class OrderTrashJobsService
     /**
      * Pause all jobs for an order:
      * - status => paused
-     * - next_run_at => NULL (avoid invalid DATETIME like '')
+     * - next_run_at => NULL
+     * - last_error => "Paused: <reason>"
+     *
+     * Does not pause successful jobs.
+     *
+     * @return int Number of rows affected.
      */
     private function pause_all_jobs_for_order(int $order_id, string $reason = ''): int
     {
@@ -200,9 +194,11 @@ final class OrderTrashJobsService
         }
 
         $table = $this->jobs_table->get_table_name();
-        $now   = OrderPlacementTimeUtil::now_mysql_utc();
+        if (!is_string($table) || $table === '') {
+            return 0;
+        }
 
-        $paused_status = (string) OrderPlacementKeys::JOB_STATUS_PAUSED;
+        $now = OrderPlacementTimeUtil::now_mysql_utc();
 
         try {
             $affected = $wpdb->query(
@@ -214,19 +210,17 @@ final class OrderTrashJobsService
                          last_error = %s
                      WHERE order_id = %d
                        AND status <> %s",
-                    $paused_status,
-                    $now,
+                    (string) OrderPlacementKeys::JOB_STATUS_PAUSED,
+                    (string) $now,
                     ($reason !== '' ? 'Paused: ' . $reason : 'Paused'),
                     $order_id,
                     (string) OrderPlacementKeys::JOB_STATUS_SUCCESS
                 )
             );
+
             return is_numeric($affected) ? (int) $affected : 0;
         } catch (\Throwable $e) {
-            $this->log_ctx('pause_jobs_exception', [
-                'order_id' => $order_id,
-                'err'      => $e->getMessage(),
-            ]);
+            $this->debug_error('pause_jobs_failed', $order_id, $e);
             return 0;
         }
     }
@@ -234,9 +228,12 @@ final class OrderTrashJobsService
     /**
      * Resume paused jobs:
      * - status => scheduled
-     * - next_run_at => now (so dispatcher will pick them up immediately)
+     * - next_run_at => now (dispatcher will pick them up)
+     * - last_error => "Resumed: <reason>"
      *
-     * NOTE: we intentionally only resume paused rows.
+     * Only resumes rows in paused status.
+     *
+     * @return int Number of rows affected.
      */
     private function resume_paused_jobs_for_order(int $order_id, string $reason = ''): int
     {
@@ -248,10 +245,11 @@ final class OrderTrashJobsService
         }
 
         $table = $this->jobs_table->get_table_name();
-        $now   = OrderPlacementTimeUtil::now_mysql_utc();
+        if (!is_string($table) || $table === '') {
+            return 0;
+        }
 
-        $scheduled_status = (string) OrderPlacementKeys::JOB_STATUS_SCHEDULED;
-        $paused_status    = (string) OrderPlacementKeys::JOB_STATUS_PAUSED;
+        $now = OrderPlacementTimeUtil::now_mysql_utc();
 
         try {
             $affected = $wpdb->query(
@@ -263,31 +261,31 @@ final class OrderTrashJobsService
                          last_error = %s
                      WHERE order_id = %d
                        AND status = %s",
-                    $scheduled_status,
-                    $now,
-                    $now,
+                    (string) OrderPlacementKeys::JOB_STATUS_SCHEDULED,
+                    (string) $now,
+                    (string) $now,
                     ($reason !== '' ? 'Resumed: ' . $reason : 'Resumed'),
                     $order_id,
-                    $paused_status
+                    (string) OrderPlacementKeys::JOB_STATUS_PAUSED
                 )
             );
 
             return is_numeric($affected) ? (int) $affected : 0;
         } catch (\Throwable $e) {
-            $this->log_ctx('resume_jobs_exception', [
-                'order_id' => $order_id,
-                'err'      => $e->getMessage(),
-            ]);
+            $this->debug_error('resume_jobs_failed', $order_id, $e);
             return 0;
         }
     }
 
-    /* ============================ logging ============================ */
+    /* ============================ minimal debug ============================ */
 
-   
-    /** @param array<string,mixed> $ctx */
-    private static function log_ctx(string $msg, array $ctx): void
+    private function debug_error(string $op, int $order_id, \Throwable $e): void
     {
-        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
+        if (!defined('WP_DEBUG') || !WP_DEBUG) {
+            return;
+        }
+
+        // One line, compact. No ctx spam.
+        error_log('[FFLHUB][OrderTrashJobs] ' . $op . ' order_id=' . $order_id . ' err=' . $e->getMessage());
     }
 }

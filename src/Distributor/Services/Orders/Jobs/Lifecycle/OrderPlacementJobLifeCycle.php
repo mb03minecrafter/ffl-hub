@@ -8,6 +8,7 @@ use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
@@ -19,23 +20,27 @@ if (!defined('ABSPATH')) {
  * OrderPlacementJobLifecycle
  *
  * Responsibility:
- * - Job row init/upsert (create if missing; keep identifiers stable).
- * - Core lifecycle transitions used by JobRunner/StateMachine:
- *   - queued/scheduled/running/success/failed/retry_scheduled
- *   - attempt counting and atomic "claim" for running
- *   - schedule/action id clearing in terminal/running transitions
+ * - Create/init job rows (upsert-by order_id+job_key) while keeping stable identifiers.
+ * - Provide durable lifecycle transitions used by the JobRunner/StateMachine:
+ *     - queued / scheduled / running / success / failed / retry_scheduled
+ *     - atomic "claim" for execution (attempts++ and status transition)
+ *     - clearing schedule metadata (next_run_at, action_id) on transitions where it must not remain
  *
  * Non-responsibilities:
  * - Reading DTOs (repository)
  * - Arbitrary column writes (writer)
- * - Snapshots (validate/place)
+ * - Snapshot persistence (validate/place)
  * - Shipping field merges
  * - Cancellation/trash/delete helpers
  *
- * Notes:
- * - This class contains some SQL where atomicity/consistency matters
- *   (init/upsert + atomic attempts increment + claim).
- * - Patch-style updates are delegated to OrderPlacementJobWriter.
+ * Architecture note (DB-only retry scheduling):
+ * - Per-job Action Scheduler actions are disabled.
+ * - action_id is kept NULL for all job rows.
+ * - next_run_at (MySQL UTC datetime) is used by a recurring dispatcher to pull ready rows.
+ *
+ * Safety:
+ * - job_key/dist_id/bucket are normalized and validated.
+ * - Atomic claim is implemented with a single UPDATE constrained by eligible statuses.
  */
 final class OrderPlacementJobLifecycle
 {
@@ -49,13 +54,21 @@ final class OrderPlacementJobLifecycle
      * Behavior:
      * - INSERT if missing (creates row with status=queued, attempts=0).
      * - If the row already exists (UNIQUE order_id+job_key), updates ONLY:
-     *     payload_json, updated_at, dist_id, bucket
-     *   (does NOT overwrite status/attempts/etc).
+     *     - payload_json
+     *     - updated_at
+     *     - dist_id
+     *     - bucket
+     *   Does NOT overwrite status/attempts/merchant_po/external ids/shipping fields/snapshots/etc.
      *
-     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
-     * @param WC_Order                $order      WooCommerce order owning the job row.
-     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
-     * @param array<string,mixed>     $payload    Minimal payload used by JobRunner (dist_id, bucket, lines, etc).
+     * Important:
+     * - This is the *only* place that creates new rows for bucket jobs.
+     * - payload_json is considered the canonical "job payload" for the runner.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table helper (provides physical table name).
+     * @param WC_Order $order WooCommerce order.
+     * @param string $job_key Job key (dist|bucket). Normalized before use.
+     * @param array<string,mixed> $payload Minimal payload used by runner (dist_id,bucket,lines,...).
+     * @return void
      */
     public static function init_job_meta(
         OrderPlacementJobsTable $jobs_table,
@@ -108,6 +121,12 @@ final class OrderPlacementJobLifecycle
             $payload_json = '[]';
         }
 
+        $empty_codes_json = wp_json_encode([]);
+        if (!is_string($empty_codes_json) || $empty_codes_json === '') {
+            $empty_codes_json = '[]';
+        }
+
+        // NOTE: Column list must match your table schema.
         $sql = "
             INSERT INTO {$table}
             (order_id, job_key, dist_id, bucket, status, attempts, created_at, updated_at,
@@ -131,13 +150,13 @@ final class OrderPlacementJobLifecycle
                 $job_key,
                 $dist_id,
                 $bucket,
-                OrderPlacementKeys::JOB_STATUS_QUEUED,
+                (string) OrderPlacementKeys::JOB_STATUS_QUEUED,
                 0,
                 $now,
                 $now,
                 '',               // last_step
                 '',               // last_error
-                wp_json_encode([]),// last_codes_json
+                $empty_codes_json,// last_codes_json
                 $payload_json
             )
         );
@@ -150,10 +169,17 @@ final class OrderPlacementJobLifecycle
     /**
      * Patch-write: set status for a job row.
      *
-     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
-     * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
-     * @param string                  $status     New status.
+     * This is a low-level helper. Prefer higher-level transitions:
+     * - mark_job_success()
+     * - mark_job_failed()
+     * - mark_job_retry_scheduled()
+     * - increment_job_attempts_and_mark_running()
+     *
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param WC_Order $order
+     * @param string $job_key Job key (dist|bucket).
+     * @param string $status New status.
+     * @return void
      */
     public static function set_job_status(
         OrderPlacementJobsTable $jobs_table,
@@ -170,10 +196,10 @@ final class OrderPlacementJobLifecycle
     /**
      * Read-only: get current status for a job row.
      *
-     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
-     * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
-     * @return string Status, or empty string if missing/invalid.
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param WC_Order $order
+     * @param string $job_key Job key (dist|bucket). Normalized before use.
+     * @return string Status, or '' if missing/invalid.
      */
     public static function get_job_status(OrderPlacementJobsTable $jobs_table, WC_Order $order, string $job_key): string
     {
@@ -202,24 +228,34 @@ final class OrderPlacementJobLifecycle
             )
         );
 
-        return is_string($status) ? $status : '';
+        return is_string($status) ? (string) $status : '';
     }
 
     /* ============================================================
-     * Attempts + running transition
+     * Attempts + running transition (atomic claim)
      * ============================================================ */
 
     /**
-     * Atomically claim a job for execution:
-     * - increments attempts
-     * - transitions status to RUNNING
-     * - clears next_run_at and action_id
+     * Atomically claim a job for execution.
      *
-     * Only succeeds if current status is scheduled or retry_scheduled.
+     * Semantics:
+     * - This is the primary concurrency gate for workers.
+     * - Performs a single conditional UPDATE that:
+     *     - increments attempts
+     *     - transitions status => running
+     *     - clears next_run_at + action_id (DB-only; keep action_id NULL always)
+     *     - sets updated_at
+     * - Only succeeds if current status is in the eligible set:
+     *     - scheduled
+     *     - retry_scheduled
      *
-     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
-     * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
+     * Return:
+     * - attempts after increment (>= 1) if claimed
+     * - 0 if not claimed (missing row, invalid key, or status not eligible)
+     *
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param WC_Order $order
+     * @param string $job_key Job key (dist|bucket). Normalized before use.
      * @return int Attempts after increment; 0 if not claimed.
      */
     public static function increment_job_attempts_and_mark_running(
@@ -292,6 +328,22 @@ final class OrderPlacementJobLifecycle
      * Terminal transitions
      * ============================================================ */
 
+    /**
+     * Transition job row to SUCCESS (terminal).
+     *
+     * Writes:
+     * - status=success
+     * - done_at=<mysql utc> (either converted from ISO or now)
+     * - last_error='' (cleared)
+     * - last_codes_json=[] (cleared)
+     * - next_run_at=NULL and action_id=NULL (cleared)
+     *
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param WC_Order $order
+     * @param string $job_key Job key (dist|bucket).
+     * @param string $done_at Optional ISO8601 timestamp; if empty uses now.
+     * @return void
+     */
     public static function mark_job_success(
         OrderPlacementJobsTable $jobs_table,
         WC_Order $order,
@@ -310,12 +362,26 @@ final class OrderPlacementJobLifecycle
             ->with_status(OrderPlacementKeys::JOB_STATUS_SUCCESS)
             ->with_field('done_at', $done_mysql)
             ->with_field('last_error', '')
-            ->with_last_codes([])
+            ->with_last_codes([]) // clears last_codes_json
             ->clear_action_and_schedule();
 
         OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
+    /**
+     * Transition job row to FAILED (terminal).
+     *
+     * Writes:
+     * - status=failed
+     * - last_error=<message>
+     * - next_run_at=NULL and action_id=NULL (cleared)
+     *
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param WC_Order $order
+     * @param string $job_key Job key (dist|bucket).
+     * @param string $error_message Failure reason.
+     * @return void
+     */
     public static function mark_job_failed(
         OrderPlacementJobsTable $jobs_table,
         WC_Order $order,
@@ -330,26 +396,67 @@ final class OrderPlacementJobLifecycle
         OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
 
+    /**
+     * Transition job row to RETRY_SCHEDULED (non-terminal).
+     *
+     * IMPORTANT:
+     * - This method expects next_run_at as a **MySQL UTC datetime** string.
+     *   (That is what the dispatcher queries against.)
+     * - action_id remains NULL (DB-only; per-job actions are disabled).
+     *
+     * Writes (single patch):
+     * - status=retry_scheduled
+     * - last_error=<reason>
+     * - last_codes_json=<codes>
+     * - last_step=<step> (optional)
+     * - next_run_at=<mysql utc> (nullable if invalid)
+     * - action_id=NULL
+     *
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param WC_Order $order
+     * @param string $job_key Job key (dist|bucket).
+     * @param string $next_run_at_mysql_utc MySQL UTC datetime (e.g., '2026-01-31 19:30:00').
+     * @param string $reason Human-readable retry reason.
+     * @param array<int,string> $codes Optional machine-readable codes (normalized/deduped).
+     * @param string $step Optional stage label ('validate'|'place' or freeform).
+     * @return void
+     */
     public static function mark_job_retry_scheduled(
         OrderPlacementJobsTable $jobs_table,
         WC_Order $order,
         string $job_key,
-        string $next_run_at_iso,
+        string $next_run_at_mysql_utc,
         string $reason,
         array $codes = [],
         string $step = ''
     ): void {
         $step = strtolower(trim((string) $step));
-        if ($step !== 'validate' && $step !== 'place') {
-            $step = '';
+
+        // Keep step constrained if you want predictable UI filters.
+        // If you prefer freeform, delete this allowlist.
+        if ($step !== 'validate' && $step !== 'place' && $step !== 'shipping') {
+            $step = ($step !== '') ? $step : '';
         }
 
-        $next_mysql = OrderPlacementTimeUtil::iso_to_mysql_utc((string) $next_run_at_iso);
+        /** @var string[] $codes_norm */
+        $codes_norm = OrderPlacementProductUtil::normalize_external_ids($codes);
+
+        // Defensive normalize: accept either mysql utc or iso; convert to mysql utc if needed.
+        $next_mysql = trim((string) $next_run_at_mysql_utc);
+
+        if ($next_mysql !== '') {
+            // If it *looks* like ISO, convert. Otherwise assume already mysql UTC.
+            // ISO typically contains 'T' or ends with 'Z' or timezone offset.
+            if (strpos($next_mysql, 'T') !== false || strpos($next_mysql, 'Z') !== false || preg_match('/[+\-]\d{2}:\d{2}$/', $next_mysql)) {
+                $tmp = OrderPlacementTimeUtil::iso_to_mysql_utc($next_mysql);
+                $next_mysql = ($tmp !== '') ? $tmp : '';
+            }
+        }
 
         $patch = OrderPlacementJobPatch::empty()
             ->with_status(OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED)
             ->with_last_error((string) $reason)
-            ->with_last_codes(is_array($codes) ? $codes : [])
+            ->with_last_codes($codes_norm)
             ->with_next_run_at_mysql(($next_mysql !== '') ? $next_mysql : null)
             ->with_last_step($step)
             ->with_action_id(null);

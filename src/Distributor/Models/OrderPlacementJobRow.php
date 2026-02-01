@@ -2,14 +2,12 @@
 
 namespace FFLHub\Distributor\Models;
 
-if (!defined('ABSPATH')) {
+if (! defined('ABSPATH')) {
     exit;
 }
 
 /**
  * Represents a row from the Order Placement Jobs table (fflhub_place_jobs).
- *
- * PHP 7 compatible.
  */
 final class OrderPlacementJobRow
 {
@@ -54,10 +52,9 @@ final class OrderPlacementJobRow
     public ?string $shipping_weight;
     public ?string $shipment_raw_json;
 
-
-
     /** @var array<string,mixed>|null */
-    private $payload_cache = null;
+    private ?array $payload_cache = null;
+
     /**
      * Construct from a DB row (ARRAY_A).
      *
@@ -137,7 +134,6 @@ final class OrderPlacementJobRow
         return $this->has_tracking() || $this->has_shipped_at();
     }
 
-
     public function primary_tracking(): string
     {
         $t = $this->tracking_numbers();
@@ -154,8 +150,10 @@ final class OrderPlacementJobRow
         if ($this->payload_cache !== null) {
             return $this->payload_cache;
         }
+
         $a = json_decode($this->payload_json, true);
         $this->payload_cache = is_array($a) ? $a : [];
+
         return $this->payload_cache;
     }
 
@@ -174,7 +172,7 @@ final class OrderPlacementJobRow
     }
 
     /**
-     * Convert payload['lines'] into DistributorOrderLine[]
+     * Convert payload['lines'] into DistributorOrderLine[].
      *
      * @return DistributorOrderLine[]
      */
@@ -185,17 +183,28 @@ final class OrderPlacementJobRow
         $ffl_required = ($bucket === 'ffl');
 
         $lines = $p['lines'] ?? [];
-        if (!is_array($lines) || empty($lines)) return [];
+        if (!is_array($lines) || empty($lines)) {
+            return [];
+        }
 
         $out = [];
+
         foreach ($lines as $line) {
-            if (!is_array($line)) continue;
+            if (!is_array($line)) {
+                continue;
+            }
 
-            $upc_raw = isset($line['upc']) ? trim((string) $line['upc']) : '';
+            $upc_raw = trim((string) ($line['upc'] ?? ''));
             $upc = self::digits_only($upc_raw);
-            if ($upc === '') continue;
+            if ($upc === '') {
+                continue;
+            }
 
-            $qty = isset($line['qty']) ? (int) $line['qty'] : 0;
+            // Be resilient to different quantity keys
+            $qty =
+                isset($line['qty'])      ? (int) $line['qty'] :
+                (isset($line['quantity']) ? (int) $line['quantity'] : 0);
+
             $qty = max(1, $qty);
 
             $out[] = new DistributorOrderLine($upc, $qty, $ffl_required);
@@ -207,11 +216,12 @@ final class OrderPlacementJobRow
     private static function digits_only(string $value): string
     {
         $value = trim((string) $value);
-        if ($value !== '' && ctype_digit($value)) return $value;
+        if ($value !== '' && ctype_digit($value)) {
+            return $value;
+        }
         $v = preg_replace('/\D+/', '', $value);
         return is_string($v) ? $v : '';
     }
-
 
     /* ===================== JSON list fields ===================== */
 
@@ -241,32 +251,29 @@ final class OrderPlacementJobRow
 
     /* ===================== JSON blobs ===================== */
 
-    /**
-     * @return array<string,mixed>|null
-     */
     public function shipment_raw(): ?array
     {
-        if (!$this->shipment_raw_json) return null;
+        if (!$this->shipment_raw_json) {
+            return null;
+        }
         $a = json_decode($this->shipment_raw_json, true);
         return is_array($a) ? $a : null;
     }
 
-    /**
-     * @return array<string,mixed>|null
-     */
     public function validate_snapshot(): ?array
     {
-        if (!$this->validate_result_json) return null;
+        if (!$this->validate_result_json) {
+            return null;
+        }
         $a = json_decode($this->validate_result_json, true);
         return is_array($a) ? $a : null;
     }
 
-    /**
-     * @return array<string,mixed>|null
-     */
     public function place_snapshot(): ?array
     {
-        if (!$this->place_result_json) return null;
+        if (!$this->place_result_json) {
+            return null;
+        }
         $a = json_decode($this->place_result_json, true);
         return is_array($a) ? $a : null;
     }
@@ -276,51 +283,68 @@ final class OrderPlacementJobRow
     /** @return string[] */
     private static function decode_string_list_json(?string $json): array
     {
-        if (!is_string($json) || trim($json) === '') return [];
+        if (!is_string($json) || trim($json) === '') {
+            return [];
+        }
 
         $a = json_decode($json, true);
-        if (!is_array($a)) return [];
+        if (!is_array($a)) {
+            return [];
+        }
 
         $out = [];
         foreach ($a as $v) {
             $s = trim((string) $v);
-            if ($s !== '') $out[] = $s;
+            if ($s !== '') {
+                $out[] = $s;
+            }
         }
 
         // unique + preserve order
         $set = [];
         $uniq = [];
         foreach ($out as $s) {
-            if (isset($set[$s])) continue;
+            if (isset($set[$s])) {
+                continue;
+            }
             $set[$s] = true;
             $uniq[] = $s;
         }
+
         return $uniq;
     }
 
     private static function norm_nullable_string($v): ?string
     {
-        if ($v === null) return null;
+        if ($v === null) {
+            return null;
+        }
         $s = trim((string) $v);
         return $s === '' ? null : $s;
     }
 
     private static function norm_nullable_int($v): ?int
     {
-        if ($v === null) return null;
-        if ($v === '') return null;
+        if ($v === null || $v === '') {
+            return null;
+        }
         $i = (int) $v;
         return $i > 0 ? $i : null;
     }
 
     private static function norm_mysql_datetime($v): ?string
     {
-        if ($v === null) return null;
+        if ($v === null) {
+            return null;
+        }
         $s = trim((string) $v);
-        if ($s === '' || $s === self::ZERO_DATE) return null;
+        if ($s === '' || $s === self::ZERO_DATE) {
+            return null;
+        }
         return $s;
     }
 
+    /* ===================== Normalized accessors ===================== */
 
     public function job_key_norm(): string
     {
@@ -374,19 +398,15 @@ final class OrderPlacementJobRow
         return $this->payload_bucket() === 'ffl';
     }
 
-    /** @return int */
     public function payload_lines_count(): int
     {
-        $lines = $this->payload_lines();
-        return is_array($lines) ? count($lines) : 0;
+        return count($this->payload_lines());
     }
 
     /**
      * Build a small, stable context payload for snapshots/logging.
      *
-     * If $attempt_n is omitted (null), uses the attempts value already on this row.
-     *
-     * @param int|null $attempt_n Attempt number for the current run (optional).
+     * @param int|null $attempt_n
      * @return array<string,mixed>
      */
     public function ctx(?int $attempt_n = null): array

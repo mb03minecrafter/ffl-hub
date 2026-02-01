@@ -27,7 +27,15 @@ final class PartialShipmentEmailContext
         $this->job = $job;
         $this->update = $update;
         $this->shipment = $shipment;
-        $this->lines = $lines;
+
+        // Defensive: keep only valid line objects; preserve order.
+        $out = [];
+        foreach ($lines as $l) {
+            if ($l instanceof DistributorOrderLine) {
+                $out[] = $l;
+            }
+        }
+        $this->lines = $out;
     }
 
     public function should_send(): bool

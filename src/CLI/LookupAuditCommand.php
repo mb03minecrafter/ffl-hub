@@ -6,6 +6,7 @@ namespace FFLHub\CLI;
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Models\UpcLookupResult;
 use FFLHub\Distributor\Models\DistributorOffer;
+use FFLHub\Plugin;
 
 if (! defined('ABSPATH')) {
     exit;
@@ -189,7 +190,7 @@ final class LookupAuditCommand
             }
 
             // Run actual lookup pipeline
-            $res = DistributorProductHelper::get_upc_lookup_result_from_distributors($upc, (bool) $include_images);
+            $res = DistributorProductHelper::get_upc_lookup_result_from_distributors(Plugin::instance()->distributor_handler, $upc, (bool) $include_images);
 
             // If lookup itself fails, record "missing offer" for all targets
             if (! ($res instanceof UpcLookupResult)) {

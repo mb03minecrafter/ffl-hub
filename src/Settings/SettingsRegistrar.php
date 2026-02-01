@@ -2,7 +2,7 @@
 
 namespace FFLHub\Settings;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
@@ -10,18 +10,34 @@ use FFLHub\Distributor\Core\DistributorRegistry;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 
 /**
- * Registers all FFLHub settings with the WP Settings API.
+ * Centralized WP Settings API registration for FFL Hub.
  *
- * AdminPage should NOT call register_setting() anymore.
- * All settings are registered here, driven by distributor modules.
+ * Why this exists:
+ * - Keeps settings registration out of admin page rendering code.
+ * - Allows distributor modules to declare their own settings via a schema,
+ *   while still enforcing consistent sanitize/typing rules.
+ *
+ * Entry point:
+ * - Plugin constructor calls SettingsRegistrar::init()
+ * - This hooks admin_init and registers all known settings.
  */
 final class SettingsRegistrar
 {
+    /**
+     * Hook settings registration into WordPress admin init.
+     *
+     * NOTE: register_setting() should only run in admin context.
+     */
     public static function init(): void
     {
         add_action('admin_init', [__CLASS__, 'register_all_settings']);
     }
 
+    /**
+     * Register all settings:
+     * - Global (plugin-wide)
+     * - Distributor module settings (schema-driven)
+     */
     public static function register_all_settings(): void
     {
         self::register_global_settings();
@@ -32,6 +48,12 @@ final class SettingsRegistrar
      * Global settings
      * ---------------------------------------------------------------------- */
 
+    /**
+     * Register plugin-wide settings (not tied to a distributor).
+     *
+     * All values are stored as strings in wp_options (WP Settings API behavior).
+     * We sanitize values on write and provide a default for first-time reads.
+     */
     private static function register_global_settings(): void
     {
         $group = Options::global_settings_group();
@@ -61,24 +83,46 @@ final class SettingsRegistrar
      * Distributor settings (module-driven)
      * ---------------------------------------------------------------------- */
 
+    /**
+     * Register settings declared by each distributor module.
+     *
+     * Contract (expected schema shape):
+     *   $module->settings_schema() returns:
+     *     [
+     *       'field_key' => [
+     *         'type'    => 'text'|'textarea'|'select'|'number'|'password'|'checkbox',
+     *         'default' => '...',
+     *         // (optional future keys: label, description, options, etc.)
+     *       ],
+     *       ...
+     *     ]
+     *
+     * Notes:
+     * - We store each setting under a generated option name that namespaces it
+     *   by distributor id and schema key.
+     * - Each setting is registered as a string option because WP stores option
+     *   values as strings, and our sanitizers also return strings.
+     */
     private static function register_distributor_settings(): void
     {
         foreach (DistributorRegistry::get_modules() as $module) {
-            if (! ($module instanceof DistributorModuleInterface)) {
+            if (!($module instanceof DistributorModuleInterface)) {
                 continue;
             }
 
             $dist_id = $module->id();
             $fields  = $module->settings_schema();
 
-            if (empty($fields) || ! is_array($fields)) {
+            if (empty($fields) || !is_array($fields)) {
                 continue;
             }
 
             $group = Options::distributor_settings_group($dist_id);
 
             foreach ($fields as $key => $def) {
-                $key         = (string) $key;
+                $key = (string) $key;
+
+                // Option name is centralized so we can change naming once if needed.
                 $option_name = Options::distributor_option_name($dist_id, $key);
 
                 $type    = isset($def['type']) ? (string) $def['type'] : 'text';
@@ -102,9 +146,19 @@ final class SettingsRegistrar
      * ---------------------------------------------------------------------- */
 
     /**
-     * Percent sanitizer:
-     *  - allow digits + dot
-     *  - coerce to float string
+     * Percent/number sanitizer:
+     * - Removes everything except digits and '.'.
+     * - Coerces to float and returns the normalized float string.
+     *
+     * Examples:
+     * - " 5 "      -> "5"
+     * - "5.25%"    -> "5.25"
+     * - "abc"      -> "0"
+     *
+     * NOTE: This matches existing behavior. If you later want stricter behavior
+     * (e.g., reject invalid), that would be a functional change.
+     *
+     * @param mixed $value
      */
     public static function sanitize_percent_string($value): string
     {
@@ -113,7 +167,12 @@ final class SettingsRegistrar
     }
 
     /**
-     * Conservative string sanitizer for secrets (does not clobber special chars).
+     * Conservative string sanitizer for secrets:
+     * - Does NOT use sanitize_text_field() because that can clobber characters
+     *   commonly used in API keys or passwords.
+     * - Removes null bytes and trims whitespace.
+     *
+     * @param mixed $value
      */
     public static function sanitize_loose_string($value): string
     {
@@ -123,7 +182,9 @@ final class SettingsRegistrar
     }
 
     /**
-     * Standard text field sanitizer.
+     * Standard WP text sanitizer (safe for typical admin text inputs).
+     *
+     * @param mixed $value
      */
     public static function sanitize_text($value): string
     {
@@ -131,7 +192,10 @@ final class SettingsRegistrar
     }
 
     /**
-     * Checkbox sanitizer: force "0" or "1".
+     * Checkbox sanitizer:
+     * - Forces stored value to "1" or "0" (strings).
+     *
+     * @param mixed $value
      */
     public static function sanitize_checkbox($value): string
     {
@@ -139,7 +203,10 @@ final class SettingsRegistrar
     }
 
     /**
-     * Select a sanitizer based on field type.
+     * Select a sanitizer based on schema "type".
+     *
+     * IMPORTANT: This maps UI field types to sanitizers.
+     * WP's "type" in register_setting is still 'string' for storage purposes.
      */
     private static function sanitize_callback_for_type(string $type): callable
     {
@@ -147,9 +214,11 @@ final class SettingsRegistrar
 
         switch ($type) {
             case 'number':
+                // Schema "number" maps to percent/float normalization.
                 return [__CLASS__, 'sanitize_percent_string'];
 
             case 'password':
+                // Preserve most characters for secrets.
                 return [__CLASS__, 'sanitize_loose_string'];
 
             case 'checkbox':

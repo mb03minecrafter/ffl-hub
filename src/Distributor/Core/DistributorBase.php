@@ -3,16 +3,12 @@
 
 namespace FFLHub\Distributor\Core;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
 use FFLHub\Distributor\Contracts\DistributorInterface;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
-
-use FFLHub\Distributor\Services\DistributorServicesInterface;
-use FFLHub\Distributor\Services\Tables\DistributorTableInterface;
-
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\DistributorOrderRequest;
@@ -20,29 +16,45 @@ use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorShipment;
+use FFLHub\Distributor\Services\DistributorServicesInterface;
+use FFLHub\Distributor\Services\Tables\DistributorTableInterface;
 
 /**
- * Base class for distributors with common functionality.
+ * Base class for distributor implementations.
  *
- * Responsibilities:
- * - Provide module metadata
- * - Provide services/table helpers
- * - Provide shared normalization and row-to-payload helpers
- * - Provide shared compliance helpers (can_ship_to_state_by_upc)
- * - Provide shared line->Items[] mapping helper for ordering APIs
+ * This class provides:
+ * - Module metadata delegation (id/label/name/description/settings schema).
+ * - Optional service bundle access (tables, cron wiring, etc.).
+ * - Common normalization helpers (UPC, ZIP, digits-only extraction, etc.).
+ * - Helpers to build a DistributorProductPayload from a fulfillment row + map.
+ * - Helpers to map order lines into a distributor-specific Items[] payload.
+ *
+ * Subclasses typically override:
+ * - get_product_by_upc()
+ * - get_image_url_from_row()
+ * - get_shipping_cost_by_upc() (if applicable)
+ * - get_true_cost_by_distributor_cost_shipping_cost() (if applicable)
+ * - place_order()
+ * - validate_order_request() / get_shipment_by_po() (if supported)
  */
 abstract class DistributorBase implements DistributorInterface
 {
+    /**
+     * Module definition for this distributor (metadata + settings schema + builder).
+     */
     protected DistributorModuleInterface $module;
 
     /**
-     * Optional services bundle for this distributor (tables, cron, etc.)
+     * Optional services bundle for this distributor (tables, cron, importers, etc).
+     *
+     * Many distributor methods can run without services, but validation and
+     * local-only checks often rely on fulfillment tables.
      */
     protected ?DistributorServicesInterface $services = null;
 
     public function __construct(DistributorModuleInterface $module, ?DistributorServicesInterface $services = null)
     {
-        $this->module = $module;
+        $this->module   = $module;
         $this->services = $services;
     }
 
@@ -51,7 +63,9 @@ abstract class DistributorBase implements DistributorInterface
         return $this->module;
     }
 
-    /* ---- Metadata + schema delegate to module ---- */
+    /* ---------------------------------------------------------------------
+     * Metadata + schema (delegated to module)
+     * ------------------------------------------------------------------ */
 
     public function get_id(): string
     {
@@ -83,13 +97,20 @@ abstract class DistributorBase implements DistributorInterface
         return $this->module->icon_url();
     }
 
+    /**
+     * Distributor settings schema, used by SettingsRegistrar.
+     *
+     * @return array<string,mixed>
+     */
     public function get_field_definitions(): array
     {
         $schema = $this->module->settings_schema();
         return is_array($schema) ? $schema : [];
     }
 
-    /* ---- Services ---- */
+    /* ---------------------------------------------------------------------
+     * Services bundle access
+     * ------------------------------------------------------------------ */
 
     public function set_services(DistributorServicesInterface $services): void
     {
@@ -106,13 +127,24 @@ abstract class DistributorBase implements DistributorInterface
         return $this->services instanceof DistributorServicesInterface;
     }
 
+    /**
+     * Convenience access to the distributor's fulfillment table (if available).
+     *
+     * Some workflows (like local-only validation) rely on this table.
+     */
     protected function get_fulfillment_table(): ?DistributorTableInterface
     {
         return $this->services ? $this->services->get_fulfillment_table() : null;
     }
 
-    /* ---- Helpers for WordPress option naming ---- */
+    /* ---------------------------------------------------------------------
+     * Legacy WordPress option naming helpers
+     * ------------------------------------------------------------------ */
 
+    /**
+     * NOTE: These are older helpers for settings pages.
+     * New settings access should generally use Settings\Options helpers.
+     */
     protected function get_option_group(): string
     {
         return 'fflhub_' . $this->get_id() . '_settings_group';
@@ -138,8 +170,16 @@ abstract class DistributorBase implements DistributorInterface
         return 'fflhub_' . $this->get_id() . '_' . $field_key . '_field';
     }
 
-    /* ---- Product / pricing (default implementations) ---- */
+    /* ---------------------------------------------------------------------
+     * Product / pricing (default implementations)
+     * ------------------------------------------------------------------ */
 
+    /**
+     * Default offer lookup:
+     * - Normalizes UPC (digits only).
+     * - Uses pricing-only payload when include_images=false (cron fast-path).
+     * - Wraps the payload as a DistributorOffer (id + label + product).
+     */
     public function get_offer_by_upc(string $upc, bool $include_images = true): ?DistributorOffer
     {
         $normalized = $this->normalize_upc($upc);
@@ -148,15 +188,13 @@ abstract class DistributorBase implements DistributorInterface
         }
 
         // Fast-path: no image probing for cron/sync workloads.
-        $product = null;
-
-        if (! $include_images && method_exists($this, 'get_pricing_payload_by_upc')) {
+        if (!$include_images && method_exists($this, 'get_pricing_payload_by_upc')) {
             $product = $this->get_pricing_payload_by_upc($normalized);
         } else {
             $product = $this->get_product_by_upc($normalized);
         }
 
-        if (! $product instanceof DistributorProductPayload) {
+        if (!$product instanceof DistributorProductPayload) {
             return null;
         }
 
@@ -168,16 +206,25 @@ abstract class DistributorBase implements DistributorInterface
     }
 
     /**
-     * Distributors override this.
+     * Fetch a full product payload by UPC.
      *
-     * NOTE: In DistributorBase we normalize incoming UPCs before calling this method.
-     * Implementations may assume $upc is digits-only.
+     * Subclasses should override this.
+     *
+     * IMPORTANT:
+     * - DistributorBase normalizes incoming UPCs before calling this.
+     * - Implementations may assume $upc is digits-only.
      */
     public function get_product_by_upc(string $upc): ?DistributorProductPayload
     {
-        return null; // distributors override
+        return null;
     }
 
+    /**
+     * Pricing-only payload.
+     *
+     * Default: call get_product_by_upc() with normalized UPC.
+     * Distributors may override to fetch a cheaper/smaller response.
+     */
     public function get_pricing_payload_by_upc(string $upc): ?DistributorProductPayload
     {
         $normalized = $this->normalize_upc($upc);
@@ -196,7 +243,7 @@ abstract class DistributorBase implements DistributorInterface
         }
 
         $product = $this->get_pricing_payload_by_upc($normalized);
-        if (! $product instanceof DistributorProductPayload) {
+        if (!$product instanceof DistributorProductPayload) {
             return null;
         }
 
@@ -216,7 +263,7 @@ abstract class DistributorBase implements DistributorInterface
         }
 
         $product = $this->get_pricing_payload_by_upc($normalized);
-        if (! $product instanceof DistributorProductPayload) {
+        if (!$product instanceof DistributorProductPayload) {
             return null;
         }
 
@@ -228,6 +275,12 @@ abstract class DistributorBase implements DistributorInterface
         return (float) $p;
     }
 
+    /**
+     * Default shipping cost for a UPC.
+     *
+     * Many distributors don't provide this; default is 0.0.
+     * Subclasses may override to implement real shipping heuristics.
+     */
     public function get_shipping_cost_by_upc(string $upc): ?float
     {
         $normalized = $this->normalize_upc($upc);
@@ -240,7 +293,8 @@ abstract class DistributorBase implements DistributorInterface
 
     /**
      * Normalize a UPC by stripping non-digits.
-     * Returns null if empty after normalization.
+     *
+     * Returns null if the UPC is empty after normalization.
      */
     protected function normalize_upc(string $upc): ?string
     {
@@ -251,11 +305,13 @@ abstract class DistributorBase implements DistributorInterface
         return $normalized !== '' ? $normalized : null;
     }
 
-    /* ---- Field helpers ---- */
+    /* ---------------------------------------------------------------------
+     * Generic "row field" extraction helpers (for fulfillment row mapping)
+     * ------------------------------------------------------------------ */
 
     /**
      * @param array<string,mixed> $item
-     * @param array<int,string> $keys
+     * @param array<int,string>   $keys
      */
     protected function get_string_field(array $item, array $keys): ?string
     {
@@ -269,7 +325,7 @@ abstract class DistributorBase implements DistributorInterface
 
     /**
      * @param array<string,mixed> $item
-     * @param array<int,string> $keys
+     * @param array<int,string>   $keys
      */
     protected function get_int_field(array $item, array $keys): ?int
     {
@@ -283,7 +339,7 @@ abstract class DistributorBase implements DistributorInterface
 
     /**
      * @param array<string,mixed> $item
-     * @param array<int,string> $keys
+     * @param array<int,string>   $keys
      */
     protected function get_float_field(array $item, array $keys): ?float
     {
@@ -297,7 +353,7 @@ abstract class DistributorBase implements DistributorInterface
 
     /**
      * @param array<string,mixed> $item
-     * @param array<int,string> $keys
+     * @param array<int,string>   $keys
      */
     protected function get_bool_field(array $item, array $keys): ?bool
     {
@@ -309,36 +365,26 @@ abstract class DistributorBase implements DistributorInterface
         return null;
     }
 
-    /**
-     * Trim a scalar-ish value into a safe string for distributor payloads.
-     */
+    /* ---------------------------------------------------------------------
+     * Payload normalization helpers (shared formatting)
+     * ------------------------------------------------------------------ */
+
     protected static function normalize_payload_string($value): string
     {
         return trim((string) $value);
     }
 
-    /**
-     * Normalize US state code for distributor payloads.
-     * Returns uppercase trimmed input; if it is a valid 2-letter code, it stays that.
-     */
     protected static function normalize_us_state_code_for_payload($state): string
     {
-        $s = strtoupper(trim((string) $state));
-        return $s;
+        return strtoupper(trim((string) $state));
     }
 
-    /**
-     * Extract only digits from a value (ZIP, phone, etc.).
-     */
     protected static function extract_digits($value): string
     {
         $digits = preg_replace('/\D+/', '', (string) $value);
         return is_string($digits) ? $digits : '';
     }
 
-    /**
-     * Format ZIP as 5 digits (ZIP5). Returns '' if no digits.
-     */
     protected static function format_us_zip5_for_payload($zip): string
     {
         $digits = self::extract_digits($zip);
@@ -348,9 +394,6 @@ abstract class DistributorBase implements DistributorInterface
         return substr($digits, 0, 5);
     }
 
-    /**
-     * Format ZIP as ZIP5 or ZIP+4 with dash when 9 digits are present.
-     */
     protected static function format_us_zip5_or_zip9_with_dash_for_payload($zip): string
     {
         $zip = trim((string) $zip);
@@ -358,6 +401,7 @@ abstract class DistributorBase implements DistributorInterface
             return '';
         }
 
+        // Already in ZIP+4 format.
         if (preg_match('/^\d{5}-\d{4}$/', $zip)) {
             return $zip;
         }
@@ -374,12 +418,16 @@ abstract class DistributorBase implements DistributorInterface
         return substr($digits, 0, 5);
     }
 
+    /* ---------------------------------------------------------------------
+     * Payload building
+     * ------------------------------------------------------------------ */
+
     /**
-     * Build a normalized payload from a fulfillment row + field map.
+     * Build a normalized DistributorProductPayload from a fulfillment row + mapping.
      *
-     * @param array<string,mixed> $row
-     * @param array<string,array<int,string>> $map
-     * @param callable $category_mapper fn(?string $raw_category): ?array  (recommended category path)
+     * @param array<string,mixed>                  $row
+     * @param array<string,array<int,string>>      $map
+     * @param callable                             $category_mapper fn(?string $raw_category): ?array
      */
     protected function build_payload_from_row(
         array $row,
@@ -388,16 +436,17 @@ abstract class DistributorBase implements DistributorInterface
         string $normalized_upc,
         bool $include_images = true
     ): DistributorProductPayload {
-        $sku             = $this->get_string_field($row, $map['sku'] ?? []) ?? '';
-        $upc_raw         = $this->get_string_field($row, $map['upc'] ?? []) ?? $normalized_upc;
-        $upc             = $this->normalize_upc($upc_raw) ?? $normalized_upc;
+        $sku     = $this->get_string_field($row, $map['sku'] ?? []) ?? '';
+        $upc_raw = $this->get_string_field($row, $map['upc'] ?? []) ?? $normalized_upc;
+        $upc     = $this->normalize_upc($upc_raw) ?? $normalized_upc;
 
         $raw_name        = $this->get_string_field($row, $map['name'] ?? []) ?? '';
         $raw_description = $this->get_string_field($row, $map['description'] ?? []) ?? '';
 
-        $raw_name        = trim(preg_replace('/\s+/', ' ', $raw_name));
-        $raw_description = trim(preg_replace('/\s+/', ' ', $raw_description));
+        $raw_name        = trim((string) preg_replace('/\s+/', ' ', $raw_name));
+        $raw_description = trim((string) preg_replace('/\s+/', ' ', $raw_description));
 
+        // Prefer "Name – Description" unless description is already inside the name.
         if ($raw_name !== '' && $raw_description !== '') {
             if (stripos($raw_name, $raw_description) !== false) {
                 $name = $raw_name;
@@ -417,6 +466,7 @@ abstract class DistributorBase implements DistributorInterface
 
         $shipping = (float) ($this->get_shipping_cost_by_upc($normalized_upc) ?? 0.0);
 
+        // True cost is distributor-defined; default returns distributor_cost.
         $true_cost = $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping);
         if ($true_cost === null) {
             $true_cost = $price + $shipping;
@@ -424,7 +474,7 @@ abstract class DistributorBase implements DistributorInterface
 
         $category_raw = $this->get_string_field($row, $map['category'] ?? []);
         $recommended_category = $category_mapper($category_raw);
-        if (! is_array($recommended_category)) {
+        if (!is_array($recommended_category)) {
             $recommended_category = null;
         }
 
@@ -457,26 +507,50 @@ abstract class DistributorBase implements DistributorInterface
         );
     }
 
+    /**
+     * Extract an image URL from a fulfillment row.
+     *
+     * Default implementation returns empty string.
+     * Subclasses typically override to implement distributor-specific behavior.
+     *
+     * @param array<string,mixed> $row
+     * @param mixed              $field Field key or schema entry.
+     */
     protected function get_image_url_from_row(array $row, $field): string
     {
         return '';
     }
 
-    /* ---- True cost helpers ---- */
+    /* ---------------------------------------------------------------------
+     * True cost helpers
+     * ------------------------------------------------------------------ */
 
+    /**
+     * Compute "true cost" for pricing decisions.
+     *
+     * Default behavior returns distributor cost unchanged (ignores shipping).
+     * Subclasses may override to incorporate shipping or other heuristics.
+     */
     protected function get_true_cost_by_distributor_cost_shipping_cost(float $distributor_cost, float $shipping_cost): ?float
     {
         return $distributor_cost;
     }
 
-    /* ---- Ordering helpers ---- */
+    /* ---------------------------------------------------------------------
+     * Ordering helpers
+     * ------------------------------------------------------------------ */
 
     /**
      * Map order lines into a distributor-specific Items[] payload.
      *
-     * If mapping fails, returns a coded DistributorOrderResult using the NEW shape:
-     *  - code: OK / BLOCK_RETRYABLE / BLOCK_FATAL
-     *  - codes[]: secondary reason(s)
+     * This is a shared helper for different distributor ordering APIs where
+     * each line must be mapped into a required item key (SKU/ItemNo/etc).
+     *
+     * Behavior:
+     * - Iterates provided lines, normalizes UPCs, clamps qty >= 1.
+     * - Uses $map() to map UPC -> required key.
+     * - Uses $build() to produce the array item payload.
+     * - Returns DistributorOrderResult::block_fatal(...) on mapping errors.
      *
      * @param array<int,mixed> $lines
      * @param callable $map   fn(string $normalized_upc, string $raw_upc, DistributorOrderLine $line): ?string
@@ -552,7 +626,12 @@ abstract class DistributorBase implements DistributorInterface
         return $items;
     }
 
-
+    /**
+     * Place an order with the distributor.
+     *
+     * Default: fatal "not implemented".
+     * Subclasses that support ordering must override.
+     */
     public function place_order(DistributorOrderRequest $request): DistributorOrderResult
     {
         return DistributorOrderResult::block_fatal(
@@ -561,20 +640,26 @@ abstract class DistributorBase implements DistributorInterface
         );
     }
 
-
-
     /**
-     * Default behavior: allow (some distributors won’t support a preflight API).
+     * Validate an order request before placement (optional).
      *
-     * @param bool $local_only  If true, perform only local stock checks (no remote API).
+     * Default behavior: allow.
+     * Some distributors support preflight validation via API; others do not.
+     *
+     * @param bool $local_only If true, perform only local checks (no remote API).
      */
-    public function validate_order_request(DistributorOrderRequest $request,  bool $local_only = false): DistributorOrderValidationResult
-    {
+    public function validate_order_request(
+        DistributorOrderRequest $request,
+        bool $local_only = false
+    ): DistributorOrderValidationResult {
         return DistributorOrderValidationResult::allow('No distributor-specific validation implemented.');
     }
 
     /**
-     * Return subset of lines this distributor can validate.
+     * Return subset of lines this distributor can validate using local fulfillment table.
+     *
+     * This is useful for cart/order compliance: only validate lines that this
+     * distributor actually carries (based on fulfillment table presence).
      *
      * @param DistributorOrderLine[] $lines
      * @return DistributorOrderLine[]
@@ -582,7 +667,7 @@ abstract class DistributorBase implements DistributorInterface
     public function filter_lines_for_validation(array $lines): array
     {
         $table = $this->get_fulfillment_table();
-        if (! $table) {
+        if (!$table) {
             return [];
         }
 
@@ -606,8 +691,12 @@ abstract class DistributorBase implements DistributorInterface
         return $out;
     }
 
-
-
+    /**
+     * Fetch shipment information by purchase order number (if supported).
+     *
+     * Default: not implemented (returns null).
+     * Subclasses may override.
+     */
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
     {
         return null;

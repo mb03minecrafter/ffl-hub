@@ -1,67 +1,95 @@
 <?php
+declare(strict_types=1);
 
 namespace FFLHub\FFL\Tables;
 
-if ( ! defined( 'ABSPATH' ) ) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
 /**
- * Small helper responsible only for the FFL DB table.
+ * Physical table manager for the FFL database table.
+ *
+ * Responsibilities:
+ * - Resolve the fully-qualified table name (with WP prefix).
+ * - Create or migrate the table schema via dbDelta().
+ * - Expose schema-defined writable columns as a single source of truth.
+ *
+ * Explicitly NOT responsible for:
+ * - Import/parsing logic
+ * - Query/read repositories
+ * - Business or validation logic
  */
-class FFLTable {
-
-    const TABLE_NAME_KEY = 'fflhub_ffls';
-
+final class FFLTable
+{
     /**
-     * Returns the fully qualified table name (with prefix).
+     * Schema definition (authoritative source for columns and indexes).
      */
-    public static function get_table_name(): string {
-        global $wpdb;
-        return $wpdb->prefix . self::TABLE_NAME_KEY;
+    private FFLSchema $schema;
+
+    public function __construct(FFLSchema $schema)
+    {
+        $this->schema = $schema;
     }
 
     /**
-     * Create / update the FFL table.
-     *
-     * Columns are modeled directly after the ATF TXT format, plus:
-     * - ffl_number: derived from LIC_REGN-LIC_DIST-LIC_CNTY-LIC_TYPE-LIC_XPRDTE-LIC_SEQN
+     * Get the fully-qualified table name (including $wpdb->prefix).
      */
-    public static function create_table(): void {
+    public function get_table_name(): string
+    {
         global $wpdb;
 
-        $table_name      = self::get_table_name();
-        $charset_collate = $wpdb->get_charset_collate();
+        return (string) ($wpdb->prefix . $this->schema->get_base_table_key());
+    }
 
-        // If the table already exists, don't run dbDelta again.
-        $existing = $wpdb->get_var(
-            $wpdb->prepare( 'SHOW TABLES LIKE %s', $table_name )
-        );
+    /**
+     * Create or migrate the table using dbDelta().
+     *
+     * dbDelta quirks to be aware of:
+     * - No inline SQL comments (--) inside CREATE TABLE.
+     * - No blank lines inside the CREATE TABLE parentheses.
+     * - One column or index definition per line.
+     *
+     * This method is safe to call repeatedly.
+     */
+    public function createTables(): void
+    {
+        global $wpdb;
 
-        if ( $existing === $table_name ) {
-            return;
+        $table   = $this->get_table_name();
+        $charset = (string) $wpdb->get_charset_collate();
+
+        $columns = $this->schema->get_column_definitions();
+        $indexes = $this->schema->get_index_definitions();
+
+        $lines = [];
+
+        foreach ($columns as $name => $definition) {
+            $lines[] = "{$name} {$definition}";
         }
 
-        $sql = "CREATE TABLE {$table_name} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            ffl_number     VARCHAR(64)  NOT NULL,
-            license_name   VARCHAR(255) NOT NULL,
-            premise_street VARCHAR(255) NOT NULL,
-            premise_city   VARCHAR(128) NOT NULL,
-            premise_state  CHAR(2)      NOT NULL,
-            premise_zip    VARCHAR(10)  NOT NULL,
-            mail_street    VARCHAR(255) NULL,
-            mail_city      VARCHAR(128) NULL,
-            mail_state     CHAR(2)      NULL,
-            mail_zip       VARCHAR(10)  NULL,
-            voice_phone    VARCHAR(32)  NULL,
-            PRIMARY KEY  (id),
-            UNIQUE KEY ffl_number (ffl_number),
-            KEY premise_zip   (premise_zip),
-            KEY premise_state (premise_state)
-        ) {$charset_collate};";
+        foreach ($indexes as $indexDefinition) {
+            $lines[] = (string) $indexDefinition;
+        }
+
+        // IMPORTANT: dbDelta requires a tightly formatted CREATE TABLE body.
+        $sql = "CREATE TABLE {$table} (\n" .
+            implode(",\n", $lines) .
+            "\n) {$charset};";
 
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-        dbDelta( $sql );
+        dbDelta($sql);
+    }
+
+    /**
+     * Columns that are safe to update via partial updates or patch operations.
+     *
+     * Delegated directly from the schema to avoid duplication.
+     *
+     * @return string[]
+     */
+    public function get_writable_columns(): array
+    {
+        return $this->schema->get_writable_columns();
     }
 }

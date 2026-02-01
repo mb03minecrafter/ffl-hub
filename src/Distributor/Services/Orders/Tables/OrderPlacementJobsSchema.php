@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 
 namespace FFLHub\Distributor\Services\Orders\Tables;
 
@@ -11,7 +12,7 @@ if (!defined('ABSPATH')) {
  *
  * IMPORTANT (dbDelta quirks):
  * - Do NOT put SQL comments (--) inside the CREATE TABLE body.
- * - Avoid blank lines inside the CREATE TABLE parentheses.
+ * - Avoid blank lines inside CREATE TABLE parentheses.
  * - Keep one field/key per line.
  */
 final class OrderPlacementJobsSchema
@@ -27,16 +28,20 @@ final class OrderPlacementJobsSchema
     }
 
     /**
-     * Return the set of writable column names for safe partial updates.
+     * Writable columns for safe partial updates.
      *
-     * Writer/patch should use this to avoid schema drift.
+     * Excludes:
+     * - id (auto-increment)
+     * - order_id/job_key (row identifiers)
+     * - created_at (insert-time field)
+     *
+     * Includes:
+     * - updated_at (writer stamps it on every update)
      *
      * @return string[]
      */
     public function get_writable_columns(): array
     {
-        // NOTE: exclude id/order_id/job_key/created_at (identifiers or managed elsewhere)
-        // include updated_at since writer stamps it.
         return [
             'dist_id',
             'bucket',
@@ -70,45 +75,49 @@ final class OrderPlacementJobsSchema
     }
 
     /**
+     * Column definitions.
+     *
      * @return array<string,string> column_name => SQL definition
      */
     public function get_column_definitions(): array
     {
         return [
-            'id'                     => 'BIGINT UNSIGNED NOT NULL AUTO_INCREMENT',
-            'order_id'               => 'BIGINT UNSIGNED NOT NULL',
-            'job_key'                => 'VARCHAR(80) NOT NULL',
-            'dist_id'                => 'VARCHAR(32) NOT NULL',
-            'bucket'                 => 'VARCHAR(8) NOT NULL',
-            'status'                 => 'VARCHAR(24) NOT NULL',
-            'attempts'               => 'INT UNSIGNED NOT NULL DEFAULT 0',
-            'created_at'             => 'DATETIME NOT NULL',
-            'updated_at'             => 'DATETIME NOT NULL',
-            'action_id'              => 'BIGINT UNSIGNED NULL',
-            'next_run_at'            => 'DATETIME NULL',
-            'last_step'              => "VARCHAR(16) NOT NULL DEFAULT ''",
-            'last_error'             => 'TEXT NULL',
-            'last_codes_json'        => 'TEXT NULL',
-            'done_at'                => 'DATETIME NULL',
-            'payload_json'           => 'LONGTEXT NOT NULL',
-            'validate_result_json'   => 'LONGTEXT NULL',
-            'place_result_json'      => 'LONGTEXT NULL',
-            'merchant_po'            => 'VARCHAR(32) NULL',
-            'external_order_id'      => 'VARCHAR(64) NULL',
-            'external_order_ids_json'=> 'TEXT NULL',
+            'id'                      => 'BIGINT UNSIGNED NOT NULL AUTO_INCREMENT',
+            'order_id'                => 'BIGINT UNSIGNED NOT NULL',
+            'job_key'                 => 'VARCHAR(80) NOT NULL',
+            'dist_id'                 => 'VARCHAR(32) NOT NULL',
+            'bucket'                  => 'VARCHAR(8) NOT NULL',
+            'status'                  => 'VARCHAR(24) NOT NULL',
+            'attempts'                => 'INT UNSIGNED NOT NULL DEFAULT 0',
+            'created_at'              => 'DATETIME NOT NULL',
+            'updated_at'              => 'DATETIME NOT NULL',
+            'action_id'               => 'BIGINT UNSIGNED NULL',
+            'next_run_at'             => 'DATETIME NULL',
+            'last_step'               => "VARCHAR(16) NOT NULL DEFAULT ''",
+            'last_error'              => 'TEXT NULL',
+            'last_codes_json'         => 'TEXT NULL',
+            'done_at'                 => 'DATETIME NULL',
+            'payload_json'            => 'LONGTEXT NOT NULL',
+            'validate_result_json'    => 'LONGTEXT NULL',
+            'place_result_json'       => 'LONGTEXT NULL',
+            'merchant_po'             => 'VARCHAR(32) NULL',
+            'external_order_id'       => 'VARCHAR(64) NULL',
+            'external_order_ids_json' => 'TEXT NULL',
 
             // shipping
-            'shipped_at'             => 'DATETIME NULL',
-            'tracking_numbers_json'  => 'TEXT NULL',
-            'invoice_numbers_json'   => 'TEXT NULL',
-            'shipping_service'       => 'VARCHAR(64) NULL',
-            'shipping_weight'        => 'VARCHAR(32) NULL',
-            'shipment_raw_json'      => 'LONGTEXT NULL',
-            'last_shipping_poll_at'  => 'DATETIME NULL',
+            'shipped_at'              => 'DATETIME NULL',
+            'tracking_numbers_json'   => 'TEXT NULL',
+            'invoice_numbers_json'    => 'TEXT NULL',
+            'shipping_service'        => 'VARCHAR(64) NULL',
+            'shipping_weight'         => 'VARCHAR(32) NULL',
+            'shipment_raw_json'       => 'LONGTEXT NULL',
+            'last_shipping_poll_at'   => 'DATETIME NULL',
         ];
     }
 
     /**
+     * Index definitions (dbDelta expects these as lines inside CREATE TABLE()).
+     *
      * @return string[]
      */
     public function get_index_definitions(): array
@@ -128,19 +137,18 @@ final class OrderPlacementJobsSchema
     }
 
     /**
+     * Insert columns (excludes auto-increment id).
+     *
      * @return string[]
      */
     public function get_insert_columns(): array
     {
         $columns = array_keys($this->get_column_definitions());
 
-        // do not include auto-increment id
         return array_values(
             array_filter(
                 $columns,
-                static function (string $col): bool {
-                    return $col !== 'id';
-                }
+                static fn(string $col): bool => $col !== 'id'
             )
         );
     }

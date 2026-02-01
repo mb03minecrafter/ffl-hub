@@ -4,28 +4,49 @@ namespace FFLHub\Distributor\Product\Category;
 
 use FFLHub\Product\CategorySchema;
 
-if ( ! defined( 'ABSPATH' ) ) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
 /**
- * Maps distributor-specific category values (Lipsey item groups, RSR department numbers)
- * into FFLHub's unified category structure.
+ * DistributorProductCategoryMapper
+ *
+ * Translates distributor-specific category identifiers into FFLHub's unified
+ * category path format.
+ *
+ * Output format:
+ * - A category path is an ordered list of strings:
+ *     [ topLevel, midLevel?, leafLevel? ]
+ *   Example:
+ *     [ CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols' ]
+ *
+ * Design goals:
+ * - Pure mapping (no DB/IO, no side effects).
+ * - Tolerant of messy inputs (extra whitespace, case differences, numeric strings).
+ * - Returns null when a mapping is unknown (callers can fall back to defaults).
+ *
+ * Notes:
+ * - Lipsey's uses an "item_group" string (often uppercase with varying punctuation).
+ * - RSR uses a numeric department code ("dept_number").
  */
 class DistributorProductCategoryMapper
 {
     /**
      * Map Lipsey's item_group → unified category path.
      *
-     * Returns an array like:
-     *   [ top-level, mid-level, leaf ]
-     *   e.g. [ 'Firearms', 'Handguns', 'Pistols' ]
+     * Normalization rules:
+     * - Trims whitespace
+     * - Uppercases
      *
-     * Some entries may be only 1–2 levels deep depending on what we know.
+     * @param string $item_group Lipsey's item group label (as received from API/feed)
+     * @return array<int,string>|null Category path, or null if unknown
      */
     public static function map_lipseys(string $item_group): ?array
     {
         $g = strtoupper(trim($item_group));
+        if ($g === '') {
+            return null;
+        }
 
         $map = [
 
@@ -127,22 +148,27 @@ class DistributorProductCategoryMapper
             'LESS LETHAL ACCESSORIES'                   => [CategorySchema::CAT_LESS_LETHAL, 'Accessories'],
         ];
 
-        return $map[$g] ?? null;
+        // Return a copy (avoid callers accidentally mutating our map entries).
+        return isset($map[$g]) ? array_values($map[$g]) : null;
     }
 
     /**
      * Map RSR department number → unified category path.
      *
-     * Returns arrays like:
-     *   [ top-level, mid-level? ]
-     * Examples:
-     *   [ Firearms, Handguns ]
-     *   [ Optics / Optics Accessories, Scopes / Magnified Optics ]
-     *   [ Magazines ]
+     * Accepts:
+     * - int
+     * - numeric string
+     * - strings with whitespace (e.g. " 10 ")
+     *
+     * @param int|string $dept RSR dept_number (as received from feed/table)
+     * @return array<int,string>|null Category path, or null if unknown/invalid
      */
     public static function map_rsr(int|string $dept): ?array
     {
-        $dept = (int) $dept;
+        $dept_i = self::to_int_or_zero($dept);
+        if ($dept_i <= 0) {
+            return null;
+        }
 
         $map = [
 
@@ -186,6 +212,38 @@ class DistributorProductCategoryMapper
             // (You can later decide where to place 22, 41, 42, 43 etc.)
         ];
 
-        return $map[$dept] ?? null;
+        return isset($map[$dept_i]) ? array_values($map[$dept_i]) : null;
+    }
+
+    /**
+     * Convert an int-ish value to int, returning 0 if not usable.
+     *
+     * @param mixed $v
+     */
+    private static function to_int_or_zero($v): int
+    {
+        if (is_int($v)) {
+            return $v;
+        }
+
+        if (is_string($v)) {
+            $s = trim($v);
+            if ($s === '') {
+                return 0;
+            }
+            // tolerate things like "0010" or "10\n"
+            if (ctype_digit($s)) {
+                return (int) $s;
+            }
+            // fallback: extract digits (handles "Dept 10" etc.)
+            $digits = preg_replace('/\D+/', '', $s);
+            return is_string($digits) && $digits !== '' ? (int) $digits : 0;
+        }
+
+        if (is_float($v)) {
+            return (int) $v;
+        }
+
+        return 0;
     }
 }

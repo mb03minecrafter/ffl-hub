@@ -2,71 +2,84 @@
 
 namespace FFLHub;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
 use FFLHub\Admin\Orders\OrderPlacementMetaBox;
-use FFLHub\Settings\Options;
-use FFLHub\Settings\SettingsRegistrar;
-
-use FFLHub\Admin\WPCronWarning;
-
-use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\AdminPage;
+use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
-
 use FFLHub\Admin\ProductMeta\OrderFFLPanel;
 use FFLHub\Admin\ProductMeta\ProductMetaBox;
-
-
-use FFLHub\Distributor\Core\DistributorHandler;
-
-
-
+use FFLHub\Admin\WPCronWarning;
+use FFLHub\Checkout\Compliance\CartCompliance;
+use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Fields\CheckoutFields;
 use FFLHub\Checkout\Map\CheckoutMap;
-use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
-use FFLHub\Checkout\Compliance\CartCompliance;
-use FFLHub\Distributor\Services\Orders\OrderPlacementOrchestrator;
-use FFLHub\Distributor\Services\Orders\OrderTrashJobsService;
-use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
-
+use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\FFL\API\FFLApi;
+use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
-
-use FFLHub\Shipping\Wordpress\ShippingRegistrar;
-
-
-
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Product\MapPriceVisibility;
-
-
+use FFLHub\Settings\Options;
+use FFLHub\Settings\SettingsRegistrar;
+use FFLHub\Shipping\Wordpress\ShippingRegistrar;
 
 /**
- * Main plugin class for FFL Hub.
+ * Main plugin bootstrapper for FFL Hub.
+ *
+ * Responsibilities:
+ * - Register core settings and always-on services.
+ * - Initialize shared dependencies (FFL table, distributor handler).
+ * - Register admin-only UI/tools when in wp-admin.
+ * - Register frontend-only UI (checkout fields/map) when not in admin.
+ *
+ * This class is instantiated as a singleton from the plugin entrypoint.
  */
-class Plugin
+final class Plugin
 {
     /**
      * Singleton instance.
-     *
-     * @var Plugin|null
      */
-    private static $instance = null;
-
-    public DistributorHandler $distributor_handler;
-
-
-    //Admin Classes
-    public DistributorProductsPage $distributor_products_page;
-
+    private static ?self $instance = null;
 
     /**
-     * Get the single instance of the class.
-     *
-     * @return Plugin
+     * FFL table schema + table access layer.
+     */
+    public FFLSchema $ffl_table_schema;
+    public FFLTable $ffl_table;
+
+    /**
+     * FFL API used for checkout autocomplete and other FFL lookups.
+     */
+    public FFLApi $ffl_api;
+
+    /**
+     * Distributor runtime registry/handler (RSR/Lipsey's/etc).
+     */
+    public DistributorHandler $distributor_handler;
+
+    // -----------------------------
+    // Admin-only services / pages
+    // -----------------------------
+    public FFLImporterPage $ffl_importer_page;
+    public DistributorProductsPage $distributor_products_page;
+    public OrderPlacementMetaBox $order_placement_metabox;
+
+    // -----------------------------
+    // Frontend-only services
+    // -----------------------------
+    public CheckoutFields $checkout_fields;
+
+    // -----------------------------
+    // Always-on services
+    // -----------------------------
+    public CartCompliance $cart_compliance;
+
+    /**
+     * Retrieve the singleton instance.
      */
     public static function instance(): self
     {
@@ -77,74 +90,95 @@ class Plugin
         return self::$instance;
     }
 
+    /**
+     * Private constructor for singleton.
+     *
+     * Notes on "static vs instance":
+     * - We use static initializers for components that have no runtime dependencies
+     *   (or can read dependencies via WP hooks/options safely).
+     * - We use instance properties for components that require shared objects
+     *   (e.g., DistributorHandler, FFLTable) to avoid "hidden globals" and to keep
+     *   dependency flow explicit.
+     */
     private function __construct()
     {
-        // Always-on: settings, core services, async/job hooks
+        // -----------------------------------------------------------------
+        // Always-on bootstrap: settings, core services, runtime registries
+        // -----------------------------------------------------------------
         SettingsRegistrar::init();
 
+        $this->ffl_table_schema = new FFLSchema();
+        $this->ffl_table        = new FFLTable($this->ffl_table_schema);
+
+        // FFL API (used primarily at checkout to autocomplete / validate FFLs).
+        $this->ffl_api = new FFLApi($this->ffl_table);
+        $this->ffl_api->register();
+
+        // Distributor handler + runtime services (tables, jobs, registries, etc).
         $this->distributor_handler = new DistributorHandler();
         $this->distributor_handler->register_runtime_services();
 
+        // Shipping + MAP visibility are always-on.
         ShippingRegistrar::init();
         MapPriceVisibility::init();
 
-        // Cart compliance typically affects frontend + Store API; keep always-on unless proven heavy
-        CartCompliance::init();
+        // Cart compliance affects both frontend and Store API behavior.
+        $this->cart_compliance = new CartCompliance($this->ffl_table, $this->distributor_handler);
+        $this->cart_compliance->register();
+
+        // Store API/Cart extension to require FFL when applicable.
         FFLRequiredCartExtension::init();
 
-        // Context-specific: admin
+        // -----------------------------------------------------------------
+        // Admin-only initialization
+        // -----------------------------------------------------------------
         if (is_admin()) {
             WPCronWarning::init();
             AdminPage::init();
-            
+
             $this->distributor_products_page = new DistributorProductsPage($this->distributor_handler);
             $this->distributor_products_page->register();
 
-            FFLImporterPage::init();
-            FFLApi::init();
+            // Meta box needs ordering jobs table; sourced from handler.
+            $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
+            $this->order_placement_metabox->register();
+
+            $this->ffl_importer_page = new FFLImporterPage($this->ffl_table);
+            $this->ffl_importer_page->register();
+
             OrderFFLPanel::init();
-
             ProductMetaBox::init();
-            OrderPlacementMetaBox::init();
 
-            return; // optional: bail early to avoid accidental frontend init below
+            // Bail early: prevents accidental frontend initialization in admin.
+            return;
         }
 
-        // Context-specific: frontend UI
-        CheckoutFields::init();
+        // -----------------------------------------------------------------
+        // Frontend-only initialization (checkout UX)
+        // -----------------------------------------------------------------
+        $this->checkout_fields = new CheckoutFields($this->ffl_table);
+        $this->checkout_fields->register();
+
         CheckoutMap::init();
-    }
-
-
-
-
-    /**
-     * Create all required database tables.
-     *
-     * Scoped to this class; used during plugin activation.
-     */
-    private static function create_tables(): void
-    {
-        // FFL table.
-        FFLTable::create_table();
-        OrderPlacementJobsTable::create_table();
     }
 
     /**
      * Plugin activation callback.
      *
-     * This is hooked from the main plugin file via:
-     * register_activation_hook( FFLHUB_PLUGIN_FILE, array( 'FFLHub_Plugin', 'activate' ) );
+     * Creates required tables, sets default options, installs categories,
+     * and lets each distributor provision its own required schema/state.
      */
     public static function activate(): void
     {
-        // Create required tables.
-        self::create_tables();
-
         Options::init_defaults();
-
         CategoryInstaller::install_default_categories();
 
+        // Create core FFL tables.
+        $ffl_table_schema = new FFLSchema();
+        $ffl_table        = new FFLTable($ffl_table_schema);
+        $ffl_table->createTables();
+
+        // Allow distributor handler to provision its own tables/state.
         $handler = new DistributorHandler();
         $handler->on_activate();
     }
@@ -152,8 +186,8 @@ class Plugin
     /**
      * Plugin deactivation callback.
      *
-     * This is hooked from the main plugin file via:
-     * register_deactivation_hook( FFLHUB_PLUGIN_FILE, array( 'FFLHub_Plugin', 'deactivate' ) );
+     * Intended to disable scheduled tasks / runtime hooks safely.
+     * (No destructive data operations here unless explicitly desired.)
      */
     public static function deactivate(): void
     {

@@ -1,68 +1,77 @@
 <?php
-
 declare(strict_types=1);
 
 namespace FFLHub\Admin\Pages;
 
+use FFLHub\FFL\Data\FFLRepository;
+use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\FFL\Parsing\FFLParser;
 use FFLHub\FFL\Tables\FFLTable;
 
-if (! defined('ABSPATH')) {
+if (!defined('ABSPATH')) {
     exit;
 }
 
 /**
  * Coordinator for the "FFL Import" admin page and import logic.
  *
- * - Wires up the admin page and POST handler.
- * - Calls the FFL table helper for schema.
- * - Uses FFLParser to parse and then bulk upsert.
+ * Instance-based:
+ * - Constructor takes the FFLTable (explicit dependency).
+ * - Uses FFLRepository static helpers for DB access.
+ * - Uses FFLParser for TXT parsing.
  */
-class FFLImporterPage
+final class FFLImporterPage
 {
-    /**
-     * Wire up hooks.
-     *
-     * Called from your main plugin bootstrap (FFLHub_Plugin::register_services()).
-     */
-    public static function init(): void
-    {
-        // Add the "FFL Import" page in the admin.
-        add_action('admin_menu', array(__CLASS__, 'register_admin_page'));
+    private const MENU_SLUG     = 'fflhub-ffl-import';
+    private const FORM_ACTION   = 'fflhub_import_ffls';
+    private const NONCE_ACTION  = 'fflhub_import_ffls';
+    private const NONCE_NAME    = 'fflhub_import_ffls_nonce';
 
-        // Handle the form POST (file upload).
-        add_action('admin_post_fflhub_import_ffls', array(__CLASS__, 'handle_import_submission'));
+    private FFLTable $table;
+
+    public function __construct(FFLTable $table)
+    {
+        $this->table = $table;
     }
 
     /**
-     * Public wrapper so other classes can use the FFL table name.
+     * Wire up hooks (call from plugin bootstrap).
      */
-    public static function get_table_name_public(): string
+    public function register(): void
     {
-        return FFLTable::get_table_name();
+        add_action('admin_menu', [$this, 'register_admin_page']);
+        add_action('admin_post_' . self::FORM_ACTION, [$this, 'handle_import_submission']);
+    }
+
+    /**
+     * Public wrapper so other classes can use the FFL table name (instance-based).
+     */
+    public function get_table_name_public(): string
+    {
+        return $this->table->get_table_name();
     }
 
     /**
      * Register the "FFL Import" admin page under Tools.
      */
-    public static function register_admin_page(): void
+    public function register_admin_page(): void
     {
         add_submenu_page(
-            'tools.php',                         // parent menu slug (Tools menu)
-            'FFL Hub – Import FFL List',         // page title
-            'FFL Import',                        // menu title
-            'manage_options',                    // capability required
-            'fflhub-ffl-import',                 // menu slug
-            array(__CLASS__, 'render_admin_page') // callback
+            'tools.php',
+            'FFL Hub – Import FFL List',
+            'FFL Import',
+            'manage_options',
+            self::MENU_SLUG,
+            [$this, 'render_admin_page']
         );
     }
 
     /**
      * Render the FFL Import admin page (upload form + search).
      */
-    public static function render_admin_page(): void
+    public function render_admin_page(): void
     {
-        if (! current_user_can('manage_options')) {
+        if (!current_user_can('manage_options')) {
             wp_die('You do not have permission to access this page.');
         }
 
@@ -74,35 +83,11 @@ class FFLImporterPage
             ? sanitize_text_field(wp_unslash($_GET['fflhub_search_zip']))
             : '';
 
-        $search_results = array();
-
+        $search_results = [];
         if ($search_zip !== '') {
-            global $wpdb;
-
-            $table_name = FFLTable::get_table_name();
-            // Allow prefix search: e.g. "708" or full "70801".
-            $like = $search_zip . '%';
-
-            $sql = "
-                SELECT
-                    ffl_number,
-                    license_name,
-                    premise_street,
-                    premise_city,
-                    premise_state,
-                    premise_zip,
-                    voice_phone
-                FROM {$table_name}
-                WHERE premise_zip LIKE %s
-                   OR mail_zip    LIKE %s
-                ORDER BY premise_state, premise_city, license_name
-                LIMIT 100
-            ";
-
-            $search_results = $wpdb->get_results(
-                $wpdb->prepare($sql, $like, $like),
-                ARRAY_A
-            );
+            // Repo returns canonical "public" shape (premise/mailing/phone).
+            // For this admin table, we can render from that shape directly.
+            $search_results = FFLRepository::search_by_zip_prefix($this->table, $search_zip, 100);
         }
         ?>
         <div class="wrap">
@@ -134,9 +119,9 @@ class FFLImporterPage
                 method="post"
                 enctype="multipart/form-data"
                 action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                <?php wp_nonce_field('fflhub_import_ffls', 'fflhub_import_ffls_nonce'); ?>
+                <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_NAME); ?>
 
-                <input type="hidden" name="action" value="fflhub_import_ffls">
+                <input type="hidden" name="action" value="<?php echo esc_attr(self::FORM_ACTION); ?>">
 
                 <table class="form-table" role="presentation">
                     <tr>
@@ -167,7 +152,7 @@ class FFLImporterPage
             </p>
 
             <form method="get" action="">
-                <input type="hidden" name="page" value="fflhub-ffl-import" />
+                <input type="hidden" name="page" value="<?php echo esc_attr(self::MENU_SLUG); ?>" />
                 <table class="form-table" role="presentation">
                     <tr>
                         <th scope="row">
@@ -209,21 +194,24 @@ class FFLImporterPage
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach ($search_results as $row) : ?>
+                            <?php foreach ($search_results as $ffl) : ?>
+                                <?php
+                                $premise = is_array($ffl['premise'] ?? null) ? $ffl['premise'] : [];
+                                ?>
                                 <tr>
-                                    <td><?php echo esc_html($row['ffl_number']); ?></td>
-                                    <td><?php echo esc_html($row['license_name']); ?></td>
-                                    <td><?php echo esc_html($row['premise_street']); ?></td>
+                                    <td><?php echo esc_html((string) ($ffl['ffl_number'] ?? '')); ?></td>
+                                    <td><?php echo esc_html((string) ($ffl['name'] ?? '')); ?></td>
+                                    <td><?php echo esc_html((string) ($premise['street'] ?? '')); ?></td>
                                     <td>
                                         <?php
                                         echo esc_html(
-                                            $row['premise_city'] . ', ' .
-                                            $row['premise_state'] . ' ' .
-                                            $row['premise_zip']
+                                            (string) ($premise['city'] ?? '') . ', ' .
+                                            (string) ($premise['state'] ?? '') . ' ' .
+                                            (string) ($premise['zip'] ?? '')
                                         );
                                         ?>
                                     </td>
-                                    <td><?php echo esc_html($row['voice_phone']); ?></td>
+                                    <td><?php echo esc_html((string) ($ffl['phone'] ?? '')); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
@@ -237,100 +225,45 @@ class FFLImporterPage
     /**
      * Handle the form submission when the TXT file is uploaded.
      */
-    public static function handle_import_submission(): void
+    public function handle_import_submission(): void
     {
-        if (! current_user_can('manage_options')) {
+        if (!current_user_can('manage_options')) {
             wp_die('You do not have permission to perform this action.');
         }
 
-        check_admin_referer('fflhub_import_ffls', 'fflhub_import_ffls_nonce');
+        check_admin_referer(self::NONCE_ACTION, self::NONCE_NAME);
 
-        if (! isset($_FILES['fflhub_txt_file']) || ! is_array($_FILES['fflhub_txt_file'])) {
-            wp_redirect(
-                add_query_arg(
-                    array(
-                        'fflhub_msg'   => 'error',
-                        'fflhub_count' => 0,
-                    ),
-                    admin_url('tools.php?page=fflhub-ffl-import')
-                )
-            );
-            exit;
+        if (!isset($_FILES['fflhub_txt_file']) || !is_array($_FILES['fflhub_txt_file'])) {
+            $this->redirect_with_result('error', 0);
         }
 
         $file = $_FILES['fflhub_txt_file'];
 
-        if (! empty($file['error']) || empty($file['tmp_name'])) {
-            wp_redirect(
-                add_query_arg(
-                    array(
-                        'fflhub_msg'   => 'error',
-                        'fflhub_count' => 0,
-                    ),
-                    admin_url('tools.php?page=fflhub-ffl-import')
-                )
-            );
-            exit;
+        if (!empty($file['error']) || empty($file['tmp_name'])) {
+            $this->redirect_with_result('error', 0);
         }
 
-        $contents = file_get_contents($file['tmp_name']);
-
+        $contents = file_get_contents((string) $file['tmp_name']);
         if ($contents === false) {
-            wp_redirect(
-                add_query_arg(
-                    array(
-                        'fflhub_msg'   => 'error',
-                        'fflhub_count' => 0,
-                    ),
-                    admin_url('tools.php?page=fflhub-ffl-import')
-                )
-            );
-            exit;
+            $this->redirect_with_result('error', 0);
         }
 
-        // Import the contents.
-        $imported_count = self::import_atf_txt($contents);
+        $imported_count = $this->import_atf_txt((string) $contents);
 
         if ($imported_count <= 0) {
-            wp_redirect(
-                add_query_arg(
-                    array(
-                        'fflhub_msg'   => 'error',
-                        'fflhub_count' => 0,
-                    ),
-                    admin_url('tools.php?page=fflhub-ffl-import')
-                )
-            );
-            exit;
+            $this->redirect_with_result('error', 0);
         }
 
-        // Success.
-        wp_redirect(
-            add_query_arg(
-                array(
-                    'fflhub_msg'   => 'success',
-                    'fflhub_count' => $imported_count,
-                ),
-                admin_url('tools.php?page=fflhub-ffl-import')
-            )
-        );
-        exit;
+        $this->redirect_with_result('success', $imported_count);
     }
 
     /**
      * Import the ATF TXT contents into the DB.
      *
-     * Uses FFLParser to get rows and then bulk upserts them.
-     *
-     * @param string $txt
-     * @return int Number of rows inserted/updated (count of processed lines).
+     * Uses FFLParser to get rows and then bulk upserts them via FFLRepository.
      */
-    protected static function import_atf_txt(string $txt): int
+    protected function import_atf_txt(string $txt): int
     {
-        global $wpdb;
-
-        $table_name = FFLTable::get_table_name();
-
         // Allow long-running import if needed.
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
@@ -339,78 +272,25 @@ class FFLImporterPage
         $parser = new FFLParser();
         $rows   = $parser->parse($txt);
 
-        $batch_size   = 500;   // rows per multi-insert
-        $batch_rows   = array();
-        $total_import = 0;
-
-        /**
-         * Flush current batch into DB as a multi-row
-         * INSERT ... VALUES (...) ON DUPLICATE KEY UPDATE ...
-         */
-        $flush_batch = function () use (&$batch_rows, &$total_import, $table_name, $wpdb): void {
-            if (empty($batch_rows)) {
-                return;
-            }
-
-            $placeholders = array();
-            $values       = array();
-
-            foreach ($batch_rows as $row) {
-                $placeholders[] = '( %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s )';
-
-                $values[] = $row['ffl_number'];
-                $values[] = $row['license_name'];
-                $values[] = $row['premise_street'];
-                $values[] = $row['premise_city'];
-                $values[] = $row['premise_state'];
-                $values[] = $row['premise_zip'];
-                $values[] = $row['mail_street'];
-                $values[] = $row['mail_city'];
-                $values[] = $row['mail_state'];
-                $values[] = $row['mail_zip'];
-                $values[] = $row['voice_phone'];
-            }
-
-            $sql = "
-                INSERT INTO {$table_name}
-                    ( ffl_number, license_name, premise_street, premise_city, premise_state,
-                      premise_zip, mail_street, mail_city, mail_state, mail_zip, voice_phone )
-                VALUES " . implode(', ', $placeholders) . "
-                ON DUPLICATE KEY UPDATE
-                    license_name   = VALUES(license_name),
-                    premise_street = VALUES(premise_street),
-                    premise_city   = VALUES(premise_city),
-                    premise_state  = VALUES(premise_state),
-                    premise_zip    = VALUES(premise_zip),
-                    mail_street    = VALUES(mail_street),
-                    mail_city      = VALUES(mail_city),
-                    mail_state     = VALUES(mail_state),
-                    mail_zip       = VALUES(mail_zip),
-                    voice_phone    = VALUES(voice_phone)
-            ";
-
-            $prepared = $wpdb->prepare($sql, $values);
-            $result   = $wpdb->query($prepared);
-
-            if ($result !== false) {
-                $total_import += count($batch_rows);
-            }
-
-            // Reset batch.
-            $batch_rows = array();
-        };
-
-        foreach ($rows as $row) {
-            $batch_rows[] = $row;
-
-            if (count($batch_rows) >= $batch_size) {
-                $flush_batch();
-            }
+        if (empty($rows)) {
+            return 0;
         }
 
-        // Flush any remaining rows.
-        $flush_batch();
+        // Delegate DB work to repository (single SQL choke-point).
+        return FFLRepository::bulk_upsert($this->table, $rows, 500);
+    }
 
-        return $total_import;
+    private function redirect_with_result(string $msg, int $count): void
+    {
+        wp_redirect(
+            add_query_arg(
+                [
+                    'fflhub_msg'   => $msg,
+                    'fflhub_count' => $count,
+                ],
+                admin_url('tools.php?page=' . self::MENU_SLUG)
+            )
+        );
+        exit;
     }
 }

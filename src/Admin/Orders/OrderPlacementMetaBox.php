@@ -2,51 +2,76 @@
 
 namespace FFLHub\Admin\Orders;
 
+use WC_Order;
+
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
+use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
 use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifecycle;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
-use FFLHub\Distributor\Services\Orders\OrderPlacementDispatchCronService;
-use FFLHub\Distributor\Services\Orders\OrderPlacementKeys;
-use FFLHub\Distributor\Services\Orders\OrderPlacementOrchestrator;
-use FFLHub\Distributor\Services\Tables\OrderPlacementJobsTable;
-use WC_Order;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
 if (!defined('ABSPATH')) {
     exit;
 }
 
+/**
+ * Admin meta box that displays the Order Placement pipeline + per-job status.
+ *
+ * Architecture notes:
+ * - Jobs index is derived from the jobs TABLE (not order meta).
+ * - “Retry” is DB-only: status=retry_scheduled + next_run_at set, so the dispatcher picks it up.
+ *
+ * This class is instance-based so we can inject the OrderPlacementJobsTable manager.
+ */
 final class OrderPlacementMetaBox
 {
-    public static function init(): void
+    private const META_BOX_ID    = 'fflhub_order_placement_jobs';
+    private const META_BOX_TITLE = 'FFL Hub — Order Placement Jobs';
+
+    private OrderPlacementJobsTable $jobs_table;
+
+    public function __construct(OrderPlacementJobsTable $jobs_table)
     {
-        // Classic orders screen
-        add_action('add_meta_boxes_shop_order', [self::class, 'register_metabox']);
-
-        // HPOS orders screen (wc-orders)
-        add_action('add_meta_boxes_woocommerce_page_wc-orders', [self::class, 'register_metabox']);
-
-        // CSS for the “pretty boxes”
-        add_action('admin_enqueue_scripts', [self::class, 'enqueue_assets']);
-
-        // Manual retry action (admin-post)
-        add_action('admin_post_fflhub_retry_order_job', [self::class, 'handle_retry_job_post']);
+        $this->jobs_table = $jobs_table;
     }
 
-    public static function register_metabox(): void
+    /**
+     * Register hooks for the meta box + assets + retry handler.
+     */
+    public function register(): void
+    {
+        // Classic orders screen
+        add_action('add_meta_boxes_shop_order', [$this, 'register_metabox']);
+
+        // HPOS orders screen (wc-orders)
+        add_action('add_meta_boxes_woocommerce_page_wc-orders', [$this, 'register_metabox']);
+
+        // CSS for the “pretty boxes”
+        add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
+
+        // Manual retry action (admin-post)
+        add_action('admin_post_fflhub_retry_order_job', [$this, 'handle_retry_job_post']);
+    }
+
+    public function register_metabox(): void
     {
         add_meta_box(
-            'fflhub_order_placement_jobs',
-            'FFL Hub — Order Placement Jobs',
-            [self::class, 'render_metabox'],
+            self::META_BOX_ID,
+            self::META_BOX_TITLE,
+            [$this, 'render_metabox'],
             null,
             'side',
             'high'
         );
     }
 
-    public static function enqueue_assets(string $hook_suffix): void
+    /**
+     * Enqueue inline CSS only on order screens.
+     */
+    public function enqueue_assets(string $hook_suffix): void
     {
         $screen = function_exists('get_current_screen') ? get_current_screen() : null;
         if (!$screen) {
@@ -67,7 +92,12 @@ final class OrderPlacementMetaBox
         wp_add_inline_style('fflhub-order-placement-metabox', self::css());
     }
 
-    public static function render_metabox($post_or_order): void
+    /**
+     * Render the meta box.
+     *
+     * @param mixed $post_or_order WP_Post|WC_Order|order-like object depending on screen.
+     */
+    public function render_metabox($post_or_order): void
     {
         $order = self::resolve_order($post_or_order);
         if (!($order instanceof WC_Order)) {
@@ -80,8 +110,8 @@ final class OrderPlacementMetaBox
         $started_at = OrderPlacementPipelineMetaStore::get_pipeline_started_at($order);
         $started_by = OrderPlacementPipelineMetaStore::get_pipeline_started_by($order);
 
-        // Jobs index is now derived from the jobs table
-        $job_keys = OrderPlacementJobsRepository::get_jobs_index($order);
+        // Jobs index is derived from the jobs table (new architecture)
+        $job_keys = OrderPlacementJobsRepository::get_jobs_index($this->jobs_table, $order);
 
         echo '<div class="fflhub-wrap">';
 
@@ -103,7 +133,7 @@ final class OrderPlacementMetaBox
         } else {
             echo '<div class="fflhub-badges">';
             foreach ($job_keys as $k) {
-                echo '<span class="fflhub-badge">' . esc_html($k) . '</span>';
+                echo '<span class="fflhub-badge">' . esc_html((string) $k) . '</span>';
             }
             echo '</div>';
         }
@@ -111,18 +141,23 @@ final class OrderPlacementMetaBox
 
         // Job cards
         foreach ($job_keys as $job_key) {
-            self::render_job_card($order, (string) $job_key);
+            $this->render_job_card($order, (string) $job_key);
         }
 
         echo '</div>'; // wrap
     }
 
-    private static function render_job_card(WC_Order $order, string $job_key): void
+    /**
+     * Render a single job status card.
+     */
+    private function render_job_card(WC_Order $order, string $job_key): void
     {
         $job_key = trim((string) $job_key);
-        if ($job_key === '') return;
+        if ($job_key === '') {
+            return;
+        }
 
-        $row = self::get_job_row_for_admin((int) $order->get_id(), $job_key);
+        $row = $this->get_job_row_for_admin((int) $order->get_id(), $job_key);
 
         $status   = isset($row['status']) ? (string) $row['status'] : '';
         $attempts = isset($row['attempts']) ? (string) $row['attempts'] : '';
@@ -136,13 +171,13 @@ final class OrderPlacementMetaBox
         $place_raw    = isset($row['place_result_json']) ? (string) $row['place_result_json'] : '';
 
         // shipment fields (new structure)
-        $shipped_at         = isset($row['shipped_at']) ? (string) $row['shipped_at'] : '';
-        $tracking_json      = isset($row['tracking_numbers_json']) ? (string) $row['tracking_numbers_json'] : '';
-        $invoice_json       = isset($row['invoice_numbers_json']) ? (string) $row['invoice_numbers_json'] : '';
-        $ship_service       = isset($row['shipping_service']) ? (string) $row['shipping_service'] : '';
-        $ship_weight        = isset($row['shipping_weight']) ? (string) $row['shipping_weight'] : '';
-        $ship_poll_at       = isset($row['last_shipping_poll_at']) ? (string) $row['last_shipping_poll_at'] : '';
-        $shipment_raw_json  = isset($row['shipment_raw_json']) ? (string) $row['shipment_raw_json'] : '';
+        $shipped_at        = isset($row['shipped_at']) ? (string) $row['shipped_at'] : '';
+        $tracking_json     = isset($row['tracking_numbers_json']) ? (string) $row['tracking_numbers_json'] : '';
+        $invoice_json      = isset($row['invoice_numbers_json']) ? (string) $row['invoice_numbers_json'] : '';
+        $ship_service      = isset($row['shipping_service']) ? (string) $row['shipping_service'] : '';
+        $ship_weight       = isset($row['shipping_weight']) ? (string) $row['shipping_weight'] : '';
+        $ship_poll_at      = isset($row['last_shipping_poll_at']) ? (string) $row['last_shipping_poll_at'] : '';
+        $shipment_raw_json = isset($row['shipment_raw_json']) ? (string) $row['shipment_raw_json'] : '';
 
         $pill = self::pill($status !== '' ? $status : '—', self::status_class($status));
 
@@ -179,18 +214,18 @@ final class OrderPlacementMetaBox
             $val = json_decode($validate_raw, true);
 
             if (is_array($val)) {
-                $ok      = !empty($val['ok']);
-                $code    = isset($val['code']) ? (string) $val['code'] : '';
-                $msg     = isset($val['message']) ? (string) $val['message'] : '';
-                $at      = isset($val['at']) ? (string) $val['at'] : '';
-                $codes   = isset($val['codes']) && is_array($val['codes']) ? $val['codes'] : [];
+                $ok    = !empty($val['ok']);
+                $code  = isset($val['code']) ? (string) $val['code'] : '';
+                $msg   = isset($val['message']) ? (string) $val['message'] : '';
+                $at    = isset($val['at']) ? (string) $val['at'] : '';
+                $codes = isset($val['codes']) && is_array($val['codes']) ? $val['codes'] : [];
 
                 $v_pill_class = 'muted';
-                if ($ok && $code === 'ALLOW') {
+                if ($ok && strtoupper($code) === 'ALLOW') {
                     $v_pill_class = 'success';
-                } elseif ($code === 'BLOCK_RETRYABLE') {
+                } elseif (strtoupper($code) === 'BLOCK_RETRYABLE') {
                     $v_pill_class = 'warning';
-                } elseif ($code === 'BLOCK_FATAL') {
+                } elseif (strtoupper($code) === 'BLOCK_FATAL') {
                     $v_pill_class = 'danger';
                 }
 
@@ -200,7 +235,9 @@ final class OrderPlacementMetaBox
 
                 if (!empty($codes)) {
                     $codes_str = implode(', ', array_slice(array_map('strval', $codes), 0, 12));
-                    if (count($codes) > 12) $codes_str .= ', …';
+                    if (count($codes) > 12) {
+                        $codes_str .= ', …';
+                    }
                     echo self::kv('Codes', '<span class="fflhub-mono">' . esc_html($codes_str) . '</span>');
                 } else {
                     echo self::kv('Codes', '<span class="fflhub-muted">—</span>');
@@ -260,7 +297,9 @@ final class OrderPlacementMetaBox
 
                 if (!empty($ext)) {
                     $ext_str = implode(', ', array_slice(array_map('strval', $ext), 0, 8));
-                    if (count($ext) > 8) $ext_str .= ', …';
+                    if (count($ext) > 8) {
+                        $ext_str .= ', …';
+                    }
                     echo self::kv('External IDs', '<span class="fflhub-mono">' . esc_html($ext_str) . '</span>');
                 } else {
                     echo self::kv('External IDs', '<span class="fflhub-muted">—</span>');
@@ -268,7 +307,9 @@ final class OrderPlacementMetaBox
 
                 if (!empty($codes)) {
                     $codes_str = implode(', ', array_slice(array_map('strval', $codes), 0, 12));
-                    if (count($codes) > 12) $codes_str .= ', …';
+                    if (count($codes) > 12) {
+                        $codes_str .= ', …';
+                    }
                     echo self::kv('Codes', '<span class="fflhub-mono">' . esc_html($codes_str) . '</span>');
                 } else {
                     echo self::kv('Codes', '<span class="fflhub-muted">—</span>');
@@ -302,14 +343,19 @@ final class OrderPlacementMetaBox
         echo '<div class="fflhub-subcard">';
         echo '<div class="fflhub-subcard-title">Shipment</div>';
 
-        // Helper to decode small json arrays (tracking/invoice)
         $tracking_list = self::decode_string_list_json($tracking_json);
         $invoice_list  = self::decode_string_list_json($invoice_json);
 
         $has_shipment = false;
-        if ($shipped_at !== '' && $shipped_at !== '0000-00-00 00:00:00') $has_shipment = true;
-        if (!empty($tracking_list) || !empty($invoice_list)) $has_shipment = true;
-        if ($ship_poll_at !== '' && $ship_poll_at !== '0000-00-00 00:00:00') $has_shipment = true;
+        if ($shipped_at !== '' && $shipped_at !== '0000-00-00 00:00:00') {
+            $has_shipment = true;
+        }
+        if (!empty($tracking_list) || !empty($invoice_list)) {
+            $has_shipment = true;
+        }
+        if ($ship_poll_at !== '' && $ship_poll_at !== '0000-00-00 00:00:00') {
+            $has_shipment = true;
+        }
 
         if (!$has_shipment) {
             echo '<div class="fflhub-muted">No shipment data yet.</div>';
@@ -326,7 +372,9 @@ final class OrderPlacementMetaBox
 
             if (!empty($tracking_list)) {
                 $t_str = implode(', ', array_slice($tracking_list, 0, 8));
-                if (count($tracking_list) > 8) $t_str .= ', …';
+                if (count($tracking_list) > 8) {
+                    $t_str .= ', …';
+                }
                 echo self::kv('Tracking', '<span class="fflhub-mono">' . esc_html($t_str) . '</span>');
             } else {
                 echo self::kv('Tracking', '<span class="fflhub-muted">—</span>');
@@ -334,7 +382,9 @@ final class OrderPlacementMetaBox
 
             if (!empty($invoice_list)) {
                 $i_str = implode(', ', array_slice($invoice_list, 0, 8));
-                if (count($invoice_list) > 8) $i_str .= ', …';
+                if (count($invoice_list) > 8) {
+                    $i_str .= ', …';
+                }
                 echo self::kv('Invoices', '<span class="fflhub-mono">' . esc_html($i_str) . '</span>');
             } else {
                 echo self::kv('Invoices', '<span class="fflhub-muted">—</span>');
@@ -343,7 +393,7 @@ final class OrderPlacementMetaBox
             echo self::kv('Service', $ship_service !== '' ? '<span class="fflhub-mono">' . esc_html($ship_service) . '</span>' : '<span class="fflhub-muted">—</span>');
             echo self::kv('Weight', $ship_weight !== '' ? '<span class="fflhub-mono">' . esc_html($ship_weight) . '</span>' : '<span class="fflhub-muted">—</span>');
 
-            echo '</div>'; // kv
+            echo '</div>';
 
             if ($shipment_raw_json !== '') {
                 $pretty_ship = self::pretty_json($shipment_raw_json);
@@ -371,15 +421,15 @@ final class OrderPlacementMetaBox
     }
 
     /**
-     * Admin-only table read for fields that don't have public getters on the store.
+     * Admin-only read: returns a single job row as an associative array.
      *
      * @return array<string,mixed>
      */
-    private static function get_job_row_for_admin(int $order_id, string $job_key): array
+    private function get_job_row_for_admin(int $order_id, string $job_key): array
     {
         global $wpdb;
 
-        $table = OrderPlacementJobsTable::get_table_name();
+        $table  = $this->jobs_table->get_table_name();
         $job_key = strtolower(trim((string) $job_key));
 
         $sql = "
@@ -413,20 +463,79 @@ final class OrderPlacementMetaBox
         return is_array($row) ? $row : [];
     }
 
+    /**
+     * Handle manual retry request from admin UI.
+     *
+     * Behavior:
+     * - only allows retry if job is currently FAILED
+     * - sets status=retry_scheduled and next_run_at=now
+     * - optionally kicks the dispatcher hook for faster UX
+     */
+    public function handle_retry_job_post(): void
+    {
+        if (!current_user_can('manage_woocommerce') && !current_user_can('edit_shop_orders')) {
+            wp_die('Insufficient permissions.');
+        }
+
+        $order_id = isset($_GET['order_id']) ? (int) $_GET['order_id'] : 0;
+        $job_key  = isset($_GET['job_key']) ? (string) wp_unslash($_GET['job_key']) : '';
+        $job_key  = rawurldecode($job_key);
+
+        if ($order_id <= 0 || $job_key === '') {
+            wp_die('Missing order_id or job_key.');
+        }
+
+        check_admin_referer('fflhub_retry_order_job_' . $order_id . '|' . $job_key);
+
+        $order = wc_get_order($order_id);
+        if (!($order instanceof WC_Order)) {
+            wp_die('Order not found.');
+        }
+
+        $job_keys = OrderPlacementJobsRepository::get_jobs_index($this->jobs_table, $order);
+        if (!in_array($job_key, $job_keys, true)) {
+            wp_die('Job key not found on this order.');
+        }
+
+        $status = OrderPlacementJobLifecycle::get_job_status($this->jobs_table, $order, $job_key);
+        if (strtolower(trim((string) $status)) !== 'failed') {
+            self::redirect_back($order_id, $job_key, 'not_failed');
+            return;
+        }
+
+        // DB-only retry scheduling (dispatcher model)
+        $patch = OrderPlacementJobPatch::empty()
+            ->with_status(OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED)
+            ->with_next_run_at_mysql(self::now_mysql_utc_plus(0))
+            ->with_last_error(''); // optional: clear terminal error when user retries
+
+        OrderPlacementJobWriter::apply_patch($this->jobs_table, $order_id, $job_key, $patch);
+
+        // Kick dispatcher for UX (best-effort)
+        if (function_exists('as_schedule_single_action')) {
+            as_schedule_single_action(
+                time() + 1,
+                OrderingCronService::CRON_HOOK,
+                [],
+                'fflhub_place'
+            );
+        }
+
+        self::redirect_back($order_id, $job_key, 'scheduled');
+    }
+
     private static function resolve_order($post_or_order): ?WC_Order
     {
         if ($post_or_order instanceof WC_Order) {
             return $post_or_order;
         }
 
-        // Classic edit screen passes WP_Post
         if (is_object($post_or_order) && isset($post_or_order->ID)) {
             $oid = (int) $post_or_order->ID;
             $o = wc_get_order($oid);
             return ($o instanceof WC_Order) ? $o : null;
         }
 
-        // HPOS sometimes passes an order-like object; try common getters
         if (is_object($post_or_order) && method_exists($post_or_order, 'get_id')) {
             $oid = (int) $post_or_order->get_id();
             $o = wc_get_order($oid);
@@ -446,6 +555,7 @@ final class OrderPlacementMetaBox
         if ($s === 'scheduled') return 'info';
         if ($s === 'queued')    return 'muted';
         if ($s === strtolower(OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED)) return 'warning';
+
         return 'muted';
     }
 
@@ -460,8 +570,6 @@ final class OrderPlacementMetaBox
     }
 
     /**
-     * Decode a JSON array into list of strings.
-     *
      * @return array<int,string>
      */
     private static function decode_string_list_json(string $raw_json): array
@@ -495,8 +603,6 @@ final class OrderPlacementMetaBox
     }
 
     /**
-     * Decide pill class for place results.
-     *
      * @param bool $ok
      * @param string $code
      * @param array<int,mixed> $codes
@@ -542,78 +648,14 @@ final class OrderPlacementMetaBox
             . '</div>';
     }
 
-    public static function handle_retry_job_post(): void
-    {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('edit_shop_orders')) {
-            wp_die('Insufficient permissions.');
-        }
-
-        $order_id = isset($_GET['order_id']) ? (int) $_GET['order_id'] : 0;
-        $job_key  = isset($_GET['job_key']) ? (string) wp_unslash($_GET['job_key']) : '';
-        $job_key  = rawurldecode($job_key);
-
-        if ($order_id <= 0 || $job_key === '') {
-            wp_die('Missing order_id or job_key.');
-        }
-
-        check_admin_referer('fflhub_retry_order_job_' . $order_id . '|' . $job_key);
-
-        $order = wc_get_order($order_id);
-        if (!($order instanceof WC_Order)) {
-            wp_die('Order not found.');
-        }
-
-        // Ensure this job exists in the TABLE-derived index
-        $job_keys = OrderPlacementJobsRepository::get_jobs_index($order);
-        if (!in_array($job_key, $job_keys, true)) {
-            wp_die('Job key not found on this order.');
-        }
-
-        // Only allow retry if terminally failed
-        $status = OrderPlacementJobLifecycle::get_job_status($order, $job_key);
-        if (strtolower(trim((string) $status)) !== 'failed') {
-            self::redirect_back($order_id, $job_key, 'not_failed');
-            return;
-        }
-
-        // ----------------------------
-        // NEW: table-based "retry"
-        // ----------------------------
-        $delay_seconds = 0;
-
-        // Set next_run_at + status + clear error so the poller will pick it up
-        $patch = OrderPlacementJobPatch::empty()
-            ->with_status('retry_scheduled')
-            ->with_next_run_at_mysql(gmdate('Y-m-d H:i:s', time() + $delay_seconds));
-
-        OrderPlacementJobWriter::apply_patch($order_id, $job_key, $patch);
-
-        // Best-effort: kick the poller so you don’t wait for the next cron tick.
-        // If your poller is already running frequently via system cron, this is still nice for UX.
-
-        if (function_exists('as_schedule_single_action')) {
-            $hook  = OrderPlacementDispatchCronService::CRON_HOOK; // fflhub_place_order_poll
-            $group = 'fflhub_place';
-
-            
-
-            
-            as_schedule_single_action(time() + 1, $hook, [], $group);
-            
-        }
-        self::redirect_back($order_id, $job_key, 'scheduled');
-    }
-
     /**
-     * Helper: returns UTC mysql datetime string for now + N seconds.
-     * Keep consistent with your existing now_mysql_utc() style.
+     * UTC mysql datetime string for now + N seconds.
      */
     private static function now_mysql_utc_plus(int $seconds): string
     {
         $ts = time() + max(0, $seconds);
         return gmdate('Y-m-d H:i:s', $ts);
     }
-
 
     private static function redirect_back(int $order_id, string $job_key, string $result): void
     {
@@ -634,6 +676,7 @@ final class OrderPlacementMetaBox
     private static function css(): string
     {
         return <<<CSS
+/* (unchanged: your CSS block) */
 .fflhub-wrap { display:flex; flex-direction:column; gap:10px; }
 .fflhub-card {
   background:#111827; border:1px solid #243043; border-radius:10px;
@@ -667,8 +710,6 @@ final class OrderPlacementMetaBox
 .fflhub-error { margin-top:8px; background:#2a0d0d; border:1px solid #7f1d1d; border-radius:8px; padding:8px; }
 .fflhub-error-title { font-weight:800; color:#fecaca; margin-bottom:4px; }
 .fflhub-error-msg { color:#fee2e2; font-size:12px; white-space:pre-wrap; word-break:break-word; }
-
-/* small inner card for validation/place blocks */
 .fflhub-subcard {
   margin-top:8px;
   background:#0b1220;
