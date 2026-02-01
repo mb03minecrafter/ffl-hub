@@ -14,11 +14,6 @@ if (!defined('ABSPATH')) {
 
 /**
  * Coordinator for the "FFL Import" admin page and import logic.
- *
- * Instance-based:
- * - Constructor takes the FFLTable (explicit dependency).
- * - Uses FFLRepository static helpers for DB access.
- * - Uses FFLParser for TXT parsing.
  */
 final class FFLImporterPage
 {
@@ -27,6 +22,20 @@ final class FFLImporterPage
     private const NONCE_ACTION  = 'fflhub_import_ffls';
     private const NONCE_NAME    = 'fflhub_import_ffls_nonce';
 
+    // -----------------------------
+    // DEBUG LOGGING (no behavior changes)
+    // -----------------------------
+    private const LOG_PREFIX = '[FFLHUB][FFLImport]';
+
+    private static function log(string $msg, array $ctx = []): void
+    {
+        if (!empty($ctx)) {
+            error_log(self::LOG_PREFIX . ' ' . $msg . ' ' . wp_json_encode($ctx));
+            return;
+        }
+        error_log(self::LOG_PREFIX . ' ' . $msg);
+    }
+
     private FFLTable $table;
 
     public function __construct(FFLTable $table)
@@ -34,28 +43,24 @@ final class FFLImporterPage
         $this->table = $table;
     }
 
-    /**
-     * Wire up hooks (call from plugin bootstrap).
-     */
     public function register(): void
     {
         add_action('admin_menu', [$this, 'register_admin_page']);
         add_action('admin_post_' . self::FORM_ACTION, [$this, 'handle_import_submission']);
+        self::log('register() wired hooks', [
+            'menu_slug' => self::MENU_SLUG,
+            'action'    => self::FORM_ACTION,
+        ]);
     }
 
-    /**
-     * Public wrapper so other classes can use the FFL table name (instance-based).
-     */
     public function get_table_name_public(): string
     {
         return $this->table->get_table_name();
     }
 
-    /**
-     * Register the "FFL Import" admin page under Tools.
-     */
     public function register_admin_page(): void
     {
+        self::log('register_admin_page()');
         add_submenu_page(
             'tools.php',
             'FFL Hub – Import FFL List',
@@ -66,9 +71,6 @@ final class FFLImporterPage
         );
     }
 
-    /**
-     * Render the FFL Import admin page (upload form + search).
-     */
     public function render_admin_page(): void
     {
         if (!current_user_can('manage_options')) {
@@ -78,25 +80,24 @@ final class FFLImporterPage
         $message       = isset($_GET['fflhub_msg']) ? sanitize_text_field(wp_unslash($_GET['fflhub_msg'])) : '';
         $imported_rows = isset($_GET['fflhub_count']) ? (int) $_GET['fflhub_count'] : 0;
 
-        // Handle search query (GET).
         $search_zip = isset($_GET['fflhub_search_zip'])
             ? sanitize_text_field(wp_unslash($_GET['fflhub_search_zip']))
             : '';
 
         $search_results = [];
         if ($search_zip !== '') {
-            // Repo returns canonical "public" shape (premise/mailing/phone).
-            // For this admin table, we can render from that shape directly.
+            self::log('search request', ['zip' => $search_zip]);
             $search_results = FFLRepository::search_by_zip_prefix($this->table, $search_zip, 100);
+            self::log('search results', ['count' => is_array($search_results) ? count($search_results) : -1]);
         }
         ?>
         <div class="wrap">
             <h1>FFL Hub – Import ATF FFL List</h1>
 
             <p>
-                Step 1: Download the latest <strong>Complete Federal Firearms Listings</strong> TXT file
-                from the ATF website.<br>
-                Step 2: Upload that TXT file here to populate/update the FFL database.
+                Step 1: Download the latest <strong>Complete Federal Firearms Listings</strong> CSV file
+                from the ATF website: https://www.atf.gov/firearms/tools-and-services-firearms-industry/federal-firearms-listings<br>
+                Step 2: Upload that CSV file here to populate/update the FFL database.
             </p>
 
             <?php if ($message === 'success') : ?>
@@ -113,8 +114,7 @@ final class FFLImporterPage
 
             <hr>
 
-            <!-- Upload form -->
-            <h2>Upload ATF TXT File</h2>
+            <h2>Upload ATF CSV File</h2>
             <form
                 method="post"
                 enctype="multipart/form-data"
@@ -125,16 +125,16 @@ final class FFLImporterPage
 
                 <table class="form-table" role="presentation">
                     <tr>
-                        <th scope="row"><label for="fflhub_txt_file">ATF TXT file</label></th>
+                        <th scope="row"><label for="fflhub_csv_file">ATF CSV file</label></th>
                         <td>
                             <input
                                 type="file"
-                                name="fflhub_txt_file"
-                                id="fflhub_txt_file"
-                                accept=".txt"
+                                name="fflhub_csv_file"
+                                id="fflhub_csv_file"
+                                accept=".csv"
                                 required>
                             <p class="description">
-                                Upload the TXT file you downloaded from the ATF website.
+                                Upload the CSV file you downloaded from the ATF website.
                             </p>
                         </td>
                     </tr>
@@ -145,7 +145,6 @@ final class FFLImporterPage
 
             <hr>
 
-            <!-- Search section -->
             <h2>Search FFLs by ZIP</h2>
             <p>
                 Enter a full ZIP (e.g. <code>70801</code>) or a ZIP prefix (e.g. <code>708</code>) to see matching FFLs.
@@ -195,9 +194,7 @@ final class FFLImporterPage
                         </thead>
                         <tbody>
                             <?php foreach ($search_results as $ffl) : ?>
-                                <?php
-                                $premise = is_array($ffl['premise'] ?? null) ? $ffl['premise'] : [];
-                                ?>
+                                <?php $premise = is_array($ffl['premise'] ?? null) ? $ffl['premise'] : []; ?>
                                 <tr>
                                     <td><?php echo esc_html((string) ($ffl['ffl_number'] ?? '')); ?></td>
                                     <td><?php echo esc_html((string) ($ffl['name'] ?? '')); ?></td>
@@ -222,33 +219,68 @@ final class FFLImporterPage
         <?php
     }
 
-    /**
-     * Handle the form submission when the TXT file is uploaded.
-     */
     public function handle_import_submission(): void
     {
+        self::log('handle_import_submission() START', [
+            'user_id' => get_current_user_id(),
+            'method'  => $_SERVER['REQUEST_METHOD'] ?? '',
+        ]);
+
         if (!current_user_can('manage_options')) {
+            self::log('permission denied');
             wp_die('You do not have permission to perform this action.');
         }
 
+        // Will wp_die on nonce failure; still log the attempt.
+        self::log('checking nonce', [
+            'nonce_field_present' => isset($_POST[self::NONCE_NAME]),
+        ]);
         check_admin_referer(self::NONCE_ACTION, self::NONCE_NAME);
 
-        if (!isset($_FILES['fflhub_txt_file']) || !is_array($_FILES['fflhub_txt_file'])) {
+        if (!isset($_FILES['fflhub_csv_file']) || !is_array($_FILES['fflhub_csv_file'])) {
+            self::log('missing $_FILES[fflhub_csv_file]', ['files_keys' => array_keys($_FILES ?? [])]);
             $this->redirect_with_result('error', 0);
         }
 
-        $file = $_FILES['fflhub_txt_file'];
+        $file = $_FILES['fflhub_csv_file'];
+
+        self::log('upload received', [
+            'name'     => $file['name'] ?? '',
+            'type'     => $file['type'] ?? '',
+            'size'     => $file['size'] ?? 0,
+            'error'    => $file['error'] ?? null,
+            'tmp_name' => $file['tmp_name'] ?? '',
+        ]);
 
         if (!empty($file['error']) || empty($file['tmp_name'])) {
+            self::log('upload invalid', [
+                'error'    => $file['error'] ?? null,
+                'tmp_name' => $file['tmp_name'] ?? '',
+            ]);
             $this->redirect_with_result('error', 0);
         }
 
-        $contents = file_get_contents((string) $file['tmp_name']);
+        $tmp = (string) $file['tmp_name'];
+
+        self::log('reading tmp file', [
+            'is_readable' => is_readable($tmp),
+            'filesize'    => @filesize($tmp),
+        ]);
+
+        $contents = file_get_contents($tmp);
         if ($contents === false) {
+            self::log('file_get_contents failed', ['tmp' => $tmp]);
             $this->redirect_with_result('error', 0);
         }
+
+        self::log('file read OK', [
+            'bytes' => strlen($contents),
+            'head'  => substr($contents, 0, 80),
+        ]);
 
         $imported_count = $this->import_atf_txt((string) $contents);
+
+        self::log('import complete', ['imported_count' => $imported_count]);
 
         if ($imported_count <= 0) {
             $this->redirect_with_result('error', 0);
@@ -257,31 +289,64 @@ final class FFLImporterPage
         $this->redirect_with_result('success', $imported_count);
     }
 
-    /**
-     * Import the ATF TXT contents into the DB.
-     *
-     * Uses FFLParser to get rows and then bulk upserts them via FFLRepository.
-     */
     protected function import_atf_txt(string $txt): int
     {
-        // Allow long-running import if needed.
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
-        $parser = new FFLParser();
-        $rows   = $parser->parse($txt);
+        self::log('import_atf_txt() START', [
+            'txt_bytes' => strlen($txt),
+        ]);
 
-        if (empty($rows)) {
+        try {
+            $parser = new FFLParser();
+            $rows   = $parser->parse($txt);
+
+            self::log('parse finished', [
+                'rows_count' => is_array($rows) ? count($rows) : -1,
+            ]);
+
+            if (empty($rows)) {
+                self::log('parse returned 0 rows');
+                return 0;
+            }
+
+            // Useful sanity peek at shape (avoid logging whole row)
+            $first = $rows[0] ?? null;
+            if (is_array($first)) {
+                self::log('first row keys', ['keys' => array_slice(array_keys($first), 0, 30)]);
+            }
+
+            $table_name = method_exists($this->table, 'get_table_name') ? $this->table->get_table_name() : '';
+            self::log('bulk_upsert begin', [
+                'table' => $table_name,
+                'batch' => 500,
+            ]);
+
+            $result = FFLRepository::bulk_upsert($this->table, $rows, 500);
+
+            self::log('bulk_upsert done', ['result' => $result]);
+
+            return (int) $result;
+        } catch (\Throwable $e) {
+            self::log('EXCEPTION during import', [
+                'type'    => get_class($e),
+                'message' => $e->getMessage(),
+                'file'    => $e->getFile(),
+                'line'    => $e->getLine(),
+            ]);
             return 0;
         }
-
-        // Delegate DB work to repository (single SQL choke-point).
-        return FFLRepository::bulk_upsert($this->table, $rows, 500);
     }
 
     private function redirect_with_result(string $msg, int $count): void
     {
+        self::log('redirect_with_result()', [
+            'msg'   => $msg,
+            'count' => $count,
+        ]);
+
         wp_redirect(
             add_query_arg(
                 [
