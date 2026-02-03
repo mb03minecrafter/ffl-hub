@@ -45,7 +45,7 @@ define('FFLHUB_PLUGIN_VERSION', '1.0.0');
  *
  * NOTE: Some services read specific flags (e.g., CartCompliance uses its own).
  */
-define('FFLHUB_CRON_DEBUG', false);
+define('FFLHUB_CRON_DEBUG', true);
 define('FFLHUB_ADMIN_DEBUG', false);
 
 // Checkout / cart compliance (must preserve existing behavior).

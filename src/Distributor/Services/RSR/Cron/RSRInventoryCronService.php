@@ -17,8 +17,8 @@ use FFLHub\Util\DebugLogUtil;
  *
  * Runs every 5 minutes:
  *  - downloads IM-QTY-CSV.csv via FTP to uploads/fflhub-rsr/
- *  - parses it (RSR Stock Number, Quantity)
- *  - updates inventory_quantity in the LIVE fulfillment table.
+ *  - bulk loads it into a staging table via LOAD DATA LOCAL INFILE
+ *  - join-updates inventory_quantity in the LIVE fulfillment table
  */
 final class RSRInventoryCronService extends AbstractTableCronService
 {
@@ -37,25 +37,16 @@ final class RSRInventoryCronService extends AbstractTableCronService
      */
     private const LOG_PREFIX = '[FFLHUB][RSRInventoryCron]';
 
-    /**
-     * Inject the double-buffered fulfillment table.
-     */
     public function __construct(DoubleBufferedFulfillmentTable $table)
     {
         parent::__construct($table);
     }
 
-    /**
-     * Unique cron hook name.
-     */
     public function get_cron_hook_name(): string
     {
         return self::CRON_HOOK;
     }
 
-    /**
-     * Interval length in seconds.
-     */
     protected function get_interval_seconds(): int
     {
         return 5 * MINUTE_IN_SECONDS;
@@ -66,19 +57,11 @@ final class RSRInventoryCronService extends AbstractTableCronService
         return 'fflhub_catalog';
     }
 
-    /**
-     * Delay before first run (keeps your old 2-minute initial delay).
-     */
     protected function get_initial_delay_seconds(): int
     {
         return 2 * MINUTE_IN_SECONDS;
     }
 
-    /**
-     * Cron callback:
-     *  1) Download IM-QTY-CSV.csv from RSR FTP to uploads.
-     *  2) Parse it and update inventory_quantity in the live table.
-     */
     public function run(): void
     {
         $t_start   = microtime(true);
@@ -101,10 +84,10 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $creds   = $this->get_ftp_credentials();
 
         $this->profile('Credentials retrieval', $t_creds, [
-            'ok'      => is_array($creds),
-            'has_host'=> is_array($creds) ? (bool) ($creds['host'] ?? '') : false,
-            'has_user'=> is_array($creds) ? (bool) ($creds['username'] ?? '') : false,
-            'has_ssl' => is_array($creds) ? (bool) ($creds['use_ssl'] ?? false) : false,
+            'ok'       => is_array($creds),
+            'has_host' => is_array($creds) ? (bool) ($creds['host'] ?? '') : false,
+            'has_user' => is_array($creds) ? (bool) ($creds['username'] ?? '') : false,
+            'has_ssl'  => is_array($creds) ? (bool) ($creds['use_ssl'] ?? false) : false,
         ]);
 
         if (!is_array($creds)) {
@@ -139,10 +122,10 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $remote_path = '/ftpdownloads/IM-QTY-CSV.csv';
 
         $this->profile('Prepare local paths', $t_paths, [
-            'base_dir'     => (string) $base_dir,
-            'remote_csv'   => (string) $remote_path,
-            'local_csv'    => (string) $local_path,
-            'live_table'   => (string) $this->table->get_live_table_name(),
+            'base_dir'   => (string) $base_dir,
+            'remote_csv' => (string) $remote_path,
+            'local_csv'  => (string) $local_path,
+            'live_table' => (string) $this->table->get_live_table_name(),
         ]);
 
         // 1) Download the file via FTP.
@@ -184,15 +167,14 @@ final class RSRInventoryCronService extends AbstractTableCronService
         update_option('fflhub_rsr_inventory_last_download', current_time('mysql'));
         delete_option('fflhub_rsr_inventory_last_download_error');
 
-        // 2) Apply inventory updates to live table.
+        // 2) Apply inventory updates to live table (LOAD DATA + JOIN).
         $t_apply = microtime(true);
 
         $processed_rows = 0;
         $apply_stats    = [];
 
         try {
-            // returns ['processed_rows'=>int,'input_rows'=>int,'batches'=>int,'parse_ms'=>float,'db_flush_ms'=>float,'total_ms'=>float]
-            $apply_stats = $this->apply_inventory_updates_from_file_profiled($local_path);
+            $apply_stats = $this->apply_inventory_updates_via_load_data_profiled($local_path);
             $processed_rows = (int) ($apply_stats['processed_rows'] ?? 0);
         } catch (\Throwable $e) {
             $this->log('ERROR: exception applying inventory updates', [
@@ -214,18 +196,20 @@ final class RSRInventoryCronService extends AbstractTableCronService
     }
 
     /**
-     * Profiled wrapper around the existing apply logic.
+     * Bulk-load IM-QTY-CSV.csv into a staging table via LOAD DATA LOCAL INFILE,
+     * then join-update inventory_quantity in the live table.
+     *
+     * Adds instrumentation:
+     * - join_matched: number of live rows matched by staging (sanity check)
+     * - would_change: number of matched rows where value differs (explains join_updated=0)
      *
      * @return array<string,mixed>
      */
-    private function apply_inventory_updates_from_file_profiled(string $file_path): array
+    private function apply_inventory_updates_via_load_data_profiled(string $file_path): array
     {
         global $wpdb;
 
         $t_start = microtime(true);
-
-        $t_parse_total = 0.0;
-        $t_flush_total = 0.0;
 
         if (!file_exists($file_path) || !is_readable($file_path)) {
             $this->log('ERROR: IM-QTY-CSV file missing or unreadable', [
@@ -233,10 +217,15 @@ final class RSRInventoryCronService extends AbstractTableCronService
             ]);
             return [
                 'processed_rows' => 0,
-                'input_rows'     => 0,
-                'batches'        => 0,
-                'parse_ms'       => '0.00',
-                'db_flush_ms'    => '0.00',
+                'rows_loaded'    => 0,
+                'join_matched'   => 0,
+                'would_change'   => 0,
+                'join_updated'   => 0,
+                'create_ms'      => '0.00',
+                'load_ms'        => '0.00',
+                'stats_ms'       => '0.00',
+                'join_ms'        => '0.00',
+                'drop_ms'        => '0.00',
                 'total_ms'       => '0.00',
             ];
         }
@@ -246,10 +235,15 @@ final class RSRInventoryCronService extends AbstractTableCronService
             $this->log('ERROR: could not resolve live table name');
             return [
                 'processed_rows' => 0,
-                'input_rows'     => 0,
-                'batches'        => 0,
-                'parse_ms'       => '0.00',
-                'db_flush_ms'    => '0.00',
+                'rows_loaded'    => 0,
+                'join_matched'   => 0,
+                'would_change'   => 0,
+                'join_updated'   => 0,
+                'create_ms'      => '0.00',
+                'load_ms'        => '0.00',
+                'stats_ms'       => '0.00',
+                'join_ms'        => '0.00',
+                'drop_ms'        => '0.00',
                 'total_ms'       => '0.00',
             ];
         }
@@ -258,163 +252,203 @@ final class RSRInventoryCronService extends AbstractTableCronService
             @set_time_limit(0);
         }
 
-        $handle = fopen($file_path, 'r');
-        if (!$handle) {
-            $this->log('ERROR: could not fopen file', [
-                'file_path' => (string) $file_path,
-            ]);
-            return [
-                'processed_rows' => 0,
-                'input_rows'     => 0,
-                'batches'        => 0,
-                'parse_ms'       => '0.00',
-                'db_flush_ms'    => '0.00',
-                'total_ms'       => '0.00',
-            ];
+        // If RSR ever adds a header row, flip this to 1.
+        $ignore_lines = 0;
+
+        $pid = function_exists('getmypid') ? (int) getmypid() : 0;
+        $suffix = $pid > 0 ? (string) $pid : (string) wp_rand(1000, 9999);
+        $stage_table = $wpdb->prefix . 'fflhub_rsr_qty_stage_' . $suffix;
+
+        $infile_path_sql = str_replace('\\', '\\\\', $file_path);
+        $infile_path_sql = str_replace("'", "\\'", $infile_path_sql);
+
+        // Capabilities check
+        $t_check = microtime(true);
+        $mysql_ok = $this->mysql_local_infile_enabled();
+        $php_ok   = $this->php_local_infile_enabled();
+        DebugLogUtil::log_ctx(self::DEBUG_FLAG, '[FFLHub][RSR Import][DEBUG]', 'LOAD DATA check', [
+            'mysql_ok'    => $mysql_ok ? 'true' : 'false',
+            'php_ok'      => $php_ok ? 'true' : 'false',
+            'result'      => ($mysql_ok && $php_ok) ? 'true' : 'false',
+            'elapsed_ms'  => number_format((microtime(true) - $t_check) * 1000.0, 2, '.', ''),
+        ]);
+
+        // -----------------------
+        // Create staging table
+        // -----------------------
+        $t_create = microtime(true);
+
+        $wpdb->query("DROP TABLE IF EXISTS {$stage_table}");
+
+        $charset = $wpdb->get_charset_collate();
+        $create_sql = "
+        CREATE TABLE {$stage_table} (
+            rsr_stock_number varchar(64) NOT NULL,
+            qty int unsigned NOT NULL,
+            PRIMARY KEY (rsr_stock_number)
+        ) {$charset};
+    ";
+
+        $created = $wpdb->query($create_sql);
+        if ($created === false) {
+            throw new \RuntimeException('Failed to create staging table: ' . (string) $wpdb->last_error);
         }
 
-        $input_rows     = 0; // raw lines that parse into an update row
-        $batch_size     = 200;
-        $batch_updates  = [];
-        $flushes        = 0;
+        $create_ms = (microtime(true) - $t_create) * 1000.0;
 
-        $wpdb->query('START TRANSACTION');
+        // -----------------------
+        // LOAD DATA LOCAL INFILE
+        // -----------------------
+        $t_load = microtime(true);
 
-        try {
-            $flush_batch = function () use (&$batch_updates, $live_table, $wpdb, &$t_flush_total, &$input_rows, &$flushes): void {
-                if (empty($batch_updates)) {
-                    return;
-                }
+        $load_sql = "
+        LOAD DATA LOCAL INFILE '{$infile_path_sql}'
+        INTO TABLE {$stage_table}
+        FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"'
+        LINES TERMINATED BY '\n'
+        " . ($ignore_lines > 0 ? "IGNORE {$ignore_lines} LINES" : "") . "
+        (rsr_stock_number, qty)
+    ";
 
-                $t0 = microtime(true);
-
-                $when_sql        = [];
-                $case_values     = [];
-                $in_placeholders = [];
-                $in_values       = [];
-
-                foreach ($batch_updates as $row) {
-                    $rsr_stock_number = (string) $row['rsr_stock_number'];
-                    $qty_str          = (string) $row['qty'];
-
-                    $when_sql[]    = 'WHEN %s THEN %s';
-                    $case_values[] = $rsr_stock_number;
-                    $case_values[] = $qty_str;
-
-                    $in_placeholders[] = '%s';
-                    $in_values[]       = $rsr_stock_number;
-                }
-
-                $all_values = array_merge($case_values, $in_values);
-
-                $sql = "
-                UPDATE {$live_table}
-                SET inventory_quantity = CASE rsr_stock_number
-                    " . implode("\n                    ", $when_sql) . "
-                END
-                WHERE rsr_stock_number IN (" . implode(', ', $in_placeholders) . ')
-            ';
-
-                $prepared = $wpdb->prepare($sql, $all_values);
-                $result   = $wpdb->query($prepared);
-
-                if ($result === false) {
-                    throw new \RuntimeException('batch UPDATE failed: ' . (string) $wpdb->last_error);
-                }
-
-                $input_rows += count($batch_updates);
-                $batch_updates = [];
-
-                $flushes++;
-                $t_flush_total += (microtime(true) - $t0);
-            };
-
-            while (($line = fgets($handle)) !== false) {
-                $t0 = microtime(true);
-
-                $line = trim($line);
-                if ($line === '') {
-                    $t_parse_total += (microtime(true) - $t0);
-                    continue;
-                }
-
-                $cols = explode(',', $line);
-                if (count($cols) < 2) {
-                    $t_parse_total += (microtime(true) - $t0);
-                    continue;
-                }
-
-                $rsr_stock_number_raw = trim((string) $cols[0]);
-                $qty_raw              = trim((string) $cols[1]);
-
-                if ($rsr_stock_number_raw === '') {
-                    $t_parse_total += (microtime(true) - $t0);
-                    continue;
-                }
-
-                if ($qty_raw === '') {
-                    $qty_int = 0;
-                } else {
-                    $digits  = preg_replace('/[^0-9]/', '', $qty_raw);
-                    $qty_int = ($digits === '') ? 0 : (int) $digits;
-                }
-
-                $batch_updates[] = [
-                    'rsr_stock_number' => $rsr_stock_number_raw,
-                    'qty'              => (string) $qty_int,
-                ];
-
-                $t_parse_total += (microtime(true) - $t0);
-
-                if (count($batch_updates) >= $batch_size) {
-                    $flush_batch();
-                }
-            }
-
-            fclose($handle);
-
-            // Flush remaining
-            $flush_batch();
-
-            $wpdb->query('COMMIT');
-        } catch (\Throwable $e) {
-            fclose($handle);
-            $wpdb->query('ROLLBACK');
-            $this->log('ERROR: rolled back transaction', [
-                'error' => $e->getMessage(),
-            ]);
-            throw $e;
+        $loaded = $wpdb->query($load_sql);
+        if ($loaded === false) {
+            $wpdb->query("DROP TABLE IF EXISTS {$stage_table}");
+            throw new \RuntimeException('LOAD DATA LOCAL INFILE failed: ' . (string) $wpdb->last_error);
         }
+
+        // Clean CR from CRLF (Windows line endings)
+        $wpdb->query("UPDATE {$stage_table} SET rsr_stock_number = TRIM(TRAILING '\r' FROM rsr_stock_number)");
+
+        $load_ms = (microtime(true) - $t_load) * 1000.0;
+
+        // Count rows loaded
+        $rows_loaded = 0;
+        $count_row = $wpdb->get_row("SELECT COUNT(*) AS c FROM {$stage_table}", ARRAY_A);
+        if (is_array($count_row) && isset($count_row['c'])) {
+            $rows_loaded = (int) $count_row['c'];
+        }
+
+        // -----------------------
+        // Pre-join stats
+        // -----------------------
+        $t_stats = microtime(true);
+
+        // How many staging rows match a live row?
+        $join_matched = (int) $wpdb->get_var("
+        SELECT COUNT(*)
+        FROM {$stage_table} S
+        INNER JOIN {$live_table} L
+            ON L.rsr_stock_number = S.rsr_stock_number
+    ");
+
+        // How many matched rows would actually change inventory_quantity?
+        // inventory_quantity is VARCHAR in your schema; compare as INT for correctness.
+        $would_change = (int) $wpdb->get_var("
+        SELECT COUNT(*)
+        FROM {$stage_table} S
+        INNER JOIN {$live_table} L
+            ON L.rsr_stock_number = S.rsr_stock_number
+        WHERE
+            L.inventory_quantity IS NULL
+            OR CAST(L.inventory_quantity AS UNSIGNED) <> S.qty
+    ");
+
+        $stats_ms = (microtime(true) - $t_stats) * 1000.0;
+
+        // -----------------------
+        // JOIN update live table
+        // -----------------------
+        $t_join = microtime(true);
+
+        $join_sql = "
+        UPDATE {$live_table} L
+        INNER JOIN {$stage_table} S
+            ON S.rsr_stock_number = L.rsr_stock_number
+        SET L.inventory_quantity = S.qty
+    ";
+
+        $join_updated = $wpdb->query($join_sql);
+        if ($join_updated === false) {
+            $wpdb->query("DROP TABLE IF EXISTS {$stage_table}");
+            throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
+        }
+
+        $join_ms = (microtime(true) - $t_join) * 1000.0;
+
+        // -----------------------
+        // Drop staging table
+        // -----------------------
+        $t_drop = microtime(true);
+        $wpdb->query("DROP TABLE IF EXISTS {$stage_table}");
+        $drop_ms = (microtime(true) - $t_drop) * 1000.0;
 
         $t_total_ms = (microtime(true) - $t_start) * 1000.0;
 
         $stats = [
-            // keep prior semantics: "processed_rows" = input rows processed (not DB changed)
-            'processed_rows' => (int) $input_rows,
-            'input_rows'     => (int) $input_rows,
-            'batch_size'     => (int) $batch_size,
-            'batches'        => (int) $flushes,
-            'parse_ms'       => number_format($t_parse_total * 1000.0, 2, '.', ''),
-            'db_flush_ms'    => number_format($t_flush_total * 1000.0, 2, '.', ''),
+            'processed_rows' => (int) $rows_loaded,
+            'rows_loaded'    => (int) $rows_loaded,
+            'join_matched'   => (int) $join_matched,
+            'would_change'   => (int) $would_change,
+            'join_updated'   => (int) $join_updated,
+            'stage_table'    => (string) $stage_table,
+            'ignore_lines'   => (int) $ignore_lines,
+            'create_ms'      => number_format($create_ms, 2, '.', ''),
+            'load_ms'        => number_format($load_ms, 2, '.', ''),
+            'stats_ms'       => number_format($stats_ms, 2, '.', ''),
+            'join_ms'        => number_format($join_ms, 2, '.', ''),
+            'drop_ms'        => number_format($drop_ms, 2, '.', ''),
             'total_ms'       => number_format($t_total_ms, 2, '.', ''),
         ];
 
-        // Keep existing detailed log too (useful if you grep legacy logs)
-        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, 'PROFILE: apply_inventory_updates_from_file() breakdown', $stats);
+        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, 'PROFILE: apply_inventory_updates_via_load_data() breakdown', $stats);
 
         return $stats;
+    }
+
+
+    /**
+     * MySQL server variable local_infile must be ON.
+     */
+    private function mysql_local_infile_enabled(): bool
+    {
+        global $wpdb;
+        $row = $wpdb->get_row("SHOW VARIABLES LIKE 'local_infile'", ARRAY_A);
+        if (!is_array($row)) {
+            return false;
+        }
+        $val = strtolower((string) ($row['Value'] ?? $row['value'] ?? ''));
+        return $val === 'on' || $val === '1' || $val === 'true';
+    }
+
+    /**
+     * PHP must allow local infile for mysqli/pdo_mysql.
+     */
+    private function php_local_infile_enabled(): bool
+    {
+        // These may not exist in all environments; treat missing as "unknown/false".
+        $mysqli = ini_get('mysqli.allow_local_infile');
+        $pdo    = ini_get('pdo_mysql.allow_local_infile');
+
+        $ok_mysqli = ($mysqli !== false) ? $this->ini_truthy((string) $mysqli) : false;
+        $ok_pdo    = ($pdo !== false) ? $this->ini_truthy((string) $pdo) : false;
+
+        // WP uses mysqli typically, but allow either to count as "php_ok".
+        return ($ok_mysqli || $ok_pdo);
+    }
+
+    private function ini_truthy(string $v): bool
+    {
+        $v = strtolower(trim($v));
+        return in_array($v, ['1', 'on', 'true', 'yes'], true);
     }
 
     /**
      * Retrieve and validate FTP credentials from RSR distributor settings.
      *
-     * Uses the centralized Options helper so we don't hard-code option names.
-     *
      * @return array{host:string,username:string,password:string,use_ssl:bool}|null
      */
     public function get_ftp_credentials(): ?array
     {
-        // Values come from RSRModule::settings_schema() via SettingsRegistrar.
         $host      = Options::get_distributor_option('rsr', 'ftp_host', '');
         $username  = Options::get_distributor_option('rsr', 'ftp_username', '');
         $password  = Options::get_distributor_option('rsr', 'ftp_password', '');
@@ -491,6 +525,4 @@ final class RSRInventoryCronService extends AbstractTableCronService
             $this->log("---- RUN END ({$status}) ----");
         }
     }
-
-    
 }
