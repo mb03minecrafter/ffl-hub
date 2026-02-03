@@ -17,7 +17,7 @@ use FFLHub\Checkout\Builders\CheckoutOrderRequestBuilder;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
 
 use FFLHub\Distributor\Services\Orders\Jobs\Identifiers\OrderPlacementJobIdentifiersStore;
-use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifecycle;
+use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
 use FFLHub\Distributor\Services\Orders\Jobs\Snapshots\OrderPlacementJobSnapshotsStore;
 
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
@@ -63,18 +63,18 @@ final class OrderPlacementJobRunner
         }
 
         // Fast exit if already success.
-        $existing_status = (string) OrderPlacementJobLifecycle::get_job_status($jobs_table, $order, $job_key);
+        $existing_status = (string) OrderPlacementJobLifeCycle::get_job_status($jobs_table, $order, $job_key);
         if ($existing_status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
             return;
         }
 
         // Claim job (attempts++, status => running). Concurrency gate.
         try {
-            $attempt_n = (int) OrderPlacementJobLifecycle::increment_job_attempts_and_mark_running($jobs_table, $order, $job_key);
+            $attempt_n = (int) OrderPlacementJobLifeCycle::increment_job_attempts_and_mark_running($jobs_table, $order, $job_key);
         } catch (\Throwable $e) {
             // If we can't claim safely, treat as failed (best-effort).
             try {
-                OrderPlacementJobLifecycle::mark_job_failed($jobs_table, $order, $job_key, 'Failed to claim job: ' . $e->getMessage());
+                OrderPlacementJobLifeCycle::mark_job_failed($jobs_table, $order, $job_key, 'Failed to claim job: ' . $e->getMessage());
             } catch (\Throwable $ignored) {
                 // swallow
             }
@@ -95,7 +95,7 @@ final class OrderPlacementJobRunner
 
         if (!($job instanceof OrderPlacementJobRow)) {
             try {
-                OrderPlacementJobLifecycle::mark_job_failed($jobs_table, $order, $job_key, 'Job row not found for order/job_key');
+                OrderPlacementJobLifeCycle::mark_job_failed($jobs_table, $order, $job_key, 'Job row not found for order/job_key');
             } catch (\Throwable $ignored) {
                 // swallow
             }
@@ -189,11 +189,11 @@ final class OrderPlacementJobRunner
             }
 
             // Mark success (terminal transition).
-            OrderPlacementJobLifecycle::mark_job_success($jobs_table, $order, $job_key);
+            OrderPlacementJobLifeCycle::mark_job_success($jobs_table, $order, $job_key);
         } catch (\Throwable $e) {
             // Terminal failure.
             try {
-                OrderPlacementJobLifecycle::mark_job_failed($jobs_table, $order, $job_key, $e->getMessage());
+                OrderPlacementJobLifeCycle::mark_job_failed($jobs_table, $order, $job_key, $e->getMessage());
             } catch (\Throwable $ignored) {
                 // swallow
             }

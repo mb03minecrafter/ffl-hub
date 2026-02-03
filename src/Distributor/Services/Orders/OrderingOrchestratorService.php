@@ -8,7 +8,7 @@ use WC_Order_Item_Product;
 
 use FFLHub\Product\ProductMeta;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
-use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifecycle;
+use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
@@ -313,7 +313,7 @@ final class OrderingOrchestratorService
             }
 
             try {
-                OrderPlacementJobLifecycle::init_job_meta($this->jobs_table, $order, $job_key, $job);
+                OrderPlacementJobLifeCycle::init_job_meta($this->jobs_table, $order, $job_key, $job);
                 $count++;
             } catch (\Throwable $e) {
                 $this->log_ctx('persist_job_exception', [
@@ -359,7 +359,7 @@ final class OrderingOrchestratorService
                 continue;
             }
 
-            $status = (string) OrderPlacementJobLifecycle::get_job_status($this->jobs_table, $order, $job_key_norm);
+            $status = (string) OrderPlacementJobLifeCycle::get_job_status($this->jobs_table, $order, $job_key_norm);
 
             // If already succeeded, don't re-queue.
             if ($status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {

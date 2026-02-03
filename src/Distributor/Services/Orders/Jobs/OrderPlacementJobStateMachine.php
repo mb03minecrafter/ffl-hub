@@ -8,7 +8,7 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 
-use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifecycle;
+use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
@@ -283,7 +283,7 @@ final class OrderPlacementJobStateMachine
         // next_run_at should be MySQL UTC datetime string.
         $run_at_mysql_utc = OrderPlacementTimeUtil::unix_to_mysql_utc((int) $desired_run_at_unix);
 
-        OrderPlacementJobLifecycle::mark_job_retry_scheduled(
+        OrderPlacementJobLifeCycle::mark_job_retry_scheduled(
             $jobs_table,
             $order,
             $job_key,
@@ -344,7 +344,7 @@ final class OrderPlacementJobStateMachine
                 ->with_last_codes($codes)
         );
 
-        OrderPlacementJobLifecycle::mark_job_failed($jobs_table, $order, $job_key, $reason);
+        OrderPlacementJobLifeCycle::mark_job_failed($jobs_table, $order, $job_key, $reason);
 
         return ['action' => 'exit', 'reason' => 'failed'];
     }

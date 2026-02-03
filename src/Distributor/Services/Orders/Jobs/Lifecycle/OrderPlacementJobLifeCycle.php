@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * OrderPlacementJobLifecycle
+ * OrderPlacementJobLifeCycle
  *
  * Responsibility:
  * - Create/init job rows (upsert-by order_id+job_key) while keeping stable identifiers.
@@ -42,7 +42,7 @@ if (!defined('ABSPATH')) {
  * - job_key/dist_id/bucket are normalized and validated.
  * - Atomic claim is implemented with a single UPDATE constrained by eligible statuses.
  */
-final class OrderPlacementJobLifecycle
+final class OrderPlacementJobLifeCycle
 {
     /* ============================================================
      * Job init / upsert

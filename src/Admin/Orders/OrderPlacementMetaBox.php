@@ -6,7 +6,7 @@ use WC_Order;
 
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
-use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifecycle;
+use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
@@ -497,7 +497,7 @@ final class OrderPlacementMetaBox
             wp_die('Job key not found on this order.');
         }
 
-        $status = OrderPlacementJobLifecycle::get_job_status($this->jobs_table, $order, $job_key);
+        $status = OrderPlacementJobLifeCycle::get_job_status($this->jobs_table, $order, $job_key);
         if (strtolower(trim((string) $status)) !== 'failed') {
             self::redirect_back($order_id, $job_key, 'not_failed');
             return;
