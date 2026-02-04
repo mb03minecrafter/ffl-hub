@@ -264,56 +264,6 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
             return;
         }
 
-
-        /**
-         * ==========================================
-         * OLD PIPELINE (UNCHANGED)
-         * ==========================================
-         */
-        $t_catalog = microtime(true);
-
-        try {
-            $result = $client->Catalog();
-        } catch (\Throwable $e) {
-            $this->log('ERROR: Catalog() failed', ['error' => $e->getMessage()]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR');
-            return;
-        }
-
-        $this->profile('Catalog()', $t_catalog);
-
-        if (!is_array($result)) {
-            $this->log('ERROR: Catalog() did not return array');
-            $this->finalize_run($t_start, $mem_start, 'ERROR');
-            return;
-        }
-
-        $items = $result['items'] ?? $result['data'] ?? [];
-        if (empty($items)) {
-            $this->log('ERROR: no items in Catalog() response');
-            $this->finalize_run($t_start, $mem_start, 'ERROR');
-            return;
-        }
-
-        $t_import = microtime(true);
-
-        try {
-            $count = $this->get_importer()->import_items_array($items);
-        } catch (\Throwable $e) {
-            $this->log('ERROR: import failed', ['error' => $e->getMessage()]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR');
-            return;
-        }
-
-        $this->profile('Import (array)', $t_import, [
-            'rows' => (int) $count,
-        ]);
-
-        if ($count > 0) {
-            $this->table->swap_live_and_staging();
-        }
-
-        $this->finalize_run($t_start, $mem_start, 'SUCCESS');
     }
 
     // ---------------------------------------------
