@@ -184,6 +184,269 @@ class LipseysFulfillmentImporterService
         return (int) $total_import;
     }
 
+    // ============================================================
+    // NEW: TSV IMPORT PIPELINE (LOAD DATA LOCAL INFILE + FALLBACK)
+    // ============================================================
+
+    /**
+     * Import TSV into staging (fast path: LOAD DATA LOCAL INFILE).
+     * Falls back to PHP line-by-line batching using insert_rows_into_staging().
+     *
+     * @param string   $file_path Absolute path to TSV.
+     * @param string[] $columns   Exact TSV column order (usually schema insert columns).
+     * @return int Number of rows imported.
+     */
+    public function import_from_tsv_file(string $file_path, array $columns): int
+    {
+        if (!file_exists($file_path) || !is_readable($file_path)) {
+            $this->log_debug('[FFLHub][Lipseys Import] TSV missing/unreadable at ' . $file_path);
+            return 0;
+        }
+
+        if (empty($columns)) {
+            $this->log_debug('[FFLHub][Lipseys Import] TSV import: columns empty');
+            return 0;
+        }
+
+        if ($this->can_use_load_data_local_infile()) {
+            $rows = $this->import_tsv_via_load_data($file_path, $columns);
+            if ($rows >= 0) {
+                return $rows;
+            }
+            $this->log_debug('[FFLHub][Lipseys Import] LOAD DATA path failed, falling back to PHP importer.');
+        }
+
+        return $this->import_tsv_via_php($file_path, $columns);
+    }
+
+    private function can_use_load_data_local_infile(): bool
+    {
+        global $wpdb;
+
+        $row      = $wpdb->get_row("SHOW VARIABLES LIKE 'local_infile'");
+        $mysql_ok = $row && isset($row->Value) && in_array(strtolower((string) $row->Value), ['on', '1'], true);
+
+        $ini_val = ini_get('mysqli.allow_local_infile');
+        $php_ok  = in_array(strtolower((string) $ini_val), ['on', '1'], true);
+
+        $result = ($mysql_ok && $php_ok);
+
+        $this->log_debug(
+            sprintf(
+                '[FFLHub][Lipseys Import][DEBUG] LOAD DATA check: mysql_ok=%s, php_ok=%s, result=%s',
+                $mysql_ok ? 'true' : 'false',
+                $php_ok ? 'true' : 'false',
+                $result ? 'true' : 'false'
+            )
+        );
+
+        return $result;
+    }
+
+    /**
+     * FAST PATH: LOAD DATA LOCAL INFILE for TSV.
+     *
+     * Returns:
+     *  >=0 inserted rows
+     *  -1  failure (caller should fall back)
+     *
+     * @param string   $file_path
+     * @param string[] $columns
+     */
+    private function import_tsv_via_load_data(string $file_path, array $columns): int
+    {
+        global $wpdb;
+
+        $t_start = microtime(true);
+
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+
+        $table_name = $this->table->get_staging_table_name();
+
+        // Backtick columns defensively.
+        $col_list = implode(', ', array_map(static function (string $c): string {
+            return '`' . str_replace('`', '``', $c) . '`';
+        }, $columns));
+
+        $sql = "
+            LOAD DATA LOCAL INFILE %s
+            INTO TABLE {$table_name}
+            FIELDS TERMINATED BY '\\t'
+            LINES TERMINATED BY '\\n'
+            ({$col_list})
+        ";
+
+        try {
+            // Always start clean staging (same as RSR).
+            $this->table->truncate_staging();
+
+            $prepared    = $wpdb->prepare($sql, $file_path);
+            $t_sql_start = microtime(true);
+            $result      = $wpdb->query($prepared);
+            $t_sql_ms    = (microtime(true) - $t_sql_start) * 1000.0;
+
+            if ($result === false) {
+                $this->log_debug('[FFLHub][Lipseys Import][LOAD DATA] query failed: ' . $wpdb->last_error);
+                return -1;
+            }
+
+            // Post-clean: remove rows with empty UPC.
+            $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        } catch (\Throwable $e) {
+            $this->log_debug('[FFLHub][Lipseys Import][LOAD DATA] exception: ' . $e->getMessage());
+            return -1;
+        }
+
+        $rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if ($rows > 0) {
+            update_option('fflhub_lipseys_fulfillment_last_import', current_time('mysql'));
+            update_option('fflhub_lipseys_fulfillment_last_import_count', (int) $rows);
+        }
+
+        $t_total_ms = (microtime(true) - $t_start) * 1000.0;
+
+        $this->log_debug(
+            sprintf(
+                '[FFLHub][Lipseys Import] import_tsv_via_load_data(): total=%.2f ms, rows=%d',
+                $t_total_ms,
+                $rows
+            )
+        );
+
+        return $rows;
+    }
+
+    /**
+     * FALLBACK: PHP batching — reads TSV line-by-line and uses insert_rows_into_staging()
+     * so you have one place that owns insert logic.
+     *
+     * IMPORTANT: TSV is assumed to have NO header row.
+     *
+     * @param string   $file_path
+     * @param string[] $columns
+     */
+    private function import_tsv_via_php(string $file_path, array $columns): int
+    {
+        $t_start   = microtime(true);
+        $mem_start = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
+
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+
+        $handle = fopen($file_path, 'r');
+        if (!$handle) {
+            $this->log_debug('[FFLHub][Lipseys Import][TSV PHP] fopen failed for ' . $file_path);
+            return 0;
+        }
+
+        // Clean staging first (same as load-data path).
+        try {
+            $this->table->truncate_staging();
+        } catch (\Throwable $e) {
+            fclose($handle);
+            $this->log_debug('[FFLHub][Lipseys Import][TSV PHP] truncate_staging threw: ' . $e->getMessage());
+            return 0;
+        }
+
+        $batch_size          = 1000;
+        $batch_rows          = [];
+        $total_import        = 0;
+        $skipped_missing_upc = 0;
+        $line_number         = 0;
+
+        $num_cols = count($columns);
+
+        while (($line = fgets($handle)) !== false) {
+            $line_number++;
+            $line = rtrim($line, "\r\n");
+            if ($line === '') {
+                continue;
+            }
+
+            $parts = explode("\t", $line);
+
+            // Normalize number of fields.
+            if (count($parts) < $num_cols) {
+                $parts = array_pad($parts, $num_cols, '');
+            } elseif (count($parts) > $num_cols) {
+                $parts = array_slice($parts, 0, $num_cols);
+            }
+
+            $row = [];
+            for ($i = 0; $i < $num_cols; $i++) {
+                $row[$columns[$i]] = $parts[$i];
+            }
+
+            // Skip missing UPC.
+            $upc = isset($row['upc']) ? trim((string) $row['upc']) : '';
+            if ($upc === '' || strcasecmp($upc, 'null') === 0) {
+                $skipped_missing_upc++;
+                continue;
+            }
+
+            $batch_rows[] = $row;
+
+            if (count($batch_rows) >= $batch_size) {
+                try {
+                    $inserted = (int) $this->table->insert_rows_into_staging($batch_rows);
+                } catch (\Throwable $e) {
+                    $this->log_debug('[FFLHub][Lipseys Import][TSV PHP] insert_rows_into_staging threw: ' . $e->getMessage());
+                    $inserted = 0;
+                }
+
+                $total_import += $inserted;
+                $batch_rows = [];
+            }
+        }
+
+        fclose($handle);
+
+        // Flush remainder.
+        if (!empty($batch_rows)) {
+            try {
+                $inserted = (int) $this->table->insert_rows_into_staging($batch_rows);
+            } catch (\Throwable $e) {
+                $this->log_debug('[FFLHub][Lipseys Import][TSV PHP] final insert_rows_into_staging threw: ' . $e->getMessage());
+                $inserted = 0;
+            }
+
+            $total_import += $inserted;
+        }
+
+        // Post-clean: remove rows with empty UPC (paranoia / consistency).
+        global $wpdb;
+        $table_name = $this->table->get_staging_table_name();
+        $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if ($total_import > 0) {
+            update_option('fflhub_lipseys_fulfillment_last_import', current_time('mysql'));
+            update_option('fflhub_lipseys_fulfillment_last_import_count', (int) $total_import);
+        }
+
+        $t_total_ms = (microtime(true) - $t_start) * 1000.0;
+
+        $this->log_debug(
+            sprintf(
+                '[FFLHub][Lipseys Import][TSV PHP] imported_rows=%d, skipped_missing_upc=%d, total=%.2f ms, lines=%d',
+                (int) $total_import,
+                (int) $skipped_missing_upc,
+                $t_total_ms,
+                (int) $line_number
+            )
+        );
+
+        if ($mem_start > 0) {
+            $this->log_memory_summary((int) $mem_start);
+        }
+
+        return (int) $total_import;
+    }
+
+    // ------------------------------------------------------------
 
     private function log_debug(string $message): void
     {
