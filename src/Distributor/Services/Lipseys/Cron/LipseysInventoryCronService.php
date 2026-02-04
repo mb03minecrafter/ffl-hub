@@ -7,13 +7,19 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
+use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
 /**
- * WP-Cron job to refresh Lipsey's pricing/quantity feed hourly
- * and update relevant fields in the LIVE Lipsey's fulfillment table.
+ * Cron job to refresh Lipsey's pricing/quantity feed hourly
+ * using a streaming TSV -> staging table -> JOIN update pipeline.
+ *
+ * Mirrors the RSR inventory update architecture:
+ *  - stream API response directly to TSV (no huge JSON held in memory)
+ *  - LOAD DATA LOCAL INFILE into a staging table
+ *  - JOIN update the LIVE fulfillment table (4 fields only)
  */
 final class LipseysInventoryCronService extends AbstractTableCronService
 {
@@ -37,17 +43,11 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         parent::__construct($table);
     }
 
-    /**
-     * Unique cron hook name.
-     */
     public function get_cron_hook_name(): string
     {
         return self::CRON_HOOK;
     }
 
-    /**
-     * Interval length in seconds.
-     */
     protected function get_interval_seconds(): int
     {
         return HOUR_IN_SECONDS;
@@ -58,24 +58,13 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         return 'fflhub_catalog';
     }
 
-    /**
-     * Delay before first run (keeps your old 5-minute initial delay).
-     */
     protected function get_initial_delay_seconds(): int
     {
         return 5 * MINUTE_IN_SECONDS;
     }
 
-    /**
-     * Main cron callback:
-     *  - Calls PricingAndQuantity() on Lipseys API
-     *  - Validates response
-     *  - Applies price/qty deltas to the LIVE table
-     */
     public function run(): void
     {
-        global $wpdb;
-
         $t_start   = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
@@ -91,7 +80,7 @@ final class LipseysInventoryCronService extends AbstractTableCronService
             'interval_sec' => $this->get_interval_seconds(),
         ]);
 
-        // Credentials via centralized Options helper.
+        // 0) Credentials
         $t_creds         = microtime(true);
         $dealer_email    = trim((string) Options::get_distributor_option('lipseys', 'dealer_email', ''));
         $dealer_password = trim((string) Options::get_distributor_option('lipseys', 'dealer_password', ''));
@@ -107,10 +96,40 @@ final class LipseysInventoryCronService extends AbstractTableCronService
             return;
         }
 
-        // Client creation.
+        // 1) Resolve live table
+        $live_table = (string) $this->table->get_live_table_name();
+        if ($live_table === '') {
+            $this->log('ERROR: could not resolve live table name.');
+            $this->finalize_run($t_start, $mem_start, 'ERROR (no live table)');
+            return;
+        }
+
+        // 2) Build TSV path
+        $uploads  = wp_upload_dir();
+        $base_dir = trailingslashit($uploads['basedir']) . 'fflhub/lipseys';
+        $t_paths  = microtime(true);
+
+        if (!wp_mkdir_p($base_dir)) {
+            $this->log('ERROR: failed to create base directory', [
+                'base_dir' => (string) $base_dir,
+            ]);
+            $this->profile('Prepare local paths (mkdir failed)', $t_paths);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (mkdir failed)');
+            return;
+        }
+
+        $tsv_path = trailingslashit($base_dir) . 'pricing_qty_' . gmdate('Ymd_His') . '.tsv';
+
+        $this->profile('Prepare local paths', $t_paths, [
+            'base_dir'   => (string) $base_dir,
+            'local_tsv'  => (string) $tsv_path,
+            'live_table' => (string) $live_table,
+        ]);
+
+        // 3) Client creation
         $t_client = microtime(true);
         try {
-            $client = new \lipseys\ApiIntegration\LipseysClient(
+            $client = new LipseysClient(
                 (string) $dealer_email,
                 (string) $dealer_password
             );
@@ -124,387 +143,376 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         }
         $this->profile('Client creation', $t_client);
 
-        // PricingAndQuantity().
-        $t_paq = microtime(true);
-        try {
-            $result = $client->PricingAndQuantity();
-        } catch (\Throwable $e) {
-            $this->log('ERROR: exception calling PricingAndQuantity()', [
-                'error' => $e->getMessage(),
-            ]);
-            $this->profile('PricingAndQuantity() call (failed)', $t_paq);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (PricingAndQuantity exception)');
-            return;
-        }
-        $this->profile('PricingAndQuantity() call', $t_paq);
+        // 4) Stream PricingQuantityFeed -> TSV
+        $t_stream = microtime(true);
 
-        if (!is_array($result)) {
-            $this->log('ERROR: PricingAndQuantity() did not return an array.', [
-                'type' => is_object($result) ? get_class($result) : gettype($result),
-            ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (bad result type)');
-            return;
-        }
+        // TSV columns order (must match LOAD DATA column list)
+        $columns = [
+            'lipseys_item_number',
+            'inventory_quantity',
+            'allocation_status',
+            'distributor_price',
+            'retail_map',
+        ];
 
-        // Validate response and extract items.
-        $t_validate = microtime(true);
-
-        $success    = isset($result['success']) ? (bool) $result['success'] : false;
-        $authorized = isset($result['authorized']) ? (bool) $result['authorized'] : false;
-
-        if (!$success || !$authorized) {
-            $errors = (isset($result['errors']) && is_array($result['errors']))
-                ? implode('; ', array_map('strval', $result['errors']))
-                : '';
-
-            $this->log('ERROR: API response not successful/authorized', [
-                'success'    => $success ? 1 : 0,
-                'authorized' => $authorized ? 1 : 0,
-                'errors'     => $errors,
-            ]);
-
-            $this->profile('Response validation (failed)', $t_validate);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (validation failed)');
-            return;
-        }
-
-        if (!isset($result['data']) || !is_array($result['data'])) {
-            $this->log('ERROR: response missing data object.');
-            $this->profile('Response validation (missing data)', $t_validate);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (missing data)');
-            return;
-        }
-
-        $data = $result['data'];
-
-        if (isset($data['nextUpdate'])) {
-            update_option('fflhub_lipseys_pricing_quantity_next_update', (string) $data['nextUpdate']);
-        }
-
-        if (!isset($data['items']) || !is_array($data['items'])) {
-            $this->log('ERROR: data.items missing or not array.');
-            $this->profile('Response validation (items missing)', $t_validate);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (items missing)');
-            return;
-        }
-
-        $items       = $data['items'];
-        $items_count = count($items);
-
-        if (empty($items)) {
-            $this->log('ERROR: data.items is empty.');
-            $this->profile('Response validation (empty items)', $t_validate);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (empty items)');
-            return;
-        }
-
-        $mem_after_extract = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
-
-        $this->profile('Response validation + items extraction', $t_validate, [
-            'count'         => (int) $items_count,
-            'memory_kb_now' => $mem_after_extract > 0 ? (int) round($mem_after_extract / 1024) : 0,
-        ]);
-
-        $table_name = (string) $this->table->get_live_table_name();
-        if ($table_name === '') {
-            $this->log('ERROR: could not resolve live table name.');
-            $this->finalize_run($t_start, $mem_start, 'ERROR (no table)');
-            return;
-        }
-
-        // Normalize only the delta fields we actually want to update.
-        // Keyed by lipseys_item_number.
-        $t_normalize = microtime(true);
-        $rows = array();
-
-        foreach ($items as $item) {
-            if (!is_array($item)) {
-                continue;
-            }
-
+        $item_to_row = static function (array $item): ?array {
             $item_number = isset($item['itemNumber']) ? trim((string) $item['itemNumber']) : '';
             if ($item_number === '') {
-                continue;
+                return null;
             }
 
-            $quantity     = $this->to_int_or_null($item, 'quantity');
-            $allocated    = (bool) $this->to_bool_flag($item, 'allocated');
-            $currentPrice = $this->to_decimal_or_null($item, 'currentPrice');
-            $retailMap    = $this->to_decimal_or_null($item, 'retailMap');
+            $qty = isset($item['quantity']) && is_numeric($item['quantity']) ? (int) $item['quantity'] : 0;
 
-            $rows[$item_number] = array(
-                // Keep your existing data typing conventions (strings in table)
-                'inventory_quantity' => $quantity !== null ? (string) $quantity : '0',
-                'allocation_status'  => $allocated ? 'Y' : '',
-                'distributor_price'  => $currentPrice !== null ? (string) $currentPrice : '',
-                'retail_map'         => $retailMap !== null ? (string) $retailMap : '',
-            );
-        }
+            $allocated = false;
+            if (isset($item['allocated'])) {
+                $v = $item['allocated'];
+                if (is_bool($v)) {
+                    $allocated = $v;
+                } elseif (is_numeric($v)) {
+                    $allocated = ((int) $v) !== 0;
+                } else {
+                    $allocated = in_array(strtolower(trim((string) $v)), ['1', 'true', 'yes', 'y'], true);
+                }
+            }
 
-        $this->profile('Normalize items → delta rows', $t_normalize, [
-            'input_items'      => (int) $items_count,
-            'normalized_rows'  => (int) count($rows),
-        ]);
+            $current_price = (isset($item['currentPrice']) && is_numeric($item['currentPrice']))
+                ? (string) $item['currentPrice']
+                : '';
 
-        if (empty($rows)) {
-            $this->log('ERROR: no usable items after normalization.', [
-                'input_items' => (int) $items_count,
-            ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (no normalized rows)');
-            return;
-        }
+            $retail_map = (isset($item['retailMap']) && is_numeric($item['retailMap']))
+                ? (string) $item['retailMap']
+                : '';
 
-        // Transaction via table helper.
-        $t_updates = microtime(true);
-
-        $this->table->begin_transaction();
-
-        $rows_changed_total = 0;
-        $rows_matched_total = 0;
-
-        // Batch timing aggregation (keeps logs tight).
-        $batch_count = 0;
-        $batch_ms_total = 0.0;
-        $batch_ms_max = 0.0;
+            return [
+                'lipseys_item_number' => $item_number,
+                'inventory_quantity'  => (string) $qty,                 // keep varchar convention
+                'allocation_status'   => $allocated ? 'Y' : '',
+                'distributor_price'   => $current_price,
+                'retail_map'          => $retail_map,
+            ];
+        };
 
         try {
-            $batch_size = 200;
-            $batches    = array_chunk($rows, $batch_size, true);
-
-            foreach ($batches as $batch_index => $batch) {
-                if (empty($batch)) {
-                    continue;
-                }
-
-                $batch_count++;
-                $t_batch = microtime(true);
-
-                // Matched rows (truth), vs changed rows (wpdb/query result).
-                $item_numbers = array_keys($batch);
-                $matched_rows = $this->count_lipseys_matched_rows($table_name, $item_numbers);
-                $rows_matched_total += $matched_rows;
-
-                $sql = $this->build_lipseys_case_update_sql($table_name, $batch);
-                if ($sql === '') {
-                    $this->log('Batch skipped (empty SQL)', [
-                        'batch'        => (int) ($batch_index + 1),
-                        'batch_items'  => (int) count($batch),
-                        'matched_rows' => (int) $matched_rows,
-                    ]);
-                    continue;
-                }
-
-                $q = $wpdb->query($sql);
-
-                if ($q === false) {
-                    $this->log('SQL ERROR during batch', [
-                        'batch'       => (int) ($batch_index + 1),
-                        'batch_items' => (int) count($batch),
-                        'matched_rows'=> (int) $matched_rows,
-                        'last_error'  => (string) $wpdb->last_error,
-                    ]);
-                    continue;
-                }
-
-                // Note: wpdb->query() returns "changed rows" (not "matched rows").
-                $changed_rows = (int) $q;
-                $rows_changed_total += $changed_rows;
-
-                $batch_ms = (microtime(true) - $t_batch) * 1000.0;
-                $batch_ms_total += $batch_ms;
-                if ($batch_ms > $batch_ms_max) {
-                    $batch_ms_max = $batch_ms;
-                }
-
-                // Keep per-batch logging concise (still useful when this job is the thing you're diagnosing).
-                $this->log('Batch updated', [
-                    'batch'        => (int) ($batch_index + 1),
-                    'batch_items'  => (int) count($batch),
-                    'matched_rows' => (int) $matched_rows,
-                    'changed_rows' => (int) $changed_rows,
-                    'elapsed_ms'   => number_format($batch_ms, 2, '.', ''),
-                ]);
-            }
-
-            $this->table->commit_transaction();
+            $stream_stats = $client->PricingAndQuantityToTsv($tsv_path, $columns, $item_to_row);
         } catch (\Throwable $e) {
-            $this->table->rollback_transaction();
-
-            $this->log('ERROR: exception during batched updates (rolled back transaction)', [
+            $this->log('ERROR: exception streaming PricingAndQuantityToTsv()', [
                 'error' => $e->getMessage(),
             ]);
-
-            $this->profile('Batched DB updates (failed)', $t_updates, [
-                'items'               => (int) $items_count,
-                'normalized_rows'     => (int) count($rows),
-                'matched_rows_total'  => (int) $rows_matched_total,
-                'changed_rows_total'  => (int) $rows_changed_total,
-                'batches_seen'        => (int) $batch_count,
-            ]);
-
-            $this->finalize_run($t_start, $mem_start, 'ERROR (update loop exception)');
+            $this->profile('PricingAndQuantityToTsv() (failed)', $t_stream);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (stream exception)');
             return;
         }
 
-        $updates_ms     = (microtime(true) - $t_updates) * 1000.0;
-        $items_per_sec  = $updates_ms > 0 ? ($items_count / ($updates_ms / 1000.0)) : 0.0;
-        $avg_batch_ms   = $batch_count > 0 ? ($batch_ms_total / $batch_count) : 0.0;
-
-        $this->profile('Batched DB updates', $t_updates, [
-            'table'              => (string) $table_name,
-            'items'              => (int) $items_count,
-            'normalized_rows'    => (int) count($rows),
-            'batch_size'         => 200,
-            'batches'            => (int) $batch_count,
-            'avg_batch_ms'       => number_format($avg_batch_ms, 2, '.', ''),
-            'max_batch_ms'       => number_format($batch_ms_max, 2, '.', ''),
-            'matched_rows_total' => (int) $rows_matched_total,
-            'changed_rows_total' => (int) $rows_changed_total,
-            'items_per_sec'      => number_format($items_per_sec, 0, '.', ''),
+        $this->profile('PricingAndQuantityToTsv()', $t_stream, is_array($stream_stats) ? $stream_stats : [
+            'result_type' => is_object($stream_stats) ? get_class($stream_stats) : gettype($stream_stats),
         ]);
+
+        if (!is_array($stream_stats) || empty($stream_stats['success'])) {
+            $this->log('ERROR: PricingAndQuantityToTsv() did not succeed.', [
+                'authorized' => is_array($stream_stats) && isset($stream_stats['authorized']) ? (int) ((bool) $stream_stats['authorized']) : null,
+                'errors'     => is_array($stream_stats) && isset($stream_stats['errors']) ? $stream_stats['errors'] : null,
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (stream failed)');
+            return;
+        }
+
+        $rows_written = isset($stream_stats['rows_written']) ? (int) $stream_stats['rows_written'] : 0;
+
+        if ($rows_written <= 0) {
+            $this->log('WARNING: streaming produced 0 rows (not swapping)', [
+                'items_seen'    => isset($stream_stats['items_seen']) ? (int) $stream_stats['items_seen'] : 0,
+                'items_skipped' => isset($stream_stats['items_skipped']) ? (int) $stream_stats['items_skipped'] : 0,
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'NO APPLY (0 rows)', [
+                'rows_written' => (int) $rows_written,
+            ]);
+            return;
+        }
+
+        // 5) Apply updates: TSV -> staging -> JOIN update live table
+        $t_apply = microtime(true);
+
+        try {
+            $apply_stats = $this->apply_pricing_quantity_updates_via_load_data_profiled(
+                $tsv_path,
+                $live_table
+            );
+        } catch (\Throwable $e) {
+            $this->log('ERROR: exception applying pricing/quantity updates', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->profile('Apply pricing/quantity updates (failed)', $t_apply);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (apply failed)');
+            return;
+        }
+
+        $this->profile('Apply pricing/quantity updates', $t_apply, $apply_stats);
+
+        $processed_rows = (int) ($apply_stats['rows_loaded'] ?? 0);
 
         update_option('fflhub_lipseys_pricing_quantity_last_sync', current_time('mysql'));
-
-        // Keep existing meaning for the stored count: "changed rows" total.
-        update_option('fflhub_lipseys_pricing_quantity_last_sync_count', (int) $rows_changed_total);
-
-        // Optional extra visibility: matched rows total.
-        update_option('fflhub_lipseys_pricing_quantity_last_sync_matched_count', (int) $rows_matched_total);
+        update_option('fflhub_lipseys_pricing_quantity_last_sync_count', (int) ($apply_stats['join_updated'] ?? 0));
+        update_option('fflhub_lipseys_pricing_quantity_last_sync_matched_count', (int) ($apply_stats['join_matched'] ?? 0));
 
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
-            'items'              => (int) $items_count,
-            'normalized_rows'    => (int) count($rows),
-            'matched_rows_total' => (int) $rows_matched_total,
-            'changed_rows_total' => (int) $rows_changed_total,
-            'batches'            => (int) $batch_count,
+            'tsv_rows'        => (int) $rows_written,
+            'rows_loaded'     => (int) $processed_rows,
+            'join_matched'    => (int) ($apply_stats['join_matched'] ?? 0),
+            'would_change'    => (int) ($apply_stats['would_change'] ?? 0),
+            'join_updated'    => (int) ($apply_stats['join_updated'] ?? 0),
         ]);
     }
 
     /**
-     * Build a batched CASE-based UPDATE for Lipsey's live fulfillment table.
+     * Bulk-load TSV into a staging table via LOAD DATA LOCAL INFILE,
+     * then join-update the LIVE table for the 4 fields:
+     *  - inventory_quantity
+     *  - allocation_status
+     *  - distributor_price
+     *  - retail_map
      *
-     * @param string $table_name
-     * @param array<string,array<string,string>> $batch Keyed by lipseys_item_number
-     * @return string SQL (empty string if batch empty)
-     */
-    private function build_lipseys_case_update_sql(string $table_name, array $batch): string
-    {
-        if (empty($batch)) {
-            return '';
-        }
-
-        $ids = array();
-
-        $case_inventory_qty = '';
-        $case_alloc_status  = '';
-        $case_dist_price    = '';
-        $case_retail_map    = '';
-
-        foreach ($batch as $item_number => $vals) {
-            $raw_id = trim((string) $item_number);
-            if ($raw_id === '') {
-                continue;
-            }
-
-            // Escape only at SQL build time.
-            $id = esc_sql($raw_id);
-            $ids[] = "'" . $id . "'";
-
-            $case_inventory_qty .= " WHEN '{$id}' THEN '" . esc_sql((string) $vals['inventory_quantity']) . "'";
-            $case_alloc_status  .= " WHEN '{$id}' THEN '" . esc_sql((string) $vals['allocation_status']) . "'";
-            $case_dist_price    .= " WHEN '{$id}' THEN '" . esc_sql((string) $vals['distributor_price']) . "'";
-            $case_retail_map    .= " WHEN '{$id}' THEN '" . esc_sql((string) $vals['retail_map']) . "'";
-        }
-
-        if (empty($ids)) {
-            return '';
-        }
-
-        return "
-        UPDATE {$table_name}
-        SET
-            inventory_quantity = CASE lipseys_item_number {$case_inventory_qty} ELSE inventory_quantity END,
-            allocation_status  = CASE lipseys_item_number {$case_alloc_status}  ELSE allocation_status END,
-            distributor_price  = CASE lipseys_item_number {$case_dist_price}    ELSE distributor_price END,
-            retail_map         = CASE lipseys_item_number {$case_retail_map}    ELSE retail_map END
-        WHERE lipseys_item_number IN (" . implode(',', $ids) . ")
-    ";
-    }
-
-    /**
-     * Count how many rows in the LIVE table match the given lipseys_item_number list.
-     * This is "matched rows" (truth), separate from "changed rows" returned by UPDATE.
+     * Mirrors RSR instrumentation:
+     * - join_matched: number of live rows matched by staging
+     * - would_change: matched rows where any of the 4 values differs
      *
-     * @param string            $table_name
-     * @param array<int,string> $ids Raw (unescaped) item numbers
+     * @return array<string,mixed>
      */
-    private function count_lipseys_matched_rows(string $table_name, array $ids): int
+    private function apply_pricing_quantity_updates_via_load_data_profiled(string $tsv_path, string $live_table): array
     {
         global $wpdb;
 
-        if (empty($ids)) {
-            return 0;
+        $t_start = microtime(true);
+
+        if (!file_exists($tsv_path) || !is_readable($tsv_path)) {
+            $this->log('ERROR: TSV missing or unreadable', [
+                'tsv_path' => (string) $tsv_path,
+            ]);
+            return [
+                'rows_loaded'  => 0,
+                'join_matched' => 0,
+                'would_change' => 0,
+                'join_updated' => 0,
+                'create_ms'    => '0.00',
+                'load_ms'      => '0.00',
+                'stats_ms'     => '0.00',
+                'join_ms'      => '0.00',
+                'drop_ms'      => '0.00',
+                'total_ms'     => '0.00',
+            ];
         }
 
-        // Trim + drop empties.
-        $clean = array();
-        foreach ($ids as $id) {
-            $v = trim((string) $id);
-            if ($v !== '') {
-                $clean[] = $v;
-            }
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
         }
 
-        if (empty($clean)) {
-            return 0;
+        // No header row written by the streamer.
+        $ignore_lines = 0;
+
+        $pid    = function_exists('getmypid') ? (int) getmypid() : 0;
+        $suffix = $pid > 0 ? (string) $pid : (string) wp_rand(1000, 9999);
+
+        $stage_table = $wpdb->prefix . 'fflhub_lipseys_pq_stage_' . $suffix;
+
+        // Escape file path for SQL string literal
+        $infile_path_sql = str_replace('\\', '\\\\', $tsv_path);
+        $infile_path_sql = str_replace("'", "\\'", $infile_path_sql);
+
+        // Capabilities check (same pattern as RSR)
+        $t_check = microtime(true);
+        $mysql_ok = $this->mysql_local_infile_enabled();
+        $php_ok   = $this->php_local_infile_enabled();
+
+        DebugLogUtil::log_ctx(self::DEBUG_FLAG, '[FFLHub][Lipseys Import][DEBUG]', 'LOAD DATA check', [
+            'mysql_ok'   => $mysql_ok ? 'true' : 'false',
+            'php_ok'     => $php_ok ? 'true' : 'false',
+            'result'     => ($mysql_ok && $php_ok) ? 'true' : 'false',
+            'elapsed_ms' => number_format((microtime(true) - $t_check) * 1000.0, 2, '.', ''),
+        ]);
+
+        // -----------------------
+        // Create staging table
+        // -----------------------
+        $t_create = microtime(true);
+
+        $wpdb->query("DROP TABLE IF EXISTS {$stage_table}");
+
+        $charset = $wpdb->get_charset_collate();
+
+        // Minimal definitions to make JOIN fast + simple.
+        // Types align with LIVE schema (all varchar).
+        $create_sql = "
+            CREATE TABLE {$stage_table} (
+                lipseys_item_number VARCHAR(64) NOT NULL,
+                inventory_quantity  VARCHAR(32) NULL,
+                allocation_status   VARCHAR(64) NULL,
+                distributor_price   VARCHAR(32) NULL,
+                retail_map          VARCHAR(32) NULL,
+                PRIMARY KEY (lipseys_item_number)
+            ) {$charset};
+        ";
+
+        $created = $wpdb->query($create_sql);
+        if ($created === false) {
+            throw new \RuntimeException('Failed to create staging table: ' . (string) $wpdb->last_error);
         }
 
-        $placeholders = implode(',', array_fill(0, count($clean), '%s'));
-        $sql          = "SELECT COUNT(*) FROM {$table_name} WHERE lipseys_item_number IN ($placeholders)";
+        $create_ms = (microtime(true) - $t_create) * 1000.0;
 
-        return (int) $wpdb->get_var($wpdb->prepare($sql, $clean));
+        // -----------------------
+        // LOAD DATA LOCAL INFILE
+        // -----------------------
+        $t_load = microtime(true);
+
+        $load_sql = "
+            LOAD DATA LOCAL INFILE '{$infile_path_sql}'
+            INTO TABLE {$stage_table}
+            FIELDS TERMINATED BY '\t'
+            LINES TERMINATED BY '\n'
+            " . ($ignore_lines > 0 ? "IGNORE {$ignore_lines} LINES" : "") . "
+            (lipseys_item_number, inventory_quantity, allocation_status, distributor_price, retail_map)
+        ";
+
+        $loaded = $wpdb->query($load_sql);
+        if ($loaded === false) {
+            $wpdb->query("DROP TABLE IF EXISTS {$stage_table}");
+            throw new \RuntimeException('LOAD DATA LOCAL INFILE failed: ' . (string) $wpdb->last_error);
+        }
+
+        // Handle CRLF / trailing CR (Windows line endings)
+        $wpdb->query("UPDATE {$stage_table} SET lipseys_item_number = TRIM(TRAILING '\r' FROM lipseys_item_number)");
+        $wpdb->query("UPDATE {$stage_table} SET inventory_quantity = TRIM(TRAILING '\r' FROM inventory_quantity)");
+        $wpdb->query("UPDATE {$stage_table} SET allocation_status  = TRIM(TRAILING '\r' FROM allocation_status)");
+        $wpdb->query("UPDATE {$stage_table} SET distributor_price  = TRIM(TRAILING '\r' FROM distributor_price)");
+        $wpdb->query("UPDATE {$stage_table} SET retail_map         = TRIM(TRAILING '\r' FROM retail_map)");
+
+        $load_ms = (microtime(true) - $t_load) * 1000.0;
+
+        // Row count loaded (truth)
+        $rows_loaded = 0;
+        $count_row = $wpdb->get_row("SELECT COUNT(*) AS c FROM {$stage_table}", ARRAY_A);
+        if (is_array($count_row) && isset($count_row['c'])) {
+            $rows_loaded = (int) $count_row['c'];
+        }
+
+        // -----------------------
+        // Pre-join stats
+        // -----------------------
+        $t_stats = microtime(true);
+
+        // How many staging rows match a live row?
+        $join_matched = (int) $wpdb->get_var("
+            SELECT COUNT(*)
+            FROM {$stage_table} S
+            INNER JOIN {$live_table} L
+                ON L.lipseys_item_number = S.lipseys_item_number
+        ");
+
+        // How many matched rows would actually change any of the 4 fields?
+        // Use COALESCE to treat NULL as '' so comparisons behave.
+        $would_change = (int) $wpdb->get_var("
+            SELECT COUNT(*)
+            FROM {$stage_table} S
+            INNER JOIN {$live_table} L
+                ON L.lipseys_item_number = S.lipseys_item_number
+            WHERE
+                COALESCE(L.inventory_quantity,'') <> COALESCE(S.inventory_quantity,'')
+                OR COALESCE(L.allocation_status,'') <> COALESCE(S.allocation_status,'')
+                OR COALESCE(L.distributor_price,'') <> COALESCE(S.distributor_price,'')
+                OR COALESCE(L.retail_map,'') <> COALESCE(S.retail_map,'')
+        ");
+
+        $stats_ms = (microtime(true) - $t_stats) * 1000.0;
+
+        // -----------------------
+        // JOIN update live table
+        // -----------------------
+        $t_join = microtime(true);
+
+        $join_sql = "
+            UPDATE {$live_table} L
+            INNER JOIN {$stage_table} S
+                ON S.lipseys_item_number = L.lipseys_item_number
+            SET
+                L.inventory_quantity = S.inventory_quantity,
+                L.allocation_status  = S.allocation_status,
+                L.distributor_price  = S.distributor_price,
+                L.retail_map         = S.retail_map
+        ";
+
+        $join_updated = $wpdb->query($join_sql);
+        if ($join_updated === false) {
+            $wpdb->query("DROP TABLE IF EXISTS {$stage_table}");
+            throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
+        }
+
+        $join_ms = (microtime(true) - $t_join) * 1000.0;
+
+        // -----------------------
+        // Drop staging table
+        // -----------------------
+        $t_drop = microtime(true);
+        $wpdb->query("DROP TABLE IF EXISTS {$stage_table}");
+        $drop_ms = (microtime(true) - $t_drop) * 1000.0;
+
+        $total_ms = (microtime(true) - $t_start) * 1000.0;
+
+        $stats = [
+            'rows_loaded'  => (int) $rows_loaded,
+            'join_matched' => (int) $join_matched,
+            'would_change' => (int) $would_change,
+            'join_updated' => (int) $join_updated,
+            'stage_table'  => (string) $stage_table,
+            'ignore_lines' => (int) $ignore_lines,
+            'create_ms'    => number_format($create_ms, 2, '.', ''),
+            'load_ms'      => number_format($load_ms, 2, '.', ''),
+            'stats_ms'     => number_format($stats_ms, 2, '.', ''),
+            'join_ms'      => number_format($join_ms, 2, '.', ''),
+            'drop_ms'      => number_format($drop_ms, 2, '.', ''),
+            'total_ms'     => number_format($total_ms, 2, '.', ''),
+        ];
+
+        DebugLogUtil::log_ctx(
+            self::DEBUG_FLAG,
+            self::LOG_PREFIX,
+            'PROFILE: apply_pricing_quantity_updates_via_load_data() breakdown',
+            $stats
+        );
+
+        return $stats;
     }
 
-    private function to_int_or_null(array $item, string $key): ?int
+    /**
+     * MySQL server variable local_infile must be ON.
+     */
+    private function mysql_local_infile_enabled(): bool
     {
-        if (!isset($item[$key])) {
-            return null;
+        global $wpdb;
+        $row = $wpdb->get_row("SHOW VARIABLES LIKE 'local_infile'", ARRAY_A);
+        if (!is_array($row)) {
+            return false;
         }
-        $val = $item[$key];
-        return is_numeric($val) ? (int) $val : null;
+        $val = strtolower((string) ($row['Value'] ?? $row['value'] ?? ''));
+        return $val === 'on' || $val === '1' || $val === 'true';
     }
 
-    private function to_decimal_or_null(array $item, string $key): ?float
+    /**
+     * PHP must allow local infile for mysqli/pdo_mysql.
+     */
+    private function php_local_infile_enabled(): bool
     {
-        if (!isset($item[$key])) {
-            return null;
-        }
-        $val = $item[$key];
-        return is_numeric($val) ? (float) $val : null;
+        $mysqli = ini_get('mysqli.allow_local_infile');
+        $pdo    = ini_get('pdo_mysql.allow_local_infile');
+
+        $ok_mysqli = ($mysqli !== false) ? $this->ini_truthy((string) $mysqli) : false;
+        $ok_pdo    = ($pdo !== false) ? $this->ini_truthy((string) $pdo) : false;
+
+        return ($ok_mysqli || $ok_pdo);
     }
 
-    private function to_bool_flag(array $item, string $key): int
+    private function ini_truthy(string $v): bool
     {
-        if (!isset($item[$key])) {
-            return 0;
-        }
-
-        $val = $item[$key];
-
-        if (is_bool($val)) {
-            return $val ? 1 : 0;
-        }
-
-        if (is_numeric($val)) {
-            return ((int) $val) ? 1 : 0;
-        }
-
-        $str = strtolower(trim((string) $val));
-        if (in_array($str, array('1', 'true', 'yes', 'y'), true)) {
-            return 1;
-        }
-
-        return 0;
+        $v = strtolower(trim($v));
+        return in_array($v, ['1', 'on', 'true', 'yes'], true);
     }
 
     // --------------------------------------------------
@@ -528,7 +536,6 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         $elapsed_ms = (microtime(true) - $t0) * 1000.0;
 
         $ctx = array_merge($ctx, [
-            // string avoids float-repr noise like 0.28999999998
             'elapsed_ms' => number_format($elapsed_ms, 2, '.', ''),
         ]);
 

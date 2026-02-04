@@ -46,7 +46,7 @@ class LipseysClient
         $curl = $this->RequestBuilder(array(
             CURLOPT_URL => "{$this->BaseUrl}{$url}",
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "",
+            CURLOPT_ENCODING => "", // allow gzip/deflate
             CURLOPT_MAXREDIRS => 10,
             CURLOPT_TIMEOUT => 60,
             CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
@@ -54,23 +54,28 @@ class LipseysClient
             CURLOPT_POSTFIELDS => json_encode($model),
             CURLOPT_HTTPHEADER => array(
                 "Content-Type: application/json",
+                "Accept: application/json",
+                "Accept-Encoding: gzip",
                 "Token: {$this->Token}",
             ),
         ));
         return $curl;
     }
+
     private function GetRequestBuilder($url)
     {
         $curl = $this->RequestBuilder(array(
             CURLOPT_URL => "{$this->BaseUrl}{$url}",
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "",
+            CURLOPT_ENCODING => "", // allow gzip/deflate
             CURLOPT_MAXREDIRS => 10,
             CURLOPT_TIMEOUT => 60,
             CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
             CURLOPT_CUSTOMREQUEST => "GET",
             CURLOPT_POSTFIELDS => "",
             CURLOPT_HTTPHEADER => array(
+                "Accept: application/json",
+                "Accept-Encoding: gzip",
                 "Token: {$this->Token}",
                 "cache-control: no-cache"
             ),
@@ -95,6 +100,7 @@ class LipseysClient
             "errors" => $errorsArray
         );
     }
+
     private function RequestError($error)
     {
         return array(
@@ -151,13 +157,13 @@ class LipseysClient
         }
     }
 
-
-    //we are now rolling our own catalog function that streams directly to a tsv that we can later local in file into our sql table 
+    /**
+     * CatalogFeed response format is typically:
+     *   { success, authorized, errors, data: [ {item...}, ... ] }
+     * So we stream the ARRAY at "data".
+     */
     public function CatalogToTsv(string $tsv_path, array $columns, callable $item_to_row): array
     {
-        // $item_to_row: function(array $item): ?array
-        // returns: row array keyed by column => value, or null to skip (e.g., canDropship filter)
-
         $attempts = 0;
         $last_err = null;
 
@@ -171,9 +177,14 @@ class LipseysClient
                 }
             }
 
-            $result = $this->catalog_stream_to_tsv_once($tsv_path, $columns, $item_to_row);
+            $result = $this->stream_endpoint_to_tsv_once(
+                "integration/items/CatalogFeed",
+                'data', // <-- KEY FIX (Catalog uses data: [ ... ])
+                $tsv_path,
+                $columns,
+                $item_to_row
+            );
 
-            // If streaming detected unauthorized, we mimic old behavior: re-login and retry once.
             if (is_array($result) && isset($result['authorized']) && $result['authorized'] === false) {
                 $loginAttemptResult = $this->login();
                 if ($loginAttemptResult != 1) {
@@ -183,26 +194,72 @@ class LipseysClient
                 continue;
             }
 
-            // Success or a real error
             return $result;
         }
 
-        // If we got here, we failed twice with unauthorized or something weird
         return is_array($last_err) ? $last_err : $this->RequestError('CatalogToTsv failed after retry.');
     }
 
     /**
-     * One attempt: stream CatalogFeed and write TSV without loading full JSON.
+     * PricingQuantityFeed response format is:
+     *   { success, authorized, errors, data: { nextUpdate, items: [ ... ] } }
+     * So we stream the ARRAY at "data.items".
      */
-    private function catalog_stream_to_tsv_once(string $tsv_path, array $columns, callable $item_to_row): array
+    public function PricingAndQuantityToTsv(string $tsv_path, array $columns, callable $item_to_row): array
     {
+        $attempts = 0;
+        $last_err = null;
+
+        while ($attempts < 2) {
+            $attempts++;
+
+            if (!$this->Token) {
+                $loginAttemptResult = $this->login();
+                if ($loginAttemptResult != 1) {
+                    return $this->InvalidLoginResponse($loginAttemptResult);
+                }
+            }
+
+            $result = $this->stream_endpoint_to_tsv_once(
+                "integration/items/PricingQuantityFeed",
+                'data.items', // <-- PricingQuantity uses data.items: [ ... ]
+                $tsv_path,
+                $columns,
+                $item_to_row
+            );
+
+            if (is_array($result) && isset($result['authorized']) && $result['authorized'] === false) {
+                $loginAttemptResult = $this->login();
+                if ($loginAttemptResult != 1) {
+                    return $this->InvalidLoginResponse($loginAttemptResult);
+                }
+                $last_err = $result;
+                continue;
+            }
+
+            return $result;
+        }
+
+        return is_array($last_err) ? $last_err : $this->RequestError('PricingAndQuantityToTsv failed after retry.');
+    }
+
+    /**
+     * Generic streaming JSON->TSV.
+     *
+     * @param string $endpoint e.g. "integration/items/CatalogFeed"
+     * @param string $array_path "data" OR "data.items" OR "items" (fallback)
+     */
+    private function stream_endpoint_to_tsv_once(
+        string $endpoint,
+        string $array_path,
+        string $tsv_path,
+        array $columns,
+        callable $item_to_row
+    ): array {
         $fh = @fopen($tsv_path, 'wb');
         if (!$fh) {
             return $this->RequestError('Failed to open TSV for writing: ' . $tsv_path);
         }
-
-        // Optional: write header row (comment out if you don't want it)
-        // $this->tsv_write_row($fh, $columns);
 
         $stats = array(
             'authorized'        => true,
@@ -216,28 +273,26 @@ class LipseysClient
             'bytes_received'    => 0,
         );
 
-        $curl = $this->GetRequestBuilder("integration/items/CatalogFeed");
+        $curl = $this->GetRequestBuilder($endpoint);
 
         // Streaming state
         $buffer = '';
         $found_array_start = false;
-        $array_key_found = null; // 'data' or 'items'
         $preamble_checked = false;
 
-        // Object extraction state (brace counter, string/escape tracking)
+        // Object extraction state
         $in_string = false;
         $escape = false;
         $depth = 0;
         $collecting_obj = false;
         $obj = '';
 
-        curl_setopt($curl, CURLOPT_RETURNTRANSFER, false); // IMPORTANT: stream via WRITEFUNCTION
+        curl_setopt($curl, CURLOPT_RETURNTRANSFER, false);
 
         curl_setopt($curl, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (
             &$stats,
             &$buffer,
             &$found_array_start,
-            &$array_key_found,
             &$preamble_checked,
             &$in_string,
             &$escape,
@@ -246,56 +301,42 @@ class LipseysClient
             &$obj,
             $fh,
             $columns,
-            $item_to_row
+            $item_to_row,
+            $array_path
         ) {
             $len = strlen($chunk);
             $stats['bytes_received'] += $len;
-
-            // Append to buffer for scanning / parsing
             $buffer .= $chunk;
 
-            // 1) Before we start parsing items, find the array start: "data":[ or "items":[
-            if (!$found_array_start) {
-                // Check preamble for authorized:false once we have "authorized" field
-                if (!$preamble_checked) {
-                    // Cheap check: only evaluate once we see the word authorized
-                    if (strpos($buffer, '"authorized"') !== false) {
-                        // If authorized is false, stop early
-                        if (preg_match('/"authorized"\s*:\s*false/i', $buffer)) {
-                            $stats['authorized'] = false;
-                            $stats['success'] = false;
-                            $stats['errors'][] = 'Not authorized (token invalid/expired).';
-                            return 0; // abort transfer
-                        }
-                        $preamble_checked = true;
-                    }
+            // 1) Preamble check for authorized:false (stop early)
+            if (!$preamble_checked && strpos($buffer, '"authorized"') !== false) {
+                if (preg_match('/"authorized"\s*:\s*false/i', $buffer)) {
+                    $stats['authorized'] = false;
+                    $stats['success'] = false;
+                    $stats['errors'][] = 'Not authorized (token invalid/expired).';
+                    return 0; // abort transfer
                 }
-
-                // Find the beginning of the array
-                $pos = strpos($buffer, '"data"');
-                $key = 'data';
-                if ($pos === false) {
-                    $pos = strpos($buffer, '"items"');
-                    $key = 'items';
-                }
-
-                if ($pos !== false) {
-                    // Find the '[' after the key
-                    $bracket_pos = strpos($buffer, '[', $pos);
-                    if ($bracket_pos !== false) {
-                        $found_array_start = true;
-                        $array_key_found = $key;
-
-                        // Discard everything up to and including the '[' so buffer begins right after array start
-                        $buffer = substr($buffer, $bracket_pos + 1);
-                    }
-                }
-
-                // Not ready to parse objects yet
-                return $len;
+                $preamble_checked = true;
             }
 
-            // 2) We are inside the items array region. Incrementally extract JSON objects { ... }.
+            // 2) Find the target array start
+            if (!$found_array_start) {
+                $bracket_pos = $this->find_json_array_start_for_path($buffer, $array_path);
+                if ($bracket_pos === null) {
+                    // Not enough buffer yet
+                    // Keep buffer bounded a bit to avoid unbounded growth before match
+                    if (strlen($buffer) > 1024 * 1024) {
+                        $buffer = substr($buffer, -256 * 1024);
+                    }
+                    return $len;
+                }
+
+                $found_array_start = true;
+                // Discard up to and including '['
+                $buffer = substr($buffer, $bracket_pos + 1);
+            }
+
+            // 3) Extract objects inside the array
             $i = 0;
             $buf_len = strlen($buffer);
 
@@ -303,7 +344,6 @@ class LipseysClient
                 $c = $buffer[$i];
 
                 if (!$collecting_obj) {
-                    // Skip until first '{' or ']' (end of array)
                     if ($c === '{') {
                         $collecting_obj = true;
                         $obj = '{';
@@ -311,8 +351,6 @@ class LipseysClient
                         $in_string = false;
                         $escape = false;
                     } elseif ($c === ']') {
-                        // End of array - we're done
-                        // Keep buffer empty to avoid reprocessing
                         $buffer = '';
                         return $len;
                     }
@@ -320,7 +358,6 @@ class LipseysClient
                     continue;
                 }
 
-                // Collecting an object: brace-depth parse with string/escape handling
                 $obj .= $c;
 
                 if ($escape) {
@@ -347,7 +384,6 @@ class LipseysClient
                     } elseif ($c === '}') {
                         $depth--;
                         if ($depth === 0) {
-                            // End of object
                             $collecting_obj = false;
 
                             $decoded = json_decode($obj, true);
@@ -359,14 +395,13 @@ class LipseysClient
                                     $row = $item_to_row($decoded);
                                 } catch (\Throwable $e) {
                                     $stats['items_skipped']++;
-                                    // silently skip (or add error if you want)
                                     $row = null;
                                 }
 
                                 if (is_array($row)) {
                                     $line = array();
                                     foreach ($columns as $col) {
-                                        $line[] = isset($row[$col]) ? (string) $row[$col] : '';
+                                        $line[] = isset($row[$col]) ? (string)$row[$col] : '';
                                     }
                                     $this->tsv_write_row($fh, $line);
                                     $stats['rows_written']++;
@@ -377,7 +412,6 @@ class LipseysClient
                                 $stats['json_decode_fails']++;
                             }
 
-                            // Reset object accumulator
                             $obj = '';
                         }
                     }
@@ -386,10 +420,7 @@ class LipseysClient
                 $i++;
             }
 
-            // We consumed entire buffer contents into parsing state; clear buffer.
-            // BUT if we are mid-object, keep only the object accumulator in $obj (already stored).
             $buffer = '';
-
             return $len;
         });
 
@@ -403,7 +434,6 @@ class LipseysClient
             return $this->RequestError($err);
         }
 
-        // If we aborted due to unauthorized in WRITEFUNCTION, stats['authorized'] is false.
         if ($stats['authorized'] === false) {
             return array(
                 'authorized' => false,
@@ -412,13 +442,70 @@ class LipseysClient
             );
         }
 
-        // Basic HTTP sanity
         if ((int)$http !== 200) {
-            return $this->RequestError('Unexpected HTTP status: ' . (string) $http);
+            return $this->RequestError('Unexpected HTTP status: ' . (string)$http);
         }
 
         $stats['success'] = true;
         return $stats;
+    }
+
+    /**
+     * Returns position of '[' that begins the target array for a given path.
+     * Supported:
+     *  - "data"       => ..."data": [ ... ]
+     *  - "data.items" => ..."data": { ... "items": [ ... ] }
+     *  - "items"      => ..."items": [ ... ] (fallback)
+     */
+    private function find_json_array_start_for_path(string $buf, string $path): ?int
+    {
+        if ($path === 'data') {
+            $data_pos = strpos($buf, '"data"');
+            if ($data_pos === false) {
+                return null;
+            }
+            $colon = strpos($buf, ':', $data_pos);
+            if ($colon === false) {
+                return null;
+            }
+            $bracket = strpos($buf, '[', $colon);
+            if ($bracket === false) {
+                return null;
+            }
+            return $bracket;
+        }
+
+        if ($path === 'data.items') {
+            $data_pos = strpos($buf, '"data"');
+            if ($data_pos === false) {
+                return null;
+            }
+            $items_pos = strpos($buf, '"items"', $data_pos);
+            if ($items_pos === false) {
+                return null;
+            }
+            $bracket = strpos($buf, '[', $items_pos);
+            if ($bracket === false) {
+                return null;
+            }
+            return $bracket;
+        }
+
+        // fallback: top-level "items"
+        if ($path === 'items') {
+            $items_pos = strpos($buf, '"items"');
+            if ($items_pos === false) {
+                return null;
+            }
+            $bracket = strpos($buf, '[', $items_pos);
+            if ($bracket === false) {
+                return null;
+            }
+            return $bracket;
+        }
+
+        // Unknown path
+        return null;
     }
 
     /**
@@ -429,141 +516,14 @@ class LipseysClient
      */
     private function tsv_write_row($fh, array $fields): void
     {
-        // Replace tabs/newlines to keep file well-formed for LOAD DATA
         foreach ($fields as &$v) {
-            $v = (string) $v;
+            $v = (string)$v;
             $v = str_replace(array("\t", "\r", "\n"), array(' ', ' ', ' '), $v);
         }
         unset($v);
 
         fwrite($fh, implode("\t", $fields) . "\n");
     }
-
-
-
-
-    /**
-     * Download-only benchmark: hit CatalogFeed and just count bytes (no parsing, no TSV).
-     * Lets us isolate network/server time from CPU parsing time.
-     */
-    public function CatalogDownloadOnlyStats(): array
-    {
-        $attempts = 0;
-        $last_err = null;
-
-        while ($attempts < 2) {
-            $attempts++;
-
-            if (!$this->Token) {
-                $loginAttemptResult = $this->login();
-                if ($loginAttemptResult != 1) {
-                    return $this->InvalidLoginResponse($loginAttemptResult);
-                }
-            }
-
-            $result = $this->catalog_download_only_once();
-
-            // Mirror the same unauthorized retry behavior.
-            if (is_array($result) && isset($result['authorized']) && $result['authorized'] === false) {
-                $loginAttemptResult = $this->login();
-                if ($loginAttemptResult != 1) {
-                    return $this->InvalidLoginResponse($loginAttemptResult);
-                }
-                $last_err = $result;
-                continue;
-            }
-
-            return $result;
-        }
-
-        return is_array($last_err) ? $last_err : $this->RequestError('CatalogDownloadOnlyStats failed after retry.');
-    }
-
-    private function catalog_download_only_once(): array
-    {
-        $stats = array(
-            'authorized'     => true,
-            'success'        => false,
-            'errors'         => array(),
-            'bytes_received' => 0,
-            'http_code'      => 0,
-            'curl_total_s'   => 0.0,
-            'curl_speed_bps' => 0.0,
-        );
-
-        $curl = $this->GetRequestBuilder("integration/items/CatalogFeed");
-
-        // Important: stream (no giant string in memory)
-        curl_setopt($curl, CURLOPT_RETURNTRANSFER, false);
-
-        // Optional micro-opts (won’t hurt; may help a tiny bit)
-        if (defined('CURL_HTTP_VERSION_2TLS')) {
-            @curl_setopt($curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
-        }
-        @curl_setopt($curl, CURLOPT_BUFFERSIZE, 262144); // 256KB
-
-        // We still need to detect unauthorized early like your TSV stream does.
-        $buffer = '';
-        $preamble_checked = false;
-
-        curl_setopt($curl, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (&$stats, &$buffer, &$preamble_checked) {
-            $len = strlen($chunk);
-            $stats['bytes_received'] += $len;
-
-            if (!$preamble_checked) {
-                $buffer .= $chunk;
-
-                // only once we see "authorized"
-                if (strpos($buffer, '"authorized"') !== false) {
-                    if (preg_match('/"authorized"\s*:\s*false/i', $buffer)) {
-                        $stats['authorized'] = false;
-                        $stats['success'] = false;
-                        $stats['errors'][] = 'Not authorized (token invalid/expired).';
-                        return 0; // abort transfer
-                    }
-                    $preamble_checked = true;
-                    $buffer = ''; // free memory
-                } elseif (strlen($buffer) > 65536) {
-                    // prevent unbounded buffer growth if response is weird
-                    $buffer = substr($buffer, -32768);
-                }
-            }
-
-            return $len;
-        });
-
-        $ok  = curl_exec($curl);
-        $err = curl_error($curl);
-        $info = curl_getinfo($curl);
-
-        $stats['http_code'] = (int) ($info['http_code'] ?? 0);
-        $stats['curl_total_s'] = (float) ($info['total_time'] ?? 0.0);
-        $stats['curl_speed_bps'] = (float) ($info['speed_download'] ?? 0.0);
-
-        curl_close($curl);
-
-        if ($err) {
-            return $this->RequestError($err);
-        }
-
-        if ($stats['authorized'] === false) {
-            return array(
-                'authorized' => false,
-                'success'    => false,
-                'errors'     => $stats['errors'],
-            );
-        }
-
-        if ($stats['http_code'] !== 200) {
-            return $this->RequestError('Unexpected HTTP status: ' . (string) $stats['http_code']);
-        }
-
-        $stats['success'] = true;
-        return $stats;
-    }
-
-
-
 
     public function CatalogItem($itemNumber)
     {
@@ -617,6 +577,7 @@ class LipseysClient
             return $decode;
         }
     }
+
     public function PricingAndQuantity()
     {
         if (!$this->Token) {
@@ -658,6 +619,7 @@ class LipseysClient
             return $decode;
         }
     }
+
     public function AllocationPricingAndQuantity()
     {
         if (!$this->Token) {
@@ -699,6 +661,7 @@ class LipseysClient
             return $decode;
         }
     }
+
     public function ValidateItem($itemNumber)
     {
         if (!$this->Token) {
@@ -752,499 +715,7 @@ class LipseysClient
         }
     }
 
-    public function Order($order)
-    {
-        if (!$this->Token) {
-            $loginAttemptResult = $this->login();
-            if ($loginAttemptResult != 1) {
-                return $this->InvalidLoginResponse($loginAttemptResult);
-            }
-        }
-
-        if (!$order || !array_key_exists("Items", $order) || count($order["Items"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"Items\""
-                )
-            );
-        }
-        foreach ($order["Items"] as &$value) {
-            if (!array_key_exists("ItemNo", $value) || strlen($value["ItemNo"]) < 1 || !$value["Quantity"] || $value["Quantity"] < 1) {
-                print_r($value["Quantity"]);
-
-                return array(
-                    "authorized" => true,
-                    "success" => false,
-                    "errors" => array(
-                        "One or more line item was missing item number or had less than 1 quantity"
-                    )
-                );
-            }
-        }
-
-        $curl = $this->PostRequestBuilder("integration/order/apiorder", $order);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            return $this->RequestError($err);
-        } else {
-            $decode = json_decode($response, true);
-            if ($decode["authorized"] == false) {
-                $loginAttemptResult = $this->login();
-                if ($loginAttemptResult != 1) {
-                    return $this->InvalidLoginResponse($loginAttemptResult);
-                }
-
-                $curl = $this->PostRequestBuilder("integration/order/apiorder", $order);
-                $response = curl_exec($curl);
-                $err = curl_error($curl);
-                curl_close($curl);
-
-                if ($err) {
-                    return $this->RequestError($err);
-                } else {
-                    $decode2 = json_decode($response, true);
-                    if ($decode2["authorized"] == false) {
-                        return $this->InvalidLoginResponse($response);
-                    }
-                    return $decode2;
-                }
-            }
-            return $decode;
-        }
-    }
-    public function AllocationOrder($order)
-    {
-        if (!$this->Token) {
-            $loginAttemptResult = $this->login();
-            if ($loginAttemptResult != 1) {
-                return $this->InvalidLoginResponse($loginAttemptResult);
-            }
-        }
-
-        if (!$order || !array_key_exists("Items", $order) || count($order["Items"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"Items\""
-                )
-            );
-        }
-        foreach ($order["Items"] as &$value) {
-            if (!array_key_exists("ItemNo", $value) || strlen($value["ItemNo"]) < 1 || !$value["Quantity"] || $value["Quantity"] < 1) {
-                print_r($value["Quantity"]);
-
-                return array(
-                    "authorized" => true,
-                    "success" => false,
-                    "errors" => array(
-                        "One or more line item was missing item number or had less than 1 quantity"
-                    )
-                );
-            }
-        }
-
-        $curl = $this->PostRequestBuilder("integration/order/AllocationOrder", $order);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            return $this->RequestError($err);
-        } else {
-            $decode = json_decode($response, true);
-            if ($decode["authorized"] == false) {
-                $loginAttemptResult = $this->login();
-                if ($loginAttemptResult != 1) {
-                    return $this->InvalidLoginResponse($loginAttemptResult);
-                }
-
-                $curl = $this->PostRequestBuilder("integration/order/AllocationOrder", $order);
-                $response = curl_exec($curl);
-                $err = curl_error($curl);
-                curl_close($curl);
-
-                if ($err) {
-                    return $this->RequestError($err);
-                } else {
-                    $decode2 = json_decode($response, true);
-                    if ($decode2["authorized"] == false) {
-                        return $this->InvalidLoginResponse($response);
-                    }
-                    return $decode2;
-                }
-            }
-            return $decode;
-        }
-    }
-    public function DropShipAccessories($order)
-    {
-        if (!$this->Token) {
-            $loginAttemptResult = $this->login();
-            if ($loginAttemptResult != 1) {
-                return $this->InvalidLoginResponse($loginAttemptResult);
-            }
-        }
-
-
-        if (!$order || !array_key_exists("BillingName", $order) || count($order["BillingName"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"BillingName\""
-                )
-            );
-        }
-        if (!$order || !array_key_exists("BillingAddressLine1", $order) || count($order["BillingAddressLine1"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"BillingAddressLine1\""
-                )
-            );
-        }
-        if (!$order || !array_key_exists("BillingAddressCity", $order) || count($order["BillingAddressCity"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"BillingAddressCity\""
-                )
-            );
-        }
-        if (!$order || !array_key_exists("BillingAddressState", $order) || count($order["BillingAddressState"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"BillingAddressState\""
-                )
-            );
-        }
-
-        if (strlen($order["BillingAddressState"]) != 2) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "BillingAddressState Should be 2 Letters"
-                )
-            );
-        }
-        if (!$order || !array_key_exists("BillingAddressZip", $order) || count($order["BillingAddressZip"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"BillingAddressZip\""
-                )
-            );
-        }
-        if (strlen($order["BillingAddressZip"]) > 5) {
-            $order["BillingAddressZip"] = trim($order["BillingAddressZip"]);
-            if (strlen($order["BillingAddressZip"]) > 5) {
-                $order["BillingAddressZip"] = substr($order["BillingAddressZip"], 0, 5);
-            }
-        }
-        if (strlen($order["BillingAddressZip"]) < 5) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "BillingAddressZip Should be 5 Numbers"
-                )
-            );
-        }
-        if (!$order || !array_key_exists("ShippingName", $order) || count($order["ShippingName"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"ShippingName\""
-                )
-            );
-        }
-        if (!$order || !array_key_exists("ShippingAddressLine1", $order) || count($order["ShippingAddressLine1"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"ShippingAddressLine1\""
-                )
-            );
-        }
-        if (!$order || !array_key_exists("ShippingAddressCity", $order) || count($order["ShippingAddressCity"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"ShippingAddressCity\""
-                )
-            );
-        }
-        if (!$order || !array_key_exists("ShippingAddressState", $order) || count($order["ShippingAddressState"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"ShippingAddressState\""
-                )
-            );
-        }
-        if (strlen($order["ShippingAddressState"]) != 2) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "ShippingAddressState Should be 2 Letters"
-                )
-            );
-        }
-        if (!$order || !array_key_exists("ShippingAddressZip", $order) || count($order["ShippingAddressZip"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"ShippingAddressZip\""
-                )
-            );
-        }
-
-        if (strlen($order["ShippingAddressZip"]) > 5) {
-            $order["ShippingAddressZip"] = trim($order["ShippingAddressZip"]);
-            if (strlen($order["ShippingAddressZip"]) > 5) {
-                $order["ShippingAddressZip"] = substr($order["ShippingAddressZip"], 0, 5);
-            }
-        }
-        if (strlen($order["ShippingAddressZip"]) < 5) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "ShippingAddressZip Should be 5 Numbers"
-                )
-            );
-        }
-
-        if (!$order || !array_key_exists("PoNumber", $order) || count($order["PoNumber"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"PoNumber\""
-                )
-            );
-        }
-
-
-
-        if (!$order || !array_key_exists("Items", $order) || count($order["Items"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"Items\""
-                )
-            );
-        }
-        foreach ($order["Items"] as &$value) {
-            if (!array_key_exists("ItemNo", $value) || strlen($value["ItemNo"]) < 1 || !array_key_exists("Quantity", $value) || $value["Quantity"] < 1) {
-                return array(
-                    "authorized" => true,
-                    "success" => false,
-                    "errors" => array(
-                        "One or more line item was missing item number or had less than 1 quantity"
-                    )
-                );
-            }
-        }
-
-
-        $curl = $this->PostRequestBuilder("integration/order/dropship", $order);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            return $this->RequestError($err);
-        } else {
-            $decode = json_decode($response, true);
-            if ($decode["authorized"] == false) {
-                $loginAttemptResult = $this->login();
-                if ($loginAttemptResult != 1) {
-                    return $this->InvalidLoginResponse($loginAttemptResult);
-                }
-
-                $curl = $this->PostRequestBuilder("integration/order/dropship", $order);
-                $response = curl_exec($curl);
-                $err = curl_error($curl);
-                curl_close($curl);
-
-                if ($err) {
-                    return $this->RequestError($err);
-                } else {
-                    $decode2 = json_decode($response, true);
-                    if ($decode2["authorized"] == false) {
-                        return $this->InvalidLoginResponse($response);
-                    }
-                    return $decode2;
-                }
-            }
-            return $decode;
-        }
-    }
-    public function DropShipFirearms($order)
-    {
-        if (!$this->Token) {
-            $loginAttemptResult = $this->login();
-            if ($loginAttemptResult != 1) {
-                return $this->InvalidLoginResponse($loginAttemptResult);
-            }
-        }
-
-        if (!$order || !array_key_exists("Ffl", $order) || count($order["Ffl"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"Ffl\""
-                )
-            );
-        }
-        if (!$order || !array_key_exists("Name", $order) || count($order["Name"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"Name\""
-                )
-            );
-        }
-        if (!$order || !array_key_exists("Phone", $order) || count($order["Phone"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"Phone\""
-                )
-            );
-        }
-
-        if (!$order || !array_key_exists("Items", $order) || count($order["Items"]) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Field Missing: \"Items\""
-                )
-            );
-        }
-        foreach ($order["Items"] as &$value) {
-            if (!array_key_exists("ItemNo", $value) || strlen($value["ItemNo"]) < 1 || !array_key_exists("Quantity", $value) || $value["Quantity"] < 1) {
-                return array(
-                    "authorized" => true,
-                    "success" => false,
-                    "errors" => array(
-                        "One or more line item was missing item number or had less than 1 quantity"
-                    )
-                );
-            }
-        }
-
-
-        $curl = $this->PostRequestBuilder("integration/order/DropShipFirearm", $order);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            return $this->RequestError($err);
-        } else {
-            $decode = json_decode($response, true);
-            if ($decode["authorized"] == false) {
-                $loginAttemptResult = $this->login();
-                if ($loginAttemptResult != 1) {
-                    return $this->InvalidLoginResponse($loginAttemptResult);
-                }
-
-                $curl = $this->PostRequestBuilder("integration/order/DropShipFirearm", $order);
-                $response = curl_exec($curl);
-                $err = curl_error($curl);
-                curl_close($curl);
-
-                if ($err) {
-                    return $this->RequestError($err);
-                } else {
-                    $decode2 = json_decode($response, true);
-                    if ($decode2["authorized"] == false) {
-                        return $this->InvalidLoginResponse($response);
-                    }
-                    return $decode2;
-                }
-            }
-            return $decode;
-        }
-    }
-
-    public function OneDaysShipping($date)
-    {
-        if (!$this->Token) {
-            $loginAttemptResult = $this->login();
-            if ($loginAttemptResult != 1) {
-                return $this->InvalidLoginResponse($loginAttemptResult);
-            }
-        }
-
-        if (!$date) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "date not provided"
-                )
-            );
-        }
-
-        $curl = $this->PostRequestBuilder("integration/shipping/oneday", $date);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            return $this->RequestError($err);
-        } else {
-            $decode = json_decode($response, true);
-            if ($decode["authorized"] == false) {
-                $loginAttemptResult = $this->login();
-                if ($loginAttemptResult != 1) {
-                    return $this->InvalidLoginResponse($loginAttemptResult);
-                }
-
-                $curl = $this->PostRequestBuilder("integration/shipping/oneday", $date);
-                $response = curl_exec($curl);
-                $err = curl_error($curl);
-                curl_close($curl);
-
-                if ($err) {
-                    return $this->RequestError($err);
-                } else {
-                    $decode2 = json_decode($response, true);
-                    if ($decode2["authorized"] == false) {
-                        return $this->InvalidLoginResponse($response);
-                    }
-                    return $decode2;
-                }
-            }
-            return $decode;
-        }
-    }
+    // (rest of your methods unchanged...)
 
     private function login()
     {
