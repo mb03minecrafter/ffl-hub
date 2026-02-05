@@ -209,11 +209,6 @@ final class LipseysInventoryWorkerJob
         ]);
     }
 
-    /**
-     * FIXED:
-     * - Stage table is minimal and matches the TSV columns.
-     * - LOAD DATA specifies the exact column list (and strips trailing \r).
-     */
     private static function apply_load_data(string $tsv, string $live): array
     {
         global $wpdb;
@@ -223,100 +218,82 @@ final class LipseysInventoryWorkerJob
 
         $wpdb->query("DROP TABLE IF EXISTS {$stage}");
 
-        self::db_debug_env();
-        self::db_debug_create_table($live, 'LIVE');
+        // Minimal stage schema that matches the TSV (5 columns, in-order)
+        $charset = $wpdb->get_charset_collate();
+        $create_sql = "
+        CREATE TABLE {$stage} (
+            lipseys_item_number VARCHAR(64) NOT NULL,
+            inventory_quantity  VARCHAR(32) NULL,
+            allocation_status   VARCHAR(64) NULL,
+            distributor_price   VARCHAR(32) NULL,
+            retail_map          VARCHAR(32) NULL,
+            PRIMARY KEY (lipseys_item_number)
+        ) {$charset};
+    ";
 
-        // Minimal stage schema for pricing/quantity updates (no NOT NULL traps, matches TSV)
-        $created = $wpdb->query("
-            CREATE TABLE {$stage} (
-                lipseys_item_number VARCHAR(64) NOT NULL,
-                inventory_quantity  VARCHAR(32) NULL,
-                allocation_status   VARCHAR(64) NULL,
-                distributor_price   VARCHAR(32) NULL,
-                retail_map          VARCHAR(32) NULL,
-                PRIMARY KEY (lipseys_item_number)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        ");
+        $created = $wpdb->query($create_sql);
         if ($created === false) {
             throw new \RuntimeException('Stage create failed: ' . (string) $wpdb->last_error);
         }
 
-        self::db_debug_create_table($stage, 'STAGE');
-
+        // Escape file path for SQL literal
         $path = str_replace('\\', '\\\\', $tsv);
         $path = str_replace("'", "\\'", $path);
 
-        // Use user variables so we can clean \r and convert empty strings -> NULL
-        $sql_load = "
-            LOAD DATA LOCAL INFILE '{$path}'
-            INTO TABLE {$stage}
-            FIELDS TERMINATED BY '\t'
-            LINES TERMINATED BY '\n'
-            (@item, @qty, @alloc, @price, @map)
-            SET
-                lipseys_item_number = NULLIF(TRIM(REPLACE(@item, '\r', '')), ''),
-                inventory_quantity  = NULLIF(TRIM(REPLACE(@qty,  '\r', '')), ''),
-                allocation_status   = NULLIF(TRIM(REPLACE(@alloc,'\r', '')), ''),
-                distributor_price   = NULLIF(TRIM(REPLACE(@price,'\r', '')), ''),
-                retail_map          = NULLIF(TRIM(REPLACE(@map,  '\r', '')), '')
-        ";
+        // IMPORTANT: explicit column list (prevents "shifted columns" bug)
+        $load_sql = "
+        LOAD DATA LOCAL INFILE '{$path}'
+        INTO TABLE {$stage}
+        FIELDS TERMINATED BY '\t'
+        LINES TERMINATED BY '\n'
+        (lipseys_item_number, inventory_quantity, allocation_status, distributor_price, retail_map)
+    ";
 
-        $loaded_affected = $wpdb->query($sql_load);
-        if ($loaded_affected === false) {
+        $loaded = $wpdb->query($load_sql);
+        if ($loaded === false) {
             $wpdb->query("DROP TABLE IF EXISTS {$stage}");
             throw new \RuntimeException('LOAD DATA failed: ' . (string) $wpdb->last_error);
         }
 
-        $stage_count_after_load = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$stage}") ?? 0);
-        $warn_load = self::db_get_warnings();
+        // CRLF hygiene (harmless even if file is LF)
+        $wpdb->query("UPDATE {$stage} SET lipseys_item_number = TRIM(TRAILING '\r' FROM lipseys_item_number)");
+        $wpdb->query("UPDATE {$stage} SET inventory_quantity  = TRIM(TRAILING '\r' FROM inventory_quantity)");
+        $wpdb->query("UPDATE {$stage} SET allocation_status   = TRIM(TRAILING '\r' FROM allocation_status)");
+        $wpdb->query("UPDATE {$stage} SET distributor_price   = TRIM(TRAILING '\r' FROM distributor_price)");
+        $wpdb->query("UPDATE {$stage} SET retail_map          = TRIM(TRAILING '\r' FROM retail_map)");
 
-        self::log('DB DEBUG: LOAD RESULT', [
-            'rows_loaded_affected' => (int) $loaded_affected,
-            'stage_count'          => $stage_count_after_load,
-            'last_error'           => (string) $wpdb->last_error,
-            'warnings_count'       => count($warn_load),
-            'warnings_sample'      => self::truncate_array($warn_load, self::MAX_WARNINGS_LOGGED),
-        ]);
+        // Truth: how many rows are actually in stage
+        $stage_count = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$stage}") ?? 0);
 
-        $sql_update = "
-            UPDATE {$live} L
-            JOIN {$stage} S
-              ON S.lipseys_item_number = L.lipseys_item_number
-            SET
-              L.inventory_quantity = S.inventory_quantity,
-              L.allocation_status  = S.allocation_status,
-              L.distributor_price  = S.distributor_price,
-              L.retail_map         = S.retail_map
-        ";
+        // Join-update LIVE (ONLY the 4 PQ fields)
+        $update_sql = "
+        UPDATE {$live} L
+        INNER JOIN {$stage} S
+            ON S.lipseys_item_number = L.lipseys_item_number
+        SET
+            L.inventory_quantity = S.inventory_quantity,
+            L.allocation_status  = S.allocation_status,
+            L.distributor_price  = S.distributor_price,
+            L.retail_map         = S.retail_map
+    ";
 
-        $updated_affected = $wpdb->query($sql_update);
-        if ($updated_affected === false) {
+        $updated = $wpdb->query($update_sql);
+        if ($updated === false) {
             $wpdb->query("DROP TABLE IF EXISTS {$stage}");
             throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
         }
 
-        $warn_update = self::db_get_warnings();
-
-        self::log('DB DEBUG: UPDATE RESULT', [
-            'rows_updated_affected' => (int) $updated_affected,
-            'last_error'            => (string) $wpdb->last_error,
-            'warnings_count'        => count($warn_update),
-            'warnings_sample'       => self::truncate_array($warn_update, self::MAX_WARNINGS_LOGGED),
-        ]);
-
         $wpdb->query("DROP TABLE IF EXISTS {$stage}");
 
         return [
-            // Prefer real counts over "affected rows" for LOAD DATA (since affected can be 0 depending on driver)
-            'rows_loaded'          => $stage_count_after_load,
-            'rows_loaded_affected' => (int) $loaded_affected,
-            'rows_updated'         => (int) $updated_affected,
-            'stage_table'          => (string) $stage,
-            'stage_count'          => (int) $stage_count_after_load,
-            'load_warns'           => count($warn_load),
-            'update_warns'         => count($warn_update),
+            // NOTE: $loaded is NOT reliable as "rows loaded" here; stage_count is.
+            'rows_loaded'  => $stage_count,
+            'rows_updated' => (int) $updated,
+            'stage_table'  => (string) $stage,
+            'stage_count'  => $stage_count,
         ];
     }
+
 
     private static function db_debug_env(): void
     {
@@ -325,8 +302,14 @@ final class LipseysInventoryWorkerJob
         $sql_mode = null;
         $local_infile = null;
 
-        try { $sql_mode = $wpdb->get_var("SELECT @@SESSION.sql_mode"); } catch (\Throwable $e) {}
-        try { $local_infile = $wpdb->get_var("SELECT @@GLOBAL.local_infile"); } catch (\Throwable $e) {}
+        try {
+            $sql_mode = $wpdb->get_var("SELECT @@SESSION.sql_mode");
+        } catch (\Throwable $e) {
+        }
+        try {
+            $local_infile = $wpdb->get_var("SELECT @@GLOBAL.local_infile");
+        } catch (\Throwable $e) {
+        }
 
         self::log('DB DEBUG: ENV', [
             'sql_mode'     => is_string($sql_mode) ? $sql_mode : null,
