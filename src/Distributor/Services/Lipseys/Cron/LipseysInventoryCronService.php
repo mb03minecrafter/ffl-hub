@@ -188,32 +188,7 @@ final class LipseysInventoryCronService extends AbstractTableCronService
     private function log(string $msg, array $ctx = []): void
     {
         DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $msg, $ctx);
-        $this->file_log(self::LOG_PREFIX . ' ' . $msg, $ctx);
     }
 
-    private function file_log(string $msg, array $ctx = []): void
-    {
-        try {
-            $up = wp_upload_dir();
-            $basedir = (string) ($up['basedir'] ?? '');
-            if ($basedir === '') return;
-
-            $dir = rtrim($basedir, '/\\') . '/fflhub/logs';
-            if (!is_dir($dir)) {
-                wp_mkdir_p($dir);
-            }
-            if (!is_dir($dir) || !is_writable($dir)) return;
-
-            $file = $dir . '/' . self::FILE_LOG_NAME;
-
-            $pid = function_exists('getmypid') ? (int) getmypid() : 0;
-            $line = '[' . gmdate('Y-m-d H:i:s') . '][pid:' . $pid . '] ' . $msg;
-            if (!empty($ctx)) $line .= ' ' . wp_json_encode($ctx);
-            $line .= PHP_EOL;
-
-            @file_put_contents($file, $line, FILE_APPEND | LOCK_EX);
-        } catch (\Throwable $e) {
-            // never break cron
-        }
-    }
+    
 }
