@@ -4,6 +4,7 @@ namespace FFLHub\Distributor\Services\Lipseys\Cron;
 
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
 use FFLHub\Distributor\Services\Lipseys\Tables\LipseysShipmentTable;
+use FFLHub\Settings\Options;
 use lipseys\ApiIntegration\LipseysClient;
 
 if (! defined('ABSPATH')) {
@@ -78,8 +79,11 @@ final class LipseysShipmentsDailyCronService extends AbstractCronService
         // 1) Build API client
         // ------------------------------------------------------------
 
-        $email    = (string) get_option('fflhub_lipseys_email', '');
-        $password = (string) get_option('fflhub_lipseys_password', '');
+        $email    = trim((string) Options::get_distributor_option('lipseys', 'dealer_email', ''));
+        $password = trim((string) Options::get_distributor_option('lipseys', 'dealer_password', ''));
+
+
+
 
         if ($email === '' || $password === '') {
             $this->log_debug('[FFLHub][Lipsey\'s Shipments Cron] Missing Lipsey\'s credentials');
