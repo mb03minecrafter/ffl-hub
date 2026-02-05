@@ -32,12 +32,16 @@ final class LipseysInventoryWorkerJob
     // If we fail to extract nextUpdate, keep the chain alive with a retry
     private const FALLBACK_RETRY_SEC = 600;
 
+    // Debug limits (avoid log spam)
+    private const MAX_WARNINGS_LOGGED = 25;
+    private const MAX_CREATE_TABLE_CHARS = 1200;
+
     /**
      * Worker behavior:
      * - Reads last_seen_version/next_update_unix from options for context.
-     * - ALWAYS runs the heavy PricingAndQuantityToTsv + DB apply (that call is the source of truth).
+     * - ALWAYS runs the heavy PricingAndQuantityToTsv + DB apply (source of truth).
      * - Marks last_applied_version = current last_seen_version (if present).
-     * - Extracts nextUpdate from the TSV streaming stats (no NextUpdateFast call).
+     * - Extracts nextUpdate from TSV streaming stats (no NextUpdateFast call).
      * - Persists nextUpdate into options and schedules the NEXT singleton worker at nextUpdate + skew.
      */
     public static function run(DoubleBufferedFulfillmentTable $table): void
@@ -163,6 +167,9 @@ final class LipseysInventoryWorkerJob
 
         self::log('STREAM COMPLETE', is_array($stats) ? $stats : ['stats' => $stats]);
 
+        // TSV sanity check: first line, field count
+        self::debug_tsv_sample($tsv);
+
         $apply = self::apply_load_data($tsv, $live_table);
 
         self::log('DB APPLY COMPLETE', $apply);
@@ -214,9 +221,9 @@ final class LipseysInventoryWorkerJob
         as_schedule_single_action($target, self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
 
         self::log('Next worker scheduled (fallback)', [
-            'reason'     => $reason,
-            'target_unix'=> $target,
-            'retry_sec'  => self::FALLBACK_RETRY_SEC,
+            'reason'      => $reason,
+            'target_unix' => $target,
+            'retry_sec'   => self::FALLBACK_RETRY_SEC,
         ]);
     }
 
@@ -229,26 +236,47 @@ final class LipseysInventoryWorkerJob
 
         $wpdb->query("DROP TABLE IF EXISTS {$stage}");
 
+        // Environment debug (sql_mode / local_infile)
+        self::db_debug_env();
+
         $created = $wpdb->query("CREATE TABLE {$stage} LIKE {$live}");
         if ($created === false) {
             throw new \RuntimeException('Stage create failed: ' . (string) $wpdb->last_error);
         }
 
+        // Log CREATE TABLE (trimmed)
+        self::db_debug_create_table($live, 'LIVE');
+        self::db_debug_create_table($stage, 'STAGE');
+
         $path = str_replace('\\', '\\\\', $tsv);
         $path = str_replace("'", "\\'", $path);
 
-        $loaded = $wpdb->query("
+        $sql_load = "
             LOAD DATA LOCAL INFILE '{$path}'
             INTO TABLE {$stage}
             FIELDS TERMINATED BY '\t'
             LINES TERMINATED BY '\n'
-        ");
+        ";
+
+        $loaded = $wpdb->query($sql_load);
         if ($loaded === false) {
             $wpdb->query("DROP TABLE IF EXISTS {$stage}");
             throw new \RuntimeException('LOAD DATA failed: ' . (string) $wpdb->last_error);
         }
 
-        $updated = $wpdb->query("
+        // DEBUG: count rows in stage + SHOW WARNINGS after LOAD
+        $stage_count_after_load = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$stage}") ?? 0);
+        $warn_load = self::db_get_warnings();
+
+        self::log('DB DEBUG: LOAD RESULT', [
+            'rows_loaded_affected' => (int) $loaded,
+            'stage_count'          => $stage_count_after_load,
+            'last_error'           => (string) $wpdb->last_error,
+            'warnings_count'       => count($warn_load),
+            'warnings_sample'      => self::truncate_array($warn_load, self::MAX_WARNINGS_LOGGED),
+        ]);
+
+        $sql_update = "
             UPDATE {$live} L
             JOIN {$stage} S
               ON S.lipseys_item_number = L.lipseys_item_number
@@ -257,11 +285,23 @@ final class LipseysInventoryWorkerJob
               L.allocation_status  = S.allocation_status,
               L.distributor_price  = S.distributor_price,
               L.retail_map         = S.retail_map
-        ");
+        ";
+
+        $updated = $wpdb->query($sql_update);
         if ($updated === false) {
             $wpdb->query("DROP TABLE IF EXISTS {$stage}");
             throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
         }
+
+        // DEBUG: SHOW WARNINGS after UPDATE
+        $warn_update = self::db_get_warnings();
+
+        self::log('DB DEBUG: UPDATE RESULT', [
+            'rows_updated_affected' => (int) $updated,
+            'last_error'            => (string) $wpdb->last_error,
+            'warnings_count'        => count($warn_update),
+            'warnings_sample'       => self::truncate_array($warn_update, self::MAX_WARNINGS_LOGGED),
+        ]);
 
         $wpdb->query("DROP TABLE IF EXISTS {$stage}");
 
@@ -269,7 +309,132 @@ final class LipseysInventoryWorkerJob
             'rows_updated' => (int) $updated,
             'rows_loaded'  => (int) $loaded,
             'stage_table'  => (string) $stage,
+            'stage_count'  => (int) $stage_count_after_load,
+            'load_warns'   => count($warn_load),
+            'update_warns' => count($warn_update),
         ];
+    }
+
+    private static function db_debug_env(): void
+    {
+        global $wpdb;
+
+        $sql_mode = null;
+        $local_infile = null;
+
+        try {
+            $sql_mode = $wpdb->get_var("SELECT @@SESSION.sql_mode");
+        } catch (\Throwable $e) {}
+
+        try {
+            $local_infile = $wpdb->get_var("SELECT @@GLOBAL.local_infile");
+        } catch (\Throwable $e) {}
+
+        self::log('DB DEBUG: ENV', [
+            'sql_mode'      => is_string($sql_mode) ? $sql_mode : null,
+            'local_infile'  => is_scalar($local_infile) ? (string) $local_infile : null,
+        ]);
+    }
+
+    private static function db_debug_create_table(string $table, string $label): void
+    {
+        global $wpdb;
+
+        try {
+            $row = $wpdb->get_row("SHOW CREATE TABLE {$table}", ARRAY_A);
+            $create = is_array($row) ? (string) ($row['Create Table'] ?? '') : '';
+            if ($create !== '') {
+                self::log("DB DEBUG: SHOW CREATE TABLE ({$label})", [
+                    'table'  => $table,
+                    'create' => self::truncate_str($create, self::MAX_CREATE_TABLE_CHARS),
+                ]);
+            } else {
+                self::log("DB DEBUG: SHOW CREATE TABLE ({$label}) empty", ['table' => $table]);
+            }
+        } catch (\Throwable $e) {
+            self::log("DB DEBUG: SHOW CREATE TABLE ({$label}) failed", [
+                'table' => $table,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Returns SHOW WARNINGS rows as array of {Level, Code, Message}
+     */
+    private static function db_get_warnings(): array
+    {
+        global $wpdb;
+
+        try {
+            $rows = $wpdb->get_results("SHOW WARNINGS", ARRAY_A);
+            if (!is_array($rows)) {
+                return [];
+            }
+
+            // Normalize keys
+            $out = [];
+            foreach ($rows as $r) {
+                if (!is_array($r)) continue;
+                $out[] = [
+                    'Level'   => $r['Level']   ?? ($r['level']   ?? null),
+                    'Code'    => $r['Code']    ?? ($r['code']    ?? null),
+                    'Message' => $r['Message'] ?? ($r['message'] ?? null),
+                ];
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return [
+                ['Level' => 'error', 'Code' => null, 'Message' => 'SHOW WARNINGS failed: ' . $e->getMessage()],
+            ];
+        }
+    }
+
+    private static function debug_tsv_sample(string $tsv): void
+    {
+        try {
+            if (!is_readable($tsv)) {
+                self::log('TSV DEBUG: not readable', ['path' => $tsv]);
+                return;
+            }
+
+            $fh = @fopen($tsv, 'rb');
+            if (!$fh) {
+                self::log('TSV DEBUG: fopen failed', ['path' => $tsv]);
+                return;
+            }
+
+            $line = (string) fgets($fh);
+            fclose($fh);
+
+            $line_trim = trim($line);
+            $fields = $line_trim === '' ? [] : explode("\t", $line_trim);
+
+            self::log('TSV DEBUG: sample', [
+                'path'        => $tsv,
+                'first_line'  => self::truncate_str($line_trim, 500),
+                'field_count' => count($fields),
+            ]);
+        } catch (\Throwable $e) {
+            self::log('TSV DEBUG: exception', ['error' => $e->getMessage()]);
+        }
+    }
+
+    private static function truncate_str(string $s, int $max): string
+    {
+        if ($max <= 0) return '';
+        if (strlen($s) <= $max) return $s;
+        return substr($s, 0, $max) . '…';
+    }
+
+    /**
+     * @param array<int,mixed> $arr
+     */
+    private static function truncate_array(array $arr, int $max): array
+    {
+        if ($max <= 0) return [];
+        if (count($arr) <= $max) return $arr;
+        return array_slice($arr, 0, $max);
     }
 
     private static function log(string $msg, array $ctx = []): void
