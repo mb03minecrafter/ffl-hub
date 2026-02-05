@@ -46,7 +46,7 @@ class LipseysClient
         $curl = $this->RequestBuilder(array(
             CURLOPT_URL => "{$this->BaseUrl}{$url}",
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "", // allow gzip/deflate
+            CURLOPT_ENCODING => "",
             CURLOPT_MAXREDIRS => 10,
             CURLOPT_TIMEOUT => 60,
             CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
@@ -67,7 +67,7 @@ class LipseysClient
         $curl = $this->RequestBuilder(array(
             CURLOPT_URL => "{$this->BaseUrl}{$url}",
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => "", // allow gzip/deflate
+            CURLOPT_ENCODING => "",
             CURLOPT_MAXREDIRS => 10,
             CURLOPT_TIMEOUT => 60,
             CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
@@ -113,11 +113,6 @@ class LipseysClient
         );
     }
 
-    /**
-     * CatalogFeed response format is typically:
-     *   { success, authorized, errors, data: [ {item...}, ... ] }
-     * So we stream the ARRAY at "data".
-     */
     public function CatalogToTsv(string $tsv_path, array $columns, callable $item_to_row): array
     {
         $attempts = 0;
@@ -135,7 +130,7 @@ class LipseysClient
 
             $result = $this->stream_endpoint_to_tsv_once(
                 "integration/items/CatalogFeed",
-                'data', // <-- KEY FIX (Catalog uses data: [ ... ])
+                'data',
                 $tsv_path,
                 $columns,
                 $item_to_row
@@ -157,9 +152,10 @@ class LipseysClient
     }
 
     /**
-     * PricingQuantityFeed response format is:
+     * PricingQuantityFeed response format:
      *   { success, authorized, errors, data: { nextUpdate, items: [ ... ] } }
-     * So we stream the ARRAY at "data.items".
+     *
+     * We stream the array at "data.items", AND we also extract "data.nextUpdate" while streaming.
      */
     public function PricingAndQuantityToTsv(string $tsv_path, array $columns, callable $item_to_row): array
     {
@@ -178,7 +174,7 @@ class LipseysClient
 
             $result = $this->stream_endpoint_to_tsv_once(
                 "integration/items/PricingQuantityFeed",
-                'data.items', // <-- PricingQuantity uses data.items: [ ... ]
+                'data.items',
                 $tsv_path,
                 $columns,
                 $item_to_row
@@ -199,12 +195,6 @@ class LipseysClient
         return is_array($last_err) ? $last_err : $this->RequestError('PricingAndQuantityToTsv failed after retry.');
     }
 
-    /**
-     * Generic streaming JSON->TSV.
-     *
-     * @param string $endpoint e.g. "integration/items/CatalogFeed"
-     * @param string $array_path "data" OR "data.items" OR "items" (fallback)
-     */
     private function stream_endpoint_to_tsv_once(
         string $endpoint,
         string $array_path,
@@ -227,16 +217,22 @@ class LipseysClient
             'items_skipped'     => 0,
             'json_decode_fails' => 0,
             'bytes_received'    => 0,
+
+            // ✅ NEW: capture nextUpdate while streaming (best-effort)
+            'next_update_raw'   => null,
+            'next_update_unix'  => null,
         );
 
         $curl = $this->GetRequestBuilder($endpoint);
 
-        // Streaming state
         $buffer = '';
         $found_array_start = false;
         $preamble_checked = false;
 
-        // Object extraction state
+        // NEW: nextUpdate scan state
+        $nextupdate_found = false;
+        $re_nextupdate = '/"nextUpdate"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"/';
+
         $in_string = false;
         $escape = false;
         $depth = 0;
@@ -258,29 +254,43 @@ class LipseysClient
             $fh,
             $columns,
             $item_to_row,
-            $array_path
+            $array_path,
+            &$nextupdate_found,
+            $re_nextupdate
         ) {
             $len = strlen($chunk);
             $stats['bytes_received'] += $len;
             $buffer .= $chunk;
 
-            // 1) Preamble check for authorized:false (stop early)
+            // 1) Preamble check for authorized:false
             if (!$preamble_checked && strpos($buffer, '"authorized"') !== false) {
                 if (preg_match('/"authorized"\s*:\s*false/i', $buffer)) {
                     $stats['authorized'] = false;
                     $stats['success'] = false;
                     $stats['errors'][] = 'Not authorized (token invalid/expired).';
-                    return 0; // abort transfer
+                    return 0;
                 }
                 $preamble_checked = true;
+            }
+
+            // ✅ NEW: Extract nextUpdate as soon as it appears (best-effort; before/while array start)
+            if (!$nextupdate_found && strpos($buffer, '"nextUpdate"') !== false) {
+                if (preg_match($re_nextupdate, $buffer, $m)) {
+                    $raw = stripcslashes($m[1]);
+                    $stats['next_update_raw'] = $raw;
+
+                    $ts = strtotime($raw);
+                    if ($ts !== false) {
+                        $stats['next_update_unix'] = (int) $ts;
+                    }
+                    $nextupdate_found = true;
+                }
             }
 
             // 2) Find the target array start
             if (!$found_array_start) {
                 $bracket_pos = $this->find_json_array_start_for_path($buffer, $array_path);
                 if ($bracket_pos === null) {
-                    // Not enough buffer yet
-                    // Keep buffer bounded a bit to avoid unbounded growth before match
                     if (strlen($buffer) > 1024 * 1024) {
                         $buffer = substr($buffer, -256 * 1024);
                     }
@@ -288,7 +298,6 @@ class LipseysClient
                 }
 
                 $found_array_start = true;
-                // Discard up to and including '['
                 $buffer = substr($buffer, $bracket_pos + 1);
             }
 
@@ -406,70 +415,39 @@ class LipseysClient
         return $stats;
     }
 
-    /**
-     * Returns position of '[' that begins the target array for a given path.
-     * Supported:
-     *  - "data"       => ..."data": [ ... ]
-     *  - "data.items" => ..."data": { ... "items": [ ... ] }
-     *  - "items"      => ..."items": [ ... ] (fallback)
-     */
     private function find_json_array_start_for_path(string $buf, string $path): ?int
     {
         if ($path === 'data') {
             $data_pos = strpos($buf, '"data"');
-            if ($data_pos === false) {
-                return null;
-            }
+            if ($data_pos === false) return null;
             $colon = strpos($buf, ':', $data_pos);
-            if ($colon === false) {
-                return null;
-            }
+            if ($colon === false) return null;
             $bracket = strpos($buf, '[', $colon);
-            if ($bracket === false) {
-                return null;
-            }
+            if ($bracket === false) return null;
             return $bracket;
         }
 
         if ($path === 'data.items') {
             $data_pos = strpos($buf, '"data"');
-            if ($data_pos === false) {
-                return null;
-            }
+            if ($data_pos === false) return null;
             $items_pos = strpos($buf, '"items"', $data_pos);
-            if ($items_pos === false) {
-                return null;
-            }
+            if ($items_pos === false) return null;
             $bracket = strpos($buf, '[', $items_pos);
-            if ($bracket === false) {
-                return null;
-            }
+            if ($bracket === false) return null;
             return $bracket;
         }
 
-        // fallback: top-level "items"
         if ($path === 'items') {
             $items_pos = strpos($buf, '"items"');
-            if ($items_pos === false) {
-                return null;
-            }
+            if ($items_pos === false) return null;
             $bracket = strpos($buf, '[', $items_pos);
-            if ($bracket === false) {
-                return null;
-            }
+            if ($bracket === false) return null;
             return $bracket;
         }
 
-        // Unknown path
         return null;
     }
 
-    /**
-     * Write one TSV row, escaping tabs/newlines safely.
-     *
-     * @param resource $fh
-     * @param string[] $fields
-     */
     private function tsv_write_row($fh, array $fields): void
     {
         foreach ($fields as &$v) {
@@ -480,63 +458,6 @@ class LipseysClient
 
         fwrite($fh, implode("\t", $fields) . "\n");
     }
-
-
-
-    public function ValidateItem($itemNumber)
-    {
-        if (!$this->Token) {
-            $loginAttemptResult = $this->login();
-            if ($loginAttemptResult != 1) {
-                return $this->InvalidLoginResponse($loginAttemptResult);
-            }
-        }
-
-        if (!$itemNumber || strlen($itemNumber) < 1) {
-            return array(
-                "authorized" => true,
-                "success" => false,
-                "errors" => array(
-                    "Item number not provided"
-                )
-            );
-        }
-
-        $curl = $this->PostRequestBuilder("integration/items/validateitem", $itemNumber);
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            return $this->RequestError($err);
-        } else {
-            $decode = json_decode($response, true);
-            if ($decode["authorized"] == false) {
-                $loginAttemptResult = $this->login();
-                if ($loginAttemptResult != 1) {
-                    return $this->InvalidLoginResponse($loginAttemptResult);
-                }
-
-                $curl = $this->PostRequestBuilder("integration/items/validateitem", $itemNumber);
-                $response = curl_exec($curl);
-                $err = curl_error($curl);
-                curl_close($curl);
-
-                if ($err) {
-                    return $this->RequestError($err);
-                } else {
-                    $decode2 = json_decode($response, true);
-                    if ($decode2["authorized"] == false) {
-                        return $this->InvalidLoginResponse($response);
-                    }
-                    return $decode2;
-                }
-            }
-            return $decode;
-        }
-    }
-
-    // (rest of your methods unchanged...)
 
     private function login()
     {
@@ -565,23 +486,7 @@ class LipseysClient
         return $response;
     }
 
-
-
-    /**
-     * Fast path: stream-scan PricingQuantityFeed and extract data.nextUpdate
-     * without decoding the full JSON or downloading the whole payload.
-     *
-     * Returns:
-     *  [
-     *    'authorized' => bool,
-     *    'success' => bool,
-     *    'errors' => string[],
-     *    'next_update_raw' => ?string,   // the raw string value
-     *    'next_update_unix' => ?int,     // strtotime(...) result if parseable
-     *    'bytes_received' => int,
-     *    'http_code' => int,
-     *  ]
-     */
+    // Your existing NextUpdateFast stays as-is (cron bootstrap uses it rarely).
     public function PricingAndQuantityNextUpdateFast(): array
     {
         $attempts = 0;
@@ -599,7 +504,6 @@ class LipseysClient
 
             $result = $this->pricing_quantity_next_update_fast_once();
 
-            // If token expired, retry once after login.
             if (is_array($result) && isset($result['authorized']) && $result['authorized'] === false) {
                 $loginAttemptResult = $this->login();
                 if ($loginAttemptResult != 1) {
@@ -615,9 +519,6 @@ class LipseysClient
         return is_array($last_err) ? $last_err : $this->RequestError('PricingAndQuantityNextUpdateFast failed after retry.');
     }
 
-    /**
-     * One attempt. Aborts curl transfer as soon as "nextUpdate" is extracted.
-     */
     private function pricing_quantity_next_update_fast_once(): array
     {
         $stats = [
@@ -632,13 +533,11 @@ class LipseysClient
 
         $curl = $this->GetRequestBuilder("integration/items/PricingQuantityFeed");
 
-        // We will not return the full response.
         curl_setopt($curl, CURLOPT_RETURNTRANSFER, false);
 
         $rolling = '';
         $preamble_checked = false;
 
-        // Match: "nextUpdate":"...." (handles escaped chars inside the string)
         $re_nextupdate = '/"nextUpdate"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"/';
 
         curl_setopt($curl, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (
@@ -650,29 +549,24 @@ class LipseysClient
             $len = strlen($chunk);
             $stats['bytes_received'] += $len;
 
-            // Append to rolling buffer and bound it.
             $rolling .= $chunk;
             if (strlen($rolling) > 64 * 1024) {
                 $rolling = substr($rolling, -16 * 1024);
             }
 
-            // Early auth failure detection.
             if (!$preamble_checked && strpos($rolling, '"authorized"') !== false) {
                 if (preg_match('/"authorized"\s*:\s*false/i', $rolling)) {
                     $stats['authorized'] = false;
                     $stats['success'] = false;
                     $stats['errors'][] = 'Not authorized (token invalid/expired).';
-                    return 0; // abort
+                    return 0;
                 }
                 $preamble_checked = true;
             }
 
-            // Extract nextUpdate if present in rolling buffer.
             if (strpos($rolling, '"nextUpdate"') !== false) {
                 if (preg_match($re_nextupdate, $rolling, $m)) {
-                    // Unescape JSON string content minimally.
                     $raw = stripcslashes($m[1]);
-
                     $stats['next_update_raw'] = $raw;
 
                     $ts = strtotime($raw);
@@ -681,7 +575,7 @@ class LipseysClient
                     }
 
                     $stats['success'] = true;
-                    return 0; // abort transfer as soon as we got it
+                    return 0;
                 }
             }
 
@@ -696,7 +590,6 @@ class LipseysClient
 
         $stats['http_code'] = $http;
 
-        // If we aborted because token invalid/expired, return that (NOT a curl error)
         if ($stats['authorized'] === false) {
             return [
                 'authorized'     => false,
@@ -707,14 +600,12 @@ class LipseysClient
             ];
         }
 
-        // If we succeeded and aborted early, cURL will often report CURLE_WRITE_ERROR (23). Expected.
         if ($stats['success'] === true) {
             $stats['curl_errno'] = (int) $errno;
             $stats['curl_error'] = (string) $err;
             return $stats;
         }
 
-        // Real error only if we did NOT succeed.
         if ($err) {
             return [
                 'authorized'     => true,
