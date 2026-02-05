@@ -481,7 +481,7 @@ class LipseysClient
         fwrite($fh, implode("\t", $fields) . "\n");
     }
 
-    
+
 
     public function ValidateItem($itemNumber)
     {
@@ -563,5 +563,180 @@ class LipseysClient
             }
         }
         return $response;
+    }
+
+
+
+    /**
+     * Fast path: stream-scan PricingQuantityFeed and extract data.nextUpdate
+     * without decoding the full JSON or downloading the whole payload.
+     *
+     * Returns:
+     *  [
+     *    'authorized' => bool,
+     *    'success' => bool,
+     *    'errors' => string[],
+     *    'next_update_raw' => ?string,   // the raw string value
+     *    'next_update_unix' => ?int,     // strtotime(...) result if parseable
+     *    'bytes_received' => int,
+     *    'http_code' => int,
+     *  ]
+     */
+    public function PricingAndQuantityNextUpdateFast(): array
+    {
+        $attempts = 0;
+        $last_err = null;
+
+        while ($attempts < 2) {
+            $attempts++;
+
+            if (!$this->Token) {
+                $loginAttemptResult = $this->login();
+                if ($loginAttemptResult != 1) {
+                    return $this->InvalidLoginResponse($loginAttemptResult);
+                }
+            }
+
+            $result = $this->pricing_quantity_next_update_fast_once();
+
+            // If token expired, retry once after login.
+            if (is_array($result) && isset($result['authorized']) && $result['authorized'] === false) {
+                $loginAttemptResult = $this->login();
+                if ($loginAttemptResult != 1) {
+                    return $this->InvalidLoginResponse($loginAttemptResult);
+                }
+                $last_err = $result;
+                continue;
+            }
+
+            return $result;
+        }
+
+        return is_array($last_err) ? $last_err : $this->RequestError('PricingAndQuantityNextUpdateFast failed after retry.');
+    }
+
+    /**
+     * One attempt. Aborts curl transfer as soon as "nextUpdate" is extracted.
+     */
+    private function pricing_quantity_next_update_fast_once(): array
+    {
+        $stats = [
+            'authorized'       => true,
+            'success'          => false,
+            'errors'           => [],
+            'next_update_raw'  => null,
+            'next_update_unix' => null,
+            'bytes_received'   => 0,
+            'http_code'        => 0,
+        ];
+
+        $curl = $this->GetRequestBuilder("integration/items/PricingQuantityFeed");
+
+        // We will not return the full response.
+        curl_setopt($curl, CURLOPT_RETURNTRANSFER, false);
+
+        $rolling = '';
+        $preamble_checked = false;
+
+        // Match: "nextUpdate":"...." (handles escaped chars inside the string)
+        $re_nextupdate = '/"nextUpdate"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"/';
+
+        curl_setopt($curl, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (
+            &$stats,
+            &$rolling,
+            &$preamble_checked,
+            $re_nextupdate
+        ) {
+            $len = strlen($chunk);
+            $stats['bytes_received'] += $len;
+
+            // Append to rolling buffer and bound it.
+            $rolling .= $chunk;
+            if (strlen($rolling) > 64 * 1024) {
+                $rolling = substr($rolling, -16 * 1024);
+            }
+
+            // Early auth failure detection.
+            if (!$preamble_checked && strpos($rolling, '"authorized"') !== false) {
+                if (preg_match('/"authorized"\s*:\s*false/i', $rolling)) {
+                    $stats['authorized'] = false;
+                    $stats['success'] = false;
+                    $stats['errors'][] = 'Not authorized (token invalid/expired).';
+                    return 0; // abort
+                }
+                $preamble_checked = true;
+            }
+
+            // Extract nextUpdate if present in rolling buffer.
+            if (strpos($rolling, '"nextUpdate"') !== false) {
+                if (preg_match($re_nextupdate, $rolling, $m)) {
+                    // Unescape JSON string content minimally.
+                    $raw = stripcslashes($m[1]);
+
+                    $stats['next_update_raw'] = $raw;
+
+                    $ts = strtotime($raw);
+                    if ($ts !== false) {
+                        $stats['next_update_unix'] = (int) $ts;
+                    }
+
+                    $stats['success'] = true;
+                    return 0; // abort transfer as soon as we got it
+                }
+            }
+
+            return $len;
+        });
+
+        curl_exec($curl);
+        $err   = curl_error($curl);
+        $errno = curl_errno($curl);
+        $http  = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        curl_close($curl);
+
+        $stats['http_code'] = $http;
+
+        // If we aborted because token invalid/expired, return that (NOT a curl error)
+        if ($stats['authorized'] === false) {
+            return [
+                'authorized'     => false,
+                'success'        => false,
+                'errors'         => $stats['errors'],
+                'bytes_received' => (int) $stats['bytes_received'],
+                'http_code'      => (int) $http,
+            ];
+        }
+
+        // If we succeeded and aborted early, cURL will often report CURLE_WRITE_ERROR (23). Expected.
+        if ($stats['success'] === true) {
+            $stats['curl_errno'] = (int) $errno;
+            $stats['curl_error'] = (string) $err;
+            return $stats;
+        }
+
+        // Real error only if we did NOT succeed.
+        if ($err) {
+            return [
+                'authorized'     => true,
+                'success'        => false,
+                'errors'         => ["Error making http request", $err],
+                'bytes_received' => (int) $stats['bytes_received'],
+                'http_code'      => (int) $http,
+                'curl_errno'     => (int) $errno,
+            ];
+        }
+
+        if ($http !== 200) {
+            return $this->RequestError('Unexpected HTTP status: ' . (string) $http);
+        }
+
+        return [
+            'authorized'     => true,
+            'success'        => false,
+            'errors'         => ['nextUpdate not found in response (within rolling window).'],
+            'bytes_received' => (int) $stats['bytes_received'],
+            'http_code'      => (int) $http,
+            'curl_errno'     => (int) $errno,
+        ];
     }
 }
