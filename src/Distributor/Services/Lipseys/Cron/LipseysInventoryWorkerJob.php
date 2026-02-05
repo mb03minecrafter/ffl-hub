@@ -36,14 +36,6 @@ final class LipseysInventoryWorkerJob
     private const MAX_WARNINGS_LOGGED = 25;
     private const MAX_CREATE_TABLE_CHARS = 1200;
 
-    /**
-     * Worker behavior:
-     * - Reads last_seen_version/next_update_unix from options for context.
-     * - ALWAYS runs the heavy PricingAndQuantityToTsv + DB apply (source of truth).
-     * - Marks last_applied_version = current last_seen_version (if present).
-     * - Extracts nextUpdate from TSV streaming stats (no NextUpdateFast call).
-     * - Persists nextUpdate into options and schedules the NEXT singleton worker at nextUpdate + skew.
-     */
     public static function run(DoubleBufferedFulfillmentTable $table): void
     {
         $t0 = microtime(true);
@@ -80,7 +72,6 @@ final class LipseysInventoryWorkerJob
             $stats = self::run_heavy_inventory_update($table, $client);
         } catch (\Throwable $e) {
             self::log('HEAVY UPDATE FAILED', ['error' => $e->getMessage()]);
-            // Even if heavy fails, we still attempt to keep the chain alive.
             self::schedule_next_worker_fallback('heavy_failed');
             self::log('RUN END', ['elapsed_ms' => (int) round((microtime(true) - $t0) * 1000)]);
             return;
@@ -96,7 +87,6 @@ final class LipseysInventoryWorkerJob
             'elapsed_ms'      => (int) round((microtime(true) - $t0) * 1000),
         ]);
 
-        // Extract nextUpdate from TSV stats (source-of-truth: the same payload we just streamed)
         $nextRaw  = is_array($stats) ? (string) ($stats['next_update_raw'] ?? '') : '';
         $nextUnix = is_array($stats) ? (int) ($stats['next_update_unix'] ?? 0) : 0;
 
@@ -112,7 +102,6 @@ final class LipseysInventoryWorkerJob
             'next_unix' => $nextUnix > 0 ? $nextUnix : null,
         ]);
 
-        // Chain schedule next worker
         self::schedule_next_worker($nextUnix, $nextRaw);
 
         self::log('RUN END', [
@@ -120,10 +109,6 @@ final class LipseysInventoryWorkerJob
         ]);
     }
 
-    /**
-     * Runs the heavy stream->TSV + LOAD DATA flow.
-     * Returns an array including next_update_raw/next_update_unix (added via LipseysClient changes).
-     */
     private static function run_heavy_inventory_update(DoubleBufferedFulfillmentTable $table, LipseysClient $client): array
     {
         $t0 = microtime(true);
@@ -167,7 +152,6 @@ final class LipseysInventoryWorkerJob
 
         self::log('STREAM COMPLETE', is_array($stats) ? $stats : ['stats' => $stats]);
 
-        // TSV sanity check: first line, field count
         self::debug_tsv_sample($tsv);
 
         $apply = self::apply_load_data($tsv, $live_table);
@@ -194,9 +178,7 @@ final class LipseysInventoryWorkerJob
             ? (int) max($now + 10, $next_unix + self::WORKER_SKEW_SEC)
             : (int) ($now + self::FALLBACK_RETRY_SEC);
 
-        // Enforce singleton: wipe any pending actions for this signature, then schedule exactly one.
         as_unschedule_all_actions(self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
-
         as_schedule_single_action($target, self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
 
         self::log('Next worker scheduled (self-chain)', [
@@ -227,49 +209,69 @@ final class LipseysInventoryWorkerJob
         ]);
     }
 
+    /**
+     * FIXED:
+     * - Stage table is minimal and matches the TSV columns.
+     * - LOAD DATA specifies the exact column list (and strips trailing \r).
+     */
     private static function apply_load_data(string $tsv, string $live): array
     {
         global $wpdb;
 
         $pid = function_exists('getmypid') ? (int) getmypid() : (int) wp_rand(1000, 9999);
-        $stage = $wpdb->prefix . 'fflhub_lipseys_stage_' . $pid;
+        $stage = $wpdb->prefix . 'fflhub_lipseys_pq_stage_' . $pid;
 
         $wpdb->query("DROP TABLE IF EXISTS {$stage}");
 
-        // Environment debug (sql_mode / local_infile)
         self::db_debug_env();
+        self::db_debug_create_table($live, 'LIVE');
 
-        $created = $wpdb->query("CREATE TABLE {$stage} LIKE {$live}");
+        // Minimal stage schema for pricing/quantity updates (no NOT NULL traps, matches TSV)
+        $created = $wpdb->query("
+            CREATE TABLE {$stage} (
+                lipseys_item_number VARCHAR(64) NOT NULL,
+                inventory_quantity  VARCHAR(32) NULL,
+                allocation_status   VARCHAR(64) NULL,
+                distributor_price   VARCHAR(32) NULL,
+                retail_map          VARCHAR(32) NULL,
+                PRIMARY KEY (lipseys_item_number)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
         if ($created === false) {
             throw new \RuntimeException('Stage create failed: ' . (string) $wpdb->last_error);
         }
 
-        // Log CREATE TABLE (trimmed)
-        self::db_debug_create_table($live, 'LIVE');
         self::db_debug_create_table($stage, 'STAGE');
 
         $path = str_replace('\\', '\\\\', $tsv);
         $path = str_replace("'", "\\'", $path);
 
+        // Use user variables so we can clean \r and convert empty strings -> NULL
         $sql_load = "
             LOAD DATA LOCAL INFILE '{$path}'
             INTO TABLE {$stage}
             FIELDS TERMINATED BY '\t'
             LINES TERMINATED BY '\n'
+            (@item, @qty, @alloc, @price, @map)
+            SET
+                lipseys_item_number = NULLIF(TRIM(REPLACE(@item, '\r', '')), ''),
+                inventory_quantity  = NULLIF(TRIM(REPLACE(@qty,  '\r', '')), ''),
+                allocation_status   = NULLIF(TRIM(REPLACE(@alloc,'\r', '')), ''),
+                distributor_price   = NULLIF(TRIM(REPLACE(@price,'\r', '')), ''),
+                retail_map          = NULLIF(TRIM(REPLACE(@map,  '\r', '')), '')
         ";
 
-        $loaded = $wpdb->query($sql_load);
-        if ($loaded === false) {
+        $loaded_affected = $wpdb->query($sql_load);
+        if ($loaded_affected === false) {
             $wpdb->query("DROP TABLE IF EXISTS {$stage}");
             throw new \RuntimeException('LOAD DATA failed: ' . (string) $wpdb->last_error);
         }
 
-        // DEBUG: count rows in stage + SHOW WARNINGS after LOAD
         $stage_count_after_load = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$stage}") ?? 0);
         $warn_load = self::db_get_warnings();
 
         self::log('DB DEBUG: LOAD RESULT', [
-            'rows_loaded_affected' => (int) $loaded,
+            'rows_loaded_affected' => (int) $loaded_affected,
             'stage_count'          => $stage_count_after_load,
             'last_error'           => (string) $wpdb->last_error,
             'warnings_count'       => count($warn_load),
@@ -287,17 +289,16 @@ final class LipseysInventoryWorkerJob
               L.retail_map         = S.retail_map
         ";
 
-        $updated = $wpdb->query($sql_update);
-        if ($updated === false) {
+        $updated_affected = $wpdb->query($sql_update);
+        if ($updated_affected === false) {
             $wpdb->query("DROP TABLE IF EXISTS {$stage}");
             throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
         }
 
-        // DEBUG: SHOW WARNINGS after UPDATE
         $warn_update = self::db_get_warnings();
 
         self::log('DB DEBUG: UPDATE RESULT', [
-            'rows_updated_affected' => (int) $updated,
+            'rows_updated_affected' => (int) $updated_affected,
             'last_error'            => (string) $wpdb->last_error,
             'warnings_count'        => count($warn_update),
             'warnings_sample'       => self::truncate_array($warn_update, self::MAX_WARNINGS_LOGGED),
@@ -306,12 +307,14 @@ final class LipseysInventoryWorkerJob
         $wpdb->query("DROP TABLE IF EXISTS {$stage}");
 
         return [
-            'rows_updated' => (int) $updated,
-            'rows_loaded'  => (int) $loaded,
-            'stage_table'  => (string) $stage,
-            'stage_count'  => (int) $stage_count_after_load,
-            'load_warns'   => count($warn_load),
-            'update_warns' => count($warn_update),
+            // Prefer real counts over "affected rows" for LOAD DATA (since affected can be 0 depending on driver)
+            'rows_loaded'          => $stage_count_after_load,
+            'rows_loaded_affected' => (int) $loaded_affected,
+            'rows_updated'         => (int) $updated_affected,
+            'stage_table'          => (string) $stage,
+            'stage_count'          => (int) $stage_count_after_load,
+            'load_warns'           => count($warn_load),
+            'update_warns'         => count($warn_update),
         ];
     }
 
@@ -322,17 +325,12 @@ final class LipseysInventoryWorkerJob
         $sql_mode = null;
         $local_infile = null;
 
-        try {
-            $sql_mode = $wpdb->get_var("SELECT @@SESSION.sql_mode");
-        } catch (\Throwable $e) {}
-
-        try {
-            $local_infile = $wpdb->get_var("SELECT @@GLOBAL.local_infile");
-        } catch (\Throwable $e) {}
+        try { $sql_mode = $wpdb->get_var("SELECT @@SESSION.sql_mode"); } catch (\Throwable $e) {}
+        try { $local_infile = $wpdb->get_var("SELECT @@GLOBAL.local_infile"); } catch (\Throwable $e) {}
 
         self::log('DB DEBUG: ENV', [
-            'sql_mode'      => is_string($sql_mode) ? $sql_mode : null,
-            'local_infile'  => is_scalar($local_infile) ? (string) $local_infile : null,
+            'sql_mode'     => is_string($sql_mode) ? $sql_mode : null,
+            'local_infile' => is_scalar($local_infile) ? (string) $local_infile : null,
         ]);
     }
 
@@ -359,20 +357,14 @@ final class LipseysInventoryWorkerJob
         }
     }
 
-    /**
-     * Returns SHOW WARNINGS rows as array of {Level, Code, Message}
-     */
     private static function db_get_warnings(): array
     {
         global $wpdb;
 
         try {
             $rows = $wpdb->get_results("SHOW WARNINGS", ARRAY_A);
-            if (!is_array($rows)) {
-                return [];
-            }
+            if (!is_array($rows)) return [];
 
-            // Normalize keys
             $out = [];
             foreach ($rows as $r) {
                 if (!is_array($r)) continue;
@@ -427,9 +419,6 @@ final class LipseysInventoryWorkerJob
         return substr($s, 0, $max) . '…';
     }
 
-    /**
-     * @param array<int,mixed> $arr
-     */
     private static function truncate_array(array $arr, int $max): array
     {
         if ($max <= 0) return [];
