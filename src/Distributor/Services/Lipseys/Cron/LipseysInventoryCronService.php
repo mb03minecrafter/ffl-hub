@@ -46,9 +46,42 @@ final class LipseysInventoryCronService extends AbstractTableCronService
         );
     }
 
-    public function get_cron_hook_name(): string { return self::CRON_HOOK; }
-    protected function get_interval_seconds(): int { return 600; }
-    public function get_action_group(): string { return self::WORKER_GROUP; }
+    public function get_cron_hook_name(): string
+    {
+        return self::CRON_HOOK;
+    }
+    protected function get_interval_seconds(): int
+    {
+        return 600;
+    }
+    public function get_action_group(): string
+    {
+        return self::WORKER_GROUP;
+    }
+
+
+    /**
+     * IMPORTANT:
+     * - Also unschedule singleton worker(s) on deactivation.
+     * - Parent removes the recurring action for CRON_HOOK.
+     */
+    public function on_deactivation(): void
+    {
+        // 1) Remove the recurring cron action (CRON_HOOK, args=[], group=fflhub_catalog)
+        parent::on_deactivation();
+
+        // 2) Remove any pending worker actions (singleton signature)
+        if (function_exists('as_unschedule_all_actions')) {
+            as_unschedule_all_actions(
+                LipseysInventoryWorkerJob::HOOK,
+                self::WORKER_ARGS,
+                self::WORKER_GROUP
+            );
+        }
+
+        // Optional: log for visibility (won't break if logging disabled)
+        $this->log('DEACTIVATION: unscheduled recurring + worker actions');
+    }
 
     /**
      * Bootstrap/repair loop:
