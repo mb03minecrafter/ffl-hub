@@ -53,7 +53,7 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
      */
     protected function get_interval_seconds(): int
     {
-        return 2 * HOUR_IN_SECONDS;
+        return 60;
     }
 
     public function get_action_group(): string
@@ -80,7 +80,6 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         $t_start   = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
-        // Allow long-running download/import if needed.
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
@@ -98,10 +97,10 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         $creds   = $this->get_ftp_credentials();
 
         $this->profile('Credentials retrieval', $t_creds, [
-            'ok'      => is_array($creds),
-            'has_host'=> is_array($creds) ? (bool) ($creds['host'] ?? '') : false,
-            'has_user'=> is_array($creds) ? (bool) ($creds['username'] ?? '') : false,
-            'has_ssl' => is_array($creds) ? (bool) ($creds['use_ssl'] ?? false) : false,
+            'ok'       => is_array($creds),
+            'has_host' => is_array($creds) ? (bool) ($creds['host'] ?? '') : false,
+            'has_user' => is_array($creds) ? (bool) ($creds['username'] ?? '') : false,
+            'has_ssl'  => is_array($creds) ? (bool) ($creds['use_ssl'] ?? false) : false,
         ]);
 
         if (!is_array($creds)) {
@@ -114,7 +113,7 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         $password = (string) $creds['password'];
         $use_ssl  = (bool) $creds['use_ssl'];
 
-        // Where to save the file locally.
+        // Local save dir.
         $uploads  = wp_upload_dir();
         $base_dir = trailingslashit($uploads['basedir']) . 'fflhub-rsr';
 
@@ -130,25 +129,23 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         }
 
         $file_name      = 'fulfillment-inv-new.txt';
-        $local_path     = trailingslashit($base_dir) . $file_name; // extracted TXT path
+        $local_path     = trailingslashit($base_dir) . $file_name;
         $zip_name       = 'fulfillment-inv-new.zip';
         $local_zip_path = trailingslashit($base_dir) . $zip_name;
 
-        // Remote path on RSR FTP.
         $remote_path = '/ftpdownloads/fulfillment-inv-new.zip';
 
         $this->profile('Prepare local paths', $t_paths, [
-            'base_dir'        => (string) $base_dir,
-            'remote_zip'      => (string) $remote_path,
-            'local_zip_path'  => (string) $local_zip_path,
-            'local_txt_path'  => (string) $local_path,
+            'base_dir'       => (string) $base_dir,
+            'remote_zip'     => (string) $remote_path,
+            'local_zip_path' => (string) $local_zip_path,
+            'local_txt_path' => (string) $local_path,
         ]);
 
-        // 1) Download the file.
-        $t_download = microtime(true);
+        // 1) Connect FTP.
+        $t_ftp = microtime(true);
 
         $ftp = new RSRFTPService($host, $username, $password, $use_ssl);
-
         if (!$ftp->is_connected()) {
             update_option('fflhub_rsr_fulfillment_last_download_error', current_time('mysql'));
 
@@ -157,28 +154,81 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
                 'use_ssl' => $use_ssl ? 1 : 0,
             ]);
 
-            $this->profile('FTP connection (failed)', $t_download);
+            $this->profile('FTP connection (failed)', $t_ftp);
             $this->finalize_run($t_start, $mem_start, 'ERROR (FTP connection failed)');
             return;
         }
 
-        // Optional: size before download (helps detect stale/partial files)
-        $zip_size_before = file_exists($local_zip_path) ? (int) filesize($local_zip_path) : 0;
+        // -----------------------------
+        // NEW: FTP meta gate (mtime/size)
+        // -----------------------------
+        $t_meta = microtime(true);
 
+        $remote_mtime = (int) $ftp->get_remote_mtime($remote_path); // 0 if unsupported
+        $remote_size  = (int) $ftp->get_remote_size($remote_path);  // -1 if unsupported
+
+        $last_applied_mtime = (int) get_option('fflhub_rsr_fulfillment_last_applied_mtime', 0);
+
+        update_option('fflhub_rsr_fulfillment_last_seen_mtime', $remote_mtime);
+        if ($remote_size >= 0) {
+            update_option('fflhub_rsr_fulfillment_last_seen_size', $remote_size);
+        }
+
+        $this->profile('FTP meta check (mtime/size)', $t_meta, [
+            'remote_mtime'       => $remote_mtime > 0 ? $remote_mtime : null,
+            'remote_size_bytes'  => $remote_size >= 0 ? $remote_size : null,
+            'last_applied_mtime' => $last_applied_mtime > 0 ? $last_applied_mtime : null,
+            'changed'            => ($remote_mtime > 0 && $remote_mtime > $last_applied_mtime) ? 1 : 0,
+        ]);
+
+        // If MDTM works and unchanged, skip heavy path.
+        if ($remote_mtime > 0 && $remote_mtime <= $last_applied_mtime) {
+            $this->log('No update available (remote mtime unchanged) — skipping download/import/swap', [
+                'remote_mtime'       => $remote_mtime,
+                'last_applied_mtime' => $last_applied_mtime,
+                'remote_size_bytes'  => $remote_size >= 0 ? $remote_size : null,
+            ]);
+
+            $this->finalize_run($t_start, $mem_start, 'SUCCESS (no change)');
+            return;
+        }
+
+        // Optional but recommended: size stability guard (avoid mid-upload)
+        if ($remote_mtime > 0 && $remote_mtime > $last_applied_mtime && $remote_size >= 0) {
+            usleep(250000); // 0.25s
+            $remote_size2 = (int) $ftp->get_remote_size($remote_path);
+            if ($remote_size2 >= 0 && $remote_size2 !== $remote_size) {
+                $this->log('Remote file still changing (size unstable) — deferring', [
+                    'size1'       => $remote_size,
+                    'size2'       => $remote_size2,
+                    'remote_mtime' => $remote_mtime,
+                ]);
+                $this->finalize_run($t_start, $mem_start, 'SUCCESS (defer; unstable remote file)');
+                return;
+            }
+        }
+
+        // 2) Download ZIP + extract TXT.
+        $t_download = microtime(true);
+
+        // IMPORTANT: Your RSRFTPService deletes ZIP by default after extract.
+        // If you want zip_size_after to be meaningful, pass delete_zip_after=false.
         $ok = $ftp->download_zip_file(
             $remote_path,
             $local_zip_path,
-            $base_dir
+            $base_dir,
+            false // keep zip so we can inspect/size/log; you can unlink after if you want
         );
 
         $zip_size_after = file_exists($local_zip_path) ? (int) filesize($local_zip_path) : 0;
         $txt_exists     = file_exists($local_path);
+        $txt_size_after = $txt_exists ? (int) filesize($local_path) : 0;
 
         $this->profile('FTP download', $t_download, [
-            'ok'              => $ok ? 1 : 0,
-            'zip_kb_before'   => $zip_size_before > 0 ? (int) round($zip_size_before / 1024) : 0,
-            'zip_kb_after'    => $zip_size_after > 0 ? (int) round($zip_size_after / 1024) : 0,
-            'txt_extracted'   => $txt_exists ? 1 : 0,
+            'ok'             => $ok ? 1 : 0,
+            'zip_kb_after'   => $zip_size_after > 0 ? (int) round($zip_size_after / 1024) : 0,
+            'txt_extracted'  => $txt_exists ? 1 : 0,
+            'txt_kb_after'   => $txt_size_after > 0 ? (int) round($txt_size_after / 1024) : 0,
         ]);
 
         if (!$ok) {
@@ -188,7 +238,9 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             return;
         }
 
-        // Success: mark last download.
+        // If you don’t want to retain the ZIP, delete it here after extraction.
+        @unlink($local_zip_path);
+
         update_option('fflhub_rsr_fulfillment_last_download', current_time('mysql'));
         delete_option('fflhub_rsr_fulfillment_last_download_error');
 
@@ -196,10 +248,10 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             $this->log('WARNING: expected extracted TXT not found after download', [
                 'local_txt_path' => (string) $local_path,
             ]);
-            // keep going; importer may still find a path depending on its own logic
+            // keep going; importer may handle its own paths
         }
 
-        // 2) Import the downloaded file into the staging table.
+        // 3) Import into staging.
         $t_import = microtime(true);
 
         $count = 0;
@@ -225,7 +277,7 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             return;
         }
 
-        // 3) Swap staging ↔ live, so new data goes live atomically.
+        // 4) Swap staging ↔ live.
         $t_swap = microtime(true);
 
         $new_live = '';
@@ -248,11 +300,18 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         update_option('fflhub_rsr_fulfillment_last_import_count', (int) $count);
         update_option('fflhub_rsr_fulfillment_last_swap', current_time('mysql'));
 
+        // Mark applied mtime ONLY after a successful import+swap
+        if ($remote_mtime > 0) {
+            update_option('fflhub_rsr_fulfillment_last_applied_mtime', $remote_mtime);
+        }
+
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
             'imported_rows' => (int) $count,
             'new_live'      => (string) $new_live,
+            'remote_mtime'  => $remote_mtime > 0 ? $remote_mtime : null,
         ]);
     }
+
 
     /**
      * Retrieve and validate FTP credentials from RSR distributor settings.

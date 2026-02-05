@@ -49,7 +49,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
 
     protected function get_interval_seconds(): int
     {
-        return 5 * MINUTE_IN_SECONDS;
+        return 1 * MINUTE_IN_SECONDS;
     }
 
     public function get_action_group(): string
@@ -128,7 +128,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
             'live_table' => (string) $this->table->get_live_table_name(),
         ]);
 
-        // 1) Download the file via FTP.
+        // 1) Connect (and metadata gate).
         $t_ftp = microtime(true);
 
         $ftp = new RSRFTPService($host, $username, $password, $use_ssl);
@@ -143,6 +143,68 @@ final class RSRInventoryCronService extends AbstractTableCronService
             return;
         }
 
+        // --- NEW: remote last-modified gate (skip heavy work when file unchanged) ---
+        // Requires RSRFTPService methods:
+        // - get_remote_mtime(string $remote_path): int   (unix ts, 0 on unknown)
+        // - get_remote_size(string $remote_path): int    (bytes, -1 on unknown)
+        $t_meta = microtime(true);
+
+        $remote_mtime = (int) ($ftp->get_remote_mtime($remote_path) ?? 0);
+        $remote_size  = (int) ($ftp->get_remote_size($remote_path) ?? -1);
+
+        $last_applied_mtime = (int) get_option('fflhub_rsr_qty_last_applied_mtime', 0);
+
+        // Persist what we saw (handy for debugging / admin screen)
+        update_option('fflhub_rsr_qty_last_seen_mtime', $remote_mtime);
+        if ($remote_size >= 0) {
+            update_option('fflhub_rsr_qty_last_seen_size', $remote_size);
+        }
+
+        $this->profile('FTP meta check (mtime/size)', $t_meta, [
+            'remote_mtime'        => $remote_mtime > 0 ? $remote_mtime : null,
+            'remote_size_bytes'   => $remote_size >= 0 ? $remote_size : null,
+            'last_applied_mtime'  => $last_applied_mtime > 0 ? $last_applied_mtime : null,
+            'changed'             => ($remote_mtime > 0 && $remote_mtime > $last_applied_mtime) ? 1 : 0,
+        ]);
+
+        // If server doesn't support MDTM, we can't reliably gate—fall through to normal behavior.
+        // If MDTM works and file unchanged, skip download + DB work.
+        if ($remote_mtime > 0 && $remote_mtime <= $last_applied_mtime) {
+            $this->log('No update available (remote mtime unchanged) — skipping download/apply', [
+                'remote_mtime'       => $remote_mtime,
+                'last_applied_mtime' => $last_applied_mtime,
+                'remote_size_bytes'  => $remote_size >= 0 ? $remote_size : null,
+            ]);
+
+            // Not an error; we simply had nothing new to apply.
+            $this->finalize_run($t_start, $mem_start, 'SUCCESS (no change)');
+            return;
+        }
+
+
+
+
+        if ($remote_mtime > 0 && $remote_mtime > $last_applied_mtime) {
+            // ensure file size is stable for 2 seconds before downloading
+            if ($remote_size >= 0) {
+                usleep(250000); // 0.25s
+                $remote_size2 = (int) $ftp->get_remote_size($remote_path);
+
+                if ($remote_size2 >= 0 && $remote_size2 !== $remote_size) {
+                    $this->log('Remote file still changing (size unstable) — deferring', [
+                        'size1' => $remote_size,
+                        'size2' => $remote_size2,
+                        'remote_mtime' => $remote_mtime,
+                    ]);
+                    $this->finalize_run($t_start, $mem_start, 'SUCCESS (defer; unstable remote file)');
+                    return;
+                }
+            }
+        }
+
+
+
+        // 2) Download the file via FTP.
         $csv_kb_before = file_exists($local_path) ? (int) round(((int) filesize($local_path)) / 1024) : 0;
 
         $ok = $ftp->download_file($remote_path, $local_path);
@@ -167,15 +229,15 @@ final class RSRInventoryCronService extends AbstractTableCronService
         update_option('fflhub_rsr_inventory_last_download', current_time('mysql'));
         delete_option('fflhub_rsr_inventory_last_download_error');
 
-        // 2) Apply inventory updates to live table (LOAD DATA + JOIN).
+        // 3) Apply inventory updates to live table (LOAD DATA + JOIN).
         $t_apply = microtime(true);
 
         $processed_rows = 0;
         $apply_stats    = [];
 
         try {
-            $apply_stats = $this->apply_inventory_updates_via_load_data_profiled($local_path);
-            $processed_rows = (int) ($apply_stats['processed_rows'] ?? 0);
+            $apply_stats     = $this->apply_inventory_updates_via_load_data_profiled($local_path);
+            $processed_rows  = (int) ($apply_stats['processed_rows'] ?? 0);
         } catch (\Throwable $e) {
             $this->log('ERROR: exception applying inventory updates', [
                 'error' => $e->getMessage(),
@@ -190,10 +252,17 @@ final class RSRInventoryCronService extends AbstractTableCronService
         update_option('fflhub_rsr_inventory_last_update', current_time('mysql'));
         update_option('fflhub_rsr_inventory_last_update_count', (int) $processed_rows);
 
+        // --- NEW: mark applied mtime (only if server gave us one) ---
+        if ($remote_mtime > 0) {
+            update_option('fflhub_rsr_qty_last_applied_mtime', $remote_mtime);
+        }
+
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
             'processed_rows' => (int) $processed_rows,
+            'remote_mtime'   => $remote_mtime > 0 ? $remote_mtime : null,
         ]);
     }
+
 
     /**
      * Bulk-load IM-QTY-CSV.csv into a staging table via LOAD DATA LOCAL INFILE,
