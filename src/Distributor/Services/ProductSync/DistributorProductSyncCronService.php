@@ -614,21 +614,18 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
     private function log(string $msg): void
     {
-        return; //off
         DebugLogUtil::log(self::DEBUG_CONST, self::LOG_PREFIX, $msg);
     }
 
     /** @param array<string,mixed> $ctx */
     private function log_ctx(string $msg, array $ctx): void
     {
-        return; //off
         DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
     }
 
     /** @param array<string,mixed> $ctx */
     private function profile(string $label, float $t0, array $ctx = array()): void
     {
-        return; //off
         $ctx['elapsed_ms'] = number_format($this->ms_since($t0), 2, '.', '');
         DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, 'PROFILE: ' . $label, $ctx);
     }
