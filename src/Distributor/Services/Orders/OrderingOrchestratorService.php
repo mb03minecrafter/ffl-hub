@@ -121,6 +121,20 @@ final class OrderingOrchestratorService
 
         $oid = (int) $order->get_id();
 
+
+        // Atomic “claim” to prevent concurrent double-start.
+        $lock_key = '_fflhub_order_place_pipeline_lock';
+
+
+        //this is extra security to make sure we dont order twice. I want to be able to sleep at night
+        // add_post_meta returns false if meta already exists when $unique=true.
+        $locked = add_post_meta($oid, $lock_key, (string) time(), true);
+        if (!$locked) {
+            // Another request already claimed pipeline start.
+            return;
+        }
+
+
         if (OrderPlacementPipelineMetaStore::get_pipeline_started($order)) {
             return;
         }
