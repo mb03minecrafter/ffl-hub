@@ -35,6 +35,22 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
      */
     private const LOG_PREFIX = '[FFLHUB][RSRFulfillmentCron]';
 
+    /**
+     * Option key used to rate-limit FTP meta checks (avoid repeated handshakes).
+     */
+    private const OPT_LAST_CHECKED_AT = 'fflhub_rsr_fulfillment_last_checked_at';
+
+    /**
+     * Vendor updates ~ every 2 hours.
+     * After we successfully applied a new mtime, skip FTP for a while to save connection cost.
+     */
+    private const FTP_COOLDOWN_SECONDS = 2700; // 45 minutes
+
+    /**
+     * Hard minimum gap between FTP checks (guards overlaps / double-runs).
+     */
+    private const FTP_MIN_CHECK_GAP_SECONDS = 300; // 5 minutes
+
     public function __construct(DoubleBufferedFulfillmentTable $table)
     {
         parent::__construct($table);
@@ -50,6 +66,7 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
 
     /**
      * Interval length in seconds.
+     * (You can keep this frequent; cooldown+throttle will prevent expensive FTP connects.)
      */
     protected function get_interval_seconds(): int
     {
@@ -142,6 +159,39 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             'local_txt_path' => (string) $local_path,
         ]);
 
+        // ---------------------------------------------------------------------
+        // FTP connect throttle (skip FTP entirely to avoid handshake cost)
+        // ---------------------------------------------------------------------
+        $now = time();
+
+        // Hard rate-limit: if a recent run already checked, don't connect again.
+        $last_checked_at = (int) get_option(self::OPT_LAST_CHECKED_AT, 0);
+        if ($last_checked_at > 0 && ($now - $last_checked_at) < self::FTP_MIN_CHECK_GAP_SECONDS) {
+            $this->log('FTP check throttled (recently checked) — skipping connect', [
+                'last_checked_at' => $last_checked_at,
+                'age_sec'         => (int) ($now - $last_checked_at),
+                'min_gap_sec'     => (int) self::FTP_MIN_CHECK_GAP_SECONDS,
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'SUCCESS (throttle; recent check)');
+            return;
+        }
+
+        // Cooldown after we *know* we just applied a change: skip FTP for a while.
+        $last_applied_mtime = (int) get_option('fflhub_rsr_fulfillment_last_applied_mtime', 0);
+        if ($last_applied_mtime > 0 && $now < ($last_applied_mtime + self::FTP_COOLDOWN_SECONDS)) {
+            $this->log('Cooldown after last applied change — skipping FTP connect', [
+                'last_applied_mtime' => $last_applied_mtime,
+                'cooldown_sec'       => (int) self::FTP_COOLDOWN_SECONDS,
+                'skip_for_sec'       => (int) (($last_applied_mtime + self::FTP_COOLDOWN_SECONDS) - $now),
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'SUCCESS (cooldown)');
+            return;
+        }
+
+        // Record that we are about to perform an FTP check (prevents overlap spam).
+        // Use autoload=false to avoid polluting wp_options autoload.
+        update_option(self::OPT_LAST_CHECKED_AT, $now, false);
+
         // 1) Connect FTP.
         $t_ftp = microtime(true);
 
@@ -160,16 +210,35 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         }
 
         // -----------------------------
-        // NEW: FTP meta gate (mtime/size)
+        // FTP meta gate (mtime first, size only if needed)
         // -----------------------------
         $t_meta = microtime(true);
 
-        $remote_mtime = (int) $ftp->get_remote_mtime($remote_path); // 0 if unsupported
-        $remote_size  = (int) $ftp->get_remote_size($remote_path);  // -1 if unsupported
-
+        $remote_mtime = (int) ($ftp->get_remote_mtime($remote_path) ?? 0); // 0 if unsupported
         $last_applied_mtime = (int) get_option('fflhub_rsr_fulfillment_last_applied_mtime', 0);
 
         update_option('fflhub_rsr_fulfillment_last_seen_mtime', $remote_mtime);
+
+        // If MDTM works and unchanged, skip heavy path and avoid SIZE roundtrip.
+        if ($remote_mtime > 0 && $remote_mtime <= $last_applied_mtime) {
+            $this->profile('FTP meta check (mtime only)', $t_meta, [
+                'remote_mtime'       => $remote_mtime,
+                'last_applied_mtime' => $last_applied_mtime > 0 ? $last_applied_mtime : null,
+                'changed'            => 0,
+                'size_checked'       => 0,
+            ]);
+
+            $this->log('No update available (remote mtime unchanged) — skipping download/import/swap', [
+                'remote_mtime'       => $remote_mtime,
+                'last_applied_mtime' => $last_applied_mtime,
+            ]);
+
+            $this->finalize_run($t_start, $mem_start, 'SUCCESS (no change)');
+            return;
+        }
+
+        // Only now call SIZE (used for stability guard + logging).
+        $remote_size = (int) ($ftp->get_remote_size($remote_path) ?? -1); // -1 if unsupported
         if ($remote_size >= 0) {
             update_option('fflhub_rsr_fulfillment_last_seen_size', $remote_size);
         }
@@ -179,28 +248,17 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             'remote_size_bytes'  => $remote_size >= 0 ? $remote_size : null,
             'last_applied_mtime' => $last_applied_mtime > 0 ? $last_applied_mtime : null,
             'changed'            => ($remote_mtime > 0 && $remote_mtime > $last_applied_mtime) ? 1 : 0,
+            'size_checked'       => 1,
         ]);
-
-        // If MDTM works and unchanged, skip heavy path.
-        if ($remote_mtime > 0 && $remote_mtime <= $last_applied_mtime) {
-            $this->log('No update available (remote mtime unchanged) — skipping download/import/swap', [
-                'remote_mtime'       => $remote_mtime,
-                'last_applied_mtime' => $last_applied_mtime,
-                'remote_size_bytes'  => $remote_size >= 0 ? $remote_size : null,
-            ]);
-
-            $this->finalize_run($t_start, $mem_start, 'SUCCESS (no change)');
-            return;
-        }
 
         // Optional but recommended: size stability guard (avoid mid-upload)
         if ($remote_mtime > 0 && $remote_mtime > $last_applied_mtime && $remote_size >= 0) {
             usleep(250000); // 0.25s
-            $remote_size2 = (int) $ftp->get_remote_size($remote_path);
+            $remote_size2 = (int) ($ftp->get_remote_size($remote_path) ?? -1);
             if ($remote_size2 >= 0 && $remote_size2 !== $remote_size) {
                 $this->log('Remote file still changing (size unstable) — deferring', [
-                    'size1'       => $remote_size,
-                    'size2'       => $remote_size2,
+                    'size1'        => $remote_size,
+                    'size2'        => $remote_size2,
                     'remote_mtime' => $remote_mtime,
                 ]);
                 $this->finalize_run($t_start, $mem_start, 'SUCCESS (defer; unstable remote file)');
@@ -211,13 +269,11 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         // 2) Download ZIP + extract TXT.
         $t_download = microtime(true);
 
-        // IMPORTANT: Your RSRFTPService deletes ZIP by default after extract.
-        // If you want zip_size_after to be meaningful, pass delete_zip_after=false.
         $ok = $ftp->download_zip_file(
             $remote_path,
             $local_zip_path,
             $base_dir,
-            false // keep zip so we can inspect/size/log; you can unlink after if you want
+            false // keep zip temporarily for logging/inspection; delete after extract below
         );
 
         $zip_size_after = file_exists($local_zip_path) ? (int) filesize($local_zip_path) : 0;
@@ -225,10 +281,10 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         $txt_size_after = $txt_exists ? (int) filesize($local_path) : 0;
 
         $this->profile('FTP download', $t_download, [
-            'ok'             => $ok ? 1 : 0,
-            'zip_kb_after'   => $zip_size_after > 0 ? (int) round($zip_size_after / 1024) : 0,
-            'txt_extracted'  => $txt_exists ? 1 : 0,
-            'txt_kb_after'   => $txt_size_after > 0 ? (int) round($txt_size_after / 1024) : 0,
+            'ok'            => $ok ? 1 : 0,
+            'zip_kb_after'  => $zip_size_after > 0 ? (int) round($zip_size_after / 1024) : 0,
+            'txt_extracted' => $txt_exists ? 1 : 0,
+            'txt_kb_after'  => $txt_size_after > 0 ? (int) round($txt_size_after / 1024) : 0,
         ]);
 
         if (!$ok) {
@@ -238,7 +294,7 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             return;
         }
 
-        // If you don’t want to retain the ZIP, delete it here after extraction.
+        // Don’t retain ZIP on disk.
         @unlink($local_zip_path);
 
         update_option('fflhub_rsr_fulfillment_last_download', current_time('mysql'));
@@ -312,17 +368,13 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         ]);
     }
 
-
     /**
      * Retrieve and validate FTP credentials from RSR distributor settings.
-     *
-     * Uses the centralized Options helper so we don't hard-code option names.
      *
      * @return array{host:string,username:string,password:string,use_ssl:bool}|null
      */
     public function get_ftp_credentials(): ?array
     {
-        // Values come from RSRModule::settings_schema() via SettingsRegistrar.
         $host      = Options::get_distributor_option('rsr', 'ftp_host', '');
         $username  = Options::get_distributor_option('rsr', 'ftp_username', '');
         $password  = Options::get_distributor_option('rsr', 'ftp_password', '');
@@ -334,13 +386,10 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         $use_ssl  = ($use_ssl_s !== '');
 
         if ($host === '' || $username === '' || $password === '') {
-            $this->log(
-                'Missing FTP credentials',
-                [
-                    'host' => $host !== '' ? 'set' : 'empty',
-                    'user' => $username !== '' ? 'set' : 'empty',
-                ]
-            );
+            $this->log('Missing FTP credentials', [
+                'host' => $host !== '' ? 'set' : 'empty',
+                'user' => $username !== '' ? 'set' : 'empty',
+            ]);
             return null;
         }
 

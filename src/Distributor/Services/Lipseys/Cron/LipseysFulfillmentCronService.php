@@ -270,6 +270,7 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
 
     private function log(string $msg, array $ctx = []): void
     {
+        return; //off
         empty($ctx)
             ? DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $msg)
             : DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $msg, $ctx);

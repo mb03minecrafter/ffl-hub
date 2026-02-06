@@ -521,6 +521,7 @@ final class LipseysInventoryWorkerJob
 
     private static function log(string $msg, array $ctx = []): void
     {
+        return; //off
         DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $msg, $ctx);
     }
 
