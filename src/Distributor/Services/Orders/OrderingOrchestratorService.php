@@ -131,6 +131,7 @@ final class OrderingOrchestratorService
         $locked = add_post_meta($oid, $lock_key, (string) time(), true);
         if (!$locked) {
             // Another request already claimed pipeline start.
+            error_log("BIG ERROR, SEE LINE 134 in the ORDERING ORCH SERVICE FILE!");
             return;
         }
 
