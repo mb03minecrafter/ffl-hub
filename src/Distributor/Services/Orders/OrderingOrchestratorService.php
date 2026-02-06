@@ -71,7 +71,7 @@ final class OrderingOrchestratorService
      */
     public function register(): void
     {
-        add_action('woocommerce_order_status_changed', [$this, 'handle_status_changed'], 10, 4);
+        add_action('woocommerce_payment_complete', [$this, 'handle_payment_complete'], 10, 1); //ONLY ORDER WHEN THE PAYMENT IS COMPLETE TO AVOID GETTING FUCKED
     }
 
     /**
@@ -90,7 +90,7 @@ final class OrderingOrchestratorService
         $old_s = (string) $old_status;
         $new_s = (string) $new_status;
 
-        
+
 
         if ($new_s !== 'processing') {
             return;
@@ -106,6 +106,18 @@ final class OrderingOrchestratorService
             ]);
             return;
         }
+
+
+        // If we aint paid, they aint getting the product.
+        if (!$order->is_paid()) {
+            $this->log_ctx('skip_not_paid', [
+                'order_id' => $order_id_i,
+                'status'   => $order->get_status(),
+            ]);
+            return;
+        }
+
+
 
         $oid = (int) $order->get_id();
 
