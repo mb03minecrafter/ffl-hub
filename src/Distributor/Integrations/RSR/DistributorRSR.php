@@ -625,12 +625,6 @@ class DistributorRSR extends DistributorBase
             60
         );
 
-
-
-
-
-
-
         if (!is_array($resp) || empty($resp['ok'])) {
             return null;
         }
@@ -640,22 +634,23 @@ class DistributorRSR extends DistributorBase
             return null;
         }
 
-        /**
-         * RSR may return CSV fields:
-         *  - TrackingNum: "1Z...,7259..."
-         *  - Invoices:    "400...,401..."
-         *  - DateShipped: "YYYYMMDD,YYYYMMDD"
-         *
-         * We'll normalize into lists and return a single DistributorShipment
-         * containing all unique tracking/invoice numbers seen across all rows.
-         */
-
         $tracking_numbers = [];
         $invoice_numbers  = [];
 
-        // Optional "nice to have" rollups (not in DTO yet, but useful to keep in raw)
         $date_shipped_values = [];
         $warehouses          = [];
+
+        // Tracking sentinels we should NOT treat as real tracking numbers, this is because RSR is dumb and shows we shipped even if the tracking number is only pending... dumb
+        $bad_tracking = [
+            'pending',
+            'tbd',
+            'n/a',
+            'na',
+            'none',
+            'null',
+            'unknown',
+            '-', // sometimes vendors send "-"
+        ];
 
         foreach ($items as $row) {
             if (!is_array($row)) {
@@ -667,9 +662,34 @@ class DistributorRSR extends DistributorBase
             if ($tracking_raw !== '') {
                 foreach (preg_split('/\s*,\s*/', $tracking_raw) as $t) {
                     $t = trim((string) $t);
-                    if ($t !== '') {
-                        $tracking_numbers[] = $t;
+                    if ($t === '') {
+                        continue;
                     }
+
+                    $t_lc = strtolower($t);
+
+                    // Drop obvious non-tracking sentinel values like "Pending"
+                    if (in_array($t_lc, $bad_tracking, true)) {
+                        continue;
+                    }
+
+                    // Drop whitespace-containing tokens (usually not real tracking)
+                    if (preg_match('/\s/', $t)) {
+                        continue;
+                    }
+
+                    // Drop pure alphabetic words (e.g., "Pending")
+                    if (preg_match('/^[a-z]+$/i', $t)) {
+                        continue;
+                    }
+
+                    // Basic length sanity check; avoids short junk tokens
+                    // (UPS/FedEx/USPS tracking are typically longer than this)
+                    if (strlen($t) < 8) {
+                        continue;
+                    }
+
+                    $tracking_numbers[] = $t;
                 }
             }
 
@@ -702,17 +722,17 @@ class DistributorRSR extends DistributorBase
         }
 
         // Dedupe while preserving order
-        $tracking_numbers = array_values(array_unique($tracking_numbers));
-        $invoice_numbers  = array_values(array_unique($invoice_numbers));
+        $tracking_numbers    = array_values(array_unique($tracking_numbers));
+        $invoice_numbers     = array_values(array_unique($invoice_numbers));
         $date_shipped_values = array_values(array_unique($date_shipped_values));
-        $warehouses = array_values(array_unique($warehouses));
+        $warehouses          = array_values(array_unique($warehouses));
 
-        // If no tracking yet, treat as "not shipped"
+        // If no VALID tracking yet, treat as "not shipped"
         if (empty($tracking_numbers)) {
             return null;
         }
 
-        // Deterministic output ordering (helps debug, diff, idempotency)
+        // Deterministic output ordering
         sort($tracking_numbers, SORT_STRING);
         sort($invoice_numbers, SORT_STRING);
         sort($date_shipped_values, SORT_STRING);
@@ -721,18 +741,19 @@ class DistributorRSR extends DistributorBase
         return new DistributorShipment(
             $tracking_numbers,
             $invoice_numbers,
-            null,   // shipping_service (RSR response doesn't provide)
-            null,   // shipping_weight  (RSR response doesn't provide)
+            null,
+            null,
             [
-                'po_number'   => $po_number,
-                'raw_items'   => $items,
-                'raw'         => $resp['raw'] ?? null,
-                'http_status' => isset($resp['http_status']) ? (int) $resp['http_status'] : 0,
+                'po_number'          => $po_number,
+                'raw_items'          => $items,
+                'raw'                => $resp['raw'] ?? null,
+                'http_status'        => isset($resp['http_status']) ? (int) $resp['http_status'] : 0,
                 'date_shipped_values' => $date_shipped_values,
-                'warehouses'          => $warehouses,
+                'warehouses'         => $warehouses,
             ]
         );
     }
+
 
     /**
      * Classify an RSR place-order failure into retryable vs fatal (NEW shape).

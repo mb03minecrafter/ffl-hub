@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Lipseys\LipseysFulfillmentImporterService;
+use FFLHub\Distributor\Services\Lipseys\LipseysFulfillmentParser;
 use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Settings\Options;
@@ -31,6 +32,7 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
 
     public function __construct(DoubleBufferedFulfillmentTable $table)
     {
+        $this->importer = new LipseysFulfillmentImporterService($table);
         parent::__construct($table);
     }
 
@@ -128,7 +130,7 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
             $columns = $schema->get_insert_columns();
 
             // 3) Item → Row mapper uses your existing parser (dropship filter happens there)
-            $parser = new \FFLHub\Distributor\Services\Lipseys\LipseysFulfillmentParser();
+            $parser = new LipseysFulfillmentParser();
 
             // Enforce "first wins" de-dupe in the streaming mapper.
             $seen_upcs = [];

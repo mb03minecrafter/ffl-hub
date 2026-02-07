@@ -9,9 +9,11 @@ if (!defined('ABSPATH')) {
 
 use WC_Email;
 use WC_Order;
-
 use FFLHub\Distributor\Models\PartialShipmentEmailContext;
 
+/**
+ * Customer email: Sent when new tracking numbers are detected for an order placement job.
+ */
 final class FFLHubPartialShipment extends WC_Email
 {
     public function __construct()
@@ -35,22 +37,19 @@ final class FFLHubPartialShipment extends WC_Email
     }
 
     /**
-     * @param int $order_id
+     * Trigger the email.
+     *
+     * @param int   $order_id
      * @param mixed $ctx
      */
     public function trigger($order_id, $ctx = null)
     {
-
         $order_id = (int) $order_id;
 
-        if (!($ctx instanceof \FFLHub\Distributor\Models\PartialShipmentEmailContext)) {
+        if (!($ctx instanceof PartialShipmentEmailContext)) {
             error_log('[FFLHUB][Email] abort: ctx not PartialShipmentEmailContext');
             return;
         }
-
-        // log deltas
-        $at = (isset($ctx->update) && isset($ctx->update->added_tracking) && is_array($ctx->update->added_tracking)) ? count($ctx->update->added_tracking) : -1;
-        $ai = (isset($ctx->update) && isset($ctx->update->added_invoices) && is_array($ctx->update->added_invoices)) ? count($ctx->update->added_invoices) : -1;
 
         if (method_exists($ctx, 'should_send') && !$ctx->should_send()) {
             error_log('[FFLHUB][Email] abort: ctx->should_send() = false');
@@ -58,27 +57,29 @@ final class FFLHubPartialShipment extends WC_Email
         }
 
         $order = wc_get_order($order_id);
-        if (!($order instanceof \WC_Order)) {
+        if (!($order instanceof WC_Order)) {
             error_log('[FFLHUB][Email] abort: order not found');
             return;
         }
 
         $this->object    = $order;
-        $this->recipient = $order->get_billing_email();
-
+        $this->recipient = (string) $order->get_billing_email();
 
         if (!$this->is_enabled() || !$this->get_recipient()) {
             error_log('[FFLHUB][Email] abort: disabled or empty recipient');
             return;
         }
 
-        $this->placeholders = [
-            '{order_number}' => $order->get_order_number(),
-        ];
+        /**
+         * IMPORTANT:
+         * Do NOT overwrite $this->placeholders or you'll clobber Woo defaults like {site_title}.
+         * Only add/override the one(s) you need.
+         */
+        $this->placeholders['{order_number}'] = $order->get_order_number();
 
         $this->setup_locale();
 
-        // Force render once so we can see if template returns empty
+        // Render HTML content using our DTO context
         $html = $this->get_content_html($ctx);
 
         $sent = $this->send(
@@ -89,14 +90,13 @@ final class FFLHubPartialShipment extends WC_Email
             $this->get_attachments()
         );
 
-
         $this->restore_locale();
     }
 
     /**
      * @param PartialShipmentEmailContext|null $ctx
      */
-    public function get_content_html($ctx = null)
+    public function get_content_html($ctx = null): string
     {
         if (!($ctx instanceof PartialShipmentEmailContext)) {
             return '';
@@ -109,7 +109,7 @@ final class FFLHubPartialShipment extends WC_Email
             [
                 'order'   => $this->object,
                 'email'   => $this,
-                'context' => $ctx, // ✅ now a DTO
+                'context' => $ctx,
             ],
             '',
             $this->template_base
@@ -121,7 +121,7 @@ final class FFLHubPartialShipment extends WC_Email
     /**
      * @param PartialShipmentEmailContext|null $ctx
      */
-    public function get_content_plain($ctx = null)
+    public function get_content_plain($ctx = null): string
     {
         if (!($ctx instanceof PartialShipmentEmailContext)) {
             return '';
@@ -134,7 +134,7 @@ final class FFLHubPartialShipment extends WC_Email
             [
                 'order'   => $this->object,
                 'email'   => $this,
-                'context' => $ctx, // ✅ now a DTO
+                'context' => $ctx,
             ],
             '',
             $this->template_base

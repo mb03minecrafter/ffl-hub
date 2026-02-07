@@ -12,15 +12,15 @@ if (!defined('ABSPATH')) {
 use FFLHub\Product\ProductMeta;
 
 // -----------------------------
-// Brand palette (tweak these to match bickhamfirearms.com)
+// Brand palette (matches your Frost override CSS)
 // -----------------------------
-// NOTE: I couldn't fetch the site colors (406), so these are safe defaults.
-// Replace these with your exact brand hex values once you pick them.
-$brand_text   = '#111111';
-$brand_muted  = '#414141';
+// Button default: #C9A24D (bronze), text: #000000
+// Hover/focus don't reliably apply in email clients, so we keep a single static button color.
+$brand_text   = '#000000';
+$brand_muted  = '#000000';
 $brand_border = 'rgba(0,0,0,.20)';
-$brand_accent = '#ffd33d';  // <- swap to your exact accent
-$brand_accent_text = '#111111';
+$brand_accent = '#C9A24D';       // bronze
+$brand_accent_text = '#000000';  // black text on bronze
 $brand_panel_bg = '#ffffff';
 
 $email_heading = $email->get_heading();
@@ -204,7 +204,7 @@ do_action('woocommerce_email_customer_details', $order, false, false, $email);
 <p style="margin: 0 0 16px; margin-top: 16px;">
     <a href="<?php echo esc_url($order->get_view_order_url()); ?>"
        class="link"
-       style="font-weight: normal; color: <?php echo esc_attr($brand_text); ?>; display: inline-block; padding: 12px 18px; text-decoration: none; border-radius: 3px; background: <?php echo esc_attr($brand_accent); ?>;">
+       style="font-weight: normal; color: <?php echo esc_attr($brand_accent_text); ?>; display: inline-block; padding: 12px 18px; text-decoration: none; border-radius: 3px; background: <?php echo esc_attr($brand_accent); ?>;">
         View order
     </a>
 </p>
