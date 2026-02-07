@@ -670,7 +670,6 @@ class DistributorRSR extends DistributorBase
 
                     // Drop obvious non-tracking sentinel values like "Pending"
                     if (in_array($t_lc, $bad_tracking, true)) {
-                        error_log($t_lc);
                         continue;
                     }
 
