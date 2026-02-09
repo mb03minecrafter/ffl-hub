@@ -18,6 +18,7 @@ use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Distributor\Services\ProductSync\DistributorProductSyncCronService;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Settings\Options;
+use FFLHub\Util\DebugLogUtil;
 
 /**
  * Central registry/aggregator for distributor instances and distributor-wide services.
@@ -77,33 +78,73 @@ class DistributorHandler
     // ---------------------------------------------------------------------
     private FFLTable $ffl_table;
 
+
+
+    private const DEBUG_CONST = 'FFLHUB_DEBUG_BOOT';
+    private const LOG_PREFIX  = '[DistributorHandler]';
+
     public function __construct(FFLTable $ffl_table)
     {
+        $t0 = microtime(true);
+        $t_last = $t0;
+        $step = 0;
+
+        $log_step = function (string $label, array $extra = []) use (&$t_last, $t0, &$step): void {
+            $now = microtime(true);
+            $delta_ms = ($now - $t_last) * 1000.0;
+            $since_ms = ($now - $t0) * 1000.0;
+            $t_last = $now;
+            $step++;
+
+            DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, 'BOOT STEP', array_merge([
+                'step' => $step,
+                'label' => $label,
+                'elapsed_ms' => round($delta_ms, 3),
+                'since_start_ms' => round($since_ms, 3),
+                'mem_kb' => (int) (memory_get_usage(true) / 1024),
+            ], $extra));
+        };
+
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, 'BOOT START', [
+            'mem_kb' => (int) (memory_get_usage(true) / 1024),
+        ]);
 
         $this->ffl_table = $ffl_table;
+        $log_step('assign ffl_table');
 
-        // Build distributor instances from module registry first.
         $this->register_distributors();
+        $log_step('register_distributors', [
+            'distributor_count' => count($this->distributors),
+        ]);
 
-        /**
-         * Product sync cron:
-         * requires handler so it can resolve enabled distributors and call into them.
-         */
         $this->productSyncCronService = new DistributorProductSyncCronService($this);
+        $log_step('new DistributorProductSyncCronService');
 
-        // Order placement jobs table + related pipeline services.
-        $this->orderSchema        = new OrderPlacementJobsSchema();
+        $this->orderSchema = new OrderPlacementJobsSchema();
+        $log_step('new OrderPlacementJobsSchema');
+
         $this->ordering_jobs_table = new OrderPlacementJobsTable($this->orderSchema);
+        $log_step('new OrderPlacementJobsTable');
 
         $this->orderPlacementOrchestratorService = new OrderingOrchestratorService($this->ordering_jobs_table);
+        $log_step('new OrderingOrchestratorService');
 
-        // Cron services require handler to reach distributor implementations.
         $this->orderPlacementCronService = new OrderingCronService($this, $this->ordering_jobs_table, $this->ffl_table);
-        $this->orderShippingCronService  = new ShippingCronService($this, $this->ordering_jobs_table);
+        $log_step('new OrderingCronService');
 
-        // Order trash hooks (not cron-based; no scheduling lifecycle needed).
+        $this->orderShippingCronService  = new ShippingCronService($this, $this->ordering_jobs_table);
+        $log_step('new ShippingCronService');
+
         $this->orderTrashJobsService = new OrderTrashJobsService($this->ordering_jobs_table);
+        $log_step('new OrderTrashJobsService');
+
+        $total_ms = (microtime(true) - $t0) * 1000.0;
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, 'BOOT END', [
+            'total_ms' => round($total_ms, 3),
+            'mem_kb' => (int) (memory_get_usage(true) / 1024),
+        ]);
     }
+
 
     /**
      * Build distributors from the module registry.

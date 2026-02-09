@@ -70,6 +70,10 @@ define('FFLHUB_TRASH_ORDER_JOBS_DEBUG', false);
 // Shipping / tracking.
 define('FFLHUB_DEBUG_SHIPPING', false);
 
+
+//init profiling
+define('FFLHUB_DEBUG_BOOT', true);
+
 /**
  * -------------------------------------------------------------------------
  * i18n + Woo Checkout Requirements
