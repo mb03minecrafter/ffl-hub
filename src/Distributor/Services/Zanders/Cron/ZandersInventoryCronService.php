@@ -43,7 +43,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
     private const LOCAL_DIR      = 'fflhub-zanders';
     private const LOCAL_FILENAME = 'liveinv.csv';
 
-    private const FORCE_UPDATE = true;
+    private const FORCE_UPDATE = false;
 
 
     public function __construct(DoubleBufferedFulfillmentTable $table)
