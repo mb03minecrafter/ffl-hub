@@ -9,17 +9,21 @@ if ( ! defined( 'ABSPATH' ) ) {
 use FFLHub\Distributor\Services\DistributorServicesBase;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Distributor\Services\Zanders\Cron\ZandersFulfillmentCronService;
+use FFLHub\Distributor\Services\Zanders\Cron\ZandersInventoryCronService;
 
 class ZandersServices extends DistributorServicesBase
 {
     public function __construct(
         DoubleBufferedFulfillmentTable $fulfillmentTable,
-                ZandersFulfillmentCronService $fulfillmentCron,
+        ZandersFulfillmentCronService $fulfillmentCron,
+        ZandersInventoryCronService $inventoryCron
+
 
     ) {
         parent::__construct(
             $fulfillmentTable,
-            $fulfillmentCron
+            $fulfillmentCron,
+            $inventoryCron
         );
     }
 

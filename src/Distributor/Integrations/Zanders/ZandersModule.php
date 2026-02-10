@@ -12,6 +12,7 @@ use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Distributor\Services\Zanders\Cron\ZandersFulfillmentCronService;
+use FFLHub\Distributor\Services\Zanders\Cron\ZandersInventoryCronService;
 use FFLHub\Distributor\Services\Zanders\Tables\ZandersFulfillmentSchema;
 use FFLHub\Distributor\Services\Zanders\ZandersServices;
 
@@ -166,8 +167,9 @@ final class ZandersModule implements DistributorModuleInterface
 
         // Cron services use the table as their storage target.
         $fulfillmentCron = new ZandersFulfillmentCronService($table);
+        $inventoryCron = new ZandersInventoryCronService($table);
 
-        $services = new ZandersServices($table, $fulfillmentCron);
+        $services = new ZandersServices($table, $fulfillmentCron, $inventoryCron);
 
         return new DistributorZanders($this, $services);
     }
