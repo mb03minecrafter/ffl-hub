@@ -89,6 +89,7 @@ abstract class AbstractCronService implements CronServiceInterface
      *
      * Safety:
      * - If Action Scheduler functions are unavailable (Woo/AS inactive), this is a no-op.
+     * - I also added deduping to ensure we dont have a double scheduled action of the same kind!
      */
     final public function maybe_schedule_action(): void
     {
@@ -100,6 +101,61 @@ abstract class AbstractCronService implements CronServiceInterface
         $hook  = (string) $this->get_cron_hook_name();
         $args  = $this->get_action_args();
         $group = (string) $this->get_action_group();
+
+        // ------------------------------------------------------------
+        // DEDUPE: if multiple pending actions exist for this signature,
+        // keep one and cancel the rest.
+        //
+        // Why: you can end up with duplicate recurring entries (like
+        // Lipsey’s 20740/20741) due to double registration, old code,
+        // activation glitches, etc. This self-heals.
+        // ------------------------------------------------------------
+        try {
+            if (class_exists('\ActionScheduler_Store')) {
+                /** @var \ActionScheduler_Store $store */
+                $store = \ActionScheduler_Store::instance();
+
+                // Query pending actions for this exact hook + args + group.
+                // Keep this fairly small; we only care if there's >1.
+                $ids = $store->query_actions([
+                    'hook'     => $hook,
+                    'group'    => $group,
+                    'args'     => $args,
+                    'status'   => \ActionScheduler_Store::STATUS_PENDING,
+                    'claimed'  => false,
+                    'per_page' => 20,
+                ]);
+
+                if (is_array($ids) && count($ids) > 1) {
+                    // Keep the oldest/lowest id; cancel the rest.
+                    sort($ids, SORT_NUMERIC);
+                    $keep = array_shift($ids);
+
+                    foreach ($ids as $id) {
+                        try {
+                            // Prefer store cancel if present.
+                            if (method_exists($store, 'cancel_action')) {
+                                $store->cancel_action((int) $id);
+                            } elseif (method_exists($store, 'mark_failure')) {
+                                // Fallback (not ideal), but avoids leaving dupes.
+                                $store->mark_failure((int) $id);
+                            }
+                        } catch (\Throwable $inner) {
+                            // Swallow: dedupe should never break scheduling.
+                        }
+                    }
+
+                    // If we still have a valid next run, don't create another.
+                    $next = as_next_scheduled_action($hook, $args, $group);
+                    if ($next !== false) {
+                        return;
+                    }
+                    // Otherwise we’ll fall through and schedule a fresh one.
+                }
+            }
+        } catch (\Throwable $e) {
+            // Never let dedupe failures break scheduling.
+        }
 
         // If an action is already scheduled (pending) for this hook/args/group, don't duplicate.
         $next = as_next_scheduled_action($hook, $args, $group);
@@ -129,6 +185,7 @@ abstract class AbstractCronService implements CronServiceInterface
             $group
         );
     }
+
 
     /**
      * Action Scheduler group name for this job.
