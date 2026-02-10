@@ -59,6 +59,9 @@ define('FFLHUB_ORDERING_DRY_RUN', false);
 define('FFLHUB_RSR_API_DEBUG', false);
 define('FFLHUB_RSR_API_DEBUG_RAW', false);
 define('FFLHUB_LIPSEYS_DEBUG', false);
+define('FFLHUB_ZANDERS_DEBUG', true);
+
+
 
 // Order orchestration / state machine.
 define('FFLHUB_PLACE_ORCH_DEBUG', false);

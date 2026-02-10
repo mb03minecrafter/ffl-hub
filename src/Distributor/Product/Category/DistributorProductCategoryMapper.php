@@ -215,6 +215,133 @@ class DistributorProductCategoryMapper
         return isset($map[$dept_i]) ? array_values($map[$dept_i]) : null;
     }
 
+
+    /**
+     * Map Zanders category string → unified category path.
+     *
+     * Zanders feed uses a relatively clean top-level Category column.
+     * We map the obvious ones precisely, then use a few conservative
+     * contains-based fallbacks.
+     *
+     * @param string $category Zanders "category" column
+     * @return array<int,string>|null
+     */
+    public static function map_zanders(string $category): ?array
+    {
+        $c = strtoupper(trim($category));
+        if ($c === '') {
+            return null;
+        }
+
+        // --- High confidence exact mappings ---
+        $map = [
+
+            // Firearms
+            'PISTOL'                => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'REVOLVER'              => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'RIFLE'                 => [CategorySchema::CAT_FIREARMS, 'Rifles'],
+            'SHOTGUN'               => [CategorySchema::CAT_FIREARMS, 'Shotguns'],
+            'RECEIVER'              => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'PISTOL FRAMES'         => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'OTHER FIREARMS'        => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'STARTER PISTOLS'       => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+
+            // NFA / Suppressors
+            'DS SUPPRESSORS'        => [CategorySchema::CAT_NFA, 'Suppressors'],
+            'SUPPRESSOR ACCESSORIES' => [CategorySchema::CAT_NFA, 'Suppressor Accessories'],
+
+            // Black powder / muzzleloading
+            'BLACK POWDER REVOLVERS' => [CategorySchema::CAT_BLACK_POWDER, 'Guns'],
+            'MUZZLELOADING FIREARMS' => [CategorySchema::CAT_BLACK_POWDER, 'Firearms'],
+            'MUZZLELOADING ACCESSORIES' => [CategorySchema::CAT_BLACK_POWDER, 'Accessories'],
+            'PERCUSSION CAPS'       => [CategorySchema::CAT_BLACK_POWDER, 'Accessories'],
+
+            // Optics
+            'OPTICS'                => [CategorySchema::CAT_OPTICS],
+            'BINOCULARS'            => [CategorySchema::CAT_OPTICS, 'Observation / Range Finding'],
+            'RANGEFINDERS'          => [CategorySchema::CAT_OPTICS, 'Observation / Range Finding'],
+            'SPOTTING SCOPES'       => [CategorySchema::CAT_OPTICS, 'Scopes / Magnified Optics'],
+            'SCOPE MOUNTS AND RINGS' => [CategorySchema::CAT_OPTICS, 'Optic Mounts & Rings'],
+            'SCOPE COVERS'          => [CategorySchema::CAT_OPTICS, 'Optics Accessories'],
+            'BORE SIGHTERS'         => [CategorySchema::CAT_OPTICS, 'Optics Accessories'],
+            'NIGHT VISION'          => [CategorySchema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'], // best-fit bucket for now
+
+            // Lights / lasers
+            'LASERS'                => [CategorySchema::CAT_LIGHTS],
+            'LIGHTS AND ACCESSORIES' => [CategorySchema::CAT_LIGHTS],
+
+            // Magazines
+            'MAGAZINES (REPLACEMENT)' => [CategorySchema::CAT_MAGAZINES],
+            'MAGAZINE ACCESSORIES'    => [CategorySchema::CAT_MAGAZINES],
+
+            // Ammo
+            'AMMO'                 => [CategorySchema::CAT_AMMO],
+            'BLANKS'               => [CategorySchema::CAT_AMMO],
+            'SNAP CAPS'            => [CategorySchema::CAT_AMMO],
+
+            // Less lethal
+            'PEPPER SPRAY'         => [CategorySchema::CAT_LESS_LETHAL],
+            'STUN GUNS'            => [CategorySchema::CAT_LESS_LETHAL],
+            'PERSONAL SAFETY(NON FIREARMS)' => [CategorySchema::CAT_LESS_LETHAL],
+
+            // Airguns (you may want its own CAT later; for now keep it under firearms-ish)
+            'AIRGUNS AND ACCESSORIES' => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+
+            // Reloading (no dedicated constant shown in your snippet; returning null lets caller default)
+            // 'RELOADING TOOLS' ...
+        ];
+
+        if (isset($map[$c])) {
+            return array_values($map[$c]);
+        }
+
+        // --- Conservative heuristic fallbacks (keeps mapping coverage high) ---
+
+        // Anything with these keywords is almost certainly a firearm PART, not a complete gun.
+        foreach (['BARREL', 'TRIGGER', 'STOCK', 'FOREARM', 'GRIP', 'MUZZLE BRAKE', 'AR15 UPPER', 'CONVERSION KIT', 'CHOKE TUBE'] as $kw) {
+            if (strpos($c, $kw) !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Parts'];
+            }
+        }
+
+        // Sights belong under optics in your taxonomy.
+        if (strpos($c, 'SIGHT') !== false) {
+            return [CategorySchema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'];
+        }
+
+        // Suppressor-ish keywords
+        if (strpos($c, 'SUPPRESS') !== false || strpos($c, 'SILENC') !== false) {
+            return [CategorySchema::CAT_NFA];
+        }
+
+        // Muzzleloading-ish keywords
+        if (strpos($c, 'MUZZLE') !== false || strpos($c, 'BLACK POWDER') !== false) {
+            return [CategorySchema::CAT_BLACK_POWDER];
+        }
+
+        // Magazine keyword
+        if (strpos($c, 'MAGAZ') !== false) {
+            return [CategorySchema::CAT_MAGAZINES];
+        }
+
+        // Ammo keyword
+        if (strpos($c, 'AMMO') !== false) {
+            return [CategorySchema::CAT_AMMO];
+        }
+
+        // Lights / lasers keyword
+        if (strpos($c, 'LIGHT') !== false || strpos($c, 'LASER') !== false) {
+            return [CategorySchema::CAT_LIGHTS];
+        }
+
+        // If we can’t confidently map it (outdoors/archery/apparel/etc.), return null.
+        return null;
+    }
+
+
+
+
+
     /**
      * Convert an int-ish value to int, returning 0 if not usable.
      *

@@ -306,7 +306,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $lookup = null;
 
         try {
-            $lookup = $this->handler->get_payloads_for_upc($upc, false); // returns UpcLookupResult
+            $lookup = $this->handler->get_payloads_for_upc($upc, false); // returns UpcLookupResult, we dont need image to update pricing and quantity data so we exclude it by passing false into the optional argument
         } catch (\Throwable $e) {
             $lookup = null;
             $this->log_ctx('distributor_lookup exception', array(
