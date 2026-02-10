@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Integrations\Lipseys\LipseysModule;
 use FFLHub\Distributor\Integrations\RSR\RSRModule;
+use FFLHub\Distributor\Integrations\Zanders\ZandersModule;
 
 /**
  * Static registry for distributor modules.
@@ -34,6 +35,7 @@ final class DistributorRegistry
         return [
             new RSRModule(),
             new LipseysModule(),
+            new ZandersModule()
         ];
     }
 

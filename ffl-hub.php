@@ -72,7 +72,7 @@ define('FFLHUB_DEBUG_SHIPPING', false);
 
 
 //init profiling
-define('FFLHUB_DEBUG_BOOT', true);
+define('FFLHUB_DEBUG_BOOT', false);
 
 /**
  * -------------------------------------------------------------------------

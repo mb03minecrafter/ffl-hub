@@ -26,33 +26,23 @@ if (!defined('ABSPATH')) {
  * OrderingOrchestratorService
  *
  * Responsibility:
- * - Orchestrate the *start* of the Order Placement pipeline when an order transitions
- *   into the configured trigger status (currently: "processing").
+ * - Orchestrate the *start* of the Order Placement pipeline when payment is complete.
+ *
+ * Trigger model:
+ * - Uses WooCommerce `woocommerce_payment_complete` (order is paid).
  *
  * What this class does:
- * - Detect trigger (woocommerce_order_status_changed).
- * - Build per-(dist_id × bucket) job definitions from the order's line items.
+ * - On payment complete: fetch WC_Order, verify paid.
+ * - Build per-(dist_id × bucket) job definitions from the order's FFLHub-managed line items.
  * - Persist durable job rows to the Order Placement Jobs table (upsert/init).
  * - Mark those rows eligible for processing by setting:
  *   - status = scheduled
  *   - next_run_at = now (UTC)
  *   - action_id = NULL (no per-job Action Scheduler action)
  *
- * Execution model (important):
- * - Legacy: schedule 1 Action Scheduler action per job.
- * - Current: a separate recurring dispatcher batch-pulls eligible rows (LIMIT N) and executes them.
- *
- * Non-responsibilities:
- * - Per-job execution logic (belongs in OrderPlacementJobRunner invoked by the dispatcher).
- * - Retry/backoff policy (lifecycle/state machine).
- * - Shipping polling/merges and email dispatch.
- *
- * Idempotency:
- * - OrderPlacementPipelineMetaStore is used to ensure we only start the pipeline once per order.
- * - Job row creation is an upsert keyed by (order_id, job_key).
- *
- * Notes:
- * - Order save failures are best-effort logged; pipeline meta is still treated as authoritative.
+ * Idempotency / safety:
+ * - Atomic postmeta lock prevents concurrent double-start.
+ * - Pipeline meta store prevents re-start on later events.
  */
 final class OrderingOrchestratorService
 {
@@ -71,84 +61,86 @@ final class OrderingOrchestratorService
      */
     public function register(): void
     {
-        add_action('woocommerce_payment_complete', [$this, 'handle_payment_complete'], 10, 1); //ONLY ORDER WHEN THE PAYMENT IS COMPLETE TO AVOID GETTING FUCKED
+        // Canonical trigger: ONLY start ordering after payment is complete.
+        add_action('woocommerce_payment_complete', [$this, 'handle_payment_complete'], 10, 1);
     }
 
     /**
-     * WooCommerce hook handler: start pipeline when status transitions to "processing".
+     * WooCommerce hook handler: payment is complete.
      *
      * @param int|string $order_id
-     * @param string     $old_status
-     * @param string     $new_status
-     * @param mixed      $order
      */
-    public function handle_status_changed($order_id, $old_status, $new_status, $order): void
+    public function handle_payment_complete($order_id): void
     {
-        $started = microtime(true);
-
         $order_id_i = (int) $order_id;
-        $old_s = (string) $old_status;
-        $new_s = (string) $new_status;
 
-
-
-        if ($new_s !== 'processing') {
-            return;
-        }
-
+        $order = wc_get_order($order_id_i);
         if (!($order instanceof WC_Order)) {
-            $order = wc_get_order($order_id_i);
-        }
-        if (!($order instanceof WC_Order)) {
-            $this->log_ctx('order_not_found', [
+            $this->log_ctx('payment_complete_order_not_found', [
                 'order_id' => $order_id_i,
-                'reason'   => 'wc_get_order_failed',
             ]);
             return;
         }
 
-
-        // If we aint paid, they aint getting the product.
+        // Safety: should be true for this hook, but keep it.
         if (!$order->is_paid()) {
-            $this->log_ctx('skip_not_paid', [
+            $this->log_ctx('payment_complete_not_paid', [
                 'order_id' => $order_id_i,
                 'status'   => $order->get_status(),
             ]);
             return;
         }
 
+        $this->start_pipeline_if_needed($order, 'payment_complete');
+    }
 
-
+    /**
+     * Single authoritative entry point for starting the placement pipeline.
+     *
+     * @param WC_Order $order
+     * @param string  $trigger
+     */
+    private function start_pipeline_if_needed(WC_Order $order, string $trigger): void
+    {
         $oid = (int) $order->get_id();
-
 
         // Atomic “claim” to prevent concurrent double-start.
         $lock_key = '_fflhub_order_place_pipeline_lock';
 
-
-        //this is extra security to make sure we dont order twice. I want to be able to sleep at night
         // add_post_meta returns false if meta already exists when $unique=true.
         $locked = add_post_meta($oid, $lock_key, (string) time(), true);
         if (!$locked) {
-            // Another request already claimed pipeline start.
-            error_log("BIG ERROR, SEE LINE 134 in the ORDERING ORCH SERVICE FILE!");
+            $this->log_ctx('pipeline_lock_already_claimed', [
+                'order_id' => $oid,
+                'trigger'  => $trigger,
+            ]);
             return;
         }
 
-
+        // If pipeline already started (durable meta), don't start again.
         if (OrderPlacementPipelineMetaStore::get_pipeline_started($order)) {
+            $this->log_ctx('pipeline_already_started', [
+                'order_id' => $oid,
+                'trigger'  => $trigger,
+            ]);
             return;
         }
 
+        // Build jobs from FFLHub-managed products only.
+        // If none exist, bucket_jobs is empty and we early-exit => NOTHING happens for non-FFLHub orders.
         $bucket_jobs = $this->build_bucket_jobs_from_order($order);
         if (empty($bucket_jobs)) {
+            $this->log_ctx('no_bucket_jobs_found', [
+                'order_id' => $oid,
+                'trigger'  => $trigger,
+            ]);
             return;
         }
 
         $started_at = gmdate('c');
 
         // Mark started + persist jobs + mark eligible (DB queue)
-        OrderPlacementPipelineMetaStore::set_pipeline_started($order, true, $started_at, 'status_processing');
+        OrderPlacementPipelineMetaStore::set_pipeline_started($order, true, $started_at, $trigger);
 
         $this->persist_bucket_jobs_table($order, $bucket_jobs);
         $this->mark_jobs_eligible_for_processing($order, $bucket_jobs);
@@ -323,8 +315,8 @@ final class OrderingOrchestratorService
     /**
      * Persist job rows to the Order Placement Jobs table (init/upsert).
      *
-     * @param WC_Order              $order
-     * @param array<string,mixed>   $bucket_jobs
+     * @param WC_Order            $order
+     * @param array<string,mixed> $bucket_jobs
      */
     private function persist_bucket_jobs_table(WC_Order $order, array $bucket_jobs): void
     {
@@ -358,13 +350,6 @@ final class OrderingOrchestratorService
     /**
      * Mark DB-backed job rows as eligible for the dispatcher to process.
      *
-     * Legacy:
-     * - Scheduled an Action Scheduler action per job.
-     *
-     * Current:
-     * - Writes status=scheduled and next_run_at=now for the dispatcher to batch-pull.
-     * - Ensures action_id is NULL (no per-job Action Scheduler action).
-     *
      * @param WC_Order $order
      * @param array<string, array{order_id:int,dist_id:string,bucket:string,lines:array<int,array{upc:string,qty:int}>}> $bucket_jobs
      */
@@ -372,13 +357,9 @@ final class OrderingOrchestratorService
     {
         $oid = (int) $order->get_id();
 
-        $marked = 0;
-        $skipped = 0;
-
         foreach ($bucket_jobs as $job_key => $_job) {
             $job_key_norm = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
             if ($job_key_norm === '') {
-                $skipped++;
                 $this->log_ctx('mark_eligible_skip_invalid_job_key', [
                     'order_id'    => $oid,
                     'job_key_raw' => (string) $job_key,
@@ -390,26 +371,24 @@ final class OrderingOrchestratorService
 
             // If already succeeded, don't re-queue.
             if ($status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
-                $skipped++;
                 continue;
             }
 
-            // "scheduled" now means: eligible in DB for dispatcher (not "AS action exists").
+            // "scheduled" means: eligible in DB for dispatcher (not "AS action exists").
             $patch = OrderPlacementJobPatch::empty()
                 ->with_action_id(null)
                 ->with_status(OrderPlacementKeys::JOB_STATUS_SCHEDULED)
                 ->with_next_run_at_mysql(OrderPlacementTimeUtil::now_mysql_utc());
 
             OrderPlacementJobWriter::apply_patch_for_order($this->jobs_table, $order, $job_key_norm, $patch);
-            $marked++;
         }
     }
 
     /**
      * Logging helper.
      *
-     * @param string               $msg
-     * @param array<string,mixed>  $ctx
+     * @param string              $msg
+     * @param array<string,mixed> $ctx
      */
     private function log_ctx(string $msg, array $ctx): void
     {

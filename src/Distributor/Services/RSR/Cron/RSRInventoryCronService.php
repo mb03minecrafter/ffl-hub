@@ -8,7 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
-use FFLHub\Distributor\Services\RSR\RSRFTPService;
+use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -189,7 +189,16 @@ final class RSRInventoryCronService extends AbstractTableCronService
         // 1) Connect (and metadata gate).
         $t_ftp = microtime(true);
 
-        $ftp = new RSRFTPService($host, $username, $password, $use_ssl);
+        $ftp = new FTPClientService(
+            $host,
+            $username,
+            $password,
+            $use_ssl,
+            2222,
+            30,
+            true,
+            '[FFLHub][RSR][FTP]'
+        );
         if (!$ftp->is_connected()) {
             update_option('fflhub_rsr_inventory_last_download_error', current_time('mysql'));
             $this->log('ERROR: FTP connection not available.', [
