@@ -1,18 +1,20 @@
 <?php
-// File: src/Distributor/Lipseys/DistributorLipseys.php
+// File: src/Distributor/Zanders/DistributorZanders.php
 
 namespace FFLHub\Distributor\Integrations\Zanders;
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Models\DistributorProductPayload;
-use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Util\DebugLogUtil;
 
+if (!defined('ABSPATH')) {
+    exit;
+}
+
 class DistributorZanders extends DistributorBase
 {
-
     /**
      * Toggle Zanders debug logs.
      *
@@ -34,7 +36,6 @@ class DistributorZanders extends DistributorBase
         parent::__construct($module, $services);
     }
 
-
     /**
      * For Zanders, its $15 no matter what
      */
@@ -47,15 +48,12 @@ class DistributorZanders extends DistributorBase
         return 15.0;
     }
 
-
-
-
     /**
      * Build a normalized DistributorProductPayload for a UPC using the local Zanders fulfillment table.
      *
      * NOTE:
      * - No SOAP calls.
-     * - Pricing: uses price_1 as the default distributor price (tier1).
+     * - Pricing: uses distributor_price (normalized from price1).
      */
     public function get_product_by_upc(string $upc): ?DistributorProductPayload
     {
@@ -76,7 +74,7 @@ class DistributorZanders extends DistributorBase
         return $this->build_payload_from_row_zanders($row, $normalized_upc, true);
     }
 
-    //same as above, we exlcude image for our product syncing 
+    // same as above, but exclude image for our product syncing
     public function get_pricing_payload_by_upc(string $upc): ?DistributorProductPayload
     {
         if (!$this->services) {
@@ -93,18 +91,20 @@ class DistributorZanders extends DistributorBase
             return null;
         }
 
-        return $this->build_payload_from_row_zanders($row, $normalized_upc, false); //false for the image flag
+        return $this->build_payload_from_row_zanders($row, $normalized_upc, false);
     }
-
 
     /**
      * Zanders-specific payload builder.
      *
-     * Differences vs base:
-     * - Cleans price strings (strip $ and other junk)
-     * - Parses "available" safely (supports "10+", " 25 ", etc.)
-     * - Uses map_zanders() category mapper
-     * - FTP image loading 
+     * Updates for new schema:
+     * - price_1 -> distributor_price
+     * - map_price -> retail_map
+     * - msrp -> retail_msrp
+     * - available -> inventory_quantity
+     * - category -> item_type
+     * - desc1/desc2 -> product_description
+     * - ffl_required/sot_required now exist in-row
      *
      * @param array<string,mixed> $row
      */
@@ -135,30 +135,36 @@ class DistributorZanders extends DistributorBase
             return $digits === '' ? 0 : (int) $digits;
         };
 
+        $to_boolish = static function ($v): bool {
+            $s = strtoupper(trim((string) $v));
+            return in_array($s, ['1', 'Y', 'YES', 'T', 'TRUE'], true);
+        };
+
         $sku     = trim((string) ($this->get_string_field($row, ['zanders_item_number']) ?? ''));
         $upc_raw = $this->get_string_field($row, ['upc']) ?? $normalized_upc;
         $upc     = $this->normalize_upc((string) $upc_raw) ?? $normalized_upc;
 
-        // Name/description: Zanders gives desc1/desc2
-        $raw_name = trim((string) ($this->get_string_field($row, ['manufacturer', 'desc1', 'desc2']) ?? ''));
-        $raw_desc = trim((string) ($this->get_string_field($row, ['desc1', 'desc2']) ?? ''));
+        $manufacturer = trim((string) ($this->get_string_field($row, ['manufacturer']) ?? ''));
 
-        $raw_name = trim((string) preg_replace('/\s+/', ' ', $raw_name));
+        // New schema: description is already combined.
+        $raw_desc = trim((string) ($this->get_string_field($row, ['product_description']) ?? ''));
         $raw_desc = trim((string) preg_replace('/\s+/', ' ', $raw_desc));
 
-        if ($raw_name !== '' && $raw_desc !== '') {
-            $name = (stripos($raw_name, $raw_desc) !== false) ? $raw_name : ($raw_name . ' – ' . $raw_desc);
-        } else {
-            $name = $raw_name !== '' ? $raw_name : $raw_desc;
+        // Build a stable "name" (avoid old desc1/desc2 fields).
+        $name = trim((string) preg_replace('/\s+/', ' ', trim($manufacturer . ' ' . $raw_desc)));
+        if ($name === '') {
+            $name = $raw_desc;
         }
 
         $description = $raw_desc;
 
-        $price    = $money($this->get_string_field($row, ['price_1']));
-        $mapPrice = $money($this->get_string_field($row, ['map_price']));
-        $msrp     = $money($this->get_string_field($row, ['msrp']));
+        // New schema pricing fields
+        $price    = $money($this->get_string_field($row, ['distributor_price']));
+        $mapPrice = $money($this->get_string_field($row, ['retail_map']));
+        $msrp     = $money($this->get_string_field($row, ['retail_msrp']));
 
-        $quantity = $intish($this->get_string_field($row, ['available']));
+        // New schema inventory field
+        $quantity = $intish($this->get_string_field($row, ['inventory_quantity']));
 
         $shipping  = (float) ($this->get_shipping_cost_by_upc($normalized_upc) ?? 0.0);
         $true_cost = $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping);
@@ -166,10 +172,11 @@ class DistributorZanders extends DistributorBase
             $true_cost = $price + $shipping;
         }
 
-        $category_raw = $this->get_string_field($row, ['category']);
+        // New schema: category is item_type
+        $item_type_raw = $this->get_string_field($row, ['item_type']);
         $recommended_category = null;
-        if (is_string($category_raw) && trim($category_raw) !== '') {
-            $recommended_category = \FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper::map_zanders($category_raw);
+        if (is_string($item_type_raw) && trim($item_type_raw) !== '') {
+            $recommended_category = \FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper::map_zanders($item_type_raw);
             if (!is_array($recommended_category)) {
                 $recommended_category = null;
             }
@@ -182,8 +189,8 @@ class DistributorZanders extends DistributorBase
             $image = is_string($image) ? trim($image) : '';
         }
 
-        // No explicit FFL required flag in your Zanders schema.
-        $ffl_required = false;
+        // New schema: this is now provided/derived at import time.
+        $ffl_required = $to_boolish($this->get_string_field($row, ['ffl_required']) ?? '0');
 
         return new DistributorProductPayload(
             $upc,
@@ -202,8 +209,6 @@ class DistributorZanders extends DistributorBase
             $row
         );
     }
-
-
 
     /**
      * Zanders image resolver (FTP-cached).
@@ -352,9 +357,6 @@ class DistributorZanders extends DistributorBase
         return '';
     }
 
-
-
-
     private function build_zanders_remote_image_path(string $item_no): string
     {
         $item_no = trim($item_no);
@@ -365,9 +367,6 @@ class DistributorZanders extends DistributorBase
         // Example: /Inventory/Images_2/00061.jpg
         return '/Inventory/Images_2/' . $item_no . '.jpg';
     }
-
-
-
 
     /**
      * Retrieve and validate FTP credentials from Zanders distributor settings.
@@ -387,7 +386,6 @@ class DistributorZanders extends DistributorBase
         $password = trim((string) $password);
 
         if ($host === '' || $username === '' || $password === '') {
-            // If you don't have a logger on the distributor class, you can remove this.
             if (defined('FFLHUB_CRON_DEBUG') && FFLHUB_CRON_DEBUG === true) {
                 error_log('[FFLHub][ZandersDistributor] Missing FTP credentials');
             }
@@ -402,8 +400,6 @@ class DistributorZanders extends DistributorBase
             'port'     => 21,
         ];
     }
-
-
 
     /** @param array<string,mixed> $ctx */
     private function log(string $msg, array $ctx = []): void

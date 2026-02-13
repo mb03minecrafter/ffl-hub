@@ -19,7 +19,7 @@ use FFLHub\Util\DebugLogUtil;
  *  - downloads /Inventory/liveinv.csv via FTP to uploads/fflhub-zanders/
  *  - bulk loads into a persistent staging table via LOAD DATA LOCAL INFILE
  *  - join-updates fast-moving columns in the LIVE fulfillment table:
- *      available, price_1/2/3, bulk_qty_1/2/3
+ *      inventory_quantity, distributor_price, price_2, price_3, bulk_qty_1/2/3
  *
  * Source CSV (header + CRLF):
  * itemnumber,available,price1,price2,price3,qty1,qty2,qty3
@@ -32,10 +32,9 @@ final class ZandersInventoryCronService extends AbstractTableCronService
     private const LOG_PREFIX  = '[FFLHUB][ZandersInventoryCron]';
 
     private const STAGE_TABLE_SUFFIX = 'fflhub_zanders_qty_price_stage';
-
     private const OPT_LAST_CHECKED_AT = 'fflhub_zanders_qty_last_checked_at';
 
-    // Zanders updates this file ~every 5 minutes; mimic RSR cadence.
+    // Zanders updates this file ~every 5 minutes.
     private const FTP_COOLDOWN_SECONDS      = 180; // 3 minutes after applying a change
     private const FTP_MIN_CHECK_GAP_SECONDS = 60;  // 1 minute hard throttle
 
@@ -44,7 +43,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
     private const LOCAL_FILENAME = 'liveinv.csv';
 
     private const FORCE_UPDATE = false;
-
 
     public function __construct(DoubleBufferedFulfillmentTable $table)
     {
@@ -73,7 +71,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
 
     public function run(): void
     {
-
         $t_start   = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
@@ -157,7 +154,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             return;
         }
 
-
         $last_applied_mtime = (int) get_option('fflhub_zanders_qty_last_applied_mtime', 0);
         if (!self::FORCE_UPDATE && $last_applied_mtime > 0 && $now < ($last_applied_mtime + self::FTP_COOLDOWN_SECONDS)) {
             $this->log('Cooldown after last applied change — skipping FTP connect', [
@@ -178,8 +174,8 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             $host,
             $username,
             $password,
-            $use_ssl, // false
-            $port,    // 21
+            $use_ssl,
+            $port,
             30,
             true,
             '[FFLHub][Zanders][FTP]'
@@ -202,7 +198,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         // 3) Remote meta gate (mtime first; SIZE only if changed)
         $t_meta = microtime(true);
 
-        $remote_mtime      = (int) ($ftp->get_remote_mtime($remote_path) ?? 0);
+        $remote_mtime       = (int) ($ftp->get_remote_mtime($remote_path) ?? 0);
         $last_applied_mtime = (int) get_option('fflhub_zanders_qty_last_applied_mtime', 0);
 
         update_option('fflhub_zanders_qty_last_seen_mtime', $remote_mtime);
@@ -326,45 +322,20 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             $this->log('ERROR: liveinv.csv missing or unreadable', [
                 'file_path' => (string) $file_path,
             ]);
-            return [
-                'processed_rows' => 0,
-                'rows_loaded'    => 0,
-                'join_matched'   => 0,
-                'would_change'   => 0,
-                'join_updated'   => 0,
-                'create_ms'      => '0.00',
-                'load_ms'        => '0.00',
-                'stats_ms'       => '0.00',
-                'join_ms'        => '0.00',
-                'drop_ms'        => '0.00',
-                'total_ms'       => '0.00',
-            ];
+            return $this->empty_apply_stats();
         }
 
         $live_table = (string) $this->table->get_live_table_name();
         if ($live_table === '') {
             $this->log('ERROR: could not resolve live table name');
-            return [
-                'processed_rows' => 0,
-                'rows_loaded'    => 0,
-                'join_matched'   => 0,
-                'would_change'   => 0,
-                'join_updated'   => 0,
-                'create_ms'      => '0.00',
-                'load_ms'        => '0.00',
-                'stats_ms'       => '0.00',
-                'join_ms'        => '0.00',
-                'drop_ms'        => '0.00',
-                'total_ms'       => '0.00',
-            ];
+            return $this->empty_apply_stats();
         }
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
-        // Header row expected.
-        $ignore_lines = 1;
+        $ignore_lines = 1; // header row expected
 
         $charset     = $wpdb->get_charset_collate();
         $stage_table = $wpdb->prefix . self::STAGE_TABLE_SUFFIX;
@@ -375,17 +346,17 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         $t_create = microtime(true);
 
         $create_sql = "
-        CREATE TABLE IF NOT EXISTS {$stage_table} (
-            itemnumber  varchar(64) NOT NULL,
-            available   int unsigned NULL,
-            price1      decimal(12,4) NULL,
-            price2      decimal(12,4) NULL,
-            price3      decimal(12,4) NULL,
-            qty1        int unsigned NULL,
-            qty2        int unsigned NULL,
-            qty3        int unsigned NULL,
-            PRIMARY KEY (itemnumber)
-        ) {$charset};
+            CREATE TABLE IF NOT EXISTS {$stage_table} (
+                itemnumber  varchar(64) NOT NULL,
+                available   int unsigned NULL,
+                price1      decimal(12,4) NULL,
+                price2      decimal(12,4) NULL,
+                price3      decimal(12,4) NULL,
+                qty1        int unsigned NULL,
+                qty2        int unsigned NULL,
+                qty3        int unsigned NULL,
+                PRIMARY KEY (itemnumber)
+            ) {$charset};
         ";
 
         $created = $wpdb->query($create_sql);
@@ -405,35 +376,36 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         // -----------------------
         $t_load = microtime(true);
 
+        // Escape path for SQL literal.
         $infile_path_sql = str_replace('\\', '\\\\', $file_path);
         $infile_path_sql = str_replace("'", "\\'", $infile_path_sql);
 
         $load_sql = "
-        LOAD DATA LOCAL INFILE '{$infile_path_sql}'
-        INTO TABLE {$stage_table}
-        CHARACTER SET utf8mb4
-        FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"' ESCAPED BY '\\\\'
-        LINES TERMINATED BY '\\r\\n'
-        IGNORE {$ignore_lines} LINES
-        (
-            @itemnumber,
-            @available,
-            @price1,
-            @price2,
-            @price3,
-            @qty1,
-            @qty2,
-            @qty3
-        )
-        SET
-            itemnumber = TRIM(BOTH '\\r' FROM TRIM(@itemnumber)),
-            available  = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@available)), '') + 0,
-            price1     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price1)), ''),
-            price2     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price2)), ''),
-            price3     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price3)), ''),
-            qty1       = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty1)), '') + 0,
-            qty2       = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty2)), '') + 0,
-            qty3       = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty3)), '') + 0
+            LOAD DATA LOCAL INFILE '{$infile_path_sql}'
+            INTO TABLE {$stage_table}
+            CHARACTER SET utf8mb4
+            FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"' ESCAPED BY '\\\\'
+            LINES TERMINATED BY '\\r\\n'
+            IGNORE {$ignore_lines} LINES
+            (
+                @itemnumber,
+                @available,
+                @price1,
+                @price2,
+                @price3,
+                @qty1,
+                @qty2,
+                @qty3
+            )
+            SET
+                itemnumber = TRIM(BOTH '\\r' FROM TRIM(@itemnumber)),
+                available  = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@available)), '') + 0, 0),
+                price1     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price1)), ''),
+                price2     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price2)), ''),
+                price3     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price3)), ''),
+                qty1       = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty1)), '') + 0, 0),
+                qty2       = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty2)), '') + 0, 0),
+                qty3       = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty3)), '') + 0, 0)
         ";
 
         $loaded = $wpdb->query($load_sql);
@@ -443,7 +415,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
 
         $load_ms = (microtime(true) - $t_load) * 1000.0;
 
-        // Count rows loaded
         $rows_loaded = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stage_table}");
 
         // -----------------------
@@ -469,22 +440,31 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                 INNER JOIN {$live_table} L
                     ON L.zanders_item_number = S.itemnumber
                 WHERE
-                    (L.available IS NULL OR L.available = '' OR CAST(L.available AS UNSIGNED) <> IFNULL(S.available, CAST(L.available AS UNSIGNED)))
-                 OR (NULLIF(L.price_1,'') IS NULL AND S.price1 IS NOT NULL)
-                 OR (NULLIF(L.price_1,'') IS NOT NULL AND S.price1 IS NULL)
-                 OR (NULLIF(L.price_1,'') IS NOT NULL AND S.price1 IS NOT NULL AND CAST(NULLIF(L.price_1,'') AS DECIMAL(12,4)) <> S.price1)
+                    (
+                        L.inventory_quantity IS NULL
+                        OR L.inventory_quantity = ''
+                        OR CAST(L.inventory_quantity AS UNSIGNED) <> IFNULL(S.available, CAST(L.inventory_quantity AS UNSIGNED))
+                    )
+                 OR (NULLIF(L.distributor_price,'') IS NULL AND S.price1 IS NOT NULL)
+                 OR (NULLIF(L.distributor_price,'') IS NOT NULL AND S.price1 IS NULL)
+                 OR (NULLIF(L.distributor_price,'') IS NOT NULL AND S.price1 IS NOT NULL AND CAST(NULLIF(L.distributor_price,'') AS DECIMAL(12,4)) <> S.price1)
+
                  OR (NULLIF(L.price_2,'') IS NULL AND S.price2 IS NOT NULL)
                  OR (NULLIF(L.price_2,'') IS NOT NULL AND S.price2 IS NULL)
                  OR (NULLIF(L.price_2,'') IS NOT NULL AND S.price2 IS NOT NULL AND CAST(NULLIF(L.price_2,'') AS DECIMAL(12,4)) <> S.price2)
+
                  OR (NULLIF(L.price_3,'') IS NULL AND S.price3 IS NOT NULL)
                  OR (NULLIF(L.price_3,'') IS NOT NULL AND S.price3 IS NULL)
                  OR (NULLIF(L.price_3,'') IS NOT NULL AND S.price3 IS NOT NULL AND CAST(NULLIF(L.price_3,'') AS DECIMAL(12,4)) <> S.price3)
+
                  OR (NULLIF(L.bulk_qty_1,'') IS NULL AND S.qty1 IS NOT NULL)
                  OR (NULLIF(L.bulk_qty_1,'') IS NOT NULL AND S.qty1 IS NULL)
                  OR (NULLIF(L.bulk_qty_1,'') IS NOT NULL AND S.qty1 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_1,'') AS UNSIGNED) <> S.qty1)
+
                  OR (NULLIF(L.bulk_qty_2,'') IS NULL AND S.qty2 IS NOT NULL)
                  OR (NULLIF(L.bulk_qty_2,'') IS NOT NULL AND S.qty2 IS NULL)
                  OR (NULLIF(L.bulk_qty_2,'') IS NOT NULL AND S.qty2 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_2,'') AS UNSIGNED) <> S.qty2)
+
                  OR (NULLIF(L.bulk_qty_3,'') IS NULL AND S.qty3 IS NOT NULL)
                  OR (NULLIF(L.bulk_qty_3,'') IS NOT NULL AND S.qty3 IS NULL)
                  OR (NULLIF(L.bulk_qty_3,'') IS NOT NULL AND S.qty3 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_3,'') AS UNSIGNED) <> S.qty3)
@@ -499,37 +479,46 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         $t_join = microtime(true);
 
         $join_sql = "
-        UPDATE {$live_table} L
-        INNER JOIN {$stage_table} S
-            ON S.itemnumber = L.zanders_item_number
-        SET
-            L.available   = IFNULL(CAST(S.available AS CHAR), ''),
-            L.price_1     = IFNULL(CAST(S.price1 AS CHAR), ''),
-            L.price_2     = IFNULL(CAST(S.price2 AS CHAR), ''),
-            L.price_3     = IFNULL(CAST(S.price3 AS CHAR), ''),
-            L.bulk_qty_1  = IFNULL(CAST(S.qty1 AS CHAR), ''),
-            L.bulk_qty_2  = IFNULL(CAST(S.qty2 AS CHAR), ''),
-            L.bulk_qty_3  = IFNULL(CAST(S.qty3 AS CHAR), '')
-        WHERE
-            (L.available IS NULL OR L.available = '' OR CAST(L.available AS UNSIGNED) <> IFNULL(S.available, CAST(L.available AS UNSIGNED)))
-         OR (NULLIF(L.price_1,'') IS NULL AND S.price1 IS NOT NULL)
-         OR (NULLIF(L.price_1,'') IS NOT NULL AND S.price1 IS NULL)
-         OR (NULLIF(L.price_1,'') IS NOT NULL AND S.price1 IS NOT NULL AND CAST(NULLIF(L.price_1,'') AS DECIMAL(12,4)) <> S.price1)
-         OR (NULLIF(L.price_2,'') IS NULL AND S.price2 IS NOT NULL)
-         OR (NULLIF(L.price_2,'') IS NOT NULL AND S.price2 IS NULL)
-         OR (NULLIF(L.price_2,'') IS NOT NULL AND S.price2 IS NOT NULL AND CAST(NULLIF(L.price_2,'') AS DECIMAL(12,4)) <> S.price2)
-         OR (NULLIF(L.price_3,'') IS NULL AND S.price3 IS NOT NULL)
-         OR (NULLIF(L.price_3,'') IS NOT NULL AND S.price3 IS NULL)
-         OR (NULLIF(L.price_3,'') IS NOT NULL AND S.price3 IS NOT NULL AND CAST(NULLIF(L.price_3,'') AS DECIMAL(12,4)) <> S.price3)
-         OR (NULLIF(L.bulk_qty_1,'') IS NULL AND S.qty1 IS NOT NULL)
-         OR (NULLIF(L.bulk_qty_1,'') IS NOT NULL AND S.qty1 IS NULL)
-         OR (NULLIF(L.bulk_qty_1,'') IS NOT NULL AND S.qty1 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_1,'') AS UNSIGNED) <> S.qty1)
-         OR (NULLIF(L.bulk_qty_2,'') IS NULL AND S.qty2 IS NOT NULL)
-         OR (NULLIF(L.bulk_qty_2,'') IS NOT NULL AND S.qty2 IS NULL)
-         OR (NULLIF(L.bulk_qty_2,'') IS NOT NULL AND S.qty2 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_2,'') AS UNSIGNED) <> S.qty2)
-         OR (NULLIF(L.bulk_qty_3,'') IS NULL AND S.qty3 IS NOT NULL)
-         OR (NULLIF(L.bulk_qty_3,'') IS NOT NULL AND S.qty3 IS NULL)
-         OR (NULLIF(L.bulk_qty_3,'') IS NOT NULL AND S.qty3 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_3,'') AS UNSIGNED) <> S.qty3)
+            UPDATE {$live_table} L
+            INNER JOIN {$stage_table} S
+                ON S.itemnumber = L.zanders_item_number
+            SET
+                L.inventory_quantity = IFNULL(CAST(S.available AS CHAR), ''),
+                L.distributor_price  = IFNULL(CAST(S.price1 AS CHAR), ''),
+                L.price_2            = IFNULL(CAST(S.price2 AS CHAR), ''),
+                L.price_3            = IFNULL(CAST(S.price3 AS CHAR), ''),
+                L.bulk_qty_1         = IFNULL(CAST(S.qty1 AS CHAR), ''),
+                L.bulk_qty_2         = IFNULL(CAST(S.qty2 AS CHAR), ''),
+                L.bulk_qty_3         = IFNULL(CAST(S.qty3 AS CHAR), '')
+            WHERE
+                (
+                    L.inventory_quantity IS NULL
+                    OR L.inventory_quantity = ''
+                    OR CAST(L.inventory_quantity AS UNSIGNED) <> IFNULL(S.available, CAST(L.inventory_quantity AS UNSIGNED))
+                )
+             OR (NULLIF(L.distributor_price,'') IS NULL AND S.price1 IS NOT NULL)
+             OR (NULLIF(L.distributor_price,'') IS NOT NULL AND S.price1 IS NULL)
+             OR (NULLIF(L.distributor_price,'') IS NOT NULL AND S.price1 IS NOT NULL AND CAST(NULLIF(L.distributor_price,'') AS DECIMAL(12,4)) <> S.price1)
+
+             OR (NULLIF(L.price_2,'') IS NULL AND S.price2 IS NOT NULL)
+             OR (NULLIF(L.price_2,'') IS NOT NULL AND S.price2 IS NULL)
+             OR (NULLIF(L.price_2,'') IS NOT NULL AND S.price2 IS NOT NULL AND CAST(NULLIF(L.price_2,'') AS DECIMAL(12,4)) <> S.price2)
+
+             OR (NULLIF(L.price_3,'') IS NULL AND S.price3 IS NOT NULL)
+             OR (NULLIF(L.price_3,'') IS NOT NULL AND S.price3 IS NULL)
+             OR (NULLIF(L.price_3,'') IS NOT NULL AND S.price3 IS NOT NULL AND CAST(NULLIF(L.price_3,'') AS DECIMAL(12,4)) <> S.price3)
+
+             OR (NULLIF(L.bulk_qty_1,'') IS NULL AND S.qty1 IS NOT NULL)
+             OR (NULLIF(L.bulk_qty_1,'') IS NOT NULL AND S.qty1 IS NULL)
+             OR (NULLIF(L.bulk_qty_1,'') IS NOT NULL AND S.qty1 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_1,'') AS UNSIGNED) <> S.qty1)
+
+             OR (NULLIF(L.bulk_qty_2,'') IS NULL AND S.qty2 IS NOT NULL)
+             OR (NULLIF(L.bulk_qty_2,'') IS NOT NULL AND S.qty2 IS NULL)
+             OR (NULLIF(L.bulk_qty_2,'') IS NOT NULL AND S.qty2 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_2,'') AS UNSIGNED) <> S.qty2)
+
+             OR (NULLIF(L.bulk_qty_3,'') IS NULL AND S.qty3 IS NOT NULL)
+             OR (NULLIF(L.bulk_qty_3,'') IS NOT NULL AND S.qty3 IS NULL)
+             OR (NULLIF(L.bulk_qty_3,'') IS NOT NULL AND S.qty3 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_3,'') AS UNSIGNED) <> S.qty3)
         ";
 
         $join_updated = $wpdb->query($join_sql);
@@ -563,10 +552,25 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         return $stats;
     }
 
+    private function empty_apply_stats(): array
+    {
+        return [
+            'processed_rows' => 0,
+            'rows_loaded'    => 0,
+            'join_matched'   => 0,
+            'would_change'   => 0,
+            'join_updated'   => 0,
+            'create_ms'      => '0.00',
+            'load_ms'        => '0.00',
+            'stats_ms'       => '0.00',
+            'join_ms'        => '0.00',
+            'drop_ms'        => '0.00',
+            'total_ms'       => '0.00',
+        ];
+    }
+
     /**
      * Retrieve and validate FTP credentials from Zanders distributor settings.
-     *
-     * Note: Zanders is FTP (no TLS). We enforce use_ssl=false and port=21 defaults.
      *
      * @return array{host:string,username:string,password:string,use_ssl:bool,port:int}|null
      */

@@ -14,6 +14,15 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Source CSV columns (as provided):
  * available,category,desc1,desc2,itemnumber,manufacturer,mfgpnumber,msrp,
  * price1,price2,price3,qty1,qty2,qty3,upc,weight,serialized,mapprice
+ *
+ * Normalized internal columns:
+ * - zanders_item_number (instead of "itemnumber")
+ * - inventory_quantity (instead of "available")
+ * - distributor_price / retail_map / retail_msrp
+ * - product_description
+ * - mfg_model_number
+ * - shipping_weight
+ * - ffl_required / sot_required (derived)
  */
 class ZandersFulfillmentSchema implements FulfillmentSchemaInterface
 {
@@ -36,49 +45,58 @@ class ZandersFulfillmentSchema implements FulfillmentSchemaInterface
             // Primary key
             'upc' => 'VARCHAR(32) NOT NULL',
 
-            // Core identifiers
-            'zanders_item_number'      => 'VARCHAR(64)  NOT NULL',
-            'manufacturer'             => 'VARCHAR(255) NULL',
-            'manufacturer_part_number' => 'VARCHAR(128) NULL',
+            // Distributor identifier (normalized pattern: <dist>_item_number)
+            'zanders_item_number' => 'VARCHAR(64) NOT NULL',
 
-            // Catalog / descriptions
-            'category' => 'VARCHAR(255) NULL',
-            'desc1'    => 'TEXT         NULL',
-            'desc2'    => 'TEXT         NULL',
+            // Inventory / status (normalized)
+            'inventory_quantity' => 'VARCHAR(32) NULL',
+            'allocation_status'  => 'VARCHAR(64) NULL', // not provided by Zanders; reserved for future
 
-            // Quantity and Pricing
-            // RSR inventory_quantity == Zanders available
-            'available'     => 'VARCHAR(32) NULL',
-            'msrp'          => 'VARCHAR(32) NULL',
-            'map_price'     => 'VARCHAR(32) NULL',
-            'price_1'       => 'VARCHAR(32) NULL',
-            'price_2'       => 'VARCHAR(32) NULL',
-            'price_3'       => 'VARCHAR(32) NULL',
-            'bulk_qty_1'    => 'VARCHAR(32) NULL',
-            'bulk_qty_2'    => 'VARCHAR(32) NULL',
-            'bulk_qty_3'    => 'VARCHAR(32) NULL',
+            // Pricing (normalized)
+            'distributor_price' => 'VARCHAR(32) NULL', // map from price1 (recommended)
+            'retail_map'        => 'VARCHAR(32) NULL', // mapprice
+            'retail_msrp'       => 'VARCHAR(32) NULL', // msrp
 
-            // Logistics / misc
-            'weight_lb'   => 'VARCHAR(32) NULL',
-            'serialized'  => 'TINYINT(1) NOT NULL DEFAULT 0',
+            // Descriptive fields (normalized)
+            'product_description' => 'TEXT NULL',        // desc1 + desc2 combined
+            'item_type'           => 'VARCHAR(128) NULL',// map from category (or keep separate)
+            'manufacturer'        => 'VARCHAR(255) NULL',
+            'mfg_model_number'    => 'VARCHAR(128) NULL',
 
-            // Reserved for future Zanders fields / transformations without schema changes
-            'reserved_future' => 'VARCHAR(255) NULL',
+            // Logistics (normalized)
+            'shipping_weight'     => 'DECIMAL(10,2) NULL', // map from weight (ensure units!)
+
+            // Keep the raw fields that Zanders provides but we don't normalize yet
+            'price_2'    => 'VARCHAR(32) NULL',
+            'price_3'    => 'VARCHAR(32) NULL',
+            'bulk_qty_1' => 'VARCHAR(32) NULL',
+            'bulk_qty_2' => 'VARCHAR(32) NULL',
+            'bulk_qty_3' => 'VARCHAR(32) NULL',
+
+            // Flags (normalized/derived)
+            'ffl_required' => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'sot_required' => 'TINYINT(1) NOT NULL DEFAULT 0',
+
+            // Provided by Zanders (optional to retain)
+            'serialized' => 'TINYINT(1) NOT NULL DEFAULT 0',
         );
     }
 
     public function get_index_definitions(): array
     {
         return array(
-            'PRIMARY KEY  (upc)',
+            'PRIMARY KEY (upc)',
             'KEY zanders_item_number (zanders_item_number)',
-            'KEY manufacturer_part_number (manufacturer_part_number)',
+            'KEY manufacturer (manufacturer)',
+            'KEY mfg_model_number (mfg_model_number)',
+            'KEY ffl_required (ffl_required)',
+            'KEY sot_required (sot_required)',
         );
     }
 
     public function get_insert_columns(): array
     {
-        $all = array_keys( self::get_column_definitions() );
+        $all = array_keys( $this->get_column_definitions() );
 
         return array_values(
             array_filter(
@@ -90,12 +108,12 @@ class ZandersFulfillmentSchema implements FulfillmentSchemaInterface
 
     /**
      * “Quantity update” should only touch the fast-moving inventory number.
-     * For Zanders, that is the "available" column.
+     * For Zanders, that is the "available" value mapped to inventory_quantity.
      */
     public function get_quantity_update_columns(): array
     {
         return array(
-            'available',
+            'inventory_quantity',
         );
     }
 }

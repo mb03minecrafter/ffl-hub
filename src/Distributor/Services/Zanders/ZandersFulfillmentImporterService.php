@@ -20,14 +20,90 @@ if (!defined('ABSPATH')) {
  * Expected file (downloaded by cron):
  *   uploads/fflhub-zanders/zandersinv.csv
  *
- * Source columns:
+ * Source columns (CSV):
  * available,category,desc1,desc2,itemnumber,manufacturer,mfgpnumber,msrp,
  * price1,price2,price3,qty1,qty2,qty3,upc,weight,serialized,mapprice
+ *
+ * Normalized internal columns:
+ * upc
+ * zanders_item_number
+ * inventory_quantity
+ * allocation_status
+ * distributor_price
+ * retail_map
+ * retail_msrp
+ * product_description
+ * item_type
+ * manufacturer
+ * mfg_model_number
+ * shipping_weight
+ * price_2
+ * price_3
+ * bulk_qty_1
+ * bulk_qty_2
+ * bulk_qty_3
+ * ffl_required (derived)
+ * sot_required (derived)
+ * serialized
+ *
+ * IMPORTANT:
+ * - We MUST NOT import "restricted drop ship" manufacturers (Zanders-provided list).
+ * - We MUST keep CSV parsing settings exact (quoted CSV, CRLF, escaped backslashes).
  */
 class ZandersFulfillmentImporterService
 {
     /** @var DoubleBufferedFulfillmentTable */
     private $table;
+
+    /**
+     * Zanders "restricted drop ship" manufacturers / brands (as provided).
+     *
+     * We normalize comparisons (uppercase + remove spaces/punct) and check:
+     *  - exact normalized match
+     *  - token-based contains match for entries like "COLT/CZ", "S&W FIREARMS", etc.
+     */
+    private const RESTRICTED_DROP_SHIP_MANUFACTURERS = [
+        'ATN',
+        'AOB CUTLERY',
+        'ARSENAL',
+        'BARRETT',
+        'BERETTA FIREARMS',
+        'BUBBA BLADE',
+        'COBRA ARCHERY',
+        'COLT/CZ',
+        'COLUMBIA RIVER KNIFE & TOOL/CRKT',
+        'CRIMSON TRACE',
+        'FN',
+        'FROGG TOGGS',
+        'FSDC',
+        'GLOCK',
+        'GSS',
+        'HAVALON',
+        'HK/HECKLER & KOCH FIREARMS',
+        'HOLOSUN',
+        'INSIGHTS HUNTING',
+        'IWI',
+        'KYNSHOT',
+        'LEUPOLD',
+        'LONGSHOT',
+        'MAG STORAGE SOLUTIONS',
+        'MANTIS',
+        'RUGER FIREARMS',
+        'SIG SAUER',
+        'SLOGAN',
+        'SOG',
+        'SPORTDOG',
+        'SPRINGFIELD FIREARMS',
+        'S&W FIREARMS',
+        'TACTACAM',
+        'TIKKA',
+        'TIMNEY TRIGGERS',
+        'THOMPSON CENTER',
+        'UMAREX (RWS, AXEON)',
+        'WALTHER',
+        '1791 GUN LEATHER',
+        '2 SISTERS MAGNETIC GUN REST',
+    ];
 
     public function __construct(DoubleBufferedFulfillmentTable $table)
     {
@@ -137,16 +213,16 @@ class ZandersFulfillmentImporterService
 
         /**
          * Source order (CSV):
-         * 0 available
-         * 1 category
-         * 2 desc1
-         * 3 desc2
-         * 4 itemnumber
-         * 5 manufacturer
-         * 6 mfgpnumber
-         * 7 msrp
-         * 8 price1
-         * 9 price2
+         * 0  available
+         * 1  category
+         * 2  desc1
+         * 3  desc2
+         * 4  itemnumber
+         * 5  manufacturer
+         * 6  mfgpnumber
+         * 7  msrp
+         * 8  price1
+         * 9  price2
          * 10 price3
          * 11 qty1
          * 12 qty2
@@ -155,49 +231,106 @@ class ZandersFulfillmentImporterService
          * 15 weight
          * 16 serialized
          * 17 mapprice
+         *
+         * IMPORTANT CSV NOTES (to avoid prior parsing issues):
+         * - Keep ENCLOSED BY '"' because Zanders uses quoted fields
+         * - Use ESCAPED BY '\\' to match backslash escapes
+         * - Use LINES TERMINATED BY '\r\n' (Windows CRLF) — we also TRIM '\r'
+         *
+         * RESTRICTED DROP SHIP:
+         * - We can't truly "skip" rows during LOAD DATA without a user variable hack.
+         * - Strategy:
+         *    1) LOAD DATA into staging normally
+         *    2) DELETE restricted manufacturers (normalized matching) immediately after
+         *
+         * This still ensures restricted rows are never present after the import completes.
          */
         $sql = "
-    LOAD DATA LOCAL INFILE %s
-    INTO TABLE {$table_name}
-    CHARACTER SET utf8mb4
-    FIELDS
-        TERMINATED BY ','
-        ENCLOSED BY '\"'
-        ESCAPED BY '\\\\'
-    LINES TERMINATED BY '\\r\\n'
-    IGNORE {$ignore_lines} LINES
-    (
-        @c0,  @c1,  @c2,  @c3,  @c4,  @c5,  @c6,  @c7,  @c8,
-        @c9,  @c10, @c11, @c12, @c13, @c14, @c15, @c16, @c17
-    )
-    SET
-        available                = TRIM(BOTH '\\r' FROM @c0),
-        category                 = TRIM(BOTH '\\r' FROM @c1),
-        desc1                    = TRIM(BOTH '\\r' FROM @c2),
-        desc2                    = TRIM(BOTH '\\r' FROM @c3),
-        zanders_item_number      = TRIM(BOTH '\\r' FROM @c4),
-        manufacturer             = TRIM(BOTH '\\r' FROM @c5),
-        manufacturer_part_number = TRIM(BOTH '\\r' FROM @c6),
-        msrp                     = TRIM(BOTH '\\r' FROM @c7),
-        price_1                  = TRIM(BOTH '\\r' FROM @c8),
-        price_2                  = TRIM(BOTH '\\r' FROM @c9),
-        price_3                  = TRIM(BOTH '\\r' FROM @c10),
-        bulk_qty_1               = TRIM(BOTH '\\r' FROM @c11),
-        bulk_qty_2               = TRIM(BOTH '\\r' FROM @c12),
-        bulk_qty_3               = TRIM(BOTH '\\r' FROM @c13),
-        upc                      = TRIM(BOTH '\\r' FROM @c14),
-        weight_lb                = TRIM(BOTH '\\r' FROM @c15),
-        serialized               = CASE
-                                    WHEN UPPER(TRIM(BOTH '\\r' FROM @c16)) IN ('YES','Y','1','TRUE','T')
-                                    THEN '1' ELSE '0'
-                                  END,
-        map_price = CASE
-            WHEN TRIM(BOTH '\\r' FROM @c17) IN ('', '\"\"') THEN '0'
-            ELSE TRIM(BOTH '\\r' FROM @c17)
-        END
-        
-";
+            LOAD DATA LOCAL INFILE %s
+            INTO TABLE {$table_name}
+            CHARACTER SET utf8mb4
+            FIELDS
+                TERMINATED BY ','
+                ENCLOSED BY '\"'
+                ESCAPED BY '\\\\'
+            LINES TERMINATED BY '\\r\\n'
+            IGNORE {$ignore_lines} LINES
+            (
+                @c0,  @c1,  @c2,  @c3,  @c4,  @c5,  @c6,  @c7,  @c8,
+                @c9,  @c10, @c11, @c12, @c13, @c14, @c15, @c16, @c17
+            )
+            SET
+                inventory_quantity  = CASE
+                                        WHEN TRIM(BOTH '\\r' FROM @c0) IN ('', '\"\"') THEN '0'
+                                        ELSE TRIM(BOTH '\\r' FROM @c0)
+                                      END,
 
+                item_type           = TRIM(BOTH '\\r' FROM @c1),
+
+                product_description = TRIM(
+                                        BOTH ' ' FROM
+                                        CONCAT(
+                                            NULLIF(TRIM(BOTH '\\r' FROM @c2), ''),
+                                            CASE
+                                                WHEN NULLIF(TRIM(BOTH '\\r' FROM @c2), '') IS NOT NULL
+                                                     AND NULLIF(TRIM(BOTH '\\r' FROM @c3), '') IS NOT NULL
+                                                THEN ' '
+                                                ELSE ''
+                                            END,
+                                            NULLIF(TRIM(BOTH '\\r' FROM @c3), '')
+                                        )
+                                      ),
+
+                zanders_item_number  = TRIM(BOTH '\\r' FROM @c4),
+                manufacturer         = TRIM(BOTH '\\r' FROM @c5),
+                mfg_model_number     = TRIM(BOTH '\\r' FROM @c6),
+
+                retail_msrp          = TRIM(BOTH '\\r' FROM @c7),
+
+                distributor_price    = TRIM(BOTH '\\r' FROM @c8),
+                price_2              = TRIM(BOTH '\\r' FROM @c9),
+                price_3              = TRIM(BOTH '\\r' FROM @c10),
+
+                bulk_qty_1           = TRIM(BOTH '\\r' FROM @c11),
+                bulk_qty_2           = TRIM(BOTH '\\r' FROM @c12),
+                bulk_qty_3           = TRIM(BOTH '\\r' FROM @c13),
+
+                upc                  = TRIM(BOTH '\\r' FROM @c14),
+
+                shipping_weight      = CASE
+                                        WHEN TRIM(BOTH '\\r' FROM @c15) IN ('', '\"\"') THEN NULL
+                                        ELSE CAST(TRIM(BOTH '\\r' FROM @c15) AS DECIMAL(10,2))
+                                      END,
+
+                serialized           = CASE
+                                        WHEN UPPER(TRIM(BOTH '\\r' FROM @c16)) IN ('YES','Y','1','TRUE','T')
+                                        THEN '1' ELSE '0'
+                                      END,
+
+                retail_map           = CASE
+                                        WHEN TRIM(BOTH '\\r' FROM @c17) IN ('', '\"\"') THEN '0'
+                                        ELSE TRIM(BOTH '\\r' FROM @c17)
+                                      END,
+
+                ffl_required         = CASE
+                                        WHEN UPPER(TRIM(BOTH '\\r' FROM @c1)) IN (
+                                            'PISTOL',
+                                            'REVOLVER',
+                                            'RIFLE',
+                                            'SHOTGUN',
+                                            'OTHER FIREARMS',
+                                            'RECEIVER',
+                                            'PISTOL FRAMES',
+                                            'DS SUPPRESSORS'
+                                        )
+                                        THEN '1' ELSE '0'
+                                      END,
+
+                sot_required         = CASE
+                                        WHEN UPPER(TRIM(BOTH '\\r' FROM @c1)) IN ('DS SUPPRESSORS')
+                                        THEN '1' ELSE '0'
+                                      END
+        ";
 
         $t_sql_ms = 0.0;
 
@@ -216,6 +349,16 @@ class ZandersFulfillmentImporterService
 
             // Post-clean: remove rows with empty/NULL UPC.
             $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+            // Drop-ship restricted: delete restricted manufacturers.
+            $deleted_restricted = $this->delete_restricted_manufacturers_from_table($table_name);
+
+            $this->log_debug(
+                sprintf(
+                    '[FFLHub][Zanders Import][LOAD DATA] deleted_restricted_manufacturers=%d',
+                    $deleted_restricted
+                )
+            );
         } catch (\Throwable $e) {
             $this->log_debug('[FFLHub][Zanders Import][LOAD DATA] exception: ' . $e->getMessage());
             return -1;
@@ -248,9 +391,11 @@ class ZandersFulfillmentImporterService
      *
      * Must match LOAD DATA behavior:
      *  - CSV: comma + quoted fields (fgetcsv handles quoting)
-     *  - "serialized" => 1/0
-     *  - blank/"" map_price => "0"
-     *  - blank/"" available => "0"
+     *  - inventory_quantity blank/"" => "0"
+     *  - retail_map blank/"" => "0"
+     *  - serialized => 1/0
+     *  - ffl_required/sot_required derived from category
+     *  - restricted manufacturers are skipped BEFORE batching
      */
     private function import_fulfillment_file_via_php(string $file_path): int
     {
@@ -311,6 +456,8 @@ class ZandersFulfillmentImporterService
         $line_number         = 1; // already consumed header
         $skipped_missing_upc = 0;
 
+        $skipped_restricted_mfr = 0;
+
         $batch_flushes  = 0;
         $batch_failures = 0;
 
@@ -339,7 +486,7 @@ class ZandersFulfillmentImporterService
             // Remove BOM if it sneaks into data
             $val = (string) preg_replace('/^\xEF\xBB\xBF/', '', $val);
 
-            // Trim whitespace + CR/LF (LOAD DATA trims '\r' explicitly)
+            // Trim whitespace + CR/LF
             $val = trim($val);
             $val = trim($val, "\r\n");
 
@@ -355,7 +502,7 @@ class ZandersFulfillmentImporterService
         };
 
         /**
-         * Blank/"" => 0 (match LOAD DATA CASE when IN ('', '""'))
+         * Blank/"" => 0 (match LOAD DATA CASE)
          */
         $blank_to_zero = static function (string $v): string {
             $v = trim($v);
@@ -363,6 +510,70 @@ class ZandersFulfillmentImporterService
                 return '0';
             }
             return $v;
+        };
+
+        /**
+         * Decimal normalize for shipping_weight (DECIMAL(10,2) or NULL).
+         * Accepts blank/"" => NULL.
+         */
+        $to_decimal_or_null = static function (string $v): ?string {
+            $v = trim($v);
+            if ($v === '' || $v === '""') {
+                return null;
+            }
+
+            // Keep digits, dot, minus only; if it collapses to empty, return null.
+            $clean = preg_replace('/[^0-9\.\-]/', '', $v);
+            $clean = trim((string) $clean);
+
+            if ($clean === '' || $clean === '-' || $clean === '.' || $clean === '-.') {
+                return null;
+            }
+
+            // Format to 2 decimals to match DECIMAL(10,2)
+            return number_format((float) $clean, 2, '.', '');
+        };
+
+        /**
+         * Deduce compliance flags from category/item_type.
+         */
+        $deduce_ffl = static function (string $category): string {
+            $c = strtoupper(trim($category));
+            return in_array(
+                $c,
+                [
+                    'PISTOL',
+                    'REVOLVER',
+                    'RIFLE',
+                    'SHOTGUN',
+                    'OTHER FIREARMS',
+                    'RECEIVER',
+                    'PISTOL FRAMES',
+                    'DS SUPPRESSORS',
+                ],
+                true
+            ) ? '1' : '0';
+        };
+
+        $deduce_sot = static function (string $category): string {
+            $c = strtoupper(trim($category));
+            return in_array($c, ['DS SUPPRESSORS'], true) ? '1' : '0';
+        };
+
+        /**
+         * Combine desc1 + desc2 into product_description (single space between if both present).
+         */
+        $combine_desc = static function (string $d1, string $d2): string {
+            $d1 = trim($d1);
+            $d2 = trim($d2);
+
+            if ($d1 === '') {
+                return $d2;
+            }
+            if ($d2 === '') {
+                return $d1;
+            }
+            return $d1 . ' ' . $d2;
         };
 
         $flush_batch = function () use (
@@ -390,7 +601,7 @@ class ZandersFulfillmentImporterService
                 $placeholders[] = $row_placeholder;
 
                 foreach ($columns as $col) {
-                    $values[] = isset($row[$col]) ? $row[$col] : '';
+                    $values[] = array_key_exists($col, $row) ? $row[$col] : '';
                 }
             }
 
@@ -402,7 +613,7 @@ class ZandersFulfillmentImporterService
                 $total_import += (int) $result;
             } else {
                 $batch_failures++;
-                $this->log_debug('[FFLHub][Zanders Import] Batch INSERT failed: ' . $wpdb->last_error);
+                error_log('[FFLHub][Zanders Import] Batch INSERT failed: ' . $wpdb->last_error);
             }
 
             $batch_rows = [];
@@ -419,7 +630,6 @@ class ZandersFulfillmentImporterService
 
             $t0 = microtime(true);
 
-            // Pull + normalize fields
             $upc  = $get($csv, $header_map, 'upc');
             $item = $get($csv, $header_map, 'itemnumber');
 
@@ -430,33 +640,47 @@ class ZandersFulfillmentImporterService
                 continue;
             }
 
-            // Build one row in schema terms (match LOAD DATA behavior)
+            $manufacturer = $get($csv, $header_map, 'manufacturer');
+
+            // Skip restricted manufacturers BEFORE we build/insert.
+            if ($this->is_restricted_drop_ship_manufacturer($manufacturer)) {
+                $skipped_restricted_mfr++;
+                $t_parse_total += (microtime(true) - $t0);
+                continue;
+            }
+
+            $category = $get($csv, $header_map, 'category');
+            $desc1    = $get($csv, $header_map, 'desc1');
+            $desc2    = $get($csv, $header_map, 'desc2');
+
             $row = [
-                'upc'                      => $upc,
-                'zanders_item_number'      => $item,
-                'manufacturer'             => $get($csv, $header_map, 'manufacturer'),
-                'manufacturer_part_number' => $get($csv, $header_map, 'mfgpnumber'),
-                'category'                 => $get($csv, $header_map, 'category'),
-                'desc1'                    => $get($csv, $header_map, 'desc1'),
-                'desc2'                    => $get($csv, $header_map, 'desc2'),
+                'upc'                 => $upc,
+                'zanders_item_number' => $item,
 
-                // Blank -> 0 like LOAD DATA CASE
-                'available' => $blank_to_zero($get($csv, $header_map, 'available')),
-                'msrp'      => $get($csv, $header_map, 'msrp'),
+                'inventory_quantity' => $blank_to_zero($get($csv, $header_map, 'available')),
+                'allocation_status'  => '',
 
-                // Blank -> 0 like LOAD DATA CASE
-                'map_price' => $blank_to_zero($get($csv, $header_map, 'mapprice')),
+                'distributor_price' => $get($csv, $header_map, 'price1'),
+                'retail_map'        => $blank_to_zero($get($csv, $header_map, 'mapprice')),
+                'retail_msrp'       => $get($csv, $header_map, 'msrp'),
 
-                'price_1'    => $get($csv, $header_map, 'price1'),
+                'product_description' => $combine_desc($desc1, $desc2),
+                'item_type'           => $category,
+                'manufacturer'        => $manufacturer,
+                'mfg_model_number'    => $get($csv, $header_map, 'mfgpnumber'),
+
+                'shipping_weight' => $to_decimal_or_null($get($csv, $header_map, 'weight')),
+
                 'price_2'    => $get($csv, $header_map, 'price2'),
                 'price_3'    => $get($csv, $header_map, 'price3'),
                 'bulk_qty_1' => $get($csv, $header_map, 'qty1'),
                 'bulk_qty_2' => $get($csv, $header_map, 'qty2'),
                 'bulk_qty_3' => $get($csv, $header_map, 'qty3'),
-                'weight_lb'  => $get($csv, $header_map, 'weight'),
 
-                'serialized'      => $to_bool($get($csv, $header_map, 'serialized')),
-                'reserved_future' => '',
+                'ffl_required' => $deduce_ffl($category),
+                'sot_required' => $deduce_sot($category),
+
+                'serialized' => $to_bool($get($csv, $header_map, 'serialized')),
             ];
 
             $batch_rows[] = $row;
@@ -472,6 +696,9 @@ class ZandersFulfillmentImporterService
 
         $flush_batch();
 
+        // Post-clean: remove rows with empty/NULL UPC (match LOAD DATA post-clean)
+        $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
         if ($total_import > 0) {
             update_option('fflhub_zanders_fulfillment_last_import', current_time('mysql'), false);
             update_option('fflhub_zanders_fulfillment_last_import_count', $total_import, false);
@@ -483,12 +710,13 @@ class ZandersFulfillmentImporterService
 
         $this->log_debug(
             sprintf(
-                '[FFLHub][Zanders Import] import_fulfillment_file_via_php(): total=%.2f ms, parse+loop=%.2f ms, db_flush=%.2f ms, inserted_rows=%d, skipped_missing_upc=%d, batch_flushes=%d, batch_failures=%d',
+                '[FFLHub][Zanders Import] import_fulfillment_file_via_php(): total=%.2f ms, parse+loop=%.2f ms, db_flush=%.2f ms, inserted_rows=%d, skipped_missing_upc=%d, skipped_restricted_mfr=%d, batch_flushes=%d, batch_failures=%d',
                 $t_import_total_ms,
                 $t_parse_ms,
                 $t_flush_ms,
                 $total_import,
                 $skipped_missing_upc,
+                $skipped_restricted_mfr,
                 $batch_flushes,
                 $batch_failures
             )
@@ -497,6 +725,209 @@ class ZandersFulfillmentImporterService
         return $total_import;
     }
 
+    /**
+     * Delete restricted manufacturers from a given table (used for LOAD DATA fast path).
+     *
+     * @param string $table_name
+     * @return int rows deleted
+     */
+    private function delete_restricted_manufacturers_from_table(string $table_name): int
+    {
+        global $wpdb;
+
+        // Build (manufacturer IS NOT NULL AND (normalized match OR token match...)) as OR clauses.
+        // We avoid regex here for portability; this is fast enough and happens once per import.
+        $restricted = self::RESTRICTED_DROP_SHIP_MANUFACTURERS;
+
+        $clauses = [];
+        foreach ($restricted as $raw) {
+            $raw = (string) $raw;
+            $raw_norm = $this->normalize_mfr_key($raw);
+
+            // Skip empty just in case
+            if ($raw_norm === '') {
+                continue;
+            }
+
+            // Exact normalized match OR "contains" match.
+            // We normalize manufacturer in SQL by stripping common punctuation/spaces.
+            $clauses[] = sprintf(
+                "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(manufacturer)),' ',''),'&',''),'/',''),'-',''),'.','') = '%s'
+                 OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(manufacturer)),' ',''),'&',''),'/',''),'-',''),'.','') LIKE '%%%s%%'",
+                esc_sql($raw_norm),
+                esc_sql($raw_norm)
+            );
+
+            // Also handle some common synonyms in the restricted list that won't normalize well
+            // (e.g., "S&W" vs "SMITHWESSON", "HK" vs "HECKLERKOCH").
+            foreach ($this->restricted_alias_norms($raw_norm) as $alias_norm) {
+                if ($alias_norm === '') {
+                    continue;
+                }
+                $clauses[] = sprintf(
+                    "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(manufacturer)),' ',''),'&',''),'/',''),'-',''),'.','') = '%s'
+                     OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(manufacturer)),' ',''),'&',''),'/',''),'-',''),'.','') LIKE '%%%s%%'",
+                    esc_sql($alias_norm),
+                    esc_sql($alias_norm)
+                );
+            }
+        }
+
+        if (empty($clauses)) {
+            return 0;
+        }
+
+        $where = '(' . implode(' OR ', $clauses) . ')';
+
+        $sql = "DELETE FROM {$table_name} WHERE manufacturer IS NOT NULL AND TRIM(manufacturer) <> '' AND ({$where})";
+        $res = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        return is_numeric($res) ? (int) $res : 0;
+    }
+
+    /**
+     * Is a manufacturer restricted for drop ship?
+     */
+    private function is_restricted_drop_ship_manufacturer(string $manufacturer): bool
+    {
+        $m_norm = $this->normalize_mfr_key($manufacturer);
+        if ($m_norm === '') {
+            return false;
+        }
+
+        foreach (self::RESTRICTED_DROP_SHIP_MANUFACTURERS as $raw) {
+            $r_norm = $this->normalize_mfr_key((string) $raw);
+            if ($r_norm === '') {
+                continue;
+            }
+
+            // Exact match
+            if ($m_norm === $r_norm) {
+                return true;
+            }
+
+            // Contains match (handles "COLT/CZ" vs "COLT", etc.)
+            if (strpos($m_norm, $r_norm) !== false || strpos($r_norm, $m_norm) !== false) {
+                return true;
+            }
+
+            // Alias handling (S&W, HK, etc.)
+            foreach ($this->restricted_alias_norms($r_norm) as $alias_norm) {
+                if ($alias_norm === '') {
+                    continue;
+                }
+                if ($m_norm === $alias_norm || strpos($m_norm, $alias_norm) !== false || strpos($alias_norm, $m_norm) !== false) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Normalize manufacturer key for comparisons.
+     *
+     * - uppercase
+     * - strip spaces and common punctuation
+     */
+    private function normalize_mfr_key(string $v): string
+    {
+        $v = strtoupper(trim($v));
+        $v = preg_replace('/^\xEF\xBB\xBF/', '', $v);
+        $v = str_replace([' ', "\t", "\r", "\n"], '', $v);
+        $v = str_replace(['&', '/', '-', '.', ',', '\'', '"'], '', $v);
+
+        // Also strip parentheses content markers without trying to parse them
+        $v = str_replace(['(', ')'], '', $v);
+
+        return (string) $v;
+    }
+
+    /**
+     * Some restricted entries are formatted in a way that benefits from aliases.
+     * We return additional normalized keys to match against.
+     */
+    private function restricted_alias_norms(string $restricted_norm): array
+    {
+        // These are already normalized forms (no spaces/punct).
+        $aliases = [];
+
+        // S&W variants
+        if ($restricted_norm === 'SWFIREARMS' || $restricted_norm === 'SW') {
+            $aliases[] = 'SMITHWESSON';
+            $aliases[] = 'SMITHANDWESSON';
+        }
+        if ($restricted_norm === 'SMITHWESSON' || $restricted_norm === 'SMITHANDWESSON') {
+            $aliases[] = 'SW';
+            $aliases[] = 'SWFIREARMS';
+        }
+
+        // HK variants
+        if ($restricted_norm === 'HKHECKLERKOCHFIREARMS' || $restricted_norm === 'HK') {
+            $aliases[] = 'HK';
+            $aliases[] = 'HECKLERKOCH';
+            $aliases[] = 'HECKLERANDKOCH';
+        }
+        if ($restricted_norm === 'HECKLERKOCH' || $restricted_norm === 'HECKLERANDKOCH') {
+            $aliases[] = 'HK';
+        }
+
+        // Colt/CZ variants
+        if ($restricted_norm === 'COLTCZ') {
+            $aliases[] = 'COLT';
+            $aliases[] = 'CZ';
+            $aliases[] = 'CZUSA';
+        }
+
+        // CRKT variants
+        if ($restricted_norm === 'COLUMBIARIVERKNIFETOOLCRKT') {
+            $aliases[] = 'CRKT';
+            $aliases[] = 'COLUMBIARIVER';
+        }
+
+        // Beretta variants
+        if ($restricted_norm === 'BERETTAFIREARMS') {
+            $aliases[] = 'BERETTA';
+        }
+
+        // Ruger variants
+        if ($restricted_norm === 'RUGERFIREARMS') {
+            $aliases[] = 'RUGER';
+        }
+
+        // Springfield variants
+        if ($restricted_norm === 'SPRINGFIELDFIREARMS') {
+            $aliases[] = 'SPRINGFIELD';
+            $aliases[] = 'SPRINGFIELDARMORY';
+        }
+
+        // Sig variants
+        if ($restricted_norm === 'SIGSAUER') {
+            $aliases[] = 'SIG';
+        }
+
+        // Umarex variants (they listed "Umarex (RWS, AXEON)")
+        if ($restricted_norm === 'UMAREXRWSAXEON') {
+            $aliases[] = 'UMAREX';
+            $aliases[] = 'RWS';
+            $aliases[] = 'AXEON';
+        }
+
+
+                // Timney variants
+        if ($restricted_norm === 'TIMNEYTRIGGERS') {
+            $aliases[] = 'TIMNEY';
+        }
+
+        // Longshot variants
+        if ($restricted_norm === 'LONGSHOT') {
+            $aliases[] = 'LONGSHOTTARGETCAMERA';
+        }
+
+
+        return $aliases;
+    }
 
     private function log_debug(string $message): void
     {
