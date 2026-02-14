@@ -6,6 +6,7 @@ use WC_Order;
 
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementJobsStoreUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
@@ -111,8 +112,21 @@ final class OrderPlacementJobSnapshotsStore
         $patch = OrderPlacementJobPatch::empty()
             ->with_field('place_result_json', $json);
 
+        // ✅ Promote ext_ids into dedicated columns (works for ALL distributors)
+        $ext_ids = [];
+        if (isset($snapshot['ext_ids']) && is_array($snapshot['ext_ids'])) {
+            $ext_ids = OrderPlacementJobsStoreUtil::normalize_external_ids($snapshot['ext_ids']);
+        }
+
+        if (!empty($ext_ids)) {
+            $patch = $patch
+                ->with_field('external_order_ids_json', wp_json_encode($ext_ids))
+                ->with_field('external_order_id', (string) $ext_ids[0]);
+        }
+
         OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
     }
+
 
     /**
      * Retrieve the place-order snapshot for a job.

@@ -418,6 +418,120 @@ abstract class DistributorBase implements DistributorInterface
         return substr($digits, 0, 5);
     }
 
+
+
+    /* ---------------------------------------------------------------------
+     * Shared order payload formatting helpers
+     * ------------------------------------------------------------------ */
+
+    protected static function truncate_string(string $s, int $max): string
+    {
+        $s = trim($s);
+        if ($s === '' || $max <= 0) {
+            return '';
+        }
+        return (strlen($s) <= $max) ? $s : substr($s, 0, $max);
+    }
+
+    /**
+     * "Best effort" state formatter for APIs that REQUIRE 2 chars.
+     * Your existing normalize_us_state_code_for_payload() does not clamp.
+     */
+    protected static function format_us_state2_best_effort($state): string
+    {
+        $s = strtoupper(trim((string) $state));
+        if ($s === '') {
+            return '';
+        }
+        return (strlen($s) === 2) ? $s : substr($s, 0, 2);
+    }
+
+    /**
+     * ZIP5 best-effort:
+     * - Accepts "12345-6789" -> "12345"
+     * - Otherwise extracts digits and uses first 5.
+     */
+    protected static function format_us_zip5_best_effort($zip): string
+    {
+        $zip = trim((string) $zip);
+        if ($zip === '') {
+            return '';
+        }
+
+        if (preg_match('/^(\d{5})/', $zip, $m)) {
+            return (string) $m[1];
+        }
+
+        $digits = self::extract_digits($zip);
+        if ($digits === '') {
+            return '';
+        }
+
+        return substr($digits, 0, 5);
+    }
+
+    protected static function looks_like_yyyy_mm_dd(string $s): bool
+    {
+        return (bool) preg_match('/^\d{4}\-\d{2}\-\d{2}$/', trim($s));
+    }
+
+    /**
+     * Zanders-style ship instructions: 40 chars name + 40 chars phone.
+     */
+    protected static function build_fixed_80_ship_instructions(string $customer_name, string $customer_phone): string
+    {
+        $name  = self::truncate_string($customer_name !== '' ? $customer_name : 'Customer', 40);
+        $phone = self::truncate_string($customer_phone !== '' ? $customer_phone : 'NA', 40);
+
+        $name  = str_pad($name, 40, ' ');
+        $phone = str_pad($phone, 40, ' ');
+
+        return substr($name . $phone, 0, 80);
+    }
+
+    /**
+     * First 3 digits + last 5 digits from an FFL number (digits-only).
+     * Zanders requires this for addressinfo.fflno.
+     */
+    protected static function format_fflno_first3_last5(string $ffl): string
+    {
+        $digits = self::extract_digits($ffl);
+        if (strlen($digits) < 8) {
+            return '';
+        }
+        return substr($digits, 0, 3) . substr($digits, -5);
+    }
+
+    /**
+     * Minimal ship-to validation shared across distributors.
+     *
+     * @return array{ok:bool,message:string}
+     */
+    protected static function validate_shipto_minimum(\FFLHub\Distributor\Models\DistributorShipTo $s): array
+    {
+        if (
+            trim((string) $s->name) === '' ||
+            trim((string) $s->address1) === '' ||
+            trim((string) $s->city) === '' ||
+            trim((string) $s->state) === '' ||
+            trim((string) $s->zip) === ''
+        ) {
+            return ['ok' => false, 'message' => 'ship-to missing required fields (name/address/city/state/zip).'];
+        }
+
+        return ['ok' => true, 'message' => 'OK'];
+    }
+
+    /**
+     * Convenience: sanitize then truncate a merchant PO.
+     */
+    protected function sanitize_and_truncate_po(string $po, int $max, string $allowed_regex = '/[^A-Z0-9\-]/'): string
+    {
+        $po = $this->sanitize_po($po, $allowed_regex, true);
+        return self::truncate_string($po, $max);
+    }
+
+
     /* ---------------------------------------------------------------------
      * Payload building
      * ------------------------------------------------------------------ */
@@ -575,7 +689,8 @@ abstract class DistributorBase implements DistributorInterface
 
             $seen_any_line = true;
 
-            $raw_upc = trim((string) $l->upc);
+            $raw_upc = $this->read_line_upc($l);
+            $raw_upc = trim((string) $raw_upc);
             if ($raw_upc === '') {
                 continue;
             }
@@ -591,7 +706,7 @@ abstract class DistributorBase implements DistributorInterface
                 );
             }
 
-            $qty = max(1, (int) $l->quantity);
+            $qty = max(1, (int) $this->read_line_qty($l));
 
             $mapped_key = $map($normalized_upc, $raw_upc, $l);
             $mapped_key = is_string($mapped_key) ? trim($mapped_key) : '';
@@ -626,34 +741,7 @@ abstract class DistributorBase implements DistributorInterface
         return $items;
     }
 
-    /**
-     * Place an order with the distributor.
-     *
-     * Default: fatal "not implemented".
-     * Subclasses that support ordering must override.
-     */
-    public function place_order(DistributorOrderRequest $request): DistributorOrderResult
-    {
-        return DistributorOrderResult::block_fatal(
-            'Ordering is not implemented for this distributor.',
-            [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED]
-        );
-    }
 
-    /**
-     * Validate an order request before placement (optional).
-     *
-     * Default behavior: allow.
-     * Some distributors support preflight validation via API; others do not.
-     *
-     * @param bool $local_only If true, perform only local checks (no remote API).
-     */
-    public function validate_order_request(
-        DistributorOrderRequest $request,
-        bool $local_only = false
-    ): DistributorOrderValidationResult {
-        return DistributorOrderValidationResult::allow('No distributor-specific validation implemented.');
-    }
 
     /**
      * Return subset of lines this distributor can validate using local fulfillment table.
@@ -691,6 +779,104 @@ abstract class DistributorBase implements DistributorInterface
         return $out;
     }
 
+
+
+    /* -------------------------------------------------------------------------
+     * Internal helpers: line aggregation (validation)
+     * ---------------------------------------------------------------------- */
+
+    /**
+     * Aggregate required quantities by normalized UPC.
+     *
+     * Why:
+     * - Checkouts can contain the same UPC multiple times (qty spread across lines).
+     * - Lipsey's ValidateItem is per-item; we need total required per UPC.
+     *
+     * @param DistributorOrderLine[] $lines
+     * @return array<string,int> map of UPC => requiredQty
+     */
+    protected function build_required_qty_by_upc(array $lines): array
+    {
+        $required = [];
+
+        foreach ($lines as $idx => $l) {
+            if (!($l instanceof DistributorOrderLine)) {
+
+                continue;
+            }
+
+            $raw_upc = $this->read_line_upc($l);
+            $qty     = $this->read_line_qty($l);
+
+            $upc = $this->normalize_upc($raw_upc);
+            if ($upc === null) {
+                continue;
+            }
+
+            if ($qty < 1) {
+                continue;
+            }
+
+            if (!isset($required[$upc])) {
+                $required[$upc] = 0;
+            }
+
+            $required[$upc] += $qty;
+        }
+
+        return $required;
+    }
+
+    /**
+     * Defensive UPC accessor.
+     */
+    protected function read_line_upc(DistributorOrderLine $l): string
+    {
+        foreach (['get_upc', 'getUpc', 'upc'] as $m) {
+            if (method_exists($l, $m)) {
+                try {
+                    $v = $l->{$m}();
+                    $v = trim((string) $v);
+                    if ($v !== '') {
+                        return $v;
+                    }
+                } catch (\Throwable $e) {
+                    // ignore
+                }
+            }
+        }
+
+        if (isset($l->upc)) {
+            return trim((string) $l->upc);
+        }
+
+        return '';
+    }
+
+    /**
+     * Defensive quantity accessor (clamps to >= 0).
+     */
+    protected function read_line_qty(DistributorOrderLine $l): int
+    {
+        foreach (['get_qty', 'getQty', 'qty', 'get_quantity', 'getQuantity', 'quantity'] as $m) {
+            if (method_exists($l, $m)) {
+                try {
+                    return max(0, (int) $l->{$m}());
+                } catch (\Throwable $e) {
+                    // ignore
+                }
+            }
+        }
+
+        if (isset($l->quantity)) {
+            return max(0, (int) $l->quantity);
+        }
+
+
+        return 0;
+    }
+
+
     /**
      * Fetch shipment information by purchase order number (if supported).
      *
@@ -700,5 +886,670 @@ abstract class DistributorBase implements DistributorInterface
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
     {
         return null;
+    }
+
+
+
+    /**
+     * Validate required quantities using the local fulfillment table.
+     *
+     * Centralizes the common "local_only" / "local fallback" behavior:
+     * - aggregate qty per UPC
+     * - lookup row by UPC in local fulfillment table
+     * - parse inventory quantity safely
+     * - unknown qty policy (default: block)
+     * - optional bucket enforcement against row flag (e.g., ffl_required)
+     *
+     * @param DistributorOrderLine[] $lines
+     * @param array{
+     *   label?:string,
+     *   max_unique?:int,
+     *   inventory_keys?:string[],
+     *   unknown_qty_blocks?:bool,
+     *   bucket?:string,
+     *   enforce_ffl_required?:null|int,
+     *   ffl_required_row_keys?:string[],
+     *   extra_row_checks?:null|callable(array $row,string $normalized_upc,int $requiredQty):array{ok:bool,message?:string,details?:array},
+     * } $opts
+     */
+    protected function validate_local_fulfillment_required_qty_by_upc(array $lines, array $opts = []): DistributorOrderValidationResult
+    {
+        $label = isset($opts['label']) ? trim((string) $opts['label']) : 'Local fulfillment';
+        if ($label === '') {
+            $label = 'Local fulfillment';
+        }
+
+        $required_by_upc = $this->build_required_qty_by_upc($lines);
+        if (empty($required_by_upc)) {
+            return DistributorOrderValidationResult::allow($label . ': no valid UPC line items to validate.', [
+                'required_by_upc' => [],
+                'items' => [],
+                'label' => $label,
+            ]);
+        }
+
+        $max_unique = isset($opts['max_unique']) ? (int) $opts['max_unique'] : 75;
+        if ($max_unique > 0 && count($required_by_upc) > $max_unique) {
+            return DistributorOrderValidationResult::block(
+                $label . ': too many unique items to validate (' . count($required_by_upc) . ').',
+                [strtoupper(preg_replace('/\s+/', '_', $label)) . '_TOO_MANY_UNIQUE'],
+                [
+                    'label' => $label,
+                    'unique_count' => count($required_by_upc),
+                    'max_unique' => $max_unique,
+                    'required_by_upc' => $required_by_upc,
+                ]
+            );
+        }
+
+        if (!$this->services) {
+            return DistributorOrderValidationResult::block(
+                $label . ': services not available; cannot access fulfillment table.',
+                [strtoupper(preg_replace('/\s+/', '_', $label)) . '_SERVICES_MISSING'],
+                [
+                    'label' => $label,
+                    'required_by_upc' => $required_by_upc,
+                ]
+            );
+        }
+
+        $table = $this->services->get_fulfillment_table();
+        if (!$table) {
+            return DistributorOrderValidationResult::block(
+                $label . ': fulfillment table not available.',
+                [strtoupper(preg_replace('/\s+/', '_', $label)) . '_TABLE_MISSING'],
+                [
+                    'label' => $label,
+                    'required_by_upc' => $required_by_upc,
+                ]
+            );
+        }
+
+        $inventory_keys = isset($opts['inventory_keys']) && is_array($opts['inventory_keys'])
+            ? array_values($opts['inventory_keys'])
+            : ['inventory_quantity'];
+
+        $unknown_qty_blocks = array_key_exists('unknown_qty_blocks', $opts) ? (bool) $opts['unknown_qty_blocks'] : true;
+
+        $bucket = isset($opts['bucket']) ? trim((string) $opts['bucket']) : '';
+        $enforce_ffl_required = array_key_exists('enforce_ffl_required', $opts) ? $opts['enforce_ffl_required'] : null;
+        if ($enforce_ffl_required !== null) {
+            $enforce_ffl_required = (int) $enforce_ffl_required;
+            if ($enforce_ffl_required !== 0 && $enforce_ffl_required !== 1) {
+                $enforce_ffl_required = null;
+            }
+        }
+
+        $ffl_required_row_keys = isset($opts['ffl_required_row_keys']) && is_array($opts['ffl_required_row_keys'])
+            ? array_values($opts['ffl_required_row_keys'])
+            : ['ffl_required'];
+
+        $extra_row_checks = isset($opts['extra_row_checks']) && is_callable($opts['extra_row_checks'])
+            ? $opts['extra_row_checks']
+            : null;
+
+        $details = [
+            'label' => $label,
+            'bucket' => $bucket,
+            'required_by_upc' => $required_by_upc,
+            'items' => [],
+            'policy' => [
+                'unknown_qty_blocks' => $unknown_qty_blocks ? 1 : 0,
+                'inventory_keys' => $inventory_keys,
+                'enforce_ffl_required' => $enforce_ffl_required,
+                'ffl_required_row_keys' => $ffl_required_row_keys,
+            ],
+        ];
+
+        $fail_msgs = [];
+
+        foreach ($required_by_upc as $upc => $requiredQty) {
+            $requiredQty = (int) $requiredQty;
+
+            $normalized = $this->normalize_upc((string) $upc);
+            if ($normalized === null) {
+                $fail_msgs[] = "UPC={$upc} invalid (normalize_upc null)";
+                $details['items'][(string) $upc] = [
+                    'requiredQty' => $requiredQty,
+                    'found' => 0,
+                    'reason' => 'invalid_upc',
+                ];
+                continue;
+            }
+
+            $row = $table->get_row_by_upc($normalized);
+            if (!$row || !is_array($row)) {
+                $fail_msgs[] = "UPC={$normalized} not found in local fulfillment table";
+                $details['items'][$normalized] = [
+                    'requiredQty' => $requiredQty,
+                    'found' => 0,
+                    'local_qty' => null,
+                    'reason' => 'not_found',
+                ];
+                continue;
+            }
+
+            $qty_raw = $this->get_string_field($row, $inventory_keys);
+            $qty_raw_s = trim((string) $qty_raw);
+            $local_qty = (is_numeric($qty_raw_s) ? (int) $qty_raw_s : null);
+
+            $item_details = [
+                'requiredQty' => $requiredQty,
+                'found' => 1,
+                'inventory_raw' => $qty_raw_s,
+                'local_qty' => $local_qty,
+            ];
+
+            if ($enforce_ffl_required !== null) {
+                $ffl_raw = $this->get_string_field($row, $ffl_required_row_keys);
+                $ffl_flag = (int) (is_numeric((string) $ffl_raw) ? (int) $ffl_raw : ((string)$ffl_raw === 'Y' ? 1 : 0));
+                $item_details['ffl_required'] = $ffl_flag;
+
+                if ($ffl_flag !== $enforce_ffl_required) {
+                    $fail_msgs[] = "UPC={$normalized} bucket_mismatch ffl_required={$ffl_flag} expected={$enforce_ffl_required}";
+                    $item_details['reason'] = 'bucket_mismatch';
+                    $details['items'][$normalized] = $item_details;
+                    continue;
+                }
+            }
+
+            if ($extra_row_checks) {
+                $chk = $extra_row_checks($row, $normalized, $requiredQty);
+                $ok = (bool) ($chk['ok'] ?? false);
+                if (isset($chk['details']) && is_array($chk['details'])) {
+                    $item_details = array_merge($item_details, $chk['details']);
+                }
+                if (!$ok) {
+                    $m = trim((string) ($chk['message'] ?? 'extra_row_checks failed'));
+                    $fail_msgs[] = "UPC={$normalized} " . $m;
+                    $item_details['reason'] = 'extra_row_checks';
+                    $details['items'][$normalized] = $item_details;
+                    continue;
+                }
+            }
+
+            if ($local_qty === null) {
+                $item_details['reason'] = 'unknown_qty';
+                $details['items'][$normalized] = $item_details;
+
+                if ($unknown_qty_blocks) {
+                    $fail_msgs[] = "UPC={$normalized} local_qty=UNKNOWN required={$requiredQty}";
+                }
+                continue;
+            }
+
+            if ($local_qty < $requiredQty) {
+                $fail_msgs[] = "UPC={$normalized} local_available={$local_qty} required={$requiredQty}";
+                $item_details['reason'] = 'insufficient';
+            }
+
+            $details['items'][$normalized] = $item_details;
+        }
+
+        if (!empty($fail_msgs)) {
+            $msg = $label . ' failed: ' . implode(' | ', array_slice($fail_msgs, 0, 8));
+            if (count($fail_msgs) > 8) {
+                $msg .= ' | ...';
+            }
+
+            return DistributorOrderValidationResult::block(
+                $msg,
+                [strtoupper(preg_replace('/\s+/', '_', $label)) . '_BLOCKED'],
+                $details
+            );
+        }
+
+        return DistributorOrderValidationResult::allow($label . ' OK.', $details);
+    }
+
+
+
+
+        /* -------------------------------------------------------------------------
+     * Order validation template (base orchestration + distributor hooks)
+     * ---------------------------------------------------------------------- */
+
+    /**
+     * Validate an order request before placement (optional).
+     *
+     * Base behavior:
+     * - empty lines => allow
+     * - build_required_qty_by_upc => allow if empty
+     * - max unique guard
+     * - optional invariants (ex: FFL ship-to requirements)
+     * - local-only path OR "remote not supported" => local validation
+     * - remote path => distributor-specific remote validation
+     *
+     * Distributors should override the hook methods below rather than
+     * overriding validate_order_request() directly.
+     *
+     * @param bool $local_only If true, perform only local checks (no remote API).
+     */
+    public function validate_order_request(
+        DistributorOrderRequest $request,
+        bool $local_only = false
+    ): DistributorOrderValidationResult {
+        if (empty($request->lines)) {
+            return DistributorOrderValidationResult::allow('No order lines to validate.');
+        }
+
+        $required_by_upc = $this->build_required_qty_by_upc($request->lines);
+        if (empty($required_by_upc)) {
+            return DistributorOrderValidationResult::allow('No valid UPC line items to validate.');
+        }
+
+        $max_unique = $this->validation_max_unique_items($request, $local_only);
+        if ($max_unique > 0 && count($required_by_upc) > $max_unique) {
+            return DistributorOrderValidationResult::block(
+                $this->validation_too_many_unique_message(count($required_by_upc), $max_unique),
+                [$this->validation_too_many_unique_code()],
+                [
+                    'unique_count'     => count($required_by_upc),
+                    'max_unique'       => $max_unique,
+                    'local_only'       => $local_only ? 1 : 0,
+                    'required_by_upc'  => $required_by_upc,
+                ]
+            );
+        }
+
+        // Cheap invariants (can block early).
+        $inv = $this->validation_precheck_invariants($request, $local_only);
+        if ($inv instanceof DistributorOrderValidationResult) {
+            return $inv;
+        }
+
+        // Local-only OR remote not supported => local path.
+        if ($local_only || !$this->supports_remote_validation()) {
+            return $this->validate_order_request_local($request, $required_by_upc, $local_only);
+        }
+
+        // Remote path.
+        return $this->validate_order_request_remote($request, $required_by_upc);
+    }
+
+    /**
+     * Whether this distributor supports remote validation.
+     */
+    protected function supports_remote_validation(): bool
+    {
+        return false;
+    }
+
+    /**
+     * Max unique UPCs allowed in validation.
+     * Return 0 to disable the guard.
+     */
+    protected function validation_max_unique_items(DistributorOrderRequest $request, bool $local_only): int
+    {
+        return 75;
+    }
+
+    protected function validation_too_many_unique_code(): string
+    {
+        return strtoupper($this->get_id()) . '_VALIDATE_TOO_MANY_UNIQUE';
+    }
+
+    protected function validation_too_many_unique_message(int $count, int $max): string
+    {
+        return $this->get_label() . ' validation failed: too many unique items to validate in one checkout (' . $count . ' > ' . $max . ').';
+    }
+
+    protected function validation_services_missing_code(): string
+    {
+        return strtoupper($this->get_id()) . '_SERVICES_MISSING';
+    }
+
+    protected function validation_services_missing_message(): string
+    {
+        return $this->get_label() . ' services not available; cannot access fulfillment table.';
+    }
+
+    /**
+     * Optional invariant checks before local/remote validation runs.
+     *
+     * Return:
+     * - DistributorOrderValidationResult to block/allow early
+     * - null to continue
+     */
+    protected function validation_precheck_invariants(DistributorOrderRequest $request, bool $local_only): ?DistributorOrderValidationResult
+    {
+        return null;
+    }
+
+    /**
+     * Local validation options for validate_local_fulfillment_required_qty_by_upc().
+     *
+     * @param array<string,int> $required_by_upc
+     * @return array<string,mixed>
+     */
+    protected function validation_local_options(
+        DistributorOrderRequest $request,
+        array $required_by_upc,
+        bool $local_only
+    ): array {
+        return [
+            'label'              => $this->get_label() . ' validation (local)',
+            'max_unique'          => $this->validation_max_unique_items($request, $local_only),
+            'inventory_keys'      => ['inventory_quantity'],
+            'unknown_qty_blocks'  => true,
+        ];
+    }
+
+    /**
+     * Local validation wrapper (centralized services/table guard + call).
+     *
+     * @param array<string,int> $required_by_upc
+     */
+    protected function validate_order_request_local(
+        DistributorOrderRequest $request,
+        array $required_by_upc,
+        bool $local_only
+    ): DistributorOrderValidationResult {
+        if (!$this->services) {
+            return DistributorOrderValidationResult::block(
+                $this->validation_services_missing_message(),
+                [$this->validation_services_missing_code()],
+                [
+                    'local_only'      => $local_only ? 1 : 0,
+                    'required_by_upc' => $required_by_upc,
+                ]
+            );
+        }
+
+        $opts = $this->validation_local_options($request, $required_by_upc, $local_only);
+
+        // Note: validate_local_* will rebuild required_by_upc internally.
+        // That’s fine; if you want to avoid that later, we can add an optional
+        // 'required_by_upc' override to validate_local_*.
+        return $this->validate_local_fulfillment_required_qty_by_upc($request->lines, $opts);
+    }
+
+    /**
+     * Remote validation hook. Only called if supports_remote_validation() is true.
+     *
+     * @param array<string,int> $required_by_upc
+     */
+    protected function validate_order_request_remote(
+        DistributorOrderRequest $request,
+        array $required_by_upc
+    ): DistributorOrderValidationResult {
+        return DistributorOrderValidationResult::allow($this->get_label() . ' validation: remote not implemented.');
+    }
+
+    /**
+     * Shared invariant helper: if the request has any FFL lines, require ship_to_ffl + receiving_ffl_number.
+     *
+     * $code_prefix should be something like "RSR" or strtoupper($this->get_id()).
+     */
+    protected function require_ffl_shipto_if_ffl_lines(DistributorOrderRequest $request, string $code_prefix): ?DistributorOrderValidationResult
+    {
+        $ffl_lines = method_exists($request, 'ffl_lines') ? (array) $request->ffl_lines() : [];
+
+        if (empty($ffl_lines)) {
+            return null;
+        }
+
+        if (!($request->ship_to_ffl instanceof \FFLHub\Distributor\Models\DistributorShipTo)) {
+            return DistributorOrderValidationResult::block(
+                'Validation failed (FFL items): missing ship_to_ffl (transfer dealer address required).',
+                [$code_prefix . '_FFL_ADDRESS_MISSING']
+            );
+        }
+
+        if (trim((string) $request->receiving_ffl_number) === '') {
+            return DistributorOrderValidationResult::block(
+                'Validation failed (FFL items): missing receiving FFL number (ShipFFL required).',
+                [$code_prefix . '_SHIPFFL_MISSING']
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * Shared helper: infer bucket/enforcement from request->bucket or line ffl_required flags.
+     *
+     * Returns: ['bucket' => 'ffl'|'non'|'', 'enforce_ffl_required' => 1|0|null]
+     *
+     * @return array{bucket:string,enforce_ffl_required:null|int}
+     */
+    protected function infer_bucket_and_ffl_enforcement(DistributorOrderRequest $request): array
+    {
+        $bucket = '';
+        $enforce = null;
+
+        if (property_exists($request, 'bucket')) {
+            $b = strtolower(trim((string) ($request->bucket ?? '')));
+            if ($b === 'ffl') {
+                return ['bucket' => 'ffl', 'enforce_ffl_required' => 1];
+            }
+            if ($b === 'non') {
+                return ['bucket' => 'non', 'enforce_ffl_required' => 0];
+            }
+        }
+
+        $flags = [];
+        foreach ((array) $request->lines as $ln) {
+            if (is_object($ln) && property_exists($ln, 'ffl_required')) {
+                $flags[] = ((int) ($ln->ffl_required ?? 0)) ? 1 : 0;
+            } elseif (is_array($ln) && array_key_exists('ffl_required', $ln)) {
+                $flags[] = ((int) ($ln['ffl_required'] ?? 0)) ? 1 : 0;
+            }
+        }
+
+        $flags = array_values(array_unique($flags));
+        if (count($flags) === 1) {
+            $enforce = (int) $flags[0];
+            $bucket = ($enforce === 1) ? 'ffl' : 'non';
+        }
+
+        return ['bucket' => $bucket, 'enforce_ffl_required' => $enforce];
+    }
+
+
+    /* -------------------------------------------------------------------------
+ * Order placement template (base orchestration + distributor hooks)
+ * ---------------------------------------------------------------------- */
+
+    public function place_order(DistributorOrderRequest $request): DistributorOrderResult
+    {
+        if (!$this->supports_ordering()) {
+            return DistributorOrderResult::block_fatal(
+                'Ordering is not implemented for this distributor.',
+                [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED]
+            );
+        }
+
+        $guard = $this->place_order_precheck($request);
+        if ($guard instanceof DistributorOrderResult) {
+            return $guard;
+        }
+
+        $lines_non = method_exists($request, 'non_ffl_lines') ? (array) $request->non_ffl_lines() : [];
+        $lines_ffl = method_exists($request, 'ffl_lines') ? (array) $request->ffl_lines() : [];
+
+        if (empty($lines_non) && empty($lines_ffl)) {
+            return DistributorOrderResult::block_fatal(
+                'No valid order lines after normalization.',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
+            );
+        }
+
+        $external_ids = [];
+        $errors = [];
+
+        $stop_on_first_failure = $this->place_order_stop_on_first_failure();
+
+        if (!empty($lines_non)) {
+            $res = $this->place_order_bucket($request, 'non', $lines_non, $external_ids);
+
+            if (!$this->order_result_code_ok($res)) {
+                $res->external_order_ids = $external_ids;
+
+                if ($stop_on_first_failure || $this->place_order_should_short_circuit_on_failure($res)) {
+                    return $res;
+                }
+
+                $errors[] = (string) $res->message;
+            } else {
+                // in case bucket handler returned OK with ids in result
+                $external_ids = $this->merge_external_ids($external_ids, (array) $res->external_order_ids);
+            }
+        }
+
+        if (!empty($lines_ffl)) {
+            $res = $this->place_order_bucket($request, 'ffl', $lines_ffl, $external_ids);
+
+            if (!$this->order_result_code_ok($res)) {
+                $res->external_order_ids = $external_ids;
+
+                if ($stop_on_first_failure || $this->place_order_should_short_circuit_on_failure($res)) {
+                    return $res;
+                }
+
+                $errors[] = (string) $res->message;
+            } else {
+                $external_ids = $this->merge_external_ids($external_ids, (array) $res->external_order_ids);
+            }
+        }
+
+        if (!empty($errors)) {
+            return DistributorOrderResult::block_fatal(
+                $this->get_label() . ' order failed: ' . $this->join_msgs($errors, 8),
+                [DistributorOrderResult::REASON_FATAL_UNKNOWN],
+                ['errors' => $errors],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        return DistributorOrderResult::ok($this->get_label() . ' order submitted.', $external_ids);
+    }
+
+    protected function supports_ordering(): bool
+    {
+        return false;
+    }
+
+    protected function place_order_stop_on_first_failure(): bool
+    {
+        // RSR/Zanders want true. Lipsey’s wants false (it can attempt both).
+        return true;
+    }
+
+    protected function place_order_should_short_circuit_on_failure(DistributorOrderResult $res): bool
+    {
+        // Default: always short-circuit retryables (keeps idempotency simple).
+        return $res->is_retryable();
+    }
+
+    protected function place_order_precheck(DistributorOrderRequest $request): ?DistributorOrderResult
+    {
+        if (!$this->services) {
+            return DistributorOrderResult::block_fatal(
+                $this->get_label() . ' services not available; cannot access fulfillment table.',
+                [DistributorOrderResult::REASON_FATAL_SERVICES_MISSING]
+            );
+        }
+
+        if (empty($request->lines)) {
+            return DistributorOrderResult::block_fatal(
+                'No order lines provided.',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * @param 'non'|'ffl' $bucket
+     * @param array<int,mixed> $lines
+     * @param array<int,string> $external_ids accumulator (pass-by-ref)
+     */
+    protected function place_order_bucket(
+        DistributorOrderRequest $request,
+        string $bucket,
+        array $lines,
+        array &$external_ids
+    ): DistributorOrderResult {
+        return DistributorOrderResult::block_fatal(
+            'place_order_bucket not implemented for this distributor.',
+            [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED]
+        );
+    }
+
+    /* -----------------------
+ * Small internal helpers
+ * -------------------- */
+
+    protected function order_result_code_ok(DistributorOrderResult $res): bool
+    {
+        // Use code, not $res->ok (dry_run has code=OK but ok=false).
+        return ($res->code === DistributorOrderResult::CODE_OK);
+    }
+
+    /** @param string[] $a @param string[] $b @return string[] */
+    protected function merge_external_ids(array $a, array $b): array
+    {
+        $out = $a;
+        foreach ($b as $id) {
+            $id = trim((string) $id);
+            if ($id !== '' && !in_array($id, $out, true)) {
+                $out[] = $id;
+            }
+        }
+        return $out;
+    }
+
+    /** @param string[] $msgs */
+    protected function join_msgs(array $msgs, int $max = 8): string
+    {
+        $msgs = array_values(array_filter(array_map('strval', $msgs), function ($m) {
+            return trim($m) !== '';
+        }));
+
+        $head = array_slice($msgs, 0, max(1, $max));
+        $s = implode(' | ', $head);
+
+        if (count($msgs) > $max) {
+            $s .= ' | ...';
+        }
+
+        return $s;
+    }
+
+
+
+
+    //SANITIZE HELPERS SECTION
+    /**
+     * Sanitize a merchant PO / reference string into a conservative "safe" format.
+     *
+     * Philosophy:
+     * - Be transparent (minimal mutation).
+     * - Keep only characters that are broadly accepted across distributor APIs.
+     * - Do NOT re-shape the string (no dash insertion, no truncation).
+     *
+     * Default allowed chars: A-Z, 0-9, dash.
+     * Override allowed pattern per distributor if needed.
+     */
+    protected function sanitize_po(
+        string $s,
+        string $allowed_regex = '/[^A-Z0-9\-]/',
+        bool $uppercase = true
+    ): string {
+        $s = trim($s);
+        if ($s === '') {
+            return '';
+        }
+
+        if ($uppercase) {
+            $s = strtoupper($s);
+        }
+
+        $s = preg_replace($allowed_regex, '', $s);
+        return is_string($s) ? $s : '';
     }
 }

@@ -5,8 +5,18 @@ namespace FFLHub\Distributor\Integrations\Zanders;
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
+use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\DistributorOrderRequest;
+use FFLHub\Distributor\Models\DistributorOrderResult;
+use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
+use FFLHub\Distributor\Models\DistributorShipment;
+use FFLHub\Distributor\Models\DistributorShipTo;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
+use FFLHub\Distributor\Services\Zanders\API\ZandersSoapCurlClient;
+use FFLHub\Distributor\Services\Zanders\ZandersServices;
+use FFLHub\FFL\Data\FFLRepository;
 use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
@@ -36,7 +46,623 @@ class DistributorZanders extends DistributorBase
         parent::__construct($module, $services);
     }
 
+
+
+    //VALIDATION SECTION
+
+    protected function supports_remote_validation(): bool
+    {
+        return false; // Zanders never does remote validation
+    }
+
+    protected function validation_max_unique_items(DistributorOrderRequest $request, bool $local_only): int
+    {
+        return self::VALIDATE_MAX_UNIQUE_ITEMS;
+    }
+
+    protected function validation_too_many_unique_code(): string
+    {
+        return 'ZANDERS_VALIDATE_TOO_MANY_UNIQUE';
+    }
+
+    protected function validation_services_missing_code(): string
+    {
+        return 'ZANDERS_SERVICES_MISSING';
+    }
+
+    protected function validation_services_missing_message(): string
+    {
+        return 'Zanders services not available; cannot access fulfillment table.';
+    }
+
     /**
+     * @param array<string,int> $required_by_upc
+     * @return array<string,mixed>
+     */
+    protected function validation_local_options(
+        DistributorOrderRequest $request,
+        array $required_by_upc,
+        bool $local_only
+    ): array {
+        // Bucket + enforcement is shared in base helper you added.
+        $b = $this->infer_bucket_and_ffl_enforcement($request);
+
+        return [
+            'label'                => 'Zanders validation (local)',
+            'max_unique'           => self::VALIDATE_MAX_UNIQUE_ITEMS,
+            'inventory_keys'       => ['inventory_quantity'],
+            'unknown_qty_blocks'   => true,
+
+            'bucket'               => $b['bucket'],
+            'enforce_ffl_required' => $b['enforce_ffl_required'],
+            'ffl_required_row_keys' => ['ffl_required'],
+
+            'extra_row_checks' => function (array $row, string $normalized_upc, int $requiredQty): array {
+                $sot_raw  = $row['sot_required'] ?? null;
+                $sot_flag = (int) (is_numeric((string) $sot_raw) ? (int) $sot_raw : ((string) $sot_raw === 'Y' ? 1 : 0));
+
+                return [
+                    'ok' => true,
+                    'details' => [
+                        'sot_required'        => $sot_flag,
+                        'zanders_item_number' => (string) ($row['zanders_item_number'] ?? ''),
+                    ],
+                ];
+            },
+        ];
+    }
+
+
+    //END VALIDATION SECTION
+
+
+
+    private function is_testing_mode(): bool
+    {
+        // Whatever you do in other integrations (option, env, etc)
+        return (bool) apply_filters('fflhub_zanders_testing_mode', false);
+    }
+
+    private function get_zanders_auth(): array
+    {
+        // Replace with your actual credentials retrieval.
+        // Must return ['ok'=>bool, 'payload'=>['username'=>..., 'password'=>...], 'message'=>...]
+        $u = (string) apply_filters('fflhub_zanders_username', '');
+        $p = (string) apply_filters('fflhub_zanders_password', '');
+        if ($u === '' || $p === '') {
+            return ['ok' => false, 'message' => 'Missing Zanders credentials.', 'payload' => []];
+        }
+        return ['ok' => true, 'message' => 'OK', 'payload' => ['username' => $u, 'password' => $p]];
+    }
+
+    private function make_orders_client(): ZandersSoapCurlClient
+    {
+        $verify_tls = (bool) apply_filters('fflhub_zanders_verify_tls', true);
+        $timeout    = (int) apply_filters('fflhub_zanders_timeout_sec', 60);
+
+        return new ZandersSoapCurlClient(
+            ZandersDirectShipAPI::ORDERS_WSDL,
+            max(10, $timeout),
+            $verify_tls,
+            'FFLHUB-Zanders-Orders'
+        );
+    }
+
+    private function make_shipto_client(): ZandersSoapCurlClient
+    {
+        $verify_tls = (bool) apply_filters('fflhub_zanders_verify_tls', true);
+        $timeout    = (int) apply_filters('fflhub_zanders_timeout_sec', 60);
+
+        return new ZandersSoapCurlClient(
+            ZandersDirectShipAPI::SHIPTO_WSDL,
+            max(10, $timeout),
+            $verify_tls,
+            'FFLHUB-Zanders-ShipTo'
+        );
+    }
+
+    //ORDERING SECIONT
+
+
+    protected function supports_ordering(): bool
+    {
+        return true;
+    }
+
+    protected function place_order_stop_on_first_failure(): bool
+    {
+        return true; // match RSR behavior: no partials
+    }
+
+    protected function place_order_precheck(DistributorOrderRequest $request): ?DistributorOrderResult
+    {
+        $base = parent::place_order_precheck($request);
+        if ($base instanceof DistributorOrderResult) {
+            return $base;
+        }
+
+        $auth = $this->get_zanders_auth();
+        if (!($auth['ok'] ?? false)) {
+            return DistributorOrderResult::block_fatal(
+                (string) ($auth['message'] ?? 'Missing Zanders credentials.'),
+                [DistributorOrderResult::REASON_FATAL_MISSING_CREDS],
+                ['auth' => ['ok' => (int)($auth['ok'] ?? 0), 'message' => (string)($auth['message'] ?? '')]]
+            );
+        }
+
+        // ✅ exact merchant PO already encoded upstream
+        $po = $this->sanitize_and_truncate_po((string) $request->merchant_order_id, 22);
+        if ($po === '') {
+            return DistributorOrderResult::block_fatal(
+                'Zanders: missing merchant PO (purchaseOrderNumber).',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
+            );
+        }
+
+        return null;
+    }
+
+    protected function place_order_bucket(
+        DistributorOrderRequest $request,
+        string $bucket,
+        array $lines,
+        array &$external_ids
+    ): DistributorOrderResult {
+        $auth = $this->get_zanders_auth(); // already validated in precheck
+        $testing = $this->is_testing_mode();
+
+        $orders_client = $this->make_orders_client();
+        $shipto_client = $this->make_shipto_client();
+
+
+        $po = $this->sanitize_and_truncate_po((string) $request->merchant_order_id, 22);
+
+
+        $ship_date = (string) apply_filters('fflhub_zanders_ship_date', gmdate('Y-m-d'), $request);
+
+        $items = $this->build_zanders_items($lines);
+        if ($items instanceof DistributorOrderResult) {
+            $items->external_order_ids = $external_ids;
+            return $items;
+        }
+
+        if ($bucket === 'non') {
+            if (!($request->ship_to_customer instanceof DistributorShipTo)) {
+                return DistributorOrderResult::block_fatal(
+                    'Zanders NON: missing ship_to_customer (ship-to address required).',
+                    [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                    [],
+                    0,
+                    '',
+                    $external_ids
+                );
+            }
+
+            $ship = $request->ship_to_customer;
+            $ship_check = self::validate_shipto_minimum($ship);
+
+
+            if (!($ship_check['ok'] ?? false)) {
+                return DistributorOrderResult::block_fatal(
+                    'Zanders NON: ' . (string) ($ship_check['message'] ?? 'Invalid ship-to.'),
+                    [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                    ['ship_check' => $ship_check],
+                    0,
+                    '',
+                    $external_ids
+                );
+            }
+
+            $order_map = [
+                'shipToName'         => self::truncate_string($ship->name, 40),
+                'shipToAddress1'     => self::truncate_string($ship->address1, 40),
+                'shipToAddress2'     => self::truncate_string($ship->address2, 40),
+                'shipToCity'         => self::truncate_string($ship->city, 30),
+                'shipToState'        => self::format_us_state2_best_effort($ship->state),
+                'shipToZip'          => self::format_us_zip5_best_effort($ship->zip),
+
+                'shipDate'           => $ship_date,
+                'shipViaCode'        => 'UM',
+                'shipInstructions'   => self::truncate_string((string) $request->notes, 60),
+
+                'orderCommentsPhone' => self::truncate_string($ship->phone, 20),
+                'orderCommentsEmail' => self::truncate_string($ship->email, 60),
+
+                'purchaseOrderNumber' => $po,
+                'items'               => $items,
+            ];
+
+            $soap = ZandersDirectShipAPI::create_order($orders_client, $auth['payload'], $order_map, $testing);
+            if (!($soap['ok'] ?? false)) {
+                $r = $this->classify_zanders_transport_failure($soap, 'Zanders NON');
+                $r->external_order_ids = $external_ids;
+                return $r;
+            }
+
+            $norm = ZandersDirectShipAPI::normalize_order_response($soap, 'Zanders NON');
+            if (!($norm['ok'] ?? false)) {
+                $r = $this->classify_zanders_order_failure($norm, 'Zanders NON');
+                $r->external_order_ids = $external_ids;
+                return $r;
+            }
+
+            $external_ids[] = (string) ($norm['order_number'] ?? '');
+            return DistributorOrderResult::ok('Zanders NON order submitted.', $external_ids);
+        }
+
+        // bucket === 'ffl'
+        if (!($request->ship_to_ffl instanceof DistributorShipTo)) {
+            return DistributorOrderResult::block_fatal(
+                'Zanders FFL: missing ship_to_ffl (transfer dealer address required).',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                [],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        $ffl_num = strtoupper(trim((string) $request->receiving_ffl_number));
+        if ($ffl_num === '') {
+            return DistributorOrderResult::block_fatal(
+                'Zanders FFL: missing receiving FFL number.',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                [],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        $fflno = self::format_fflno_first3_last5($ffl_num); // now base version
+        if ($fflno === '') {
+            return DistributorOrderResult::block_fatal(
+                'Zanders FFL: invalid receiving FFL number (cannot derive first3+last5).',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                ['receiving_ffl_number' => $ffl_num],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        $fflexp = $this->resolve_fflexp_for_request($request);
+        if (!self::looks_like_yyyy_mm_dd($fflexp)) {
+            return DistributorOrderResult::block_fatal(
+                'Zanders FFL: missing/invalid FFL expiration (fflexp required for useShipTo).',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                ['fflexp' => $fflexp],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        $ffl_ship = $request->ship_to_ffl;
+
+        $addrinfo = [
+            'name'     => self::truncate_string($ffl_ship->company !== '' ? $ffl_ship->company : $ffl_ship->name, 40),
+            'address1' => self::truncate_string($ffl_ship->address1, 40),
+            'address2' => self::truncate_string($ffl_ship->address2, 40),
+            'city'     => self::truncate_string($ffl_ship->city, 30),
+            'state'    => self::format_us_state2_best_effort($ffl_ship->state),
+            'zip'      => self::format_us_zip5_best_effort($ffl_ship->zip),
+            'fflno'    => $fflno,
+            'fflexp'   => $fflexp,
+        ];
+
+
+        $soap_shipto = ZandersDirectShipAPI::use_ship_to($shipto_client, $auth['payload'], $addrinfo, $testing);
+        if (!($soap_shipto['ok'] ?? false)) {
+            $r = $this->classify_zanders_transport_failure($soap_shipto, 'Zanders FFL useShipTo');
+            $r->external_order_ids = $external_ids;
+            return $r;
+        }
+
+        $shipto_norm = ZandersDirectShipAPI::normalize_use_ship_to_response($soap_shipto, 'Zanders FFL useShipTo');
+        if (!($shipto_norm['ok'] ?? false)) {
+            return DistributorOrderResult::block_fatal(
+                'Zanders FFL useShipTo failed: ' . (string) ($shipto_norm['message'] ?? 'Unknown error'),
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                ['shipto' => $shipto_norm],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        $shipToNo = (string) ($shipto_norm['ship_to_no'] ?? '');
+        if ($shipToNo === '') {
+            return DistributorOrderResult::block_fatal(
+                'Zanders FFL: useShipTo returned empty ShipToNo.',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                ['shipto' => $shipto_norm],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        if (!($request->ship_to_customer instanceof DistributorShipTo)) {
+            return DistributorOrderResult::block_fatal(
+                'Zanders FFL: missing ship_to_customer (needed for shipInstructions).',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                [],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        $customer = $request->ship_to_customer;
+        $ship_instructions = self::build_fixed_80_ship_instructions($customer->name, $customer->phone);
+
+        $order_map = [
+            'shipToNo'            => $shipToNo,
+            'shipDate'            => $ship_date,
+            'shipViaCode'         => 'UG',
+            'shipInstructions'    => $ship_instructions,
+
+            'purchaseOrderNumber' => $po,
+            'items'               => $items,
+        ];
+
+        $soap = ZandersDirectShipAPI::create_order($orders_client, $auth['payload'], $order_map, $testing);
+        if (!($soap['ok'] ?? false)) {
+            $r = $this->classify_zanders_transport_failure($soap, 'Zanders FFL');
+            $r->external_order_ids = $external_ids;
+            return $r;
+        }
+
+        $norm = ZandersDirectShipAPI::normalize_order_response($soap, 'Zanders FFL');
+        if (!($norm['ok'] ?? false)) {
+            $r = $this->classify_zanders_order_failure($norm, 'Zanders FFL');
+            $r->external_order_ids = $external_ids;
+            return $r;
+        }
+
+        $external_ids[] = (string) ($norm['order_number'] ?? '');
+        return DistributorOrderResult::ok('Zanders FFL order submitted.', $external_ids);
+    }
+
+
+    //END OF ORDERING SECTION
+
+
+
+
+    public function get_shipment_by_po(string $po_number): ?DistributorShipment
+    {
+        $po_number = trim((string) $po_number);
+        if ($po_number === '') {
+            return null;
+        }
+
+        $auth = $this->get_zanders_auth();
+        if (empty($auth['ok'])) {
+            return null;
+        }
+
+        $external_ids = $this->lookup_external_order_ids_by_po($po_number);
+        if (empty($external_ids)) {
+            return null;
+        }
+
+        $testing       = $this->is_testing_mode();
+        $orders_client = $this->make_orders_client();
+
+        $tracking_numbers = [];
+        $shipping_service = null;
+        $shipping_weight  = null;
+        $raw              = [];
+
+        foreach ($external_ids as $order_number) {
+            $order_number = trim((string) $order_number);
+            if ($order_number === '') {
+                continue;
+            }
+
+            $soap = ZandersDirectShipAPI::get_tracking_info(
+                $orders_client,
+                $auth['payload'],
+                $order_number,
+                $testing
+            );
+
+            $raw[] = ['orderNumber' => $order_number, 'soap' => $soap];
+
+            if (empty($soap['ok'])) {
+                continue;
+            }
+
+            $norm = ZandersDirectShipAPI::normalize_tracking_response($soap, 'Zanders getTrackingInfo');
+            $raw[] = ['orderNumber' => $order_number, 'norm' => $norm];
+
+            if (empty($norm['ok'])) {
+                continue;
+            }
+
+            // ✅ Prefer the normalizer’s flattened list
+            foreach ((array) ($norm['tracking_numbers_flat'] ?? []) as $t) {
+                $t = trim((string) $t);
+                if ($t !== '') {
+                    $tracking_numbers[] = $t;
+                }
+            }
+
+            // Use rows only to pick a service/weight hint
+            foreach ((array) ($norm['tracking_rows'] ?? []) as $r) {
+                if (!is_array($r)) {
+                    continue;
+                }
+
+                if ($shipping_service === null) {
+                    $co = trim((string) ($r['shipCompany'] ?? ''));
+                    $sv = trim((string) ($r['shipVia'] ?? ''));
+                    $svc = trim($co . ($sv !== '' ? (' ' . $sv) : ''));
+                    if ($svc !== '') {
+                        $shipping_service = $svc;
+                    }
+                }
+
+                if ($shipping_weight === null) {
+                    $w = trim((string) ($r['weight'] ?? ''));
+                    if ($w !== '') {
+                        $shipping_weight = $w;
+                    }
+                }
+
+                if ($shipping_service !== null && $shipping_weight !== null) {
+                    break;
+                }
+            }
+        }
+
+        $tracking_numbers = array_values(array_unique(array_filter($tracking_numbers)));
+        sort($tracking_numbers, SORT_STRING);
+
+        if (empty($tracking_numbers)) {
+            return null;
+        }
+
+        return new DistributorShipment(
+            $tracking_numbers,
+            [],
+            $shipping_service,
+            $shipping_weight,
+            [
+                'po_number'    => $po_number,
+                'external_ids' => $external_ids,
+                'raw'          => $raw,
+            ]
+        );
+    }
+
+
+
+
+
+
+    // ---------------------------------------------------------------------
+    // Item mapping (UPC -> itemNumber) + payload shaping
+    // ---------------------------------------------------------------------
+
+
+    /**
+     * @param DistributorOrderLine[] $lines
+     * @param bool $allow_empty
+     * @return array<int,array{itemNumber:string,quantity:int,allowBackOrder:string}>|DistributorOrderResult
+     */
+    private function build_zanders_items(array $lines, bool $require_non_empty  = false)
+    {
+        return $this->map_order_lines_to_items(
+            $lines,
+            function (string $normalized_upc, string $raw_upc, DistributorOrderLine $line): ?string {
+                $item_no = $this->lookup_zanders_item_number_by_upc($normalized_upc);
+                return $item_no !== '' ? $item_no : null;
+            },
+            function (string $item_no, int $qty, string $normalized_upc, string $raw_upc, DistributorOrderLine $line): array {
+                return [
+                    'itemNumber'     => $item_no,
+                    'quantity'       => $qty,
+                    'allowBackOrder' => 'false',
+                ];
+            },
+            'Zanders: cannot map UPC to itemNumber: %s',
+            !$require_non_empty ,
+            'Zanders: no valid items after normalization.'
+        );
+    }
+
+
+    private function lookup_zanders_item_number_by_upc(string $upc): string
+    {
+        // TODO: wire to your Zanders fulfillment table / repo.
+        // Example idea:
+        // return (string) $this->services->zanders()->fulfillment_repo()->get_itemnumber_by_upc($upc);
+        if (!$this->services) {
+            return '';
+        }
+
+        $normalized = $this->normalize_upc($upc);
+        if ($normalized === null) {
+            return '';
+        }
+
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized);
+        if (!$row) {
+            return '';
+        }
+
+        $item_no = $this->get_string_field($row, ['zanders_item_number']);
+        $item_no = trim((string) $item_no);
+
+        return $item_no;
+    }
+
+    // ---------------------------------------------------------------------
+    // Failure classification
+    // ---------------------------------------------------------------------
+
+    private function classify_zanders_transport_failure(array $soap, string $ctx): DistributorOrderResult
+    {
+        $http = (int) ($soap['http_status'] ?? 0);
+        $msg  = (string) ($soap['message'] ?? 'SOAP call failed');
+
+        // Heuristics: timeouts, DNS, TLS, 5xx, etc => retryable
+        $m = strtolower($msg);
+        $retryable =
+            $http === 0 ||
+            $http >= 500 ||
+            strpos($m, 'timeout') !== false ||
+            strpos($m, 'timed out') !== false ||
+            strpos($m, 'could not resolve') !== false ||
+            strpos($m, 'connection') !== false ||
+            strpos($m, 'soap fault') !== false; // treat as retryable unless you learn otherwise
+
+        if ($retryable) {
+            return DistributorOrderResult::block_retryable(
+                $ctx . ': ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_UNKNOWN],
+                ['soap' => ['http' => $http, 'message' => $msg]]
+            );
+        }
+
+        return DistributorOrderResult::block_fatal(
+            $ctx . ': ' . $msg,
+            [DistributorOrderResult::REASON_FATAL_UNKNOWN],
+            ['soap' => ['http' => $http, 'message' => $msg]]
+        );
+    }
+
+    private function classify_zanders_order_failure(array $norm, string $ctx): DistributorOrderResult
+    {
+        $code   = (int) ($norm['return_code'] ?? -1);
+        $reason = (string) ($norm['reason'] ?? '');
+        $removed = $norm['removed_items'] ?? [];
+
+        // Zanders “returnCode=9” is commonly out-of-stock with removed items.
+        // For now: treat as fatal (bad request / cannot fulfill) and include removed items.
+        // If you later want partial-fill behavior, this is where you’d change it.
+        $msg = $ctx . ': Zanders order rejected (returnCode=' . $code . ')';
+        if ($reason !== '') {
+            $msg .= ' reason=' . $reason;
+        }
+
+        return DistributorOrderResult::block_fatal(
+            $msg,
+            [DistributorOrderResult::REASON_FATAL_UNKNOWN],
+            [
+                'return_code'   => $code,
+                'reason'        => $reason,
+                'removed_items' => is_array($removed) ? $removed : [],
+                'raw'           => $norm['raw'] ?? null,
+            ]
+        );
+    }
+
+
+    /*
      * For Zanders, its $15 no matter what
      */
     public function get_shipping_cost_by_upc(string $upc): ?float
@@ -410,5 +1036,127 @@ class DistributorZanders extends DistributorBase
         }
 
         DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $msg, $ctx);
+    }
+
+
+
+
+
+
+    /**
+     * Resolve FFL expiration date for Zanders useShipTo (fflexp).
+     *
+     * Returns '' when missing/unparseable so caller can block_fatal.
+     */
+    private function resolve_fflexp_for_request(DistributorOrderRequest $request): string
+    {
+        $ffl_full = strtoupper(trim((string) $request->receiving_ffl_number));
+        if ($ffl_full === '') {
+            return '';
+        }
+
+        if (!($this->services instanceof \FFLHub\Distributor\Services\Zanders\ZandersServices)) {
+            $this->log('resolve_fflexp_for_request: services not ZandersServices');
+            return '';
+        }
+
+        $fflTable = $this->services->get_ffl_table(); // must return \FFLHub\FFL\Tables\FFLTable
+
+        $exp = FFLRepository::get_expiration_by_number($fflTable, $ffl_full);
+
+        if ($exp === '') {
+            $this->log('resolve_fflexp_for_request: missing expiration for FFL', ['ffl' => $ffl_full]);
+        }
+
+        return $exp; // YYYY-MM-DD or ''
+    }
+
+
+    /**
+     * @return string[]
+     */
+    private function lookup_external_order_ids_by_po(string $po_number): array
+    {
+        global $wpdb;
+
+        $po_number = trim((string) $po_number);
+        if ($po_number === '') {
+            return [];
+        }
+
+
+
+        if (!($this->services instanceof \FFLHub\Distributor\Services\Zanders\ZandersServices)) {
+            return [];
+        }
+
+        $order_table = $this->services->get_order_table(); // must return order placment jobs tables
+
+
+        $table = $order_table->get_table_name();
+
+        // Only look at Zanders jobs for this PO.
+        $sql = $wpdb->prepare(
+            "SELECT external_order_ids_json, external_order_id, place_result_json
+         FROM {$table}
+         WHERE merchant_po = %s AND dist_id = %s
+         ORDER BY id DESC
+         LIMIT 10",
+            $po_number,
+            'zanders'
+        );
+
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+
+        foreach ($rows as $r) {
+            if (!is_array($r)) {
+                continue;
+            }
+
+            // 1) Prefer external_order_ids_json
+            $ids_json = trim((string) ($r['external_order_ids_json'] ?? ''));
+            if ($ids_json !== '') {
+                $decoded = json_decode($ids_json, true);
+                if (is_array($decoded)) {
+                    foreach ($decoded as $id) {
+                        $id = trim((string) $id);
+                        if ($id !== '') {
+                            $out[] = $id;
+                        }
+                    }
+                }
+            }
+
+            // 2) Fallback external_order_id
+            $single = trim((string) ($r['external_order_id'] ?? ''));
+            if ($single !== '') {
+                $out[] = $single;
+            }
+
+            // 3) Fallback: parse place_result_json.ext_ids
+            $place_json = trim((string) ($r['place_result_json'] ?? ''));
+            if ($place_json !== '') {
+                $p = json_decode($place_json, true);
+                if (is_array($p) && isset($p['ext_ids']) && is_array($p['ext_ids'])) {
+                    foreach ($p['ext_ids'] as $id) {
+                        $id = trim((string) $id);
+                        if ($id !== '') {
+                            $out[] = $id;
+                        }
+                    }
+                }
+            }
+        }
+
+        $out = array_values(array_unique($out));
+        // Zanders order numbers are numeric-ish but keep as strings.
+        sort($out, SORT_STRING);
+
+        return $out;
     }
 }

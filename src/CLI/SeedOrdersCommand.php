@@ -1,6 +1,7 @@
 <?php
 
 namespace FFLHub\CLI;
+
 use WP_CLI\Utils;
 
 if (!defined('ABSPATH')) {
@@ -167,6 +168,7 @@ final class SeedOrdersCommand
                 }
 
                 $order->calculate_totals();
+                $order->payment_complete(); // triggers woocommerce_payment_complete
 
                 // Set status last (likely triggers your placement hooks)
                 $order->update_status($status, 'FFLHub seed-orders (WP-CLI)', true);

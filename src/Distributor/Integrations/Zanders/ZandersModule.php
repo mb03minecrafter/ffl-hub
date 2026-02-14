@@ -8,13 +8,15 @@ if (! defined('ABSPATH')) {
 
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
-
-
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsSchema;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Distributor\Services\Zanders\Cron\ZandersFulfillmentCronService;
 use FFLHub\Distributor\Services\Zanders\Cron\ZandersInventoryCronService;
 use FFLHub\Distributor\Services\Zanders\Tables\ZandersFulfillmentSchema;
 use FFLHub\Distributor\Services\Zanders\ZandersServices;
+use FFLHub\FFL\Tables\FFLSchema;
+use FFLHub\FFL\Tables\FFLTable;
 
 /**
  * Zanders module definition.
@@ -136,6 +138,36 @@ final class ZandersModule implements DistributorModuleInterface
                 'default'     => '',
             ],
 
+            //Account details for drop shipping accessories and then drop shipping firearms:
+            'accessory_username' => [
+                'label'       => 'Zanders Accessory Account Username',
+                'type'        => 'text',
+                'placeholder' => '',
+                'description' => 'Your Zanders Accessory Account Username',
+                'default'     => '',
+            ],
+            'accessory_password' => [
+                'label'       => 'Zanders Accessory Account Password',
+                'type'        => 'password',
+                'placeholder' => '',
+                'description' => 'Zanders Accessory Account Password',
+                'default'     => '',
+            ],
+            'gun_username' => [
+                'label'       => 'Zanders Gun Account Username',
+                'type'        => 'text',
+                'placeholder' => '',
+                'description' => 'Your Zanders Gun Account Username',
+                'default'     => '',
+            ],
+            'gun_password' => [
+                'label'       => 'Zanders Gun Account Password',
+                'type'        => 'password',
+                'placeholder' => '',
+                'description' => 'Your Zanders Gun Account Password',
+                'default'     => '',
+            ]
+
             
         ];
     }
@@ -169,7 +201,15 @@ final class ZandersModule implements DistributorModuleInterface
         $fulfillmentCron = new ZandersFulfillmentCronService($table);
         $inventoryCron = new ZandersInventoryCronService($table);
 
-        $services = new ZandersServices($table, $fulfillmentCron, $inventoryCron);
+
+        $ffl_schema = new FFLSchema();
+        $ffl_table = new FFLTable($ffl_schema);
+
+        $order_schema = new OrderPlacementJobsSchema();
+        $order_table = new OrderPlacementJobsTable($order_schema);
+
+
+        $services = new ZandersServices($table, $fulfillmentCron, $inventoryCron, $ffl_table, $order_table);
 
         return new DistributorZanders($this, $services);
     }

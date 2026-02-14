@@ -9,7 +9,6 @@ use FFLHub\Distributor\Models\UpcLookupResult;
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Plugin;
-use WP_Error;
 
 if (! defined('ABSPATH')) {
     exit;
@@ -21,7 +20,9 @@ if (! defined('ABSPATH')) {
  *
  * OPTIONS
  * [--source=<src>]
- * : rsr|lipseys|both (default: both)
+ * : rsr|lipseys|zanders|both|all (default: both)
+ *   - both = rsr + lipseys (legacy)
+ *   - all  = rsr + lipseys + zanders
  *
  * [--count=<n>]
  * : Number of products to attempt to create (default: 50)
@@ -58,8 +59,8 @@ if (! defined('ABSPATH')) {
  * : Show progress bar
  *
  * EXAMPLES
- *   wp fflhub stress-create-products --source=both --count=200 --pool=2000 --progress --csv="C:\temp\stress.csv"
- *   wp fflhub stress-create-products --source=rsr --count=50 --dry-run
+ *   wp fflhub stress-create-products --source=all --count=200 --pool=2000 --progress --csv="C:\temp\stress.csv"
+ *   wp fflhub stress-create-products --source=zanders --count=50 --dry-run
  */
 final class StressCreateProductsCommand
 {
@@ -74,8 +75,18 @@ final class StressCreateProductsCommand
         $t0 = microtime(true);
 
         $source = isset($assoc_args['source']) ? strtolower((string) $assoc_args['source']) : 'both';
-        if (! in_array($source, ['rsr', 'lipseys', 'both'], true)) {
-            \WP_CLI::error("Invalid --source={$source}. Use rsr|lipseys|both.");
+
+        // Normalize legacy aliases:
+        // - both => rsr + lipseys
+        // - all  => rsr + lipseys + zanders
+        if ($source === 'all') {
+            $source = 'all';
+        } elseif ($source === 'both') {
+            $source = 'both';
+        }
+
+        if (! in_array($source, ['rsr', 'lipseys', 'zanders', 'both', 'all'], true)) {
+            \WP_CLI::error("Invalid --source={$source}. Use rsr|lipseys|zanders|both|all.");
             return;
         }
 
@@ -104,18 +115,28 @@ final class StressCreateProductsCommand
         // Detect latest fulfillment tables
         $rsr_table     = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_rsr_fulfillment_v');
         $lipseys_table = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_lipseys_fulfillment_v');
+        $zanders_table = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_zanders_fulfillment_v');
 
-        if (($source === 'rsr' || $source === 'both') && $rsr_table === '') {
+        $want_rsr     = ($source === 'rsr' || $source === 'both' || $source === 'all');
+        $want_lipseys = ($source === 'lipseys' || $source === 'both' || $source === 'all');
+        $want_zanders = ($source === 'zanders' || $source === 'all');
+
+        if ($want_rsr && $rsr_table === '') {
             \WP_CLI::warning('RSR fulfillment table not found.');
         }
-        if (($source === 'lipseys' || $source === 'both') && $lipseys_table === '') {
+        if ($want_lipseys && $lipseys_table === '') {
             \WP_CLI::warning("Lipsey's fulfillment table not found.");
+        }
+        if ($want_zanders && $zanders_table === '') {
+            \WP_CLI::warning("Zanders fulfillment table not found.");
         }
 
         if (
-            ($source === 'rsr' && $rsr_table === '') ||
-            ($source === 'lipseys' && $lipseys_table === '') ||
-            ($source === 'both' && $rsr_table === '' && $lipseys_table === '')
+            ($want_rsr && $rsr_table === '' && !$want_lipseys && !$want_zanders) ||
+            ($want_lipseys && $lipseys_table === '' && !$want_rsr && !$want_zanders) ||
+            ($want_zanders && $zanders_table === '' && !$want_rsr && !$want_lipseys) ||
+            (($source === 'both') && $rsr_table === '' && $lipseys_table === '') ||
+            (($source === 'all') && $rsr_table === '' && $lipseys_table === '' && $zanders_table === '')
         ) {
             \WP_CLI::error('No usable fulfillment tables found for requested --source.');
             return;
@@ -123,16 +144,25 @@ final class StressCreateProductsCommand
 
         // Build random UPC candidate pool
         $candidates = [];
-        if (($source === 'rsr' || $source === 'both') && $rsr_table !== '') {
+
+        if ($want_rsr && $rsr_table !== '') {
             $candidates = array_merge(
                 $candidates,
                 $this->fetch_random_instock_upcs($wpdb, $rsr_table, $pool, $min_qty, $min_len, $max_len)
             );
         }
-        if (($source === 'lipseys' || $source === 'both') && $lipseys_table !== '') {
+
+        if ($want_lipseys && $lipseys_table !== '') {
             $candidates = array_merge(
                 $candidates,
                 $this->fetch_random_instock_upcs($wpdb, $lipseys_table, $pool, $min_qty, $min_len, $max_len)
+            );
+        }
+
+        if ($want_zanders && $zanders_table !== '') {
+            $candidates = array_merge(
+                $candidates,
+                $this->fetch_random_instock_upcs($wpdb, $zanders_table, $pool, $min_qty, $min_len, $max_len)
             );
         }
 
@@ -167,7 +197,7 @@ final class StressCreateProductsCommand
             } else {
                 fputcsv($csv_fh, [
                     'upc',
-                    'action',              // created|existing|skipped_existing|lookup_error|no_offer|bad_payload|dry_run
+                    'action',              // created|existing|skipped_existing|lookup_error|no_offer|bad_payload|dry_run|create_error
                     'product_id',
                     'selected_dist_id',
                     'selected_label',
@@ -248,7 +278,11 @@ final class StressCreateProductsCommand
             }
 
             $t_lookup0 = microtime(true);
-            $res = DistributorProductHelper::get_upc_lookup_result_from_distributors(Plugin::instance()->distributor_handler,$upc, (bool) $include_images);
+            $res = DistributorProductHelper::get_upc_lookup_result_from_distributors(
+                Plugin::instance()->distributor_handler,
+                $upc,
+                (bool) $include_images
+            );
             $lookup_ms = (microtime(true) - $t_lookup0) * 1000.0;
             $lookup_ms_sum += $lookup_ms;
 
@@ -433,6 +467,7 @@ final class StressCreateProductsCommand
             // Helper returns array on success/warn OR WP_Error on failure
             if (is_wp_error($create_res)) {
                 $lookup_error++; // treat as "create_error bucket"
+
                 $this->write_csv($csv_fh, [
                     $upc,
                     'create_error',
@@ -458,12 +493,9 @@ final class StressCreateProductsCommand
                 continue;
             }
 
-            // If "existing" response, we can’t reliably extract ID from message.
-            // But since we skipped existing above (default), most successful responses are "created".
             $action = 'created';
             $product_id = '';
 
-            // Best-effort: parse "ID #123" from message (optional)
             if (is_array($create_res) && isset($create_res['type']) && $create_res['type'] === 'warning') {
                 $action = 'existing';
                 $existing++;
@@ -543,12 +575,12 @@ final class StressCreateProductsCommand
         if ($kind === 'LIPSEYS') {
             $sql = $wpdb->prepare(
                 "SELECT upc
-             FROM {$table}
-             WHERE upc IS NOT NULL AND upc != ''
-               AND inventory_quantity IS NOT NULL AND inventory_quantity != ''
-               AND CAST(inventory_quantity AS UNSIGNED) >= %d
-             ORDER BY RAND()
-             LIMIT %d",
+                 FROM {$table}
+                 WHERE upc IS NOT NULL AND upc != ''
+                   AND inventory_quantity IS NOT NULL AND inventory_quantity != ''
+                   AND CAST(inventory_quantity AS UNSIGNED) >= %d
+                 ORDER BY RAND()
+                 LIMIT %d",
                 $min_qty,
                 $pool
             );
@@ -557,17 +589,36 @@ final class StressCreateProductsCommand
             return is_array($rows) ? $this->filter_upcs($rows, $min_len, $max_len) : [];
         }
 
-        // RSR: based on your pasted structure, it ALSO has inventory_quantity varchar(32)
-        // (If your actual RSR table uses another column later, we can tweak similarly.)
+        // RSR: inventory_quantity varchar(32)
         if ($kind === 'RSR') {
             $sql = $wpdb->prepare(
                 "SELECT upc
-             FROM {$table}
-             WHERE upc IS NOT NULL AND upc != ''
-               AND inventory_quantity IS NOT NULL AND inventory_quantity != ''
-               AND CAST(inventory_quantity AS UNSIGNED) >= %d
-             ORDER BY RAND()
-             LIMIT %d",
+                 FROM {$table}
+                 WHERE upc IS NOT NULL AND upc != ''
+                   AND inventory_quantity IS NOT NULL AND inventory_quantity != ''
+                   AND CAST(inventory_quantity AS UNSIGNED) >= %d
+                 ORDER BY RAND()
+                 LIMIT %d",
+                $min_qty,
+                $pool
+            );
+
+            $rows = $wpdb->get_col($sql);
+            return is_array($rows) ? $this->filter_upcs($rows, $min_len, $max_len) : [];
+        }
+
+        // Zanders: "available" column is the quantity from the CSV you showed.
+        // It may be numeric or string; CAST handles both.
+        // Zanders: inventory_quantity varchar(32) (normalized from "available")
+        if ($kind === 'ZANDERS') {
+            $sql = $wpdb->prepare(
+                "SELECT upc
+         FROM {$table}
+         WHERE upc IS NOT NULL AND upc != ''
+           AND inventory_quantity IS NOT NULL AND inventory_quantity != ''
+           AND CAST(inventory_quantity AS UNSIGNED) >= %d
+         ORDER BY RAND()
+         LIMIT %d",
                 $min_qty,
                 $pool
             );
@@ -584,26 +635,21 @@ final class StressCreateProductsCommand
         return is_array($rows) ? $this->filter_upcs($rows, $min_len, $max_len) : [];
     }
 
-
     private function detect_stock_filter(\wpdb $wpdb, string $table): array
     {
-        // Return: [where_sql_fragment, params[]]
-        // where_sql_fragment should NOT include "WHERE".
+        // Return: [kind, params[]]
+        // kind is a small string that indicates how to interpret stock columns.
 
-        // Lipsey's fulfillment schema
         if (strpos($table, 'fflhub_lipseys_fulfillment_') !== false) {
-            // inventory_quantity is varchar, so CAST it.
-            // allocation_status is also varchar; you may want to exclude some statuses.
-            //
-            // IMPORTANT: allocation_status values are business-specific; adjust the NOT IN list once you see real values.
-            //
-            // Default behavior: only require qty >= min_qty, ignore allocation_status.
             return ['LIPSEYS', []];
         }
 
-        // RSR schema varies in your pasted snippet (looks like it also has inventory_quantity varchar)
         if (strpos($table, 'fflhub_rsr_fulfillment_') !== false) {
             return ['RSR', []];
+        }
+
+        if (strpos($table, 'fflhub_zanders_fulfillment_') !== false) {
+            return ['ZANDERS', []];
         }
 
         return ['', []];

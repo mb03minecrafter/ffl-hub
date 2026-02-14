@@ -151,75 +151,86 @@ class DistributorRSR extends DistributorBase
         return $cost;
     }
 
-    /**
-     * Submit RSR orders using DirectConnect place-order.
-     *
-     * NOTE on partial orders:
-     * We do NOT continue submitting the next bucket if one bucket fails.
-     * This avoids creating partial orders in the “same job” scenario.
-     */
-    public function place_order(DistributorOrderRequest $request): DistributorOrderResult
+
+    //ORDERING SECTION
+
+    protected function supports_ordering(): bool
     {
-        if (! $this->services) {
-            return DistributorOrderResult::block_fatal(
-                'RSR services not available; cannot access fulfillment table.',
-                [DistributorOrderResult::REASON_FATAL_SERVICES_MISSING]
-            );
+        return true;
+    }
+
+    protected function place_order_stop_on_first_failure(): bool
+    {
+        return true; // no partial “same job” ordering
+    }
+
+    /**
+     * Pre-checks shared by both buckets.
+     */
+    protected function place_order_precheck(DistributorOrderRequest $request): ?DistributorOrderResult
+    {
+        $base = parent::place_order_precheck($request);
+        if ($base instanceof DistributorOrderResult) {
+            return $base;
         }
 
         $auth = $this->get_rsr_auth_payload();
-        if (! $auth['ok']) {
+        if (!($auth['ok'] ?? false)) {
             return DistributorOrderResult::block_fatal(
-                (string) $auth['message'],
+                (string) ($auth['message'] ?? 'Missing RSR credentials.'),
                 [DistributorOrderResult::REASON_FATAL_MISSING_CREDS],
                 ['auth' => $this->safe_raw_summary($auth)]
             );
         }
 
-        if (empty($request->lines)) {
-            return DistributorOrderResult::block_fatal(
-                'No order lines provided.',
-                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
-            );
-        }
+        return null;
+    }
 
-        $lines_non = $request->non_ffl_lines();
-        $lines_ffl = $request->ffl_lines();
-
-        if (empty($lines_non) && empty($lines_ffl)) {
-            return DistributorOrderResult::block_fatal(
-                'No valid order lines after normalization.',
-                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
-            );
-        }
-
+    /**
+     * @param 'non'|'ffl' $bucket
+     * @param array<int,mixed> $lines
+     */
+    protected function place_order_bucket(
+        DistributorOrderRequest $request,
+        string $bucket,
+        array $lines,
+        array &$external_ids
+    ): DistributorOrderResult {
+        $auth = $this->get_rsr_auth_payload(); // already validated in precheck
         $api_base_url = $this->get_api_base_url();
-        $external_ids = [];
 
         $base_po = RSRDirectConnectAPI::sanitize_rsr_po((string) $request->merchant_order_id);
         if ($base_po === '') {
-            $base_po = 'WCORDER';
+            $fallback = (string) ($request->order_id ?? $request->wc_order_id ?? '');
+            $base_po = $fallback !== '' ? ('WC' . $fallback) : ('WC' . gmdate('YmdHis'));
+        }
+        $po = RSRDirectConnectAPI::truncate_po($base_po);
+        
+        $items = $this->build_rsr_items_from_lines($lines);
+        if ($items instanceof DistributorOrderResult) {
+            $items->external_order_ids = $external_ids;
+            return $items;
         }
 
-        // -----------------------------
-        // NON-FFL bucket
-        // -----------------------------
-        if (! empty($lines_non)) {
-            $po = RSRDirectConnectAPI::truncate_po($base_po);
-
-            $items = $this->build_rsr_items_from_lines($lines_non);
-            if ($items instanceof DistributorOrderResult) {
-                // Preserve whatever we may have already created (future-proofing).
-                $items->external_order_ids = $external_ids;
-                return $items;
+        if ($bucket === 'non') {
+            if (!($request->ship_to_customer instanceof DistributorShipTo)) {
+                return DistributorOrderResult::block_fatal(
+                    'RSR NON: missing ship_to_customer (ship-to address required).',
+                    [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                    [],
+                    0,
+                    '',
+                    $external_ids
+                );
             }
 
             $ship = $request->ship_to_customer;
-
             $ship_check = RSRDirectConnectAPI::validate_ship_to_required_fields($ship);
-            if (! $ship_check['ok']) {
+
+
+            if (!($ship_check['ok'] ?? false)) {
                 return DistributorOrderResult::block_fatal(
-                    'RSR NON: ' . (string) $ship_check['message'],
+                    'RSR NON: ' . (string) ($ship_check['message'] ?? 'Invalid ship-to.'),
                     [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
                     ['ship_check' => $ship_check],
                     0,
@@ -241,118 +252,154 @@ class DistributorRSR extends DistributorBase
             );
 
             $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
-            if (! $resp['ok']) {
+            if (!($resp['ok'] ?? false)) {
                 $failure = $this->classify_rsr_place_order_failure($resp, 'RSR NON');
                 $failure->external_order_ids = $external_ids;
                 return $failure;
             }
 
-            $external_ids[] = (string) $resp['external_id'];
+            $external_ids[] = (string) ($resp['external_id'] ?? '');
+            return DistributorOrderResult::ok('RSR NON order submitted.', $external_ids);
         }
 
-        // -----------------------------
-        // FFL bucket
-        // -----------------------------
-        if (! empty($lines_ffl)) {
-            $po = RSRDirectConnectAPI::truncate_po($base_po);
-
-            $items = $this->build_rsr_items_from_lines($lines_ffl);
-            if ($items instanceof DistributorOrderResult) {
-                $items->external_order_ids = $external_ids;
-                return $items;
-            }
-
-            $ffl_num = strtoupper(trim((string) $request->receiving_ffl_number));
-            if ($ffl_num === '') {
-                return DistributorOrderResult::block_fatal(
-                    'RSR FFL: missing receiving FFL number (ShipFFL required).',
-                    [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
-                    [],
-                    0,
-                    '',
-                    $external_ids
-                );
-            }
-
-            if (! ($request->ship_to_ffl instanceof DistributorShipTo)) {
-                return DistributorOrderResult::block_fatal(
-                    'RSR FFL: missing ship_to_ffl address (transfer dealer address required).',
-                    [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
-                    [],
-                    0,
-                    '',
-                    $external_ids
-                );
-            }
-
-            $ship = $request->ship_to_ffl;
-
-            $ship_check = RSRDirectConnectAPI::validate_ship_to_required_fields($ship);
-            if (! $ship_check['ok']) {
-                return DistributorOrderResult::block_fatal(
-                    'RSR FFL: ' . (string) $ship_check['message'],
-                    [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
-                    ['ship_check' => $ship_check],
-                    0,
-                    '',
-                    $external_ids
-                );
-            }
-
-            $id_check = RSRDirectConnectAPI::validate_customer_identity_for_firearm_dropship($request->ship_to_customer);
-            if (! $id_check['ok']) {
-                // You explicitly asked for fatal restricted.
-                return DistributorOrderResult::block_fatal(
-                    'RSR FFL: ' . (string) $id_check['message'],
-                    [DistributorOrderResult::REASON_FATAL_RESTRICTED],
-                    ['id_check' => $id_check],
-                    0,
-                    '',
-                    $external_ids
-                );
-            }
-
-            $ship_ctx = RSRDirectConnectAPI::build_ship_context_payload($ship, $request->ship_to_customer);
-
-            $payload = array_merge(
-                $auth['payload'],
-                $this->build_rsr_dealer_email_payload(),
-                [
-                    'PONum'   => $po,
-                    'ShipFFL' => $ffl_num,
-                    'Items'   => $items,
-                ],
-                $ship_ctx
+        // bucket === 'ffl'
+        $ffl_num = strtoupper(trim((string) $request->receiving_ffl_number));
+        if ($ffl_num === '') {
+            return DistributorOrderResult::block_fatal(
+                'RSR FFL: missing receiving FFL number (ShipFFL required).',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                [],
+                0,
+                '',
+                $external_ids
             );
-
-            $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
-            if (! $resp['ok']) {
-                $failure = $this->classify_rsr_place_order_failure($resp, 'RSR FFL');
-                $failure->external_order_ids = $external_ids;
-                return $failure;
-            }
-
-            $external_ids[] = (string) $resp['external_id'];
         }
 
-        return DistributorOrderResult::ok('RSR order submitted.', $external_ids);
+        if (!($request->ship_to_ffl instanceof DistributorShipTo)) {
+            return DistributorOrderResult::block_fatal(
+                'RSR FFL: missing ship_to_ffl address (transfer dealer address required).',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                [],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        $ship = $request->ship_to_ffl;
+
+        $ship_check = RSRDirectConnectAPI::validate_ship_to_required_fields($ship);
+        if (!($ship_check['ok'] ?? false)) {
+            return DistributorOrderResult::block_fatal(
+                'RSR FFL: ' . (string) ($ship_check['message'] ?? 'Invalid ship-to.'),
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                ['ship_check' => $ship_check],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        $id_check = RSRDirectConnectAPI::validate_customer_identity_for_firearm_dropship($request->ship_to_customer);
+        if (!($id_check['ok'] ?? false)) {
+            return DistributorOrderResult::block_fatal(
+                'RSR FFL: ' . (string) ($id_check['message'] ?? 'Customer identity check failed.'),
+                [DistributorOrderResult::REASON_FATAL_RESTRICTED],
+                ['id_check' => $id_check],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        $ship_ctx = RSRDirectConnectAPI::build_ship_context_payload($ship, $request->ship_to_customer);
+
+        $payload = array_merge(
+            $auth['payload'],
+            $this->build_rsr_dealer_email_payload(),
+            [
+                'PONum'   => $po,
+                'ShipFFL' => $ffl_num,
+                'Items'   => $items,
+            ],
+            $ship_ctx
+        );
+
+        $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
+        if (!($resp['ok'] ?? false)) {
+            $failure = $this->classify_rsr_place_order_failure($resp, 'RSR FFL');
+            $failure->external_order_ids = $external_ids;
+            return $failure;
+        }
+
+        $external_ids[] = (string) ($resp['external_id'] ?? '');
+        return DistributorOrderResult::ok('RSR FFL order submitted.', $external_ids);
+    }
+
+    //END OF ORDERING SECTION
+
+
+
+
+
+
+    //VALIDATION SECTION
+
+
+    protected function supports_remote_validation(): bool
+    {
+        return true;
+    }
+
+    protected function validation_max_unique_items(DistributorOrderRequest $request, bool $local_only): int
+    {
+        // Matches your local_only option max_unique=100.
+        // Remote check-catalog probably also should cap; keep consistent.
+        return 100;
+    }
+
+    protected function validation_services_missing_code(): string
+    {
+        return 'RSR_SERVICES_MISSING';
+    }
+
+    protected function validation_services_missing_message(): string
+    {
+        return 'RSR services not available; cannot access fulfillment table.';
+    }
+
+    protected function validation_precheck_invariants(DistributorOrderRequest $request, bool $local_only): ?DistributorOrderValidationResult
+    {
+        // Enforce FFL invariants both local_only and remote (matches old behavior).
+        return $this->require_ffl_shipto_if_ffl_lines($request, 'RSR');
     }
 
     /**
-     * Validate an order request against RSR shipping/restriction rules using check-catalog.
-     *
-     * If $local_only=true, we ONLY do a lightweight local fulfillment-table stock check
-     * and skip ALL remote check-catalog calls.
+     * @param array<string,int> $required_by_upc
+     * @return array<string,mixed>
      */
-    public function validate_order_request(DistributorOrderRequest $request, bool $local_only = false): DistributorOrderValidationResult
-    {
-        if (! $this->services) {
-            return DistributorOrderValidationResult::block(
-                'RSR services not available; cannot access fulfillment table.',
-                ['RSR_SERVICES_MISSING']
-            );
-        }
+    protected function validation_local_options(
+        DistributorOrderRequest $request,
+        array $required_by_upc,
+        bool $local_only
+    ): array {
+        return [
+            'label'             => 'RSR validation (local_only)',
+            'max_unique'        => 100,
+            'inventory_keys'    => ['inventory_quantity', 'qty', 'quantity', 'available', 'on_hand'],
+            'unknown_qty_blocks' => true,
+        ];
+    }
 
+    /**
+     * Remote validation via RSR check-catalog (bucketed).
+     *
+     * @param array<string,int> $required_by_upc
+     */
+    protected function validate_order_request_remote(
+        DistributorOrderRequest $request,
+        array $required_by_upc
+    ): DistributorOrderValidationResult {
         $lines_non = $request->non_ffl_lines();
         $lines_ffl = $request->ffl_lines();
 
@@ -360,247 +407,97 @@ class DistributorRSR extends DistributorBase
             return DistributorOrderValidationResult::allow('No valid order lines to validate.');
         }
 
-        // -----------------------------------------
-        // LOCAL-ONLY MODE: stock-only local check
-        // -----------------------------------------
-        if ($local_only) {
-            $details = [
-                'local_only' => true,
-                'non' => [
-                    'ok' => true,
-                    'kind' => 'local_only',
-                    'message' => 'local_only=true (skipping RSR check-catalog)',
-                    'items' => [],
-                ],
-                'ffl' => [
-                    'ok' => true,
-                    'kind' => 'local_only',
-                    'message' => 'local_only=true (skipping RSR check-catalog)',
-                    'items' => [],
-                ],
-            ];
-
-            $local_fail_msgs = [];
-            $table = $this->services->get_fulfillment_table();
-
-            $check_lines = function (array $lines, string $bucket_key) use (&$details, &$local_fail_msgs, $table): void {
-                foreach ($lines as $line) {
-                    // Try to extract a UPC and required quantity without assuming too much.
-                    $upc_raw = '';
-                    if (is_array($line)) {
-                        $upc_raw = (string) ($line['upc'] ?? $line['UPC'] ?? $line['Upc'] ?? $line['product_upc'] ?? '');
-                    } elseif (is_object($line)) {
-                        // common DTO patterns
-                        if (isset($line->upc)) {
-                            $upc_raw = (string) $line->upc;
-                        } elseif (method_exists($line, 'upc')) {
-                            $upc_raw = (string) $line->upc();
-                        }
-                    }
-
-                    $qty_req = 1;
-                    if (is_array($line)) {
-                        $qty_req = (int) ($line['qty'] ?? $line['quantity'] ?? 1);
-                    } elseif (is_object($line)) {
-                        if (isset($line->qty)) {
-                            $qty_req = (int) $line->qty;
-                        } elseif (isset($line->quantity)) {
-                            $qty_req = (int) $line->quantity;
-                        } elseif (method_exists($line, 'qty')) {
-                            $qty_req = (int) $line->qty();
-                        } elseif (method_exists($line, 'quantity')) {
-                            $qty_req = (int) $line->quantity();
-                        }
-                    }
-                    if ($qty_req <= 0) {
-                        $qty_req = 1;
-                    }
-
-                    $normalized_upc = $this->normalize_upc($upc_raw);
-                    if ($normalized_upc === null || $normalized_upc === '') {
-                        $local_fail_msgs[] = "UPC={$upc_raw} invalid (normalize_upc null/empty)";
-                        $details[$bucket_key]['items'][$upc_raw] = [
-                            'requiredQty' => $qty_req,
-                            'local_qty' => null,
-                            'found' => 0,
-                            'reason' => 'invalid_upc',
-                        ];
-                        continue;
-                    }
-
-                    $row = $table->get_row_by_upc($normalized_upc);
-                    if (! $row || ! is_array($row)) {
-                        $local_fail_msgs[] = "UPC={$normalized_upc} not found in local fulfillment table";
-                        $details[$bucket_key]['items'][$normalized_upc] = [
-                            'requiredQty' => $qty_req,
-                            'local_qty' => null,
-                            'found' => 0,
-                            'reason' => 'not_found',
-                        ];
-                        continue;
-                    }
-
-                    $qty_raw = $this->get_string_field($row, ['inventory_quantity', 'qty', 'quantity', 'available', 'on_hand']);
-                    $local_qty = is_numeric($qty_raw) ? (int) $qty_raw : null;
-
-                    $details[$bucket_key]['items'][$normalized_upc] = [
-                        'requiredQty' => $qty_req,
-                        'local_qty' => $local_qty,
-                        'found' => 1,
-                    ];
-
-                    // Keeping parity with Lipseys local fallback:
-                    // UNKNOWN => block (safer, avoids placing into unknown inventory)
-                    if ($local_qty === null) {
-                        $local_fail_msgs[] = "UPC={$normalized_upc} local_qty=UNKNOWN required={$qty_req}";
-                        continue;
-                    }
-
-                    if ($local_qty < $qty_req) {
-                        $local_fail_msgs[] = "UPC={$normalized_upc} local_available={$local_qty} required={$qty_req}";
-                    }
-                }
-            };
-
-            if (! empty($lines_non)) {
-                $check_lines($lines_non, 'non');
-            }
-            if (! empty($lines_ffl)) {
-                // Still enforce required FFL info even in local_only mode (cheap + prevents nonsense)
-                if (! ($request->ship_to_ffl instanceof DistributorShipTo)) {
-                    return DistributorOrderValidationResult::block(
-                        'RSR validation failed (FFL items): missing ship_to_ffl (transfer dealer address required).',
-                        ['RSR_FFL_ADDRESS_MISSING'],
-                        $details
-                    );
-                }
-                if (trim((string) $request->receiving_ffl_number) === '') {
-                    return DistributorOrderValidationResult::block(
-                        'RSR validation failed (FFL items): missing receiving FFL number (ShipFFL required).',
-                        ['RSR_SHIPFFL_MISSING'],
-                        $details
-                    );
-                }
-
-                $check_lines($lines_ffl, 'ffl');
-            }
-
-            if (! empty($local_fail_msgs)) {
-                $msg = 'RSR validation failed (local_only): ' . implode(' | ', array_slice($local_fail_msgs, 0, 8));
-                if (count($local_fail_msgs) > 8) {
-                    $msg .= ' | ...';
-                }
-
-                return DistributorOrderValidationResult::block(
-                    $msg,
-                    ['RSR_LOCAL_ONLY_BLOCKED'],
-                    $details
-                );
-            }
-
-            return DistributorOrderValidationResult::allow('RSR validation OK (local_only).', $details);
-        }
-
-        // -----------------------------------------
-        // REMOTE MODE (existing behavior)
-        // -----------------------------------------
-
         $auth = $this->get_rsr_auth_payload();
-        if (! $auth['ok']) {
+        if (!($auth['ok'] ?? false)) {
             return DistributorOrderValidationResult::block(
-                (string) $auth['message'],
+                (string) ($auth['message'] ?? 'Missing RSR auth payload.'),
                 ['RSR_AUTH_MISSING']
             );
         }
 
         $details = [];
 
-        if (! empty($lines_non)) {
-            $res_non = $this->rsr_check_catalog_for_bucket($auth['payload'], $request, false, $lines_non);
-            $details['non'] = $res_non;
+        if (!empty($lines_non)) {
+            $res = $this->rsr_check_catalog_for_bucket($auth['payload'], $request, false, $lines_non);
+            $details['non'] = $res;
 
-            if (! $res_non['ok']) {
-                $kind = isset($res_non['kind']) ? (string) $res_non['kind'] : '';
-
-                if ($kind === 'out_of_stock') {
-                    return DistributorOrderValidationResult::block(
-                        'RSR out of stock (non-FFL items): ' . (string) ($res_non['message'] ?? 'Out of stock'),
-                        ['RSR_OUT_OF_STOCK'],
-                        $details
-                    );
-                }
-
-                $http = isset($res_non['http_status']) ? (int) $res_non['http_status'] : 0;
-                $msg  = (string) ($res_non['message'] ?? 'Unknown');
-
-                if ($this->is_rsr_validation_failure_retryable($msg, $http)) {
-                    return DistributorOrderValidationResult::block_retryable(
-                        'RSR validation (non-FFL) retryable: ' . $msg,
-                        ['RSR_NON_CHECK_CATALOG_RETRYABLE'],
-                        $details
-                    );
-                }
-
-                return DistributorOrderValidationResult::block(
-                    'RSR validation failed (non-FFL items): ' . $msg,
-                    ['RSR_NON_CHECK_CATALOG_RESTRICTED'],
-                    $details
-                );
+            $early = $this->rsr_map_check_catalog_failure_to_validation_result(
+                $res,
+                false,
+                $details
+            );
+            if ($early instanceof DistributorOrderValidationResult) {
+                return $early;
             }
         }
 
-        if (! empty($lines_ffl)) {
-            if (! ($request->ship_to_ffl instanceof DistributorShipTo)) {
-                return DistributorOrderValidationResult::block(
-                    'RSR validation failed (FFL items): missing ship_to_ffl (transfer dealer address required).',
-                    ['RSR_FFL_ADDRESS_MISSING'],
-                    $details
-                );
-            }
+        if (!empty($lines_ffl)) {
+            // FFL invariants already enforced by base precheck hook.
 
-            if (trim((string) $request->receiving_ffl_number) === '') {
-                return DistributorOrderValidationResult::block(
-                    'RSR validation failed (FFL items): missing receiving FFL number (ShipFFL required).',
-                    ['RSR_SHIPFFL_MISSING'],
-                    $details
-                );
-            }
+            $res = $this->rsr_check_catalog_for_bucket($auth['payload'], $request, true, $lines_ffl);
+            $details['ffl'] = $res;
 
-            $res_ffl = $this->rsr_check_catalog_for_bucket($auth['payload'], $request, true, $lines_ffl);
-            $details['ffl'] = $res_ffl;
-
-            if (! $res_ffl['ok']) {
-                $kind = isset($res_ffl['kind']) ? (string) $res_ffl['kind'] : '';
-
-                if ($kind === 'out_of_stock') {
-                    return DistributorOrderValidationResult::block(
-                        'RSR out of stock (FFL items): ' . (string) ($res_ffl['message'] ?? 'Out of stock'),
-                        ['RSR_OUT_OF_STOCK'],
-                        $details
-                    );
-                }
-
-                $http = isset($res_ffl['http_status']) ? (int) $res_ffl['http_status'] : 0;
-                $msg  = (string) ($res_ffl['message'] ?? 'Unknown');
-
-                if ($this->is_rsr_validation_failure_retryable($msg, $http)) {
-                    return DistributorOrderValidationResult::block_retryable(
-                        'RSR validation (FFL) retryable: ' . $msg,
-                        ['RSR_FFL_CHECK_CATALOG_RETRYABLE'],
-                        $details
-                    );
-                }
-
-                return DistributorOrderValidationResult::block(
-                    'RSR validation failed (FFL items): ' . $msg,
-                    ['RSR_FFL_CHECK_CATALOG_RESTRICTED'],
-                    $details
-                );
+            $early = $this->rsr_map_check_catalog_failure_to_validation_result(
+                $res,
+                true,
+                $details
+            );
+            if ($early instanceof DistributorOrderValidationResult) {
+                return $early;
             }
         }
 
         return DistributorOrderValidationResult::allow('RSR validation OK.', $details);
     }
+
+    /**
+     * Convert a check-catalog bucket response to a validation result (or null if ok).
+     *
+     * @param array<string,mixed> $res
+     * @param array<string,mixed> $details
+     */
+    private function rsr_map_check_catalog_failure_to_validation_result(
+        array $res,
+        bool $is_ffl,
+        array $details
+    ): ?DistributorOrderValidationResult {
+        if (($res['ok'] ?? false) === true) {
+            return null;
+        }
+
+        $kind = (string) ($res['kind'] ?? '');
+        if ($kind === 'out_of_stock') {
+            return DistributorOrderValidationResult::block(
+                'RSR out of stock (' . ($is_ffl ? 'FFL' : 'non-FFL') . ' items): ' . (string) ($res['message'] ?? 'Out of stock'),
+                ['RSR_OUT_OF_STOCK'],
+                $details
+            );
+        }
+
+        $http = (int) ($res['http_status'] ?? 0);
+        $msg  = (string) ($res['message'] ?? 'Unknown');
+
+        if ($this->is_rsr_validation_failure_retryable($msg, $http)) {
+            return DistributorOrderValidationResult::block_retryable(
+                'RSR validation (' . ($is_ffl ? 'FFL' : 'non-FFL') . ') retryable: ' . $msg,
+                [$is_ffl ? 'RSR_FFL_CHECK_CATALOG_RETRYABLE' : 'RSR_NON_CHECK_CATALOG_RETRYABLE'],
+                $details
+            );
+        }
+
+        return DistributorOrderValidationResult::block(
+            'RSR validation failed (' . ($is_ffl ? 'FFL' : 'non-FFL') . ' items): ' . $msg,
+            [$is_ffl ? 'RSR_FFL_CHECK_CATALOG_RESTRICTED' : 'RSR_NON_CHECK_CATALOG_RESTRICTED'],
+            $details
+        );
+    }
+
+
+
+    //END VALIDATION SECTION
+
+
+
 
 
 

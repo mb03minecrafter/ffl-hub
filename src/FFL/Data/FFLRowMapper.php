@@ -1,7 +1,10 @@
 <?php
+
 declare(strict_types=1);
 
 namespace FFLHub\FFL\Data;
+
+use FFLHub\FFL\Tables\FFLTable;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -84,4 +87,7 @@ final class FFLRowMapper
         $zip = preg_replace('/\s+/', '', $zip);
         return (string) $zip;
     }
+
+
+    
 }

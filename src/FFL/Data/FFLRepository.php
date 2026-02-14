@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace FFLHub\FFL\Data;
@@ -29,18 +30,19 @@ final class FFLRepository
      * Stored as a SQL fragment string to keep $wpdb->prepare usage simple.
      */
     private const SELECT_COLUMNS = "
-        ffl_number,
-        license_name,
-        premise_street,
-        premise_city,
-        premise_state,
-        premise_zip,
-        mail_street,
-        mail_city,
-        mail_state,
-        mail_zip,
-        voice_phone
-    ";
+    ffl_number,
+    ffl_expiration,
+    license_name,
+    premise_street,
+    premise_city,
+    premise_state,
+    premise_zip,
+    mail_street,
+    mail_city,
+    mail_state,
+    mail_zip,
+    voice_phone
+";
 
     /**
      * Find a single FFL by exact number.
@@ -117,10 +119,10 @@ final class FFLRepository
     }
 
     /**
-     * Bulk upsert rows parsed from ATF TXT.
+     * Bulk upsert rows parsed from ATF CSV.
      *
-     * Expected keys per row (11 columns):
-     * - ffl_number, license_name
+     * Expected keys per row (12 columns):
+     * - ffl_number, ffl_expiration, license_name
      * - premise_street, premise_city, premise_state, premise_zip
      * - mail_street, mail_city, mail_state, mail_zip
      * - voice_phone
@@ -128,7 +130,6 @@ final class FFLRepository
      * Notes:
      * - Uses multi-row INSERT ... ON DUPLICATE KEY UPDATE for throughput.
      * - Returns number of processed rows (attempted upserts), NOT DB affected rows.
-     *   This makes reporting stable across inserts vs updates.
      *
      * @param array<int, array<string,string>> $rows
      */
@@ -148,11 +149,6 @@ final class FFLRepository
         $total = 0;
         $batch = [];
 
-        /**
-         * Flush current batch into the database.
-         *
-         * Counts processed rows (batch size) on success.
-         */
         $flush = static function () use (&$batch, &$total, $table_name, $wpdb): void {
             if (empty($batch)) {
                 return;
@@ -162,42 +158,75 @@ final class FFLRepository
             $values       = [];
 
             foreach ($batch as $row) {
-                // 11 columns per row.
-                $placeholders[] = '( %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s )';
+                // 12 columns per row.
+                // For ffl_expiration (DATE NULL): we pass either a YYYY-MM-DD string or NULL.
+                $placeholders[] = '( %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s )';
 
                 $values[] = (string) ($row['ffl_number'] ?? '');
+
+                $exp = trim((string) ($row['ffl_expiration'] ?? ''));
+                // Let NULL land as NULL for DATE column (avoid '' -> 0000-00-00 coercion).
+                $values[] = ($exp !== '' ? $exp : null);
+
                 $values[] = (string) ($row['license_name'] ?? '');
+
                 $values[] = (string) ($row['premise_street'] ?? '');
                 $values[] = (string) ($row['premise_city'] ?? '');
                 $values[] = (string) ($row['premise_state'] ?? '');
                 $values[] = (string) ($row['premise_zip'] ?? '');
+
                 $values[] = (string) ($row['mail_street'] ?? '');
                 $values[] = (string) ($row['mail_city'] ?? '');
                 $values[] = (string) ($row['mail_state'] ?? '');
                 $values[] = (string) ($row['mail_zip'] ?? '');
+
                 $values[] = (string) ($row['voice_phone'] ?? '');
             }
 
+            // IMPORTANT:
+            // - For ffl_expiration we want NULL to stay NULL.
+            // - $wpdb->prepare does not have a %d/%f/%s form that cleanly preserves NULL for %s,
+            //   so we do a post-pass replacement for the "NULL" sentinel below.
+            //
+            // Strategy:
+            // - We insert a unique sentinel string for null dates, then replace it with literal NULL.
+            $NULL_SENTINEL = '__FFLHUB_NULL_DATE__';
+
+            for ($i = 0; $i < count($values); $i++) {
+                if ($values[$i] === null) {
+                    $values[$i] = $NULL_SENTINEL;
+                }
+            }
+
             $sql = "
-                INSERT INTO {$table_name}
-                    ( ffl_number, license_name, premise_street, premise_city, premise_state,
-                      premise_zip, mail_street, mail_city, mail_state, mail_zip, voice_phone )
-                VALUES " . implode(', ', $placeholders) . "
-                ON DUPLICATE KEY UPDATE
-                    license_name   = VALUES(license_name),
-                    premise_street = VALUES(premise_street),
-                    premise_city   = VALUES(premise_city),
-                    premise_state  = VALUES(premise_state),
-                    premise_zip    = VALUES(premise_zip),
-                    mail_street    = VALUES(mail_street),
-                    mail_city      = VALUES(mail_city),
-                    mail_state     = VALUES(mail_state),
-                    mail_zip       = VALUES(mail_zip),
-                    voice_phone    = VALUES(voice_phone)
-            ";
+            INSERT INTO {$table_name}
+                ( ffl_number, ffl_expiration, license_name,
+                  premise_street, premise_city, premise_state, premise_zip,
+                  mail_street, mail_city, mail_state, mail_zip,
+                  voice_phone )
+            VALUES " . implode(', ', $placeholders) . "
+            ON DUPLICATE KEY UPDATE
+                ffl_expiration = VALUES(ffl_expiration),
+                license_name   = VALUES(license_name),
+                premise_street = VALUES(premise_street),
+                premise_city   = VALUES(premise_city),
+                premise_state  = VALUES(premise_state),
+                premise_zip    = VALUES(premise_zip),
+                mail_street    = VALUES(mail_street),
+                mail_city      = VALUES(mail_city),
+                mail_state     = VALUES(mail_state),
+                mail_zip       = VALUES(mail_zip),
+                voice_phone    = VALUES(voice_phone)
+        ";
 
             $prepared = $wpdb->prepare($sql, $values);
-            $result   = $wpdb->query($prepared);
+
+            // Replace the quoted sentinel with literal NULL.
+            // We must cover both single-quote and double-quote cases defensively.
+            $prepared = str_replace("'" . $NULL_SENTINEL . "'", 'NULL', (string) $prepared);
+            $prepared = str_replace('"' . $NULL_SENTINEL . '"', 'NULL', (string) $prepared);
+
+            $result = $wpdb->query($prepared);
 
             if ($result !== false) {
                 $total += count($batch);
@@ -217,5 +246,35 @@ final class FFLRepository
         $flush();
 
         return $total;
+    }
+
+
+    public static function get_expiration_by_number(FFLTable $table, string $ffl_number): string
+    {
+        $ffl_number = FFLRowMapper::normalize_ffl_number($ffl_number);
+        if ($ffl_number === '') {
+            return '';
+        }
+
+        global $wpdb;
+
+        $table_name = $table->get_table_name();
+
+        $sql = $wpdb->prepare(
+            "SELECT ffl_expiration FROM {$table_name} WHERE ffl_number = %s LIMIT 1",
+            $ffl_number
+        );
+
+        $val = $wpdb->get_var($sql);
+        if (!is_string($val)) {
+            return '';
+        }
+
+        // DB DATE should already be YYYY-MM-DD, but normalize defensively:
+        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $val)) {
+            return $val;
+        }
+
+        return '';
     }
 }

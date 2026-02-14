@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace FFLHub\FFL\Tables;
@@ -62,6 +63,7 @@ final class FFLSchema
         ];
     }
 
+
     /**
      * Column definitions.
      *
@@ -75,6 +77,7 @@ final class FFLSchema
         return [
             'id'             => 'BIGINT UNSIGNED NOT NULL AUTO_INCREMENT',
             'ffl_number'     => 'VARCHAR(64) NOT NULL',
+            'ffl_expiration' => 'DATE NULL',
             'license_name'   => 'VARCHAR(255) NOT NULL',
             'premise_street' => 'VARCHAR(255) NOT NULL',
             'premise_city'   => 'VARCHAR(128) NOT NULL',
@@ -88,6 +91,7 @@ final class FFLSchema
         ];
     }
 
+
     /**
      * Index definitions.
      *
@@ -98,11 +102,15 @@ final class FFLSchema
      */
     public function get_index_definitions(): array
     {
+        // In get_index_definitions():
         return [
             'PRIMARY KEY (id)',
             'UNIQUE KEY uq_ffl_number (ffl_number)',
             'KEY idx_premise_zip (premise_zip)',
             'KEY idx_premise_state (premise_state)',
+
+            // NEW (optional but nice):
+            'KEY idx_ffl_expiration (ffl_expiration)',
         ];
     }
 
@@ -120,7 +128,7 @@ final class FFLSchema
         return array_values(
             array_filter(
                 $columns,
-                static fn (string $col): bool => $col !== 'id'
+                static fn(string $col): bool => $col !== 'id'
             )
         );
     }

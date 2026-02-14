@@ -260,7 +260,7 @@ final class OrderPlacementJobRunner
         try {
             $or = $dist->place_order($req);
             
-
+            //$or = DistributorOrderResult::block_fatal("TEST DEBUG BLOCK TO TEST VALIDATION");
 
             ///WE NEED TO CHANGE THIS TO ORDER FOR REAL WHEN WE GO TO PROD
 
@@ -283,6 +283,10 @@ final class OrderPlacementJobRunner
             $job_key,
             OrderPlacementSnapshotUtil::place_snapshot($or, $job->ctx($attempt_n))
         );
+
+
+        //here?
+
 
         return $or;
     }

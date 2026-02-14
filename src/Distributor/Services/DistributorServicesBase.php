@@ -2,7 +2,7 @@
 
 namespace FFLHub\Distributor\Services;
 
-if ( ! defined( 'ABSPATH' ) ) {
+if (! defined('ABSPATH')) {
     exit;
 }
 
@@ -38,6 +38,7 @@ abstract class DistributorServicesBase implements DistributorServicesInterface
         return $this->fulfillmentTable;
     }
 
+
     /**
      * @return CronServiceInterface[]
      */
@@ -49,26 +50,26 @@ abstract class DistributorServicesBase implements DistributorServicesInterface
     public function on_activate(): void
     {
         // 1) Ensure fulfillment table exists.
-        if ( method_exists( $this->fulfillmentTable, 'createTables' ) ) {
+        if (method_exists($this->fulfillmentTable, 'createTables')) {
             $this->fulfillmentTable->createTables();
         }
 
         // 2) Let each cron service schedule itself.
-        foreach ( $this->cronServices as $cron ) {
+        foreach ($this->cronServices as $cron) {
             $cron->on_activation();
         }
     }
 
     public function on_deactivate(): void
     {
-        foreach ( $this->cronServices as $cron ) {
+        foreach ($this->cronServices as $cron) {
             $cron->on_deactivation();
         }
     }
 
     public function register_runtime_services(): void
     {
-        foreach ( $this->cronServices as $cron ) {
+        foreach ($this->cronServices as $cron) {
             $cron->register();
         }
     }

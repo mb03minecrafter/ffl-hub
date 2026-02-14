@@ -9,9 +9,7 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Pure parser for the ATF FFL export.
- *
- * We now ingest the CSV layout (comma-delimited, header row).
+ * Pure parser for the ATF FFL export (CSV).
  *
  * Output:
  * - array<int, array<string,string>> keyed to match DB columns.
@@ -41,7 +39,6 @@ final class FFLParser
      */
     public function parse(string $txt): array
     {
-        // Handle BOM (Excel/export often includes it).
         $txt = $this->strip_utf8_bom($txt);
 
         $lines = preg_split("/\r\n|\n|\r/", $txt) ?: [];
@@ -71,10 +68,7 @@ final class FFLParser
         }
 
         $header = str_getcsv($headerLine, ',', '"', '\\');
-        $header = array_map(
-            static fn($h) => strtoupper(trim((string) $h)),
-            $header
-        );
+        $header = array_map(static fn($h) => strtoupper(trim((string) $h)), $header);
 
         // Build name->index map.
         $idx = [];
@@ -84,7 +78,6 @@ final class FFLParser
             }
         }
 
-        // Minimal required columns for our importer.
         $required = [
             'LIC_REGN',
             'LIC_DIST',
@@ -113,9 +106,9 @@ final class FFLParser
             return [];
         }
 
-        $accepted = 0;
-        $skipped_empty = 0;
-        $skipped_short = 0;
+        $accepted       = 0;
+        $skipped_empty  = 0;
+        $skipped_short  = 0;
         $skipped_sanity = 0;
 
         for ($i = $startIndex; $i < count($lines); $i++) {
@@ -125,7 +118,6 @@ final class FFLParser
                 continue;
             }
 
-            // Proper CSV parsing (handles quoted commas).
             $cols = str_getcsv($line, ',', '"', '\\');
             if (!is_array($cols) || count($cols) < 10) {
                 $skipped_short++;
@@ -144,7 +136,7 @@ final class FFLParser
             $lic_dist   = $get($cols, $idx, 'LIC_DIST');
             $lic_cnty   = $get($cols, $idx, 'LIC_CNTY');
             $lic_type   = $get($cols, $idx, 'LIC_TYPE');
-            $lic_xprdte = $get($cols, $idx, 'LIC_XPRDTE');
+            $lic_xprdte = $get($cols, $idx, 'LIC_XPRDTE'); // <-- 2-char code like "7F"
             $lic_seqn   = $get($cols, $idx, 'LIC_SEQN');
 
             $license_name   = $get($cols, $idx, 'LICENSE_NAME');
@@ -161,7 +153,6 @@ final class FFLParser
 
             $voice_phone    = $get($cols, $idx, 'VOICE_PHONE');
 
-            // Basic sanity check: must have a name and premise address fields.
             if (
                 $license_name === '' ||
                 $premise_street === '' ||
@@ -172,7 +163,6 @@ final class FFLParser
                 continue;
             }
 
-            // Normalize ZIPs by removing spaces.
             $premise_zip = preg_replace('/\s+/', '', $premise_zip) ?? '';
             $mail_zip    = preg_replace('/\s+/', '', $mail_zip) ?? '';
 
@@ -198,8 +188,12 @@ final class FFLParser
 
             $ffl_number = implode('-', $ffl_number_parts);
 
+            // Convert ATF expiration CODE -> real date string (YYYY-MM-DD) for DB DATE column.
+            $ffl_expiration = $this->normalize_atf_expiration($lic_xprdte);
+
             $rows[] = [
                 'ffl_number'     => $ffl_number,
+                'ffl_expiration' => $ffl_expiration, // '' allowed (DATE NULL)
                 'license_name'   => $license_name,
                 'premise_street' => $premise_street,
                 'premise_city'   => $premise_city,
@@ -228,10 +222,119 @@ final class FFLParser
 
     private function strip_utf8_bom(string $s): string
     {
-        // UTF-8 BOM: EF BB BF
         if (strncmp($s, "\xEF\xBB\xBF", 3) === 0) {
             return substr($s, 3);
         }
         return $s;
+    }
+
+    /**
+     * Normalize ATF expiration value into YYYY-MM-DD.
+     *
+     * Important:
+     * - In the ATF export, LIC_XPRDTE is usually a 2-character expiration code like "7F".
+     *   - first char: last digit of expiration year
+     *   - second char: month letter A–M (skipping I)
+     *   Example: "8K" => Oct 2028 -> "2028-10-31"
+     *
+     * If something else is provided, we still support a few common literal date formats.
+     */
+    private function normalize_atf_expiration(string $raw): string
+    {
+        $s = strtoupper(trim($raw));
+        if ($s === '') {
+            return '';
+        }
+
+        // YYYY-MM-DD -> YYYY-MM-01
+        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $s, $m)) {
+            return "{$m[1]}-{$m[2]}-01";
+        }
+
+        // MM/DD/YYYY -> YYYY-MM-01
+        if (preg_match('/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/', $s, $m)) {
+            $mm = str_pad($m[1], 2, '0', STR_PAD_LEFT);
+            return "{$m[3]}-{$mm}-01";
+        }
+
+        // YYYYMMDD -> YYYY-MM-01
+        if (preg_match('/^(\d{4})(\d{2})(\d{2})$/', $s, $m)) {
+            return "{$m[1]}-{$m[2]}-01";
+        }
+
+        // ATF expiration CODE like "7F" -> YYYY-MM-01
+        if (preg_match('/^([0-9])([A-Z])$/', $s, $m)) {
+            $year_last_digit = (int) $m[1];
+            $month_letter    = $m[2];
+
+            $month = $this->month_from_atf_letter($month_letter);
+            if ($month === 0) {
+                return '';
+            }
+
+            $year = $this->resolve_expiration_year_from_last_digit($year_last_digit, $month);
+            if ($year === 0) {
+                return '';
+            }
+
+            return sprintf('%04d-%02d-01', $year, $month);
+        }
+
+        return '';
+    }
+
+
+    /**
+     * Month letter mapping A–M skipping I:
+     * A Jan, B Feb, C Mar, D Apr, E May, F Jun, G Jul, H Aug,
+     * J Sep, K Oct, L Nov, M Dec.
+     */
+    private function month_from_atf_letter(string $letter): int
+    {
+        return match ($letter) {
+            'A' => 1,
+            'B' => 2,
+            'C' => 3,
+            'D' => 4,
+            'E' => 5,
+            'F' => 6,
+            'G' => 7,
+            'H' => 8,
+            'J' => 9,
+            'K' => 10,
+            'L' => 11,
+            'M' => 12,
+            default => 0,
+        };
+    }
+
+    /**
+     * Given last digit of year + month, pick the nearest expiration year that is not in the past.
+     *
+     * Example (today 2026-02):
+     * - code 7F (Jun) -> 2027
+     * - code 6H (Aug) -> 2026 (since Aug 2026 is still upcoming)
+     */
+    private function resolve_expiration_year_from_last_digit(int $last_digit, int $month): int
+    {
+        // Use UTC "now" since imports usually run on server time; month-level granularity is fine.
+        $nowY = (int) gmdate('Y');
+        $nowM = (int) gmdate('n');
+
+        // Search forward up to 20 years to find the first non-past match.
+        for ($y = $nowY; $y <= $nowY + 20; $y++) {
+            if (($y % 10) !== $last_digit) {
+                continue;
+            }
+
+            // If it's this year, ensure the expiration month hasn't already passed.
+            if ($y === $nowY && $month < $nowM) {
+                continue;
+            }
+
+            return $y;
+        }
+
+        return 0;
     }
 }
