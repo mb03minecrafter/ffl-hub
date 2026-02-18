@@ -11,25 +11,16 @@ if (!defined('ABSPATH')) {
 /**
  * Low-level SOAP-over-HTTP client using cURL.
  *
- * Responsibilities:
- * - Build SOAP 1.1 envelope
- * - POST to endpoint with SOAPAction
- * - Return normalized array:
- *   [
- *     'ok' => bool,
- *     'http_status' => int,
- *     'message' => string,
- *     'raw' => string,          // raw XML response (optional; keep small upstream)
- *     'parsed' => array|null,   // parsed summary (optional)
- *     'fault' => array|null,    // soap fault details
- *   ]
- *
- * Notes:
- * - SOAP 1.1: Content-Type text/xml; charset=utf-8 + SOAPAction header.
- * - Uses simple XML parsing (no ext/soap dependency).
+ * Supports:
+ * - Zanders RPC/Encoded payloads (ns2:Map + enc:Array) as shown in their spec examples.
+ * - Optional debug logging (request/response head + parse summary).
+ * - WSDL URL fix: strip trailing ?wsdl for POST endpoint.
  */
 final class ZandersSoapCurlClient
 {
+    /** Toggle client-level debug logs */
+    public const DEBUG_FLAG = 'FFLHUB_ZANDERS_SOAP_DEBUG';
+
     /** @var string */
     private $endpoint;
 
@@ -42,15 +33,14 @@ final class ZandersSoapCurlClient
     /** @var string|null */
     private $log_prefix;
 
-    /**
-     * @param string $endpoint
-     * @param int    $timeout_sec
-     * @param bool   $verify_tls
-     * @param string|null $log_prefix
-     */
     public function __construct(string $endpoint, int $timeout_sec = 60, bool $verify_tls = true, ?string $log_prefix = null)
     {
-        $this->endpoint    = trim($endpoint);
+        $endpoint = trim($endpoint);
+
+        // If someone passes a WSDL URL, derive the actual endpoint.
+        $endpoint = (string) preg_replace('/\?wsdl$/i', '', $endpoint);
+
+        $this->endpoint    = $endpoint;
         $this->timeout_sec = max(5, $timeout_sec);
         $this->verify_tls  = (bool) $verify_tls;
         $this->log_prefix  = $log_prefix;
@@ -59,16 +49,26 @@ final class ZandersSoapCurlClient
     /**
      * Call a SOAP operation.
      *
-     * @param string               $soap_action Full SOAPAction value or operation name (depends on server)
-     * @param string               $operation   SOAP body operation element name (e.g. "DropShipAccessories")
-     * @param array<string,mixed>  $params      Operation params (scalar/arrays)
-     * @param string               $ns          XML namespace for operation element
-     * @param array<string,string> $auth        Optional: ['username' => '...', 'password' => '...'] for header auth
+     * Options:
+     * - mode: 'zanders_rpc_encoded' | 'soap11_literal' (default: soap11_literal)
+     *
+     * @param string               $soap_action
+     * @param string               $operation
+     * @param array<string,mixed>  $params
+     * @param string               $ns
+     * @param array<string,string> $auth
+     * @param array<string,mixed>  $options
      *
      * @return array<string,mixed>
      */
-    public function call(string $soap_action, string $operation, array $params, string $ns, array $auth = []): array
-    {
+    public function call(
+        string $soap_action,
+        string $operation,
+        array $params,
+        string $ns,
+        array $auth = [],
+        array $options = []
+    ): array {
         if ($this->endpoint === '') {
             return $this->fail(0, 'Zanders SOAP endpoint is empty.');
         }
@@ -81,17 +81,40 @@ final class ZandersSoapCurlClient
             return $this->fail(0, 'SOAP operation or namespace missing.');
         }
 
-        $xml = $this->build_envelope_soap11($operation, $params, $ns, $auth);
+        $mode = (string) ($options['mode'] ?? 'soap11_literal');
 
-        $headers = [
-            'Content-Type: text/xml; charset=utf-8',
-            'Accept: text/xml',
-        ];
-
-        // Some SOAP servers require SOAPAction quoted; some don’t. Quote is safest for SOAP 1.1.
-        if ($soap_action !== '') {
-            $headers[] = 'SOAPAction: "' . $soap_action . '"';
+        if ($mode === 'zanders_rpc_encoded') {
+            $xml = $this->build_envelope_zanders_rpc_encoded($operation, $params, $ns);
+            $headers = [
+                // Zanders examples often use SOAP 1.2 envelope URI. Many servers still accept text/xml.
+                'Content-Type: text/xml; charset=utf-8',
+                'Accept: text/xml',
+            ];
+            if ($soap_action !== '') {
+                $headers[] = 'SOAPAction: "' . $soap_action . '"';
+            }
+        } else {
+            // Legacy SOAP 1.1 doc/literal envelope (kept as fallback)
+            $xml = $this->build_envelope_soap11_literal($operation, $params, $ns, $auth);
+            $headers = [
+                'Content-Type: text/xml; charset=utf-8',
+                'Accept: text/xml',
+            ];
+            if ($soap_action !== '') {
+                $headers[] = 'SOAPAction: "' . $soap_action . '"';
+            }
         }
+
+        $this->dbg('SOAP request', [
+            'endpoint'    => $this->endpoint,
+            'operation'   => $operation,
+            'soap_action' => $soap_action,
+            'ns'          => $ns,
+            'mode'        => $mode,
+            'timeout_sec' => $this->timeout_sec,
+            'verify_tls'  => $this->verify_tls ? 1 : 0,
+            'req_xml'     => $this->maybe_truncate($this->redact_xml($xml), 6000),
+        ]);
 
         $ch = curl_init($this->endpoint);
         if (!is_resource($ch) && !($ch instanceof \CurlHandle)) {
@@ -104,19 +127,22 @@ final class ZandersSoapCurlClient
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout_sec);
 
-        // TLS verification toggles (keep true for production).
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, $this->verify_tls ? 1 : 0);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, $this->verify_tls ? 2 : 0);
 
-        // We want headers only for debugging sometimes; keep off by default.
         curl_setopt($ch, CURLOPT_HEADER, false);
 
-        $raw = curl_exec($ch);
-        $err = curl_error($ch);
+        $raw  = curl_exec($ch);
+        $err  = curl_error($ch);
         $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
         if ($raw === false || $raw === null) {
+            $this->dbg('SOAP transport fail', [
+                'http_status' => $http,
+                'curl_err'    => (string) $err,
+            ]);
+
             return $this->fail($http, 'SOAP request failed: ' . (string) $err, [
                 'http_status' => $http,
             ]);
@@ -124,12 +150,41 @@ final class ZandersSoapCurlClient
 
         $raw_s = (string) $raw;
 
-        // If HTTP is non-200, still attempt to parse SOAP Fault (often returned with 500).
+
+
+        // FULL RAW SOAP RESPONSE (only when debug enabled)
+        /*$dom = new \DOMDocument();
+        $pretty = $raw_s;
+        if (@$dom->loadXML($raw_s)) {
+            $dom->formatOutput = true;
+            $pretty = $dom->saveXML();
+        }
+        $this->dbg('SOAP response (FULL XML)', [
+            'http_status' => $http,
+            'raw_xml'     => $this->maybe_truncate($pretty, 20000),
+        ]);*/
+
+
+
+
+        $this->dbg('SOAP response (raw head)', [
+            'http_status' => $http,
+            'raw_head'    => substr($raw_s, 0, 400),
+        ]);
+
         $parsed = $this->parse_soap_response($raw_s);
+
+        $this->dbg('SOAP response (parsed summary)', [
+            'http_status' => $http,
+            'has_fault'   => !empty($parsed['fault']) ? 1 : 0,
+            'body_type'   => is_array($parsed['body'] ?? null) ? 'array' : (is_string($parsed['body'] ?? null) ? 'string' : 'null'),
+            'fault'       => $parsed['fault'] ?? null,
+        ]);
 
         if (!empty($parsed['fault'])) {
             $fault = $parsed['fault'];
-            $msg = 'SOAP Fault: ' . ($fault['faultstring'] ?? 'Unknown fault');
+            $msg   = 'SOAP Fault: ' . ($fault['faultstring'] ?? 'Unknown fault');
+
             return [
                 'ok'          => false,
                 'http_status' => $http,
@@ -140,7 +195,6 @@ final class ZandersSoapCurlClient
             ];
         }
 
-        // If HTTP bad but no SOAP Fault, treat as failure.
         if ($http < 200 || $http >= 300) {
             return $this->fail($http, 'SOAP HTTP error: ' . $http, [
                 'raw'    => $this->maybe_truncate($raw_s),
@@ -159,31 +213,19 @@ final class ZandersSoapCurlClient
     }
 
     /**
-     * Build SOAP 1.1 envelope with optional auth header.
-     *
-     * This supports two common auth patterns:
-     * 1) SOAP Header with <Auth><Username>..</Username><Password>..</Password></Auth>
-     * 2) No header auth (credentials are in body params) — just pass $auth=[]
-     *
-     * If Zanders requires a specific header element name/namespace, change build_auth_header().
-     *
-     * @param string              $operation
-     * @param array<string,mixed> $params
-     * @param string              $ns
-     * @param array<string,string> $auth
+     * SOAP 1.1 doc/literal (fallback)
      */
-    private function build_envelope_soap11(string $operation, array $params, string $ns, array $auth): string
+    private function build_envelope_soap11_literal(string $operation, array $params, string $ns, array $auth): string
     {
-        $op_xml = $this->xml_element($operation, $params, $ns);
+        $op_xml = $this->xml_element_literal($operation, $params, $ns);
 
         $header_xml = '';
         $user = isset($auth['username']) ? (string) $auth['username'] : '';
         $pass = isset($auth['password']) ? (string) $auth['password'] : '';
         if ($user !== '' || $pass !== '') {
-            $header_xml = $this->build_auth_header($user, $pass);
+            $header_xml = '<Auth><Username>' . $this->xml_escape($user) . '</Username><Password>' . $this->xml_escape($pass) . '</Password></Auth>';
         }
 
-        // SOAP 1.1 envelope
         return '<?xml version="1.0" encoding="utf-8"?>'
             . '<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
             . 'xmlns:xsd="http://www.w3.org/2001/XMLSchema" '
@@ -194,37 +236,180 @@ final class ZandersSoapCurlClient
     }
 
     /**
-     * Default auth header element. Adjust to match Zanders spec if needed.
+     * Zanders RPC/Encoded envelope.
+     *
+     * Matches their XML examples:
+     * - env namespace = http://www.w3.org/2003/05/soap-envelope
+     * - order/addressinfo params encoded as ns2:Map
+     * - items encoded as enc:Array of ns2:Map
      */
-    private function build_auth_header(string $username, string $password): string
+    private function build_envelope_zanders_rpc_encoded(string $operation, array $params, string $ns): string
     {
-        // NOTE: no namespace on Auth by default.
-        return '<Auth>'
-            . '<Username>' . $this->xml_escape($username) . '</Username>'
-            . '<Password>' . $this->xml_escape($password) . '</Password>'
-            . '</Auth>';
+        $envNs = 'http://www.w3.org/2003/05/soap-envelope';
+        $xsdNs = 'http://www.w3.org/2001/XMLSchema';
+        $xsiNs = 'http://www.w3.org/2001/XMLSchema-instance';
+        $ns2Ns = 'http://xml.apache.org/xml-soap';
+        $encNs = 'http://www.w3.org/2003/05/soap-encoding';
+        $rpcNs = 'http://www.w3.org/2003/05/soap-rpc';
+
+        $opXml = $this->xml_element_zanders_rpc($operation, $params, $ns, $xsdNs, $xsiNs, $ns2Ns, $encNs);
+
+        return '<?xml version="1.0" encoding="UTF-8"?>'
+            . '<env:Envelope xmlns:env="' . $envNs . '" '
+            . 'xmlns:ns1="' . $this->xml_escape($ns) . '" '
+            . 'xmlns:xsd="' . $xsdNs . '" '
+            . 'xmlns:xsi="' . $xsiNs . '" '
+            . 'xmlns:ns2="' . $ns2Ns . '" '
+            . 'xmlns:enc="' . $encNs . '">'
+            . '<env:Body xmlns:rpc="' . $rpcNs . '">'
+            . $opXml
+            . '</env:Body>'
+            . '</env:Envelope>';
+    }
+
+    private function xml_element_zanders_rpc(
+        string $operation,
+        array $params,
+        string $ns,
+        string $xsdNs,
+        string $xsiNs,
+        string $ns2Ns,
+        string $encNs
+    ): string {
+        $inner = '';
+
+        foreach ($params as $k => $v) {
+            $k = preg_replace('/[^a-zA-Z0-9_\-:.]/', '', (string) $k);
+            if ($k === '') {
+                continue;
+            }
+
+            // Zanders expects "order" and "addressinfo" as ns2:Map, not nested xml.
+            if ($k === 'order' && is_array($v)) {
+                $inner .= $this->zanders_param_map('order', $v, $xsdNs, $xsiNs, $ns2Ns, $encNs);
+                continue;
+            }
+            if ($k === 'addressinfo' && is_array($v)) {
+                $inner .= $this->zanders_param_map('addressinfo', $v, $xsdNs, $xsiNs, $ns2Ns, $encNs);
+                continue;
+            }
+
+            // Scalars
+            $inner .= $this->zanders_scalar($k, $v, $xsdNs, $xsiNs);
+        }
+
+        // NOTE: Zanders examples place encodingStyle on the operation element.
+        return '<ns1:' . $operation . ' env:encodingStyle="http://www.w3.org/2003/05/soap-encoding" xmlns:env="http://www.w3.org/2003/05/soap-envelope">'
+            . $inner
+            . '</ns1:' . $operation . '>';
+    }
+
+    private function zanders_scalar(string $name, $v, string $xsdNs, string $xsiNs): string
+    {
+        $type = 'xsd:string';
+        $val  = '';
+
+        if (is_bool($v)) {
+            $type = 'xsd:boolean';
+            $val  = $v ? 'true' : 'false';
+        } elseif (is_int($v)) {
+            $type = 'xsd:int';
+            $val  = (string) $v;
+        } else {
+            $type = 'xsd:string';
+            $val  = (string) $v;
+        }
+
+        return '<' . $name . ' xsi:type="' . $type . '">' . $this->xml_escape($val) . '</' . $name . '>';
     }
 
     /**
-     * Build an operation element with namespace and children.
-     *
-     * Scalars become <k>v</k>
-     * Arrays become nested elements; numeric arrays become repeated <Item>..</Item> by default.
-     *
-     * @param string              $name
-     * @param array<string,mixed> $params
-     * @param string              $ns
+     * Encode associative array as ns2:Map.
+     * Special-case: items => enc:Array of ns2:Map (line items)
      */
-    private function xml_element(string $name, array $params, string $ns): string
+    private function zanders_param_map(
+        string $paramName,
+        array $assoc,
+        string $xsdNs,
+        string $xsiNs,
+        string $ns2Ns,
+        string $encNs
+    ): string {
+        $out = '<' . $paramName . ' xsi:type="ns2:Map">';
+
+        foreach ($assoc as $k => $v) {
+            $key = (string) $k;
+            if ($key === '') {
+                continue;
+            }
+
+            if ($key === 'items' && is_array($v)) {
+                // items is enc:Array of ns2:Map with arraySize=N
+                $items = $this->is_list($v) ? $v : array_values($v);
+                $n = count($items);
+
+                $valueXml = '<value enc:itemType="ns2:Map" enc:arraySize="' . $n . '" xsi:type="enc:Array">';
+                foreach ($items as $row) {
+                    if (!is_array($row)) {
+                        continue;
+                    }
+                    $valueXml .= '<item xsi:type="ns2:Map">' . $this->zanders_map_items($row) . '</item>';
+                }
+                $valueXml .= '</value>';
+
+                $out .= '<item>'
+                    . '<key xsi:type="xsd:string">' . $this->xml_escape($key) . '</key>'
+                    . $valueXml
+                    . '</item>';
+
+                continue;
+            }
+
+            $out .= '<item>'
+                . '<key xsi:type="xsd:string">' . $this->xml_escape($key) . '</key>'
+                . $this->zanders_map_value($v)
+                . '</item>';
+        }
+
+        $out .= '</' . $paramName . '>';
+        return $out;
+    }
+
+    private function zanders_map_items(array $assoc): string
     {
-        $inner = $this->xml_from_params($params);
+        $out = '';
+        foreach ($assoc as $k => $v) {
+            $key = (string) $k;
+            if ($key === '') {
+                continue;
+            }
+            $out .= '<item>'
+                . '<key xsi:type="xsd:string">' . $this->xml_escape($key) . '</key>'
+                . $this->zanders_map_value($v)
+                . '</item>';
+        }
+        return $out;
+    }
+
+    private function zanders_map_value($v): string
+    {
+        if (is_bool($v)) {
+            return '<value xsi:type="xsd:boolean">' . ($v ? 'true' : 'false') . '</value>';
+        }
+        if (is_int($v)) {
+            return '<value xsi:type="xsd:int">' . (string) $v . '</value>';
+        }
+        // quantities sometimes shown as string in examples; string is safest.
+        return '<value xsi:type="xsd:string">' . $this->xml_escape((string) $v) . '</value>';
+    }
+
+    private function xml_element_literal(string $name, array $params, string $ns): string
+    {
+        $inner = $this->xml_from_params_literal($params);
         return '<' . $name . ' xmlns="' . $this->xml_escape($ns) . '">' . $inner . '</' . $name . '>';
     }
 
-    /**
-     * @param mixed $v
-     */
-    private function xml_from_params($v, string $default_list_item = 'Item'): string
+    private function xml_from_params_literal($v, string $default_list_item = 'item'): string
     {
         if (is_array($v)) {
             $is_list = $this->is_list($v);
@@ -232,11 +417,7 @@ final class ZandersSoapCurlClient
 
             if ($is_list) {
                 foreach ($v as $item) {
-                    if (is_array($item)) {
-                        $out .= '<' . $default_list_item . '>' . $this->xml_from_params($item, $default_list_item) . '</' . $default_list_item . '>';
-                    } else {
-                        $out .= '<' . $default_list_item . '>' . $this->xml_escape((string) $item) . '</' . $default_list_item . '>';
-                    }
+                    $out .= '<' . $default_list_item . '>' . $this->xml_from_params_literal($item, $default_list_item) . '</' . $default_list_item . '>';
                 }
                 return $out;
             }
@@ -246,16 +427,11 @@ final class ZandersSoapCurlClient
                 if ($k === '') {
                     continue;
                 }
-                if (is_array($val)) {
-                    $out .= '<' . $k . '>' . $this->xml_from_params($val, $default_list_item) . '</' . $k . '>';
-                } else {
-                    $out .= '<' . $k . '>' . $this->xml_escape((string) $val) . '</' . $k . '>';
-                }
+                $out .= '<' . $k . '>' . $this->xml_from_params_literal($val, $default_list_item) . '</' . $k . '>';
             }
             return $out;
         }
 
-        // scalar
         return $this->xml_escape((string) $v);
     }
 
@@ -269,22 +445,34 @@ final class ZandersSoapCurlClient
         libxml_use_internal_errors(true);
         $doc = simplexml_load_string($xml);
         if ($doc === false) {
-            return [
-                'fault' => ['faultstring' => 'Invalid XML in SOAP response'],
-                'body'  => null,
-            ];
+            return ['fault' => ['faultstring' => 'Invalid XML in SOAP response'], 'body' => null];
         }
 
-        // Register SOAP namespace if present
-        $namespaces = $doc->getNamespaces(true);
-        $soapNs = $namespaces['soap'] ?? $namespaces['SOAP-ENV'] ?? 'http://schemas.xmlsoap.org/soap/envelope/';
+        $soap11 = 'http://schemas.xmlsoap.org/soap/envelope/';
+        $soap12 = 'http://www.w3.org/2003/05/soap-envelope';
 
-        $body = $doc->children($soapNs)->Body ?? null;
+        $body = $doc->children($soap11)->Body ?? null;
+        if (!$body) {
+            $body = $doc->children($soap12)->Body ?? null;
+        }
+        if (!$body) {
+            // prefix-agnostic fallback
+            $namespaces = $doc->getNamespaces(true);
+            if (is_array($namespaces)) {
+                foreach ($namespaces as $uri) {
+                    $try = $doc->children((string) $uri)->Body ?? null;
+                    if ($try) {
+                        $body = $try;
+                        break;
+                    }
+                }
+            }
+        }
+
         if (!$body) {
             return ['fault' => ['faultstring' => 'SOAP Body missing'], 'body' => null];
         }
 
-        // Fault?
         $fault = $body->Fault ?? null;
         if ($fault) {
             return [
@@ -297,13 +485,18 @@ final class ZandersSoapCurlClient
             ];
         }
 
-        // Otherwise: first child element under Body is the response payload
-        $children = $body->children();
-        foreach ($children as $child) {
-            return [
-                'fault' => null,
-                'body'  => $this->simplexml_to_array($child),
-            ];
+        // First child element under Body (namespaced or not)
+        foreach ($body->children() as $child) {
+            return ['fault' => null, 'body' => $this->simplexml_to_array($child)];
+        }
+
+        $bodyNs = $body->getNamespaces(true);
+        if (is_array($bodyNs)) {
+            foreach ($bodyNs as $uri) {
+                foreach ($body->children((string) $uri) as $child) {
+                    return ['fault' => null, 'body' => $this->simplexml_to_array($child)];
+                }
+            }
         }
 
         return ['fault' => null, 'body' => null];
@@ -313,16 +506,13 @@ final class ZandersSoapCurlClient
     {
         $out = [];
 
-        // attributes
         foreach ($x->attributes() as $k => $v) {
             $out['@' . $k] = (string) $v;
         }
 
-        // children
         $kids = $x->children();
         if ($kids->count() === 0) {
-            $s = trim((string) $x);
-            return $s;
+            return trim((string) $x);
         }
 
         foreach ($kids as $k => $child) {
@@ -360,7 +550,6 @@ final class ZandersSoapCurlClient
 
     private function maybe_truncate(string $s, int $max = 6000): string
     {
-        $s = (string) $s;
         if (strlen($s) <= $max) {
             return $s;
         }
@@ -369,6 +558,12 @@ final class ZandersSoapCurlClient
 
     private function fail(int $http, string $msg, array $extra = []): array
     {
+        $this->dbg('SOAP fail', [
+            'http_status' => (int) $http,
+            'message'     => $msg,
+            'extra'       => $extra,
+        ]);
+
         return array_merge([
             'ok'          => false,
             'http_status' => (int) $http,
@@ -377,5 +572,43 @@ final class ZandersSoapCurlClient
             'parsed'      => null,
             'fault'       => null,
         ], $extra);
+    }
+
+    private function dbg(string $msg, array $ctx = []): void
+    {
+        if (!(defined(self::DEBUG_FLAG) && constant(self::DEBUG_FLAG))) {
+            $env = getenv(self::DEBUG_FLAG);
+            if ($env === false || $env === '' || $env === '0') {
+                return;
+            }
+        }
+
+        $prefix = $this->log_prefix ?: 'FFLHUB-Zanders-SOAP';
+        $line = $prefix . ' ' . $msg;
+        if (!empty($ctx)) {
+            $line .= ' ' . wp_json_encode($ctx);
+        }
+        error_log($line);
+    }
+
+    private function redact_xml(string $xml): string
+    {
+        $tags = [
+            'password',
+            'Username',
+            'Password',
+            'orderCommentsEmail',
+            'orderCommentsPhone',
+        ];
+
+        foreach ($tags as $tag) {
+            $xml = (string) preg_replace(
+                '#(<' . preg_quote($tag, '#') . '\b[^>]*>)(.*?)(</' . preg_quote($tag, '#') . '>)#is',
+                '$1***REDACTED***$3',
+                $xml
+            );
+        }
+
+        return $xml;
     }
 }

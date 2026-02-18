@@ -12,52 +12,55 @@ if (!defined('ABSPATH')) {
 
 final class ZandersDirectShipAPI
 {
-    // WSDLs documented in the PDF
-    public const ORDERS_WSDL  = 'https://shop2.gzanders.com/webservice/orders?wsdl';            // :contentReference[oaicite:4]{index=4}
-    public const SHIPTO_WSDL  = 'https://shop2.gzanders.com/webservice/shiptoaddresses?wsdl';  // :contentReference[oaicite:5]{index=5}
+    /** Toggle API-level debug logs */
+    public const DEBUG_FLAG = 'FFLHUB_ZANDERS_SOAP_DEBUG';
 
-    // SOAP operation element namespaces shown in examples (note: docs show both http and https variants)
-    public const ORDERS_NS_HTTP  = 'http://shop2.gzanders.com/webservice/orders';              // :contentReference[oaicite:6]{index=6}
-    public const ORDERS_NS_HTTPS = 'https://shop2.gzanders.com/webservice/orders';             // :contentReference[oaicite:7]{index=7}
-    public const SHIPTO_NS_HTTPS = 'https://shop2.gzanders.com/webservice/shiptoaddresses';    // :contentReference[oaicite:8]{index=8}
+    public const ORDERS_WSDL = 'https://shop2.gzanders.com/webservice/orders?wsdl';
+    public const SHIPTO_WSDL = 'https://shop2.gzanders.com/webservice/shiptoaddresses?wsdl';
 
-    // Operation names (as documented)
-    public const OP_CREATE_ORDER      = 'createOrder';       // :contentReference[oaicite:9]{index=9}
-    public const OP_EDIT_ORDER        = 'editOrder';         // :contentReference[oaicite:10]{index=10}
-    public const OP_GET_TRACKING_INFO = 'getTrackingInfo';   // :contentReference[oaicite:11]{index=11}
-    public const OP_USE_SHIP_TO       = 'useShipTo';         // :contentReference[oaicite:12]{index=12}
+    public const ORDERS_NS_HTTP  = 'http://shop2.gzanders.com/webservice/orders';
+    public const ORDERS_NS_HTTPS = 'https://shop2.gzanders.com/webservice/orders';
+    public const SHIPTO_NS_HTTPS = 'https://shop2.gzanders.com/webservice/shiptoaddresses';
 
-    /**
-     * createOrder(username, password, order(Map), testing)
-     *
-     * $order is the associative array that represents the "orderarray" from the PDF.
-     * Example keys include: purchaseOrderNumber, shipToNo, shipDate, shipViaCode, payCode, shipInstructions, items[], etc.
-     * :contentReference[oaicite:13]{index=13} :contentReference[oaicite:14]{index=14}
-     */
+    public const OP_CREATE_ORDER      = 'createOrder';
+    public const OP_EDIT_ORDER        = 'editOrder';
+    public const OP_GET_TRACKING_INFO = 'getTrackingInfo';
+    public const OP_USE_SHIP_TO       = 'useShipTo';
+
     public static function create_order(
         ZandersSoapCurlClient $client,
         array $auth,
         array $order,
         bool $testing
     ): array {
+        // NOTE: Zanders expects order as ns2:Map and items as enc:Array of ns2:Map. :contentReference[oaicite:3]{index=3}
         $payload = [
-            'username' => (string)($auth['username'] ?? ''),
-            'password' => (string)($auth['password'] ?? ''),
+            'username' => (string) ($auth['username'] ?? ''),
+            'password' => (string) ($auth['password'] ?? ''),
             'order'    => $order,
-            'testing'  => $testing ? 'true' : 'false',
+            'testing'  => (bool) $testing,
         ];
 
-        // SOAPAction handling:
-        // The PDF doesn’t explicitly specify SOAPAction URIs; many servers accept just the op name.
-        // If Zanders requires a full URI later, you can change this to "…/orders#createOrder" etc.
-        return $client->call(self::OP_CREATE_ORDER, self::OP_CREATE_ORDER, $payload, self::ORDERS_NS_HTTPS, []);
+        self::dbg('create_order request', [
+            'testing' => $testing ? 1 : 0,
+            'keys'    => array_keys($order),
+            'items_n' => is_array($order['items'] ?? null) ? count($order['items']) : 0,
+        ]);
+
+        $res = $client->call(
+            self::OP_CREATE_ORDER,
+            self::OP_CREATE_ORDER,
+            $payload,
+            self::ORDERS_NS_HTTPS,
+            [],
+            ['mode' => 'zanders_rpc_encoded']
+        );
+
+        self::dbg('create_order response', self::summarize_client_result($res));
+
+        return $res;
     }
 
-    /**
-     * editOrder(username, password, order(Map), testing)
-     *
-     * Used to change shipToNo / shipViaCode / shipDate / payCode (hold/unhold). :contentReference[oaicite:15]{index=15}
-     */
     public static function edit_order(
         ZandersSoapCurlClient $client,
         array $auth,
@@ -65,20 +68,31 @@ final class ZandersDirectShipAPI
         bool $testing
     ): array {
         $payload = [
-            'username' => (string)($auth['username'] ?? ''),
-            'password' => (string)($auth['password'] ?? ''),
+            'username' => (string) ($auth['username'] ?? ''),
+            'password' => (string) ($auth['password'] ?? ''),
             'order'    => $order_patch,
-            'testing'  => $testing ? 'true' : 'false',
+            'testing'  => (bool) $testing,
         ];
 
-        return $client->call(self::OP_EDIT_ORDER, self::OP_EDIT_ORDER, $payload, self::ORDERS_NS_HTTPS, []);
+        self::dbg('edit_order request', [
+            'testing' => $testing ? 1 : 0,
+            'keys'    => array_keys($order_patch),
+        ]);
+
+        $res = $client->call(
+            self::OP_EDIT_ORDER,
+            self::OP_EDIT_ORDER,
+            $payload,
+            self::ORDERS_NS_HTTPS,
+            [],
+            ['mode' => 'zanders_rpc_encoded']
+        );
+
+        self::dbg('edit_order response', self::summarize_client_result($res));
+
+        return $res;
     }
 
-    /**
-     * getTrackingInfo(username, password, ordernumber, testing)
-     *
-     * Returns a Map with numberOfShipments + trackingNumbers[]. :contentReference[oaicite:16]{index=16} :contentReference[oaicite:17]{index=17}
-     */
     public static function get_tracking_info(
         ZandersSoapCurlClient $client,
         array $auth,
@@ -86,20 +100,31 @@ final class ZandersDirectShipAPI
         bool $testing
     ): array {
         $payload = [
-            'username'     => (string)($auth['username'] ?? ''),
-            'password'     => (string)($auth['password'] ?? ''),
-            'ordernumber'  => (string)$order_number,
-            'testing'      => $testing ? 'true' : 'false',
+            'username'    => (string) ($auth['username'] ?? ''),
+            'password'    => (string) ($auth['password'] ?? ''),
+            'ordernumber' => (string) $order_number,
+            'testing'     => (bool) $testing,
         ];
 
-        return $client->call(self::OP_GET_TRACKING_INFO, self::OP_GET_TRACKING_INFO, $payload, self::ORDERS_NS_HTTPS, []);
+        self::dbg('get_tracking_info request', [
+            'testing'      => $testing ? 1 : 0,
+            'order_number' => $order_number,
+        ]);
+
+        $res = $client->call(
+            self::OP_GET_TRACKING_INFO,
+            self::OP_GET_TRACKING_INFO,
+            $payload,
+            self::ORDERS_NS_HTTPS,
+            [],
+            ['mode' => 'zanders_rpc_encoded']
+        );
+
+        self::dbg('get_tracking_info response', self::summarize_client_result($res));
+
+        return $res;
     }
 
-    /**
-     * useShipTo(username, password, addressinfo(array), testing)
-     *
-     * Creates/returns a ShipToNo for the gun DS account. :contentReference[oaicite:18]{index=18}
-     */
     public static function use_ship_to(
         ZandersSoapCurlClient $client,
         array $auth,
@@ -107,86 +132,72 @@ final class ZandersDirectShipAPI
         bool $testing
     ): array {
         $payload = [
-            'username'     => (string)($auth['username'] ?? ''),
-            'password'     => (string)($auth['password'] ?? ''),
-            'addressinfo'  => $address_info,
-            'testing'      => $testing ? 'true' : 'false',
+            'username'    => (string) ($auth['username'] ?? ''),
+            'password'    => (string) ($auth['password'] ?? ''),
+            'addressinfo' => $address_info,
+            'testing'     => (bool) $testing,
         ];
 
-        return $client->call(self::OP_USE_SHIP_TO, self::OP_USE_SHIP_TO, $payload, self::SHIPTO_NS_HTTPS, []);
+        self::dbg('use_ship_to request', [
+            'testing' => $testing ? 1 : 0,
+            'keys'    => array_keys($address_info),
+        ]);
+
+        $res = $client->call(
+            self::OP_USE_SHIP_TO,
+            self::OP_USE_SHIP_TO,
+            $payload,
+            self::SHIPTO_NS_HTTPS,
+            [],
+            ['mode' => 'zanders_rpc_encoded']
+        );
+
+        self::dbg('use_ship_to response', self::summarize_client_result($res));
+
+        return $res;
     }
 
     // ---------------------------------------------------------------------
-    // Normalizers
+    // Normalizers (unchanged)
     // ---------------------------------------------------------------------
 
-    /**
-     * Normalize createOrder/editOrder response into:
-     * [
-     *   'ok' => bool,
-     *   'return_code' => int,
-     *   'order_number' => string,
-     *   'reason' => string,
-     *   'removed_items' => array,
-     *   'message' => string,
-     *   'raw' => array|null
-     * ]
-     *
-     * Example success Map includes returnCode=0 and orderNumber. :contentReference[oaicite:19]{index=19}
-     * Example OOS Map includes returnCode=9 + reason + removedItems. :contentReference[oaicite:20]{index=20}
-     */
     public static function normalize_order_response(array $soap_res, string $context = ''): array
     {
         $base = self::normalize_map_style_response($soap_res, $context);
 
-        $returnCode = (int)($base['map']['returnCode'] ?? -1);
-        $orderNum   = (string)($base['map']['orderNumber'] ?? '');
+        $returnCode = (int) ($base['map']['returnCode'] ?? -1);
+        $orderNum   = (string) ($base['map']['orderNumber'] ?? '');
 
-        $reason = (string)($base['map']['reason'] ?? '');
+        $reason  = (string) ($base['map']['reason'] ?? '');
         $removed = $base['map']['removedItems'] ?? [];
 
         $ok = ($base['ok'] === true && $returnCode === 0);
 
         return [
-            'ok'           => $ok,
-            'return_code'  => $returnCode,
-            'order_number' => $orderNum,
-            'reason'       => $reason,
+            'ok'            => $ok,
+            'return_code'   => $returnCode,
+            'order_number'  => $orderNum,
+            'reason'        => $reason,
             'removed_items' => is_array($removed) ? $removed : [],
-            'message'      => $ok ? self::ctx($context, 'OK') : self::ctx($context, $base['message']),
-            'raw'          => $base['raw'],
+            'message'       => $ok ? self::ctx($context, 'OK') : self::ctx($context, $base['message']),
+            'raw'           => $base['raw'],
         ];
     }
 
-    /**
-     * Normalize useShipTo response into:
-     * [
-     *   'ok' => bool,
-     *   'return_code' => int,
-     *   'ship_to_no' => string,
-     *   'reason' => string,
-     *   'message' => string,
-     *   'raw' => array|null
-     * ]
-     *
-     * PDF example logic:
-     * - if returnCode == 0 => shipToAddress[ShipToNo]
-     * - else => searchResults[ShipToNo] + reason :contentReference[oaicite:21]{index=21}
-     */
     public static function normalize_use_ship_to_response(array $soap_res, string $context = ''): array
     {
         $base = self::normalize_map_style_response($soap_res, $context);
 
-        $returnCode = (int)($base['map']['returnCode'] ?? -1);
+        $returnCode = (int) ($base['map']['returnCode'] ?? -1);
 
         $shipTo = '';
         if ($returnCode === 0) {
-            $shipTo = (string)self::dig($base['map'], ['shipToAddress', 'ShipToNo'], '');
+            $shipTo = (string) self::dig($base['map'], ['shipToAddress', 'ShipToNo'], '');
         } else {
-            $shipTo = (string)self::dig($base['map'], ['searchResults', 'ShipToNo'], '');
+            $shipTo = (string) self::dig($base['map'], ['searchResults', 'ShipToNo'], '');
         }
 
-        $reason = (string)($base['map']['reason'] ?? '');
+        $reason = (string) ($base['map']['reason'] ?? '');
 
         $ok = ($base['ok'] === true && $shipTo !== '');
 
@@ -200,48 +211,28 @@ final class ZandersDirectShipAPI
         ];
     }
 
-    /**
-     * Normalize getTrackingInfo response into:
-     * [
-     *   'ok' => bool,
-     *   'return_code' => int,
-     *   'number_of_shipments' => int,
-     *   'tracking_numbers' => array,
-     *   'message' => string,
-     *   'raw' => array|null
-     * ]
-     *
-     * trackingNumbers is an array of Maps with shipCompany/shipVia/trackingNumber/weight/url. :contentReference[oaicite:22]{index=22}
-     */
     public static function normalize_tracking_response(array $soap_res, string $context = ''): array
     {
         $base = self::normalize_map_style_response($soap_res, $context);
 
-        $returnCode = (int)($base['map']['returnCode'] ?? -1);
-        $numShip    = (int)($base['map']['numberOfShipments'] ?? 0);
+        $returnCode = (int) ($base['map']['returnCode'] ?? -1);
+        $numShip    = (int) ($base['map']['numberOfShipments'] ?? 0);
 
         $rowsRaw = $base['map']['trackingNumbers'] ?? [];
-        $rows = [];
+        $rows    = [];
 
-        // Normalize rowsRaw into a list of associative arrays
         if (is_array($rowsRaw)) {
-            // If it's a SOAP Map container, convert once.
             if (isset($rowsRaw['item'])) {
                 $items = $rowsRaw['item'];
-
-                // item can be a single row or a list of rows
                 $items_list = self::is_list($items) ? $items : [$items];
 
                 foreach ($items_list as $it) {
                     if (!is_array($it)) {
                         continue;
                     }
-
-                    // Each row may itself be a SOAP Map (with 'item' key/value pairs)
                     $rows[] = self::maybe_map_to_assoc($it);
                 }
             } else {
-                // If it's already a list -> normalize each row
                 if (self::is_list($rowsRaw)) {
                     foreach ($rowsRaw as $row) {
                         if (is_array($row)) {
@@ -249,17 +240,17 @@ final class ZandersDirectShipAPI
                         }
                     }
                 } else {
-                    // Single row associative
                     $rows[] = self::maybe_map_to_assoc($rowsRaw);
                 }
             }
         }
 
-        // Flatten tracking numbers
         $tracking_numbers = [];
         foreach ($rows as $r) {
-            if (!is_array($r)) continue;
-            $t = trim((string)($r['trackingNumber'] ?? ''));
+            if (!is_array($r)) {
+                continue;
+            }
+            $t = trim((string) ($r['trackingNumber'] ?? ''));
             if ($t !== '') {
                 $tracking_numbers[] = $t;
             }
@@ -270,34 +261,37 @@ final class ZandersDirectShipAPI
         $ok = ($base['ok'] === true && $returnCode === 0);
 
         return [
-            'ok'                   => $ok,
-            'return_code'          => $returnCode,
-            'number_of_shipments'  => $numShip,
-            'tracking_rows'        => $rows,
+            'ok'                    => $ok,
+            'return_code'           => $returnCode,
+            'number_of_shipments'   => $numShip,
+            'tracking_rows'         => $rows,
             'tracking_numbers_flat' => $tracking_numbers,
-            'message'              => $ok ? self::ctx($context, 'OK') : self::ctx($context, $base['message']),
-            'raw'                  => $base['raw'],
+            'message'               => $ok ? self::ctx($context, 'OK') : self::ctx($context, $base['message']),
+            'raw'                   => $base['raw'],
         ];
     }
 
-
     // ---------------------------------------------------------------------
-    // Internal helpers for Map-style SOAP responses
+    // Map-style response helpers
     // ---------------------------------------------------------------------
 
-    /**
-     * Zanders services return SOAP Map structures (ns2:Map) with <item><key>..</key><value>..</value></item>.
-     * We want to end up with a PHP associative array keyed by those <key> values. :contentReference[oaicite:23]{index=23}
-     */
     private static function normalize_map_style_response(array $soap_res, string $context): array
     {
         if (!($soap_res['ok'] ?? false)) {
             $fault = $soap_res['fault'] ?? null;
-            $msg = (string)($soap_res['message'] ?? 'SOAP call failed');
+            $msg   = (string) ($soap_res['message'] ?? 'SOAP call failed');
 
             if (is_array($fault) && !empty($fault['faultstring'])) {
-                $msg = 'Zanders SOAP fault: ' . (string)$fault['faultstring'];
+                $msg = 'Zanders SOAP fault: ' . (string) $fault['faultstring'];
             }
+
+            self::dbg('normalize_map_style_response (fail)', [
+                'context' => $context,
+                'message' => $msg,
+                'http'    => (int) ($soap_res['http_status'] ?? 0),
+                'fault'   => $fault,
+                'raw_head' => isset($soap_res['raw']) ? substr((string) $soap_res['raw'], 0, 300) : '',
+            ]);
 
             return [
                 'ok'      => false,
@@ -309,16 +303,17 @@ final class ZandersDirectShipAPI
 
         $body = $soap_res['parsed'] ?? null;
 
-        // The curl client returns the first element under SOAP Body as an array.
-        // Typical shape: [ 'createOrderResponse' => [ 'return' => [ 'item' => ... ] ] ]
-        // but it may also return directly: [ 'return' => ... ] depending on parsing.
+
+        self::dbg('normalize_map_style_response parsed body', [
+            'context' => $context,
+            'parsed_type' => is_array($body) ? 'array' : (is_string($body) ? 'string' : 'null'),
+            'top_keys' => is_array($body) ? array_keys($body) : [],
+        ]);
+
+
         $returnNode = null;
-
         if (is_array($body)) {
-            // Find 'return' anywhere in the first response node
             $returnNode = self::find_first_key_recursive($body, 'return');
-
-            // If not found, sometimes it’s nested under <rpc:result> etc; try first child.
             if ($returnNode === null) {
                 $returnNode = $body;
             }
@@ -329,10 +324,9 @@ final class ZandersDirectShipAPI
             $map = self::maybe_map_to_assoc($returnNode);
         }
 
-        $returnCode = (int)($map['returnCode'] ?? -1);
-        $reason = (string)($map['reason'] ?? '');
+        $returnCode = (int) ($map['returnCode'] ?? -1);
+        $reason     = (string) ($map['reason'] ?? '');
 
-        // Message: if nonzero returnCode, include reason when present.
         $msg = 'OK';
         if ($returnCode !== 0) {
             $msg = 'Zanders returnCode=' . $returnCode;
@@ -340,6 +334,14 @@ final class ZandersDirectShipAPI
                 $msg .= ' reason=' . $reason;
             }
         }
+
+        self::dbg('normalize_map_style_response (ok)', [
+            'context'    => $context,
+            'returnCode' => $returnCode,
+            'has_order'  => isset($map['orderNumber']) ? 1 : 0,
+            'has_shipto' => isset($map['shipToAddress']) || isset($map['searchResults']) ? 1 : 0,
+            'msg'        => $msg,
+        ]);
 
         return [
             'ok'      => true,
@@ -349,23 +351,14 @@ final class ZandersDirectShipAPI
         ];
     }
 
-    /**
-     * If array looks like SOAP Map (<item> list), convert it. Otherwise return as-is.
-     */
     private static function maybe_map_to_assoc(array $node): array
     {
-        // Sometimes the node is already associative (e.g., shipToAddress => [ShipToNo => ...]).
-        // But "ns2:Map" usually shows up as ['item' => [ ... ]].
         if (isset($node['item'])) {
             return self::soap_map_to_assoc($node);
         }
-
-        // Sometimes return itself is the list of items (parsed as 'item' at same level but renamed)
-        // If it looks like a list of key/value pairs, try to interpret.
         if (self::looks_like_kv_items_list($node)) {
             return self::soap_kv_items_list_to_assoc($node);
         }
-
         return $node;
     }
 
@@ -376,7 +369,7 @@ final class ZandersDirectShipAPI
             return [];
         }
 
-        $out = [];
+        $out  = [];
         $list = self::is_list($items) ? $items : [$items];
 
         foreach ($list as $it) {
@@ -384,7 +377,7 @@ final class ZandersDirectShipAPI
                 continue;
             }
 
-            $k = isset($it['key']) ? (string)$it['key'] : '';
+            $k = isset($it['key']) ? (string) $it['key'] : '';
             if ($k === '') {
                 continue;
             }
@@ -392,7 +385,6 @@ final class ZandersDirectShipAPI
             $v = $it['value'] ?? '';
 
             if (is_array($v)) {
-                // Value might itself be a Map or an Array of Maps.
                 if (isset($v['item'])) {
                     $out[$k] = self::soap_map_to_assoc($v);
                 } elseif (isset($v['item']) || isset($v['@xsi:type'])) {
@@ -400,18 +392,16 @@ final class ZandersDirectShipAPI
                 } elseif (self::is_list($v)) {
                     $norm = [];
                     foreach ($v as $row) {
-                        $norm[] = is_array($row) ? self::maybe_map_to_assoc($row) : (string)$row;
+                        $norm[] = is_array($row) ? self::maybe_map_to_assoc($row) : (string) $row;
                     }
                     $out[$k] = $norm;
                 } else {
-                    // SOAP arrays often come through like ['item' => [...]] at some depth.
-                    // Try to normalize children if present.
                     if (isset($v['item'])) {
-                        $inner = $v['item'];
+                        $inner     = $v['item'];
                         $innerList = self::is_list($inner) ? $inner : [$inner];
-                        $norm = [];
+                        $norm      = [];
                         foreach ($innerList as $row) {
-                            $norm[] = is_array($row) ? self::maybe_map_to_assoc($row) : (string)$row;
+                            $norm[] = is_array($row) ? self::maybe_map_to_assoc($row) : (string) $row;
                         }
                         $out[$k] = $norm;
                     } else {
@@ -419,20 +409,13 @@ final class ZandersDirectShipAPI
                     }
                 }
             } else {
-                $out[$k] = (string)$v;
+                $out[$k] = (string) $v;
             }
         }
 
         return $out;
     }
 
-    /**
-     * Some parsers produce a list like:
-     * [
-     *   0 => ['key' => 'returnCode', 'value' => '0'],
-     *   1 => ['key' => 'orderNumber', 'value' => '123'],
-     * ]
-     */
     private static function looks_like_kv_items_list(array $node): bool
     {
         if (!self::is_list($node) || empty($node)) {
@@ -449,12 +432,12 @@ final class ZandersDirectShipAPI
             if (!is_array($it)) {
                 continue;
             }
-            $k = isset($it['key']) ? (string)$it['key'] : '';
+            $k = isset($it['key']) ? (string) $it['key'] : '';
             if ($k === '') {
                 continue;
             }
             $v = $it['value'] ?? '';
-            $out[$k] = is_array($v) ? self::maybe_map_to_assoc($v) : (string)$v;
+            $out[$k] = is_array($v) ? self::maybe_map_to_assoc($v) : (string) $v;
         }
         return $out;
     }
@@ -509,5 +492,42 @@ final class ZandersDirectShipAPI
             $i++;
         }
         return true;
+    }
+
+    /** @return array<string,mixed> */
+    private static function summarize_client_result(array $res): array
+    {
+        $raw = (string) ($res['raw'] ?? '');
+        $fault = $res['fault'] ?? null;
+
+        $parsed = $res['parsed'] ?? null;
+        $topKeys = is_array($parsed) ? array_keys($parsed) : [];
+
+        return [
+            'ok'          => !empty($res['ok']) ? 1 : 0,
+            'http_status' => (int) ($res['http_status'] ?? 0),
+            'message'     => (string) ($res['message'] ?? ''),
+            'has_fault'   => is_array($fault) ? 1 : 0,
+            'fault'       => is_array($fault) ? $fault : null,
+            'raw_head'    => $raw !== '' ? substr($raw, 0, 300) : '',
+            'parsed_type' => is_array($parsed) ? 'array' : (is_string($parsed) ? 'string' : 'null'),
+            'parsed_top_keys' => $topKeys,
+        ];
+    }
+
+    private static function dbg(string $msg, array $ctx = []): void
+    {
+        if (!(defined(self::DEBUG_FLAG) && constant(self::DEBUG_FLAG))) {
+            $env = getenv(self::DEBUG_FLAG);
+            if ($env === false || $env === '' || $env === '0') {
+                return;
+            }
+        }
+
+        $line = '[FFLHub][ZandersDirectShipAPI] ' . $msg;
+        if (!empty($ctx)) {
+            $line .= ' ' . wp_json_encode($ctx);
+        }
+        error_log($line);
     }
 }

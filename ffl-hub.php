@@ -49,7 +49,7 @@ define('FFLHUB_CRON_DEBUG', true);
 define('FFLHUB_ADMIN_DEBUG', false);
 
 // Checkout / cart compliance (must preserve existing behavior).
-define('FFLHUB_CART_COMPLIANCE_DEBUG', true);
+define('FFLHUB_CART_COMPLIANCE_DEBUG', false);
 define('FFLHUB_CART_COMPLIANCE_PROFILE', false);
 
 // Order placement pipeline.
@@ -59,7 +59,6 @@ define('FFLHUB_ORDERING_DRY_RUN', false);
 define('FFLHUB_RSR_API_DEBUG', false);
 define('FFLHUB_RSR_API_DEBUG_RAW', false);
 define('FFLHUB_LIPSEYS_DEBUG', false);
-define('FFLHUB_ZANDERS_DEBUG', true);
 
 
 
@@ -76,6 +75,12 @@ define('FFLHUB_DEBUG_SHIPPING', false);
 
 //init profiling
 define('FFLHUB_DEBUG_BOOT', false);
+
+
+
+define('FFLHUB_ZANDERS_TESTING', false);
+define('FFLHUB_ZANDERS_SOAP_DEBUG', false);
+define('FFLHUB_ZANDERS_DEBUG', false);
 
 /**
  * -------------------------------------------------------------------------

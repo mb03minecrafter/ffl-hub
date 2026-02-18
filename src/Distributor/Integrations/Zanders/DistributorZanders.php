@@ -119,21 +119,56 @@ class DistributorZanders extends DistributorBase
 
     private function is_testing_mode(): bool
     {
-        // Whatever you do in other integrations (option, env, etc)
+        // 1) wp-config constant wins
+        if (defined('FFLHUB_ZANDERS_TESTING') && FFLHUB_ZANDERS_TESTING) {
+            return true;
+        }
+
+        // 2) env var
+        $env = getenv('FFLHUB_ZANDERS_TESTING');
+        if ($env !== false && $env !== '' && $env !== '0') {
+            return true;
+        }
+
+        // 3) option (if you add it later)
+        $opt = (string) \FFLHub\Settings\Options::get_distributor_option('zanders', 'testing_mode', '0');
+        if ($opt === '1' || strtoupper($opt) === 'Y' || strtoupper($opt) === 'TRUE') {
+            return true;
+        }
+
+        // 4) filter fallback
         return (bool) apply_filters('fflhub_zanders_testing_mode', false);
     }
 
-    private function get_zanders_auth(): array
+
+    /**
+     * @return array{ok:bool,message:string,payload:array{username?:string,password?:string}}
+     */
+    private function get_zanders_auth_for_bucket(string $bucket): array
     {
-        // Replace with your actual credentials retrieval.
-        // Must return ['ok'=>bool, 'payload'=>['username'=>..., 'password'=>...], 'message'=>...]
-        $u = (string) apply_filters('fflhub_zanders_username', '');
-        $p = (string) apply_filters('fflhub_zanders_password', '');
+        $bucket = ($bucket === 'ffl') ? 'ffl' : 'non';
+
+        $u_key = ($bucket === 'ffl') ? 'gun_username' : 'accessory_username';
+        $p_key = ($bucket === 'ffl') ? 'gun_password' : 'accessory_password';
+
+        $u = trim((string) \FFLHub\Settings\Options::get_distributor_option('zanders', $u_key, ''));
+        $p = trim((string) \FFLHub\Settings\Options::get_distributor_option('zanders', $p_key, ''));
+
         if ($u === '' || $p === '') {
-            return ['ok' => false, 'message' => 'Missing Zanders credentials.', 'payload' => []];
+            return [
+                'ok' => false,
+                'message' => "Missing Zanders SOAP creds for bucket={$bucket} (keys: {$u_key}/{$p_key}).",
+                'payload' => [],
+            ];
         }
-        return ['ok' => true, 'message' => 'OK', 'payload' => ['username' => $u, 'password' => $p]];
+
+        return [
+            'ok' => true,
+            'message' => 'OK',
+            'payload' => ['username' => $u, 'password' => $p],
+        ];
     }
+
 
     private function make_orders_client(): ZandersSoapCurlClient
     {
@@ -181,16 +216,6 @@ class DistributorZanders extends DistributorBase
             return $base;
         }
 
-        $auth = $this->get_zanders_auth();
-        if (!($auth['ok'] ?? false)) {
-            return DistributorOrderResult::block_fatal(
-                (string) ($auth['message'] ?? 'Missing Zanders credentials.'),
-                [DistributorOrderResult::REASON_FATAL_MISSING_CREDS],
-                ['auth' => ['ok' => (int)($auth['ok'] ?? 0), 'message' => (string)($auth['message'] ?? '')]]
-            );
-        }
-
-        // ✅ exact merchant PO already encoded upstream
         $po = $this->sanitize_and_truncate_po((string) $request->merchant_order_id, 22);
         if ($po === '') {
             return DistributorOrderResult::block_fatal(
@@ -202,13 +227,23 @@ class DistributorZanders extends DistributorBase
         return null;
     }
 
+
     protected function place_order_bucket(
         DistributorOrderRequest $request,
         string $bucket,
         array $lines,
         array &$external_ids
     ): DistributorOrderResult {
-        $auth = $this->get_zanders_auth(); // already validated in precheck
+        $auth = $this->get_zanders_auth_for_bucket($bucket);
+        if (empty($auth['ok'])) {
+            $r = DistributorOrderResult::block_fatal(
+                'Zanders: missing credentials for bucket=' . $bucket,
+                [DistributorOrderResult::REASON_FATAL_MISSING_CREDS],
+                ['auth' => ['message' => (string)($auth['message'] ?? '')]]
+            );
+            $r->external_order_ids = $external_ids;
+            return $r;
+        }
         $testing = $this->is_testing_mode();
 
         $orders_client = $this->make_orders_client();
@@ -429,17 +464,49 @@ class DistributorZanders extends DistributorBase
     //END OF ORDERING SECTION
 
 
+    /**
+     * Decide which Zanders credential bucket to use from our merchant PO encoding.
+     *
+     * Expected examples:
+     *   FH-ZANDERS-6722-N1  => non
+     *   FH-ZANDERS-6722-F1  => ffl
+     *
+     * Fallback: 'non' (safe default) unless we explicitly detect ffl.
+     */
+    private static function infer_bucket_from_po(string $po): string
+    {
+        $po = strtoupper(trim($po));
+        if ($po === '') {
+            return 'non';
+        }
+
+        // Split on '-' and look at the last token
+        $parts = preg_split('/-+/', $po);
+        $last  = is_array($parts) && !empty($parts) ? strtoupper((string) end($parts)) : '';
+
+        // Your current encoding uses N1. We'll treat anything starting with 'N' as non.
+        if ($last !== '' && preg_match('/^N\d*$/', $last)) {
+            return 'non';
+        }
+
+        // Common encoding for firearms bucket
+        if ($last !== '' && preg_match('/^F\d*$/', $last)) {
+            return 'ffl';
+        }
+
+        // Extra safety: if PO contains obvious marker anywhere
+        if (strpos($po, '-FFL-') !== false || strpos($po, '_FFL_') !== false) {
+            return 'ffl';
+        }
+
+        return 'non';
+    }
 
 
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
     {
         $po_number = trim((string) $po_number);
         if ($po_number === '') {
-            return null;
-        }
-
-        $auth = $this->get_zanders_auth();
-        if (empty($auth['ok'])) {
             return null;
         }
 
@@ -450,6 +517,15 @@ class DistributorZanders extends DistributorBase
 
         $testing       = $this->is_testing_mode();
         $orders_client = $this->make_orders_client();
+
+        // Use PO encoding to select the correct credential bucket (non vs ffl).
+        $bucket = self::infer_bucket_from_po($po_number);
+        $this->log('Shipment poll: inferred bucket', ['po' => $po_number, 'bucket' => $bucket, 'external_ids' => $external_ids]);
+
+        $auth = $this->get_zanders_auth_for_bucket($bucket);
+        if (!is_array($auth) || empty($auth['ok']) || empty($auth['payload']) || !is_array($auth['payload'])) {
+            return null;
+        }
 
         $tracking_numbers = [];
         $shipping_service = null;
@@ -478,11 +554,11 @@ class DistributorZanders extends DistributorBase
             $norm = ZandersDirectShipAPI::normalize_tracking_response($soap, 'Zanders getTrackingInfo');
             $raw[] = ['orderNumber' => $order_number, 'norm' => $norm];
 
+            // If returnCode != 0, skip. (Prevents your returnCode=21 spam when creds are wrong.)
             if (empty($norm['ok'])) {
                 continue;
             }
 
-            // ✅ Prefer the normalizer’s flattened list
             foreach ((array) ($norm['tracking_numbers_flat'] ?? []) as $t) {
                 $t = trim((string) $t);
                 if ($t !== '') {
@@ -490,7 +566,6 @@ class DistributorZanders extends DistributorBase
                 }
             }
 
-            // Use rows only to pick a service/weight hint
             foreach ((array) ($norm['tracking_rows'] ?? []) as $r) {
                 if (!is_array($r)) {
                     continue;
@@ -521,22 +596,24 @@ class DistributorZanders extends DistributorBase
         $tracking_numbers = array_values(array_unique(array_filter($tracking_numbers)));
         sort($tracking_numbers, SORT_STRING);
 
-        if (empty($tracking_numbers)) {
-            return null;
+        if (!empty($tracking_numbers)) {
+            return new DistributorShipment(
+                $tracking_numbers,
+                [],
+                $shipping_service,
+                $shipping_weight,
+                [
+                    'po_number'    => $po_number,
+                    'external_ids' => $external_ids,
+                    'raw'          => $raw,
+                    'bucket'       => $bucket,
+                ]
+            );
         }
 
-        return new DistributorShipment(
-            $tracking_numbers,
-            [],
-            $shipping_service,
-            $shipping_weight,
-            [
-                'po_number'    => $po_number,
-                'external_ids' => $external_ids,
-                'raw'          => $raw,
-            ]
-        );
+        return null;
     }
+
 
 
 
@@ -569,7 +646,7 @@ class DistributorZanders extends DistributorBase
                 ];
             },
             'Zanders: cannot map UPC to itemNumber: %s',
-            !$require_non_empty ,
+            !$require_non_empty,
             'Zanders: no valid items after normalization.'
         );
     }
