@@ -163,7 +163,7 @@ class DistributorLipseys extends DistributorBase
 
 
 
-    //VALIDATION SECTION
+    //LIPSEYS VALIDATION SECTION
 
     protected function supports_remote_validation(): bool
     {

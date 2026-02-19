@@ -45,12 +45,12 @@ define('FFLHUB_PLUGIN_VERSION', '1.0.0');
  *
  * NOTE: Some services read specific flags (e.g., CartCompliance uses its own).
  */
-define('FFLHUB_CRON_DEBUG', true);
+define('FFLHUB_CRON_DEBUG', false);
 define('FFLHUB_ADMIN_DEBUG', false);
 
 // Checkout / cart compliance (must preserve existing behavior).
-define('FFLHUB_CART_COMPLIANCE_DEBUG', false);
-define('FFLHUB_CART_COMPLIANCE_PROFILE', false);
+define('FFLHUB_CART_COMPLIANCE_DEBUG', true);
+define('FFLHUB_CART_COMPLIANCE_PROFILE', true);
 
 // Order placement pipeline.
 define('FFLHUB_ORDERING_DRY_RUN', false);

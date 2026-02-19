@@ -981,6 +981,12 @@ abstract class DistributorBase implements DistributorInterface
      * - unknown qty policy (default: block)
      * - optional bucket enforcement against row flag (e.g., ffl_required)
      *
+     * IMPORTANT (fix):
+     * - Missing row is NOT the same as qty=0.
+     *   We now record missing rows as:
+     *     found=0, inventory_raw=null, local_qty=null, reason=not_carried
+     *   and emit a specific code so CartCompliance can ignore non-source voters.
+     *
      * @param DistributorOrderLine[] $lines
      * @param array{
      *   label?:string,
@@ -991,6 +997,7 @@ abstract class DistributorBase implements DistributorInterface
      *   enforce_ffl_required?:null|int,
      *   ffl_required_row_keys?:string[],
      *   extra_row_checks?:null|callable(array $row,string $normalized_upc,int $requiredQty):array{ok:bool,message?:string,details?:array},
+     *   code_prefix?:string, // optional stable prefix for codes (ex: ZANDERS, RSR, LIPSEYS)
      * } $opts
      */
     protected function validate_local_fulfillment_required_qty_by_upc(array $lines, array $opts = []): DistributorOrderValidationResult
@@ -998,6 +1005,15 @@ abstract class DistributorBase implements DistributorInterface
         $label = isset($opts['label']) ? trim((string) $opts['label']) : 'Local fulfillment';
         if ($label === '') {
             $label = 'Local fulfillment';
+        }
+
+        // Prefer an explicit code_prefix; otherwise use distributor id if available; otherwise derive from label.
+        $code_prefix = isset($opts['code_prefix']) ? strtoupper(trim((string) $opts['code_prefix'])) : '';
+        if ($code_prefix === '' && method_exists($this, 'get_id')) {
+            $code_prefix = strtoupper(trim((string) $this->get_id()));
+        }
+        if ($code_prefix === '') {
+            $code_prefix = strtoupper(preg_replace('/\s+/', '_', $label));
         }
 
         $required_by_upc = $this->build_required_qty_by_upc($lines);
@@ -1013,7 +1029,7 @@ abstract class DistributorBase implements DistributorInterface
         if ($max_unique > 0 && count($required_by_upc) > $max_unique) {
             return DistributorOrderValidationResult::block(
                 $label . ': too many unique items to validate (' . count($required_by_upc) . ').',
-                [strtoupper(preg_replace('/\s+/', '_', $label)) . '_TOO_MANY_UNIQUE'],
+                [$code_prefix . '_TOO_MANY_UNIQUE'],
                 [
                     'label' => $label,
                     'unique_count' => count($required_by_upc),
@@ -1026,7 +1042,7 @@ abstract class DistributorBase implements DistributorInterface
         if (!$this->services) {
             return DistributorOrderValidationResult::block(
                 $label . ': services not available; cannot access fulfillment table.',
-                [strtoupper(preg_replace('/\s+/', '_', $label)) . '_SERVICES_MISSING'],
+                [$code_prefix . '_SERVICES_MISSING'],
                 [
                     'label' => $label,
                     'required_by_upc' => $required_by_upc,
@@ -1038,7 +1054,7 @@ abstract class DistributorBase implements DistributorInterface
         if (!$table) {
             return DistributorOrderValidationResult::block(
                 $label . ': fulfillment table not available.',
-                [strtoupper(preg_replace('/\s+/', '_', $label)) . '_TABLE_MISSING'],
+                [$code_prefix . '_TABLE_MISSING'],
                 [
                     'label' => $label,
                     'required_by_upc' => $required_by_upc,
@@ -1079,20 +1095,32 @@ abstract class DistributorBase implements DistributorInterface
                 'inventory_keys' => $inventory_keys,
                 'enforce_ffl_required' => $enforce_ffl_required,
                 'ffl_required_row_keys' => $ffl_required_row_keys,
+                'code_prefix' => $code_prefix,
             ],
         ];
 
         $fail_msgs = [];
+
+        // Track failure kinds so we can emit specific codes (in addition to the legacy *_BLOCKED).
+        $has_invalid_upc      = false;
+        $has_not_carried      = false;
+        $has_unknown_qty      = false;
+        $has_insufficient     = false;
+        $has_bucket_mismatch  = false;
+        $has_extra_row_fail   = false;
 
         foreach ($required_by_upc as $upc => $requiredQty) {
             $requiredQty = (int) $requiredQty;
 
             $normalized = $this->normalize_upc((string) $upc);
             if ($normalized === null) {
+                $has_invalid_upc = true;
                 $fail_msgs[] = "UPC={$upc} invalid (normalize_upc null)";
                 $details['items'][(string) $upc] = [
                     'requiredQty' => $requiredQty,
                     'found' => 0,
+                    'inventory_raw' => null,
+                    'local_qty' => null,
                     'reason' => 'invalid_upc',
                 ];
                 continue;
@@ -1100,33 +1128,41 @@ abstract class DistributorBase implements DistributorInterface
 
             $row = $table->get_row_by_upc($normalized);
             if (!$row || !is_array($row)) {
+                // KEY FIX: missing row is "not carried", not qty=0.
+                $has_not_carried = true;
                 $fail_msgs[] = "UPC={$normalized} not found in local fulfillment table";
                 $details['items'][$normalized] = [
                     'requiredQty' => $requiredQty,
                     'found' => 0,
+                    'inventory_raw' => null,
                     'local_qty' => null,
-                    'reason' => 'not_found',
+                    'reason' => 'not_carried',
                 ];
                 continue;
             }
 
             $qty_raw = $this->get_string_field($row, $inventory_keys);
             $qty_raw_s = trim((string) $qty_raw);
-            $local_qty = (is_numeric($qty_raw_s) ? (int) $qty_raw_s : null);
+
+            $local_qty = null;
+            if ($qty_raw_s !== '' && is_numeric($qty_raw_s)) {
+                $local_qty = (int) $qty_raw_s;
+            }
 
             $item_details = [
                 'requiredQty' => $requiredQty,
                 'found' => 1,
-                'inventory_raw' => $qty_raw_s,
+                'inventory_raw' => ($qty_raw_s !== '' ? $qty_raw_s : null),
                 'local_qty' => $local_qty,
             ];
 
             if ($enforce_ffl_required !== null) {
-                $ffl_raw = $this->get_string_field($row, $ffl_required_row_keys);
-                $ffl_flag = (int) (is_numeric((string) $ffl_raw) ? (int) $ffl_raw : ((string)$ffl_raw === 'Y' ? 1 : 0));
+                $ffl_raw  = $this->get_string_field($row, $ffl_required_row_keys);
+                $ffl_flag = (int) (is_numeric((string) $ffl_raw) ? (int) $ffl_raw : ((string) $ffl_raw === 'Y' ? 1 : 0));
                 $item_details['ffl_required'] = $ffl_flag;
 
                 if ($ffl_flag !== $enforce_ffl_required) {
+                    $has_bucket_mismatch = true;
                     $fail_msgs[] = "UPC={$normalized} bucket_mismatch ffl_required={$ffl_flag} expected={$enforce_ffl_required}";
                     $item_details['reason'] = 'bucket_mismatch';
                     $details['items'][$normalized] = $item_details;
@@ -1136,11 +1172,14 @@ abstract class DistributorBase implements DistributorInterface
 
             if ($extra_row_checks) {
                 $chk = $extra_row_checks($row, $normalized, $requiredQty);
-                $ok = (bool) ($chk['ok'] ?? false);
+                $ok  = (bool) ($chk['ok'] ?? false);
+
                 if (isset($chk['details']) && is_array($chk['details'])) {
                     $item_details = array_merge($item_details, $chk['details']);
                 }
+
                 if (!$ok) {
+                    $has_extra_row_fail = true;
                     $m = trim((string) ($chk['message'] ?? 'extra_row_checks failed'));
                     $fail_msgs[] = "UPC={$normalized} " . $m;
                     $item_details['reason'] = 'extra_row_checks';
@@ -1150,6 +1189,7 @@ abstract class DistributorBase implements DistributorInterface
             }
 
             if ($local_qty === null) {
+                $has_unknown_qty = true;
                 $item_details['reason'] = 'unknown_qty';
                 $details['items'][$normalized] = $item_details;
 
@@ -1160,8 +1200,11 @@ abstract class DistributorBase implements DistributorInterface
             }
 
             if ($local_qty < $requiredQty) {
+                $has_insufficient = true;
                 $fail_msgs[] = "UPC={$normalized} local_available={$local_qty} required={$requiredQty}";
                 $item_details['reason'] = 'insufficient';
+            } else {
+                $item_details['reason'] = 'ok';
             }
 
             $details['items'][$normalized] = $item_details;
@@ -1173,9 +1216,29 @@ abstract class DistributorBase implements DistributorInterface
                 $msg .= ' | ...';
             }
 
+            // Preserve the legacy code (some callers might key off it),
+            // but ALSO emit specific codes so CartCompliance can safely ignore non-source voters.
+            $codes = [$code_prefix . '_VALIDATION_LOCAL_BLOCKED'];
+
+            if ($has_invalid_upc)     $codes[] = $code_prefix . '_INVALID_UPC';
+            if ($has_not_carried)     $codes[] = $code_prefix . '_NOT_CARRIED';
+            if ($has_unknown_qty)     $codes[] = $code_prefix . '_UNKNOWN_QTY';
+            if ($has_insufficient)    $codes[] = $code_prefix . '_OUT_OF_STOCK';
+            if ($has_bucket_mismatch) $codes[] = $code_prefix . '_BUCKET_MISMATCH';
+            if ($has_extra_row_fail)  $codes[] = $code_prefix . '_EXTRA_ROW_CHECKS_FAILED';
+
+            $details['failure_flags'] = [
+                'invalid_upc'     => $has_invalid_upc ? 1 : 0,
+                'not_carried'     => $has_not_carried ? 1 : 0,
+                'unknown_qty'     => $has_unknown_qty ? 1 : 0,
+                'insufficient'    => $has_insufficient ? 1 : 0,
+                'bucket_mismatch' => $has_bucket_mismatch ? 1 : 0,
+                'extra_row_checks' => $has_extra_row_fail ? 1 : 0,
+            ];
+
             return DistributorOrderValidationResult::block(
                 $msg,
-                [strtoupper(preg_replace('/\s+/', '_', $label)) . '_BLOCKED'],
+                array_values(array_unique($codes)),
                 $details
             );
         }

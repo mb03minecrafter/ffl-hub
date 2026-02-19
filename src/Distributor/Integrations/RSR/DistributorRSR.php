@@ -343,7 +343,7 @@ class DistributorRSR extends DistributorBase
 
 
 
-    //VALIDATION SECTION
+    //RSR VALIDATION SECTION
 
 
     protected function supports_remote_validation(): bool

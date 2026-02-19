@@ -35,6 +35,12 @@ final class CartCompliance
      */
     private static array $profile_spans = [];
 
+    // -----------------------------
+    // DEBUG LOGGING (new, behavior-preserving)
+    // -----------------------------
+    private const DEBUG_ENV    = 'FFLHUB_CART_COMPLIANCE_DEBUG';
+    private const DEBUG_PREFIX = '[FFLHub CartCompliance DEBUG] ';
+
     private FFLTable $ffl_table;
     private DistributorHandler $handler;
 
@@ -145,6 +151,107 @@ final class CartCompliance
         }
     }
 
+    /* ---------------- Debug helpers ---------------- */
+
+    private function debug_enabled(): bool
+    {
+        if (defined(self::DEBUG_ENV)) {
+            return (bool) constant(self::DEBUG_ENV);
+        }
+
+        $env = getenv(self::DEBUG_ENV);
+        if ($env !== false) {
+            $env = strtolower(trim((string) $env));
+            if (in_array($env, ['1', 'true', 'yes', 'on'], true)) {
+                return true;
+            }
+        }
+
+        return (defined('WP_DEBUG') && WP_DEBUG);
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     */
+    private function dbg(string $event, array $payload = []): void
+    {
+        if (!$this->debug_enabled()) {
+            return;
+        }
+
+        $base = [
+            'run_id' => $this->run_id,
+            'event'  => $event,
+        ];
+
+        error_log(self::DEBUG_PREFIX . wp_json_encode(array_merge($base, $payload)));
+    }
+
+    /**
+     * Attempt to extract stable identifiers from a cart/order line.
+     * This is best-effort and never affects behavior.
+     *
+     * @param mixed $line
+     * @return array<string,mixed>
+     */
+    private function summarize_line($line): array
+    {
+        $out = [];
+
+        if (is_array($line)) {
+            foreach (['sku', 'upc', 'item_number', 'itemNumber', 'product_id', 'variation_id', 'qty', 'quantity', 'name', 'title'] as $k) {
+                if (array_key_exists($k, $line) && $line[$k] !== null && $line[$k] !== '') {
+                    $out[$k] = $line[$k];
+                }
+            }
+            return $out;
+        }
+
+        if (is_object($line)) {
+            foreach (['sku', 'upc', 'item_number', 'itemNumber', 'product_id', 'variation_id', 'qty', 'quantity', 'name', 'title'] as $k) {
+                if (isset($line->{$k}) && $line->{$k} !== null && $line->{$k} !== '') {
+                    $out[$k] = $line->{$k};
+                }
+            }
+
+            // If it has a toArray(), grab a few keys from that too.
+            if (method_exists($line, 'toArray')) {
+                try {
+                    $arr = $line->toArray();
+                    if (is_array($arr)) {
+                        foreach (['sku', 'upc', 'item_number', 'itemNumber', 'product_id', 'variation_id', 'qty', 'quantity', 'name', 'title'] as $k) {
+                            if (array_key_exists($k, $arr) && $arr[$k] !== null && $arr[$k] !== '') {
+                                $out[$k] = $arr[$k];
+                            }
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    // swallow
+                }
+            }
+
+            return $out;
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<int,mixed> $lines
+     * @return array<int,array<string,mixed>>
+     */
+    private function summarize_lines(array $lines): array
+    {
+        $out = [];
+        foreach ($lines as $line) {
+            $s = $this->summarize_line($line);
+            if (!empty($s)) {
+                $out[] = $s;
+            }
+        }
+        return $out;
+    }
+
     /* ---------------- Hook gates ---------------- */
 
     private function is_real_checkout_submit_request(): bool
@@ -169,11 +276,21 @@ final class CartCompliance
             return;
         }
 
+        $this->dbg('checkout_gate.hit', [
+            'uri' => (string) ($_SERVER['REQUEST_URI'] ?? ''),
+        ]);
+
         try {
             $this->validate_cart_for_compliance();
         } catch (\Throwable $e) {
             $order->add_order_note('FFLHub: Checkout blocked by compliance validation: ' . $e->getMessage());
             $order->save();
+
+            $this->dbg('checkout_gate.exception', [
+                'error' => $e->getMessage(),
+                'class' => get_class($e),
+            ]);
+
             throw $e;
         }
     }
@@ -216,6 +333,19 @@ final class CartCompliance
                     return $this->run_distributor_validations($handler, $ship_customer, $ship_ffl, $receiving_ffl_number);
                 }
             );
+
+            $this->dbg('validate_cart_for_compliance.blocked_summary', [
+                'blocked_count' => is_array($blocked) ? count($blocked) : 0,
+                'blocked'       => is_array($blocked) ? array_map(function ($b) {
+                    return [
+                        'id'     => $b['id'] ?? '',
+                        'label'  => $b['label'] ?? '',
+                        'bucket' => $b['bucket'] ?? '',
+                        'codes'  => $b['codes'] ?? [],
+                        'msg'    => $b['message'] ?? '',
+                    ];
+                }, $blocked) : [],
+            ]);
 
             self::prof(
                 'emit_blocked_notices(cart)',
@@ -271,6 +401,12 @@ final class CartCompliance
                     $ship_ffl = null;
                 }
             }
+
+            $this->dbg('resolve_ffl_context.result', [
+                'verify_session'       => $verify_session ? 1 : 0,
+                'receiving_ffl_number' => $receiving_ffl_number !== null ? (string) $receiving_ffl_number : null,
+                'ship_ffl_ok'          => ($ship_ffl instanceof DistributorShipTo) ? 1 : 0,
+            ]);
 
             return [$receiving_ffl_number !== null ? (string) $receiving_ffl_number : null, $ship_ffl];
         } finally {
@@ -366,6 +502,13 @@ final class CartCompliance
                     : '';
             });
 
+            $this->dbg('ffl_fp.guard', [
+                'cart_has_any_ffl' => $cart_has_any_ffl ? 1 : 0,
+                'fp_now_set'       => ($fp_now !== '') ? 1 : 0,
+                'fp_session_set'   => ($fp_set !== '') ? 1 : 0,
+                'fp_match'         => ($fp_now !== '' && $fp_set !== '') ? (hash_equals($fp_set, $fp_now) ? 1 : 0) : null,
+            ]);
+
             if ($cart_has_any_ffl) {
                 if ($fp_now !== '' && $fp_set === '') {
                     $receiving_ffl_number = null;
@@ -394,8 +537,24 @@ final class CartCompliance
                     continue;
                 }
 
+                $this->dbg('cart.dist.bucket', [
+                    'cart_dist_id' => $cart_dist_id,
+                    'has_ffl'      => $has_ffl ? 1 : 0,
+                    'line_count'   => count($lines),
+                    'lines'        => $this->summarize_lines($lines),
+                ]);
+
                 // If there are FFL-required lines, require receiving FFL + ship_to_ffl.
                 if ($has_ffl && (!$receiving_ffl_number || !($ship_ffl instanceof DistributorShipTo))) {
+                    $this->dbg('block.ffl_missing', [
+                        'cart_dist_id'          => $cart_dist_id,
+                        'has_ffl'               => 1,
+                        'receiving_ffl_present' => $receiving_ffl_number ? 1 : 0,
+                        'ship_ffl_present'      => ($ship_ffl instanceof DistributorShipTo) ? 1 : 0,
+                        'codes'                 => ['FFLHUB_RECEIVING_FFL_REQUIRED'],
+                        'bucket'                => 'ffl_missing',
+                    ]);
+
                     $blocked[] = [
                         'id'      => $cart_dist_id,
                         'label'   => $cart_dist_id,
@@ -415,6 +574,10 @@ final class CartCompliance
                 )));
 
                 if (!preg_match('/^[A-Z]{2}$/', $dest_state)) {
+                    $this->dbg('cart.dest_state.invalid', [
+                        'cart_dist_id' => $cart_dist_id,
+                        'dest_state'   => $dest_state,
+                    ]);
                     continue;
                 }
 
@@ -465,16 +628,41 @@ final class CartCompliance
                     }
 
                     if ($vr->ok) {
+                        $this->dbg('vote.ok', [
+                            'cart_dist_id' => $cart_dist_id,
+                            'voter_id'     => strtolower(trim($voter_id_str)),
+                            'label'        => $label,
+                            'bucket_hint'  => (!empty($voter_req->ffl_lines()) && empty($voter_req->non_ffl_lines())) ? 'ffl' : ((!empty($voter_req->non_ffl_lines()) && empty($voter_req->ffl_lines())) ? 'non' : 'mixed'),
+                        ]);
                         continue;
                     }
 
                     // Ignore out-of-stock blocks unless the voter is the cart's source distributor.
                     if ($this->should_ignore_vote_for_cart_source($cart_dist_id, $voter_id_str, $vr)) {
+                        $this->dbg('vote.ignored_oos_non_source', [
+                            'cart_dist_id' => $cart_dist_id,
+                            'voter_id'     => strtolower(trim($voter_id_str)),
+                            'label'        => $label,
+                            'codes'        => is_array($vr->codes) ? $vr->codes : [],
+                            'message'      => (string) ($vr->message ?? ''),
+                            'details'      => is_array($vr->details) ? $vr->details : [],
+                        ]);
                         continue;
                     }
 
                     // Vague message for system-ish failures; otherwise show pretty restriction messaging
                     if ($this->should_use_vague_customer_message($vr)) {
+                        $this->dbg('vote.blocked.vague', [
+                            'cart_dist_id' => $cart_dist_id,
+                            'voter_id'     => strtolower(trim($voter_id_str)),
+                            'label'        => $label,
+                            'bucket'       => 'single',
+                            'codes'        => is_array($vr->codes) ? $vr->codes : [],
+                            'message'      => (string) ($vr->message ?? ''),
+                            'details'      => is_array($vr->details) ? $vr->details : [],
+                            'lines'        => $this->summarize_lines($lines_for_voter),
+                        ]);
+
                         $blocked[] = [
                             'id'      => $voter_id_str,
                             'label'   => $label,
@@ -490,6 +678,17 @@ final class CartCompliance
                     }
 
                     $buckets = $this->resolve_buckets_for_pretty($vr, $voter_req);
+
+                    $this->dbg('vote.blocked.pretty', [
+                        'cart_dist_id' => $cart_dist_id,
+                        'voter_id'     => strtolower(trim($voter_id_str)),
+                        'label'        => $label,
+                        'buckets'      => $buckets,
+                        'codes'        => is_array($vr->codes) ? $vr->codes : [],
+                        'message'      => (string) ($vr->message ?? ''),
+                        'details'      => is_array($vr->details) ? $vr->details : [],
+                        'lines'        => $this->summarize_lines($lines_for_voter),
+                    ]);
 
                     foreach ($buckets as $bucket) {
                         $pretty_msgs = CheckoutOrderRequestBuilder::build_pretty_validation_messages(
@@ -583,6 +782,12 @@ final class CartCompliance
         try {
             return $dist->validate_order_request($req);
         } catch (\Throwable $e) {
+            $this->dbg('validate.exception', [
+                'dist'  => get_class($dist),
+                'error' => $e->getMessage(),
+                'class' => get_class($e),
+            ]);
+
             return new DistributorOrderValidationResult(
                 false,
                 'Validation error: ' . $e->getMessage(),
@@ -604,7 +809,9 @@ final class CartCompliance
                 continue;
             }
 
+            // New-style explicit codes (from local validator) + old-style fuzzy matches
             if (
+                str_contains($c, '_OUT_OF_STOCK') ||
                 str_contains($c, 'OUT_OF_STOCK') ||
                 str_contains($c, 'OOS') ||
                 str_contains($c, 'NO_STOCK') ||
@@ -616,10 +823,25 @@ final class CartCompliance
         }
 
         $details = is_array($vr->details) ? $vr->details : [];
+
+        // Legacy details.reason
         if (isset($details['reason'])) {
             $r = strtoupper(trim((string) $details['reason']));
             if ($r === 'OUT_OF_STOCK' || $r === 'OOS') {
                 return true;
+            }
+        }
+
+        // New local validator shape: details.items[*].reason
+        if (isset($details['items']) && is_array($details['items'])) {
+            foreach ($details['items'] as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $reason = strtolower(trim((string) ($item['reason'] ?? '')));
+                if (in_array($reason, ['insufficient', 'out_of_stock', 'oos'], true)) {
+                    return true;
+                }
             }
         }
 

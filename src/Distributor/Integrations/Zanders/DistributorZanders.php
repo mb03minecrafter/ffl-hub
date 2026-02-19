@@ -48,7 +48,7 @@ class DistributorZanders extends DistributorBase
 
 
 
-    //VALIDATION SECTION
+    //ZANDERS VALIDATION SECTION
 
     protected function supports_remote_validation(): bool
     {
