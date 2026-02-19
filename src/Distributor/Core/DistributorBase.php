@@ -889,6 +889,87 @@ abstract class DistributorBase implements DistributorInterface
     }
 
 
+    /**
+     * Normalize shipment carrier/service string to a standard carrier name.
+     *
+     * Examples:
+     *   "usps USPS Ground Advantage" → "USPS"
+     *   "UPS Next Day Air"           → "UPS"
+     *   "Federal Express"            → "FEDEX"
+     *
+     * @param string|null $raw
+     * @return string|null  Canonical carrier (USPS|UPS|FEDEX) or null if unknown.
+     */
+    protected function normalize_carrier(?string $raw): ?string
+    {
+        $raw = trim((string) $raw);
+        if ($raw === '') {
+            return null;
+        }
+
+        $v = strtoupper($raw);
+
+        // USPS
+        if (
+            strpos($v, 'USPS') !== false
+            || strpos($v, 'POSTAL') !== false
+            || strpos($v, 'UNITED STATES POSTAL') !== false
+        ) {
+            return 'USPS';
+        }
+
+        // UPS
+        if (
+            strpos($v, 'UPS') !== false
+            || strpos($v, 'UNITED PARCEL') !== false
+        ) {
+            return 'UPS';
+        }
+
+        // FedEx
+        if (
+            strpos($v, 'FEDEX') !== false
+            || strpos($v, 'FEDERAL EXPRESS') !== false
+        ) {
+            return 'FedEx';
+        }
+
+        return null;
+    }
+
+
+    /**
+     * Infer carrier from a tracking number (best-effort).
+     *
+     * @return string|null  USPS|UPS|FEDEX or null if unknown
+     */
+    protected function infer_carrier_from_tracking(string $t): ?string
+    {
+        $t = strtoupper(trim($t));
+        if ($t === '') {
+            return null;
+        }
+
+        // UPS: typically starts with 1Z
+        if (strpos($t, '1Z') === 0) {
+            return 'UPS';
+        }
+
+        // USPS: many are 22 digits starting with 9 (e.g., 9400...)
+        if (preg_match('/^9\d{21}$/', $t)) {
+            return 'USPS';
+        }
+
+        // FedEx: common forms are 12, 15, 20, 22 digits (not definitive)
+        if (preg_match('/^\d{12}$|^\d{15}$|^\d{20}$|^\d{22}$/', $t)) {
+            return 'FEDEX';
+        }
+
+        return null;
+    }
+
+
+
 
     /**
      * Validate required quantities using the local fulfillment table.

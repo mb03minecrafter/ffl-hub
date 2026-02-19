@@ -78,7 +78,7 @@ define('FFLHUB_DEBUG_BOOT', false);
 
 
 
-define('FFLHUB_ZANDERS_TESTING', false);
+define('FFLHUB_ZANDERS_TESTING', true);
 define('FFLHUB_ZANDERS_SOAP_DEBUG', true);
 define('FFLHUB_ZANDERS_DEBUG', true);
 

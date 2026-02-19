@@ -573,11 +573,14 @@ class DistributorZanders extends DistributorBase
                 }
 
                 if ($shipping_service === null) {
-                    $co = trim((string) ($r['shipCompany'] ?? ''));
-                    $sv = trim((string) ($r['shipVia'] ?? ''));
+                    $co  = trim((string) ($r['shipCompany'] ?? ''));
+                    $sv  = trim((string) ($r['shipVia'] ?? ''));
                     $svc = trim($co . ($sv !== '' ? (' ' . $sv) : ''));
+
                     if ($svc !== '') {
-                        $shipping_service = $svc;
+                        // NEW: normalize to USPS/UPS/FEDEX if possible, otherwise keep raw
+                        $carrier = $this->normalize_carrier($svc);
+                        $shipping_service = $carrier !== null ? $carrier : $svc;
                     }
                 }
 

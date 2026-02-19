@@ -205,7 +205,7 @@ class DistributorRSR extends DistributorBase
             $base_po = $fallback !== '' ? ('WC' . $fallback) : ('WC' . gmdate('YmdHis'));
         }
         $po = RSRDirectConnectAPI::truncate_po($base_po);
-        
+
         $items = $this->build_rsr_items_from_lines($lines);
         if ($items instanceof DistributorOrderResult) {
             $items->external_order_ids = $external_ids;
@@ -537,6 +537,10 @@ class DistributorRSR extends DistributorBase
         $date_shipped_values = [];
         $warehouses          = [];
 
+        //we infer the shipping carrier from the tracking number the best we can since RSR doesnt provide the carrier by default
+        $shipping_service = null;
+
+
         // Tracking sentinels we should NOT treat as real tracking numbers, this is because RSR is dumb and shows we shipped even if the tracking number is only pending... dumb
         $bad_tracking = [
             'pending',
@@ -587,6 +591,11 @@ class DistributorRSR extends DistributorBase
                     }
 
                     $tracking_numbers[] = $t;
+
+
+                    if ($shipping_service === null) {
+                        $shipping_service = $this->infer_carrier_from_tracking($t);
+                    }
                 }
             }
 
@@ -638,7 +647,7 @@ class DistributorRSR extends DistributorBase
         return new DistributorShipment(
             $tracking_numbers,
             $invoice_numbers,
-            null,
+            $shipping_service,
             null,
             [
                 'po_number'          => $po_number,

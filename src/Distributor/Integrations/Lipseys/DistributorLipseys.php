@@ -369,7 +369,7 @@ class DistributorLipseys extends DistributorBase
         );
     }
 
-    
+
 
 
     //END VALIDATION SECTION
@@ -683,7 +683,8 @@ class DistributorLipseys extends DistributorBase
             if ($shipping_service === null) {
                 $svc = trim((string) ($r['shipping_service'] ?? ''));
                 if ($svc !== '') {
-                    $shipping_service = $svc;
+                    $carrier = $this->normalize_carrier($svc); // USPS|UPS|FEDEX|null
+                    $shipping_service = $carrier !== null ? $carrier : $svc;
                 }
             }
 
@@ -791,7 +792,8 @@ class DistributorLipseys extends DistributorBase
      *
      * @param array<string,mixed> $norm
      */
-    private function classify_lipseys_order_failure(array $norm, string $prefix): DistributorOrderResult {
+    private function classify_lipseys_order_failure(array $norm, string $prefix): DistributorOrderResult
+    {
         $msg      = (string) ($norm['message'] ?? 'Unknown error');
         $http     = isset($norm['http_status']) ? (int) $norm['http_status'] : 0;
         $provider = isset($norm['provider_error_code']) ? (string) $norm['provider_error_code'] : '';
@@ -941,7 +943,8 @@ class DistributorLipseys extends DistributorBase
      *
      * This is used when the API call throws before we get a structured response.
      */
-    private function classify_lipseys_exception_as_order_result(\Throwable $e, string $prefix, string $po): DistributorOrderResult {
+    private function classify_lipseys_exception_as_order_result(\Throwable $e, string $prefix, string $po): DistributorOrderResult
+    {
         $msg = (string) $e->getMessage();
         $lc  = strtolower($msg);
 
