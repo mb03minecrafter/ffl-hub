@@ -475,6 +475,7 @@ class DistributorZanders extends DistributorBase
      */
     private static function infer_bucket_from_po(string $po): string
     {
+
         $po = strtoupper(trim($po));
         if ($po === '') {
             return 'non';
@@ -1152,6 +1153,12 @@ class DistributorZanders extends DistributorBase
     /**
      * @return string[]
      */
+    /**
+     * @return string[]
+     */
+    /**
+     * @return string[]
+     */
     private function lookup_external_order_ids_by_po(string $po_number): array
     {
         global $wpdb;
@@ -1161,18 +1168,13 @@ class DistributorZanders extends DistributorBase
             return [];
         }
 
-
-
         if (!($this->services instanceof \FFLHub\Distributor\Services\Zanders\ZandersServices)) {
             return [];
         }
 
-        $order_table = $this->services->get_order_table(); // must return order placment jobs tables
-
-
+        $order_table = $this->services->get_order_table();
         $table = $order_table->get_table_name();
 
-        // Only look at Zanders jobs for this PO.
         $sql = $wpdb->prepare(
             "SELECT external_order_ids_json, external_order_id, place_result_json
          FROM {$table}
@@ -1188,14 +1190,18 @@ class DistributorZanders extends DistributorBase
             return [];
         }
 
-        $out = [];
-
         foreach ($rows as $r) {
             if (!is_array($r)) {
                 continue;
             }
 
-            // 1) Prefer external_order_ids_json
+            // 1) Highest priority: external_order_id
+            $single = trim((string) ($r['external_order_id'] ?? ''));
+            if ($single !== '') {
+                return [$single];
+            }
+
+            // 2) Next: external_order_ids_json
             $ids_json = trim((string) ($r['external_order_ids_json'] ?? ''));
             if ($ids_json !== '') {
                 $decoded = json_decode($ids_json, true);
@@ -1203,19 +1209,13 @@ class DistributorZanders extends DistributorBase
                     foreach ($decoded as $id) {
                         $id = trim((string) $id);
                         if ($id !== '') {
-                            $out[] = $id;
+                            return [$id];
                         }
                     }
                 }
             }
 
-            // 2) Fallback external_order_id
-            $single = trim((string) ($r['external_order_id'] ?? ''));
-            if ($single !== '') {
-                $out[] = $single;
-            }
-
-            // 3) Fallback: parse place_result_json.ext_ids
+            // 3) Lowest: place_result_json.ext_ids
             $place_json = trim((string) ($r['place_result_json'] ?? ''));
             if ($place_json !== '') {
                 $p = json_decode($place_json, true);
@@ -1223,17 +1223,13 @@ class DistributorZanders extends DistributorBase
                     foreach ($p['ext_ids'] as $id) {
                         $id = trim((string) $id);
                         if ($id !== '') {
-                            $out[] = $id;
+                            return [$id];
                         }
                     }
                 }
             }
         }
 
-        $out = array_values(array_unique($out));
-        // Zanders order numbers are numeric-ish but keep as strings.
-        sort($out, SORT_STRING);
-
-        return $out;
+        return [];
     }
 }

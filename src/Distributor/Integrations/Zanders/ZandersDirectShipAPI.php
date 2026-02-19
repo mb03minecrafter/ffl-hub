@@ -222,26 +222,25 @@ final class ZandersDirectShipAPI
         $rows    = [];
 
         if (is_array($rowsRaw)) {
-            if (isset($rowsRaw['item'])) {
+            if (self::is_list($rowsRaw)) {
+                // Already normalized list of maps
+                foreach ($rowsRaw as $row) {
+                    if (is_array($row)) {
+                        $rows[] = self::maybe_map_to_assoc($row);
+                    }
+                }
+            } elseif (isset($rowsRaw['item'])) {
+                // Old path: SOAP-style container
                 $items = $rowsRaw['item'];
                 $items_list = self::is_list($items) ? $items : [$items];
 
                 foreach ($items_list as $it) {
-                    if (!is_array($it)) {
-                        continue;
+                    if (is_array($it)) {
+                        $rows[] = self::maybe_map_to_assoc($it);
                     }
-                    $rows[] = self::maybe_map_to_assoc($it);
                 }
             } else {
-                if (self::is_list($rowsRaw)) {
-                    foreach ($rowsRaw as $row) {
-                        if (is_array($row)) {
-                            $rows[] = self::maybe_map_to_assoc($row);
-                        }
-                    }
-                } else {
-                    $rows[] = self::maybe_map_to_assoc($rowsRaw);
-                }
+                $rows[] = self::maybe_map_to_assoc($rowsRaw);
             }
         }
 
@@ -351,6 +350,32 @@ final class ZandersDirectShipAPI
         ];
     }
 
+
+    private static function soap_array_to_list(array $arrNode): array
+    {
+        $items = $arrNode['item'] ?? null;
+        if (!is_array($items)) {
+            return [];
+        }
+
+        $list = self::is_list($items) ? $items : [$items];
+
+        $out = [];
+        foreach ($list as $row) {
+            if (is_array($row)) {
+                $out[] = self::maybe_map_to_assoc($row);
+            } else {
+                $s = trim((string) $row);
+                if ($s !== '') {
+                    $out[] = $s;
+                }
+            }
+        }
+
+        return $out;
+    }
+
+
     private static function maybe_map_to_assoc(array $node): array
     {
         if (isset($node['item'])) {
@@ -385,6 +410,13 @@ final class ZandersDirectShipAPI
             $v = $it['value'] ?? '';
 
             if (is_array($v)) {
+                // NEW: enc:Array (like trackingNumbers) => list
+                // Detect: has item, and those items are NOT key/value pairs
+                if (isset($v['item']) && !self::looks_like_kv_items_list($v['item'])) {
+                    $out[$k] = self::soap_array_to_list($v);
+                    continue;
+                }
+
                 if (isset($v['item'])) {
                     $out[$k] = self::soap_map_to_assoc($v);
                 } elseif (isset($v['item']) || isset($v['@xsi:type'])) {

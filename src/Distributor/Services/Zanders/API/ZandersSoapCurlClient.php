@@ -153,7 +153,7 @@ final class ZandersSoapCurlClient
 
 
         // FULL RAW SOAP RESPONSE (only when debug enabled)
-        /*$dom = new \DOMDocument();
+        $dom = new \DOMDocument();
         $pretty = $raw_s;
         if (@$dom->loadXML($raw_s)) {
             $dom->formatOutput = true;
@@ -162,7 +162,7 @@ final class ZandersSoapCurlClient
         $this->dbg('SOAP response (FULL XML)', [
             'http_status' => $http,
             'raw_xml'     => $this->maybe_truncate($pretty, 20000),
-        ]);*/
+        ]);
 
 
 
