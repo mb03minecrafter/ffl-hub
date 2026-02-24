@@ -54,7 +54,7 @@ final class OrderingCronService extends AbstractCronService
     protected function get_interval_seconds(): int
     {
         // Tune later (you had 15 seconds during profiling)
-        return 15;
+        return 60;
     }
 
     protected function get_initial_delay_seconds(): int
