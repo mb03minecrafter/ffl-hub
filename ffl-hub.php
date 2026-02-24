@@ -90,7 +90,7 @@ fflhub_define_bool('FFLHUB_DEBUG_BOOT', true);
 
 
 
-fflhub_define_bool('FFLHUB_ZANDERS_TESTING', true);
+fflhub_define_bool('FFLHUB_ZANDERS_TESTING', false);
 fflhub_define_bool('FFLHUB_ZANDERS_SOAP_DEBUG', true);
 fflhub_define_bool('FFLHUB_ZANDERS_DEBUG', true);
 
