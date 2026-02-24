@@ -20,6 +20,7 @@ use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\DistributorShipTo;
+use FFLHub\Util\DebugLogUtil;
 
 /**
  * Lipsey's distributor implementation (runtime behavior).
@@ -1073,16 +1074,17 @@ class DistributorLipseys extends DistributorBase
      */
     private function dbg(string $msg, array $ctx = []): void
     {
-        if (!$this->dbg_enabled()) {
+        $enabled = $this->dbg_enabled();
+        if (!$enabled) {
             return;
         }
 
-        $prefix = '[FFLHub Lipseys] ';
+        $prefix = '[FFLHub][LipseysDistributor]';
 
         if (!empty($ctx)) {
-            error_log($prefix . $msg . ' ' . wp_json_encode($ctx));
+            DebugLogUtil::log_if_ctx($enabled, $prefix, $msg, $ctx, 'FFLHUB_LIPSEYS_DEBUG');
         } else {
-            error_log($prefix . $msg);
+            DebugLogUtil::log_if($enabled, $prefix, $msg, 'FFLHUB_LIPSEYS_DEBUG');
         }
     }
 }

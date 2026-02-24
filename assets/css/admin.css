@@ -123,12 +123,16 @@
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
     padding: 18px 20px 20px;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }
 
+.fflhub-modal-content,
 .fflhub-modal-inner {
     max-height: calc(85vh - 40px);
-    overflow: auto;
+    overflow-y: auto;
     padding-right: 4px;
+    -webkit-overflow-scrolling: touch;
 }
 
 /* Close button */

@@ -4,6 +4,7 @@
 namespace FFLHub\Distributor\Integrations\RSR;
 
 use FFLHub\Distributor\Models\DistributorShipTo;
+use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -838,7 +839,8 @@ final class RSRDirectConnectAPI
 
     private static function log_request_payload(string $url, array $payload): void
     {
-        if (!self::debug_enabled()) {
+        $enabled = self::debug_enabled();
+        if (!$enabled) {
             return;
         }
 
@@ -846,13 +848,19 @@ final class RSRDirectConnectAPI
 
         $to_log = $raw ? $payload : self::redact_payload_for_log($payload);
 
-        error_log('[FFLHub RSR API] POST ' . $url);
-        error_log('[FFLHub RSR API] Payload' . ($raw ? ' (RAW)' : ' (REDACTED)') . ":\n" . self::json_for_log($to_log));
+        DebugLogUtil::log_if($enabled, '[FFLHub][RSRAPI]', 'POST ' . $url, self::DEBUG_CONST);
+        DebugLogUtil::log_if(
+            $enabled,
+            '[FFLHub][RSRAPI]',
+            'Payload' . ($raw ? ' (RAW)' : ' (REDACTED)') . ': ' . self::json_for_log($to_log),
+            self::DEBUG_CONST
+        );
     }
 
     private static function log_request_body_json(string $json_body): void
     {
-        if (!self::debug_enabled()) {
+        $enabled = self::debug_enabled();
+        if (!$enabled) {
             return;
         }
 
@@ -861,6 +869,6 @@ final class RSRDirectConnectAPI
             return;
         }
 
-        error_log("[FFLHub RSR API] Body JSON (RAW):\n" . $json_body);
+        DebugLogUtil::log_if($enabled, '[FFLHub][RSRAPI]', 'Body JSON (RAW): ' . $json_body, self::DEBUG_CONST);
     }
 }

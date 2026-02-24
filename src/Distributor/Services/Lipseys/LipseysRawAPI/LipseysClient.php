@@ -22,21 +22,23 @@ class LipseysClient
         if (session_status() == PHP_SESSION_NONE) {
             session_start();
         }
-        if (session_status() == PHP_SESSION_ACTIVE) {
-            if (array_key_exists("LipseysSessionToken{$email}{$password}", $_SESSION)) {
-                $this->Token = $_SESSION["LipseysSessionToken{$email}{$password}"];
-            }
-        }
-
         $this->Email = $email;
         $this->Password = $password;
+
+        if (session_status() == PHP_SESSION_ACTIVE) {
+            $sessionKey = $this->sessionTokenKey();
+            if (array_key_exists($sessionKey, $_SESSION)) {
+                $this->Token = $_SESSION[$sessionKey];
+            }
+        }
     }
 
     private function RequestBuilder($options)
     {
         $curl = curl_init();
-        curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, false);
-        curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
+        $verifyTls = $this->shouldVerifyTls();
+        curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, $verifyTls ? 2 : 0);
+        curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, $verifyTls);
         curl_setopt_array($curl, $options);
         return $curl;
     }
@@ -87,18 +89,72 @@ class LipseysClient
     {
         $errorsArray = array(
             "Not Authorized Response",
-            "Credentials Provided: {$this->Email}, {$this->Password}",
+            "Account: " . $this->maskEmail($this->Email),
             date("Y-m-d h:i:s A T"),
-            $loginResponse
+            $this->sanitizeErrorValue($loginResponse)
         );
         if ($this->Token) {
-            array_push($errorsArray, "Token: {$this->Token}");
+            array_push($errorsArray, "Token present in memory.");
         }
         return array(
             "authorized" => false,
             "success" => false,
             "errors" => $errorsArray
         );
+    }
+
+    private function shouldVerifyTls(): bool
+    {
+        $verifyTls = true;
+        if (function_exists('apply_filters')) {
+            $verifyTls = (bool) apply_filters('fflhub_lipseys_verify_tls', true);
+        }
+        return $verifyTls;
+    }
+
+    private function sessionTokenKey(): string
+    {
+        $identity = strtolower(trim((string) $this->Email));
+        return 'LipseysSessionToken_' . hash('sha256', $identity);
+    }
+
+    private function sanitizeErrorValue($value): string
+    {
+        if (is_array($value) || is_object($value)) {
+            $json = json_encode($value);
+            $value = $json === false ? 'Unable to encode error payload.' : $json;
+        }
+
+        $value = (string) $value;
+        $value = preg_replace('/("?(?:password|token|authorization)"?\s*[:=]\s*")([^"]*)(")/i', '$1[redacted]$3', $value);
+        if (strlen($value) > 800) {
+            $value = substr($value, 0, 800) . '... [truncated]';
+        }
+
+        return $value;
+    }
+
+    private function maskEmail(string $email): string
+    {
+        $email = trim($email);
+        if ($email === '') {
+            return '[empty]';
+        }
+
+        $atPos = strpos($email, '@');
+        if ($atPos === false) {
+            return substr($email, 0, 1) . str_repeat('*', max(strlen($email) - 1, 1));
+        }
+
+        $name = substr($email, 0, $atPos);
+        $domain = substr($email, $atPos + 1);
+        if ($name === '') {
+            return '*@' . $domain;
+        }
+
+        $prefix = substr($name, 0, min(2, strlen($name)));
+        $maskedName = $prefix . str_repeat('*', max(strlen($name) - strlen($prefix), 1));
+        return $maskedName . '@' . $domain;
     }
 
     private function RequestError($error)
@@ -478,7 +534,7 @@ class LipseysClient
                 $this->Account = $decode;
                 $this->Token = $decode["token"];
                 if (session_status() == PHP_SESSION_ACTIVE) {
-                    $_SESSION["LipseysSessionToken{$this->Email}{$this->Password}"] = $decode["token"];
+                    $_SESSION[$this->sessionTokenKey()] = $decode["token"];
                 }
                 return 1;
             }

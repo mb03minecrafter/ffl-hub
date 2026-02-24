@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Models\DistributorProductPayload;
+use FFLHub\Util\DebugLogUtil;
 use WC_Product;
 use WP_Error;
 
@@ -507,8 +508,6 @@ class DistributorProductImages
      */
     private static function log(string $message): void
     {
-        if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('[FFLHub][Images] ' . $message);
-        }
+        DebugLogUtil::log('WP_DEBUG', '[FFLHub][Images]', $message);
     }
 }

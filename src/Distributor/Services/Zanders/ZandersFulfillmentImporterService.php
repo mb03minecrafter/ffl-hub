@@ -3,6 +3,7 @@
 namespace FFLHub\Distributor\Services\Zanders;
 
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -613,7 +614,7 @@ class ZandersFulfillmentImporterService
                 $total_import += (int) $result;
             } else {
                 $batch_failures++;
-                error_log('[FFLHub][Zanders Import] Batch INSERT failed: ' . $wpdb->last_error);
+                $this->log_debug('[FFLHub][Zanders Import] Batch INSERT failed: ' . $wpdb->last_error);
             }
 
             $batch_rows = [];
@@ -931,10 +932,6 @@ class ZandersFulfillmentImporterService
 
     private function log_debug(string $message): void
     {
-        if (!defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
-            return;
-        }
-
-        error_log($message);
+        DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHub][ZandersImporter]', $message);
     }
 }

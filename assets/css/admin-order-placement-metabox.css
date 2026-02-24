@@ -1,0 +1,174 @@
+.fflhub-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.fflhub-card {
+    background: #111827;
+    border: 1px solid #243043;
+    border-radius: 10px;
+    padding: 10px;
+    color: #e5e7eb;
+}
+
+.fflhub-card-title {
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.fflhub-muted {
+    color: #9ca3af;
+}
+
+.fflhub-kv {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.fflhub-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.fflhub-key {
+    color: #9ca3af;
+    font-weight: 600;
+}
+
+.fflhub-val {
+    text-align: right;
+    word-break: break-word;
+    max-width: 70%;
+}
+
+.fflhub-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.fflhub-badge {
+    background: #0b1220;
+    border: 1px solid #22314a;
+    color: #e5e7eb;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 12px;
+}
+
+.fflhub-job-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.fflhub-job-title {
+    font-weight: 800;
+    font-size: 13px;
+}
+
+.fflhub-pill {
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 12px;
+    font-weight: 800;
+    border: 1px solid transparent;
+}
+
+.fflhub-pill-success {
+    background: #052e1a;
+    border-color: #14532d;
+    color: #bbf7d0;
+}
+
+.fflhub-pill-danger {
+    background: #3b0a0a;
+    border-color: #7f1d1d;
+    color: #fecaca;
+}
+
+.fflhub-pill-warning {
+    background: #3a2a07;
+    border-color: #78350f;
+    color: #fde68a;
+}
+
+.fflhub-pill-info {
+    background: #061b2a;
+    border-color: #164e63;
+    color: #a5f3fc;
+}
+
+.fflhub-pill-muted {
+    background: #0b1220;
+    border-color: #22314a;
+    color: #cbd5e1;
+}
+
+.fflhub-details summary {
+    cursor: pointer;
+    color: #93c5fd;
+    font-weight: 700;
+    margin-top: 8px;
+}
+
+.fflhub-pre {
+    background: #0b1220;
+    border: 1px solid #22314a;
+    border-radius: 8px;
+    padding: 8px;
+    overflow: auto;
+    color: #e5e7eb;
+    font-size: 12px;
+    line-height: 1.35;
+    max-height: 260px;
+}
+
+.fflhub-error {
+    margin-top: 8px;
+    background: #2a0d0d;
+    border: 1px solid #7f1d1d;
+    border-radius: 8px;
+    padding: 8px;
+}
+
+.fflhub-error-title {
+    font-weight: 800;
+    color: #fecaca;
+    margin-bottom: 4px;
+}
+
+.fflhub-error-msg {
+    color: #fee2e2;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.fflhub-subcard {
+    margin-top: 8px;
+    background: #0b1220;
+    border: 1px solid #22314a;
+    border-radius: 8px;
+    padding: 8px;
+}
+
+.fflhub-subcard-title {
+    font-weight: 800;
+    margin-bottom: 6px;
+    color: #e5e7eb;
+}
+
+.fflhub-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+}
+
+.fflhub-retry-wrap {
+    margin-top: 8px;
+}

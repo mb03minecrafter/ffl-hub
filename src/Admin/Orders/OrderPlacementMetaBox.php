@@ -11,6 +11,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 
 if (!defined('ABSPATH')) {
@@ -22,14 +23,14 @@ if (!defined('ABSPATH')) {
  *
  * Architecture notes:
  * - Jobs index is derived from the jobs TABLE (not order meta).
- * - “Retry” is DB-only: status=retry_scheduled + next_run_at set, so the dispatcher picks it up.
+ * - "Retry" is DB-only: status=retry_scheduled + next_run_at set, so the dispatcher picks it up.
  *
  * This class is instance-based so we can inject the OrderPlacementJobsTable manager.
  */
 final class OrderPlacementMetaBox
 {
     private const META_BOX_ID    = 'fflhub_order_placement_jobs';
-    private const META_BOX_TITLE = 'FFL Hub — Order Placement Jobs';
+    private const META_BOX_TITLE = 'FFL Hub - Order Placement Jobs';
 
     private OrderPlacementJobsTable $jobs_table;
 
@@ -49,7 +50,7 @@ final class OrderPlacementMetaBox
         // HPOS orders screen (wc-orders)
         add_action('add_meta_boxes_woocommerce_page_wc-orders', [$this, 'register_metabox']);
 
-        // CSS for the “pretty boxes”
+        // CSS for the "pretty boxes"
         add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
 
         // Manual retry action (admin-post)
@@ -69,7 +70,7 @@ final class OrderPlacementMetaBox
     }
 
     /**
-     * Enqueue inline CSS only on order screens.
+     * Enqueue metabox CSS only on order screens.
      */
     public function enqueue_assets(string $hook_suffix): void
     {
@@ -87,9 +88,16 @@ final class OrderPlacementMetaBox
             return;
         }
 
-        wp_register_style('fflhub-order-placement-metabox', false);
-        wp_enqueue_style('fflhub-order-placement-metabox');
-        wp_add_inline_style('fflhub-order-placement-metabox', self::css());
+        $css_rel_path = 'assets/css/admin-order-placement-metabox.css';
+        $css_abs_path = FFLHUB_PLUGIN_PATH . $css_rel_path;
+        $css_version  = file_exists($css_abs_path) ? (string) filemtime($css_abs_path) : FFLHUB_PLUGIN_VERSION;
+
+        wp_enqueue_style(
+            'fflhub-order-placement-metabox',
+            plugins_url($css_rel_path, FFLHUB_PLUGIN_FILE),
+            [],
+            $css_version
+        );
     }
 
     /**
@@ -120,8 +128,8 @@ final class OrderPlacementMetaBox
         echo '<div class="fflhub-card-title">Pipeline</div>';
         echo '<div class="fflhub-kv">';
         echo self::kv('Started', $started ? self::pill('yes', 'success') : self::pill('no', 'muted'));
-        echo self::kv('Started at', $started_at !== '' ? esc_html($started_at) : '<span class="fflhub-muted">—</span>');
-        echo self::kv('Started by', $started_by !== '' ? esc_html($started_by) : '<span class="fflhub-muted">—</span>');
+        echo self::kv('Started at', $started_at !== '' ? esc_html($started_at) : '<span class="fflhub-muted">-</span>');
+        echo self::kv('Started by', $started_by !== '' ? esc_html($started_by) : '<span class="fflhub-muted">-</span>');
         echo '</div>';
         echo '</div>';
 
@@ -179,7 +187,7 @@ final class OrderPlacementMetaBox
         $ship_poll_at      = isset($row['last_shipping_poll_at']) ? (string) $row['last_shipping_poll_at'] : '';
         $shipment_raw_json = isset($row['shipment_raw_json']) ? (string) $row['shipment_raw_json'] : '';
 
-        $pill = self::pill($status !== '' ? $status : '—', self::status_class($status));
+        $pill = self::pill($status !== '' ? $status : '-', self::status_class($status));
 
         echo '<div class="fflhub-card fflhub-job">';
         echo '<div class="fflhub-job-head">';
@@ -194,9 +202,9 @@ final class OrderPlacementMetaBox
 
         echo '<div class="fflhub-kv">';
         echo self::kv('Attempts', $attempts !== '' ? esc_html($attempts) : '<span class="fflhub-muted">0</span>');
-        echo self::kv('Action ID', $actionid !== '' ? esc_html($actionid) : '<span class="fflhub-muted">—</span>');
-        echo self::kv('Created', $created !== '' ? esc_html($created) : '<span class="fflhub-muted">—</span>');
-        echo self::kv('Done', $done_at !== '' ? esc_html($done_at) : '<span class="fflhub-muted">—</span>');
+        echo self::kv('Action ID', $actionid !== '' ? esc_html($actionid) : '<span class="fflhub-muted">-</span>');
+        echo self::kv('Created', $created !== '' ? esc_html($created) : '<span class="fflhub-muted">-</span>');
+        echo self::kv('Done', $done_at !== '' ? esc_html($done_at) : '<span class="fflhub-muted">-</span>');
         echo '</div>';
 
         if ($last_err !== '') {
@@ -231,22 +239,22 @@ final class OrderPlacementMetaBox
 
                 echo '<div class="fflhub-kv">';
                 echo self::kv('Result', self::pill($code !== '' ? $code : ($ok ? 'ALLOW' : 'BLOCK'), $v_pill_class));
-                echo self::kv('Validated at', $at !== '' ? esc_html($at) : '<span class="fflhub-muted">—</span>');
+                echo self::kv('Validated at', $at !== '' ? esc_html($at) : '<span class="fflhub-muted">-</span>');
 
                 if (!empty($codes)) {
                     $codes_str = implode(', ', array_slice(array_map('strval', $codes), 0, 12));
                     if (count($codes) > 12) {
-                        $codes_str .= ', …';
+                        $codes_str .= ', ...';
                     }
                     echo self::kv('Codes', '<span class="fflhub-mono">' . esc_html($codes_str) . '</span>');
                 } else {
-                    echo self::kv('Codes', '<span class="fflhub-muted">—</span>');
+                    echo self::kv('Codes', '<span class="fflhub-muted">-</span>');
                 }
 
                 if ($msg !== '') {
                     echo self::kv('Message', '<span class="fflhub-mono">' . esc_html($msg) . '</span>');
                 } else {
-                    echo self::kv('Message', '<span class="fflhub-muted">—</span>');
+                    echo self::kv('Message', '<span class="fflhub-muted">-</span>');
                 }
 
                 echo '</div>';
@@ -287,38 +295,38 @@ final class OrderPlacementMetaBox
 
                 echo '<div class="fflhub-kv">';
                 echo self::kv('Result', self::pill($code !== '' ? $code : ($ok ? 'OK' : 'ERROR'), $p_pill_class));
-                echo self::kv('Placed at', $at !== '' ? esc_html($at) : '<span class="fflhub-muted">—</span>');
+                echo self::kv('Placed at', $at !== '' ? esc_html($at) : '<span class="fflhub-muted">-</span>');
 
                 if ($http > 0) {
                     echo self::kv('HTTP', '<span class="fflhub-mono">' . esc_html((string) $http) . '</span>');
                 } else {
-                    echo self::kv('HTTP', '<span class="fflhub-muted">—</span>');
+                    echo self::kv('HTTP', '<span class="fflhub-muted">-</span>');
                 }
 
                 if (!empty($ext)) {
                     $ext_str = implode(', ', array_slice(array_map('strval', $ext), 0, 8));
                     if (count($ext) > 8) {
-                        $ext_str .= ', …';
+                        $ext_str .= ', ...';
                     }
                     echo self::kv('External IDs', '<span class="fflhub-mono">' . esc_html($ext_str) . '</span>');
                 } else {
-                    echo self::kv('External IDs', '<span class="fflhub-muted">—</span>');
+                    echo self::kv('External IDs', '<span class="fflhub-muted">-</span>');
                 }
 
                 if (!empty($codes)) {
                     $codes_str = implode(', ', array_slice(array_map('strval', $codes), 0, 12));
                     if (count($codes) > 12) {
-                        $codes_str .= ', …';
+                        $codes_str .= ', ...';
                     }
                     echo self::kv('Codes', '<span class="fflhub-mono">' . esc_html($codes_str) . '</span>');
                 } else {
-                    echo self::kv('Codes', '<span class="fflhub-muted">—</span>');
+                    echo self::kv('Codes', '<span class="fflhub-muted">-</span>');
                 }
 
                 if ($msg !== '') {
                     echo self::kv('Message', '<span class="fflhub-mono">' . esc_html($msg) . '</span>');
                 } else {
-                    echo self::kv('Message', '<span class="fflhub-muted">—</span>');
+                    echo self::kv('Message', '<span class="fflhub-muted">-</span>');
                 }
 
                 echo '</div>';
@@ -367,31 +375,31 @@ final class OrderPlacementMetaBox
                 : self::pill('pending', 'muted');
 
             echo self::kv('Status', $ship_pill);
-            echo self::kv('Shipped at', ($shipped_at !== '' && $shipped_at !== '0000-00-00 00:00:00') ? esc_html($shipped_at) : '<span class="fflhub-muted">—</span>');
-            echo self::kv('Last poll', ($ship_poll_at !== '' && $ship_poll_at !== '0000-00-00 00:00:00') ? esc_html($ship_poll_at) : '<span class="fflhub-muted">—</span>');
+            echo self::kv('Shipped at', ($shipped_at !== '' && $shipped_at !== '0000-00-00 00:00:00') ? esc_html($shipped_at) : '<span class="fflhub-muted">-</span>');
+            echo self::kv('Last poll', ($ship_poll_at !== '' && $ship_poll_at !== '0000-00-00 00:00:00') ? esc_html($ship_poll_at) : '<span class="fflhub-muted">-</span>');
 
             if (!empty($tracking_list)) {
                 $t_str = implode(', ', array_slice($tracking_list, 0, 8));
                 if (count($tracking_list) > 8) {
-                    $t_str .= ', …';
+                    $t_str .= ', ...';
                 }
                 echo self::kv('Tracking', '<span class="fflhub-mono">' . esc_html($t_str) . '</span>');
             } else {
-                echo self::kv('Tracking', '<span class="fflhub-muted">—</span>');
+                echo self::kv('Tracking', '<span class="fflhub-muted">-</span>');
             }
 
             if (!empty($invoice_list)) {
                 $i_str = implode(', ', array_slice($invoice_list, 0, 8));
                 if (count($invoice_list) > 8) {
-                    $i_str .= ', …';
+                    $i_str .= ', ...';
                 }
                 echo self::kv('Invoices', '<span class="fflhub-mono">' . esc_html($i_str) . '</span>');
             } else {
-                echo self::kv('Invoices', '<span class="fflhub-muted">—</span>');
+                echo self::kv('Invoices', '<span class="fflhub-muted">-</span>');
             }
 
-            echo self::kv('Service', $ship_service !== '' ? '<span class="fflhub-mono">' . esc_html($ship_service) . '</span>' : '<span class="fflhub-muted">—</span>');
-            echo self::kv('Weight', $ship_weight !== '' ? '<span class="fflhub-mono">' . esc_html($ship_weight) . '</span>' : '<span class="fflhub-muted">—</span>');
+            echo self::kv('Service', $ship_service !== '' ? '<span class="fflhub-mono">' . esc_html($ship_service) . '</span>' : '<span class="fflhub-muted">-</span>');
+            echo self::kv('Weight', $ship_weight !== '' ? '<span class="fflhub-mono">' . esc_html($ship_weight) . '</span>' : '<span class="fflhub-muted">-</span>');
 
             echo '</div>';
 
@@ -478,8 +486,9 @@ final class OrderPlacementMetaBox
         }
 
         $order_id = isset($_GET['order_id']) ? (int) $_GET['order_id'] : 0;
-        $job_key  = isset($_GET['job_key']) ? (string) wp_unslash($_GET['job_key']) : '';
-        $job_key  = rawurldecode($job_key);
+        $job_key  = isset($_GET['job_key'])
+            ? OrderPlacementKeysUtil::normalize_job_key(sanitize_text_field(wp_unslash((string) $_GET['job_key'])))
+            : '';
 
         if ($order_id <= 0 || $job_key === '') {
             wp_die('Missing order_id or job_key.');
@@ -632,16 +641,21 @@ final class OrderPlacementMetaBox
     private static function render_retry_button(WC_Order $order, string $job_key): string
     {
         $order_id = (int) $order->get_id();
+        $job_key  = OrderPlacementKeysUtil::normalize_job_key($job_key);
+
+        if ($job_key === '') {
+            return '';
+        }
 
         $url = add_query_arg([
             'action'   => 'fflhub_retry_order_job',
             'order_id' => $order_id,
-            'job_key'  => rawurlencode($job_key),
+            'job_key'  => $job_key,
         ], admin_url('admin-post.php'));
 
         $url = wp_nonce_url($url, 'fflhub_retry_order_job_' . $order_id . '|' . $job_key);
 
-        return '<div style="margin-top:8px;">'
+        return '<div class="fflhub-retry-wrap">'
             . '<a class="button button-secondary" href="' . esc_url($url) . '" '
             . 'onclick="return confirm(\'Retry this job now?\');">'
             . 'Retry Job</a>'
@@ -666,63 +680,12 @@ final class OrderPlacementMetaBox
 
         $ref = add_query_arg([
             'fflhub_retry' => $result,
-            'fflhub_job'   => rawurlencode($job_key),
+            'fflhub_job'   => $job_key,
         ], $ref);
 
         wp_safe_redirect($ref);
         exit;
     }
 
-    private static function css(): string
-    {
-        return <<<CSS
-/* (unchanged: your CSS block) */
-.fflhub-wrap { display:flex; flex-direction:column; gap:10px; }
-.fflhub-card {
-  background:#111827; border:1px solid #243043; border-radius:10px;
-  padding:10px; color:#e5e7eb;
 }
-.fflhub-card-title { font-weight:700; margin-bottom:8px; }
-.fflhub-muted { color:#9ca3af; }
-.fflhub-kv { display:flex; flex-direction:column; gap:6px; }
-.fflhub-row { display:flex; justify-content:space-between; gap:10px; }
-.fflhub-key { color:#9ca3af; font-weight:600; }
-.fflhub-val { text-align:right; word-break:break-word; max-width:70%; }
-.fflhub-badges { display:flex; flex-wrap:wrap; gap:6px; }
-.fflhub-badge {
-  background:#0b1220; border:1px solid #22314a; color:#e5e7eb;
-  border-radius:999px; padding:2px 8px; font-size:12px;
-}
-.fflhub-job-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; }
-.fflhub-job-title { font-weight:800; font-size:13px; }
-.fflhub-pill { border-radius:999px; padding:2px 8px; font-size:12px; font-weight:800; border:1px solid transparent; }
-.fflhub-pill-success { background:#052e1a; border-color:#14532d; color:#bbf7d0; }
-.fflhub-pill-danger  { background:#3b0a0a; border-color:#7f1d1d; color:#fecaca; }
-.fflhub-pill-warning { background:#3a2a07; border-color:#78350f; color:#fde68a; }
-.fflhub-pill-info    { background:#061b2a; border-color:#164e63; color:#a5f3fc; }
-.fflhub-pill-muted   { background:#0b1220; border-color:#22314a; color:#cbd5e1; }
-.fflhub-details summary { cursor:pointer; color:#93c5fd; font-weight:700; margin-top:8px; }
-.fflhub-pre {
-  background:#0b1220; border:1px solid #22314a; border-radius:8px;
-  padding:8px; overflow:auto; color:#e5e7eb; font-size:12px; line-height:1.35;
-  max-height:260px;
-}
-.fflhub-error { margin-top:8px; background:#2a0d0d; border:1px solid #7f1d1d; border-radius:8px; padding:8px; }
-.fflhub-error-title { font-weight:800; color:#fecaca; margin-bottom:4px; }
-.fflhub-error-msg { color:#fee2e2; font-size:12px; white-space:pre-wrap; word-break:break-word; }
-.fflhub-subcard {
-  margin-top:8px;
-  background:#0b1220;
-  border:1px solid #22314a;
-  border-radius:8px;
-  padding:8px;
-}
-.fflhub-subcard-title {
-  font-weight:800;
-  margin-bottom:6px;
-  color:#e5e7eb;
-}
-.fflhub-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; }
-CSS;
-    }
-}
+

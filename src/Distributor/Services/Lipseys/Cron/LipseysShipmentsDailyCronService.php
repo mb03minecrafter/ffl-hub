@@ -5,6 +5,7 @@ namespace FFLHub\Distributor\Services\Lipseys\Cron;
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
 use FFLHub\Distributor\Services\Lipseys\Tables\LipseysShipmentTable;
 use FFLHub\Settings\Options;
+use FFLHub\Util\DebugLogUtil;
 use lipseys\ApiIntegration\LipseysClient;
 
 if (! defined('ABSPATH')) {
@@ -253,10 +254,6 @@ final class LipseysShipmentsDailyCronService extends AbstractCronService
 
     private function log_debug(string $message): void
     {
-        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
-            return;
-        }
-
-        error_log($message);
+        DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHub][LipseysShipmentsCron]', $message);
     }
 }

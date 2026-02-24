@@ -2,6 +2,8 @@
 
 namespace FFLHub\Distributor\Services\FTP;
 
+use FFLHub\Util\DebugLogUtil;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -354,10 +356,17 @@ class FTPClientService
 
     private function log_debug(string $message): void
     {
-        if (!defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
-            return;
+        $prefix = $this->log_prefix !== '' ? $this->log_prefix : '[FFLHub][FTP]';
+        $msg = trim($message);
+
+        if (strpos($msg, $prefix) === 0) {
+            $msg = ltrim(substr($msg, strlen($prefix)));
         }
 
-        error_log($message);
+        if ($msg === '') {
+            $msg = '(empty message)';
+        }
+
+        DebugLogUtil::log('FFLHUB_CRON_DEBUG', $prefix, $msg);
     }
 }

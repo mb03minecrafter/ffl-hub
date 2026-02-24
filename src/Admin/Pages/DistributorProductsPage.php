@@ -11,6 +11,7 @@ use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\UpcLookupResult;
+use FFLHub\Util\DebugLogUtil;
 use WP_Error;
 
 /**
@@ -66,13 +67,15 @@ class DistributorProductsPage
             return;
         }
 
-        $base_url = FFLHUB_PLUGIN_URL . 'assets/';
+        $css_rel_path = 'assets/css/admin-distributor-products.css';
+        $css_abs_path = FFLHUB_PLUGIN_PATH . $css_rel_path;
+        $css_version  = file_exists($css_abs_path) ? (string) filemtime($css_abs_path) : FFLHUB_PLUGIN_VERSION;
 
         wp_enqueue_style(
             'fflhub-admin',
-            $base_url . 'css/admin-distributor-products.css',
+            plugins_url($css_rel_path, FFLHUB_PLUGIN_FILE),
             [],
-            '0.1.0'
+            $css_version
         );
     }
 
@@ -85,7 +88,7 @@ class DistributorProductsPage
             wp_die(esc_html__('You do not have permission to access this page.', 'ffl-hub'));
         }
 
-        $state = self::handle_request();
+        $state = $this->handle_request();
 ?>
         <div class="wrap">
             <h1><?php esc_html_e('Distributor Products', 'ffl-hub'); ?></h1>
@@ -97,11 +100,11 @@ class DistributorProductsPage
                 ); ?>
             </p>
 
-            <?php self::render_notices($state); ?>
-            <?php self::render_search_form($state); ?>
+            <?php $this->render_notices($state); ?>
+            <?php $this->render_search_form($state); ?>
 
             <?php if ($state['selected_product'] instanceof DistributorProductPayload) : ?>
-                <?php self::render_product_result($state); ?>
+                <?php $this->render_product_result($state); ?>
             <?php endif; ?>
         </div>
         <?php
@@ -148,17 +151,17 @@ class DistributorProductsPage
         ];
 
         // 1) Detect action
-        $action = self::detect_action();
+        $action = $this->detect_action();
         $state['action'] = $action;
 
-        self::log_debug("[FFLHub][DistributorProductsPage] Action detected: " . ($action ?: '[none]'));
+        $this->log_debug("[FFLHub][DistributorProductsPage] Action detected: " . ($action ?: '[none]'));
 
         if ($action === '') {
             return $state;
         }
 
         // 2) Read UPC
-        $upc = self::read_post_upc();
+        $upc = $this->read_post_upc();
         $state['upc_value'] = $upc;
 
         if ($upc === '') {
@@ -171,17 +174,21 @@ class DistributorProductsPage
             check_admin_referer('fflhub_distributor_products_search');
         } elseif ($action === 'create') {
             check_admin_referer('fflhub_distributor_products_create');
-            $state['posted_selected_dist_id'] = self::read_post_selected_distributor();
+            $state['posted_selected_dist_id'] = $this->read_post_selected_distributor();
         }
 
-        // 4) Lookup (CHANGED: can return UpcLookupResult OR WP_Error)
-        $lookup_result =  $this->handler->get_payloads_for_upc($upc);;
+        // 4) Lookup (defensive handling for unexpected return types)
+        $lookup_result = $this->handler->get_payloads_for_upc($upc);
 
-        
+        if ($lookup_result instanceof WP_Error) {
+            $state['global_error'] = $lookup_result->get_error_message();
+            $this->log_debug("[FFLHub][DistributorProductsPage] Lookup WP_Error: " . $lookup_result->get_error_code());
+            return $state;
+        }
 
-        if (! ($lookup_result instanceof UpcLookupResult)) {
+        if (!($lookup_result instanceof UpcLookupResult)) {
             $state['global_error'] = __('Lookup failed for an unknown reason.', 'ffl-hub');
-            self::log_debug("[FFLHub][DistributorProductsPage] Lookup failed: unexpected return type.");
+            $this->log_debug("[FFLHub][DistributorProductsPage] Lookup failed: unexpected return type.");
             return $state;
         }
 
@@ -192,18 +199,18 @@ class DistributorProductsPage
 
         if (empty($state['offers'])) {
             $state['global_error'] = __('No products were found for this UPC in any connected distributor.', 'ffl-hub');
-            self::log_debug("[FFLHub][DistributorProductsPage] No offers found for UPC {$upc}");
+            $this->log_debug("[FFLHub][DistributorProductsPage] No offers found for UPC {$upc}");
             return $state;
         }
 
         // 6) Selection logic
-        self::select_product_for_display($state);
+        $this->select_product_for_display($state);
 
         if (! ($state['selected_product'] instanceof DistributorProductPayload)) {
             if ($state['global_error'] === '') {
                 $state['global_error'] = __('Distributors carry this UPC, but no valid product payload was found.', 'ffl-hub');
             }
-            self::log_debug("[FFLHub][DistributorProductsPage] Selection failed for UPC {$upc}: " . $state['global_error']);
+            $this->log_debug("[FFLHub][DistributorProductsPage] Selection failed for UPC {$upc}: " . $state['global_error']);
             return $state;
         }
 
@@ -214,7 +221,7 @@ class DistributorProductsPage
 
         // 8) Create Woo Product
         if ($state['global_error'] === '') {
-            $result = self::create_woo_product($upc, $state);
+            $result = $this->create_woo_product($upc, $state);
             if (is_wp_error($result)) {
                 $state['create_notice']      = $result->get_error_message();
                 $state['create_notice_type'] = 'error';
@@ -255,26 +262,37 @@ class DistributorProductsPage
     /**
      * Mutates $state: sets selected_offer/product/dist_id/dist_label.
      *
-     * Deterministic on create (honor posted_selected_dist_id if present),
-     * otherwise cheapest-in-stock then cheapest-any then first offer.
+     * Create flow is strict:
+     * - Requires a posted selected distributor id
+     * - Fails if that distributor is not in the lookup offers
+     *
+     * Search flow auto-selects cheapest-in-stock, then cheapest-any, then first offer.
      */
     private function select_product_for_display(array &$state): void
     {
         /** @var array<string, DistributorOffer> $offers */
         $offers = (array) ($state['offers'] ?? []);
 
-        if (
-            $state['action'] === 'create'
-            && $state['posted_selected_dist_id'] !== ''
-            && isset($offers[$state['posted_selected_dist_id']])
-            && ($offers[$state['posted_selected_dist_id']] instanceof DistributorOffer)
-        ) {
-            $offer = $offers[$state['posted_selected_dist_id']];
+        if ($state['action'] === 'create') {
+            $requested_dist_id = (string) ($state['posted_selected_dist_id'] ?? '');
+
+            if ($requested_dist_id === '') {
+                $state['global_error'] = __('Please select a distributor source before creating a product.', 'ffl-hub');
+                return;
+            }
+
+            $requested_offer = $offers[$requested_dist_id] ?? null;
+            if (!($requested_offer instanceof DistributorOffer)) {
+                $state['global_error'] = __('The selected distributor is no longer available for this UPC. Please search again.', 'ffl-hub');
+                return;
+            }
+
+            $offer = $requested_offer;
 
             $state['selected_offer']      = $offer;
             $state['selected_product']    = $offer->product;
             $state['selected_dist_id']    = $offer->distributor_id;
-            $state['selected_dist_label'] = $offer->label;
+            $state['selected_dist_label'] = (string) ($offer->label ?: $offer->distributor_id);
             return;
         }
 
@@ -490,27 +508,27 @@ class DistributorProductsPage
                 <div class="fflhub-product-card-pricing">
                     <p>
                         <strong><?php esc_html_e('Dealer Price:', 'ffl-hub'); ?></strong>
-                        <?php echo ' ' . esc_html(self::format_price(is_numeric($p_price) ? (float) $p_price : null)); ?>
+                        <?php echo ' ' . esc_html($this->format_price(is_numeric($p_price) ? (float) $p_price : null)); ?>
                     </p>
                     <p>
                         <strong><?php esc_html_e('MAP:', 'ffl-hub'); ?></strong>
-                        <?php echo ' ' . esc_html(self::format_price(is_numeric($p_map) ? (float) $p_map : null)); ?>
+                        <?php echo ' ' . esc_html($this->format_price(is_numeric($p_map) ? (float) $p_map : null)); ?>
                     </p>
                     <p>
                         <strong><?php esc_html_e('MSRP:', 'ffl-hub'); ?></strong>
-                        <?php echo ' ' . esc_html(self::format_price(is_numeric($p_msrp) ? (float) $p_msrp : null)); ?>
+                        <?php echo ' ' . esc_html($this->format_price(is_numeric($p_msrp) ? (float) $p_msrp : null)); ?>
                     </p>
                     <p>
                         <strong><?php esc_html_e('Shipping Cost:', 'ffl-hub'); ?></strong>
-                        <?php echo ' ' . esc_html(self::format_price(is_numeric($p_shipping) ? (float) $p_shipping : null)); ?>
+                        <?php echo ' ' . esc_html($this->format_price(is_numeric($p_shipping) ? (float) $p_shipping : null)); ?>
                     </p>
                     <p>
                         <strong><?php esc_html_e('True Cost:', 'ffl-hub'); ?></strong>
-                        <?php echo ' ' . esc_html(self::format_price(is_numeric($p_true_cost) ? (float) $p_true_cost : null)); ?>
+                        <?php echo ' ' . esc_html($this->format_price(is_numeric($p_true_cost) ? (float) $p_true_cost : null)); ?>
                     </p>
                     <p>
                         <strong><?php esc_html_e('Recommended Price:', 'ffl-hub'); ?></strong>
-                        <?php echo ' ' . esc_html(self::format_price(is_numeric($p_recommended_price) ? (float) $p_recommended_price : null)); ?>
+                        <?php echo ' ' . esc_html($this->format_price(is_numeric($p_recommended_price) ? (float) $p_recommended_price : null)); ?>
                     </p>
                 </div>
 
@@ -551,8 +569,8 @@ class DistributorProductsPage
                     </p>
                 </div>
 
-                <div class="fflhub-product-card-actions" style="margin-top: 12px;">
-                    <form method="post" style="display:inline;">
+                <div class="fflhub-product-card-actions">
+                    <form method="post" class="fflhub-inline-form">
                         <?php wp_nonce_field('fflhub_distributor_products_create'); ?>
                         <input type="hidden" name="fflhub_distributor_upc" value="<?php echo esc_attr($p_upc ?: $state['upc_value']); ?>" />
                         <input type="hidden" name="fflhub_selected_distributor" value="<?php echo esc_attr($selected_dist_id); ?>" />
@@ -600,23 +618,23 @@ class DistributorProductsPage
                         <div class="fflhub-product-carrier-metrics">
                             <span>
                                 <strong><?php esc_html_e('True Cost:', 'ffl-hub'); ?></strong>
-                                <?php echo ' ' . esc_html(self::format_price(is_numeric($tc) ? (float) $tc : null)); ?>
+                                <?php echo ' ' . esc_html($this->format_price(is_numeric($tc) ? (float) $tc : null)); ?>
                             </span>
                             <span>
                                 <strong><?php esc_html_e('Dealer:', 'ffl-hub'); ?></strong>
-                                <?php echo ' ' . esc_html(self::format_price(is_numeric($dealer) ? (float) $dealer : null)); ?>
+                                <?php echo ' ' . esc_html($this->format_price(is_numeric($dealer) ? (float) $dealer : null)); ?>
                             </span>
                             <span>
                                 <strong><?php esc_html_e('MAP:', 'ffl-hub'); ?></strong>
-                                <?php echo ' ' . esc_html(self::format_price(is_numeric($map) ? (float) $map : null)); ?>
+                                <?php echo ' ' . esc_html($this->format_price(is_numeric($map) ? (float) $map : null)); ?>
                             </span>
                             <span>
                                 <strong><?php esc_html_e('MSRP:', 'ffl-hub'); ?></strong>
-                                <?php echo ' ' . esc_html(self::format_price(is_numeric($msrp) ? (float) $msrp : null)); ?>
+                                <?php echo ' ' . esc_html($this->format_price(is_numeric($msrp) ? (float) $msrp : null)); ?>
                             </span>
                             <span>
                                 <strong><?php esc_html_e('Shipping:', 'ffl-hub'); ?></strong>
-                                <?php echo ' ' . esc_html(self::format_price(is_numeric($shipping) ? (float) $shipping : null)); ?>
+                                <?php echo ' ' . esc_html($this->format_price(is_numeric($shipping) ? (float) $shipping : null)); ?>
                             </span>
                             <span>
                                 <strong><?php esc_html_e('Qty:', 'ffl-hub'); ?></strong>
@@ -656,10 +674,6 @@ class DistributorProductsPage
 
     private function log_debug(string $message): void
     {
-        // CHANGED: gated logging (no unconditional error_log spam)
-        if (! defined('FFLHUB_ADMIN_DEBUG') || FFLHUB_ADMIN_DEBUG !== true) {
-            return;
-        }
-        error_log($message);
+        DebugLogUtil::log('FFLHUB_ADMIN_DEBUG', '[FFLHub][DistributorProductsPage]', $message);
     }
 }

@@ -10,6 +10,7 @@ if (!defined('ABSPATH')) {
 use WC_Email;
 use WC_Order;
 use FFLHub\Distributor\Models\PartialShipmentEmailContext;
+use FFLHub\Util\DebugLogUtil;
 
 /**
  * Customer email: Sent when new tracking numbers are detected for an order placement job.
@@ -47,18 +48,18 @@ final class FFLHubPartialShipment extends WC_Email
         $order_id = (int) $order_id;
 
         if (!($ctx instanceof PartialShipmentEmailContext)) {
-            error_log('[FFLHUB][Email] abort: ctx not PartialShipmentEmailContext');
+            DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHUB][Email]', 'abort: ctx not PartialShipmentEmailContext');
             return;
         }
 
         if (method_exists($ctx, 'should_send') && !$ctx->should_send()) {
-            error_log('[FFLHUB][Email] abort: ctx->should_send() = false');
+            DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHUB][Email]', 'abort: ctx->should_send() = false');
             return;
         }
 
         $order = wc_get_order($order_id);
         if (!($order instanceof WC_Order)) {
-            error_log('[FFLHUB][Email] abort: order not found');
+            DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHUB][Email]', 'abort: order not found');
             return;
         }
 
@@ -66,7 +67,7 @@ final class FFLHubPartialShipment extends WC_Email
         $this->recipient = (string) $order->get_billing_email();
 
         if (!$this->is_enabled() || !$this->get_recipient()) {
-            error_log('[FFLHUB][Email] abort: disabled or empty recipient');
+            DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHUB][Email]', 'abort: disabled or empty recipient');
             return;
         }
 

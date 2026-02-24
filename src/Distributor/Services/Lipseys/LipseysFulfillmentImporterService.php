@@ -3,6 +3,7 @@
 namespace FFLHub\Distributor\Services\Lipseys;
 
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Util\DebugLogUtil;
 
 if (! defined('ABSPATH')) {
     exit;
@@ -450,11 +451,7 @@ class LipseysFulfillmentImporterService
 
     private function log_debug(string $message): void
     {
-        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
-            return;
-        }
-
-        error_log($message);
+        DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHub][LipseysImporter]', $message);
     }
 
     private function log_memory_summary(int $mem_start): void

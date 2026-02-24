@@ -1,6 +1,8 @@
 <?php
 namespace FFLHub\Product;
 
+use FFLHub\Util\DebugLogUtil;
+
 if (! defined('ABSPATH')) {
     exit;
 }
@@ -14,6 +16,7 @@ if (! defined('ABSPATH')) {
  */
 class CategoryInstaller
 {
+    private const LOG_PREFIX = '[FFLHub][CategoryInstaller]';
 
     /**
      * Option key used to store the category path → term_id map.
@@ -37,12 +40,12 @@ class CategoryInstaller
     public static function install_default_categories(): void
     {
         if (! class_exists('WooCommerce')) {
-            error_log('[FFLHub] Category install aborted: WooCommerce not loaded.');
+            self::log('Category install aborted: WooCommerce not loaded.');
             return;
         }
 
         if (! taxonomy_exists('product_cat')) {
-            error_log('[FFLHub] Category install aborted: taxonomy "product_cat" does not exist.');
+            self::log('Category install aborted: taxonomy "product_cat" does not exist.');
             return;
         }
 
@@ -99,7 +102,7 @@ class CategoryInstaller
         $parent   = $parent_id ?: 0;
 
         if (! taxonomy_exists($taxonomy)) {
-            error_log("[FFLHub] ensure_term called but taxonomy '{$taxonomy}' does not exist.");
+            self::log("ensure_term called but taxonomy '{$taxonomy}' does not exist.");
             return 0;
         }
 
@@ -117,7 +120,7 @@ class CategoryInstaller
         $result = wp_insert_term($name, $taxonomy, $args);
 
         if (is_wp_error($result)) {
-            error_log("[FFLHub] Failed to insert term '{$name}': " . $result->get_error_message());
+            self::log("Failed to insert term '{$name}': " . $result->get_error_message());
             return 0;
         }
 
@@ -161,7 +164,7 @@ class CategoryInstaller
         $taxonomy = 'product_cat';
 
         if (! taxonomy_exists($taxonomy)) {
-            error_log('[FFLHub] get_term_ids_for_path: taxonomy "product_cat" does not exist.');
+            self::log('get_term_ids_for_path: taxonomy "product_cat" does not exist.');
             return array();
         }
 
@@ -179,13 +182,7 @@ class CategoryInstaller
             $term = term_exists($segment, $taxonomy, $parent);
 
             if (! $term) {
-                error_log(
-                    sprintf(
-                        '[FFLHub] get_term_ids_for_path: segment "%s" not found under parent %d.',
-                        $segment,
-                        $parent
-                    )
-                );
+                self::log(sprintf('get_term_ids_for_path: segment "%s" not found under parent %d.', $segment, $parent));
                 return array();
             }
 
@@ -199,9 +196,14 @@ class CategoryInstaller
         }
 
         if (empty($term_ids)) {
-            error_log('[FFLHub] get_term_ids_for_path: no term IDs resolved for path.');
+            self::log('get_term_ids_for_path: no term IDs resolved for path.');
         }
 
         return $term_ids;
+    }
+
+    private static function log(string $msg): void
+    {
+        DebugLogUtil::log('FFLHUB_ADMIN_DEBUG', self::LOG_PREFIX, $msg);
     }
 }

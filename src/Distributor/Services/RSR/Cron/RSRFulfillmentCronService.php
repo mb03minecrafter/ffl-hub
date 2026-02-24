@@ -467,11 +467,7 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
      */
     private function log_debug(string $message): void
     {
-        if (!defined(self::DEBUG_FLAG) || constant(self::DEBUG_FLAG) !== true) {
-            return;
-        }
-
-        error_log($message);
+        DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $message);
     }
 
     /**

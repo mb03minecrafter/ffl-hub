@@ -15,6 +15,7 @@ use FFLHub\Distributor\Models\DistributorShipTo;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Zanders\API\ZandersSoapCurlClient;
+use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
 use FFLHub\Distributor\Services\Zanders\ZandersServices;
 use FFLHub\FFL\Data\FFLRepository;
 use FFLHub\Util\DebugLogUtil;
@@ -1084,28 +1085,13 @@ class DistributorZanders extends DistributorBase
      */
     private function get_ftp_credentials(): ?array
     {
-        $host     = \FFLHub\Settings\Options::get_distributor_option('zanders', 'ftp_host', '');
-        $username = \FFLHub\Settings\Options::get_distributor_option('zanders', 'ftp_username', '');
-        $password = \FFLHub\Settings\Options::get_distributor_option('zanders', 'ftp_password', '');
-
-        $host     = trim((string) $host);
-        $username = trim((string) $username);
-        $password = trim((string) $password);
-
-        if ($host === '' || $username === '' || $password === '') {
-            if (defined('FFLHUB_CRON_DEBUG') && FFLHUB_CRON_DEBUG === true) {
-                error_log('[FFLHub][ZandersDistributor] Missing FTP credentials');
-            }
+        $creds = ZandersFtpCredentials::get();
+        if (!is_array($creds)) {
+            DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHub][ZandersDistributor]', 'Missing FTP credentials');
             return null;
         }
 
-        return [
-            'host'     => $host,
-            'username' => $username,
-            'password' => $password,
-            'use_ssl'  => false,
-            'port'     => 21,
-        ];
+        return $creds;
     }
 
     /** @param array<string,mixed> $ctx */

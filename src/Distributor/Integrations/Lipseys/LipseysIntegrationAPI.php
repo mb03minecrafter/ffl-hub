@@ -3,6 +3,8 @@
 
 namespace FFLHub\Distributor\Integrations\Lipseys;
 
+use FFLHub\Util\DebugLogUtil;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -621,19 +623,12 @@ final class LipseysIntegrationAPI
      */
     private static function debug_log(string $message, array $context = []): void
     {
-        // Explicit constant gate; avoids calling getenv() repeatedly in hot paths.
-        if (!defined('FFLHUB_LIPSEYS_DEBUG') || constant('FFLHUB_LIPSEYS_DEBUG') !== true) {
-            return;
-        }
-
-        $prefix = '[FFLHub Lipseys] ';
-
         if (!empty($context)) {
-            error_log($prefix . $message . ' ' . wp_json_encode($context));
+            DebugLogUtil::log_ctx('FFLHUB_LIPSEYS_DEBUG', '[FFLHub][LipseysAPI]', $message, $context);
             return;
         }
 
-        error_log($prefix . $message);
+        DebugLogUtil::log('FFLHUB_LIPSEYS_DEBUG', '[FFLHub][LipseysAPI]', $message);
     }
 
     /* --- tail helpers: keep logs safe --- */

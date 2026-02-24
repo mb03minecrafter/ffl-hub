@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace FFLHub\FFL\Parsing;
 
+use FFLHub\Util\DebugLogUtil;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -21,10 +23,10 @@ final class FFLParser
     private static function log(string $msg, array $ctx = []): void
     {
         if (!empty($ctx)) {
-            error_log(self::LOG_PREFIX . ' ' . $msg . ' ' . wp_json_encode($ctx));
+            DebugLogUtil::log_ctx('FFLHUB_ADMIN_DEBUG', self::LOG_PREFIX, $msg, $ctx);
             return;
         }
-        error_log(self::LOG_PREFIX . ' ' . $msg);
+        DebugLogUtil::log('FFLHUB_ADMIN_DEBUG', self::LOG_PREFIX, $msg);
     }
 
     /**

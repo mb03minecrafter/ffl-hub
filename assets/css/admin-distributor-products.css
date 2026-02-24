@@ -225,6 +225,14 @@
     color: #fbbf24;
 }
 
+.fflhub-product-card-actions {
+    margin-top: 12px;
+}
+
+.fflhub-inline-form {
+    display: inline;
+}
+
 /* Carriers list (Available From section) */
 .fflhub-product-carriers-list {
     margin: 14px 0 0;

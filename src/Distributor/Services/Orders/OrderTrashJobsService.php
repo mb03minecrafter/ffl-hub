@@ -5,6 +5,7 @@ namespace FFLHub\Distributor\Services\Orders;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -281,11 +282,11 @@ final class OrderTrashJobsService
 
     private function debug_error(string $op, int $order_id, \Throwable $e): void
     {
-        if (!defined('WP_DEBUG') || !WP_DEBUG) {
-            return;
-        }
-
         // One line, compact. No ctx spam.
-        error_log('[FFLHUB][OrderTrashJobs] ' . $op . ' order_id=' . $order_id . ' err=' . $e->getMessage());
+        DebugLogUtil::log(
+            'WP_DEBUG',
+            '[FFLHUB][OrderTrashJobs]',
+            $op . ' order_id=' . $order_id . ' err=' . $e->getMessage()
+        );
     }
 }

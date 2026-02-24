@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace FFLHub\Distributor\Services\Zanders\API;
 
+use FFLHub\Util\DebugLogUtil;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -576,19 +578,22 @@ final class ZandersSoapCurlClient
 
     private function dbg(string $msg, array $ctx = []): void
     {
-        if (!(defined(self::DEBUG_FLAG) && constant(self::DEBUG_FLAG))) {
+        $enabled = (defined(self::DEBUG_FLAG) && constant(self::DEBUG_FLAG));
+        if (!$enabled) {
             $env = getenv(self::DEBUG_FLAG);
             if ($env === false || $env === '' || $env === '0') {
                 return;
             }
+            $enabled = true;
         }
 
         $prefix = $this->log_prefix ?: 'FFLHUB-Zanders-SOAP';
-        $line = $prefix . ' ' . $msg;
         if (!empty($ctx)) {
-            $line .= ' ' . wp_json_encode($ctx);
+            DebugLogUtil::log_if_ctx($enabled, '[FFLHub][' . $prefix . ']', $msg, $ctx, self::DEBUG_FLAG);
+            return;
         }
-        error_log($line);
+
+        DebugLogUtil::log_if($enabled, '[FFLHub][' . $prefix . ']', $msg, self::DEBUG_FLAG);
     }
 
     private function redact_xml(string $xml): string

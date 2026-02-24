@@ -18,6 +18,7 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Checkout\Builders\CheckoutOrderRequestBuilder;
 
 use FFLHub\FFL\Tables\FFLTable;
+use FFLHub\Util\DebugLogUtil;
 
 final class CartCompliance
 {
@@ -90,7 +91,8 @@ final class CartCompliance
      */
     private static function prof_start(string $span, array $context = []): void
     {
-        if (!self::profiling_enabled()) {
+        $enabled = self::profiling_enabled();
+        if (!$enabled) {
             return;
         }
 
@@ -100,9 +102,9 @@ final class CartCompliance
         ];
 
         if (!empty($context)) {
-            error_log(self::PROFILE_PREFIX . "START {$span} " . wp_json_encode($context));
+            DebugLogUtil::log_if_ctx($enabled, self::PROFILE_PREFIX, "START {$span}", $context, self::PROFILING_ENV);
         } else {
-            error_log(self::PROFILE_PREFIX . "START {$span}");
+            DebugLogUtil::log_if($enabled, self::PROFILE_PREFIX, "START {$span}", self::PROFILING_ENV);
         }
     }
 
@@ -111,7 +113,8 @@ final class CartCompliance
      */
     private static function prof_end(string $span, array $context = []): void
     {
-        if (!self::profiling_enabled()) {
+        $enabled = self::profiling_enabled();
+        if (!$enabled) {
             return;
         }
 
@@ -130,7 +133,7 @@ final class CartCompliance
             'mem_now'   => $mem1,
         ]);
 
-        error_log(self::PROFILE_PREFIX . "END {$span} " . wp_json_encode($payload));
+        DebugLogUtil::log_if_ctx($enabled, self::PROFILE_PREFIX, "END {$span}", $payload, self::PROFILING_ENV);
 
         unset(self::$profile_spans[$span]);
     }
@@ -175,7 +178,8 @@ final class CartCompliance
      */
     private function dbg(string $event, array $payload = []): void
     {
-        if (!$this->debug_enabled()) {
+        $enabled = $this->debug_enabled();
+        if (!$enabled) {
             return;
         }
 
@@ -184,7 +188,13 @@ final class CartCompliance
             'event'  => $event,
         ];
 
-        error_log(self::DEBUG_PREFIX . wp_json_encode(array_merge($base, $payload)));
+        DebugLogUtil::log_if_ctx(
+            $enabled,
+            self::DEBUG_PREFIX,
+            'event',
+            array_merge($base, $payload),
+            self::DEBUG_ENV
+        );
     }
 
     /**

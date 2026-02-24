@@ -4,7 +4,6 @@ declare(strict_types=1);
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\FFL\Data\FFLRepository;
-use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\FFL\Parsing\FFLParser;
 use FFLHub\FFL\Tables\FFLTable;
 
@@ -29,12 +28,7 @@ final class FFLImporterPage
 
     private static function log(string $msg, array $ctx = []): void
     {
-        return; //silence the logger
-        if (!empty($ctx)) {
-            error_log(self::LOG_PREFIX . ' ' . $msg . ' ' . wp_json_encode($ctx));
-            return;
-        }
-        error_log(self::LOG_PREFIX . ' ' . $msg);
+        return; // silence the logger
     }
 
     private FFLTable $table;
@@ -64,7 +58,7 @@ final class FFLImporterPage
         self::log('register_admin_page()');
         add_submenu_page(
             'tools.php',
-            'FFL Hub – Import FFL List',
+            'FFL Hub - Import FFL List',
             'FFL Import',
             'manage_options',
             self::MENU_SLUG,
@@ -93,7 +87,7 @@ final class FFLImporterPage
         }
         ?>
         <div class="wrap">
-            <h1>FFL Hub – Import ATF FFL List</h1>
+            <h1>FFL Hub - Import ATF FFL List</h1>
 
             <p>
                 Step 1: Download the latest <strong>Complete Federal Firearms Listings</strong> CSV file
@@ -132,7 +126,7 @@ final class FFLImporterPage
                                 type="file"
                                 name="fflhub_csv_file"
                                 id="fflhub_csv_file"
-                                accept=".csv"
+                                accept=".csv,.txt"
                                 required>
                             <p class="description">
                                 Upload the CSV file you downloaded from the ATF website.
@@ -244,24 +238,29 @@ final class FFLImporterPage
         }
 
         $file = $_FILES['fflhub_csv_file'];
+        $tmp  = (string) ($file['tmp_name'] ?? '');
+        $name = sanitize_file_name((string) ($file['name'] ?? ''));
 
         self::log('upload received', [
-            'name'     => $file['name'] ?? '',
+            'name'     => $name,
             'type'     => $file['type'] ?? '',
             'size'     => $file['size'] ?? 0,
             'error'    => $file['error'] ?? null,
-            'tmp_name' => $file['tmp_name'] ?? '',
+            'tmp_name' => $tmp,
         ]);
 
-        if (!empty($file['error']) || empty($file['tmp_name'])) {
+        if (!empty($file['error']) || $tmp === '') {
             self::log('upload invalid', [
                 'error'    => $file['error'] ?? null,
-                'tmp_name' => $file['tmp_name'] ?? '',
+                'tmp_name' => $tmp,
             ]);
             $this->redirect_with_result('error', 0);
         }
 
-        $tmp = (string) $file['tmp_name'];
+        if (!$this->is_allowed_upload_extension($name)) {
+            self::log('upload extension rejected', ['name' => $name]);
+            $this->redirect_with_result('error', 0);
+        }
 
         self::log('reading tmp file', [
             'is_readable' => is_readable($tmp),
@@ -341,14 +340,22 @@ final class FFLImporterPage
         }
     }
 
+    private function is_allowed_upload_extension(string $file_name): bool
+    {
+        $ext = strtolower((string) pathinfo($file_name, PATHINFO_EXTENSION));
+        return in_array($ext, ['csv', 'txt'], true);
+    }
+
     private function redirect_with_result(string $msg, int $count): void
     {
+        $msg = in_array($msg, ['success', 'error'], true) ? $msg : 'error';
+
         self::log('redirect_with_result()', [
             'msg'   => $msg,
             'count' => $count,
         ]);
 
-        wp_redirect(
+        wp_safe_redirect(
             add_query_arg(
                 [
                     'fflhub_msg'   => $msg,

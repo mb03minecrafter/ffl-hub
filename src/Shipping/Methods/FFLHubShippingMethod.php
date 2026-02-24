@@ -3,6 +3,7 @@
 namespace FFLHub\Shipping\Methods;
 
 use FFLHub\Product\ProductMeta;
+use FFLHub\Util\DebugLogUtil;
 use WC_Shipping_Method;
 use WC_Product;
 
@@ -32,7 +33,7 @@ if (! defined('ABSPATH')) {
  *      customer_charge = S_total / (1 - f)
  *
  * DEBUG:
- * - Controlled by constant FFLHUB_SHIPPING_DEBUG (true/false).
+ * - Controlled by constant FFLHUB_DEBUG_SHIPPING (true/false).
  */
 class FFLHubShippingMethod extends WC_Shipping_Method
 {
@@ -326,10 +327,6 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
     private function log_debug(string $message): void
     {
-        if (! defined('FFLHUB_SHIPPING_DEBUG') || FFLHUB_SHIPPING_DEBUG !== true) {
-            return;
-        }
-
-        error_log($message);
+        DebugLogUtil::log('FFLHUB_DEBUG_SHIPPING', '[FFLHub][ShippingMethod]', $message);
     }
 }

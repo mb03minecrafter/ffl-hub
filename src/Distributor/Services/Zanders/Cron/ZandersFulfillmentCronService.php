@@ -10,7 +10,7 @@ use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\Zanders\ZandersFulfillmentImporterService;
-use FFLHub\Settings\Options;
+use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
 use FFLHub\Util\DebugLogUtil;
 
 /**
@@ -360,29 +360,18 @@ final class ZandersFulfillmentCronService extends AbstractTableCronService
      */
     public function get_ftp_credentials(): ?array
     {
-        $host     = Options::get_distributor_option('zanders', 'ftp_host', '');
-        $username = Options::get_distributor_option('zanders', 'ftp_username', '');
-        $password = Options::get_distributor_option('zanders', 'ftp_password', '');
+        $loaded = ZandersFtpCredentials::load();
+        $creds = $loaded['credentials'];
 
-        $host     = trim((string) $host);
-        $username = trim((string) $username);
-        $password = trim((string) $password);
-
-        if ($host === '' || $username === '' || $password === '') {
+        if (!is_array($creds)) {
             $this->log('Missing FTP credentials', [
-                'host' => $host !== '' ? 'set' : 'empty',
-                'user' => $username !== '' ? 'set' : 'empty',
+                'host' => $loaded['has_host'] ? 'set' : 'empty',
+                'user' => $loaded['has_username'] ? 'set' : 'empty',
             ]);
             return null;
         }
 
-        return [
-            'host'     => $host,
-            'username' => $username,
-            'password' => $password,
-            'use_ssl'  => false,
-            'port'     => 21,
-        ];
+        return $creds;
     }
 
     // --------------------------------------------------

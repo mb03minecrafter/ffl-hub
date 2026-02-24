@@ -30,7 +30,7 @@ final class DebugLogUtil
             return;
         }
 
-        error_log(self::format_line($prefix, $msg));
+        self::emit($prefix, $msg, $debug_constant);
     }
 
     /** @param array<string,mixed> $ctx */
@@ -41,9 +41,32 @@ final class DebugLogUtil
         }
 
         $ctx_json = self::encode_ctx($ctx);
-        $line = self::format_line($prefix, $msg . ' ' . $ctx_json);
+        self::emit($prefix, $msg . ' ' . $ctx_json, $debug_constant);
+    }
 
-        error_log($line);
+    public static function log_if(bool $enabled, string $prefix, string $msg, string $debug_constant = ''): void
+    {
+        if (!$enabled) {
+            return;
+        }
+
+        self::emit($prefix, $msg, $debug_constant);
+    }
+
+    /** @param array<string,mixed> $ctx */
+    public static function log_if_ctx(
+        bool $enabled,
+        string $prefix,
+        string $msg,
+        array $ctx,
+        string $debug_constant = ''
+    ): void {
+        if (!$enabled) {
+            return;
+        }
+
+        $ctx_json = self::encode_ctx($ctx);
+        self::emit($prefix, $msg . ' ' . $ctx_json, $debug_constant);
     }
 
     // --------------------------------------------------
@@ -68,6 +91,12 @@ final class DebugLogUtil
         $pid = function_exists('getmypid') ? (int) getmypid() : 0;
 
         return sprintf('[%s][pid:%d]%s %s', $ts, $pid, $prefix, $msg);
+    }
+
+    private static function emit(string $prefix, string $msg, string $debugConstant): void
+    {
+        $line = self::format_line($prefix, $msg);
+        DebugLogFileRouter::write($line, $prefix, $debugConstant);
     }
 
     /** @param array<string,mixed> $ctx */

@@ -836,9 +836,6 @@ class DistributorProductHelper
      */
     private static function log_debug(string $message): void
     {
-        if (!defined('FFLHUB_ADMIN_DEBUG') || FFLHUB_ADMIN_DEBUG !== true) {
-            return;
-        }
-        error_log($message);
+        DebugLogUtil::log('FFLHUB_ADMIN_DEBUG', '[FFLHub][DistributorProductHelper]', $message);
     }
 }

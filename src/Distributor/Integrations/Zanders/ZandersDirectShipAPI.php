@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace FFLHub\Distributor\Integrations\Zanders;
 
 use FFLHub\Distributor\Services\Zanders\API\ZandersSoapCurlClient;
+use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -549,17 +550,20 @@ final class ZandersDirectShipAPI
 
     private static function dbg(string $msg, array $ctx = []): void
     {
-        if (!(defined(self::DEBUG_FLAG) && constant(self::DEBUG_FLAG))) {
+        $enabled = (defined(self::DEBUG_FLAG) && constant(self::DEBUG_FLAG));
+        if (!$enabled) {
             $env = getenv(self::DEBUG_FLAG);
             if ($env === false || $env === '' || $env === '0') {
                 return;
             }
+            $enabled = true;
         }
 
-        $line = '[FFLHub][ZandersDirectShipAPI] ' . $msg;
         if (!empty($ctx)) {
-            $line .= ' ' . wp_json_encode($ctx);
+            DebugLogUtil::log_if_ctx($enabled, '[FFLHub][ZandersDirectShipAPI]', $msg, $ctx, self::DEBUG_FLAG);
+            return;
         }
-        error_log($line);
+
+        DebugLogUtil::log_if($enabled, '[FFLHub][ZandersDirectShipAPI]', $msg, self::DEBUG_FLAG);
     }
 }

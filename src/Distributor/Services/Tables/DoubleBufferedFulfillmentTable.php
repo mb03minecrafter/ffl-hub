@@ -2,6 +2,8 @@
 
 namespace FFLHub\Distributor\Services\Tables;
 
+use FFLHub\Util\DebugLogUtil;
+
 if (! defined('ABSPATH')) {
     exit;
 }
@@ -403,11 +405,7 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
 
     private function log_debug(string $message): void
     {
-        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
-            return;
-        }
-
-        error_log($message);
+        DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHub][DoubleBufferedFulfillmentTable]', $message);
     }
 
     private function log_memory_summary(int $mem_start, string $prefix = '[FFLHub][DoubleBufferedFulfillmentTable]'): void

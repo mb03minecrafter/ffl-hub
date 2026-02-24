@@ -14,6 +14,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
 
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Util\DebugLogUtil;
 // If ShippingService is not in this namespace, import the correct class:
 // use FFLHub\Distributor\Services\Orders\Shipping\ShippingService;
 
@@ -146,7 +147,11 @@ final class ShippingJobStore
 
         $job = OrderPlacementJobsRepository::get_job($jobs_table, $order_id, $job_key);
         if (!$job) {
-            error_log('[FFLHUB][ShippingJobStore] mark_job_shipped missing row order=' . $order_id . ' job=' . $job_key);
+            DebugLogUtil::log(
+                'FFLHUB_DEBUG_SHIPPING',
+                '[FFLHUB][ShippingJobStore]',
+                'mark_job_shipped missing row order=' . $order_id . ' job=' . $job_key
+            );
             return ShippingUpdateResult::empty();
         }
 
@@ -156,7 +161,11 @@ final class ShippingJobStore
         $patch = ShippingService::compute_patch($job, $shipment, $now);
 
         if (!($patch instanceof OrderPlacementJobPatch)) {
-            error_log('[FFLHUB][ShippingJobStore] compute_patch did not return OrderPlacementJobPatch order=' . $order_id . ' job=' . $job_key);
+            DebugLogUtil::log(
+                'FFLHUB_DEBUG_SHIPPING',
+                '[FFLHUB][ShippingJobStore]',
+                'compute_patch did not return OrderPlacementJobPatch order=' . $order_id . ' job=' . $job_key
+            );
             return ShippingUpdateResult::empty();
         }
 

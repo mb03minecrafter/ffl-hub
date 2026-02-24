@@ -45,42 +45,54 @@ define('FFLHUB_PLUGIN_VERSION', '1.0.0');
  *
  * NOTE: Some services read specific flags (e.g., CartCompliance uses its own).
  */
-define('FFLHUB_CRON_DEBUG', false);
-define('FFLHUB_ADMIN_DEBUG', false);
+if (!function_exists('fflhub_define_bool')) {
+    /**
+     * Define a boolean constant only when not already provided by wp-config.php.
+     */
+    function fflhub_define_bool($name, $default): void
+    {
+        if (!defined($name)) {
+            define($name, (bool) $default);
+        }
+    }
+}
 
-// Checkout / cart compliance (must preserve existing behavior).
-define('FFLHUB_CART_COMPLIANCE_DEBUG', true);
-define('FFLHUB_CART_COMPLIANCE_PROFILE', true);
+fflhub_define_bool('FFLHUB_CRON_DEBUG', true);
+fflhub_define_bool('FFLHUB_ADMIN_DEBUG', true);
+
+// Checkout / cart compliance.
+fflhub_define_bool('FFLHUB_CART_COMPLIANCE_DEBUG', true);
+fflhub_define_bool('FFLHUB_CART_COMPLIANCE_PROFILE', true);
 
 // Order placement pipeline.
-define('FFLHUB_ORDERING_DRY_RUN', false);
+fflhub_define_bool('FFLHUB_ORDERING_DRY_RUN', true);
 
 // Distributor API debugging.
-define('FFLHUB_RSR_API_DEBUG', false);
-define('FFLHUB_RSR_API_DEBUG_RAW', false);
-define('FFLHUB_LIPSEYS_DEBUG', false);
+fflhub_define_bool('FFLHUB_RSR_API_DEBUG', true);
+fflhub_define_bool('FFLHUB_RSR_API_DEBUG_RAW', true);
+fflhub_define_bool('FFLHUB_LIPSEYS_DEBUG', true);
 
 
 
 // Order orchestration / state machine.
-define('FFLHUB_PLACE_ORCH_DEBUG', false);
-define('FFLHUB_DEBUG_PLACE_DISPATCH', false);
-define('FFLHUB_STATE_MACHINE_DEBUG', false);
-define('FFLHUB_PLACE_ORDER_JOB_RUNNER_DEBUG', false);
-define('FFLHUB_TRASH_ORDER_JOBS_DEBUG', false);
+fflhub_define_bool('FFLHUB_PLACE_ORCH_DEBUG', true);
+fflhub_define_bool('FFLHUB_DEBUG_PLACE_DISPATCH', true);
+fflhub_define_bool('FFLHUB_STATE_MACHINE_DEBUG', true);
+fflhub_define_bool('FFLHUB_PLACE_ORDER_JOB_RUNNER_DEBUG', true);
+fflhub_define_bool('FFLHUB_TRASH_ORDER_JOBS_DEBUG', true);
 
 // Shipping / tracking.
-define('FFLHUB_DEBUG_SHIPPING', false);
+fflhub_define_bool('FFLHUB_DEBUG_SHIPPING', true);
 
 
 //init profiling
-define('FFLHUB_DEBUG_BOOT', false);
+fflhub_define_bool('FFLHUB_DEBUG_BOOT', true);
 
 
 
-define('FFLHUB_ZANDERS_TESTING', false);
-define('FFLHUB_ZANDERS_SOAP_DEBUG', true);
-define('FFLHUB_ZANDERS_DEBUG', true);
+fflhub_define_bool('FFLHUB_ZANDERS_TESTING', true);
+fflhub_define_bool('FFLHUB_ZANDERS_SOAP_DEBUG', true);
+fflhub_define_bool('FFLHUB_ZANDERS_DEBUG', true);
 
 /**
  * -------------------------------------------------------------------------
@@ -93,7 +105,7 @@ define('FFLHUB_ZANDERS_DEBUG', true);
 add_action('init', function (): void {
     load_plugin_textdomain('ffl-hub', false, dirname(plugin_basename(__FILE__)) . '/languages');
 
-    // Ensure checkout phone field is required for downstream distributor needs.
+    // Ensure checkout phone field is required for downstream distributor needs. This was the only way I could get it to force requirement 
     if (get_option('woocommerce_checkout_phone_field') !== 'required') {
         update_option('woocommerce_checkout_phone_field', 'required');
     }

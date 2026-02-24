@@ -4,6 +4,7 @@ namespace FFLHub\Distributor\Services\RSR;
 
 use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentSchema;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Util\DebugLogUtil;
 
 if (! defined('ABSPATH')) {
     exit;
@@ -469,10 +470,6 @@ class RSRFulfillmentImporterService
 
     private function log_debug(string $message): void
     {
-        if (! defined('FFLHUB_CRON_DEBUG') || FFLHUB_CRON_DEBUG !== true) {
-            return;
-        }
-
-        error_log($message);
+        DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHub][RSRImporter]', $message);
     }
 }

@@ -4,6 +4,7 @@ namespace FFLHub\Admin\ProductMeta;
 
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Product\ProductMeta;
+use FFLHub\Util\DebugLogUtil;
 use WC_Product;
 use WP_Post;
 
@@ -305,7 +306,13 @@ class ProductMetaBox
         // Optional debug
         $product = wc_get_product($post_id);
         if ($product) {
-            error_log('AFTER PRICING: regular=' . $product->get_regular_price() . ' price=' . $product->get_price() . ' sale=' . $product->get_sale_price());
+            DebugLogUtil::log(
+                'FFLHUB_ADMIN_DEBUG',
+                '[FFLHub][ProductMetaBox]',
+                'AFTER PRICING: regular=' . $product->get_regular_price()
+                    . ' price=' . $product->get_price()
+                    . ' sale=' . $product->get_sale_price()
+            );
         }
     }
 }

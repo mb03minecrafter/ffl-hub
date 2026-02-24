@@ -6,7 +6,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-use FFLHub\Plugin;
+use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Settings\Options;
 use FFLHub\Distributor\Core\DistributorRegistry;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
@@ -20,6 +20,12 @@ class AdminPage
      * Slug of the settings page (used by the top-level FFL Hub menu).
      */
     private const PAGE_SLUG = 'ffl-hub-settings';
+    private DistributorHandler $handler;
+
+    public function __construct(DistributorHandler $handler)
+    {
+        $this->handler = $handler;
+    }
 
     /**
      * Get the slug of the settings page so subpages can attach to it.
@@ -32,29 +38,26 @@ class AdminPage
     /**
      * Initialize hooks for the main FFL Hub admin page.
      */
-    public static function init(): void
+    public function register(): void
     {
         // Register the top-level FFL Hub menu.
-        add_action('admin_menu', [__CLASS__, 'register_menu_page']);
+        add_action('admin_menu', [$this, 'register_menu_page']);
 
         // Enqueue assets for the FFL Hub settings page.
-        add_action('admin_enqueue_scripts', [__CLASS__, 'enqueue_assets']);
+        add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
 
-        // Register global settings.
-        add_action('admin_init', [__CLASS__, 'register_global_settings']);
-
-        // Register distributor settings.
-        add_action('admin_init', [__CLASS__, 'register_distributor_settings']);
+        // Settings registration is owned by SettingsRegistrar.
+        // This page handles UI rendering + admin actions only.
 
         // Handle enable/disable distributor actions.
-        add_action('admin_post_fflhub_toggle_distributor', [__CLASS__, 'handle_toggle_distributor']);
+        add_action('admin_post_fflhub_toggle_distributor', [$this, 'handle_toggle_distributor']);
     }
 
 
     /**
      * Enqueue CSS/JS only on our FFL Hub settings page.
      */
-    public static function enqueue_assets(string $hook): void
+    public function enqueue_assets(string $hook): void
     {
         if ($hook !== 'toplevel_page_' . self::PAGE_SLUG) {
             return;
@@ -81,7 +84,7 @@ class AdminPage
     /**
      * Plugin's main page renderer, wired to the menu callback.
      */
-    public static function render_page(): void
+    public function render_page(): void
     {
         if (! current_user_can('manage_options')) {
             wp_die(esc_html__('You do not have permission to access this page.', 'ffl-hub'));
@@ -97,90 +100,23 @@ class AdminPage
     /**
      * Register the top-level "FFL Hub" menu item.
      */
-    public static function register_menu_page(): void
+    public function register_menu_page(): void
     {
         add_menu_page(
             __('FFL Hub Settings', 'ffl-hub'),
             __('FFL Hub', 'ffl-hub'),
             'manage_options',
             self::PAGE_SLUG,
-            [__CLASS__, 'render_page'],
+            [$this, 'render_page'],
             'dashicons-admin-generic',
             56
         );
     }
 
     /**
-     * Register global FFL Hub settings (non-distributor-specific),
-     * including the payment processor percent fee and global markup.
-     */
-    public static function register_global_settings(): void
-    {
-        // Single source of truth for group + option names + defaults.
-        $settings_group = Options::global_settings_group();
-
-        register_setting(
-            $settings_group,
-            Options::OPTION_PAYMENT_PROCESSOR_FEE_PERCENT,
-            [
-                'type'              => 'string',
-                'sanitize_callback' => [__CLASS__, 'sanitize_payment_processor_fee_percent'],
-                'default'           => (string) Options::default_payment_processor_fee_percent(),
-            ]
-        );
-
-        register_setting(
-            $settings_group,
-            Options::OPTION_GLOBAL_MARKUP,
-            [
-                'type'              => 'string',
-                'sanitize_callback' => [__CLASS__, 'sanitize_payment_processor_fee_percent'],
-                'default'           => (string) Options::default_global_markup(),
-            ]
-        );
-    }
-
-    /**
-     * Register settings for all distributors using their MODULE schema.
-     *
-     * This is your "Settings Registrar" behavior, but module-driven:
-     * - Never depends on runtime distributor instances
-     * - Registers even if a distributor is disabled
-     *
-     * Option naming convention:
-     *  - group:       fflhub_{id}_settings_group
-     *  - option_name: fflhub_{id}_{key}
-     */
-    public static function register_distributor_settings(): void
-    {
-        $modules = DistributorRegistry::get_modules();
-
-        foreach ($modules as $module) {
-            if (! ($module instanceof DistributorModuleInterface)) {
-                continue;
-            }
-
-            $fields = $module->settings_schema();
-            if (empty($fields) || ! is_array($fields)) {
-                continue;
-            }
-
-            $id    = $module->id();
-            $group = Options::distributor_settings_group($id);
-
-            foreach ($fields as $key => $field) {
-                $option_name = Options::distributor_option_name($id, $key);
-
-                // Simple registration; can extend with per-field sanitizers later.
-                register_setting($group, $option_name);
-            }
-        }
-    }
-
-    /**
      * Handle enable/disable distributor actions (from modal).
      */
-    public static function handle_toggle_distributor(): void
+    public function handle_toggle_distributor(): void
     {
         if (! current_user_can('manage_options')) {
             wp_die(esc_html__('You do not have permission to perform this action.', 'ffl-hub'));
@@ -196,20 +132,13 @@ class AdminPage
 
         check_admin_referer('fflhub_toggle_distributor_' . $id);
 
-        $enable_flag = isset($_POST['enable']) ? (string) $_POST['enable'] : '0';
+        $enable_flag = isset($_POST['enable'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['enable']))
+            : '0';
         $enabled     = ($enable_flag === '1');
 
         // Centralize behavior in the handler so disabling halts cron/services.
-        $plugin  = Plugin::instance();
-        $handler = $plugin->distributor_handler ?? null;
-
-        if ($handler) {
-            // This method should persist enabled state AND start/stop services.
-            $handler->set_enabled($id, $enabled);
-        } else {
-            // Fallback.
-            Options::set_distributor_enabled($id, $enabled);
-        }
+        $this->handler->set_enabled($id, $enabled);
 
         $redirect = add_query_arg(
             [
@@ -222,20 +151,6 @@ class AdminPage
         wp_safe_redirect($redirect);
         exit;
     }
-
-    /**
-     * Sanitize numeric percent fields (payment fee, markup, etc.).
-     *
-     * @param mixed $value Raw value from the form.
-     * @return string
-     */
-    public static function sanitize_payment_processor_fee_percent($value): string
-    {
-        $value = preg_replace('/[^0-9.]/', '', (string) $value);
-        return (string) (float) $value;
-    }
-
-
 
     /**
      * Entry point used internally once we have the modules.
@@ -517,12 +432,13 @@ class AdminPage
                     <tbody>
                         <?php foreach ($fields as $key => $field) :
                             $option_name = Options::distributor_option_name($id, $key);
-                            $type        = $field['type'] ?? 'text';
+                            $type        = isset($field['type']) ? strtolower((string) $field['type']) : 'text';
                             $label       = $field['label'] ?? $key;
                             $placeholder = $field['placeholder'] ?? '';
                             $desc        = $field['description'] ?? '';
                             $default     = isset($field['default']) ? (string) $field['default'] : '';
                             $value       = Options::get_distributor_option($id, $key, $default);
+                            $options     = isset($field['options']) && is_array($field['options']) ? $field['options'] : [];
 
                         ?>
                             <tr>
@@ -532,13 +448,49 @@ class AdminPage
                                     </label>
                                 </th>
                                 <td>
-                                    <input
-                                        type="<?php echo esc_attr($type); ?>"
-                                        id="<?php echo esc_attr($option_name); ?>"
-                                        name="<?php echo esc_attr($option_name); ?>"
-                                        value="<?php echo esc_attr($value); ?>"
-                                        placeholder="<?php echo esc_attr($placeholder); ?>"
-                                        class="regular-text" />
+                                    <?php if ($type === 'textarea') : ?>
+                                        <textarea
+                                            id="<?php echo esc_attr($option_name); ?>"
+                                            name="<?php echo esc_attr($option_name); ?>"
+                                            placeholder="<?php echo esc_attr($placeholder); ?>"
+                                            class="large-text"
+                                            rows="4"><?php echo esc_textarea((string) $value); ?></textarea>
+                                    <?php elseif ($type === 'select' && !empty($options)) : ?>
+                                        <select
+                                            id="<?php echo esc_attr($option_name); ?>"
+                                            name="<?php echo esc_attr($option_name); ?>"
+                                            class="regular-text">
+                                            <?php foreach ($options as $opt_key => $opt_label) :
+                                                $option_value = is_string($opt_key) ? $opt_key : (string) $opt_label;
+                                                $option_label = is_scalar($opt_label) ? (string) $opt_label : $option_value;
+                                            ?>
+                                                <option value="<?php echo esc_attr($option_value); ?>" <?php selected((string) $value, $option_value); ?>>
+                                                    <?php echo esc_html($option_label); ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    <?php elseif ($type === 'checkbox') : ?>
+                                        <input type="hidden" name="<?php echo esc_attr($option_name); ?>" value="0" />
+                                        <input
+                                            type="checkbox"
+                                            id="<?php echo esc_attr($option_name); ?>"
+                                            name="<?php echo esc_attr($option_name); ?>"
+                                            value="1"
+                                            <?php checked((string) $value, '1'); ?> />
+                                    <?php else : ?>
+                                        <?php
+                                        $input_type = in_array($type, ['text', 'password', 'number', 'email', 'url'], true)
+                                            ? $type
+                                            : 'text';
+                                        ?>
+                                        <input
+                                            type="<?php echo esc_attr($input_type); ?>"
+                                            id="<?php echo esc_attr($option_name); ?>"
+                                            name="<?php echo esc_attr($option_name); ?>"
+                                            value="<?php echo esc_attr((string) $value); ?>"
+                                            placeholder="<?php echo esc_attr($placeholder); ?>"
+                                            class="regular-text" />
+                                    <?php endif; ?>
                                     <?php if ($desc) : ?>
                                         <p class="description"><?php echo esc_html($desc); ?></p>
                                     <?php endif; ?>
