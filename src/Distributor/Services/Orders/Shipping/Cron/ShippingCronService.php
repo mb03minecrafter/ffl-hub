@@ -36,7 +36,7 @@ final class ShippingCronService extends AbstractCronService
 
     public const CRON_HOOK = 'fflhub_place_shipping_poll';
 
-    private const JOB_MIN_POLL_INTERVAL_MINUTES = 0;
+    private const JOB_MIN_POLL_INTERVAL_MINUTES = 60;
     private const BATCH_LIMIT = 50;
     private const MAX_DAYS_AFTER_FIRST_SHIP = 14;
 
