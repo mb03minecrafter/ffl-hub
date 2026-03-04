@@ -94,6 +94,23 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         ];
     }
 
+    public function is_available($package): bool
+    {
+        if (! parent::is_available($package)) {
+            return false;
+        }
+
+        $package_type = isset($package['fflhub_package_type']) ? (string) $package['fflhub_package_type'] : '';
+        if ($package_type === 'external') {
+            return false;
+        }
+        if ($package_type === 'fflhub') {
+            return true;
+        }
+
+        return $this->package_has_fflhub_items($package);
+    }
+
     public function calculate_shipping($package = []): void
     {
         $t0 = microtime(true);
@@ -155,7 +172,13 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             // Distributor id (grouping key)
             $dist_id = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
             if ($dist_id === '') {
-                $dist_id = 'unknown';
+                $this->log_debug(
+                    sprintf(
+                        '[FFLHub][Shipping] SKIP item product_id=%d non-FFLHub product',
+                        $product_id
+                    )
+                );
+                continue;
             }
 
             // FFL bucket?
@@ -328,5 +351,22 @@ class FFLHubShippingMethod extends WC_Shipping_Method
     private function log_debug(string $message): void
     {
         DebugLogUtil::log('FFLHUB_DEBUG_SHIPPING', '[FFLHub][ShippingMethod]', $message);
+    }
+
+    private function package_has_fflhub_items($package): bool
+    {
+        foreach (($package['contents'] ?? []) as $item) {
+            $product = $item['data'] ?? null;
+            if (! $product instanceof WC_Product) {
+                continue;
+            }
+
+            $dist_id = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
+            if ($dist_id !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
