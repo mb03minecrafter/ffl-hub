@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
+use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
 use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
 use FFLHub\Util\DebugLogUtil;
@@ -139,34 +140,21 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         ]);
 
         // ---------------------------------------------------------------------
-        // FTP connect throttle (skip FTP entirely to avoid handshake cost)
+        // FTP freshness gate (pre-connect throttle/cooldown)
         // ---------------------------------------------------------------------
-        $now = time();
+        $pre_gate = FTPFreshnessGate::evaluate_pre_connect(
+            self::OPT_LAST_CHECKED_AT,
+            'fflhub_zanders_qty_last_applied_mtime',
+            self::FTP_MIN_CHECK_GAP_SECONDS,
+            self::FTP_COOLDOWN_SECONDS,
+            self::FORCE_UPDATE
+        );
 
-        $last_checked_at = (int) get_option(self::OPT_LAST_CHECKED_AT, 0);
-        if (!self::FORCE_UPDATE && $last_checked_at > 0 && ($now - $last_checked_at) < self::FTP_MIN_CHECK_GAP_SECONDS) {
-            $this->log('FTP check throttled (recently checked) — skipping connect', [
-                'last_checked_at' => $last_checked_at,
-                'age_sec'         => (int) ($now - $last_checked_at),
-                'min_gap_sec'     => (int) self::FTP_MIN_CHECK_GAP_SECONDS,
-            ]);
-            $this->finalize_run($t_start, $mem_start, 'SUCCESS (throttle; recent check)');
+        if ((bool) $pre_gate['skip']) {
+            $this->log((string) $pre_gate['log_message'], (array) $pre_gate['log_context']);
+            $this->finalize_run($t_start, $mem_start, (string) $pre_gate['status']);
             return;
         }
-
-        $last_applied_mtime = (int) get_option('fflhub_zanders_qty_last_applied_mtime', 0);
-        if (!self::FORCE_UPDATE && $last_applied_mtime > 0 && $now < ($last_applied_mtime + self::FTP_COOLDOWN_SECONDS)) {
-            $this->log('Cooldown after last applied change — skipping FTP connect', [
-                'last_applied_mtime' => $last_applied_mtime,
-                'cooldown_sec'       => (int) self::FTP_COOLDOWN_SECONDS,
-                'skip_for_sec'       => (int) (($last_applied_mtime + self::FTP_COOLDOWN_SECONDS) - $now),
-            ]);
-            $this->finalize_run($t_start, $mem_start, 'SUCCESS (cooldown)');
-            return;
-        }
-
-        update_option(self::OPT_LAST_CHECKED_AT, $now, false);
-
         // 2) FTP connect
         $t_ftp = microtime(true);
 
@@ -195,59 +183,29 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             return;
         }
 
-        // 3) Remote meta gate (mtime first; SIZE only if changed)
+        // 3) FTP freshness gate (remote mtime/size)
         $t_meta = microtime(true);
-
-        $remote_mtime       = (int) ($ftp->get_remote_mtime($remote_path) ?? 0);
         $last_applied_mtime = (int) get_option('fflhub_zanders_qty_last_applied_mtime', 0);
+        $meta_gate          = FTPFreshnessGate::evaluate_remote_meta(
+            $ftp,
+            $remote_path,
+            'fflhub_zanders_qty_last_seen_mtime',
+            'fflhub_zanders_qty_last_seen_size',
+            $last_applied_mtime,
+            self::FORCE_UPDATE,
+            250000,
+            'No update available (remote mtime unchanged) - skipping download/apply'
+        );
 
-        update_option('fflhub_zanders_qty_last_seen_mtime', $remote_mtime);
+        $this->profile((string) $meta_gate['profile_label'], $t_meta, (array) $meta_gate['profile_context']);
 
-        if (!self::FORCE_UPDATE && $remote_mtime > 0 && $remote_mtime <= $last_applied_mtime) {
-            $this->profile('FTP meta check (mtime only)', $t_meta, [
-                'remote_mtime'       => $remote_mtime,
-                'last_applied_mtime' => $last_applied_mtime > 0 ? $last_applied_mtime : null,
-                'changed'            => 0,
-                'size_checked'       => 0,
-            ]);
+        $remote_mtime = (int) $meta_gate['remote_mtime'];
 
-            $this->log('No update available (remote mtime unchanged) — skipping download/apply', [
-                'remote_mtime'       => $remote_mtime,
-                'last_applied_mtime' => $last_applied_mtime,
-            ]);
-
-            $this->finalize_run($t_start, $mem_start, 'SUCCESS (no change)');
+        if ((bool) $meta_gate['skip']) {
+            $this->log((string) $meta_gate['log_message'], (array) $meta_gate['log_context']);
+            $this->finalize_run($t_start, $mem_start, (string) $meta_gate['status']);
             return;
         }
-
-        $remote_size = (int) ($ftp->get_remote_size($remote_path) ?? -1);
-        if ($remote_size >= 0) {
-            update_option('fflhub_zanders_qty_last_seen_size', $remote_size);
-        }
-
-        $this->profile('FTP meta check (mtime/size)', $t_meta, [
-            'remote_mtime'       => $remote_mtime > 0 ? $remote_mtime : null,
-            'remote_size_bytes'  => $remote_size >= 0 ? $remote_size : null,
-            'last_applied_mtime' => $last_applied_mtime > 0 ? $last_applied_mtime : null,
-            'changed'            => ($remote_mtime > 0 && $remote_mtime > $last_applied_mtime) ? 1 : 0,
-            'size_checked'       => 1,
-        ]);
-
-        // Optional stability guard: ensure file isn't mid-write
-        if ($remote_mtime > 0 && $remote_mtime > $last_applied_mtime && $remote_size >= 0) {
-            usleep(250000);
-            $remote_size2 = (int) ($ftp->get_remote_size($remote_path) ?? -1);
-            if ($remote_size2 >= 0 && $remote_size2 !== $remote_size) {
-                $this->log('Remote file still changing (size unstable) — deferring', [
-                    'size1'        => $remote_size,
-                    'size2'        => $remote_size2,
-                    'remote_mtime' => $remote_mtime,
-                ]);
-                $this->finalize_run($t_start, $mem_start, 'SUCCESS (defer; unstable remote file)');
-                return;
-            }
-        }
-
         // 4) Download
         $t_download = microtime(true);
 
