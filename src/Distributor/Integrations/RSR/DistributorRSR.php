@@ -29,24 +29,49 @@ if (! defined('ABSPATH')) {
  */
 class DistributorRSR extends DistributorBase
 {
+    private const BASE_SHIPPING_COST = 15.0;
+    private const ADULT_SIGNATURE_SURCHARGE = 5.0;
+
     public function __construct(DistributorModuleInterface $module, ?RSRServices $services = null)
     {
         parent::__construct($module, $services);
     }
 
-    public function get_product_by_upc(string $upc): ?DistributorProductPayload
+    /**
+     * @return array<string,mixed>|null
+     */
+    private function get_fulfillment_row_by_upc(string $upc, ?string &$normalized_upc = null): ?array
     {
         if (! $this->services) {
             return null;
         }
 
-        $normalized_upc = $this->normalize_upc($upc);
-        if ($normalized_upc === null) {
+        $normalized = $this->normalize_upc($upc);
+        if ($normalized === null) {
             return null;
         }
 
-        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized);
         if (! $row) {
+            return null;
+        }
+        if (! is_array($row)) {
+            if (! is_object($row)) {
+                return null;
+            }
+            $row = get_object_vars($row);
+        }
+
+        $normalized_upc = $normalized;
+
+        return $row;
+    }
+
+    public function get_product_by_upc(string $upc): ?DistributorProductPayload
+    {
+        $normalized_upc = null;
+        $row = $this->get_fulfillment_row_by_upc($upc, $normalized_upc);
+        if ($row === null || $normalized_upc === null) {
             return null;
         }
 
@@ -87,17 +112,9 @@ class DistributorRSR extends DistributorBase
 
     public function get_pricing_payload_by_upc(string $upc): ?DistributorProductPayload
     {
-        if (! $this->services) {
-            return null;
-        }
-
-        $normalized_upc = $this->normalize_upc($upc);
-        if ($normalized_upc === null) {
-            return null;
-        }
-
-        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
-        if (! $row) {
+        $normalized_upc = null;
+        $row = $this->get_fulfillment_row_by_upc($upc, $normalized_upc);
+        if ($row === null || $normalized_upc === null) {
             return null;
         }
 
@@ -127,25 +144,16 @@ class DistributorRSR extends DistributorBase
 
     public function get_shipping_cost_by_upc(string $upc): ?float
     {
-        if (! $this->services) {
+        $product = $this->get_fulfillment_row_by_upc($upc);
+        if ($product === null) {
             return null;
         }
 
-        $cost = 15.0;
-
-        $normalized_upc = $this->normalize_upc($upc);
-        if ($normalized_upc === null) {
-            return null;
-        }
-
-        $product = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
-        if (! $product) {
-            return null;
-        }
+        $cost = self::BASE_SHIPPING_COST;
 
         $requires_signature = $this->get_bool_field($product, ['adult_sig_required']);
         if ($requires_signature === true) {
-            $cost += 5.0;
+            $cost += self::ADULT_SIGNATURE_SURCHARGE;
         }
 
         return $cost;
@@ -541,7 +549,7 @@ class DistributorRSR extends DistributorBase
         $shipping_service = null;
 
 
-        // Tracking sentinels we should NOT treat as real tracking numbers, this is because RSR is dumb and shows we shipped even if the tracking number is only pending... dumb
+        // Tracking sentinels we should NOT treat as real tracking numbers because RSR can mark shipped before final tracking is assigned.
         $bad_tracking = [
             'pending',
             'tbd',

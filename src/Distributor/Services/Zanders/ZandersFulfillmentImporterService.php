@@ -433,19 +433,11 @@ class ZandersFulfillmentImporterService
             return 0;
         }
 
-        // Normalize header keys for mapping.
-        $header_map = [];
-        foreach ($header as $idx => $name) {
-            $k = strtolower(trim((string) $name));
-            if ($k !== '') {
-                // Strip UTF-8 BOM if it ever appears on first header cell
-                $k = (string) preg_replace('/^\xEF\xBB\xBF/', '', $k);
-                $header_map[$k] = (int) $idx;
-            }
-        }
+        $parser = new ZandersFulfillmentParser();
+        $header_map = $parser->build_header_map($header);
 
         // Required columns for us to do anything useful.
-        if (!isset($header_map['upc']) || !isset($header_map['itemnumber'])) {
+        if (!$parser->has_required_columns($header_map)) {
             fclose($handle);
             $this->log_debug('[FFLHub][Zanders Import] header missing required columns upc/itemnumber');
             return 0;
@@ -454,7 +446,6 @@ class ZandersFulfillmentImporterService
         $batch_size          = 1000;
         $batch_rows          = [];
         $total_import        = 0;
-        $line_number         = 1; // already consumed header
         $skipped_missing_upc = 0;
 
         $skipped_restricted_mfr = 0;
@@ -468,114 +459,6 @@ class ZandersFulfillmentImporterService
 
         $row_placeholder = '(' . implode(', ', array_fill(0, $num_cols, '%s')) . ')';
         $insert_prefix   = 'INSERT INTO ' . $table_name . ' (' . $column_list . ') VALUES ';
-
-        $to_bool = static function ($v): string {
-            $v = strtoupper(trim((string) $v));
-            return in_array($v, ['YES', 'Y', '1', 'TRUE', 'T'], true) ? '1' : '0';
-        };
-
-        /**
-         * Shared hard-normalize (match LOAD DATA trimming intent).
-         * Note: fgetcsv already unquotes.
-         */
-        $norm = static function ($val): string {
-            if ($val === null) {
-                return '';
-            }
-            $val = (string) $val;
-
-            // Remove BOM if it sneaks into data
-            $val = (string) preg_replace('/^\xEF\xBB\xBF/', '', $val);
-
-            // Trim whitespace + CR/LF
-            $val = trim($val);
-            $val = trim($val, "\r\n");
-
-            return $val;
-        };
-
-        $get = static function (array $row, array $map, string $key) use ($norm): string {
-            if (!isset($map[$key])) {
-                return '';
-            }
-            $idx = (int) $map[$key];
-            return $norm($row[$idx] ?? '');
-        };
-
-        /**
-         * Blank/"" => 0 (match LOAD DATA CASE)
-         */
-        $blank_to_zero = static function (string $v): string {
-            $v = trim($v);
-            if ($v === '' || $v === '""') {
-                return '0';
-            }
-            return $v;
-        };
-
-        /**
-         * Decimal normalize for shipping_weight (DECIMAL(10,2) or NULL).
-         * Accepts blank/"" => NULL.
-         */
-        $to_decimal_or_null = static function (string $v): ?string {
-            $v = trim($v);
-            if ($v === '' || $v === '""') {
-                return null;
-            }
-
-            // Keep digits, dot, minus only; if it collapses to empty, return null.
-            $clean = preg_replace('/[^0-9\.\-]/', '', $v);
-            $clean = trim((string) $clean);
-
-            if ($clean === '' || $clean === '-' || $clean === '.' || $clean === '-.') {
-                return null;
-            }
-
-            // Format to 2 decimals to match DECIMAL(10,2)
-            return number_format((float) $clean, 2, '.', '');
-        };
-
-        /**
-         * Deduce compliance flags from category/item_type.
-         */
-        $deduce_ffl = static function (string $category): string {
-            $c = strtoupper(trim($category));
-            return in_array(
-                $c,
-                [
-                    'PISTOL',
-                    'REVOLVER',
-                    'RIFLE',
-                    'SHOTGUN',
-                    'OTHER FIREARMS',
-                    'RECEIVER',
-                    'PISTOL FRAMES',
-                    'DS SUPPRESSORS',
-                ],
-                true
-            ) ? '1' : '0';
-        };
-
-        $deduce_sot = static function (string $category): string {
-            $c = strtoupper(trim($category));
-            return in_array($c, ['DS SUPPRESSORS'], true) ? '1' : '0';
-        };
-
-        /**
-         * Combine desc1 + desc2 into product_description (single space between if both present).
-         */
-        $combine_desc = static function (string $d1, string $d2): string {
-            $d1 = trim($d1);
-            $d2 = trim($d2);
-
-            if ($d1 === '') {
-                return $d2;
-            }
-            if ($d2 === '') {
-                return $d1;
-            }
-            return $d1 . ' ' . $d2;
-        };
 
         $flush_batch = function () use (
             &$batch_rows,
@@ -622,67 +505,27 @@ class ZandersFulfillmentImporterService
         };
 
         while (($csv = fgetcsv($handle, 0, ',', '"', '\\')) !== false) {
-            $line_number++;
+            $t0 = microtime(true);
 
-            // Skip completely empty lines (Zanders sometimes has them)
-            if ($csv === [null] || $csv === false || count($csv) < 5) {
+            $row = $parser->parse_csv_row($csv, $header_map);
+            if ($row === null) {
+                $t_parse_total += (microtime(true) - $t0);
                 continue;
             }
 
-            $t0 = microtime(true);
-
-            $upc  = $get($csv, $header_map, 'upc');
-            $item = $get($csv, $header_map, 'itemnumber');
-
-            // UPC must exist
+            $upc = isset($row['upc']) ? trim((string) $row['upc']) : '';
             if ($upc === '' || strcasecmp($upc, 'null') === 0) {
                 $skipped_missing_upc++;
                 $t_parse_total += (microtime(true) - $t0);
                 continue;
             }
 
-            $manufacturer = $get($csv, $header_map, 'manufacturer');
-
-            // Skip restricted manufacturers BEFORE we build/insert.
+            $manufacturer = isset($row['manufacturer']) ? trim((string) $row['manufacturer']) : '';
             if ($this->is_restricted_drop_ship_manufacturer($manufacturer)) {
                 $skipped_restricted_mfr++;
                 $t_parse_total += (microtime(true) - $t0);
                 continue;
             }
-
-            $category = $get($csv, $header_map, 'category');
-            $desc1    = $get($csv, $header_map, 'desc1');
-            $desc2    = $get($csv, $header_map, 'desc2');
-
-            $row = [
-                'upc'                 => $upc,
-                'zanders_item_number' => $item,
-
-                'inventory_quantity' => $blank_to_zero($get($csv, $header_map, 'available')),
-                'allocation_status'  => '',
-
-                'distributor_price' => $get($csv, $header_map, 'price1'),
-                'retail_map'        => $blank_to_zero($get($csv, $header_map, 'mapprice')),
-                'retail_msrp'       => $get($csv, $header_map, 'msrp'),
-
-                'product_description' => $combine_desc($desc1, $desc2),
-                'item_type'           => $category,
-                'manufacturer'        => $manufacturer,
-                'mfg_model_number'    => $get($csv, $header_map, 'mfgpnumber'),
-
-                'shipping_weight' => $to_decimal_or_null($get($csv, $header_map, 'weight')),
-
-                'price_2'    => $get($csv, $header_map, 'price2'),
-                'price_3'    => $get($csv, $header_map, 'price3'),
-                'bulk_qty_1' => $get($csv, $header_map, 'qty1'),
-                'bulk_qty_2' => $get($csv, $header_map, 'qty2'),
-                'bulk_qty_3' => $get($csv, $header_map, 'qty3'),
-
-                'ffl_required' => $deduce_ffl($category),
-                'sot_required' => $deduce_sot($category),
-
-                'serialized' => $to_bool($get($csv, $header_map, 'serialized')),
-            ];
 
             $batch_rows[] = $row;
 

@@ -20,7 +20,6 @@ use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\DistributorShipTo;
-use FFLHub\Util\DebugLogUtil;
 
 /**
  * Lipsey's distributor implementation (runtime behavior).
@@ -47,6 +46,8 @@ use FFLHub\Util\DebugLogUtil;
  */
 class DistributorLipseys extends DistributorBase
 {
+    private const FLAT_SHIPPING_COST = 10.0;
+
     /**
      * ValidateItem caching:
      * - Avoid spamming Lipsey's API during a single burst of checkouts.
@@ -59,16 +60,6 @@ class DistributorLipseys extends DistributorBase
      * triggering dozens/hundreds of remote calls in a single request.
      */
     private const VALIDATEITEM_MAX_UNIQUE_ITEMS = 50;
-
-    /**
-     * Toggle Lipsey's debug logs.
-     *
-     * Enable by setting:
-     *   define('FFLHUB_LIPSEYS_DEBUG', true);
-     * in wp-config.php, OR env var:
-     *   FFLHUB_LIPSEYS_DEBUG=1
-     */
-    private const DEBUG_CONST = 'FFLHUB_LIPSEYS_DEBUG';
 
     public function __construct(DistributorModuleInterface $module, ?LipseysServices $services = null)
     {
@@ -155,7 +146,7 @@ class DistributorLipseys extends DistributorBase
             return null;
         }
 
-        return 10.0;
+        return self::FLAT_SHIPPING_COST;
     }
 
 
@@ -1047,44 +1038,4 @@ class DistributorLipseys extends DistributorBase
         set_transient($this->cache_key_validateitem($upc), $value, self::VALIDATEITEM_CACHE_TTL_SECONDS);
     }
 
-    /* -------------------------------------------------------------------------
-     * Debug helpers
-     * ---------------------------------------------------------------------- */
-
-    private function dbg_enabled(): bool
-    {
-        if (defined(self::DEBUG_CONST)) {
-            return (bool) constant(self::DEBUG_CONST);
-        }
-
-        $env = getenv(self::DEBUG_CONST);
-        if ($env !== false) {
-            $env = strtolower(trim((string) $env));
-            return in_array($env, ['1', 'true', 'yes', 'on'], true);
-        }
-
-        return false;
-    }
-
-    /**
-     * Debug logger (no-op unless enabled).
-     *
-     * @param string $msg
-     * @param array<string,mixed> $ctx
-     */
-    private function dbg(string $msg, array $ctx = []): void
-    {
-        $enabled = $this->dbg_enabled();
-        if (!$enabled) {
-            return;
-        }
-
-        $prefix = '[FFLHub][LipseysDistributor]';
-
-        if (!empty($ctx)) {
-            DebugLogUtil::log_if_ctx($enabled, $prefix, $msg, $ctx, 'FFLHUB_LIPSEYS_DEBUG');
-        } else {
-            DebugLogUtil::log_if($enabled, $prefix, $msg, 'FFLHUB_LIPSEYS_DEBUG');
-        }
-    }
 }

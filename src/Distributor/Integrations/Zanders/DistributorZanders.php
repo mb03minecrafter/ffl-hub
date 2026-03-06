@@ -36,6 +36,7 @@ class DistributorZanders extends DistributorBase
      */
     private const DEBUG_FLAG = 'FFLHUB_ZANDERS_DEBUG';
     private const LOG_PREFIX = '[FFLHub][ZandersDistributor]';
+    private const FLAT_SHIPPING_COST = 15.0;
 
     /**
      * Guardrail: prevent pathological carts from causing heavy DB lookups.
@@ -121,7 +122,7 @@ class DistributorZanders extends DistributorBase
     private function is_testing_mode(): bool
     {
         // 1) wp-config constant wins
-        if (defined('FFLHUB_ZANDERS_TESTING') && FFLHUB_ZANDERS_TESTING) {
+        if (defined('FFLHUB_ZANDERS_TESTING')) {
             return true;
         }
 
@@ -632,7 +633,7 @@ class DistributorZanders extends DistributorBase
 
     /**
      * @param DistributorOrderLine[] $lines
-     * @param bool $allow_empty
+     * @param bool $require_non_empty When true, returns fatal result if no valid items map to item numbers.
      * @return array<int,array{itemNumber:string,quantity:int,allowBackOrder:string}>|DistributorOrderResult
      */
     private function build_zanders_items(array $lines, bool $require_non_empty  = false)
@@ -659,27 +660,47 @@ class DistributorZanders extends DistributorBase
 
     private function lookup_zanders_item_number_by_upc(string $upc): string
     {
-        // TODO: wire to your Zanders fulfillment table / repo.
-        // Example idea:
-        // return (string) $this->services->zanders()->fulfillment_repo()->get_itemnumber_by_upc($upc);
-        if (!$this->services) {
+        $lookup = $this->get_fulfillment_row_for_upc($upc);
+        if ($lookup === null) {
             return '';
         }
 
-        $normalized = $this->normalize_upc($upc);
-        if ($normalized === null) {
-            return '';
-        }
-
-        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized);
-        if (!$row) {
-            return '';
-        }
-
+        $row = $lookup['row'];
         $item_no = $this->get_string_field($row, ['zanders_item_number']);
         $item_no = trim((string) $item_no);
 
         return $item_no;
+    }
+
+    /**
+     * @return array{row:array<string,mixed>,normalized_upc:string}|null
+     */
+    private function get_fulfillment_row_for_upc(string $upc): ?array
+    {
+        if (!$this->services) {
+            return null;
+        }
+
+        $normalized_upc = $this->normalize_upc($upc);
+        if ($normalized_upc === null) {
+            return null;
+        }
+
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+        if (!$row) {
+            return null;
+        }
+        if (!is_array($row)) {
+            if (!is_object($row)) {
+                return null;
+            }
+            $row = get_object_vars($row);
+        }
+
+        return [
+            'row' => $row,
+            'normalized_upc' => $normalized_upc,
+        ];
     }
 
     // ---------------------------------------------------------------------
@@ -753,7 +774,7 @@ class DistributorZanders extends DistributorBase
         if ($normalized === null) {
             return null;
         }
-        return 15.0;
+        return self::FLAT_SHIPPING_COST;
     }
 
     /**
@@ -765,41 +786,23 @@ class DistributorZanders extends DistributorBase
      */
     public function get_product_by_upc(string $upc): ?DistributorProductPayload
     {
-        if (!$this->services) {
+        $lookup = $this->get_fulfillment_row_for_upc($upc);
+        if ($lookup === null) {
             return null;
         }
 
-        $normalized_upc = $this->normalize_upc($upc);
-        if ($normalized_upc === null) {
-            return null;
-        }
-
-        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
-        if (!$row || !is_array($row)) {
-            return null;
-        }
-
-        return $this->build_payload_from_row_zanders($row, $normalized_upc, true);
+        return $this->build_payload_from_row_zanders($lookup['row'], $lookup['normalized_upc'], true);
     }
 
-    // same as above, but exclude image for our product syncing
+    // Pricing payload variant excludes images for product sync workflows.
     public function get_pricing_payload_by_upc(string $upc): ?DistributorProductPayload
     {
-        if (!$this->services) {
+        $lookup = $this->get_fulfillment_row_for_upc($upc);
+        if ($lookup === null) {
             return null;
         }
 
-        $normalized_upc = $this->normalize_upc($upc);
-        if ($normalized_upc === null) {
-            return null;
-        }
-
-        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
-        if (!$row || !is_array($row)) {
-            return null;
-        }
-
-        return $this->build_payload_from_row_zanders($row, $normalized_upc, false);
+        return $this->build_payload_from_row_zanders($lookup['row'], $lookup['normalized_upc'], false);
     }
 
     /**
@@ -1139,12 +1142,6 @@ class DistributorZanders extends DistributorBase
     }
 
 
-    /**
-     * @return string[]
-     */
-    /**
-     * @return string[]
-     */
     /**
      * @return string[]
      */
