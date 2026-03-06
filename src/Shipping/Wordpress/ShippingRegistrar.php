@@ -25,6 +25,7 @@ class ShippingRegistrar
         });
 
         add_filter('woocommerce_cart_shipping_packages', [self::class, 'split_cart_shipping_packages'], 20);
+        add_filter('woocommerce_package_rates', [self::class, 'filter_package_rates'], 20, 2);
     }
 
     /**
@@ -88,6 +89,50 @@ class ShippingRegistrar
     }
 
     /**
+     * Keep method visibility aligned with package type.
+     *
+     * - fflhub package: only allow FFL Hub shipping method
+     * - external package: disallow FFL Hub shipping method
+     *
+     * @param array<string, \WC_Shipping_Rate> $rates
+     * @param array<string, mixed> $package
+     * @return array<string, \WC_Shipping_Rate>
+     */
+    public static function filter_package_rates(array $rates, array $package): array
+    {
+        if (empty($rates)) {
+            return $rates;
+        }
+
+        $package_type = isset($package['fflhub_package_type']) ? (string) $package['fflhub_package_type'] : '';
+        if ($package_type === '') {
+            $package_type = self::detect_package_type($package);
+        }
+
+        if ($package_type === 'fflhub') {
+            foreach ($rates as $rate_id => $rate) {
+                $method_id = self::get_rate_method_id($rate);
+                if ($method_id !== 'fflhub_shipping') {
+                    unset($rates[$rate_id]);
+                }
+            }
+
+            return $rates;
+        }
+
+        if ($package_type === 'external') {
+            foreach ($rates as $rate_id => $rate) {
+                $method_id = self::get_rate_method_id($rate);
+                if ($method_id === 'fflhub_shipping') {
+                    unset($rates[$rate_id]);
+                }
+            }
+        }
+
+        return $rates;
+    }
+
+    /**
      * @param array<int|string, mixed> $contents
      */
     private static function compute_contents_cost(array $contents): float
@@ -99,5 +144,52 @@ class ShippingRegistrar
         }
 
         return max(0.0, $total);
+    }
+
+    /**
+     * Best-effort fallback if a package lost its split tag.
+     *
+     * @param array<string, mixed> $package
+     */
+    private static function detect_package_type(array $package): string
+    {
+        $contents = $package['contents'] ?? null;
+        if (!is_array($contents) || empty($contents)) {
+            return '';
+        }
+
+        foreach ($contents as $item) {
+            $product = $item['data'] ?? null;
+            if (!$product instanceof \WC_Product) {
+                continue;
+            }
+
+            $dist_id = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
+            if ($dist_id !== '') {
+                return 'fflhub';
+            }
+        }
+
+        return 'external';
+    }
+
+    /**
+     * @param mixed $rate
+     */
+    private static function get_rate_method_id($rate): string
+    {
+        if (!is_object($rate)) {
+            return '';
+        }
+
+        if (method_exists($rate, 'get_method_id')) {
+            return (string) $rate->get_method_id();
+        }
+
+        if (isset($rate->method_id)) {
+            return (string) $rate->method_id;
+        }
+
+        return '';
     }
 }
