@@ -902,6 +902,7 @@ class DistributorZanders extends DistributorBase
 
         // New schema: this is now provided/derived at import time.
         $ffl_required = $to_boolish($this->get_string_field($row, ['ffl_required']) ?? '0');
+        $dropship_enabled = $to_boolish($this->get_string_field($row, ['dropship_enabled']) ?? '1');
 
         return new DistributorProductPayload(
             $upc,
@@ -916,6 +917,7 @@ class DistributorZanders extends DistributorBase
             (float) $true_cost,
             $image,
             $ffl_required,
+            $dropship_enabled,
             $recommended_category,
             $row
         );

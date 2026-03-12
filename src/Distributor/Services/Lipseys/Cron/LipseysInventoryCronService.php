@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) exit;
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -32,7 +32,7 @@ final class LipseysInventoryCronService extends AbstractTableCronService
     // If vendor unix missing/invalid, schedule soon so we recover quickly.
     private const BOOTSTRAP_DELAY_SEC = 60;
 
-    public function __construct(DoubleBufferedFulfillmentTable $table)
+    public function __construct(DoubleBufferedProductTable $table)
     {
         parent::__construct($table);
 
@@ -93,11 +93,39 @@ final class LipseysInventoryCronService extends AbstractTableCronService
     public function run(): void
     {
         $t0 = microtime(true);
+        $force_update = $this->should_force_update();
 
         $this->log('RUN START', [
-            'pid'    => function_exists('getmypid') ? (int) getmypid() : 0,
-            'mem_kb' => function_exists('memory_get_usage') ? (int) round(memory_get_usage(true) / 1024) : 0,
+            'pid'          => function_exists('getmypid') ? (int) getmypid() : 0,
+            'mem_kb'       => function_exists('memory_get_usage') ? (int) round(memory_get_usage(true) / 1024) : 0,
+            'force_update' => $force_update ? 1 : 0,
         ]);
+
+        $hook  = LipseysInventoryWorkerJob::HOOK;
+        $args  = self::WORKER_ARGS;
+        $group = self::WORKER_GROUP;
+        $already = function_exists('as_next_scheduled_action')
+            ? as_next_scheduled_action($hook, $args, $group)
+            : false;
+
+        if ($force_update) {
+            if (function_exists('as_unschedule_all_actions')) {
+                as_unschedule_all_actions($hook, $args, $group);
+            }
+
+            $this->log('FORCE_UPDATE enabled - running inventory worker immediately', [
+                'previous_scheduled_for' => $already !== false ? (int) $already : null,
+            ]);
+
+            try {
+                LipseysInventoryWorkerJob::run($this->table);
+            } catch (\Throwable $e) {
+                $this->log('FORCE_UPDATE worker run threw', ['error' => $e->getMessage()]);
+            }
+
+            $this->log('RUN END', ['elapsed_ms' => (int) round((microtime(true) - $t0) * 1000)]);
+            return;
+        }
 
         if (!function_exists('as_next_scheduled_action') || !function_exists('as_schedule_single_action')) {
             $this->log('Action Scheduler unavailable — cannot bootstrap worker');
@@ -105,11 +133,6 @@ final class LipseysInventoryCronService extends AbstractTableCronService
             return;
         }
 
-        $hook  = LipseysInventoryWorkerJob::HOOK;
-        $args  = self::WORKER_ARGS;
-        $group = self::WORKER_GROUP;
-
-        $already = as_next_scheduled_action($hook, $args, $group);
         if ($already !== false) {
             $this->log('Worker already scheduled — skip vendor call', [
                 'scheduled_for' => (int) $already,

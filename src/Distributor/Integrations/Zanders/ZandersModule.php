@@ -10,10 +10,10 @@ use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsSchema;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
-use FFLHub\Distributor\Services\Zanders\Cron\ZandersFulfillmentCronService;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
+use FFLHub\Distributor\Services\Zanders\Cron\ZandersProductCronService;
 use FFLHub\Distributor\Services\Zanders\Cron\ZandersInventoryCronService;
-use FFLHub\Distributor\Services\Zanders\Tables\ZandersFulfillmentSchema;
+use FFLHub\Distributor\Services\Zanders\Tables\ZandersProductTableSchema;
 use FFLHub\Distributor\Services\Zanders\ZandersServices;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
@@ -177,7 +177,7 @@ final class ZandersModule implements DistributorModuleInterface
      *
      * What gets created here:
      * 1) Schema object that defines the fulfillment table column mapping.
-     * 2) DoubleBufferedFulfillmentTable:
+     * 2) DoubleBufferedProductTable:
      *    - Maintains "live" and "staging" tables behind the scenes
      *    - Cron jobs import into staging, then swap pointers to make updates atomic
      *    - The swap timestamp/marker is stored under a WP option key (or similar)
@@ -188,17 +188,17 @@ final class ZandersModule implements DistributorModuleInterface
     public function build_distributor(): DistributorBase
     {
 
-        $schema = new ZandersFulfillmentSchema();
+        $schema = new ZandersProductTableSchema();
 
         // Double-buffered table allows "atomic" swaps so readers never see half-imported data.
-        $table = new DoubleBufferedFulfillmentTable(
+        $table = new DoubleBufferedProductTable(
             $schema,
             // Swap marker key (must be stable; changing it will "reset" swap history).
             'fflhub_zanders_fulfillment_last_swap'
         );
 
         // Cron services use the table as their storage target.
-        $fulfillmentCron = new ZandersFulfillmentCronService($table);
+        $fulfillmentCron = new ZandersProductCronService($table);
         $inventoryCron = new ZandersInventoryCronService($table);
 
 

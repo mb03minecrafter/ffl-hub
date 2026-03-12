@@ -109,14 +109,14 @@ class ValidateOrderAuditCommand
         $supported = [
             'rsr' => [
                 'label'             => 'RSR',
-                'live_table_prefix' => $wpdb->prefix . 'fflhub_rsr_fulfillment_v',
+                'live_table_prefix' => $wpdb->prefix . 'fflhub_rsr_product_v',
                 'upc_col'           => 'upc',
                 'qty_col'           => 'inventory_quantity',
                 'ffl_col'           => null,
             ],
             'lipseys' => [
                 'label'             => 'Lipseys',
-                'live_table_prefix' => $wpdb->prefix . 'fflhub_lipseys_fulfillment_v',
+                'live_table_prefix' => $wpdb->prefix . 'fflhub_lipseys_product_v',
                 'upc_col'           => 'upc',
                 'qty_col'           => 'inventory_quantity',
                 'ffl_col'           => 'ffl_required',

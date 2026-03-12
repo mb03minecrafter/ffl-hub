@@ -7,7 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Parser for the RSR fulfillment catalog file (fulfillment-inv-new.txt).
+ * Parser for the RSR product catalog file (rsrinventory-new.txt).
  *
  * The file is semicolon-delimited, e.g.:
  * 17912WH-1-SBL-R;816161020234;1791 2 WAY IWB ...;...;20210420;48.99;;7.50;6.50;2.00;Y;;
@@ -45,7 +45,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Some files have a couple of extra trailing semicolons; we simply ignore columns
  * beyond the ones we care about.
  */
-class RSRFulfillmentParser
+class RSRProductParser
 {
     /**
      * Map one data line into a DB row.
@@ -184,7 +184,9 @@ class RSRFulfillmentParser
 
         $ground_shipments_only = ( $ground_shipments_raw === 'Y' ) ? '1' : '0';
         $adult_sig_required    = ( $adult_sig_raw === 'Y' ) ? '1' : '0';
-        $blocked_from_dropship = ( $blocked_raw === 'Y' ) ? '1' : '0';
+        $is_blocked_dropship   = ( $blocked_raw === 'Y' );
+        $dropship_enabled      = $is_blocked_dropship ? '0' : '1';
+        $dropship_block_reason = $is_blocked_dropship ? 'blocked_from_dropship' : '';
 
         $date_entered     = $get( $columns, $date_index );
         $retail_map       = $get( $columns, $map_index );
@@ -225,7 +227,8 @@ class RSRFulfillmentParser
         // Shipping / misc.
         $row['ground_shipments_only'] = $ground_shipments_only;
         $row['adult_sig_required']    = $adult_sig_required;
-        $row['blocked_from_dropship'] = $blocked_from_dropship;
+        $row['dropship_enabled']      = $dropship_enabled;
+        $row['dropship_block_reason'] = $dropship_block_reason;
         $row['date_entered']          = $date_entered;
         $row['image_disclaimer']      = $image_disclaimer;
         $row['shipping_length_in']    = $shipping_length;

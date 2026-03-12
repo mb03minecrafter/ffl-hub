@@ -7,7 +7,7 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
 use FFLHub\Settings\Options;
@@ -63,7 +63,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
      */
     private const FTP_MIN_CHECK_GAP_SECONDS = 60;
 
-    public function __construct(DoubleBufferedFulfillmentTable $table)
+    public function __construct(DoubleBufferedProductTable $table)
     {
         parent::__construct($table);
     }
@@ -97,13 +97,20 @@ final class RSRInventoryCronService extends AbstractTableCronService
             @set_time_limit(0);
         }
 
+        $force_update = $this->should_force_update();
+
         $this->log('---- RUN START ----', [
             'pid'          => function_exists('getmypid') ? (int) getmypid() : 0,
             'memory_kb'    => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
             'hook'         => self::CRON_HOOK,
             'group'        => $this->get_action_group(),
             'interval_sec' => $this->get_interval_seconds(),
+            'force_update' => $force_update ? 1 : 0,
         ]);
+
+        if ($force_update) {
+            $this->log('FORCE_UPDATE enabled - bypassing cooldown/mtime gates');
+        }
 
         // 0) Get FTP credentials.
         $t_creds = microtime(true);
@@ -161,7 +168,8 @@ final class RSRInventoryCronService extends AbstractTableCronService
             self::OPT_LAST_CHECKED_AT,
             'fflhub_rsr_qty_last_applied_mtime',
             self::FTP_MIN_CHECK_GAP_SECONDS,
-            self::FTP_COOLDOWN_SECONDS
+            self::FTP_COOLDOWN_SECONDS,
+            $force_update
         );
 
         if ((bool) $pre_gate['skip']) {
@@ -204,7 +212,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
             'fflhub_rsr_qty_last_seen_mtime',
             'fflhub_rsr_qty_last_seen_size',
             $last_applied_mtime,
-            false,
+            $force_update,
             250000,
             'No update available (remote mtime unchanged) - skipping download/apply'
         );

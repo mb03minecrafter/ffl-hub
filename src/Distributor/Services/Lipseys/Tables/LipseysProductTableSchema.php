@@ -2,7 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Lipseys\Tables;
 
-use FFLHub\Distributor\Services\Tables\FulfillmentSchemaInterface;
+use FFLHub\Distributor\Services\Tables\ProductSchemaInterface;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
@@ -11,13 +11,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Single source of truth for the Lipsey's fulfillment table schema.
  *
- * Now instance-based to work with DoubleBufferedFulfillmentTable and
- * other services that expect a FulfillmentSchemaInterface instance.
+ * Now instance-based to work with DoubleBufferedProductTable and
+ * other services that expect a ProductSchemaInterface instance.
  */
-class LipseysFulfillmentSchema implements FulfillmentSchemaInterface
+class LipseysProductTableSchema implements ProductSchemaInterface
 {
-    private const BASE_TABLE_KEY    = 'fflhub_lipseys_fulfillment';
-    private const LIVE_TABLE_OPTION = 'fflhub_lipseys_fulfillment_live_table';
+    private const BASE_TABLE_KEY    = 'fflhub_lipseys_product';
+    private const LIVE_TABLE_OPTION = 'fflhub_lipseys_product_live_table';
 
     /**
      * Base key used to build table names (without $wpdb->prefix, without _v1/_v2).
@@ -28,7 +28,7 @@ class LipseysFulfillmentSchema implements FulfillmentSchemaInterface
     }
 
     /**
-     * Option name that stores the "live" table (used by DoubleBufferedFulfillmentTable).
+     * Option name that stores the "live" table (used by DoubleBufferedProductTable).
      */
     public function get_live_table_option_name(): string
     {
@@ -80,6 +80,8 @@ class LipseysFulfillmentSchema implements FulfillmentSchemaInterface
             'bound_book_type'         => 'VARCHAR(64)   NULL',
             'ffl_required'            => 'TINYINT(1) NOT NULL DEFAULT 0',
             'sot_required'            => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'dropship_enabled'        => 'TINYINT(1) NOT NULL DEFAULT 1',
+            'dropship_block_reason'   => 'VARCHAR(255) NULL',
 
             // Grouping / marketing-ish
             'item_group'        => 'VARCHAR(128)  NULL',
@@ -132,7 +134,7 @@ class LipseysFulfillmentSchema implements FulfillmentSchemaInterface
 
     /**
      * Lipseys-specific subset used for pricing/quantity update operations.
-     * (Not part of FulfillmentSchemaInterface; just extra helper.)
+     * (Not part of ProductSchemaInterface; just extra helper.)
      *
      * @return string[]
      */

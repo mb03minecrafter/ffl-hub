@@ -27,7 +27,7 @@ class LipseysClient
 
         if (session_status() == PHP_SESSION_ACTIVE) {
             $sessionKey = $this->sessionTokenKey();
-            if (array_key_exists($sessionKey, $_SESSION)) {
+            if (is_array($_SESSION ?? null) && array_key_exists($sessionKey, $_SESSION)) {
                 $this->Token = $_SESSION[$sessionKey];
             }
         }
@@ -43,8 +43,18 @@ class LipseysClient
         return $curl;
     }
 
-    private function PostRequestBuilder($url, $model)
+    private function PostRequestBuilder($url, $model, bool $includeToken = true)
     {
+        $headers = array(
+            "Content-Type: application/json",
+            "Accept: application/json",
+            "Accept-Encoding: gzip",
+        );
+
+        if ($includeToken && is_string($this->Token) && $this->Token !== '') {
+            $headers[] = "Token: {$this->Token}";
+        }
+
         $curl = $this->RequestBuilder(array(
             CURLOPT_URL => "{$this->BaseUrl}{$url}",
             CURLOPT_RETURNTRANSFER => true,
@@ -54,12 +64,7 @@ class LipseysClient
             CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
             CURLOPT_CUSTOMREQUEST => "POST",
             CURLOPT_POSTFIELDS => json_encode($model),
-            CURLOPT_HTTPHEADER => array(
-                "Content-Type: application/json",
-                "Accept: application/json",
-                "Accept-Encoding: gzip",
-                "Token: {$this->Token}",
-            ),
+            CURLOPT_HTTPHEADER => $headers,
         ));
         return $curl;
     }
@@ -87,19 +92,35 @@ class LipseysClient
 
     private function InvalidLoginResponse($loginResponse)
     {
+        $loginDiagnostics = is_array($loginResponse) ? $loginResponse : null;
         $errorsArray = array(
             "Not Authorized Response",
             "Account: " . $this->maskEmail($this->Email),
             date("Y-m-d h:i:s A T"),
             $this->sanitizeErrorValue($loginResponse)
         );
+        if (is_array($loginDiagnostics)) {
+            if (array_key_exists('http_code', $loginDiagnostics)) {
+                $errorsArray[] = 'Login HTTP code: ' . (string) $loginDiagnostics['http_code'];
+            }
+            if (!empty($loginDiagnostics['curl_errno'])) {
+                $errorsArray[] = 'Login curl errno: ' . (string) $loginDiagnostics['curl_errno'];
+            }
+            if (!empty($loginDiagnostics['curl_error'])) {
+                $errorsArray[] = 'Login curl error: ' . $this->sanitizeErrorValue((string) $loginDiagnostics['curl_error']);
+            }
+            if (!empty($loginDiagnostics['json_error'])) {
+                $errorsArray[] = 'Login JSON parse: ' . $this->sanitizeErrorValue((string) $loginDiagnostics['json_error']);
+            }
+        }
         if ($this->Token) {
             array_push($errorsArray, "Token present in memory.");
         }
         return array(
             "authorized" => false,
             "success" => false,
-            "errors" => $errorsArray
+            "errors" => $errorsArray,
+            "login_diagnostics" => $loginDiagnostics,
         );
     }
 
@@ -521,16 +542,42 @@ class LipseysClient
             "Email" => $this->Email,
             "Password" => $this->Password
         );
-        $curl = $this->PostRequestBuilder("integration/authentication/login", $model);
+
+        // Always do auth login without an existing token header.
+        // Some API gateways reject login attempts with stale bearer/token headers.
+        $this->Token = null;
+        if (session_status() == PHP_SESSION_ACTIVE) {
+            unset($_SESSION[$this->sessionTokenKey()]);
+        }
+
+        $curl = $this->PostRequestBuilder("integration/authentication/login", $model, false);
         $response = curl_exec($curl);
         $err = curl_error($curl);
+        $errno = curl_errno($curl);
+        $http = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
         curl_close($curl);
 
+        $responseExcerpt = $this->sanitizeErrorValue(is_string($response) ? $response : '');
+
         if ($err) {
-            return $err;
+            return array(
+                'stage'            => 'login_request',
+                'http_code'        => $http,
+                'curl_errno'       => (int) $errno,
+                'curl_error'       => $this->sanitizeErrorValue((string) $err),
+                'response_excerpt' => $responseExcerpt,
+            );
         } else {
             $decode = json_decode($response, true);
-            if (array_key_exists("token", $decode) && array_key_exists("econtact", $decode) && $decode["econtact"]["success"] == 1) {
+            $jsonError = json_last_error() === JSON_ERROR_NONE ? '' : json_last_error_msg();
+            if (
+                is_array($decode)
+                && array_key_exists("token", $decode)
+                && array_key_exists("econtact", $decode)
+                && is_array($decode["econtact"])
+                && array_key_exists("success", $decode["econtact"])
+                && (int) $decode["econtact"]["success"] === 1
+            ) {
                 $this->Account = $decode;
                 $this->Token = $decode["token"];
                 if (session_status() == PHP_SESSION_ACTIVE) {
@@ -538,8 +585,35 @@ class LipseysClient
                 }
                 return 1;
             }
+
+            $diag = array(
+                'stage'            => 'login_response_invalid',
+                'http_code'        => $http,
+                'curl_errno'       => (int) $errno,
+                'curl_error'       => $this->sanitizeErrorValue((string) $err),
+                'response_excerpt' => $responseExcerpt,
+                'json_error'       => $jsonError !== '' ? $jsonError : null,
+                'has_token_key'    => is_array($decode) && array_key_exists("token", $decode) ? 1 : 0,
+                'has_econtact_key' => is_array($decode) && array_key_exists("econtact", $decode) ? 1 : 0,
+                'econtact_success' => (is_array($decode) && isset($decode['econtact']) && is_array($decode['econtact']) && isset($decode['econtact']['success']))
+                    ? (int) $decode['econtact']['success']
+                    : null,
+            );
+
+            // If we can identify a likely network policy / allowlist denial, surface it explicitly.
+            $responseLower = strtolower($responseExcerpt);
+            if (
+                $http === 401
+                || $http === 403
+                || strpos($responseLower, 'not authorized') !== false
+                || strpos($responseLower, 'forbidden') !== false
+                || strpos($responseLower, 'ip') !== false
+            ) {
+                $diag['likely_cause'] = 'auth_or_ip_allowlist';
+            }
+
+            return $diag;
         }
-        return $response;
     }
 
     // Your existing NextUpdateFast stays as-is (cron bootstrap uses it rarely).

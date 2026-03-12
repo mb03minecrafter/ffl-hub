@@ -90,14 +90,14 @@ final class LookupAuditCommand
         }
 
         // Detect tables (v1..v200 scanning)
-        $rsr_table     = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_rsr_fulfillment_v');
-        $lipseys_table = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_lipseys_fulfillment_v');
+        $rsr_table     = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_rsr_product_v');
+        $lipseys_table = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_lipseys_product_v');
 
         if (($source === 'rsr' || $source === 'both') && $rsr_table === '') {
-            \WP_CLI::warning('RSR fulfillment table not found.');
+            \WP_CLI::warning('RSR product table not found.');
         }
         if (($source === 'lipseys' || $source === 'both') && $lipseys_table === '') {
-            \WP_CLI::warning("Lipsey's fulfillment table not found.");
+            \WP_CLI::warning("Lipsey's product table not found.");
         }
 
         // Build UPC set + provenance (which distributor table it came from)

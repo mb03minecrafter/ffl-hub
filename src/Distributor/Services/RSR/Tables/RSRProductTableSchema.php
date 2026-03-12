@@ -2,16 +2,16 @@
 
 namespace FFLHub\Distributor\Services\RSR\Tables;
 
-use FFLHub\Distributor\Services\Tables\FulfillmentSchemaInterface;
+use FFLHub\Distributor\Services\Tables\ProductSchemaInterface;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-class RSRFulfillmentSchema implements FulfillmentSchemaInterface
+class RSRProductTableSchema implements ProductSchemaInterface
 {
-    public const BASE_TABLE_KEY    = 'fflhub_rsr_fulfillment';
-    public const LIVE_TABLE_OPTION = 'fflhub_rsr_fulfillment_live_table';
+    public const BASE_TABLE_KEY    = 'fflhub_rsr_product';
+    public const LIVE_TABLE_OPTION = 'fflhub_rsr_product_live_table';
 
     public function get_base_table_key(): string
     {
@@ -103,7 +103,8 @@ class RSRFulfillmentSchema implements FulfillmentSchemaInterface
 
             'ground_shipments_only' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'adult_sig_required'    => 'TINYINT(1) NOT NULL DEFAULT 0',
-            'blocked_from_dropship' => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'dropship_enabled'      => 'TINYINT(1) NOT NULL DEFAULT 1',
+            'dropship_block_reason' => 'VARCHAR(255) NULL',
             'date_entered'          => 'VARCHAR(16)  NULL',
             'image_disclaimer'      => 'TEXT        NULL',
 
@@ -125,7 +126,7 @@ class RSRFulfillmentSchema implements FulfillmentSchemaInterface
 
     public function get_insert_columns(): array
     {
-        $all = array_keys( self::get_column_definitions() );
+        $all = array_keys( $this->get_column_definitions() );
 
         return array_values(
             array_filter(

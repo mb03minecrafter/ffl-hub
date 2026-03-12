@@ -365,6 +365,45 @@ abstract class DistributorBase implements DistributorInterface
         return null;
     }
 
+    /**
+     * Parse mixed bool-ish values used across distributor tables.
+     *
+     * Accepts: 1/0, y/n, yes/no, true/false, on/off.
+     */
+    protected function to_boolish($value, bool $default = false): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return ((int) $value) > 0;
+        }
+
+        if ($value === null) {
+            return $default;
+        }
+
+        $s = strtoupper(trim((string) $value));
+        if ($s === '') {
+            return $default;
+        }
+
+        if (in_array($s, ['1', 'Y', 'YES', 'T', 'TRUE', 'ON'], true)) {
+            return true;
+        }
+
+        if (in_array($s, ['0', 'N', 'NO', 'F', 'FALSE', 'OFF'], true)) {
+            return false;
+        }
+
+        if (is_numeric($s)) {
+            return ((int) $s) > 0;
+        }
+
+        return $default;
+    }
+
     /* ---------------------------------------------------------------------
      * Payload normalization helpers (shared formatting)
      * ------------------------------------------------------------------ */
@@ -603,6 +642,13 @@ abstract class DistributorBase implements DistributorInterface
             $ffl_required = (bool) ((int) ($this->get_int_field($row, $map['ffl_required']) ?? 0));
         }
 
+        // Default true when source does not provide this yet.
+        $dropship_enabled = true;
+        $dropship_raw = $this->get_string_field($row, $map['dropship_enabled'] ?? ['dropship_enabled']);
+        if ($dropship_raw !== null) {
+            $dropship_enabled = $this->to_boolish($dropship_raw, true);
+        }
+
         return new DistributorProductPayload(
             $upc,
             $sku,
@@ -616,6 +662,7 @@ abstract class DistributorBase implements DistributorInterface
             (float) $true_cost,
             $image,
             $ffl_required,
+            $dropship_enabled,
             $recommended_category,
             $row
         );

@@ -7,15 +7,15 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 use FFLHub\Distributor\Services\DistributorServicesBase;
-use FFLHub\Distributor\Services\RSR\Cron\RSRFulfillmentCronService;
+use FFLHub\Distributor\Services\RSR\Cron\RSRProductCronService;
 use FFLHub\Distributor\Services\RSR\Cron\RSRInventoryCronService;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 
 class RSRServices extends DistributorServicesBase
 {
     public function __construct(
-        DoubleBufferedFulfillmentTable $fulfillmentTable,
-        RSRFulfillmentCronService $fulfillmentCron,
+        DoubleBufferedProductTable $fulfillmentTable,
+        RSRProductCronService $fulfillmentCron,
         RSRInventoryCronService $inventoryCron
     ) {
         parent::__construct(

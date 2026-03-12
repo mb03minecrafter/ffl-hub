@@ -98,6 +98,14 @@ final class DistributorProductPayload
     public bool $ffl_required;
 
     /**
+     * Whether this product can be shipped directly from distributor to customer.
+     *
+     * true  => drop ship eligible
+     * false => not drop ship eligible (dealer fulfillment only)
+     */
+    public bool $dropship_enabled;
+
+    /**
      * Recommended unified category path for this product.
      *
      * Example:
@@ -133,6 +141,7 @@ final class DistributorProductPayload
      * @param float  $true_cost
      * @param string $image_url            Optional “primary” image seed (can be empty).
      * @param bool   $ffl_required
+     * @param bool   $dropship_enabled
      * @param string[]|null $recommended_category
      * @param mixed  $raw
      */
@@ -149,6 +158,7 @@ final class DistributorProductPayload
         float $true_cost,
         string $image_url,
         bool $ffl_required,
+        bool $dropship_enabled,
         ?array $recommended_category,
         $raw = null
     ) {
@@ -171,6 +181,7 @@ final class DistributorProductPayload
         $this->true_cost = max(0.0, self::finite_float($true_cost));
 
         $this->ffl_required = (bool) $ffl_required;
+        $this->dropship_enabled = (bool) $dropship_enabled;
         $this->recommended_category = $recommended_category;
 
         // Raw is intentionally left unmodified (caller chooses what to store).

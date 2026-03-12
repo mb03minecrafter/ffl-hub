@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
  * available, category, desc1, desc2, itemnumber, manufacturer, mfgpnumber,
  * msrp, price1, price2, price3, qty1, qty2, qty3, upc, weight, serialized, mapprice
  */
-class ZandersFulfillmentParser
+class ZandersProductParser
 {
     /**
      * @param array<int, mixed> $header
@@ -92,6 +92,8 @@ class ZandersFulfillmentParser
 
             'ffl_required' => $this->deduce_ffl_required($category),
             'sot_required' => $this->deduce_sot_required($category),
+            'dropship_enabled' => '1',
+            'dropship_block_reason' => '',
 
             'serialized' => $this->to_bool_flag($this->get($csv, $header_map, 'serialized')),
         ];

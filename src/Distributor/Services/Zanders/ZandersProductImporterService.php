@@ -2,7 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Zanders;
 
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
@@ -48,12 +48,12 @@ if (!defined('ABSPATH')) {
  * serialized
  *
  * IMPORTANT:
- * - We MUST NOT import "restricted drop ship" manufacturers (Zanders-provided list).
+ * - Restricted drop-ship manufacturers are retained but marked as non-dropship.
  * - We MUST keep CSV parsing settings exact (quoted CSV, CRLF, escaped backslashes).
  */
-class ZandersFulfillmentImporterService
+class ZandersProductImporterService
 {
-    /** @var DoubleBufferedFulfillmentTable */
+    /** @var DoubleBufferedProductTable */
     private $table;
 
     /**
@@ -106,7 +106,7 @@ class ZandersFulfillmentImporterService
         '2 SISTERS MAGNETIC GUN REST',
     ];
 
-    public function __construct(DoubleBufferedFulfillmentTable $table)
+    public function __construct(DoubleBufferedProductTable $table)
     {
         $this->table = $table;
     }
@@ -239,12 +239,13 @@ class ZandersFulfillmentImporterService
          * - Use LINES TERMINATED BY '\r\n' (Windows CRLF) — we also TRIM '\r'
          *
          * RESTRICTED DROP SHIP:
-         * - We can't truly "skip" rows during LOAD DATA without a user variable hack.
+         * - We keep all rows and mark restricted manufacturers as non-dropship
+         *   immediately after LOAD DATA completes.
          * - Strategy:
          *    1) LOAD DATA into staging normally
-         *    2) DELETE restricted manufacturers (normalized matching) immediately after
+         *    2) UPDATE restricted manufacturers with dropship_enabled=0 and reason
          *
-         * This still ensures restricted rows are never present after the import completes.
+         * This keeps a complete product catalog while preserving fulfillment constraints.
          */
         $sql = "
             LOAD DATA LOCAL INFILE %s
@@ -351,13 +352,13 @@ class ZandersFulfillmentImporterService
             // Post-clean: remove rows with empty/NULL UPC.
             $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
-            // Drop-ship restricted: delete restricted manufacturers.
-            $deleted_restricted = $this->delete_restricted_manufacturers_from_table($table_name);
+            // Drop-ship restricted: keep rows, flag as non-dropship.
+            $marked_restricted = $this->mark_restricted_manufacturers_in_table($table_name);
 
             $this->log_debug(
                 sprintf(
-                    '[FFLHub][Zanders Import][LOAD DATA] deleted_restricted_manufacturers=%d',
-                    $deleted_restricted
+                    '[FFLHub][Zanders Import][LOAD DATA] marked_restricted_manufacturers=%d',
+                    $marked_restricted
                 )
             );
         } catch (\Throwable $e) {
@@ -396,7 +397,7 @@ class ZandersFulfillmentImporterService
      *  - retail_map blank/"" => "0"
      *  - serialized => 1/0
      *  - ffl_required/sot_required derived from category
-     *  - restricted manufacturers are skipped BEFORE batching
+     *  - restricted manufacturers are retained and flagged as non-dropship
      */
     private function import_fulfillment_file_via_php(string $file_path): int
     {
@@ -433,7 +434,7 @@ class ZandersFulfillmentImporterService
             return 0;
         }
 
-        $parser = new ZandersFulfillmentParser();
+        $parser = new ZandersProductParser();
         $header_map = $parser->build_header_map($header);
 
         // Required columns for us to do anything useful.
@@ -448,7 +449,7 @@ class ZandersFulfillmentImporterService
         $total_import        = 0;
         $skipped_missing_upc = 0;
 
-        $skipped_restricted_mfr = 0;
+        $restricted_marked = 0;
 
         $batch_flushes  = 0;
         $batch_failures = 0;
@@ -522,9 +523,12 @@ class ZandersFulfillmentImporterService
 
             $manufacturer = isset($row['manufacturer']) ? trim((string) $row['manufacturer']) : '';
             if ($this->is_restricted_drop_ship_manufacturer($manufacturer)) {
-                $skipped_restricted_mfr++;
-                $t_parse_total += (microtime(true) - $t0);
-                continue;
+                $row['dropship_enabled'] = '0';
+                $row['dropship_block_reason'] = 'restricted_manufacturer';
+                $restricted_marked++;
+            } else {
+                $row['dropship_enabled'] = '1';
+                $row['dropship_block_reason'] = '';
             }
 
             $batch_rows[] = $row;
@@ -554,13 +558,13 @@ class ZandersFulfillmentImporterService
 
         $this->log_debug(
             sprintf(
-                '[FFLHub][Zanders Import] import_fulfillment_file_via_php(): total=%.2f ms, parse+loop=%.2f ms, db_flush=%.2f ms, inserted_rows=%d, skipped_missing_upc=%d, skipped_restricted_mfr=%d, batch_flushes=%d, batch_failures=%d',
+                '[FFLHub][Zanders Import] import_fulfillment_file_via_php(): total=%.2f ms, parse+loop=%.2f ms, db_flush=%.2f ms, inserted_rows=%d, skipped_missing_upc=%d, restricted_marked=%d, batch_flushes=%d, batch_failures=%d',
                 $t_import_total_ms,
                 $t_parse_ms,
                 $t_flush_ms,
                 $total_import,
                 $skipped_missing_upc,
-                $skipped_restricted_mfr,
+                $restricted_marked,
                 $batch_flushes,
                 $batch_failures
             )
@@ -570,12 +574,12 @@ class ZandersFulfillmentImporterService
     }
 
     /**
-     * Delete restricted manufacturers from a given table (used for LOAD DATA fast path).
+     * Mark restricted manufacturers as non-dropship on a given table.
      *
      * @param string $table_name
-     * @return int rows deleted
+     * @return int rows updated
      */
-    private function delete_restricted_manufacturers_from_table(string $table_name): int
+    private function mark_restricted_manufacturers_in_table(string $table_name): int
     {
         global $wpdb;
 
@@ -623,7 +627,7 @@ class ZandersFulfillmentImporterService
 
         $where = '(' . implode(' OR ', $clauses) . ')';
 
-        $sql = "DELETE FROM {$table_name} WHERE manufacturer IS NOT NULL AND TRIM(manufacturer) <> '' AND ({$where})";
+        $sql = "UPDATE {$table_name} SET dropship_enabled = '0', dropship_block_reason = 'restricted_manufacturer' WHERE manufacturer IS NOT NULL AND TRIM(manufacturer) <> '' AND ({$where})";
         $res = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         return is_numeric($res) ? (int) $res : 0;

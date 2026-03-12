@@ -78,7 +78,7 @@ class OrderSplitAuditCommand
         $supported = [
             'rsr' => [
                 'label'             => 'RSR',
-                'live_table_prefix' => $wpdb->prefix . 'fflhub_rsr_fulfillment_v',
+                'live_table_prefix' => $wpdb->prefix . 'fflhub_rsr_product_v',
                 'upc_col'           => 'upc',
                 'qty_col'           => 'inventory_quantity',
                 'ffl_col'           => null,
@@ -93,7 +93,7 @@ class OrderSplitAuditCommand
             ],
             'lipseys' => [
                 'label'             => 'Lipseys',
-                'live_table_prefix' => $wpdb->prefix . 'fflhub_lipseys_fulfillment_v',
+                'live_table_prefix' => $wpdb->prefix . 'fflhub_lipseys_product_v',
                 'upc_col'           => 'upc',
                 'qty_col'           => 'inventory_quantity',
                 'ffl_col'           => 'ffl_required',
@@ -446,7 +446,7 @@ class OrderSplitAuditCommand
      * Finds the latest existing table whose name begins with a prefix like "..._v"
      * by checking v1..vMAX.
      *
-     * Example prefix: "{$wpdb->prefix}fflhub_rsr_fulfillment_live_v"
+     * Example prefix: "{$wpdb->prefix}fflhub_rsr_product_live_v"
      * It will check: ..._v1, ..._v2, ..._v3, ...
      */
     private function find_latest_existing_table(string $prefix_with_v): ?string

@@ -10,10 +10,10 @@ use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 
 use FFLHub\Distributor\Services\RSR\RSRServices;
-use FFLHub\Distributor\Services\RSR\Cron\RSRFulfillmentCronService;
+use FFLHub\Distributor\Services\RSR\Cron\RSRProductCronService;
 use FFLHub\Distributor\Services\RSR\Cron\RSRInventoryCronService;
-use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentSchema;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\RSR\Tables\RSRProductTableSchema;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 
 /**
  * RSR module definition.
@@ -195,7 +195,7 @@ final class RSRModule implements DistributorModuleInterface
      *
      * What gets created here:
      * 1) Schema object that defines the fulfillment table column mapping.
-     * 2) DoubleBufferedFulfillmentTable:
+     * 2) DoubleBufferedProductTable:
      *    - Maintains "live" and "staging" tables behind the scenes
      *    - Cron jobs import into staging, then swap pointers to make updates atomic
      *    - The swap timestamp/marker is stored under a WP option key (or similar)
@@ -210,17 +210,17 @@ final class RSRModule implements DistributorModuleInterface
     public function build_distributor(): DistributorBase
     {
         // Defines the canonical mapping from the RSR feed rows -> your normalized field names.
-        $schema = new RSRFulfillmentSchema();
+        $schema = new RSRProductTableSchema();
 
         // Double-buffered table allows "atomic" swaps so readers never see half-imported data.
-        $table = new DoubleBufferedFulfillmentTable(
+        $table = new DoubleBufferedProductTable(
             $schema,
             // Swap marker key (must be stable; changing it will "reset" swap history).
             'fflhub_rsr_fulfillment_last_swap'
         );
 
         // Cron services use the table as their storage target.
-        $fulfillmentCron = new RSRFulfillmentCronService($table);
+        $fulfillmentCron = new RSRProductCronService($table);
         $inventoryCron   = new RSRInventoryCronService($table);
 
         // Services bundle is injected into the runtime distributor for lookups/cron access.

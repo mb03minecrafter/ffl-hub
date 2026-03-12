@@ -9,7 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
 use FFLHub\Util\DebugLogUtil;
 
@@ -43,9 +43,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
     private const LOCAL_DIR      = 'fflhub-zanders';
     private const LOCAL_FILENAME = 'liveinv.csv';
 
-    private const FORCE_UPDATE = false;
-
-    public function __construct(DoubleBufferedFulfillmentTable $table)
+    public function __construct(DoubleBufferedProductTable $table)
     {
         parent::__construct($table);
     }
@@ -74,6 +72,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
     {
         $t_start   = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $force_update = $this->should_force_update();
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
@@ -85,10 +84,11 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'hook'         => self::CRON_HOOK,
             'group'        => $this->get_action_group(),
             'interval_sec' => $this->get_interval_seconds(),
+            'force_update' => $force_update ? 1 : 0,
         ]);
 
-        if (self::FORCE_UPDATE) {
-            $this->log('FORCE_UPDATE enabled — bypassing mtime/cooldown gates');
+        if ($force_update) {
+            $this->log('FORCE_UPDATE enabled - bypassing cooldown/mtime gates');
         }
 
         // 0) Credentials
@@ -147,7 +147,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'fflhub_zanders_qty_last_applied_mtime',
             self::FTP_MIN_CHECK_GAP_SECONDS,
             self::FTP_COOLDOWN_SECONDS,
-            self::FORCE_UPDATE
+            $force_update
         );
 
         if ((bool) $pre_gate['skip']) {
@@ -192,7 +192,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'fflhub_zanders_qty_last_seen_mtime',
             'fflhub_zanders_qty_last_seen_size',
             $last_applied_mtime,
-            self::FORCE_UPDATE,
+            $force_update,
             250000,
             'No update available (remote mtime unchanged) - skipping download/apply'
         );

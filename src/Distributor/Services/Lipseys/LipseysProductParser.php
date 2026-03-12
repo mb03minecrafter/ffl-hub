@@ -16,14 +16,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  *  [upc]                  => 764503046629
  *  ...
  */
-class LipseysFulfillmentParser {
+class LipseysProductParser {
 
     /**
      * Map one Lipsey item array into a DB row keyed to match
-     * the Lipsey's fulfillment table schema (minus id).
-     *
-     * IMPORTANT: Only returns a row if the item is *drop ship enabled*
-     * (`canDropship` truthy). Otherwise returns null.
+     * the Lipsey's product table schema (minus id).
      *
      * @param array<string,mixed> $item
      * @return array<string,string>|null Row keyed to match DB columns, or null to skip.
@@ -38,16 +35,10 @@ class LipseysFulfillmentParser {
             return null;
         }
 
-        // Drop-ship filter: we only keep items that are drop-ship enabled.
         $can_dropship_raw = $this->get_string( $item, 'canDropship' );
         $can_dropship     = $this->to_flag( $can_dropship_raw );
-
-
-        
-        if ( $can_dropship !== '1' ) {
-            // Not drop ship enabled => do not import this item at all.
-            return null;
-        }
+        $dropship_enabled = $can_dropship;
+        $dropship_block_reason = ( $can_dropship === '1' ) ? '' : 'canDropship=false';
 
         // Descriptions and basic identifiers.
         $description1 = $this->get_string( $item, 'description1' );
@@ -158,6 +149,8 @@ class LipseysFulfillmentParser {
             'bound_book_type'         => $bb_type,
             'ffl_required'            => $ffl_required,
             'sot_required'            => $sot_required,
+            'dropship_enabled'        => $dropship_enabled,
+            'dropship_block_reason'   => $dropship_block_reason,
 
             // Grouping / marketing-ish
             'item_group'              => $item_group,

@@ -428,6 +428,7 @@ class DistributorProductsPage
 
         $p_image_url         = $selected_product->get_primary_image_url();
         $p_ffl_required      = (bool) ($selected_product->ffl_required ?? false);
+        $p_dropship_enabled  = (bool) ($selected_product->dropship_enabled ?? true);
 
         $p_recommended_category       = $selected_product->recommended_category ?? null;
         $p_recommended_category_label = '';
@@ -556,6 +557,15 @@ class DistributorProductsPage
                         );
                         ?>
                     </p>
+                    <p>
+                        <strong><?php esc_html_e('Drop Ship Enabled:', 'ffl-hub'); ?></strong>
+                        <?php
+                        echo ' ' . ($p_dropship_enabled
+                            ? esc_html__('Yes', 'ffl-hub')
+                            : esc_html__('No', 'ffl-hub')
+                        );
+                        ?>
+                    </p>
 
                     <p>
                         <strong><?php esc_html_e('Recommended Category:', 'ffl-hub'); ?></strong>
@@ -610,6 +620,7 @@ class DistributorProductsPage
                     $shipping = $payload_row->shipping_cost ?? null;
                     $qty      = $payload_row->quantity ?? null;
                     $ffl_req_row = (bool) ($payload_row->ffl_required ?? false);
+                    $dropship_enabled_row = (bool) ($payload_row->dropship_enabled ?? true);
                     ?>
                     <li class="fflhub-product-carrier-item">
                         <div class="fflhub-product-carrier-header">
@@ -652,6 +663,10 @@ class DistributorProductsPage
                             <span>
                                 <strong><?php esc_html_e('FFL:', 'ffl-hub'); ?></strong>
                                 <?php echo ' ' . ($ffl_req_row ? esc_html__('Required', 'ffl-hub') : esc_html__('No', 'ffl-hub')); ?>
+                            </span>
+                            <span>
+                                <strong><?php esc_html_e('Drop Ship:', 'ffl-hub'); ?></strong>
+                                <?php echo ' ' . ($dropship_enabled_row ? esc_html__('Yes', 'ffl-hub') : esc_html__('No', 'ffl-hub')); ?>
                             </span>
                         </div>
                     </li>

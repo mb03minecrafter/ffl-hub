@@ -2,8 +2,8 @@
 
 namespace FFLHub\Distributor\Services\RSR;
 
-use FFLHub\Distributor\Services\RSR\Tables\RSRFulfillmentSchema;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\RSR\Tables\RSRProductTableSchema;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Util\DebugLogUtil;
 
 if (! defined('ABSPATH')) {
@@ -18,22 +18,30 @@ if (! defined('ABSPATH')) {
  *  - truncates the staging table,
  *  - bulk-inserts rows.
  *
- * You can call RSRFulfillmentImporter::import_from_downloaded_file()
+ * You can call RSRProductImporterService::import_from_downloaded_file()
  * (or legacy FFLHub_RSR_Fulfillment_Importer) after your FTP cron has fetched
- * the latest fulfillment-inv-new.txt.
+ * the latest rsrinventory-new.txt.
  */
-class RSRFulfillmentImporterService
+class RSRProductImporterService
 {
-    /** @var DoubleBufferedFulfillmentTable */
+    /**
+     * Department numbers to exclude by default for accessory-only catalogs.
+     *
+     * Mapped from RSR department definitions:
+     * 1=Handguns, 2=Used Handguns, 3=Used Long Guns, 5=Long Guns, 6=NFA Products.
+     */
+    private const DEFAULT_EXCLUDED_DEPARTMENT_NUMBERS = [1, 2, 3, 5, 6];
+
+    /** @var DoubleBufferedProductTable */
     private $table;
 
-    public function __construct(DoubleBufferedFulfillmentTable $table)
+    public function __construct(DoubleBufferedProductTable $table)
     {
         $this->table = $table;
     }
 
     /**
-     * Import from standard downloaded file (uploads/fflhub-rsr/fulfillment-inv-new.txt).
+     * Import from standard downloaded file (uploads/fflhub-rsr/rsrinventory-new.txt).
      *
      * @return int Number of rows imported.
      */
@@ -41,7 +49,7 @@ class RSRFulfillmentImporterService
     {
         $uploads   = wp_upload_dir();
         $base_dir  = trailingslashit($uploads['basedir']) . 'fflhub-rsr';
-        $file_path = trailingslashit($base_dir) . 'fulfillment-inv-new.txt';
+        $file_path = trailingslashit($base_dir) . 'rsrinventory-new.txt';
 
         if (! file_exists($file_path) || ! is_readable($file_path)) {
             $this->log_debug('[FFLHub][RSR Import] File missing or unreadable at ' . $file_path);
@@ -113,6 +121,9 @@ class RSRFulfillmentImporterService
         global $wpdb;
 
         $t_start = microtime(true);
+        $excluded_dept_numbers = $this->get_excluded_department_numbers();
+        $deleted_missing_upc = 0;
+        $deleted_excluded_dept = 0;
 
         if (! file_exists($file_path) || ! is_readable($file_path)) {
             $this->log_debug('[FFLHub][RSR Import][LOAD DATA] file missing or not readable at ' . $file_path);
@@ -240,7 +251,8 @@ class RSRFulfillmentImporterService
 
                 ground_shipments_only = CASE WHEN UPPER(TRIM(TRIM(BOTH '\\r' FROM @c66))) = 'Y' THEN '1' ELSE '0' END,
                 adult_sig_required    = CASE WHEN UPPER(TRIM(TRIM(BOTH '\\r' FROM @c67))) = 'Y' THEN '1' ELSE '0' END,
-                blocked_from_dropship = CASE WHEN UPPER(TRIM(TRIM(BOTH '\\r' FROM @c68))) = 'Y' THEN '1' ELSE '0' END,
+                dropship_enabled      = CASE WHEN UPPER(TRIM(TRIM(BOTH '\\r' FROM @c68))) = 'Y' THEN '0' ELSE '1' END,
+                dropship_block_reason = CASE WHEN UPPER(TRIM(TRIM(BOTH '\\r' FROM @c68))) = 'Y' THEN 'blocked_from_dropship' ELSE NULL END,
 
                 date_entered          = TRIM(TRIM(BOTH '\\r' FROM @c69)),
                 retail_map            = TRIM(TRIM(BOTH '\\r' FROM @c70)),
@@ -268,7 +280,26 @@ class RSRFulfillmentImporterService
             }
 
             // Post-clean: remove rows with empty UPC.
-            $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $deleted_missing_upc = (int) $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+            // Department-level filter for accessory-only RSR accounts.
+            if (!empty($excluded_dept_numbers)) {
+                $placeholders = implode(', ', array_fill(0, count($excluded_dept_numbers), '%d'));
+                $delete_by_dept_sql = "
+                    DELETE FROM {$table_name}
+                    WHERE dept_number IS NOT NULL
+                      AND TRIM(dept_number) <> ''
+                      AND CAST(TRIM(dept_number) AS UNSIGNED) IN ({$placeholders})
+                ";
+                $prepared_delete_by_dept = $wpdb->prepare($delete_by_dept_sql, $excluded_dept_numbers);
+                $delete_result = $wpdb->query($prepared_delete_by_dept);
+
+                if ($delete_result === false) {
+                    $this->log_debug('[FFLHub][RSR Import][LOAD DATA] department filter delete failed: ' . $wpdb->last_error);
+                } else {
+                    $deleted_excluded_dept = (int) $delete_result;
+                }
+            }
         } catch (\Throwable $e) {
             $this->log_debug('[FFLHub][RSR Import][LOAD DATA] exception: ' . $e->getMessage());
             return -1;
@@ -286,11 +317,14 @@ class RSRFulfillmentImporterService
 
         $this->log_debug(
             sprintf(
-                '[FFLHub][RSR Import] import_fulfillment_file_via_load_data(): total=%.2f ms (sql=%.2f ms), rows=%d, ignore_lines=%d',
+                '[FFLHub][RSR Import] import_fulfillment_file_via_load_data(): total=%.2f ms (sql=%.2f ms), rows=%d, ignore_lines=%d, deleted_missing_upc=%d, deleted_excluded_dept=%d, excluded_depts=%s',
                 $t_total_ms,
                 $t_sql_ms,
                 $rows,
-                $ignore_lines
+                $ignore_lines,
+                $deleted_missing_upc,
+                $deleted_excluded_dept,
+                empty($excluded_dept_numbers) ? '[]' : implode(',', $excluded_dept_numbers)
             )
         );
 
@@ -331,7 +365,7 @@ class RSRFulfillmentImporterService
         // Start with a clean staging table.
         $wpdb->query("TRUNCATE TABLE {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
-        $parser = new RSRFulfillmentParser();
+        $parser = new RSRProductParser();
 
         // Bigger batch = fewer INSERT statements.
         $batch_size          = 1000;
@@ -339,6 +373,9 @@ class RSRFulfillmentImporterService
         $total_import        = 0;
         $line_number         = 0;
         $skipped_missing_upc = 0;
+        $skipped_excluded_dept = 0;
+        $excluded_dept_numbers = $this->get_excluded_department_numbers();
+        $excluded_dept_lookup  = array_fill_keys(array_map('strval', $excluded_dept_numbers), true);
 
         $batch_flushes  = 0;
         $batch_failures = 0;
@@ -426,6 +463,12 @@ class RSRFulfillmentImporterService
                 continue;
             }
 
+            $dept_num = $this->normalize_department_number($row['dept_number'] ?? null);
+            if ($dept_num !== null && isset($excluded_dept_lookup[(string) $dept_num])) {
+                $skipped_excluded_dept++;
+                continue;
+            }
+
             $batch_rows[] = $row;
 
             if (count($batch_rows) >= $batch_size) {
@@ -454,12 +497,14 @@ class RSRFulfillmentImporterService
 
         $this->log_debug(
             sprintf(
-                '[FFLHub][RSR Import] import_fulfillment_file_via_php(): total=%.2f ms, parse+loop=%.2f ms, db_flush=%.2f ms, inserted_rows=%d, skipped_missing_upc=%d, batch_flushes=%d, batch_failures=%d',
+                '[FFLHub][RSR Import] import_fulfillment_file_via_php(): total=%.2f ms, parse+loop=%.2f ms, db_flush=%.2f ms, inserted_rows=%d, skipped_missing_upc=%d, skipped_excluded_dept=%d, excluded_depts=%s, batch_flushes=%d, batch_failures=%d',
                 $t_import_total_ms,
                 $t_parse_ms,
                 $t_flush_ms,
                 $total_import,
                 $skipped_missing_upc,
+                $skipped_excluded_dept,
+                empty($excluded_dept_numbers) ? '[]' : implode(',', $excluded_dept_numbers),
                 $batch_flushes,
                 $batch_failures
             )
@@ -471,5 +516,51 @@ class RSRFulfillmentImporterService
     private function log_debug(string $message): void
     {
         DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHub][RSRImporter]', $message);
+    }
+
+    /**
+     * @return array<int,int>
+     */
+    private function get_excluded_department_numbers(): array
+    {
+        $raw = apply_filters('fflhub_rsr_import_excluded_dept_numbers', self::DEFAULT_EXCLUDED_DEPARTMENT_NUMBERS);
+        if (!is_array($raw)) {
+            $raw = self::DEFAULT_EXCLUDED_DEPARTMENT_NUMBERS;
+        }
+
+        $normalized = [];
+        foreach ($raw as $v) {
+            $dept = $this->normalize_department_number($v);
+            if ($dept === null) {
+                continue;
+            }
+            $normalized[$dept] = $dept;
+        }
+
+        ksort($normalized, SORT_NUMERIC);
+        return array_values($normalized);
+    }
+
+    /**
+     * Normalize department number values like "01" => 1.
+     */
+    private function normalize_department_number($value): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return null;
+        }
+
+        $digits = preg_replace('/\D+/', '', $raw);
+        $digits = is_string($digits) ? $digits : '';
+        if ($digits === '') {
+            return null;
+        }
+
+        return (int) $digits;
     }
 }

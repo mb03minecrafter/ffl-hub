@@ -16,7 +16,7 @@ final class UpcLookupTestCommand
 {
     /**
      * Test DistributorProductHelper::get_upc_lookup_result_from_distributors()
-     * against all unique UPCs found in live RSR + Lipsey's fulfillment tables.
+     * against all unique UPCs found in live RSR + Lipsey's product tables.
      *
      * ## OPTIONS
      *
@@ -72,18 +72,18 @@ final class UpcLookupTestCommand
 
         // Discover current live tables by looking for the latest *vN* that exists.
         // (Adjust if you have a canonical place to read "live" table name.)
-        $rsr_table     = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_rsr_fulfillment_v');
-        $lipseys_table = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_lipseys_fulfillment_v');
+        $rsr_table     = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_rsr_product_v');
+        $lipseys_table = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_lipseys_product_v');
 
         if ($source === 'rsr' || $source === 'both') {
             if ($rsr_table === '') {
-                \WP_CLI::error("Could not find an existing RSR fulfillment table matching {$wpdb->prefix}fflhub_rsr_fulfillment_v*");
+                \WP_CLI::error("Could not find an existing RSR product table matching {$wpdb->prefix}fflhub_rsr_product_v*");
                 return;
             }
         }
         if ($source === 'lipseys' || $source === 'both') {
             if ($lipseys_table === '') {
-                \WP_CLI::error("Could not find an existing Lipsey's fulfillment table matching {$wpdb->prefix}fflhub_lipseys_fulfillment_v*");
+                \WP_CLI::error("Could not find an existing Lipsey's product table matching {$wpdb->prefix}fflhub_lipseys_product_v*");
                 return;
             }
         }

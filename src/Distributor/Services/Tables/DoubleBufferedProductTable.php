@@ -9,13 +9,13 @@ if (! defined('ABSPATH')) {
 }
 
 /**
- * Generic double-buffered fulfillment table:
+ * Generic double-buffered product table:
  *  - <prefix><base>_v1
  *  - <prefix><base>_v2
  *
  * "Live" vs "staging" is controlled by an option on the schema.
  */
-class DoubleBufferedFulfillmentTable implements DistributorTableInterface
+class DoubleBufferedProductTable implements DistributorTableInterface
 {
     /**
      * Optional option name used to record last swap time.
@@ -28,23 +28,23 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
     /**
      * Schema used to create our tables (columns, indexes, etc).
      *
-     * @var FulfillmentSchemaInterface
+     * @var ProductSchemaInterface
      */
-    protected $fulfillmentSchema;
+    protected $productSchema;
 
     /**
-     * @param FulfillmentSchemaInterface $fulfillmentSchema
+     * @param ProductSchemaInterface $productSchema
      * @param string                     $SWAP_TIMESTAMP_OPTION
      */
-    public function __construct(FulfillmentSchemaInterface $fulfillmentSchema, string $SWAP_TIMESTAMP_OPTION)
+    public function __construct(ProductSchemaInterface $productSchema, string $SWAP_TIMESTAMP_OPTION)
     {
-        $this->fulfillmentSchema     = $fulfillmentSchema;
+        $this->productSchema         = $productSchema;
         $this->SWAP_TIMESTAMP_OPTION = $SWAP_TIMESTAMP_OPTION;
     }
 
-    public function get_schema(): FulfillmentSchemaInterface
+    public function get_schema(): ProductSchemaInterface
     {
-        return $this->fulfillmentSchema;
+        return $this->productSchema;
     }
 
     /**
@@ -54,7 +54,7 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
     {
         global $wpdb;
 
-        return $wpdb->prefix . $this->fulfillmentSchema->get_base_table_key() . '_' . $suffix;
+        return $wpdb->prefix . $this->productSchema->get_base_table_key() . '_' . $suffix;
     }
 
     /**
@@ -63,7 +63,7 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
     public function get_live_table_name(): string
     {
         $default     = $this->get_table_name_with_suffix('v1');
-        $option_name = $this->fulfillmentSchema->get_live_table_option_name();
+        $option_name = $this->productSchema->get_live_table_option_name();
         $stored      = get_option($option_name);
 
         if (is_string($stored) && $stored !== '') {
@@ -107,7 +107,7 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
      */
     public function swap_live_and_staging(): string
     {
-        $option_name = $this->fulfillmentSchema->get_live_table_option_name();
+        $option_name = $this->productSchema->get_live_table_option_name();
 
         $current_live  = $this->get_live_table_name();
         $current_stage = $this->get_staging_table_name();
@@ -151,8 +151,8 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
             return;
         }
 
-        $cols    = $this->fulfillmentSchema->get_column_definitions();
-        $indexes = $this->fulfillmentSchema->get_index_definitions();
+        $cols    = $this->productSchema->get_column_definitions();
+        $indexes = $this->productSchema->get_index_definitions();
 
         $lines = array();
 
@@ -220,7 +220,7 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
 
         // Resolve columns from schema if not explicitly provided.
         if ($columns === null) {
-            $columns = $this->fulfillmentSchema->get_insert_columns();
+            $columns = $this->productSchema->get_insert_columns();
         }
 
         if (empty($columns)) {
@@ -268,7 +268,7 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
 
                 $this->log_debug(
                     sprintf(
-                        '[FFLHub][DoubleBufferedFulfillmentTable] Batch INSERT OK: table=%s, batch_rows=%d, inserted=%d',
+                        '[FFLHub][DoubleBufferedProductTable] Batch INSERT OK: table=%s, batch_rows=%d, inserted=%d',
                         $table,
                         count($batch_placeholders),
                         (int) $result
@@ -277,7 +277,7 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
             } else {
                 $batch_failures++;
                 $this->log_debug(
-                    '[FFLHub][DoubleBufferedFulfillmentTable] Batch INSERT FAILED: table=' . $table . ' error=' . (string) $wpdb->last_error
+                    '[FFLHub][DoubleBufferedProductTable] Batch INSERT FAILED: table=' . $table . ' error=' . (string) $wpdb->last_error
                 );
             }
 
@@ -315,7 +315,7 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
         $elapsed_ms = (microtime(true) - $t_start) * 1000;
         $this->log_debug(
             sprintf(
-                '[FFLHub][DoubleBufferedFulfillmentTable] insert_rows_into_staging(): input_rows=%d, inserted_rows=%d, batch_size=%d, batches=%d, failures=%d, elapsed=%.2f ms',
+                '[FFLHub][DoubleBufferedProductTable] insert_rows_into_staging(): input_rows=%d, inserted_rows=%d, batch_size=%d, batches=%d, failures=%d, elapsed=%.2f ms',
                 count($rows),
                 (int) $total_inserted,
                 (int) $batch_size,
@@ -405,10 +405,10 @@ class DoubleBufferedFulfillmentTable implements DistributorTableInterface
 
     private function log_debug(string $message): void
     {
-        DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHub][DoubleBufferedFulfillmentTable]', $message);
+        DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHub][DoubleBufferedProductTable]', $message);
     }
 
-    private function log_memory_summary(int $mem_start, string $prefix = '[FFLHub][DoubleBufferedFulfillmentTable]'): void
+    private function log_memory_summary(int $mem_start, string $prefix = '[FFLHub][DoubleBufferedProductTable]'): void
     {
         $mem_end = function_exists('memory_get_usage') ? memory_get_usage(true) : 0;
         if ($mem_start > 0 && $mem_end > 0) {

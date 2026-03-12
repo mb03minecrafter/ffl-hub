@@ -125,6 +125,7 @@ class DistributorLipseys extends DistributorBase
                 'category'     => ['item_group'],
                 'image'        => ['image_name'],
                 'ffl_required' => ['ffl_required'],
+                'dropship_enabled' => ['dropship_enabled'],
             ],
             [DistributorProductCategoryMapper::class, 'map_lipseys'],
             $normalized_upc,

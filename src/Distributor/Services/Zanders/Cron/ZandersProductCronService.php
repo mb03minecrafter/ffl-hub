@@ -1,30 +1,30 @@
 <?php
 
-namespace FFLHub\Distributor\Services\RSR\Cron;
+namespace FFLHub\Distributor\Services\Zanders\Cron;
 
 if (!defined('ABSPATH')) {
     exit;
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
-use FFLHub\Distributor\Services\RSR\RSRFulfillmentImporterService;
-use FFLHub\Settings\Options;
+use FFLHub\Distributor\Services\Zanders\ZandersProductImporterService;
+use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
 use FFLHub\Util\DebugLogUtil;
 
 /**
- * WP-Cron job to regularly download the RSR fulfillment catalog file
- * (fulfillment-inv-new.txt) from the RSR FTP server into uploads/fflhub-rsr/,
+ * WP-Cron job to regularly download the Zanders inventory fulfillment CSV
+ * (/Inventory/zandersinv.csv) from the Zanders FTP server into uploads/fflhub-zanders/,
  * then import it into the staging table and swap staging ↔ live.
  */
-final class RSRFulfillmentCronService extends AbstractTableCronService
+final class ZandersProductCronService extends AbstractTableCronService
 {
     /**
-     * Cron hook name for RSR fulfillment refresh.
+     * Cron hook name for Zanders fulfillment refresh.
      */
-    public const CRON_HOOK = 'fflhub_rsr_fulfillment_update';
+    public const CRON_HOOK = 'fflhub_zanders_fulfillment_update';
 
     /**
      * Debug gate constant (define('FFLHUB_CRON_DEBUG', true);).
@@ -34,44 +34,52 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
     /**
      * Log prefix.
      */
-    private const LOG_PREFIX = '[FFLHUB][RSRFulfillmentCron]';
+    private const LOG_PREFIX = '[FFLHUB][ZandersProductCron]';
 
     /**
      * Option key used to rate-limit FTP meta checks (avoid repeated handshakes).
      */
-    private const OPT_LAST_CHECKED_AT = 'fflhub_rsr_fulfillment_last_checked_at';
+    private const OPT_LAST_CHECKED_AT = 'fflhub_zanders_fulfillment_last_checked_at';
 
     /**
-     * Vendor updates ~ every 2 hours.
+     * Tune: Zanders update cadence unknown; start same as RSR.
      * After we successfully applied a new mtime, skip FTP for a while to save connection cost.
      */
-    private const FTP_COOLDOWN_SECONDS = 2700; // 45 minutes
+    private const FTP_COOLDOWN_SECONDS = 20 * HOUR_IN_SECONDS; // 20 hours
 
     /**
      * Hard minimum gap between FTP checks (guards overlaps / double-runs).
      */
     private const FTP_MIN_CHECK_GAP_SECONDS = 300; // 5 minutes
 
-    public function __construct(DoubleBufferedFulfillmentTable $table)
+    /**
+     * Remote CSV path on Zanders FTP.
+     */
+    private const REMOTE_PATH = '/Inventory/zandersinv.csv';
+
+    /**
+     * Local directory under uploads.
+     */
+    private const LOCAL_DIR = 'fflhub-zanders';
+
+    /**
+     * Local filename to save as.
+     */
+    private const LOCAL_FILE_NAME = 'zandersinv.csv';
+
+    public function __construct(DoubleBufferedProductTable $table)
     {
         parent::__construct($table);
     }
 
-    /**
-     * Unique cron hook name.
-     */
     public function get_cron_hook_name(): string
     {
         return self::CRON_HOOK;
     }
 
-    /**
-     * Interval length in seconds.
-     * (You can keep this frequent; cooldown+throttle will prevent expensive FTP connects.)
-     */
     protected function get_interval_seconds(): int
     {
-        return 60;
+        return 15 * MINUTE_IN_SECONDS;
     }
 
     public function get_action_group(): string
@@ -79,20 +87,11 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         return 'fflhub_catalog';
     }
 
-    /**
-     * Delay before first run (keeps your old 5-minute initial delay).
-     */
     protected function get_initial_delay_seconds(): int
     {
         return 5 * MINUTE_IN_SECONDS;
     }
 
-    /**
-     * Cron callback:
-     *  1) Download fulfillment-inv-new.zip from RSR FTP to uploads.
-     *  2) Import it into the STAGING table.
-     *  3) Swap staging ↔ live if import succeeded.
-     */
     public function run(): void
     {
         $t_start   = microtime(true);
@@ -102,13 +101,20 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             @set_time_limit(0);
         }
 
+        $force_update = $this->should_force_update();
+
         $this->log('---- RUN START ----', [
             'pid'          => function_exists('getmypid') ? (int) getmypid() : 0,
             'memory_kb'    => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
             'hook'         => self::CRON_HOOK,
             'group'        => $this->get_action_group(),
             'interval_sec' => $this->get_interval_seconds(),
+            'force_update' => $force_update ? 1 : 0,
         ]);
+
+        if ($force_update) {
+            $this->log('FORCE_UPDATE enabled - bypassing cooldown/mtime gates');
+        }
 
         // 0) Load FTP credentials.
         $t_creds = microtime(true);
@@ -119,6 +125,7 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             'has_host' => is_array($creds) ? (bool) ($creds['host'] ?? '') : false,
             'has_user' => is_array($creds) ? (bool) ($creds['username'] ?? '') : false,
             'has_ssl'  => is_array($creds) ? (bool) ($creds['use_ssl'] ?? false) : false,
+            'port'     => is_array($creds) ? (int) ($creds['port'] ?? 0) : 0,
         ]);
 
         if (!is_array($creds)) {
@@ -129,11 +136,12 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         $host     = (string) $creds['host'];
         $username = (string) $creds['username'];
         $password = (string) $creds['password'];
-        $use_ssl  = (bool) $creds['use_ssl'];
+        $use_ssl  = (bool) $creds['use_ssl']; // should be false for Zanders
+        $port     = (int) ($creds['port'] ?? 21);
 
         // Local save dir.
         $uploads  = wp_upload_dir();
-        $base_dir = trailingslashit($uploads['basedir']) . 'fflhub-rsr';
+        $base_dir = trailingslashit($uploads['basedir']) . self::LOCAL_DIR;
 
         $t_paths = microtime(true);
 
@@ -146,18 +154,13 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             return;
         }
 
-        $file_name      = 'fulfillment-inv-new.txt';
-        $local_path     = trailingslashit($base_dir) . $file_name;
-        $zip_name       = 'fulfillment-inv-new.zip';
-        $local_zip_path = trailingslashit($base_dir) . $zip_name;
-
-        $remote_path = '/ftpdownloads/fulfillment-inv-new.zip';
+        $local_path  = trailingslashit($base_dir) . self::LOCAL_FILE_NAME;
+        $remote_path = self::REMOTE_PATH;
 
         $this->profile('Prepare local paths', $t_paths, [
-            'base_dir'       => (string) $base_dir,
-            'remote_zip'     => (string) $remote_path,
-            'local_zip_path' => (string) $local_zip_path,
-            'local_txt_path' => (string) $local_path,
+            'base_dir'    => (string) $base_dir,
+            'remote_csv'  => (string) $remote_path,
+            'local_csv'   => (string) $local_path,
         ]);
 
         // ---------------------------------------------------------------------
@@ -165,9 +168,10 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         // ---------------------------------------------------------------------
         $pre_gate = FTPFreshnessGate::evaluate_pre_connect(
             self::OPT_LAST_CHECKED_AT,
-            'fflhub_rsr_fulfillment_last_applied_mtime',
+            'fflhub_zanders_fulfillment_last_applied_mtime',
             self::FTP_MIN_CHECK_GAP_SECONDS,
-            self::FTP_COOLDOWN_SECONDS
+            self::FTP_COOLDOWN_SECONDS,
+            $force_update
         );
 
         if ((bool) $pre_gate['skip']) {
@@ -182,18 +186,20 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             $host,
             $username,
             $password,
-            $use_ssl,
-            2222, // RSR port
-            30,   // timeout
-            true, // passive
-            '[FFLHub][RSR][FTP]'
+            $use_ssl, // expected false
+            $port,    // expected 21
+            30,
+            true,
+            '[FFLHub][Zanders][FTP]'
         );
+
         if (!$ftp->is_connected()) {
-            update_option('fflhub_rsr_fulfillment_last_download_error', current_time('mysql'));
+            update_option('fflhub_zanders_fulfillment_last_download_error', current_time('mysql'));
 
             $this->log('ERROR: FTP connection not available.', [
                 'host'    => $host,
                 'use_ssl' => $use_ssl ? 1 : 0,
+                'port'    => (int) $port,
             ]);
 
             $this->profile('FTP connection (failed)', $t_ftp);
@@ -205,14 +211,14 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
         // FTP freshness gate (remote mtime/size)
         // -----------------------------
         $t_meta = microtime(true);
-        $last_applied_mtime = (int) get_option('fflhub_rsr_fulfillment_last_applied_mtime', 0);
+        $last_applied_mtime = (int) get_option('fflhub_zanders_fulfillment_last_applied_mtime', 0);
         $meta_gate          = FTPFreshnessGate::evaluate_remote_meta(
             $ftp,
             $remote_path,
-            'fflhub_rsr_fulfillment_last_seen_mtime',
-            'fflhub_rsr_fulfillment_last_seen_size',
+            'fflhub_zanders_fulfillment_last_seen_mtime',
+            'fflhub_zanders_fulfillment_last_seen_size',
             $last_applied_mtime,
-            false,
+            $force_update,
             250000,
             'No update available (remote mtime unchanged) - skipping download/import/swap'
         );
@@ -226,53 +232,36 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             $this->finalize_run($t_start, $mem_start, (string) $meta_gate['status']);
             return;
         }
-        // 2) Download ZIP + extract TXT.
+        // 2) Download CSV
         $t_download = microtime(true);
 
-        $ok = $ftp->download_zip_file(
-            $remote_path,
-            $local_zip_path,
-            $base_dir,
-            false // keep zip temporarily for logging/inspection; delete after extract below
-        );
+        $ok = $ftp->download_file($remote_path, $local_path);
 
-        $zip_size_after = file_exists($local_zip_path) ? (int) filesize($local_zip_path) : 0;
-        $txt_exists     = file_exists($local_path);
-        $txt_size_after = $txt_exists ? (int) filesize($local_path) : 0;
+        $csv_exists     = file_exists($local_path);
+        $csv_size_after = $csv_exists ? (int) filesize($local_path) : 0;
 
         $this->profile('FTP download', $t_download, [
-            'ok'            => $ok ? 1 : 0,
-            'zip_kb_after'  => $zip_size_after > 0 ? (int) round($zip_size_after / 1024) : 0,
-            'txt_extracted' => $txt_exists ? 1 : 0,
-            'txt_kb_after'  => $txt_size_after > 0 ? (int) round($txt_size_after / 1024) : 0,
+            'ok'           => $ok ? 1 : 0,
+            'csv_exists'   => $csv_exists ? 1 : 0,
+            'csv_kb_after' => $csv_size_after > 0 ? (int) round($csv_size_after / 1024) : 0,
         ]);
 
         if (!$ok) {
-            update_option('fflhub_rsr_fulfillment_last_download_error', current_time('mysql'));
+            update_option('fflhub_zanders_fulfillment_last_download_error', current_time('mysql'));
             $this->log('ERROR: download failed – aborting import and swap.');
             $this->finalize_run($t_start, $mem_start, 'ERROR (download failed)');
             return;
         }
 
-        // Don’t retain ZIP on disk.
-        @unlink($local_zip_path);
-
-        update_option('fflhub_rsr_fulfillment_last_download', current_time('mysql'));
-        delete_option('fflhub_rsr_fulfillment_last_download_error');
-
-        if (!$txt_exists) {
-            $this->log('WARNING: expected extracted TXT not found after download', [
-                'local_txt_path' => (string) $local_path,
-            ]);
-            // keep going; importer may handle its own paths
-        }
+        update_option('fflhub_zanders_fulfillment_last_download', current_time('mysql'));
+        delete_option('fflhub_zanders_fulfillment_last_download_error');
 
         // 3) Import into staging.
         $t_import = microtime(true);
 
         $count = 0;
         try {
-            $importer = new RSRFulfillmentImporterService($this->table);
+            $importer = new ZandersProductImporterService($this->table);
             $count    = (int) $importer->import_from_downloaded_file();
         } catch (\Throwable $e) {
             $this->log('ERROR: exception during import', [
@@ -312,13 +301,12 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             'new_live' => (string) $new_live,
         ]);
 
-        update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'));
-        update_option('fflhub_rsr_fulfillment_last_import_count', (int) $count);
-        update_option('fflhub_rsr_fulfillment_last_swap', current_time('mysql'));
+        update_option('fflhub_zanders_fulfillment_last_import', current_time('mysql'));
+        update_option('fflhub_zanders_fulfillment_last_import_count', (int) $count);
+        update_option('fflhub_zanders_fulfillment_last_swap', current_time('mysql'));
 
-        // Mark applied mtime ONLY after a successful import+swap
         if ($remote_mtime > 0) {
-            update_option('fflhub_rsr_fulfillment_last_applied_mtime', $remote_mtime);
+            update_option('fflhub_zanders_fulfillment_last_applied_mtime', $remote_mtime);
         }
 
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
@@ -329,36 +317,26 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
     }
 
     /**
-     * Retrieve and validate FTP credentials from RSR distributor settings.
+     * Retrieve and validate FTP credentials from Zanders distributor settings.
      *
-     * @return array{host:string,username:string,password:string,use_ssl:bool}|null
+     * Note: Zanders is FTP (no TLS). We enforce use_ssl=false and port=21 defaults.
+     *
+     * @return array{host:string,username:string,password:string,use_ssl:bool,port:int}|null
      */
     public function get_ftp_credentials(): ?array
     {
-        $host      = Options::get_distributor_option('rsr', 'ftp_host', '');
-        $username  = Options::get_distributor_option('rsr', 'ftp_username', '');
-        $password  = Options::get_distributor_option('rsr', 'ftp_password', '');
-        $use_ssl_s = Options::get_distributor_option('rsr', 'ftp_use_ssl', '');
+        $loaded = ZandersFtpCredentials::load();
+        $creds = $loaded['credentials'];
 
-        $host     = trim((string) $host);
-        $username = trim((string) $username);
-        $password = trim((string) $password);
-        $use_ssl  = ($use_ssl_s !== '');
-
-        if ($host === '' || $username === '' || $password === '') {
+        if (!is_array($creds)) {
             $this->log('Missing FTP credentials', [
-                'host' => $host !== '' ? 'set' : 'empty',
-                'user' => $username !== '' ? 'set' : 'empty',
+                'host' => $loaded['has_host'] ? 'set' : 'empty',
+                'user' => $loaded['has_username'] ? 'set' : 'empty',
             ]);
             return null;
         }
 
-        return [
-            'host'     => $host,
-            'username' => $username,
-            'password' => $password,
-            'use_ssl'  => $use_ssl,
-        ];
+        return $creds;
     }
 
     // --------------------------------------------------
@@ -409,34 +387,6 @@ final class RSRFulfillmentCronService extends AbstractTableCronService
             $this->log("---- RUN END ({$status}) ----", $ctx);
         } else {
             $this->log("---- RUN END ({$status}) ----");
-        }
-    }
-
-    /**
-     * Legacy method retained for compatibility if other code calls it.
-     * (No longer used by this class after migrating to DebugLogUtil.)
-     */
-    private function log_debug(string $message): void
-    {
-        DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $message);
-    }
-
-    /**
-     * Legacy method retained for compatibility if other code calls it.
-     * (No longer used by this class after migrating to DebugLogUtil.)
-     */
-    private function log_memory_summary(int $mem_start): void
-    {
-        $mem_end = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
-        if ($mem_start > 0 && $mem_end > 0) {
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][RSR Fulfillment Cron] Memory usage summary: start=%d KB, end=%d KB, delta=%+d KB",
-                    (int) round($mem_start / 1024),
-                    (int) round($mem_end / 1024),
-                    (int) round(($mem_end - $mem_start) / 1024)
-                )
-            );
         }
     }
 }

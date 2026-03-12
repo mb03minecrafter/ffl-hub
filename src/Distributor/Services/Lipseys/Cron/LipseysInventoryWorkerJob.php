@@ -5,7 +5,7 @@ namespace FFLHub\Distributor\Services\Lipseys\Cron;
 if (!defined('ABSPATH')) exit;
 
 use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -32,7 +32,7 @@ final class LipseysInventoryWorkerJob
     private const MAX_WARNINGS_LOGGED = 25;
     private const MAX_CREATE_TABLE_CHARS = 1200;
 
-    public static function run(DoubleBufferedFulfillmentTable $table): void
+    public static function run(DoubleBufferedProductTable $table): void
     {
         $t_total = microtime(true);
 
@@ -134,7 +134,7 @@ final class LipseysInventoryWorkerJob
         ]);
     }
 
-    private static function run_heavy_inventory_update(DoubleBufferedFulfillmentTable $table, LipseysClient $client): array
+    private static function run_heavy_inventory_update(DoubleBufferedProductTable $table, LipseysClient $client): array
     {
         $t_heavy = microtime(true);
 

@@ -2,7 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Lipseys;
 
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Util\DebugLogUtil;
 
 if (! defined('ABSPATH')) {
@@ -13,11 +13,11 @@ if (! defined('ABSPATH')) {
  * Service for importing Lipsey's catalog items into the STAGING table
  * of a double-buffered fulfillment table.
  */
-class LipseysFulfillmentImporterService
+class LipseysProductImporterService
 {
-    private DoubleBufferedFulfillmentTable $table;
+    private DoubleBufferedProductTable $table;
 
-    public function __construct(DoubleBufferedFulfillmentTable $table)
+    public function __construct(DoubleBufferedProductTable $table)
     {
         $this->table = $table;
     }
@@ -73,7 +73,7 @@ class LipseysFulfillmentImporterService
         }
         $log_timing('truncate_staging', $t_trunc);
 
-        $parser              = new LipseysFulfillmentParser();
+        $parser              = new LipseysProductParser();
         $batch_size          = 250;
         $batch_rows          = [];
         $total_import        = 0;
@@ -98,7 +98,6 @@ class LipseysFulfillmentImporterService
 
             $t_parse_total += (microtime(true) - $t_parse);
 
-            // parse_item() already filters out non-drop-ship items.
             if ($row === null) {
                 continue;
             }

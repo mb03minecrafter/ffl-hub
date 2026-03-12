@@ -3,11 +3,11 @@
 namespace FFLHub\Distributor\Services\Lipseys;
 
 use FFLHub\Distributor\Services\DistributorServicesBase;
-use FFLHub\Distributor\Services\Lipseys\Cron\LipseysFulfillmentCronService;
+use FFLHub\Distributor\Services\Lipseys\Cron\LipseysProductCronService;
 use FFLHub\Distributor\Services\Lipseys\Cron\LipseysInventoryCronService;
 use FFLHub\Distributor\Services\Lipseys\Cron\LipseysShipmentsDailyCronService;
 use FFLHub\Distributor\Services\Lipseys\Tables\LipseysShipmentTable;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 
 class LipseysServices extends DistributorServicesBase
 {
@@ -15,8 +15,8 @@ class LipseysServices extends DistributorServicesBase
     private LipseysShipmentsDailyCronService $shipmentsCron;
 
     public function __construct(
-        DoubleBufferedFulfillmentTable $fulfillmentTable,
-        LipseysFulfillmentCronService $fulfillmentCron,
+        DoubleBufferedProductTable $fulfillmentTable,
+        LipseysProductCronService $fulfillmentCron,
         LipseysInventoryCronService $pricingCron,
         LipseysShipmentTable $shipmentTable,
         LipseysShipmentsDailyCronService $shipmentsCron

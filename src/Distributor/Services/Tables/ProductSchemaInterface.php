@@ -2,7 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Tables;
 
-interface FulfillmentSchemaInterface
+interface ProductSchemaInterface
 {
     public function get_base_table_key(): string;
     public function get_live_table_option_name(): string;

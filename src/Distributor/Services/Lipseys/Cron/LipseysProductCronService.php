@@ -7,19 +7,19 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
-use FFLHub\Distributor\Services\Lipseys\LipseysFulfillmentImporterService;
-use FFLHub\Distributor\Services\Lipseys\LipseysFulfillmentParser;
+use FFLHub\Distributor\Services\Lipseys\LipseysProductImporterService;
+use FFLHub\Distributor\Services\Lipseys\LipseysProductParser;
 use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
-final class LipseysFulfillmentCronService extends AbstractTableCronService
+final class LipseysProductCronService extends AbstractTableCronService
 {
     public const CRON_HOOK = 'fflhub_lipseys_fulfillment_update';
 
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
-    private const LOG_PREFIX = '[FFLHUB][LipseysFulfillmentCron]';
+    private const LOG_PREFIX = '[FFLHUB][LipseysProductCron]';
 
     /**
      * 🔁 TOGGLE:
@@ -28,18 +28,18 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
      */
     private const USE_STREAMING_CATALOG = true;
 
-    private ?LipseysFulfillmentImporterService $importer = null;
+    private ?LipseysProductImporterService $importer = null;
 
-    public function __construct(DoubleBufferedFulfillmentTable $table)
+    public function __construct(DoubleBufferedProductTable $table)
     {
-        $this->importer = new LipseysFulfillmentImporterService($table);
+        $this->importer = new LipseysProductImporterService($table);
         parent::__construct($table);
     }
 
-    private function get_importer(): LipseysFulfillmentImporterService
+    private function get_importer(): LipseysProductImporterService
     {
         if ($this->importer === null) {
-            $this->importer = new LipseysFulfillmentImporterService($this->table);
+            $this->importer = new LipseysProductImporterService($this->table);
         }
         return $this->importer;
     }
@@ -68,14 +68,20 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
     {
         $t_start   = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $force_update = $this->should_force_update();
 
         @set_time_limit(0);
 
         $this->log('---- RUN START ----', [
-            'pid'       => function_exists('getmypid') ? (int) getmypid() : 0,
-            'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
-            'mode'      => self::USE_STREAMING_CATALOG ? 'STREAMING_TSV' : 'ARRAY_IMPORT',
+            'pid'          => function_exists('getmypid') ? (int) getmypid() : 0,
+            'memory_kb'    => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
+            'mode'         => self::USE_STREAMING_CATALOG ? 'STREAMING_TSV' : 'ARRAY_IMPORT',
+            'force_update' => $force_update ? 1 : 0,
         ]);
+
+        if ($force_update) {
+            $this->log('FORCE_UPDATE enabled - no freshness gate for Lipseys product cron');
+        }
 
         // Credentials
         $dealer_email    = trim((string) Options::get_distributor_option('lipseys', 'dealer_email', ''));
@@ -130,7 +136,7 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
             $columns = $schema->get_insert_columns();
 
             // 3) Item → Row mapper uses your existing parser (dropship filter happens there)
-            $parser = new LipseysFulfillmentParser();
+            $parser = new LipseysProductParser();
 
             // Enforce "first wins" de-dupe in the streaming mapper.
             $seen_upcs = [];
@@ -176,8 +182,13 @@ final class LipseysFulfillmentCronService extends AbstractTableCronService
             // 5) Handle errors/unauthorized
             if (!is_array($result) || empty($result) || (isset($result['success']) && $result['success'] !== true)) {
                 $this->log('ERROR: CatalogToTsv failed', [
-                    'authorized' => $result['authorized'] ?? null,
-                    'errors'     => $result['errors'] ?? null,
+                    'authorized'        => $result['authorized'] ?? null,
+                    'errors'            => $result['errors'] ?? null,
+                    'http_code'         => $result['http_code'] ?? null,
+                    'curl_errno'        => $result['curl_errno'] ?? null,
+                    'curl_error'        => $result['curl_error'] ?? null,
+                    'bytes_received'    => $result['bytes_received'] ?? null,
+                    'login_diagnostics' => $result['login_diagnostics'] ?? null,
                 ]);
                 $this->finalize_run($t_start, $mem_start, 'ERROR');
                 return;

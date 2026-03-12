@@ -10,15 +10,15 @@ use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 
 use FFLHub\Distributor\Services\Lipseys\LipseysServices;
-use FFLHub\Distributor\Services\Lipseys\Cron\LipseysFulfillmentCronService;
+use FFLHub\Distributor\Services\Lipseys\Cron\LipseysProductCronService;
 use FFLHub\Distributor\Services\Lipseys\Cron\LipseysInventoryCronService;
 use FFLHub\Distributor\Services\Lipseys\Cron\LipseysShipmentsDailyCronService;
 
-use FFLHub\Distributor\Services\Lipseys\Tables\LipseysFulfillmentSchema;
+use FFLHub\Distributor\Services\Lipseys\Tables\LipseysProductTableSchema;
 use FFLHub\Distributor\Services\Lipseys\Tables\LipseysShipmentSchema;
 use FFLHub\Distributor\Services\Lipseys\Tables\LipseysShipmentTable;
 
-use FFLHub\Distributor\Services\Tables\DoubleBufferedFulfillmentTable;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 
 /**
  * Lipsey's distributor "module" definition.
@@ -137,7 +137,7 @@ final class LipseysModule implements DistributorModuleInterface
     public function build_distributor(): DistributorBase
     {
         // Schema definitions (single source of truth for table columns/indexes).
-        $schema         = new LipseysFulfillmentSchema();
+        $schema         = new LipseysProductTableSchema();
         $shipmentSchema = new LipseysShipmentSchema();
 
         /**
@@ -147,9 +147,9 @@ final class LipseysModule implements DistributorModuleInterface
          * - front-end reads always hit "live" table
          *
          * The swap key is stored as an option/transient-like mechanism
-         * (implementation-dependent in DoubleBufferedFulfillmentTable).
+         * (implementation-dependent in DoubleBufferedProductTable).
          */
-        $table = new DoubleBufferedFulfillmentTable(
+        $table = new DoubleBufferedProductTable(
             $schema,
             'fflhub_lipseys_fulfillment_last_swap'
         );
@@ -163,7 +163,7 @@ final class LipseysModule implements DistributorModuleInterface
          * - inventory cron: refreshes inventory quantities (may be lighter weight)
          * - shipments daily cron: ingests shipment/tracking data (daily cadence)
          */
-        $fulfillmentCron = new LipseysFulfillmentCronService($table);
+        $fulfillmentCron = new LipseysProductCronService($table);
         $inventoryCron   = new LipseysInventoryCronService($table);
 
         $shipmentCron = new LipseysShipmentsDailyCronService($shipmentTable);

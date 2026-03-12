@@ -113,19 +113,19 @@ final class StressCreateProductsCommand
         $csv_path = isset($assoc_args['csv']) ? (string) $assoc_args['csv'] : '';
 
         // Detect latest fulfillment tables
-        $rsr_table     = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_rsr_fulfillment_v');
-        $lipseys_table = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_lipseys_fulfillment_v');
-        $zanders_table = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_zanders_fulfillment_v');
+        $rsr_table     = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_rsr_product_v');
+        $lipseys_table = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_lipseys_product_v');
+        $zanders_table = $this->find_latest_existing_table($wpdb, $wpdb->prefix . 'fflhub_zanders_product_v');
 
         $want_rsr     = ($source === 'rsr' || $source === 'both' || $source === 'all');
         $want_lipseys = ($source === 'lipseys' || $source === 'both' || $source === 'all');
         $want_zanders = ($source === 'zanders' || $source === 'all');
 
         if ($want_rsr && $rsr_table === '') {
-            \WP_CLI::warning('RSR fulfillment table not found.');
+            \WP_CLI::warning('RSR product table not found.');
         }
         if ($want_lipseys && $lipseys_table === '') {
-            \WP_CLI::warning("Lipsey's fulfillment table not found.");
+            \WP_CLI::warning("Lipsey's product table not found.");
         }
         if ($want_zanders && $zanders_table === '') {
             \WP_CLI::warning("Zanders fulfillment table not found.");
@@ -640,15 +640,15 @@ final class StressCreateProductsCommand
         // Return: [kind, params[]]
         // kind is a small string that indicates how to interpret stock columns.
 
-        if (strpos($table, 'fflhub_lipseys_fulfillment_') !== false) {
+        if (strpos($table, 'fflhub_lipseys_product_') !== false) {
             return ['LIPSEYS', []];
         }
 
-        if (strpos($table, 'fflhub_rsr_fulfillment_') !== false) {
+        if (strpos($table, 'fflhub_rsr_product_') !== false) {
             return ['RSR', []];
         }
 
-        if (strpos($table, 'fflhub_zanders_fulfillment_') !== false) {
+        if (strpos($table, 'fflhub_zanders_product_') !== false) {
             return ['ZANDERS', []];
         }
 
