@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
  *
  * Expected source columns:
  * available, category, desc1, desc2, itemnumber, manufacturer, mfgpnumber,
- * msrp, price1, price2, price3, qty1, qty2, qty3, upc, weight, serialized, mapprice
+ * msrp, price1, price2, price3, qty1, qty2, qty3, upc, weight (lbs), serialized, mapprice
  */
 class ZandersProductParser
 {
@@ -82,7 +82,7 @@ class ZandersProductParser
             'manufacturer'        => $manufacturer,
             'mfg_model_number'    => $this->get($csv, $header_map, 'mfgpnumber'),
 
-            'shipping_weight' => $this->to_decimal_or_null($this->get($csv, $header_map, 'weight')),
+            'shipping_weight' => $this->pounds_to_ounces_or_null($this->get($csv, $header_map, 'weight')),
 
             'price_2'    => $this->get($csv, $header_map, 'price2'),
             'price_3'    => $this->get($csv, $header_map, 'price3'),
@@ -150,10 +150,10 @@ class ZandersProductParser
     }
 
     /**
-     * Decimal normalize for shipping_weight (DECIMAL(10,2) or NULL).
+     * Convert source pounds to ounces for shipping_weight (DECIMAL(10,2) or NULL).
      * Accepts blank/"" => NULL.
      */
-    private function to_decimal_or_null(string $v): ?string
+    private function pounds_to_ounces_or_null(string $v): ?string
     {
         $v = trim($v);
         if ($v === '' || $v === '""') {
@@ -168,7 +168,10 @@ class ZandersProductParser
             return null;
         }
 
-        return number_format((float) $clean, 2, '.', '');
+        $pounds = (float) $clean;
+        $ounces = $pounds * 16.0;
+
+        return number_format($ounces, 2, '.', '');
     }
 
     private function to_bool_flag(string $v): string

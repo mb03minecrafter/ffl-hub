@@ -37,7 +37,7 @@ if (!defined('ABSPATH')) {
  * item_type
  * manufacturer
  * mfg_model_number
- * shipping_weight
+ * shipping_weight (stored in ounces; source `weight` is pounds)
  * price_2
  * price_3
  * bulk_qty_1
@@ -301,7 +301,7 @@ class ZandersProductImporterService
 
                 shipping_weight      = CASE
                                         WHEN TRIM(BOTH '\\r' FROM @c15) IN ('', '\"\"') THEN NULL
-                                        ELSE CAST(TRIM(BOTH '\\r' FROM @c15) AS DECIMAL(10,2))
+                                        ELSE ROUND(CAST(TRIM(BOTH '\\r' FROM @c15) AS DECIMAL(10,4)) * 16, 2)
                                       END,
 
                 serialized           = CASE
