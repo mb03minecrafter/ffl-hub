@@ -107,6 +107,20 @@ final class LipseysModule implements DistributorModuleInterface
     public function settings_schema(): array
     {
         return [
+            'main_account_email' => [
+                'label'       => 'Main Account Email',
+                'type'        => 'text',
+                'placeholder' => '',
+                'description' => "Your Lipsey's main account email used for catalog imports.",
+                'default'     => '',
+            ],
+            'main_account_password' => [
+                'label'       => 'Main Account Password',
+                'type'        => 'password',
+                'placeholder' => '',
+                'description' => "Password for your Lipsey's main account used for catalog imports.",
+                'default'     => '',
+            ],
             'dealer_email' => [
                 'label'       => 'Dealer Email',
                 'type'        => 'text',

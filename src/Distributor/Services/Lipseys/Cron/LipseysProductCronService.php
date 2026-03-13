@@ -83,19 +83,37 @@ final class LipseysProductCronService extends AbstractTableCronService
             $this->log('FORCE_UPDATE enabled - no freshness gate for Lipseys product cron');
         }
 
-        // Credentials
-        $dealer_email    = trim((string) Options::get_distributor_option('lipseys', 'dealer_email', ''));
-        $dealer_password = trim((string) Options::get_distributor_option('lipseys', 'dealer_password', ''));
+        // Catalog credentials:
+        // - Prefer dedicated main-account creds for full catalog visibility.
+        // - Fall back to dealer creds if main-account creds are not configured.
+        $main_email       = trim((string) Options::get_distributor_option('lipseys', 'main_account_email', ''));
+        $main_password    = trim((string) Options::get_distributor_option('lipseys', 'main_account_password', ''));
+        $dealer_email     = trim((string) Options::get_distributor_option('lipseys', 'dealer_email', ''));
+        $dealer_password  = trim((string) Options::get_distributor_option('lipseys', 'dealer_password', ''));
+        $has_main_email   = ($main_email !== '');
+        $has_main_pass    = ($main_password !== '');
+        $use_main_catalog = ($has_main_email && $has_main_pass);
 
-        if ($dealer_email === '' || $dealer_password === '') {
-            $this->log('ERROR: missing Lipseys credentials');
+        if ($has_main_email xor $has_main_pass) {
+            $this->log('WARNING: incomplete main-account catalog credentials; using dealer credentials fallback');
+        }
+
+        $catalog_email    = $use_main_catalog ? $main_email : $dealer_email;
+        $catalog_password = $use_main_catalog ? $main_password : $dealer_password;
+
+        if ($catalog_email === '' || $catalog_password === '') {
+            $this->log('ERROR: missing Lipseys catalog credentials (set main_account_* or dealer_*)');
             $this->finalize_run($t_start, $mem_start, 'ERROR');
             return;
         }
 
+        $this->log('Catalog credential source selected', [
+            'source' => $use_main_catalog ? 'main_account' : 'dealer_fallback',
+        ]);
+
         // Client
         try {
-            $client = new LipseysClient($dealer_email, $dealer_password);
+            $client = new LipseysClient($catalog_email, $catalog_password);
         } catch (\Throwable $e) {
             $this->log('ERROR: LipseysClient init failed', ['error' => $e->getMessage()]);
             $this->finalize_run($t_start, $mem_start, 'ERROR');
