@@ -4,6 +4,7 @@ namespace FFLHub\Distributor\Services\RSR;
 
 use FFLHub\Distributor\Services\RSR\Tables\RSRProductTableSchema;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
+use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
 if (! defined('ABSPATH')) {
@@ -188,7 +189,11 @@ class RSRProductImporterService
                 manufacturer_id              = TRIM(TRIM(BOTH '\\r' FROM @c4)),
                 retail_msrp                  = TRIM(TRIM(BOTH '\\r' FROM @c5)),
                 distributor_price            = TRIM(TRIM(BOTH '\\r' FROM @c6)),
-                product_weight_oz            = TRIM(TRIM(BOTH '\\r' FROM @c7)),
+                shipping_weight              = TRIM(TRIM(BOTH '\\r' FROM @c7)),
+                sot_required                 = CASE
+                                                  WHEN CAST(TRIM(TRIM(BOTH '\\r' FROM @c3)) AS UNSIGNED) = 6 THEN '1'
+                                                  ELSE '0'
+                                               END,
                 inventory_quantity           = TRIM(TRIM(BOTH '\\r' FROM @c8)),
                 model                        = TRIM(TRIM(BOTH '\\r' FROM @c9)),
                 full_manufacturer_name       = TRIM(TRIM(BOTH '\\r' FROM @c10)),
@@ -523,6 +528,10 @@ class RSRProductImporterService
      */
     private function get_excluded_department_numbers(): array
     {
+        if (! $this->is_accessories_only_enabled()) {
+            return [];
+        }
+
         $raw = apply_filters('fflhub_rsr_import_excluded_dept_numbers', self::DEFAULT_EXCLUDED_DEPARTMENT_NUMBERS);
         if (!is_array($raw)) {
             $raw = self::DEFAULT_EXCLUDED_DEPARTMENT_NUMBERS;
@@ -539,6 +548,16 @@ class RSRProductImporterService
 
         ksort($normalized, SORT_NUMERIC);
         return array_values($normalized);
+    }
+
+    private function is_accessories_only_enabled(): bool
+    {
+        $raw = trim((string) Options::get_distributor_option('rsr', 'accessories_only', '1'));
+        if ($raw === '') {
+            return true;
+        }
+
+        return in_array(strtolower($raw), ['1', 'true', 'yes', 'y', 'on'], true);
     }
 
     /**

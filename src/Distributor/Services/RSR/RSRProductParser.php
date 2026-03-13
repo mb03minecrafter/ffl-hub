@@ -94,7 +94,7 @@ class RSRProductParser
         $manufacturer_id        = $get( $columns, 4 );
         $retail_msrp            = $get( $columns, 5 ); // maps to retail_msrp in schema
         $distributor_price      = $get( $columns, 6 ); // maps to distributor_price in schema
-        $product_weight_oz      = $get( $columns, 7 );
+        $shipping_weight        = $get( $columns, 7 );
         $inventory_quantity     = $get( $columns, 8 );
         $model                  = $get( $columns, 9 );
         $full_manufacturer_name = $get( $columns, 10 );
@@ -187,6 +187,8 @@ class RSRProductParser
         $is_blocked_dropship   = ( $blocked_raw === 'Y' );
         $dropship_enabled      = $is_blocked_dropship ? '0' : '1';
         $dropship_block_reason = $is_blocked_dropship ? 'blocked_from_dropship' : '';
+        $dept_number_numeric   = (int) preg_replace( '/\D+/', '', $dept_number );
+        $sot_required          = ( $dept_number_numeric === 6 ) ? '1' : '0';
 
         $date_entered     = $get( $columns, $date_index );
         $retail_map       = $get( $columns, $map_index );
@@ -213,7 +215,8 @@ class RSRProductParser
             'retail_msrp'                  => $retail_msrp,
 
             // Catalog
-            'product_weight_oz'            => $product_weight_oz,
+            'shipping_weight'              => $shipping_weight,
+            'sot_required'                 => $sot_required,
             'model'                        => $model,
             'full_manufacturer_name'       => $full_manufacturer_name,
             'manufacturer_part_number'     => $manufacturer_part_no,

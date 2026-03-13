@@ -616,6 +616,7 @@ abstract class DistributorBase implements DistributorInterface
         $mapPrice = (float) ($this->get_float_field($row, $map['map'] ?? []) ?? 0.0);
         $msrp     = (float) ($this->get_float_field($row, $map['msrp'] ?? []) ?? 0.0);
         $quantity = (int)   ($this->get_int_field($row, $map['quantity'] ?? []) ?? 0);
+        $shipping_weight = $this->get_string_field($row, $map['shipping_weight'] ?? ['shipping_weight']);
 
         $shipping = (float) ($this->get_shipping_cost_by_upc($normalized_upc) ?? 0.0);
 
@@ -642,6 +643,12 @@ abstract class DistributorBase implements DistributorInterface
             $ffl_required = (bool) ((int) ($this->get_int_field($row, $map['ffl_required']) ?? 0));
         }
 
+        $sot_required = false;
+        $sot_raw = $this->get_string_field($row, $map['sot_required'] ?? ['sot_required']);
+        if ($sot_raw !== null) {
+            $sot_required = $this->to_boolish($sot_raw, false);
+        }
+
         // Default true when source does not provide this yet.
         $dropship_enabled = true;
         $dropship_raw = $this->get_string_field($row, $map['dropship_enabled'] ?? ['dropship_enabled']);
@@ -664,7 +671,9 @@ abstract class DistributorBase implements DistributorInterface
             $ffl_required,
             $dropship_enabled,
             $recommended_category,
-            $row
+            $row,
+            $shipping_weight,
+            $sot_required
         );
     }
 

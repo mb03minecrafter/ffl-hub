@@ -876,6 +876,7 @@ class DistributorZanders extends DistributorBase
 
         // New schema inventory field
         $quantity = $intish($this->get_string_field($row, ['inventory_quantity']));
+        $shipping_weight = $this->get_string_field($row, ['shipping_weight']);
 
         $shipping  = (float) ($this->get_shipping_cost_by_upc($normalized_upc) ?? 0.0);
         $true_cost = $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping);
@@ -902,6 +903,7 @@ class DistributorZanders extends DistributorBase
 
         // New schema: this is now provided/derived at import time.
         $ffl_required = $to_boolish($this->get_string_field($row, ['ffl_required']) ?? '0');
+        $sot_required = $to_boolish($this->get_string_field($row, ['sot_required']) ?? '0');
         $dropship_enabled = $to_boolish($this->get_string_field($row, ['dropship_enabled']) ?? '1');
 
         return new DistributorProductPayload(
@@ -919,7 +921,9 @@ class DistributorZanders extends DistributorBase
             $ffl_required,
             $dropship_enabled,
             $recommended_category,
-            $row
+            $row,
+            $shipping_weight,
+            $sot_required
         );
     }
 

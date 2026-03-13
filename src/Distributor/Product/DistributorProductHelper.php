@@ -301,6 +301,9 @@ class DistributorProductHelper
         $map          = (float) ($selected_product->map ?? 0);
         $msrp         = (float) ($selected_product->msrp ?? 0);
         $ffl_required = (bool) ($selected_product->ffl_required ?? false);
+        $sot_required = (bool) ($selected_product->sot_required ?? false);
+        $dropship_enabled = (bool) ($selected_product->dropship_enabled ?? true);
+        $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
 
         $ship_cost = $selected_product->shipping_cost ?? null;
 
@@ -325,7 +328,9 @@ class DistributorProductHelper
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended_price);
 
         $product->update_meta_data(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required ? 1 : 0);
-        $product->update_meta_data(ProductMeta::FFLHUB_NFA_ITEM_META, 0);
+        $product->update_meta_data(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled ? 1 : 0);
+        $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight);
+        $product->update_meta_data(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required ? 1 : 0);
 
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, ProductMeta::MARKUP_MODE_GLOBAL);
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, 0);
@@ -359,8 +364,11 @@ class DistributorProductHelper
         $map       = (float) ($selected_product->map ?? 0);
         $msrp      = (float) ($selected_product->msrp ?? 0);
         $ship_cost = $selected_product->shipping_cost ?? null;
+        $dropship_enabled = ($selected_product->dropship_enabled ?? true) ? 1 : 0;
+        $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
 
         $ffl_required = ($selected_product->ffl_required ?? false) ? 1 : 0;
+        $sot_required = ($selected_product->sot_required ?? false) ? 1 : 0;
 
         /**
          * Only update meta if different (string-compare to avoid float noise).
@@ -409,6 +417,9 @@ class DistributorProductHelper
         $set_meta_if_diff(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost, 4);
         $set_meta_if_diff(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id, 0);
         $set_meta_if_diff(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required, 0);
+        $set_meta_if_diff(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required, 0);
+        $set_meta_if_diff(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled, 0);
+        $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight, 4);
 
         return $changed;
     }
@@ -508,6 +519,7 @@ class DistributorProductHelper
                 'shipping_cost' => (float) ($p->shipping_cost ?? 0),
                 'qty'           => (int) ($p->quantity ?? 0),
                 'ffl_required'  => ($p->ffl_required ?? false) ? 1 : 0,
+                'sot_required'  => ($p->sot_required ?? false) ? 1 : 0,
                 'sku'           => (string) ($p->sku ?? ''),
             ];
         }

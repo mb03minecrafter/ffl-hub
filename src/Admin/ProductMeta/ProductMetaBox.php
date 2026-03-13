@@ -67,8 +67,9 @@ class ProductMetaBox
             ProductMeta::FFLHUB_LAST_MAP_META            => __('Last MAP', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_MSRP_META           => __('Last MSRP', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META => __('Last Computed Price', 'ffl-hub'),
-            ProductMeta::FFLHUB_NFA_ITEM_META            => __('NFA Item', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_SHIPPING_COST_META            => __('Shipping Cost', 'ffl-hub'),
+            ProductMeta::FFLHUB_DROPSHIP_ENABLED_META    => __('Drop Ship Enabled', 'ffl-hub'),
+            ProductMeta::FFLHUB_SHIPPING_WEIGHT_META     => __('Shipping Weight (oz)', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_SYNC_META           => __('Last Sync At', 'ffl-hub'),
         );
 
@@ -76,6 +77,25 @@ class ProductMetaBox
 
         foreach ($fields as $key => $label) {
             $value = $product->get_meta($key, true);
+            $display_value = null;
+
+            if ($key === ProductMeta::FFLHUB_DROPSHIP_ENABLED_META) {
+                if ($value !== '' || (string) $value === '0') {
+                    $normalized = strtolower(trim((string) $value));
+                    $is_enabled = in_array($normalized, array('1', 'true', 'yes', 'y', 'on'), true);
+                    $display_value = $is_enabled ? __('Yes', 'ffl-hub') : __('No', 'ffl-hub');
+                }
+            } elseif ($key === ProductMeta::FFLHUB_SHIPPING_WEIGHT_META) {
+                if ($value !== '' || (string) $value === '0') {
+                    $weight = trim((string) $value);
+                    if (is_numeric($weight)) {
+                        $weight = rtrim(rtrim(number_format((float) $weight, 2, '.', ''), '0'), '.');
+                    }
+                    $display_value = $weight . ' oz';
+                }
+            } elseif ($value !== '' || (string) $value === '0') {
+                $display_value = (string) $value;
+            }
 
             echo '<tr>';
             echo '<th style="text-align:left;padding:2px 4px;font-weight:600;font-size:11px;">' .
@@ -83,10 +103,10 @@ class ProductMetaBox
                 '</th>';
             echo '<td style="text-align:right;padding:2px 4px;font-size:11px;">';
 
-            if ($value === '' && (string) $value !== '0') {
+            if ($display_value === null || $display_value === '') {
                 echo '<span style="color:#9ca3af;">' . esc_html__('—', 'ffl-hub') . '</span>';
             } else {
-                echo esc_html((string) $value);
+                echo esc_html($display_value);
             }
 
             echo '</td>';
@@ -95,9 +115,11 @@ class ProductMetaBox
 
         echo '</table>';
 
-        // Editable checkbox: FFL Required.
+        // Editable checkboxes: FFL Required + SOT Required.
         $raw_required = $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true);
         $ffl_required = (string) $raw_required === '1' || $raw_required === 1 || $raw_required === true;
+        $raw_sot_required = $product->get_meta(ProductMeta::FFLHUB_SOT_REQUIRED_META, true);
+        $sot_required = (string) $raw_sot_required === '1' || $raw_sot_required === 1 || $raw_sot_required === true;
 
         echo '<div style="margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb;">';
         echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;">';
@@ -106,6 +128,14 @@ class ProductMetaBox
             ' />';
         echo '<span style="font-weight:600;">' .
             esc_html__('FFL Required', 'ffl-hub') .
+            '</span>';
+        echo '</label>';
+        echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;margin-top:6px;">';
+        echo '<input type="checkbox" name="fflhub_sot_required" value="1" ' .
+            checked(true, $sot_required, false) .
+            ' />';
+        echo '<span style="font-weight:600;">' .
+            esc_html__('SOT Required', 'ffl-hub') .
             '</span>';
         echo '</label>';
         echo '</div>';
@@ -249,6 +279,10 @@ class ProductMetaBox
         // FFL Required checkbox
         $required = isset($_POST['fflhub_ffl_required']) ? 1 : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_FFL_REQUIRED_META, $required);
+
+        // SOT Required checkbox
+        $sot_required = isset($_POST['fflhub_sot_required']) ? 1 : 0;
+        $product->update_meta_data(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required);
 
         // Pricing mode
         $mode = isset($_POST['fflhub_markup_mode'])

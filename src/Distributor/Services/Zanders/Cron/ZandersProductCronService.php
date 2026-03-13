@@ -22,9 +22,10 @@ use FFLHub\Util\DebugLogUtil;
 final class ZandersProductCronService extends AbstractTableCronService
 {
     /**
-     * Cron hook name for Zanders fulfillment refresh.
+     * Cron hook name for Zanders product refresh.
      */
-    public const CRON_HOOK = 'fflhub_zanders_fulfillment_update';
+    public const CRON_HOOK = 'fflhub_zanders_product_update';
+
 
     /**
      * Debug gate constant (define('FFLHUB_CRON_DEBUG', true);).
@@ -389,4 +390,5 @@ final class ZandersProductCronService extends AbstractTableCronService
             $this->log("---- RUN END ({$status}) ----");
         }
     }
+
 }

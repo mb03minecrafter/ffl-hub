@@ -56,6 +56,14 @@ final class DistributorProductPayload
     public int $quantity;
 
     /**
+     * Product shipping weight as provided by the distributor catalog.
+     *
+     * NOTE:
+     * Units are distributor-specific (do not assume lbs/oz globally).
+     */
+    public ?string $shipping_weight;
+
+    /**
      * Estimated shipping cost for this line item (0.0 if unknown).
      *
      * NOTE:
@@ -96,6 +104,14 @@ final class DistributorProductPayload
      * If unknown, integrations should default conservatively where appropriate.
      */
     public bool $ffl_required;
+
+    /**
+     * Whether this product requires SOT/NFA handling.
+     *
+     * This is distinct from ffl_required and comes from distributor-specific fields
+     * like `sot_required` where available.
+     */
+    public bool $sot_required;
 
     /**
      * Whether this product can be shipped directly from distributor to customer.
@@ -144,6 +160,8 @@ final class DistributorProductPayload
      * @param bool   $dropship_enabled
      * @param string[]|null $recommended_category
      * @param mixed  $raw
+     * @param string|null $shipping_weight
+     * @param bool $sot_required
      */
     public function __construct(
         string $upc,
@@ -160,7 +178,9 @@ final class DistributorProductPayload
         bool $ffl_required,
         bool $dropship_enabled,
         ?array $recommended_category,
-        $raw = null
+        $raw = null,
+        ?string $shipping_weight = null,
+        bool $sot_required = false
     ) {
         // Strings: trim only; higher-level builders decide formatting/casing rules.
         $this->upc = trim($upc);
@@ -176,11 +196,15 @@ final class DistributorProductPayload
         // Quantity: never negative.
         $this->quantity = max(0, (int) $quantity);
 
+        $shipping_weight = trim((string) ($shipping_weight ?? ''));
+        $this->shipping_weight = ($shipping_weight !== '') ? $shipping_weight : null;
+
         // Shipping / true cost: never negative (and finite).
         $this->shipping_cost = max(0.0, self::finite_float($shipping_cost));
         $this->true_cost = max(0.0, self::finite_float($true_cost));
 
         $this->ffl_required = (bool) $ffl_required;
+        $this->sot_required = (bool) $sot_required;
         $this->dropship_enabled = (bool) $dropship_enabled;
         $this->recommended_category = $recommended_category;
 

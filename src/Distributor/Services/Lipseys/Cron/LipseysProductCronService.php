@@ -16,7 +16,7 @@ use FFLHub\Util\DebugLogUtil;
 
 final class LipseysProductCronService extends AbstractTableCronService
 {
-    public const CRON_HOOK = 'fflhub_lipseys_fulfillment_update';
+    public const CRON_HOOK = 'fflhub_lipseys_product_update';
 
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHUB][LipseysProductCron]';
@@ -327,4 +327,5 @@ final class LipseysProductCronService extends AbstractTableCronService
 
         $this->log("---- RUN END ({$status}) ----");
     }
+
 }

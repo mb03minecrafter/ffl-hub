@@ -44,7 +44,7 @@ class ProductMeta
     public const FFLHUB_LAST_COMPUTED_PRICE_META = '_fflhub_last_computed_price'; //last computed price (using our markup) of product : float
    
 
-    public const FFLHUB_NFA_ITEM_META = '_fflhub_nfa_item'; //markup percent of product for override: float
+    public const FFLHUB_SOT_REQUIRED_META = '_fflhub_sot_required'; // 0/1 flag
     public const FFLHUB_LAST_SYNC_META = '_fflhub_last_sync_at'; //markup percent of product for override: float
 
 
@@ -66,5 +66,7 @@ class ProductMeta
 
 
     public const FFLHUB_LAST_SHIPPING_COST_META = '_fflhub_last_shipping_cost';
+    public const FFLHUB_DROPSHIP_ENABLED_META   = '_fflhub_dropship_enabled';
+    public const FFLHUB_SHIPPING_WEIGHT_META    = '_fflhub_shipping_weight';
 
 }

@@ -420,6 +420,7 @@ class DistributorProductsPage
         $p_map       = $selected_product->map ?? null;
         $p_msrp      = $selected_product->msrp ?? null;
         $p_quantity  = $selected_product->quantity ?? null;
+        $p_shipping_weight = $selected_product->shipping_weight ?? null;
         $p_shipping  = $selected_product->shipping_cost ?? null;
         $p_true_cost = $selected_product->true_cost ?? null;
 
@@ -428,6 +429,7 @@ class DistributorProductsPage
 
         $p_image_url         = $selected_product->get_primary_image_url();
         $p_ffl_required      = (bool) ($selected_product->ffl_required ?? false);
+        $p_sot_required      = (bool) ($selected_product->sot_required ?? false);
         $p_dropship_enabled  = (bool) ($selected_product->dropship_enabled ?? true);
 
         $p_recommended_category       = $selected_product->recommended_category ?? null;
@@ -549,9 +551,25 @@ class DistributorProductsPage
                         ?>
                     </p>
                     <p>
+                        <strong><?php esc_html_e('Shipping Weight:', 'ffl-hub'); ?></strong>
+                        <?php
+                        $shipping_weight_text = trim((string) ($p_shipping_weight ?? ''));
+                        echo ' ' . esc_html($shipping_weight_text !== '' ? $shipping_weight_text : __('N/A', 'ffl-hub'));
+                        ?>
+                    </p>
+                    <p>
                         <strong><?php esc_html_e('FFL Required:', 'ffl-hub'); ?></strong>
                         <?php
                         echo ' ' . ($p_ffl_required
+                            ? esc_html__('Yes', 'ffl-hub')
+                            : esc_html__('No', 'ffl-hub')
+                        );
+                        ?>
+                    </p>
+                    <p>
+                        <strong><?php esc_html_e('SOT Required:', 'ffl-hub'); ?></strong>
+                        <?php
+                        echo ' ' . ($p_sot_required
                             ? esc_html__('Yes', 'ffl-hub')
                             : esc_html__('No', 'ffl-hub')
                         );
@@ -618,8 +636,10 @@ class DistributorProductsPage
                     $map      = $payload_row->map ?? null;
                     $msrp     = $payload_row->msrp ?? null;
                     $shipping = $payload_row->shipping_cost ?? null;
+                    $shipping_weight_row = $payload_row->shipping_weight ?? null;
                     $qty      = $payload_row->quantity ?? null;
                     $ffl_req_row = (bool) ($payload_row->ffl_required ?? false);
+                    $sot_req_row = (bool) ($payload_row->sot_required ?? false);
                     $dropship_enabled_row = (bool) ($payload_row->dropship_enabled ?? true);
                     ?>
                     <li class="fflhub-product-carrier-item">
@@ -648,6 +668,13 @@ class DistributorProductsPage
                                 <?php echo ' ' . esc_html($this->format_price(is_numeric($shipping) ? (float) $shipping : null)); ?>
                             </span>
                             <span>
+                                <strong><?php esc_html_e('Weight:', 'ffl-hub'); ?></strong>
+                                <?php
+                                $shipping_weight_row_text = trim((string) ($shipping_weight_row ?? ''));
+                                echo ' ' . esc_html($shipping_weight_row_text !== '' ? $shipping_weight_row_text : __('N/A', 'ffl-hub'));
+                                ?>
+                            </span>
+                            <span>
                                 <strong><?php esc_html_e('Qty:', 'ffl-hub'); ?></strong>
                                 <?php
                                 if ($qty === null) {
@@ -663,6 +690,10 @@ class DistributorProductsPage
                             <span>
                                 <strong><?php esc_html_e('FFL:', 'ffl-hub'); ?></strong>
                                 <?php echo ' ' . ($ffl_req_row ? esc_html__('Required', 'ffl-hub') : esc_html__('No', 'ffl-hub')); ?>
+                            </span>
+                            <span>
+                                <strong><?php esc_html_e('SOT:', 'ffl-hub'); ?></strong>
+                                <?php echo ' ' . ($sot_req_row ? esc_html__('Required', 'ffl-hub') : esc_html__('No', 'ffl-hub')); ?>
                             </span>
                             <span>
                                 <strong><?php esc_html_e('Drop Ship:', 'ffl-hub'); ?></strong>

@@ -22,9 +22,10 @@ use FFLHub\Util\DebugLogUtil;
 final class RSRProductCronService extends AbstractTableCronService
 {
     /**
-     * Cron hook name for RSR fulfillment refresh.
+     * Cron hook name for RSR product refresh.
      */
-    public const CRON_HOOK = 'fflhub_rsr_fulfillment_update';
+    public const CRON_HOOK = 'fflhub_rsr_product_update';
+
 
     /**
      * Debug gate constant (define('FFLHUB_CRON_DEBUG', true);).
@@ -447,4 +448,5 @@ final class RSRProductCronService extends AbstractTableCronService
             );
         }
     }
+
 }

@@ -187,6 +187,16 @@ final class RSRModule implements DistributorModuleInterface
                 'description' => 'Connect using FTPS/SSL (recommended).',
                 'default'     => '1',
             ],
+
+            // ---------------------------
+            // Import behavior
+            // ---------------------------
+            'accessories_only' => [
+                'label'       => 'Accessories Only',
+                'type'        => 'checkbox',
+                'description' => 'When enabled, exclude firearm/NFA departments (1, 2, 3, 5, 6) during RSR product import.',
+                'default'     => '1',
+            ],
         ];
     }
 

@@ -87,6 +87,8 @@ class DistributorRSR extends DistributorBase
                 'msrp'        => ['retail_msrp'],
                 'quantity'    => ['inventory_quantity'],
                 'category'    => ['dept_number'],
+                'shipping_weight' => ['shipping_weight'],
+                'sot_required' => ['sot_required'],
                 'dropship_enabled' => ['dropship_enabled'],
             ],
             [DistributorProductCategoryMapper::class, 'map_rsr'],
@@ -96,6 +98,9 @@ class DistributorRSR extends DistributorBase
 
         $payload->name = (string) $payload->description;
         $payload->ffl_required = false;
+        if (! $payload->sot_required && $this->is_sot_required_from_dept_number($row['dept_number'] ?? null)) {
+            $payload->sot_required = true;
+        }
 
         $image_name = trim((string) $this->get_string_field($row, ['image_name']));
         if ($image_name !== '') {
@@ -131,6 +136,8 @@ class DistributorRSR extends DistributorBase
                 'msrp'        => ['retail_msrp'],
                 'quantity'    => ['inventory_quantity'],
                 'category'    => ['dept_number'],
+                'shipping_weight' => ['shipping_weight'],
+                'sot_required' => ['sot_required'],
                 'dropship_enabled' => ['dropship_enabled'],
             ],
             [DistributorProductCategoryMapper::class, 'map_rsr'],
@@ -140,8 +147,36 @@ class DistributorRSR extends DistributorBase
 
         $payload->name = (string) $payload->description;
         $payload->ffl_required = false;
+        if (! $payload->sot_required && $this->is_sot_required_from_dept_number($row['dept_number'] ?? null)) {
+            $payload->sot_required = true;
+        }
 
         return $payload;
+    }
+
+    /**
+     * RSR dept 6 indicates NFA/SOT-required products.
+     *
+     * @param mixed $dept_number
+     */
+    private function is_sot_required_from_dept_number($dept_number): bool
+    {
+        if ($dept_number === null) {
+            return false;
+        }
+
+        $raw = trim((string) $dept_number);
+        if ($raw === '') {
+            return false;
+        }
+
+        $digits = preg_replace('/\D+/', '', $raw);
+        $digits = is_string($digits) ? $digits : '';
+        if ($digits === '') {
+            return false;
+        }
+
+        return ((int) $digits) === 6;
     }
 
     public function get_shipping_cost_by_upc(string $upc): ?float
