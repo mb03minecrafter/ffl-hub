@@ -28,6 +28,7 @@ final class DealerFulfillmentRoutingPlanner
     private const OUTBOUND_BASE_COST = 5.85;
     private const OUTBOUND_INCREMENT = 0.60;
     private const OUTBOUND_STEP_OZ   = 4.0;
+    private const TOP_CANDIDATE_LIMIT = 12;
 
     /**
      * @param array<int, array<string,mixed>> $lines
@@ -62,6 +63,7 @@ final class DealerFulfillmentRoutingPlanner
         $combinations   = 0;
         $best_cost      = INF;
         $best_plan      = self::empty_plan();
+        $top_candidates = [];
 
         self::walk_assignments(
             $decision_ids,
@@ -70,14 +72,32 @@ final class DealerFulfillmentRoutingPlanner
             $lines_by_id,
             $best_cost,
             $best_plan,
-            $combinations
+            $combinations,
+            $top_candidates
         );
+
+        $best_assignment_key = self::assignment_key((array) ($best_plan['assignments'] ?? []));
+        $alternatives = [];
+        foreach ($top_candidates as $candidate) {
+            if (!is_array($candidate)) {
+                continue;
+            }
+            $candidate_key = (string) ($candidate['assignment_key'] ?? '');
+            if ($candidate_key === $best_assignment_key) {
+                continue;
+            }
+            $alternatives[] = $candidate;
+        }
 
         $best_plan['meta'] = [
             'total_lines'            => count($normalized),
             'decision_lines'         => $decision_count,
             'fixed_dealer_lines'     => $fixed_count,
             'combinations_evaluated' => $combinations,
+            'best_assignment_key'    => $best_assignment_key,
+            'best_formula_total'     => (float) ($best_plan['total_cost'] ?? 0.0),
+            'top_candidates'         => $top_candidates,
+            'alternatives'           => $alternatives,
         ];
 
         return $best_plan;
@@ -201,6 +221,7 @@ final class DealerFulfillmentRoutingPlanner
      * @param float $best_cost
      * @param array<string,mixed> $best_plan
      * @param int $combinations
+     * @param array<int,array<string,mixed>> $top_candidates
      */
     private static function walk_assignments(
         array $decision_ids,
@@ -209,12 +230,14 @@ final class DealerFulfillmentRoutingPlanner
         array $lines_by_id,
         float &$best_cost,
         array &$best_plan,
-        int &$combinations
+        int &$combinations,
+        array &$top_candidates
     ): void {
         if ($idx >= count($decision_ids)) {
             $combinations++;
             $plan = self::score_assignment($lines_by_id, $assignment);
             $cost = (float) ($plan['total_cost'] ?? INF);
+            self::push_top_candidate($top_candidates, $plan, $cost);
 
             if ($cost < $best_cost - 0.000001) {
                 $best_cost = $cost;
@@ -235,12 +258,70 @@ final class DealerFulfillmentRoutingPlanner
         $line_id = $decision_ids[$idx];
 
         $assignment[$line_id] = 'direct_ship';
-        self::walk_assignments($decision_ids, $idx + 1, $assignment, $lines_by_id, $best_cost, $best_plan, $combinations);
+        self::walk_assignments($decision_ids, $idx + 1, $assignment, $lines_by_id, $best_cost, $best_plan, $combinations, $top_candidates);
 
         $assignment[$line_id] = 'dealer_fulfilled';
-        self::walk_assignments($decision_ids, $idx + 1, $assignment, $lines_by_id, $best_cost, $best_plan, $combinations);
+        self::walk_assignments($decision_ids, $idx + 1, $assignment, $lines_by_id, $best_cost, $best_plan, $combinations, $top_candidates);
 
         unset($assignment[$line_id]);
+    }
+
+    /**
+     * Keep a bounded list of the cheapest candidate assignments for debug visibility.
+     *
+     * @param array<int,array<string,mixed>> $top
+     * @param array<string,mixed> $plan
+     */
+    private static function push_top_candidate(array &$top, array $plan, float $cost): void
+    {
+        $assignments = [];
+        if (isset($plan['assignments']) && is_array($plan['assignments'])) {
+            $assignments = $plan['assignments'];
+        }
+
+        $entry = [
+            'assignment_key'         => self::assignment_key($assignments),
+            'total_cost'             => $cost,
+            'distributor_cost_total' => (float) ($plan['distributor_cost_total'] ?? 0.0),
+            'dealer_home_cost'       => (float) ($plan['dealer_outbound_home_cost'] ?? 0.0),
+            'dealer_ffl_cost'        => (float) ($plan['dealer_outbound_ffl_cost'] ?? 0.0),
+            'assignments'            => $assignments,
+        ];
+
+        $top[] = $entry;
+        usort($top, static function (array $a, array $b): int {
+            $ac = (float) ($a['total_cost'] ?? INF);
+            $bc = (float) ($b['total_cost'] ?? INF);
+            if (abs($ac - $bc) > 0.000001) {
+                return ($ac < $bc) ? -1 : 1;
+            }
+
+            $ak = (string) ($a['assignment_key'] ?? '');
+            $bk = (string) ($b['assignment_key'] ?? '');
+            return strcmp($ak, $bk);
+        });
+
+        if (count($top) > self::TOP_CANDIDATE_LIMIT) {
+            $top = array_slice($top, 0, self::TOP_CANDIDATE_LIMIT);
+        }
+    }
+
+    /**
+     * @param array<string,string> $assignments
+     */
+    private static function assignment_key(array $assignments): string
+    {
+        if (empty($assignments)) {
+            return '';
+        }
+
+        ksort($assignments);
+        $parts = [];
+        foreach ($assignments as $line_id => $route) {
+            $parts[] = (string) $line_id . '=' . (string) $route;
+        }
+
+        return implode('|', $parts);
     }
 
     /**

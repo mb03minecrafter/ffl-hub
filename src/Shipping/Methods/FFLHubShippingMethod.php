@@ -254,6 +254,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         // 1) Compute optimal shipping cost-to-you from routing planner
         $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan($routing_lines);
+        $planner_formula_total = (float) ($plan['total_cost'] ?? 0.0);
         $shipping_cost_total = max(0.0, (float) ($plan['total_cost'] ?? 0.0));
         $by_dist = (isset($plan['by_dist']) && is_array($plan['by_dist'])) ? $plan['by_dist'] : [];
         $assignments = (isset($plan['assignments']) && is_array($plan['assignments'])) ? $plan['assignments'] : [];
@@ -416,6 +417,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 (int) (($plan['meta']['combinations_evaluated'] ?? 0))
             )
         );
+        $this->log_planner_alternatives($plan, $line_debug_rows, $planner_formula_total);
 
         // 2) Apply cart-level free shipping rule
         $customer_charge = 0.0;
@@ -523,6 +525,12 @@ class FFLHubShippingMethod extends WC_Shipping_Method
     private function fmt_money(float $value): string
     {
         return '$' . number_format($value, 2, '.', '');
+    }
+
+    private function fmt_money_signed(float $value): string
+    {
+        $sign = ($value >= 0.0) ? '+' : '-';
+        return $sign . '$' . number_format(abs($value), 2, '.', '');
     }
 
     /**
@@ -781,6 +789,118 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             return ['length_in' => 16.0, 'width_in' => 12.0, 'height_in' => 6.0];
         }
         return ['length_in' => 20.0, 'width_in' => 14.0, 'height_in' => 8.0];
+    }
+
+    /**
+     * Log top rejected planner candidates so route decisions are explainable.
+     *
+     * @param array<string,mixed> $plan
+     * @param array<int,array<string,mixed>> $line_debug_rows
+     */
+    private function log_planner_alternatives(array $plan, array $line_debug_rows, float $planner_formula_total): void
+    {
+        $meta = (isset($plan['meta']) && is_array($plan['meta'])) ? $plan['meta'] : [];
+        $alternatives = (isset($meta['alternatives']) && is_array($meta['alternatives'])) ? $meta['alternatives'] : [];
+        if (empty($alternatives)) {
+            return;
+        }
+
+        $best_assignments = (isset($plan['assignments']) && is_array($plan['assignments'])) ? $plan['assignments'] : [];
+        $best_formula_total = (isset($meta['best_formula_total']) && is_numeric($meta['best_formula_total']))
+            ? (float) $meta['best_formula_total']
+            : $planner_formula_total;
+
+        $line_to_product = $this->build_line_to_product_map($line_debug_rows);
+        $max_to_log = min(6, count($alternatives));
+
+        $this->log_debug(
+            sprintf(
+                'ALT SUMMARY best_formula_total=%s alternatives=%d showing=%d',
+                $this->fmt_money($best_formula_total),
+                count($alternatives),
+                $max_to_log
+            )
+        );
+
+        for ($i = 0; $i < $max_to_log; $i++) {
+            $alt = $alternatives[$i];
+            if (!is_array($alt)) {
+                continue;
+            }
+
+            $alt_total = (float) ($alt['total_cost'] ?? 0.0);
+            $alt_dist_total = (float) ($alt['distributor_cost_total'] ?? 0.0);
+            $alt_home = (float) ($alt['dealer_home_cost'] ?? 0.0);
+            $alt_ffl = (float) ($alt['dealer_ffl_cost'] ?? 0.0);
+            $alt_assignments = (isset($alt['assignments']) && is_array($alt['assignments'])) ? $alt['assignments'] : [];
+            $diff = $this->describe_assignment_diff($best_assignments, $alt_assignments, $line_to_product);
+
+            $this->log_debug(
+                sprintf(
+                    'ALT %d total=%s delta=%s dist_total=%s dealer_home=%s dealer_ffl=%s diff=%s',
+                    $i + 1,
+                    $this->fmt_money($alt_total),
+                    $this->fmt_money_signed($alt_total - $best_formula_total),
+                    $this->fmt_money($alt_dist_total),
+                    $this->fmt_money($alt_home),
+                    $this->fmt_money($alt_ffl),
+                    $diff
+                )
+            );
+        }
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $line_debug_rows
+     * @return array<string,int>
+     */
+    private function build_line_to_product_map(array $line_debug_rows): array
+    {
+        $map = [];
+        foreach ($line_debug_rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $line_id = (string) ($row['line_id'] ?? '');
+            if ($line_id === '') {
+                continue;
+            }
+
+            $map[$line_id] = (int) ($row['product_id'] ?? 0);
+        }
+
+        return $map;
+    }
+
+    /**
+     * @param array<string,string> $best
+     * @param array<string,string> $candidate
+     * @param array<string,int> $line_to_product
+     */
+    private function describe_assignment_diff(array $best, array $candidate, array $line_to_product): string
+    {
+        $keys = array_unique(array_merge(array_keys($best), array_keys($candidate)));
+        sort($keys, SORT_STRING);
+
+        $parts = [];
+        foreach ($keys as $line_id) {
+            $from = isset($best[$line_id]) ? (string) $best[$line_id] : '-';
+            $to   = isset($candidate[$line_id]) ? (string) $candidate[$line_id] : '-';
+            if ($from === $to) {
+                continue;
+            }
+
+            $product_id = (int) ($line_to_product[$line_id] ?? 0);
+            $label = ($product_id > 0) ? ('p' . (string) $product_id) : (string) $line_id;
+            $parts[] = $label . ':' . $from . '->' . $to;
+        }
+
+        if (empty($parts)) {
+            return 'none';
+        }
+
+        return implode(',', $parts);
     }
 
     private function package_has_fflhub_items($package): bool
