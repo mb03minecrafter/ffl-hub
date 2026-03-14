@@ -134,7 +134,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         $this->log_debug(
             sprintf(
-                'START items=%d fee_percent=%.2f fallback=%s clamp_min=%s clamp_max=%s',
+                '---- START ---- items=%d fee_percent=%.2f fallback=%s clamp_min=%s clamp_max=%s',
                 is_array($package['contents'] ?? null) ? count($package['contents']) : 0,
                 $fee_percent,
                 $this->fmt_money($fallback_ship),
@@ -321,7 +321,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $dealer_ffl_source  = 'formula';
 
         $home_dest_zip = $this->resolve_home_destination_zip($package);
-        $ffl_dest_zip  = $this->resolve_receiving_ffl_zip($home_dest_zip);
+        $ffl_dest_zip  = $this->resolve_receiving_ffl_zip();
 
         $usps_helper = new USPSRateHelper();
         if ($usps_helper->is_enabled()) {
@@ -508,7 +508,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         $this->log_debug(
             sprintf(
-                'END customer_charge=%s elapsed_ms=%.2f',
+                '---- END ---- customer_charge=%s elapsed_ms=%.2f',
                 $this->fmt_money($customer_charge),
                 $elapsed_ms
             )
@@ -632,28 +632,28 @@ class FFLHubShippingMethod extends WC_Shipping_Method
     /**
      * Resolve receiving FFL ZIP for FFL outbound bucket.
      */
-    private function resolve_receiving_ffl_zip(string $fallback_zip): string
+    private function resolve_receiving_ffl_zip(): string
     {
         if (!function_exists('WC') || !WC() || !WC()->session) {
-            return $fallback_zip;
+            return '';
         }
 
         $raw_ffl_number = (string) WC()->session->get('fflhub_receiving_ffl_number');
         $ffl_number = FFLRowMapper::normalize_ffl_number($raw_ffl_number);
         if ($ffl_number === '') {
-            return $fallback_zip;
+            return '';
         }
 
         try {
             $ffl_table = new FFLTable(new FFLSchema());
             $row = FFLRepository::find_by_number($ffl_table, $ffl_number);
         } catch (\Throwable $e) {
-            $this->log_debug('FFL ZIP lookup failed, using fallback zip.');
-            return $fallback_zip;
+            $this->log_debug('FFL ZIP lookup failed; no selected FFL ZIP available.');
+            return '';
         }
 
         if (!is_array($row)) {
-            return $fallback_zip;
+            return '';
         }
 
         $candidate_zip = '';
@@ -666,7 +666,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         $zip = $this->normalize_us_zip($candidate_zip);
         if ($zip === '') {
-            return $fallback_zip;
+            return '';
         }
 
         return $zip;
