@@ -223,15 +223,16 @@ class DistributorLipseys extends DistributorBase
             [
                 'upc_count' => count($required_by_upc),
                 'cache_ttl_seconds' => self::VALIDATEITEM_CACHE_TTL_SECONDS,
+                'credential_source' => 'main_account',
             ]
         );
 
-        $email    = $this->get_dealer_email();
-        $password = $this->get_dealer_password();
+        $email    = $this->get_main_account_email();
+        $password = $this->get_main_account_password();
 
         if ($email === '' || $password === '') {
             return DistributorOrderValidationResult::block(
-                'Missing Lipsey’s credentials (dealer_email / dealer_password).',
+                'Missing Lipsey\'s validation credentials (main_account_email / main_account_password).',
                 ['LIPSEYS_CREDS_MISSING']
             );
         }
@@ -527,7 +528,7 @@ class DistributorLipseys extends DistributorBase
 
         if ($email === '' || $password === '') {
             return DistributorOrderResult::block_fatal(
-                'Missing Lipsey’s credentials (dealer_email / dealer_password).',
+                'Missing Lipsey\'s credentials (dealer_email / dealer_password).',
                 [DistributorOrderResult::REASON_FATAL_MISSING_CREDS]
             );
         }
@@ -1125,6 +1126,16 @@ class DistributorLipseys extends DistributorBase
         return trim((string) get_option($this->get_option_name('dealer_password'), ''));
     }
 
+    private function get_main_account_email(): string
+    {
+        return trim((string) get_option($this->get_option_name('main_account_email'), ''));
+    }
+
+    private function get_main_account_password(): string
+    {
+        return trim((string) get_option($this->get_option_name('main_account_password'), ''));
+    }
+
     
 
     
@@ -1155,4 +1166,5 @@ class DistributorLipseys extends DistributorBase
     }
 
 }
+
 
