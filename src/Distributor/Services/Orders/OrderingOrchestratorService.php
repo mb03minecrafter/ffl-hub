@@ -15,6 +15,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
+use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Util\DebugLogUtil;
 
@@ -33,7 +34,7 @@ if (!defined('ABSPATH')) {
  *
  * What this class does:
  * - On payment complete: fetch WC_Order, verify paid.
- * - Build per-(dist_id × bucket) job definitions from the order's FFLHub-managed line items.
+ * - Build per-(dist_id x lane) job definitions from the order's FFLHub-managed line items.
  * - Persist durable job rows to the Order Placement Jobs table (upsert/init).
  * - Mark those rows eligible for processing by setting:
  *   - status = scheduled
@@ -127,10 +128,10 @@ final class OrderingOrchestratorService
         }
 
         // Build jobs from FFLHub-managed products only.
-        // If none exist, bucket_jobs is empty and we early-exit => NOTHING happens for non-FFLHub orders.
-        $bucket_jobs = $this->build_bucket_jobs_from_order($order);
-        if (empty($bucket_jobs)) {
-            $this->log_ctx('no_bucket_jobs_found', [
+        // If none exist, lane jobs are empty and we early-exit.
+        $lane_jobs = $this->build_lane_jobs_from_order($order);
+        if (empty($lane_jobs)) {
+            $this->log_ctx('no_lane_jobs_found', [
                 'order_id' => $oid,
                 'trigger'  => $trigger,
             ]);
@@ -142,8 +143,8 @@ final class OrderingOrchestratorService
         // Mark started + persist jobs + mark eligible (DB queue)
         OrderPlacementPipelineMetaStore::set_pipeline_started($order, true, $started_at, $trigger);
 
-        $this->persist_bucket_jobs_table($order, $bucket_jobs);
-        $this->mark_jobs_eligible_for_processing($order, $bucket_jobs);
+        $this->persist_lane_jobs_table($order, $lane_jobs);
+        $this->mark_jobs_eligible_for_processing($order, $lane_jobs);
 
         try {
             $order->save();
@@ -158,27 +159,31 @@ final class OrderingOrchestratorService
     }
 
     /**
-     * Build per-(dist_id × bucket) placement jobs from an order's line items.
+     * Build per-(dist_id x lane) placement jobs from an order's line items.
      *
-     * Rules:
-     * - Only includes products marked as "FFLHUB managed".
-     * - Bucket is derived from the FFL-required meta (ffl vs non).
-     * - Lines aggregate quantities by UPC within each (dist, bucket).
+     * Lanes:
+     * - direct_ship_non_ffl
+     * - direct_ship_ffl
+     * - dealer_fulfilled (can contain mixed FFL + non-FFL lines)
      *
      * @param WC_Order $order
      * @return array<string, array{
      *   order_id:int,
      *   dist_id:string,
      *   bucket:string,
-     *   lines:array<int,array{upc:string,qty:int}>
+     *   lane:string,
+     *   lines:array<int,array{upc:string,qty:int,ffl_required:int,dropship_enabled:int}>
      * }>
      */
-    private function build_bucket_jobs_from_order(WC_Order $order): array
+    private function build_lane_jobs_from_order(WC_Order $order): array
     {
         $oid = (int) $order->get_id();
 
-        /** @var array<string, array<string, array<string,int>>> $agg dist => bucket => upc => qty */
-        $agg = [];
+        /** @var array<string,array<string,mixed>> $accepted_by_line_id */
+        $accepted_by_line_id = [];
+
+        /** @var array<int,array<string,mixed>> $routing_lines */
+        $routing_lines = [];
 
         $seen = [
             'items_iterated'     => 0,
@@ -186,7 +191,6 @@ final class OrderingOrchestratorService
             'product_missing'    => 0,
             'not_managed'        => 0,
             'missing_dist'       => 0,
-            'invalid_bucket'     => 0,
             'missing_upc'        => 0,
             'accepted'           => 0,
         ];
@@ -230,21 +234,6 @@ final class OrderingOrchestratorService
                 continue;
             }
 
-            $ffl_required = ((int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true) === 1);
-            $bucket = OrderPlacementKeysUtil::normalize_bucket($ffl_required ? 'ffl' : 'non');
-
-            if (!OrderPlacementKeysUtil::is_valid_bucket($bucket)) {
-                $seen['invalid_bucket']++;
-                $this->log_ctx('skip_line_invalid_bucket', [
-                    'order_id'     => $oid,
-                    'product_id'   => (int) $product->get_id(),
-                    'dist_id'      => $dist_id,
-                    'bucket'       => $bucket,
-                    'ffl_required' => $ffl_required ? '1' : '0',
-                ]);
-                continue;
-            }
-
             $upc = OrderPlacementProductUtil::extract_upc_from_product($product);
             if ($upc === '') {
                 $seen['missing_upc']++;
@@ -252,48 +241,156 @@ final class OrderingOrchestratorService
                     'order_id'   => $oid,
                     'product_id' => (int) $product->get_id(),
                     'dist_id'    => $dist_id,
-                    'bucket'     => $bucket,
                 ]);
                 continue;
             }
 
+            $ffl_required = ((int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true) === 1);
+            $dropship_enabled = $this->to_boolish(
+                $product->get_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true),
+                true
+            );
+            $weight_oz = $this->to_non_negative_float(
+                $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true),
+                0.0
+            );
+            $dist_lane_fee = $this->to_non_negative_float(
+                $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true),
+                0.0
+            );
+
+            $item_id = (int) $item->get_id();
+            $line_id = ($item_id > 0) ? ('oi_' . (string) $item_id) : ('oi_idx_' . (string) $seen['items_iterated']);
+
+            $accepted_by_line_id[$line_id] = [
+                'line_id'          => $line_id,
+                'product_id'       => (int) $product->get_id(),
+                'dist_id'          => (string) $dist_id,
+                'upc'              => (string) $upc,
+                'qty'              => $qty,
+                'ffl_required'     => $ffl_required,
+                'dropship_enabled' => $dropship_enabled,
+            ];
+
+            $routing_lines[] = [
+                'line_id'          => $line_id,
+                'dist_id'          => (string) $dist_id,
+                'qty'              => $qty,
+                'weight_oz'        => $weight_oz,
+                'ffl_required'     => $ffl_required,
+                'dropship_enabled' => $dropship_enabled,
+                'dist_lane_fee'    => $dist_lane_fee,
+            ];
+
             $seen['accepted']++;
+        }
+
+        if (empty($accepted_by_line_id) || empty($routing_lines)) {
+            return [];
+        }
+
+        $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan($routing_lines);
+        $assignments = (isset($plan['assignments']) && is_array($plan['assignments'])) ? $plan['assignments'] : [];
+
+        $this->log_ctx('lane_plan_computed', [
+            'order_id'            => $oid,
+            'accepted_lines'      => count($accepted_by_line_id),
+            'total_cost'          => (float) ($plan['total_cost'] ?? 0.0),
+            'decision_lines'      => (int) ($plan['meta']['decision_lines'] ?? 0),
+            'combinations'        => (int) ($plan['meta']['combinations_evaluated'] ?? 0),
+            'assignment_count'    => count($assignments),
+        ]);
+
+        /** @var array<string,array<string,array<string,array<string,mixed>>>> $agg */
+        $agg = [];
+
+        foreach ($accepted_by_line_id as $line_id => $row) {
+            $route = isset($assignments[$line_id])
+                ? strtolower(trim((string) $assignments[$line_id]))
+                : (!empty($row['dropship_enabled']) ? 'direct_ship' : 'dealer_fulfilled');
+
+            $lane = $this->lane_for_route($route, !empty($row['ffl_required']));
+            if (!OrderPlacementKeysUtil::is_valid_bucket($lane)) {
+                $this->log_ctx('skip_line_invalid_lane', [
+                    'order_id' => $oid,
+                    'line_id'  => $line_id,
+                    'dist_id'  => (string) ($row['dist_id'] ?? ''),
+                    'route'    => $route,
+                    'lane'     => $lane,
+                ]);
+                continue;
+            }
+
+            $dist_id = (string) ($row['dist_id'] ?? '');
+            if ($dist_id === '') {
+                continue;
+            }
 
             if (!isset($agg[$dist_id])) {
-                $agg[$dist_id] = ['non' => [], 'ffl' => []];
+                $agg[$dist_id] = [];
             }
-            if (!isset($agg[$dist_id][$bucket][$upc])) {
-                $agg[$dist_id][$bucket][$upc] = 0;
+            if (!isset($agg[$dist_id][$lane])) {
+                $agg[$dist_id][$lane] = [];
             }
 
-            $agg[$dist_id][$bucket][$upc] += $qty;
+            $ffl_int = !empty($row['ffl_required']) ? 1 : 0;
+            $line_key = (string) ($row['upc'] ?? '') . '|' . (string) $ffl_int;
+
+            if (!isset($agg[$dist_id][$lane][$line_key])) {
+                $agg[$dist_id][$lane][$line_key] = [
+                    'upc'              => (string) ($row['upc'] ?? ''),
+                    'qty'              => 0,
+                    'ffl_required'     => $ffl_int,
+                    'dropship_enabled' => !empty($row['dropship_enabled']) ? 1 : 0,
+                ];
+            }
+
+            $agg[$dist_id][$lane][$line_key]['qty'] += max(1, (int) ($row['qty'] ?? 1));
         }
 
         $jobs = [];
 
-        foreach ($agg as $dist_id => $buckets) {
-            foreach (['non', 'ffl'] as $bucket) {
-                $bucket = OrderPlacementKeysUtil::normalize_bucket($bucket);
-                if (!OrderPlacementKeysUtil::is_valid_bucket($bucket)) {
+        foreach ($agg as $dist_id => $lanes) {
+            ksort($lanes, SORT_STRING);
+
+            foreach ($lanes as $lane => $by_line_key) {
+                if (!OrderPlacementKeysUtil::is_valid_bucket($lane)) {
                     continue;
                 }
 
-                $by_upc = $buckets[$bucket] ?? [];
-                if (empty($by_upc)) {
+                if (empty($by_line_key)) {
                     continue;
                 }
 
                 $lines = [];
-                foreach ($by_upc as $upc => $qty) {
-                    $lines[] = ['upc' => (string) $upc, 'qty' => max(1, (int) $qty)];
+                foreach ($by_line_key as $line_row) {
+                    if (!is_array($line_row)) {
+                        continue;
+                    }
+
+                    $upc = trim((string) ($line_row['upc'] ?? ''));
+                    if ($upc === '') {
+                        continue;
+                    }
+
+                    $lines[] = [
+                        'upc'              => $upc,
+                        'qty'              => max(1, (int) ($line_row['qty'] ?? 1)),
+                        'ffl_required'     => !empty($line_row['ffl_required']) ? 1 : 0,
+                        'dropship_enabled' => !empty($line_row['dropship_enabled']) ? 1 : 0,
+                    ];
                 }
 
-                $job_key = OrderPlacementKeysUtil::build_job_key($dist_id, $bucket);
+                if (empty($lines)) {
+                    continue;
+                }
+
+                $job_key = OrderPlacementKeysUtil::build_job_key((string) $dist_id, (string) $lane);
                 if ($job_key === '') {
                     $this->log_ctx('skip_job_key_build_failed', [
                         'order_id' => $oid,
                         'dist_id'  => $dist_id,
-                        'bucket'   => $bucket,
+                        'lane'     => $lane,
                     ]);
                     continue;
                 }
@@ -301,30 +398,51 @@ final class OrderingOrchestratorService
                 $jobs[$job_key] = [
                     'order_id' => $oid,
                     'dist_id'  => (string) $dist_id,
-                    'bucket'   => (string) $bucket,
+                    'bucket'   => (string) $lane,
+                    'lane'     => (string) $lane,
                     'lines'    => $lines,
                 ];
             }
         }
 
-        ksort($jobs);
+        ksort($jobs, SORT_STRING);
 
         return $jobs;
+    }
+
+    private function lane_for_route(string $route, bool $ffl_required): string
+    {
+        $route = strtolower(trim($route));
+
+        if ($route === 'dealer_fulfilled') {
+            return OrderPlacementKeysUtil::BUCKET_DEALER_FULFILLED;
+        }
+
+        if ($route === 'direct_ship') {
+            return $ffl_required
+                ? OrderPlacementKeysUtil::BUCKET_DIRECT_SHIP_FFL
+                : OrderPlacementKeysUtil::BUCKET_DIRECT_SHIP_NON_FFL;
+        }
+
+        // Defensive fallback for unknown route labels.
+        return $ffl_required
+            ? OrderPlacementKeysUtil::BUCKET_DIRECT_SHIP_FFL
+            : OrderPlacementKeysUtil::BUCKET_DIRECT_SHIP_NON_FFL;
     }
 
     /**
      * Persist job rows to the Order Placement Jobs table (init/upsert).
      *
      * @param WC_Order            $order
-     * @param array<string,mixed> $bucket_jobs
+     * @param array<string,mixed> $lane_jobs
      */
-    private function persist_bucket_jobs_table(WC_Order $order, array $bucket_jobs): void
+    private function persist_lane_jobs_table(WC_Order $order, array $lane_jobs): void
     {
         $oid = (int) $order->get_id();
         $count = 0;
         $skipped = 0;
 
-        foreach ($bucket_jobs as $job_key => $job) {
+        foreach ($lane_jobs as $job_key => $job) {
             $job_key = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
             if ($job_key === '' || !is_array($job)) {
                 $skipped++;
@@ -351,13 +469,13 @@ final class OrderingOrchestratorService
      * Mark DB-backed job rows as eligible for the dispatcher to process.
      *
      * @param WC_Order $order
-     * @param array<string, array{order_id:int,dist_id:string,bucket:string,lines:array<int,array{upc:string,qty:int}>}> $bucket_jobs
+     * @param array<string, array{order_id:int,dist_id:string,bucket:string,lines:array<int,array{upc:string,qty:int,ffl_required?:int,dropship_enabled?:int}>}> $lane_jobs
      */
-    private function mark_jobs_eligible_for_processing(WC_Order $order, array $bucket_jobs): void
+    private function mark_jobs_eligible_for_processing(WC_Order $order, array $lane_jobs): void
     {
         $oid = (int) $order->get_id();
 
-        foreach ($bucket_jobs as $job_key => $_job) {
+        foreach ($lane_jobs as $job_key => $_job) {
             $job_key_norm = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
             if ($job_key_norm === '') {
                 $this->log_ctx('mark_eligible_skip_invalid_job_key', [
@@ -382,6 +500,66 @@ final class OrderingOrchestratorService
 
             OrderPlacementJobWriter::apply_patch_for_order($this->jobs_table, $order, $job_key_norm, $patch);
         }
+    }
+
+    /**
+     * Parse truthy/falsey values from meta with a default fallback.
+     *
+     * @param mixed $value
+     */
+    private function to_boolish($value, bool $default): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        $raw = strtolower(trim((string) $value));
+        if ($raw === '') {
+            return $default;
+        }
+
+        if (in_array($raw, ['1', 'true', 't', 'yes', 'y', 'on'], true)) {
+            return true;
+        }
+
+        if (in_array($raw, ['0', 'false', 'f', 'no', 'n', 'off'], true)) {
+            return false;
+        }
+
+        if (is_numeric($raw)) {
+            return ((float) $raw) !== 0.0;
+        }
+
+        return $default;
+    }
+
+    /**
+     * Parse a non-negative float from meta.
+     *
+     * @param mixed $value
+     */
+    private function to_non_negative_float($value, float $default = 0.0): float
+    {
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return max(0.0, $default);
+        }
+
+        $num = $raw;
+        if (!is_numeric($num)) {
+            $num = trim((string) preg_replace('/[^0-9\.\-]/', '', $raw));
+        }
+
+        if ($num === '' || !is_numeric($num)) {
+            return max(0.0, $default);
+        }
+
+        $v = (float) $num;
+        if (!is_finite($v) || $v < 0.0) {
+            return max(0.0, $default);
+        }
+
+        return $v;
     }
 
     /**

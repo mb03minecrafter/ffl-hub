@@ -86,7 +86,7 @@ final class OrderPlacementJobsSchema
             'order_id'                => 'BIGINT UNSIGNED NOT NULL',
             'job_key'                 => 'VARCHAR(80) NOT NULL',
             'dist_id'                 => 'VARCHAR(32) NOT NULL',
-            'bucket'                  => 'VARCHAR(8) NOT NULL',
+            'bucket'                  => 'VARCHAR(32) NOT NULL',
             'status'                  => 'VARCHAR(24) NOT NULL',
             'attempts'                => 'INT UNSIGNED NOT NULL DEFAULT 0',
             'created_at'              => 'DATETIME NOT NULL',

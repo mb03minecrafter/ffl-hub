@@ -38,13 +38,7 @@ final class OrderPlacementPOUtil
         }
 
         $bucket = $job->bucket_norm();
-        if ($bucket === 'ffl') {
-            $bucket_code = 'F';
-        } elseif ($bucket === 'non') {
-            $bucket_code = 'N';
-        } else {
-            $bucket_code = 'U';
-        }
+        $bucket_code = OrderPlacementKeysUtil::bucket_code($bucket);
 
         $i = (int) $split_index;
         if ($i < 1) {

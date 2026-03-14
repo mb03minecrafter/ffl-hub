@@ -148,7 +148,14 @@ class DistributorZanders extends DistributorBase
      */
     private function get_zanders_auth_for_bucket(string $bucket): array
     {
-        $bucket = ($bucket === 'ffl') ? 'ffl' : 'non';
+        $bucket = strtolower(trim((string) $bucket));
+        if ($bucket === 'direct_ship_ffl') {
+            $bucket = 'ffl';
+        } elseif ($bucket === 'direct_ship_non_ffl' || $bucket === 'dealer_fulfilled') {
+            $bucket = 'non';
+        } else {
+            $bucket = ($bucket === 'ffl') ? 'ffl' : 'non';
+        }
 
         $u_key = ($bucket === 'ffl') ? 'gun_username' : 'accessory_username';
         $p_key = ($bucket === 'ffl') ? 'gun_password' : 'accessory_password';
@@ -495,6 +502,14 @@ class DistributorZanders extends DistributorBase
         // Common encoding for firearms bucket
         if ($last !== '' && preg_match('/^F\d*$/', $last)) {
             return 'ffl';
+        }
+
+        // Lane-oriented codes
+        if ($last !== '' && preg_match('/^DSF\d*$/', $last)) {
+            return 'ffl';
+        }
+        if ($last !== '' && preg_match('/^(DSN|D)\d*$/', $last)) {
+            return 'non';
         }
 
         // Extra safety: if PO contains obvious marker anywhere

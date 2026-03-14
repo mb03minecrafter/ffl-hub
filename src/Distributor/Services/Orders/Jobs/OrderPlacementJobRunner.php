@@ -112,7 +112,7 @@ final class OrderPlacementJobRunner
 
         try {
             // Validate job row basics.
-            $bucket_ok = ($job->is_ffl_bucket() || $job->is_non_ffl_bucket());
+            $bucket_ok = OrderPlacementKeysUtil::is_valid_bucket($bucket);
             if ($dist_id === '' || !$bucket_ok) {
                 throw new \RuntimeException('Invalid job: missing dist_id or invalid bucket');
             }
@@ -305,7 +305,7 @@ final class OrderPlacementJobRunner
 
         $receiving_ffl_number = strtoupper(trim((string) $order->get_meta('fflhub_receiving_ffl_number', true)));
         if ($receiving_ffl_number === '') {
-            throw new \RuntimeException('FFL bucket but missing receiving FFL number on order');
+            throw new \RuntimeException('Job contains FFL-required lines but missing receiving FFL number on order');
         }
 
         $ship_ffl = CheckoutOrderRequestBuilder::build_ship_to_ffl_or_null(
@@ -317,7 +317,7 @@ final class OrderPlacementJobRunner
         );
 
         if (!($ship_ffl instanceof DistributorShipTo)) {
-            throw new \RuntimeException('FFL bucket but failed to resolve ship_to_ffl from DB');
+            throw new \RuntimeException('Job contains FFL-required lines but failed to resolve ship_to_ffl from DB');
         }
 
         return [$ship_ffl, $receiving_ffl_number];

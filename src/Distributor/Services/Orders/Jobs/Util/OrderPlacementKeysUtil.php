@@ -17,6 +17,17 @@ if (!defined('ABSPATH')) {
  */
 final class OrderPlacementKeysUtil
 {
+    // Lane-style values only.
+    public const BUCKET_DIRECT_SHIP_NON_FFL = 'direct_ship_non_ffl';
+    public const BUCKET_DIRECT_SHIP_FFL     = 'direct_ship_ffl';
+    public const BUCKET_DEALER_FULFILLED    = 'dealer_fulfilled';
+
+    /** @var string[] */
+    private const VALID_BUCKETS = [
+        self::BUCKET_DIRECT_SHIP_NON_FFL,
+        self::BUCKET_DIRECT_SHIP_FFL,
+        self::BUCKET_DEALER_FULFILLED,
+    ];
 
     // -----------------------------
     // Normalization
@@ -76,31 +87,40 @@ final class OrderPlacementKeysUtil
     public static function is_valid_bucket(string $bucket): bool
     {
         $b = self::normalize_bucket($bucket);
-        return ($b === 'ffl' || $b === 'non');
+        return in_array($b, self::VALID_BUCKETS, true);
     }
 
     public static function is_ffl_bucket(string $bucket): bool
     {
-        return self::normalize_bucket($bucket) === 'ffl';
+        $b = self::normalize_bucket($bucket);
+        return ($b === self::BUCKET_DIRECT_SHIP_FFL);
     }
 
     public static function is_non_bucket(string $bucket): bool
     {
-        return self::normalize_bucket($bucket) === 'non';
+        $b = self::normalize_bucket($bucket);
+        return ($b === self::BUCKET_DIRECT_SHIP_NON_FFL);
+    }
+
+    public static function is_dealer_fulfilled_bucket(string $bucket): bool
+    {
+        return self::normalize_bucket($bucket) === self::BUCKET_DEALER_FULFILLED;
     }
 
     /**
      * Convert bucket to the code used in correlation IDs / POs.
      * Returns:
-     * - 'F' for ffl
-     * - 'N' for non
+     * - 'F' for direct_ship_ffl
+     * - 'N' for direct_ship_non_ffl
+     * - 'D' for dealer_fulfilled
      * - 'U' for unknown/invalid
      */
     public static function bucket_code(string $bucket): string
     {
         $b = self::normalize_bucket($bucket);
-        if ($b === 'ffl') return 'F';
-        if ($b === 'non') return 'N';
+        if ($b === self::BUCKET_DIRECT_SHIP_FFL) return 'F';
+        if ($b === self::BUCKET_DIRECT_SHIP_NON_FFL) return 'N';
+        if ($b === self::BUCKET_DEALER_FULFILLED) return 'D';
         return 'U';
     }
 

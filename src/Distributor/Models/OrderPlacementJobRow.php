@@ -2,6 +2,8 @@
 
 namespace FFLHub\Distributor\Models;
 
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
+
 if (! defined('ABSPATH')) {
     exit;
 }
@@ -106,12 +108,12 @@ final class OrderPlacementJobRow
 
     public function is_ffl_bucket(): bool
     {
-        return strtolower(trim($this->bucket)) === 'ffl';
+        return OrderPlacementKeysUtil::is_ffl_bucket($this->bucket_norm());
     }
 
     public function is_non_ffl_bucket(): bool
     {
-        return strtolower(trim($this->bucket)) === 'non';
+        return OrderPlacementKeysUtil::is_non_bucket($this->bucket_norm());
     }
 
     public function has_merchant_po(): bool
@@ -180,7 +182,7 @@ final class OrderPlacementJobRow
     {
         $p = $this->payload();
         $bucket = $this->payload_bucket();
-        $ffl_required = ($bucket === 'ffl');
+        $default_ffl_required = OrderPlacementKeysUtil::is_ffl_bucket($bucket);
 
         $lines = $p['lines'] ?? [];
         if (!is_array($lines) || empty($lines)) {
@@ -207,7 +209,26 @@ final class OrderPlacementJobRow
 
             $qty = max(1, $qty);
 
-            $out[] = new DistributorOrderLine($upc, $qty, $ffl_required);
+            $ffl_required = $default_ffl_required;
+            if (array_key_exists('ffl_required', $line)) {
+                $flag = $line['ffl_required'];
+                if (is_bool($flag)) {
+                    $ffl_required = $flag;
+                } elseif (is_string($flag)) {
+                    $raw = strtolower(trim($flag));
+                    if (in_array($raw, ['1', 'true', 'yes', 'y', 'on'], true)) {
+                        $ffl_required = true;
+                    } elseif (in_array($raw, ['0', 'false', 'no', 'n', 'off', ''], true)) {
+                        $ffl_required = false;
+                    } else {
+                        $ffl_required = ((int) $raw) === 1;
+                    }
+                } else {
+                    $ffl_required = ((int) $flag) === 1;
+                }
+            }
+
+            $out[] = new DistributorOrderLine($upc, $qty, (bool) $ffl_required);
         }
 
         return $out;
@@ -395,7 +416,13 @@ final class OrderPlacementJobRow
 
     public function ffl_required(): bool
     {
-        return $this->payload_bucket() === 'ffl';
+        foreach ($this->payload_lines() as $line) {
+            if ($line instanceof DistributorOrderLine && $line->ffl_required) {
+                return true;
+            }
+        }
+
+        return OrderPlacementKeysUtil::is_ffl_bucket($this->payload_bucket());
     }
 
     public function payload_lines_count(): int
