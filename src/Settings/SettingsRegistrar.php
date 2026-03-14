@@ -77,6 +77,146 @@ final class SettingsRegistrar
                 'default'           => (string) Options::default_global_markup(),
             ]
         );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_ESTIMATE_ENABLED,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_usps_estimate_enabled() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_USE_TEST_ENV,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_usps_use_test_env() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_BASE_URL,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_loose_string'],
+                'default'           => Options::default_usps_base_url(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_CLIENT_ID,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_loose_string'],
+                'default'           => Options::default_usps_client_id(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_CLIENT_SECRET,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_loose_string'],
+                'default'           => Options::default_usps_client_secret(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_ORIGIN_ZIP,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                'default'           => Options::default_usps_origin_zip(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_ACCOUNT_TYPE,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                'default'           => Options::default_usps_account_type(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_ACCOUNT_NUMBER,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_loose_string'],
+                'default'           => Options::default_usps_account_number(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_MAIL_CLASS,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                'default'           => Options::default_usps_mail_class(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_PROCESSING_CATEGORY,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                'default'           => Options::default_usps_processing_category(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_DEST_ENTRY_FACILITY_TYPE,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                'default'           => Options::default_usps_destination_entry_facility_type(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_RATE_INDICATOR,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                'default'           => Options::default_usps_rate_indicator(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_PRICE_TYPE,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                'default'           => Options::default_usps_price_type(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_TIMEOUT_SEC,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_positive_int_string'],
+                'default'           => (string) Options::default_usps_timeout_sec(),
+            ]
+        );
     }
 
     /* -------------------------------------------------------------------------
@@ -164,6 +304,21 @@ final class SettingsRegistrar
     {
         $value = preg_replace('/[^0-9.]/', '', (string) $value);
         return (string) (float) $value;
+    }
+
+    /**
+     * Positive integer sanitizer.
+     *
+     * @param mixed $value
+     */
+    public static function sanitize_positive_int_string($value): string
+    {
+        $value = preg_replace('/[^0-9]/', '', (string) $value);
+        $num = (int) $value;
+        if ($num < 0) {
+            $num = 0;
+        }
+        return (string) $num;
     }
 
     /**

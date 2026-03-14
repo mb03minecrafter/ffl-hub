@@ -3,7 +3,12 @@
 namespace FFLHub\Shipping\Methods;
 
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
+use FFLHub\FFL\Data\FFLRepository;
+use FFLHub\FFL\Data\FFLRowMapper;
+use FFLHub\FFL\Tables\FFLSchema;
+use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Product\ProductMeta;
+use FFLHub\Shipping\USPS\USPSRateHelper;
 use FFLHub\Util\DebugLogUtil;
 use WC_Shipping_Method;
 use WC_Product;
@@ -20,7 +25,7 @@ if (! defined('ABSPATH')) {
  * - Dropship-enabled lines are optimized as direct_ship vs dealer_fulfilled.
  * - Cost includes:
  *   - distributor lane fees (dealer_inbound/direct_home/direct_ffl)
- *   - dealer outbound home/ffl costs from total weight.
+ *   - dealer outbound home/ffl costs (USPS API when enabled; formula fallback).
  *
  * FREE SHIPPING RULE:
  * - Compute cart profit P_total (net after processor fee) using stored true cost meta.
@@ -195,6 +200,15 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $weight_oz  = $this->to_non_negative_float($weight_raw, 0.0);
             $line_weight_oz = $weight_oz * (float) $qty;
 
+            // Optional dimensions in inches (may be empty for some distributors).
+            $length_raw = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, true);
+            $width_raw  = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, true);
+            $height_raw = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, true);
+
+            $length_in = $this->to_non_negative_float($length_raw, 0.0);
+            $width_in  = $this->to_non_negative_float($width_raw, 0.0);
+            $height_in = $this->to_non_negative_float($height_raw, 0.0);
+
             $routing_lines[] = [
                 'line_id'          => (string) $item_key,
                 'dist_id'          => strtolower(trim((string) $dist_id)),
@@ -203,6 +217,9 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'ffl_required'     => $is_ffl ? 1 : 0,
                 'dropship_enabled' => $dropship_enabled ? 1 : 0,
                 'dist_lane_fee'    => $ship,
+                'length_in'        => $length_in,
+                'width_in'         => $width_in,
+                'height_in'        => $height_in,
             ];
 
             // Stored true cost (used exactly like your previous method)
@@ -226,6 +243,9 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'lane_fee'       => $ship,
                 'weight_oz'      => $weight_oz,
                 'line_weight_oz' => $line_weight_oz,
+                'length_in'      => $length_in,
+                'width_in'       => $width_in,
+                'height_in'      => $height_in,
                 'line_revenue'   => $line_revenue,
                 'true_cost'      => $true_cost,
                 'profit_net'     => $line_profit_net,
@@ -286,18 +306,102 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             );
         }
 
-        $dealer_home_cost = (float) ($plan['dealer_outbound_home_cost'] ?? 0.0);
-        $dealer_ffl_cost = (float) ($plan['dealer_outbound_ffl_cost'] ?? 0.0);
-        $dealer_home_oz = (float) ($plan['dealer_outbound_home_oz'] ?? 0.0);
-        $dealer_ffl_oz = (float) ($plan['dealer_outbound_ffl_oz'] ?? 0.0);
+        $dealer_home_cost_formula = (float) ($plan['dealer_outbound_home_cost'] ?? 0.0);
+        $dealer_ffl_cost_formula = (float) ($plan['dealer_outbound_ffl_cost'] ?? 0.0);
+
+        $dealer_home_pkg = $this->build_dealer_bucket_package($line_debug_rows, $assignments, false);
+        $dealer_ffl_pkg  = $this->build_dealer_bucket_package($line_debug_rows, $assignments, true);
+
+        $dealer_home_cost = $dealer_home_cost_formula;
+        $dealer_ffl_cost  = $dealer_ffl_cost_formula;
+        $dealer_home_oz   = (float) ($dealer_home_pkg['weight_oz'] ?? 0.0);
+        $dealer_ffl_oz    = (float) ($dealer_ffl_pkg['weight_oz'] ?? 0.0);
+
+        $dealer_home_source = 'formula';
+        $dealer_ffl_source  = 'formula';
+
+        $home_dest_zip = $this->resolve_home_destination_zip($package);
+        $ffl_dest_zip  = $this->resolve_receiving_ffl_zip($home_dest_zip);
+
+        $usps_helper = new USPSRateHelper();
+        if ($usps_helper->is_enabled()) {
+            if ($dealer_home_oz > 0.0 && $home_dest_zip !== '') {
+                $home_quote = $usps_helper->estimate_rate([
+                    'destination_zip' => $home_dest_zip,
+                    'weight_oz'       => $dealer_home_oz,
+                    'length_in'       => (float) ($dealer_home_pkg['length_in'] ?? 0.0),
+                    'width_in'        => (float) ($dealer_home_pkg['width_in'] ?? 0.0),
+                    'height_in'       => (float) ($dealer_home_pkg['height_in'] ?? 0.0),
+                ]);
+
+                if (!empty($home_quote['ok'])) {
+                    $dealer_home_cost = max(0.0, (float) ($home_quote['cost'] ?? 0.0));
+                    $dealer_home_source = 'usps_api';
+                } else {
+                    $this->log_debug(
+                        sprintf(
+                            'USPS home quote failed, using formula fallback error=%s',
+                            (string) ($home_quote['error'] ?? 'unknown')
+                        )
+                    );
+                }
+            }
+
+            if ($dealer_ffl_oz > 0.0 && $ffl_dest_zip !== '') {
+                $ffl_quote = $usps_helper->estimate_rate([
+                    'destination_zip' => $ffl_dest_zip,
+                    'weight_oz'       => $dealer_ffl_oz,
+                    'length_in'       => (float) ($dealer_ffl_pkg['length_in'] ?? 0.0),
+                    'width_in'        => (float) ($dealer_ffl_pkg['width_in'] ?? 0.0),
+                    'height_in'       => (float) ($dealer_ffl_pkg['height_in'] ?? 0.0),
+                ]);
+
+                if (!empty($ffl_quote['ok'])) {
+                    $dealer_ffl_cost = max(0.0, (float) ($ffl_quote['cost'] ?? 0.0));
+                    $dealer_ffl_source = 'usps_api';
+                } else {
+                    $this->log_debug(
+                        sprintf(
+                            'USPS ffl quote failed, using formula fallback error=%s',
+                            (string) ($ffl_quote['error'] ?? 'unknown')
+                        )
+                    );
+                }
+            }
+        }
+
+        $dist_total = (float) ($plan['distributor_cost_total'] ?? 0.0);
         $outbound_total = $dealer_home_cost + $dealer_ffl_cost;
+        $shipping_cost_total = max(0.0, $dist_total + $outbound_total);
+
+        $plan['dealer_outbound_home_cost_formula'] = $dealer_home_cost_formula;
+        $plan['dealer_outbound_ffl_cost_formula'] = $dealer_ffl_cost_formula;
+        $plan['dealer_outbound_home_cost'] = $dealer_home_cost;
+        $plan['dealer_outbound_ffl_cost'] = $dealer_ffl_cost;
+        $plan['dealer_outbound_home_oz'] = $dealer_home_oz;
+        $plan['dealer_outbound_ffl_oz'] = $dealer_ffl_oz;
+        $plan['dealer_outbound_home_cost_source'] = $dealer_home_source;
+        $plan['dealer_outbound_ffl_cost_source'] = $dealer_ffl_source;
+        $plan['total_cost'] = $shipping_cost_total;
+        $plan['meta']['outbound_pricing'] = [
+            'home_source' => $dealer_home_source,
+            'ffl_source'  => $dealer_ffl_source,
+            'home_zip'    => $home_dest_zip,
+            'ffl_zip'     => $ffl_dest_zip,
+        ];
 
         $this->log_debug(
             sprintf(
-                'OUTBOUND dealer_home wt_oz=%.2f cost=%s | dealer_ffl wt_oz=%.2f cost=%s',
+                'OUTBOUND dealer_home wt_oz=%.2f dims=%s zip=%s source=%s cost=%s | dealer_ffl wt_oz=%.2f dims=%s zip=%s source=%s cost=%s',
                 $dealer_home_oz,
+                $this->fmt_dims($dealer_home_pkg),
+                ($home_dest_zip !== '' ? $home_dest_zip : '-'),
+                $dealer_home_source,
                 $this->fmt_money($dealer_home_cost),
                 $dealer_ffl_oz,
+                $this->fmt_dims($dealer_ffl_pkg),
+                ($ffl_dest_zip !== '' ? $ffl_dest_zip : '-'),
+                $dealer_ffl_source,
                 $this->fmt_money($dealer_ffl_cost)
             )
         );
@@ -306,7 +410,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             sprintf(
                 'PLAN total=%s dist_total=%s outbound_total=%s decision_lines=%d combos=%d',
                 $this->fmt_money($shipping_cost_total),
-                $this->fmt_money((float) ($plan['distributor_cost_total'] ?? 0.0)),
+                $this->fmt_money($dist_total),
                 $this->fmt_money($outbound_total),
                 (int) (($plan['meta']['decision_lines'] ?? 0)),
                 (int) (($plan['meta']['combinations_evaluated'] ?? 0))
@@ -366,6 +470,10 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             );
         }
 
+        $plan_version = (($dealer_home_source === 'usps_api') || ($dealer_ffl_source === 'usps_api'))
+            ? 'dealer_fulfilled_v2_usps_outbound'
+            : 'dealer_fulfilled_v1';
+
         $this->add_rate([
             'id'    => $this->id . ':' . $this->instance_id,
             'label' => $this->title,
@@ -387,7 +495,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
                 // Planner output details (distributor lanes + routing assignments)
                 'fflhub_shipping_by_dist' => wp_json_encode($by_dist),
-                'fflhub_shipping_plan_version' => 'dealer_fulfilled_v1',
+                'fflhub_shipping_plan_version' => $plan_version,
                 'fflhub_shipping_plan' => wp_json_encode($plan),
 
                 // Optional: record whether free shipping rule triggered
@@ -475,6 +583,204 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         }
 
         return $v;
+    }
+
+    /**
+     * @param array<string,mixed> $pkg
+     */
+    private function fmt_dims(array $pkg): string
+    {
+        $l = (float) ($pkg['length_in'] ?? 0.0);
+        $w = (float) ($pkg['width_in'] ?? 0.0);
+        $h = (float) ($pkg['height_in'] ?? 0.0);
+
+        if ($l <= 0.0 || $w <= 0.0 || $h <= 0.0) {
+            return '-';
+        }
+
+        return sprintf('%.2fx%.2fx%.2f', $l, $w, $h);
+    }
+
+    /**
+     * Resolve checkout destination ZIP for non-FFL outbound bucket.
+     *
+     * @param array<string,mixed> $package
+     */
+    private function resolve_home_destination_zip(array $package): string
+    {
+        $candidates = [];
+
+        if (!empty($package['destination']['postcode'])) {
+            $candidates[] = (string) $package['destination']['postcode'];
+        }
+
+        if (function_exists('WC') && WC() && WC()->customer) {
+            $candidates[] = (string) WC()->customer->get_shipping_postcode();
+            $candidates[] = (string) WC()->customer->get_billing_postcode();
+        }
+
+        foreach ($candidates as $raw) {
+            $zip = $this->normalize_us_zip($raw);
+            if ($zip !== '') {
+                return $zip;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Resolve receiving FFL ZIP for FFL outbound bucket.
+     */
+    private function resolve_receiving_ffl_zip(string $fallback_zip): string
+    {
+        if (!function_exists('WC') || !WC() || !WC()->session) {
+            return $fallback_zip;
+        }
+
+        $raw_ffl_number = (string) WC()->session->get('fflhub_receiving_ffl_number');
+        $ffl_number = FFLRowMapper::normalize_ffl_number($raw_ffl_number);
+        if ($ffl_number === '') {
+            return $fallback_zip;
+        }
+
+        try {
+            $ffl_table = new FFLTable(new FFLSchema());
+            $row = FFLRepository::find_by_number($ffl_table, $ffl_number);
+        } catch (\Throwable $e) {
+            $this->log_debug('FFL ZIP lookup failed, using fallback zip.');
+            return $fallback_zip;
+        }
+
+        if (!is_array($row)) {
+            return $fallback_zip;
+        }
+
+        $candidate_zip = '';
+        if (isset($row['premise']['zip'])) {
+            $candidate_zip = (string) $row['premise']['zip'];
+        }
+        if ($candidate_zip === '' && isset($row['mailing']['zip'])) {
+            $candidate_zip = (string) $row['mailing']['zip'];
+        }
+
+        $zip = $this->normalize_us_zip($candidate_zip);
+        if ($zip === '') {
+            return $fallback_zip;
+        }
+
+        return $zip;
+    }
+
+    private function normalize_us_zip(string $zip): string
+    {
+        $digits = preg_replace('/\D+/', '', trim($zip));
+        if (!is_string($digits) || strlen($digits) < 5) {
+            return '';
+        }
+
+        return substr($digits, 0, 5);
+    }
+
+    /**
+     * Build package-level stats for a dealer outbound bucket.
+     *
+     * @param array<int,array<string,mixed>> $line_debug_rows
+     * @param array<string,string> $assignments
+     * @return array<string,mixed>
+     */
+    private function build_dealer_bucket_package(array $line_debug_rows, array $assignments, bool $ffl_bucket): array
+    {
+        $weight_oz = 0.0;
+        $volume_cuin = 0.0;
+        $max_length_in = 0.0;
+        $line_count = 0;
+
+        foreach ($line_debug_rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $line_id = (string) ($row['line_id'] ?? '');
+            $route = isset($assignments[$line_id]) ? (string) $assignments[$line_id] : (!empty($row['dropship']) ? 'direct_ship' : 'dealer_fulfilled');
+            if ($route !== 'dealer_fulfilled') {
+                continue;
+            }
+
+            $is_ffl_line = !empty($row['ffl_required']);
+            if ($is_ffl_line !== $ffl_bucket) {
+                continue;
+            }
+
+            $line_count++;
+
+            $line_weight_oz = max(0.0, (float) ($row['line_weight_oz'] ?? 0.0));
+            $weight_oz += $line_weight_oz;
+
+            $qty = max(1, (int) ($row['qty'] ?? 1));
+            $length_in = max(0.0, (float) ($row['length_in'] ?? 0.0));
+            $width_in  = max(0.0, (float) ($row['width_in'] ?? 0.0));
+            $height_in = max(0.0, (float) ($row['height_in'] ?? 0.0));
+
+            if ($length_in > 0.0 && $width_in > 0.0 && $height_in > 0.0) {
+                $volume_cuin += ($length_in * $width_in * $height_in) * (float) $qty;
+                if ($length_in > $max_length_in) {
+                    $max_length_in = $length_in;
+                }
+            }
+        }
+
+        if ($weight_oz <= 0.0 || $line_count < 1) {
+            return [
+                'weight_oz'  => 0.0,
+                'length_in'  => 0.0,
+                'width_in'   => 0.0,
+                'height_in'  => 0.0,
+                'line_count' => 0,
+                'dim_source' => 'none',
+            ];
+        }
+
+        if ($volume_cuin > 0.0 && $max_length_in > 0.0) {
+            $cross_section = sqrt(max(0.25, $volume_cuin / $max_length_in));
+
+            return [
+                'weight_oz'  => $weight_oz,
+                'length_in'  => round(max(0.25, $max_length_in), 2),
+                'width_in'   => round(max(0.25, $cross_section), 2),
+                'height_in'  => round(max(0.25, $cross_section), 2),
+                'line_count' => $line_count,
+                'dim_source' => 'derived_volume',
+            ];
+        }
+
+        $fallback = $this->fallback_dimensions_for_weight_oz($weight_oz);
+
+        return [
+            'weight_oz'  => $weight_oz,
+            'length_in'  => (float) $fallback['length_in'],
+            'width_in'   => (float) $fallback['width_in'],
+            'height_in'  => (float) $fallback['height_in'],
+            'line_count' => $line_count,
+            'dim_source' => 'fallback',
+        ];
+    }
+
+    /**
+     * @return array{length_in:float,width_in:float,height_in:float}
+     */
+    private function fallback_dimensions_for_weight_oz(float $weight_oz): array
+    {
+        if ($weight_oz <= 16.0) {
+            return ['length_in' => 9.0, 'width_in' => 6.0, 'height_in' => 2.0];
+        }
+        if ($weight_oz <= 64.0) {
+            return ['length_in' => 12.0, 'width_in' => 9.0, 'height_in' => 4.0];
+        }
+        if ($weight_oz <= 160.0) {
+            return ['length_in' => 16.0, 'width_in' => 12.0, 'height_in' => 6.0];
+        }
+        return ['length_in' => 20.0, 'width_in' => 14.0, 'height_in' => 8.0];
     }
 
     private function package_has_fflhub_items($package): bool

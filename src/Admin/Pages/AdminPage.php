@@ -163,12 +163,29 @@ class AdminPage
             wp_die(esc_html__('You do not have permission to access this page.', 'ffl-hub'));
         }
 
-        $payment_fee_percent   = (string) Options::get_payment_processor_fee_percent();
-        $global_markup_percent = (string) Options::get_global_markup();
+        $global_settings = [
+            'payment_fee_percent'   => (string) Options::get_payment_processor_fee_percent(),
+            'global_markup_percent' => (string) Options::get_global_markup(),
+
+            'usps_estimate_enabled' => Options::get_usps_estimate_enabled() ? '1' : '0',
+            'usps_use_test_env'     => Options::get_usps_use_test_env() ? '1' : '0',
+            'usps_base_url'         => (string) Options::get_usps_base_url(),
+            'usps_client_id'        => (string) Options::get_usps_client_id(),
+            'usps_client_secret'    => (string) Options::get_usps_client_secret(),
+            'usps_origin_zip'       => (string) Options::get_usps_origin_zip(),
+            'usps_account_type'     => (string) Options::get_usps_account_type(),
+            'usps_account_number'   => (string) Options::get_usps_account_number(),
+            'usps_mail_class'       => (string) Options::get_usps_mail_class(),
+            'usps_processing_category' => (string) Options::get_usps_processing_category(),
+            'usps_destination_entry_facility_type' => (string) Options::get_usps_destination_entry_facility_type(),
+            'usps_rate_indicator'   => (string) Options::get_usps_rate_indicator(),
+            'usps_price_type'       => (string) Options::get_usps_price_type(),
+            'usps_timeout_sec'      => (string) Options::get_usps_timeout_sec(),
+        ];
 ?>
         <div class="wrap fflhub-wrap">
             <?php self::render_header(); ?>
-            <?php self::render_global_settings_form($payment_fee_percent, $global_markup_percent); ?>
+            <?php self::render_global_settings_form($global_settings); ?>
             <?php self::render_distributor_grid($modules); ?>
             <?php self::render_modal($modules); ?>
         </div>
@@ -194,10 +211,29 @@ class AdminPage
     /**
      * Renders the global settings block (payment fee + markup).
      */
-    private static function render_global_settings_form(
-        string $payment_fee_percent,
-        string $global_markup_percent
-    ): void {
+    /**
+     * @param array<string,string> $settings
+     */
+    private static function render_global_settings_form(array $settings): void
+    {
+        $payment_fee_percent   = (string) ($settings['payment_fee_percent'] ?? '');
+        $global_markup_percent = (string) ($settings['global_markup_percent'] ?? '');
+
+        $usps_estimate_enabled = (string) ($settings['usps_estimate_enabled'] ?? '0');
+        $usps_use_test_env     = (string) ($settings['usps_use_test_env'] ?? '1');
+        $usps_base_url         = (string) ($settings['usps_base_url'] ?? '');
+        $usps_client_id        = (string) ($settings['usps_client_id'] ?? '');
+        $usps_client_secret    = (string) ($settings['usps_client_secret'] ?? '');
+        $usps_origin_zip       = (string) ($settings['usps_origin_zip'] ?? '');
+        $usps_account_type     = (string) ($settings['usps_account_type'] ?? '');
+        $usps_account_number   = (string) ($settings['usps_account_number'] ?? '');
+        $usps_mail_class       = (string) ($settings['usps_mail_class'] ?? '');
+        $usps_processing_category = (string) ($settings['usps_processing_category'] ?? '');
+        $usps_destination_entry_facility_type = (string) ($settings['usps_destination_entry_facility_type'] ?? '');
+        $usps_rate_indicator   = (string) ($settings['usps_rate_indicator'] ?? '');
+        $usps_price_type       = (string) ($settings['usps_price_type'] ?? '');
+        $usps_timeout_sec      = (string) ($settings['usps_timeout_sec'] ?? '');
+
     ?>
         <form method="post" action="options.php" class="fflhub-global-settings-form">
             <?php settings_fields('fflhub_global_settings'); ?>
@@ -251,6 +287,236 @@ class AdminPage
                             'ffl-hub'
                         ); ?>
                     </p>
+                </div>
+
+                <h2 class="fflhub-section-title">
+                    <?php esc_html_e('USPS Outbound Estimate Settings', 'ffl-hub'); ?>
+                </h2>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_estimate_enabled"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Enable USPS outbound estimates', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_usps_estimate_enabled" value="0" />
+                    <input
+                        id="fflhub_usps_estimate_enabled"
+                        name="fflhub_usps_estimate_enabled"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($usps_estimate_enabled, '1'); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'If enabled, dealer outbound buckets use USPS Domestic Prices API with formula fallback on failures.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_use_test_env"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Use USPS test environment', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_usps_use_test_env" value="0" />
+                    <input
+                        id="fflhub_usps_use_test_env"
+                        name="fflhub_usps_use_test_env"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($usps_use_test_env, '1'); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Checked = test endpoint (apis-tem.usps.com). Unchecked = production endpoint (apis.usps.com).',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_base_url"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS base URL override', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_base_url"
+                        name="fflhub_usps_base_url"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_base_url); ?>"
+                        placeholder="https://apis-tem.usps.com" />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Optional. Leave blank to use test/prod default based on the checkbox above.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_client_id"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS client ID', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_client_id"
+                        name="fflhub_usps_client_id"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_client_id); ?>" />
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_client_secret"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS client secret', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_client_secret"
+                        name="fflhub_usps_client_secret"
+                        type="password"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_client_secret); ?>" />
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_origin_zip"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS origin ZIP (dealer)', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_origin_zip"
+                        name="fflhub_usps_origin_zip"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_origin_zip); ?>"
+                        placeholder="70801" />
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_account_type"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS account type', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_account_type"
+                        name="fflhub_usps_account_type"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_account_type); ?>"
+                        placeholder="EPS" />
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_account_number"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS account number', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_account_number"
+                        name="fflhub_usps_account_number"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_account_number); ?>" />
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_mail_class"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS mail class', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_mail_class"
+                        name="fflhub_usps_mail_class"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_mail_class); ?>"
+                        placeholder="USPS_GROUND_ADVANTAGE" />
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_processing_category"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS processing category', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_processing_category"
+                        name="fflhub_usps_processing_category"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_processing_category); ?>"
+                        placeholder="MACHINABLE" />
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_destination_entry_facility_type"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS destination facility type', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_destination_entry_facility_type"
+                        name="fflhub_usps_destination_entry_facility_type"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_destination_entry_facility_type); ?>"
+                        placeholder="NONE" />
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_rate_indicator"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS rate indicator', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_rate_indicator"
+                        name="fflhub_usps_rate_indicator"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_rate_indicator); ?>"
+                        placeholder="Optional" />
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_price_type"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS price type', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_price_type"
+                        name="fflhub_usps_price_type"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_price_type); ?>"
+                        placeholder="COMMERCIAL" />
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_usps_timeout_sec"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('USPS timeout (seconds)', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_usps_timeout_sec"
+                        name="fflhub_usps_timeout_sec"
+                        type="number"
+                        min="3"
+                        step="1"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($usps_timeout_sec); ?>" />
                 </div>
 
                 <?php submit_button(__('Save Global Settings', 'ffl-hub')); ?>
