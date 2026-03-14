@@ -33,6 +33,9 @@ if (!defined('ABSPATH')) {
  */
 final class LipseysIntegrationAPI
 {
+    private const API_BASE_URL = 'https://api.lipseys.com/api/';
+    private const VALIDATEITEM_ENDPOINT = 'integration/items/validateitem';
+
     /**
      * Create an authenticated Lipsey's client instance.
      *
@@ -95,6 +98,18 @@ final class LipseysIntegrationAPI
      */
     public static function validate_item($client, string $query): array
     {
+        $call_id  = substr(sha1($query . '|' . microtime(true) . '|' . mt_rand()), 0, 10);
+        $endpoint = self::build_endpoint_url(self::VALIDATEITEM_ENDPOINT);
+        $started  = microtime(true);
+
+        self::debug_log('ValidateItem request', [
+            'call_id'      => $call_id,
+            'method'       => 'POST',
+            'endpoint'     => $endpoint,
+            'request_body' => self::sanitize_for_log($query),
+            'request_meta' => self::classify_validateitem_query($query),
+        ]);
+
         try {
             // Vendor call. May throw for transport/auth errors.
             $resp = $client->ValidateItem($query);
@@ -106,10 +121,13 @@ final class LipseysIntegrationAPI
             $norm['ok'] = false;
             $norm['message'] = $msg;
 
-            // Keep logs safe: don’t dump massive payloads, just tails.
             self::debug_log('ValidateItem exception', [
-                'query_tail4'     => self::tail4($query),
-                'error_tail120'   => self::tail120($e->getMessage()),
+                'call_id'       => $call_id,
+                'method'        => 'POST',
+                'endpoint'      => $endpoint,
+                'query_tail4'   => self::tail4($query),
+                'error_tail120' => self::tail120($e->getMessage()),
+                'elapsed_ms'    => round((microtime(true) - $started) * 1000.0, 2),
             ]);
 
             return [
@@ -122,6 +140,15 @@ final class LipseysIntegrationAPI
                 'provider_error_code'=> self::infer_provider_error_code_from_message($e->getMessage()),
             ];
         }
+
+        self::debug_log('ValidateItem response', [
+            'call_id'      => $call_id,
+            'method'       => 'POST',
+            'endpoint'     => $endpoint,
+            'elapsed_ms'   => round((microtime(true) - $started) * 1000.0, 2),
+            'response'     => self::sanitize_for_log($resp),
+            'responseType' => is_object($resp) ? ('object:' . get_class($resp)) : gettype($resp),
+        ]);
 
         // Successful call (meaning: it returned a payload, not necessarily success=true).
         $norm = self::normalize_validateitem_response($resp, $query);
@@ -821,6 +848,114 @@ final class LipseysIntegrationAPI
     }
 
     /**
+     * Build a known endpoint URL for debug logging.
+     */
+    private static function build_endpoint_url(string $path): string
+    {
+        return rtrim(self::API_BASE_URL, '/') . '/' . ltrim($path, '/');
+    }
+
+    /**
+     * Classify ValidateItem query shape for easier debugging.
+     *
+     * @return array<string,mixed>
+     */
+    private static function classify_validateitem_query(string $query): array
+    {
+        $trimmed = trim($query);
+        $digits  = preg_replace('/\D+/', '', $trimmed);
+        if (!is_string($digits)) {
+            $digits = '';
+        }
+
+        return [
+            'len'            => strlen($trimmed),
+            'digits_len'     => strlen($digits),
+            'is_all_digits'  => (preg_match('/^\d+$/', $trimmed) === 1) ? 1 : 0,
+            'looks_like_upc' => (preg_match('/^\d{10,14}$/', $trimmed) === 1) ? 1 : 0,
+            'tail4'          => self::tail4($trimmed),
+        ];
+    }
+
+    /**
+     * Recursively sanitize values before logging.
+     *
+     * @param mixed $value
+     * @return mixed
+     */
+    private static function sanitize_for_log($value, int $depth = 0)
+    {
+        if ($depth >= 5) {
+            return '[max_depth]';
+        }
+
+        if ($value === null || is_bool($value) || is_int($value) || is_float($value)) {
+            return $value;
+        }
+
+        if (is_string($value)) {
+            return self::sanitize_log_string($value, 1200);
+        }
+
+        if (is_object($value)) {
+            $arr = json_decode(wp_json_encode($value), true);
+            if (!is_array($arr)) {
+                return '[object:' . get_class($value) . ']';
+            }
+            return self::sanitize_for_log($arr, $depth + 1);
+        }
+
+        if (is_array($value)) {
+            $is_list = self::is_list_array($value);
+            $limit   = $is_list ? 20 : 40;
+            $items   = [];
+            $count   = 0;
+
+            foreach ($value as $k => $v) {
+                $count++;
+                if ($count > $limit) {
+                    break;
+                }
+                $items[$k] = self::sanitize_for_log($v, $depth + 1);
+            }
+
+            if (count($value) > $limit) {
+                $items['_truncated_count'] = count($value) - $limit;
+            }
+
+            return $items;
+        }
+
+        return '[type:' . gettype($value) . ']';
+    }
+
+    private static function sanitize_log_string(string $value, int $maxLen = 1200): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        // Generic key/value secret masking.
+        $value = preg_replace('/("?(?:password|token|authorization|api[_-]?key|secret)"?\s*[:=]\s*")([^"]*)(")/i', '$1[redacted]$3', $value);
+        if (!is_string($value)) {
+            $value = '';
+        }
+
+        // Vendor-specific auth error shape includes plaintext credentials.
+        $value = preg_replace('/(Credentials Provided:\s*[^,]*,\s*)([^\|\r\n]+)/i', '$1[redacted]', $value);
+        if (!is_string($value)) {
+            $value = '';
+        }
+
+        if ($maxLen > 0 && strlen($value) > $maxLen) {
+            return substr($value, 0, $maxLen) . '... [truncated]';
+        }
+
+        return $value;
+    }
+
+    /**
      * Keep raw payload small (keys + some known top-level fields).
      *
      * @param array<string,mixed> $resp
@@ -936,3 +1071,4 @@ final class LipseysIntegrationAPI
         return array_keys($arr) === range(0, count($arr) - 1);
     }
 }
+

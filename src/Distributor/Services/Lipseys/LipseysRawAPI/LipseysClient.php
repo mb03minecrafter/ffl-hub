@@ -3,6 +3,7 @@
 namespace FFLHub\Distributor\Services\Lipseys\LipseysRawAPI;
 
 use Exception;
+use FFLHub\Util\DebugLogUtil;
 
 class LipseysClient
 {
@@ -180,6 +181,10 @@ class LipseysClient
 
     private function RequestError($error)
     {
+        $this->debug_log('request.error', [
+            'error' => $this->sanitizeErrorValue((string) $error),
+        ]);
+
         return array(
             "authorized" => false,
             "success" => false,
@@ -279,6 +284,14 @@ class LipseysClient
         array $columns,
         callable $item_to_row
     ): array {
+        $this->debug_log('stream.request', [
+            'method'        => 'GET',
+            'endpoint'      => $this->buildUrl($endpoint),
+            'array_path'    => $array_path,
+            'tsv_file'      => basename($tsv_path),
+            'token_present' => (is_string($this->Token) && $this->Token !== '') ? 1 : 0,
+        ]);
+
         $fh = @fopen($tsv_path, 'wb');
         if (!$fh) {
             return $this->RequestError('Failed to open TSV for writing: ' . $tsv_path);
@@ -468,9 +481,26 @@ class LipseysClient
 
         $ok = curl_exec($curl);
         $err = curl_error($curl);
+        $errno = curl_errno($curl);
         $http = curl_getinfo($curl, CURLINFO_HTTP_CODE);
         curl_close($curl);
         fclose($fh);
+
+        $this->debug_log('stream.response', [
+            'method'           => 'GET',
+            'endpoint'         => $this->buildUrl($endpoint),
+            'http_code'        => (int) $http,
+            'curl_errno'       => (int) $errno,
+            'curl_error'       => $this->sanitizeErrorValue((string) $err),
+            'curl_exec_ok'     => $ok === false ? 0 : 1,
+            'authorized'       => !empty($stats['authorized']) ? 1 : 0,
+            'bytes_received'   => (int) ($stats['bytes_received'] ?? 0),
+            'items_seen'       => (int) ($stats['items_seen'] ?? 0),
+            'rows_written'     => (int) ($stats['rows_written'] ?? 0),
+            'items_skipped'    => (int) ($stats['items_skipped'] ?? 0),
+            'json_decode_fails'=> (int) ($stats['json_decode_fails'] ?? 0),
+            'next_update_raw'  => isset($stats['next_update_raw']) ? $this->sanitizeErrorValue((string) $stats['next_update_raw']) : null,
+        ]);
 
         if ($err) {
             return $this->RequestError($err);
@@ -543,6 +573,14 @@ class LipseysClient
             "Password" => $this->Password
         );
 
+        $this->debug_log('login.request', [
+            'method'    => 'POST',
+            'endpoint'  => $this->buildUrl('integration/authentication/login'),
+            'account'   => $this->maskEmail((string) $this->Email),
+            'has_email' => trim((string) $this->Email) !== '' ? 1 : 0,
+            'has_pass'  => trim((string) $this->Password) !== '' ? 1 : 0,
+        ]);
+
         // Always do auth login without an existing token header.
         // Some API gateways reject login attempts with stale bearer/token headers.
         $this->Token = null;
@@ -560,6 +598,15 @@ class LipseysClient
         $responseExcerpt = $this->sanitizeErrorValue(is_string($response) ? $response : '');
 
         if ($err) {
+            $this->debug_log('login.response.error', [
+                'method'      => 'POST',
+                'endpoint'    => $this->buildUrl('integration/authentication/login'),
+                'http_code'   => $http,
+                'curl_errno'  => (int) $errno,
+                'curl_error'  => $this->sanitizeErrorValue((string) $err),
+                'resp_excerpt'=> $responseExcerpt,
+            ]);
+
             return array(
                 'stage'            => 'login_request',
                 'http_code'        => $http,
@@ -583,6 +630,15 @@ class LipseysClient
                 if (session_status() == PHP_SESSION_ACTIVE) {
                     $_SESSION[$this->sessionTokenKey()] = $decode["token"];
                 }
+
+                $this->debug_log('login.response.ok', [
+                    'method'           => 'POST',
+                    'endpoint'         => $this->buildUrl('integration/authentication/login'),
+                    'http_code'        => $http,
+                    'has_token'        => 1,
+                    'econtact_success' => 1,
+                ]);
+
                 return 1;
             }
 
@@ -611,6 +667,15 @@ class LipseysClient
             ) {
                 $diag['likely_cause'] = 'auth_or_ip_allowlist';
             }
+
+            $this->debug_log('login.response.invalid', [
+                'method'      => 'POST',
+                'endpoint'    => $this->buildUrl('integration/authentication/login'),
+                'http_code'   => $http,
+                'curl_errno'  => (int) $errno,
+                'curl_error'  => $this->sanitizeErrorValue((string) $err),
+                'diag'        => $diag,
+            ]);
 
             return $diag;
         }
@@ -759,5 +824,20 @@ class LipseysClient
             'http_code'      => (int) $http,
             'curl_errno'     => (int) $errno,
         ];
+    }
+
+    private function buildUrl(string $path): string
+    {
+        return rtrim((string) $this->BaseUrl, '/') . '/' . ltrim($path, '/');
+    }
+
+    private function debug_log(string $message, array $context = []): void
+    {
+        if (!empty($context)) {
+            DebugLogUtil::log_ctx('FFLHUB_LIPSEYS_DEBUG', '[FFLHub][LipseysRawAPI]', $message, $context);
+            return;
+        }
+
+        DebugLogUtil::log('FFLHUB_LIPSEYS_DEBUG', '[FFLHub][LipseysRawAPI]', $message);
     }
 }
