@@ -82,6 +82,7 @@ final class USPSRateHelper
         $length_in = $this->positive_or_default($args['length_in'] ?? 0.0, 9.0);
         $width_in  = $this->positive_or_default($args['width_in'] ?? 0.0, 6.0);
         $height_in = $this->positive_or_default($args['height_in'] ?? 0.0, 2.0);
+        [$length_in, $width_in, $height_in] = $this->normalize_dimensions_for_usps($length_in, $width_in, $height_in);
 
         $weight_lb = round(max(0.0625, $weight_oz / 16.0), 3);
 
@@ -99,9 +100,11 @@ final class USPSRateHelper
             'mailingDate'                 => gmdate('Y-m-d'),
         ];
 
-        if ($cfg['rate_indicator'] !== '') {
-            $payload['rateIndicator'] = $cfg['rate_indicator'];
+        $rate_indicator = trim((string) $cfg['rate_indicator']);
+        if ($rate_indicator === '') {
+            $rate_indicator = $this->default_rate_indicator((string) $cfg['mail_class']);
         }
+        $payload['rateIndicator'] = ($rate_indicator !== '') ? $rate_indicator : 'SP';
 
         if ($cfg['account_number'] !== '') {
             $payload['accountType']   = $cfg['account_type'];
@@ -567,6 +570,41 @@ final class USPSRateHelper
             return $text;
         }
         return substr($text, 0, $max - 3) . '...';
+    }
+
+    /**
+     * USPS v3 frequently requires a rateIndicator for specific mail classes.
+     * We apply a conservative default only when admin did not set one.
+     */
+    private function default_rate_indicator(string $mail_class): string
+    {
+        $m = strtoupper(trim($mail_class));
+        if ($m === 'USPS_GROUND_ADVANTAGE') {
+            return 'SP';
+        }
+        return 'SP';
+    }
+
+    /**
+     * USPS expects length to be the longest side, width second, height shortest.
+     *
+     * @return array{0:float,1:float,2:float}
+     */
+    private function normalize_dimensions_for_usps(float $length_in, float $width_in, float $height_in): array
+    {
+        $dims = [
+            max(0.25, $length_in),
+            max(0.25, $width_in),
+            max(0.25, $height_in),
+        ];
+
+        rsort($dims, SORT_NUMERIC);
+
+        return [
+            (float) $dims[0],
+            (float) $dims[1],
+            (float) $dims[2],
+        ];
     }
 
     /**
