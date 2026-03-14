@@ -43,24 +43,20 @@ final class LipseysIntegrationAPI
      */
     public static function create_client(string $email, string $password): array
     {
-        // Hard dependency: the vendor package must be installed.
-        if (!class_exists('\\lipseys\\ApiIntegration\\LipseysClient')) {
+        if (!class_exists('\\FFLHub\\Distributor\\Services\\Lipseys\\LipseysRawAPI\\LipseysClient')) {
             return [
                 'ok'      => false,
-                'message' => 'Lipseys API client not available (lipseys/apiintegration).',
+                'message' => 'Lipseys raw API client not available.',
                 'client'  => null,
             ];
         }
 
         try {
-            // Vendor client typically performs auth/session setup in constructor.
-            $client = new \lipseys\ApiIntegration\LipseysClient($email, $password);
+            $client = new \FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient($email, $password);
         } catch (\Throwable $e) {
-            // Treat constructor failures as "client init failed".
-            // Higher layers decide retryable vs fatal (many failures are transient).
             return [
                 'ok'      => false,
-                'message' => 'Failed to initialize Lipsey’s client: ' . $e->getMessage(),
+                'message' => 'Failed to initialize Lipsey raw API client: ' . $e->getMessage(),
                 'client'  => null,
             ];
         }
@@ -70,6 +66,16 @@ final class LipseysIntegrationAPI
             'message' => 'OK',
             'client'  => $client,
         ];
+    }
+
+    /**
+     * Backward-compatible alias.
+     *
+     * @return array{ok:bool,message:string,client:object|null}
+     */
+    public static function create_raw_client(string $email, string $password): array
+    {
+        return self::create_client($email, $password);
     }
 
     /**
@@ -1071,4 +1077,5 @@ final class LipseysIntegrationAPI
         return array_keys($arr) === range(0, count($arr) - 1);
     }
 }
+
 

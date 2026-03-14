@@ -236,15 +236,15 @@ class DistributorLipseys extends DistributorBase
             );
         }
 
-        $client_res = LipseysIntegrationAPI::create_client($email, $password);
+        $client_res = LipseysIntegrationAPI::create_raw_client($email, $password);
         if (!($client_res['ok'] ?? false)) {
             return DistributorOrderValidationResult::block_retryable(
-                (string) ($client_res['message'] ?? 'Lipseys client init failed.'),
+                (string) ($client_res['message'] ?? 'Lipseys raw API client init failed.'),
                 ['LIPSEYS_CLIENT_INIT_FAILED']
             );
         }
 
-        /** @var \lipseys\ApiIntegration\LipseysClient $client */
+        /** @var \FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient $client */
         $client = $client_res['client'];
 
         $details = [
@@ -509,10 +509,10 @@ class DistributorLipseys extends DistributorBase
 
     protected function place_order_precheck(DistributorOrderRequest $request): ?DistributorOrderResult
     {
-        // Hard dependency: Lipsey's client must be installed.
-        if (!class_exists('\\lipseys\\ApiIntegration\\LipseysClient')) {
+        // Hard dependency: internal raw Lipsey's client must be available.
+        if (!class_exists('\\FFLHub\\Distributor\\Services\\Lipseys\\LipseysRawAPI\\LipseysClient')) {
             return DistributorOrderResult::block_fatal(
-                'Lipseys API client not available (lipseys/apiintegration).',
+                'Lipseys raw API client not available.',
                 [DistributorOrderResult::REASON_FATAL_CLIENT_MISSING]
             );
         }
@@ -544,7 +544,7 @@ class DistributorLipseys extends DistributorBase
         $client_res = LipseysIntegrationAPI::create_client($email, $password);
         if (!($client_res['ok'] ?? false) || !is_object($client_res['client'])) {
             return DistributorOrderResult::block_retryable(
-                (string) ($client_res['message'] ?? 'Failed to initialize Lipsey’s client.'),
+                (string) ($client_res['message'] ?? 'Failed to initialize Lipsey raw API client.'),
                 [DistributorOrderResult::REASON_RETRY_UNKNOWN],
                 ['client_init' => $client_res]
             );
@@ -556,7 +556,7 @@ class DistributorLipseys extends DistributorBase
         return null;
     }
 
-    /** @var \lipseys\ApiIntegration\LipseysClient|null */
+    /** @var \FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient|null */
     protected $lipseys_client = null;
 
     protected function place_order_bucket(
@@ -565,7 +565,7 @@ class DistributorLipseys extends DistributorBase
         array $lines,
         array &$external_ids
     ): DistributorOrderResult {
-        /** @var \lipseys\ApiIntegration\LipseysClient $client */
+        /** @var \FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient $client */
         $client = $this->lipseys_client;
 
         $email    = $this->get_dealer_email();
@@ -1155,3 +1155,4 @@ class DistributorLipseys extends DistributorBase
     }
 
 }
+

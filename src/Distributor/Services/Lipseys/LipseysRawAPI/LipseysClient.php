@@ -140,7 +140,7 @@ class LipseysClient
         return 'LipseysSessionToken_' . hash('sha256', $identity);
     }
 
-    private function sanitizeErrorValue($value): string
+    private function sanitizeErrorValue($value, int $maxLen = 800): string
     {
         if (is_array($value) || is_object($value)) {
             $json = json_encode($value);
@@ -149,8 +149,8 @@ class LipseysClient
 
         $value = (string) $value;
         $value = preg_replace('/("?(?:password|token|authorization)"?\s*[:=]\s*")([^"]*)(")/i', '$1[redacted]$3', $value);
-        if (strlen($value) > 800) {
-            $value = substr($value, 0, 800) . '... [truncated]';
+        if ($maxLen > 0 && strlen($value) > $maxLen) {
+            $value = substr($value, 0, $maxLen) . '... [truncated]';
         }
 
         return $value;
@@ -197,6 +197,11 @@ class LipseysClient
 
     public function CatalogToTsv(string $tsv_path, array $columns, callable $item_to_row): array
     {
+        $inputErr = $this->validate_tsv_stream_inputs($tsv_path, $columns, $item_to_row);
+        if ($inputErr !== null) {
+            return $inputErr;
+        }
+
         $attempts = 0;
         $last_err = null;
 
@@ -241,6 +246,11 @@ class LipseysClient
      */
     public function PricingAndQuantityToTsv(string $tsv_path, array $columns, callable $item_to_row): array
     {
+        $inputErr = $this->validate_tsv_stream_inputs($tsv_path, $columns, $item_to_row);
+        if ($inputErr !== null) {
+            return $inputErr;
+        }
+
         $attempts = 0;
         $last_err = null;
 
@@ -275,6 +285,586 @@ class LipseysClient
         }
 
         return is_array($last_err) ? $last_err : $this->RequestError('PricingAndQuantityToTsv failed after retry.');
+    }
+
+    /**
+     * Full catalog feed (JSON, non-streaming).
+     *
+     * @return array<string,mixed>
+     */
+    public function Catalog(): array
+    {
+        return $this->get_with_auth_retry("integration/items/CatalogFeed", 'catalog');
+    }
+
+    /**
+     * Single catalog item by item number/UPC payload accepted by Lipsey's API.
+     *
+     * @param mixed $itemNumber
+     * @return array<string,mixed>
+     */
+    public function CatalogItem($itemNumber): array
+    {
+        $itemNumberStr = trim((string) $itemNumber);
+        if ($itemNumberStr === '') {
+            return array(
+                "authorized" => true,
+                "success" => false,
+                "errors" => array(
+                    "Item number not provided"
+                )
+            );
+        }
+
+        return $this->post_with_auth_retry("integration/items/CatalogFeed/Item", $itemNumberStr, 'catalog_item');
+    }
+
+    /**
+     * Full pricing + quantity feed (JSON, non-streaming).
+     *
+     * @return array<string,mixed>
+     */
+    public function PricingAndQuantity(): array
+    {
+        return $this->get_with_auth_retry("integration/items/PricingQuantityFeed", 'pricing_quantity');
+    }
+
+    /**
+     * Allocation feed (JSON).
+     *
+     * @return array<string,mixed>
+     */
+    public function AllocationPricingAndQuantity(): array
+    {
+        return $this->get_with_auth_retry("integration/items/Allocations", 'allocation_pricing_quantity');
+    }
+
+    /**
+     * Submit API order.
+     *
+     * @param mixed $order
+     * @return array<string,mixed>
+     */
+    public function Order($order): array
+    {
+        $itemsCheck = $this->validate_order_items($order);
+        if ($itemsCheck !== null) {
+            return $itemsCheck;
+        }
+
+        return $this->post_with_auth_retry("integration/order/apiorder", $order, 'order');
+    }
+
+    /**
+     * Submit allocation order.
+     *
+     * @param mixed $order
+     * @return array<string,mixed>
+     */
+    public function AllocationOrder($order): array
+    {
+        $itemsCheck = $this->validate_order_items($order);
+        if ($itemsCheck !== null) {
+            return $itemsCheck;
+        }
+
+        return $this->post_with_auth_retry("integration/order/AllocationOrder", $order, 'allocation_order');
+    }
+
+    /**
+     * Validate a single item using Lipsey's ValidateItem endpoint.
+     *
+     * Keeps retry/auth behavior aligned with vendor client while preserving
+     * raw HTTP response logging inside our own raw API class.
+     */
+    public function ValidateItem($itemNumber): array
+    {
+        $itemNumberStr = trim((string) $itemNumber);
+        $callId = substr(sha1($itemNumberStr . '|' . microtime(true) . '|' . mt_rand()), 0, 10);
+        $endpoint = "integration/items/validateitem";
+        $url = $this->buildUrl($endpoint);
+
+        if ($itemNumberStr === '') {
+            return array(
+                "authorized" => true,
+                "success" => false,
+                "errors" => array(
+                    "Item number not provided"
+                )
+            );
+        }
+
+        for ($attempt = 1; $attempt <= 2; $attempt++) {
+            if (!$this->Token) {
+                $loginAttemptResult = $this->login();
+                if ($loginAttemptResult != 1) {
+                    return $this->InvalidLoginResponse($loginAttemptResult);
+                }
+            }
+
+            $this->debug_log('validateitem.request', [
+                'call_id' => $callId,
+                'attempt' => $attempt,
+                'method' => 'POST',
+                'endpoint' => $url,
+                'request_body' => $this->sanitizeErrorValue($itemNumberStr, 4000),
+                'token_present' => (is_string($this->Token) && $this->Token !== '') ? 1 : 0,
+            ]);
+
+            $curl = $this->PostRequestBuilder($endpoint, $itemNumberStr, true);
+            $response = curl_exec($curl);
+            $err = curl_error($curl);
+            $errno = curl_errno($curl);
+            $http = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+            curl_close($curl);
+
+            $this->debug_log('validateitem.raw_response', [
+                'call_id' => $callId,
+                'attempt' => $attempt,
+                'http_code' => $http,
+                'curl_errno' => (int) $errno,
+                'curl_error' => $this->sanitizeErrorValue((string) $err),
+                'raw_response' => $this->sanitizeErrorValue(is_string($response) ? $response : '', 4000),
+            ]);
+
+            if ($err) {
+                return $this->RequestError($err);
+            }
+
+            $decode = json_decode((string) $response, true);
+            $jsonError = json_last_error() === JSON_ERROR_NONE ? '' : json_last_error_msg();
+
+            $this->debug_log('validateitem.decoded_response', [
+                'call_id' => $callId,
+                'attempt' => $attempt,
+                'json_error' => $jsonError,
+                'decoded' => is_array($decode) ? $decode : null,
+            ]);
+
+            if (!is_array($decode)) {
+                return $this->RequestError('ValidateItem JSON decode failed: ' . ($jsonError !== '' ? $jsonError : 'unknown'));
+            }
+
+            if (array_key_exists('authorized', $decode) && $decode['authorized'] == false) {
+                if ($attempt === 1) {
+                    $loginAttemptResult = $this->login();
+                    if ($loginAttemptResult != 1) {
+                        return $this->InvalidLoginResponse($loginAttemptResult);
+                    }
+                    continue;
+                }
+                return $this->InvalidLoginResponse($response);
+            }
+
+            return $decode;
+        }
+
+        return $this->RequestError('ValidateItem failed after retry.');
+    }
+
+    /**
+     * Pull one-day shipment data from Lipsey's for the given date string.
+     *
+     * @param mixed $date Example format: n/j/Y (UTC), e.g. 3/14/2026
+     * @return array<string,mixed>
+     */
+    public function OneDaysShipping($date): array
+    {
+        $dateStr = trim((string) $date);
+        if ($dateStr === '') {
+            return array(
+                "authorized" => true,
+                "success" => false,
+                "errors" => array(
+                    "date not provided"
+                )
+            );
+        }
+
+        return $this->post_with_auth_retry("integration/shipping/oneday", $dateStr, 'one_day_shipping');
+    }
+
+    /**
+     * Submit a non-FFL dropship order.
+     *
+     * @param array<string,mixed> $order
+     * @return array<string,mixed>
+     */
+    public function DropShipAccessories($order): array
+    {
+        if (!is_array($order)) {
+            return $this->validation_error('Order payload must be an array');
+        }
+
+        $required = array(
+            "BillingName",
+            "BillingAddressLine1",
+            "BillingAddressCity",
+            "BillingAddressState",
+            "BillingAddressZip",
+            "ShippingName",
+            "ShippingAddressLine1",
+            "ShippingAddressCity",
+            "ShippingAddressState",
+            "ShippingAddressZip",
+            "PoNumber",
+        );
+        foreach ($required as $field) {
+            $fieldErr = $this->require_non_empty_field($order, $field);
+            if ($fieldErr !== null) {
+                return $fieldErr;
+            }
+        }
+
+        $billingStateErr = $this->require_state_code($order, "BillingAddressState", "BillingAddressState Should be 2 Letters");
+        if ($billingStateErr !== null) {
+            return $billingStateErr;
+        }
+
+        $shippingStateErr = $this->require_state_code($order, "ShippingAddressState", "ShippingAddressState Should be 2 Letters");
+        if ($shippingStateErr !== null) {
+            return $shippingStateErr;
+        }
+
+        $billingZipErr = $this->normalize_and_require_zip5($order, "BillingAddressZip", "BillingAddressZip Should be 5 Numbers");
+        if ($billingZipErr !== null) {
+            return $billingZipErr;
+        }
+
+        $shippingZipErr = $this->normalize_and_require_zip5($order, "ShippingAddressZip", "ShippingAddressZip Should be 5 Numbers");
+        if ($shippingZipErr !== null) {
+            return $shippingZipErr;
+        }
+
+        $itemsCheck = $this->validate_order_items($order);
+        if ($itemsCheck !== null) {
+            return $itemsCheck;
+        }
+
+        return $this->post_with_auth_retry("integration/order/DropShipAccessory", $order, 'dropship_accessories');
+    }
+
+    /**
+     * Submit an FFL dropship order.
+     *
+     * @param array<string,mixed> $order
+     * @return array<string,mixed>
+     */
+    public function DropShipFirearms($order): array
+    {
+        if (!is_array($order)) {
+            return $this->validation_error('Order payload must be an array');
+        }
+
+        foreach (array("Ffl", "Name", "Phone") as $field) {
+            $fieldErr = $this->require_non_empty_field($order, $field);
+            if ($fieldErr !== null) {
+                return $fieldErr;
+            }
+        }
+
+        $itemsCheck = $this->validate_order_items($order);
+        if ($itemsCheck !== null) {
+            return $itemsCheck;
+        }
+
+        return $this->post_with_auth_retry("integration/order/DropShipFirearm", $order, 'dropship_firearms');
+    }
+
+    /**
+     * @param mixed $payload
+     * @return array<string,mixed>
+     */
+    private function post_with_auth_retry(string $endpoint, $payload, string $op): array
+    {
+        $callId = substr(sha1($endpoint . '|' . microtime(true) . '|' . mt_rand()), 0, 10);
+        $url = $this->buildUrl($endpoint);
+
+        for ($attempt = 1; $attempt <= 2; $attempt++) {
+            if (!$this->Token) {
+                $loginAttemptResult = $this->login();
+                if ($loginAttemptResult != 1) {
+                    return $this->InvalidLoginResponse($loginAttemptResult);
+                }
+            }
+
+            $this->debug_log($op . '.request', [
+                'call_id' => $callId,
+                'attempt' => $attempt,
+                'method' => 'POST',
+                'endpoint' => $url,
+                'token_present' => (is_string($this->Token) && $this->Token !== '') ? 1 : 0,
+                'payload' => $payload,
+            ]);
+
+            $curl = $this->PostRequestBuilder($endpoint, $payload, true);
+            $response = curl_exec($curl);
+            $err = curl_error($curl);
+            $errno = curl_errno($curl);
+            $http = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+            curl_close($curl);
+
+            $this->debug_log($op . '.raw_response', [
+                'call_id' => $callId,
+                'attempt' => $attempt,
+                'http_code' => $http,
+                'curl_errno' => (int) $errno,
+                'curl_error' => $this->sanitizeErrorValue((string) $err),
+                'raw_response' => $this->sanitizeErrorValue(is_string($response) ? $response : '', 4000),
+            ]);
+
+            if ($err) {
+                return $this->RequestError($err);
+            }
+
+            $decoded = json_decode((string) $response, true);
+            $jsonError = json_last_error() === JSON_ERROR_NONE ? '' : json_last_error_msg();
+
+            $this->debug_log($op . '.decoded_response', [
+                'call_id' => $callId,
+                'attempt' => $attempt,
+                'json_error' => $jsonError,
+                'decoded' => is_array($decoded) ? $decoded : null,
+            ]);
+
+            if (!is_array($decoded)) {
+                return $this->RequestError($op . ' JSON decode failed: ' . ($jsonError !== '' ? $jsonError : 'unknown'));
+            }
+
+            if (array_key_exists('authorized', $decoded) && $decoded['authorized'] == false) {
+                if ($attempt === 1) {
+                    $loginAttemptResult = $this->login();
+                    if ($loginAttemptResult != 1) {
+                        return $this->InvalidLoginResponse($loginAttemptResult);
+                    }
+                    continue;
+                }
+
+                return $this->InvalidLoginResponse($response);
+            }
+
+            return $decoded;
+        }
+
+        return $this->RequestError($op . ' failed after retry.');
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function get_with_auth_retry(string $endpoint, string $op): array
+    {
+        $callId = substr(sha1('GET|' . $endpoint . '|' . microtime(true) . '|' . mt_rand()), 0, 10);
+        $url = $this->buildUrl($endpoint);
+
+        for ($attempt = 1; $attempt <= 2; $attempt++) {
+            if (!$this->Token) {
+                $loginAttemptResult = $this->login();
+                if ($loginAttemptResult != 1) {
+                    return $this->InvalidLoginResponse($loginAttemptResult);
+                }
+            }
+
+            $this->debug_log($op . '.request', [
+                'call_id' => $callId,
+                'attempt' => $attempt,
+                'method' => 'GET',
+                'endpoint' => $url,
+                'token_present' => (is_string($this->Token) && $this->Token !== '') ? 1 : 0,
+            ]);
+
+            $curl = $this->GetRequestBuilder($endpoint);
+            $response = curl_exec($curl);
+            $err = curl_error($curl);
+            $errno = curl_errno($curl);
+            $http = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+            curl_close($curl);
+
+            $this->debug_log($op . '.raw_response', [
+                'call_id' => $callId,
+                'attempt' => $attempt,
+                'http_code' => $http,
+                'curl_errno' => (int) $errno,
+                'curl_error' => $this->sanitizeErrorValue((string) $err),
+                'raw_response' => $this->sanitizeErrorValue(is_string($response) ? $response : '', 4000),
+            ]);
+
+            if ($err) {
+                return $this->RequestError($err);
+            }
+
+            $decoded = json_decode((string) $response, true);
+            $jsonError = json_last_error() === JSON_ERROR_NONE ? '' : json_last_error_msg();
+
+            $this->debug_log($op . '.decoded_response', [
+                'call_id' => $callId,
+                'attempt' => $attempt,
+                'json_error' => $jsonError,
+                'decoded' => is_array($decoded) ? $decoded : null,
+            ]);
+
+            if (!is_array($decoded)) {
+                return $this->RequestError($op . ' JSON decode failed: ' . ($jsonError !== '' ? $jsonError : 'unknown'));
+            }
+
+            if (array_key_exists('authorized', $decoded) && $decoded['authorized'] == false) {
+                if ($attempt === 1) {
+                    $loginAttemptResult = $this->login();
+                    if ($loginAttemptResult != 1) {
+                        return $this->InvalidLoginResponse($loginAttemptResult);
+                    }
+                    continue;
+                }
+
+                return $this->InvalidLoginResponse($response);
+            }
+
+            return $decoded;
+        }
+
+        return $this->RequestError($op . ' failed after retry.');
+    }
+
+    /**
+     * @param array<int,mixed> $columns
+     * @param mixed $item_to_row
+     * @return array<string,mixed>|null
+     */
+    private function validate_tsv_stream_inputs(string $tsv_path, array $columns, $item_to_row): ?array
+    {
+        if (trim($tsv_path) === '') {
+            return $this->validation_error('TSV path not provided');
+        }
+
+        if (empty($columns)) {
+            return $this->validation_error('TSV columns not provided');
+        }
+
+        foreach ($columns as $col) {
+            if (!is_string($col) || trim($col) === '') {
+                return $this->validation_error('TSV columns must be non-empty strings');
+            }
+        }
+
+        if (!is_callable($item_to_row)) {
+            return $this->validation_error('TSV row mapper must be callable');
+        }
+
+        return null;
+    }
+
+    /**
+     * Validates shared order payload shape for order endpoints that require Items.
+     *
+     * @param mixed $order
+     * @return array<string,mixed>|null
+     */
+    private function validate_order_items($order): ?array
+    {
+        if (!is_array($order) || !array_key_exists("Items", $order) || !is_array($order["Items"]) || count($order["Items"]) < 1) {
+            return array(
+                "authorized" => true,
+                "success" => false,
+                "errors" => array(
+                    "Field Missing: \"Items\""
+                )
+            );
+        }
+
+        foreach ($order["Items"] as $value) {
+            if (
+                !is_array($value)
+                || !array_key_exists("ItemNo", $value)
+                || strlen(trim((string) $value["ItemNo"])) < 1
+                || !array_key_exists("Quantity", $value)
+                || (int) $value["Quantity"] < 1
+            ) {
+                return array(
+                    "authorized" => true,
+                    "success" => false,
+                    "errors" => array(
+                        "One or more line item was missing item number or had less than 1 quantity"
+                    )
+                );
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string,mixed> $order
+     * @return array<string,mixed>|null
+     */
+    private function require_non_empty_field(array $order, string $field): ?array
+    {
+        if (!array_key_exists($field, $order)) {
+            return $this->validation_error('Field Missing: "' . $field . '"');
+        }
+
+        $value = $order[$field];
+        if (is_array($value)) {
+            return count($value) < 1 ? $this->validation_error('Field Missing: "' . $field . '"') : null;
+        }
+
+        if (trim((string) $value) === '') {
+            return $this->validation_error('Field Missing: "' . $field . '"');
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string,mixed> $order
+     * @return array<string,mixed>|null
+     */
+    private function require_state_code(array $order, string $field, string $errorMessage): ?array
+    {
+        if (!array_key_exists($field, $order)) {
+            return $this->validation_error('Field Missing: "' . $field . '"');
+        }
+
+        $state = strtoupper(trim((string) $order[$field]));
+        if (strlen($state) !== 2) {
+            return $this->validation_error($errorMessage);
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string,mixed> $order
+     * @return array<string,mixed>|null
+     */
+    private function normalize_and_require_zip5(array &$order, string $field, string $errorMessage): ?array
+    {
+        if (!array_key_exists($field, $order)) {
+            return $this->validation_error('Field Missing: "' . $field . '"');
+        }
+
+        $zip = trim((string) $order[$field]);
+        if (strlen($zip) > 5) {
+            $zip = substr($zip, 0, 5);
+        }
+        $order[$field] = $zip;
+
+        if (strlen($zip) < 5) {
+            return $this->validation_error($errorMessage);
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function validation_error(string $message): array
+    {
+        return array(
+            "authorized" => true,
+            "success" => false,
+            "errors" => array($message),
+        );
     }
 
     private function stream_endpoint_to_tsv_once(
