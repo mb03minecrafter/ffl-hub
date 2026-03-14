@@ -258,9 +258,9 @@ final class OrderPlacementJobRunner
         $job_key = $job->job_key_norm();
 
         try {
-            $or = $dist->place_order($req);
+            //$or = $dist->place_order($req);
             
-            //$or = DistributorOrderResult::block_fatal("TEST DEBUG BLOCK TO TEST VALIDATION");
+            $or = DistributorOrderResult::block_fatal("TEST DEBUG BLOCK TO TEST VALIDATION");
 
             ///WE NEED TO CHANGE THIS TO ORDER FOR REAL WHEN WE GO TO PROD
 
