@@ -24,6 +24,7 @@ final class CartCompliance
 {
     private const SESSION_KEY_RECEIVING_FFL    = 'fflhub_receiving_ffl_number';
     private const SESSION_KEY_RECEIVING_FFL_FP = 'fflhub_receiving_ffl_cart_fp';
+    private const ORDER_META_KEY_RECEIVING_FFL = 'fflhub_receiving_ffl_number';
 
     // -----------------------------
     // PROFILING (unchanged behavior)
@@ -291,7 +292,7 @@ final class CartCompliance
         ]);
 
         try {
-            $this->validate_cart_for_compliance();
+            $this->validate_cart_for_compliance($order);
         } catch (\Throwable $e) {
             $order->add_order_note('FFLHub: Checkout blocked by compliance validation: ' . $e->getMessage());
             $order->save();
@@ -307,7 +308,7 @@ final class CartCompliance
 
     /* ---------------- Entry points ---------------- */
 
-    public function validate_cart_for_compliance(): void
+    public function validate_cart_for_compliance(?\WC_Order $order = null): void
     {
         self::prof_start('validate_cart_for_compliance.total');
 
@@ -332,8 +333,8 @@ final class CartCompliance
 
             [$receiving_ffl_number, $ship_ffl] = self::prof(
                 'resolve_ffl_context(cart)',
-                function () {
-                    return $this->resolve_ffl_context(true);
+                function () use ($order) {
+                    return $this->resolve_ffl_context(true, $order);
                 }
             );
 
@@ -375,11 +376,13 @@ final class CartCompliance
      *
      * @return array{0:?string,1:?DistributorShipTo}
      */
-    private function resolve_ffl_context(bool $verify_session): array
+    private function resolve_ffl_context(bool $verify_session, ?\WC_Order $order = null): array
     {
         self::prof_start('resolve_ffl_context.total', ['verify_session' => $verify_session ? '1' : '0']);
 
         try {
+            $resolved_from_order = false;
+
             $receiving_ffl_number = self::prof(
                 'resolve_receiving_ffl_number',
                 function () {
@@ -390,12 +393,28 @@ final class CartCompliance
                 }
             );
 
+            if ($receiving_ffl_number === null && $order instanceof \WC_Order) {
+                $from_order = strtoupper(trim((string) $order->get_meta(self::ORDER_META_KEY_RECEIVING_FFL, true)));
+                if ($from_order !== '' && preg_match('/^[A-Z0-9-]+$/', $from_order)) {
+                    $receiving_ffl_number = $from_order;
+                    $resolved_from_order = true;
+                }
+            }
+
             if ($verify_session) {
                 CheckoutOrderRequestBuilder::persist_receiving_ffl_to_session(
                     $receiving_ffl_number,
                     self::SESSION_KEY_RECEIVING_FFL,
                     null
                 );
+
+                if (function_exists('WC') && WC()->session) {
+                    $fp_now = CheckoutOrderRequestBuilder::current_cart_ffl_fingerprint();
+                    WC()->session->set(
+                        self::SESSION_KEY_RECEIVING_FFL_FP,
+                        ($receiving_ffl_number !== null && $fp_now !== '') ? $fp_now : null
+                    );
+                }
             }
 
             $ship_ffl = null;
@@ -416,6 +435,7 @@ final class CartCompliance
                 'verify_session'       => $verify_session ? 1 : 0,
                 'receiving_ffl_number' => $receiving_ffl_number !== null ? (string) $receiving_ffl_number : null,
                 'ship_ffl_ok'          => ($ship_ffl instanceof DistributorShipTo) ? 1 : 0,
+                'resolved_from_order'  => $resolved_from_order ? 1 : 0,
             ]);
 
             return [$receiving_ffl_number !== null ? (string) $receiving_ffl_number : null, $ship_ffl];
@@ -434,12 +454,22 @@ final class CartCompliance
         ]);
 
         try {
+            $seen = [];
+
             foreach ($blocked as $b) {
                 $pretty = isset($b['pretty']) && is_array($b['pretty']) ? $b['pretty'] : [];
 
                 if (!empty($pretty)) {
                     foreach ($pretty as $msg) {
-                        $msg = (string) $msg;
+                        $msg = trim((string) $msg);
+                        if ($msg === '') {
+                            continue;
+                        }
+                        if (isset($seen[$msg])) {
+                            continue;
+                        }
+                        $seen[$msg] = true;
+
                         wc_add_notice($msg, 'error');
                         if ($errors instanceof \WP_Error) {
                             $errors->add('fflhub_cart_compliance', $msg);
@@ -449,6 +479,11 @@ final class CartCompliance
                 }
 
                 $fallback = __('We couldn’t validate one or more items in your cart. Please contact us for help.', 'ffl-hub');
+                if (isset($seen[$fallback])) {
+                    continue;
+                }
+                $seen[$fallback] = true;
+
                 wc_add_notice($fallback, 'error');
                 if ($errors instanceof \WP_Error) {
                     $errors->add('fflhub_cart_compliance', $fallback);
@@ -520,11 +555,6 @@ final class CartCompliance
             ]);
 
             if ($cart_has_any_ffl) {
-                if ($fp_now !== '' && $fp_set === '') {
-                    $receiving_ffl_number = null;
-                    $ship_ffl = null;
-                }
-
                 if ($fp_now !== '' && $fp_set !== '' && !hash_equals($fp_set, $fp_now)) {
                     $receiving_ffl_number = null;
                     $ship_ffl = null;

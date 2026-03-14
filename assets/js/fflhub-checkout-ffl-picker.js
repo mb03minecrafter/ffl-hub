@@ -16,20 +16,21 @@
 
     // Additional Checkout text field (Receiving FFL).
     // Attribute may be on the input itself or on a wrapper.
-    const receivingFieldContainer = document.querySelector(
-      '[data-fflhub-receiving-ffl-input="1"]'
-    );
-    let receivingInput = null;
-
-    if (receivingFieldContainer) {
-      if (receivingFieldContainer.tagName.toLowerCase() === "input") {
-        // Attribute is on the <input>.
-        receivingInput = receivingFieldContainer;
-      } else {
-        // Attribute is on a wrapper (label/div) → find the inner input.
-        receivingInput = receivingFieldContainer.querySelector("input");
+    function getReceivingInput() {
+      const receivingFieldContainer = document.querySelector(
+        '[data-fflhub-receiving-ffl-input="1"]'
+      );
+      if (!receivingFieldContainer) {
+        return null;
       }
+
+      if (receivingFieldContainer.tagName.toLowerCase() === "input") {
+        return receivingFieldContainer;
+      }
+
+      return receivingFieldContainer.querySelector("input");
     }
+
 
     const zipInput = picker.querySelector("#fflhub-ffl-picker-zip");
     const searchButton = picker.querySelector(
@@ -138,6 +139,7 @@
           }
 
           // 👉 Fill the Additional Checkout text field with the FFL number.
+          const receivingInput = getReceivingInput();
           if (receivingInput) {
             const value = dealer.ffl_number || "";
 
@@ -153,6 +155,7 @@
             receivingInput.dispatchEvent(
               new Event("change", { bubbles: true })
             );
+            receivingInput.dispatchEvent(new Event("blur", { bubbles: true }));
           }
 
           // Update map to center on selected dealer.
