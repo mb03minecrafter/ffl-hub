@@ -20,6 +20,7 @@ use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\DistributorShipTo;
+use FFLHub\Util\DebugLogUtil;
 
 /**
  * Lipsey's distributor implementation (runtime behavior).
@@ -215,6 +216,16 @@ class DistributorLipseys extends DistributorBase
         DistributorOrderRequest $request,
         array $required_by_upc
     ): DistributorOrderValidationResult {
+        DebugLogUtil::log_ctx(
+            'FFLHUB_LIPSEYS_DEBUG',
+            '[FFLHub][LipseysValidation]',
+            'validation.path.remote.start',
+            [
+                'upc_count' => count($required_by_upc),
+                'cache_ttl_seconds' => self::VALIDATEITEM_CACHE_TTL_SECONDS,
+            ]
+        );
+
         $email    = $this->get_dealer_email();
         $password = $this->get_dealer_password();
 
@@ -310,6 +321,16 @@ class DistributorLipseys extends DistributorBase
         }
 
         if ($quota_triggered) {
+            DebugLogUtil::log_ctx(
+                'FFLHUB_LIPSEYS_DEBUG',
+                '[FFLHub][LipseysValidation]',
+                'validation.path.remote.quota_fallback_local',
+                [
+                    'upc_count' => count($required_by_upc),
+                    'quota_messages' => $quota_msgs,
+                ]
+            );
+
             $res = $this->validate_local_fulfillment_required_qty_by_upc(
                 $request->lines,
                 [
@@ -324,10 +345,32 @@ class DistributorLipseys extends DistributorBase
             $res->details['quota_triggered'] = 1;
             $res->details['quota_messages']  = $quota_msgs;
 
+            DebugLogUtil::log_ctx(
+                'FFLHUB_LIPSEYS_DEBUG',
+                '[FFLHub][LipseysValidation]',
+                'validation.path.remote.quota_fallback_local.result',
+                [
+                    'code' => (string) ($res->code ?? ''),
+                    'ok' => !empty($res->ok) ? 1 : 0,
+                    'codes' => is_array($res->codes) ? $res->codes : [],
+                    'message' => (string) ($res->message ?? ''),
+                ]
+            );
+
             return $res;
         }
 
         if (!empty($retryable_msgs)) {
+            DebugLogUtil::log_ctx(
+                'FFLHUB_LIPSEYS_DEBUG',
+                '[FFLHub][LipseysValidation]',
+                'validation.path.remote.result',
+                [
+                    'status' => 'retryable',
+                    'retryable_count' => count($retryable_msgs),
+                ]
+            );
+
             return DistributorOrderValidationResult::block_retryable(
                 'Lipseys validation retryable failure: ' . $this->join_msgs($retryable_msgs),
                 ['LIPSEYS_VALIDATEITEM_RETRYABLE'],
@@ -336,6 +379,16 @@ class DistributorLipseys extends DistributorBase
         }
 
         if (!empty($blocked_msgs)) {
+            DebugLogUtil::log_ctx(
+                'FFLHUB_LIPSEYS_DEBUG',
+                '[FFLHub][LipseysValidation]',
+                'validation.path.remote.result',
+                [
+                    'status' => 'blocked',
+                    'blocked_count' => count($blocked_msgs),
+                ]
+            );
+
             return DistributorOrderValidationResult::block(
                 'Lipseys validation failed: ' . $this->join_msgs($blocked_msgs),
                 ['LIPSEYS_VALIDATEITEM_BLOCKED'],
@@ -344,6 +397,16 @@ class DistributorLipseys extends DistributorBase
         }
 
         if (!empty($insufficient_msgs)) {
+            DebugLogUtil::log_ctx(
+                'FFLHUB_LIPSEYS_DEBUG',
+                '[FFLHub][LipseysValidation]',
+                'validation.path.remote.result',
+                [
+                    'status' => 'insufficient',
+                    'insufficient_count' => count($insufficient_msgs),
+                ]
+            );
+
             return DistributorOrderValidationResult::block(
                 'Lipseys validation failed (insufficient stock): ' . $this->join_msgs($insufficient_msgs),
                 ['LIPSEYS_INSUFFICIENT_STOCK'],
@@ -351,7 +414,54 @@ class DistributorLipseys extends DistributorBase
             );
         }
 
+        DebugLogUtil::log_ctx(
+            'FFLHUB_LIPSEYS_DEBUG',
+            '[FFLHub][LipseysValidation]',
+            'validation.path.remote.result',
+            [
+                'status' => 'ok',
+                'upc_count' => count($required_by_upc),
+            ]
+        );
+
         return DistributorOrderValidationResult::allow('Lipseys validation OK.', $details);
+    }
+
+    /**
+     * Log when the base class local validation path is used first.
+     *
+     * @param array<string,int> $required_by_upc
+     */
+    protected function validate_order_request_local(
+        DistributorOrderRequest $request,
+        array $required_by_upc,
+        bool $local_only
+    ): DistributorOrderValidationResult {
+        DebugLogUtil::log_ctx(
+            'FFLHUB_LIPSEYS_DEBUG',
+            '[FFLHub][LipseysValidation]',
+            'validation.path.local.start',
+            [
+                'upc_count' => count($required_by_upc),
+                'local_only' => $local_only ? 1 : 0,
+            ]
+        );
+
+        $res = parent::validate_order_request_local($request, $required_by_upc, $local_only);
+
+        DebugLogUtil::log_ctx(
+            'FFLHUB_LIPSEYS_DEBUG',
+            '[FFLHub][LipseysValidation]',
+            'validation.path.local.result',
+            [
+                'code' => (string) ($res->code ?? ''),
+                'ok' => !empty($res->ok) ? 1 : 0,
+                'codes' => is_array($res->codes) ? $res->codes : [],
+                'message' => (string) ($res->message ?? ''),
+            ]
+        );
+
+        return $res;
     }
 
     private function lipseys_msg_indicates_quota_or_rate_limit(string $msg_lc): bool

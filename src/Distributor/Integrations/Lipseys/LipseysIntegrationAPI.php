@@ -208,8 +208,12 @@ final class LipseysIntegrationAPI
         // Vendor conventions:
         // - If "authorized" exists and is false => auth failure (fatal credentials).
         // - If "success" false => error (quota/rate-limit/validation/etc).
-        $authorized = array_key_exists('authorized', $resp) ? (bool) $resp['authorized'] : true;
-        $success    = array_key_exists('success', $resp) ? (bool) $resp['success'] : false;
+        $authorized = array_key_exists('authorized', $resp)
+            ? self::to_bool_default($resp['authorized'], true)
+            : true;
+        $success    = array_key_exists('success', $resp)
+            ? self::to_bool_default($resp['success'], false)
+            : false;
 
         if (!$authorized) {
             $errors = self::implode_errors($resp);
@@ -322,26 +326,38 @@ final class LipseysIntegrationAPI
         }
 
         // Extract fields with conservative defaults.
-        $qty = (isset($row['qty']) && (is_int($row['qty']) || is_numeric($row['qty']))) ? (int) $row['qty'] : 0;
+        $qty_source = '';
+        $qty = self::extract_first_int_field(
+            $row,
+            ['qty', 'quantity', 'availableQuantity', 'availableQty', 'onHand', 'onhand', 'inStock', 'stockQty', 'stock', 'qtyOnHand'],
+            0,
+            $qty_source
+        );
 
-        $price = (isset($row['price']) && (is_float($row['price']) || is_int($row['price']) || is_numeric($row['price'])))
-            ? (float) $row['price']
-            : null;
+        $price_source = '';
+        $price = self::extract_first_float_field(
+            $row,
+            ['price', 'unitPrice', 'dealerPrice', 'cost', 'itemPrice'],
+            null,
+            $price_source
+        );
 
-        $blocked    = isset($row['blocked']) ? (bool) $row['blocked'] : false;
-        $allocated  = isset($row['allocated']) ? (bool) $row['allocated'] : false;
-        $itemNumber = isset($row['itemNumber']) ? (string) $row['itemNumber'] : '';
+        $blocked = self::extract_first_bool_field($row, ['blocked', 'isBlocked'], false);
+        $allocated = self::extract_first_bool_field($row, ['allocated', 'isAllocated'], false);
+        $itemNumber = self::extract_first_string_field($row, ['itemNumber', 'itemNo', 'item_number', 'sku'], '');
 
         // canDropship is critical, but may be absent in some schemas.
-        $canDropship = array_key_exists('canDropship', $row) ? (bool) $row['canDropship'] : null;
+        $canDropship = self::extract_first_bool_field($row, ['canDropship', 'canDropShip', 'dropshipAllowed', 'dropShipAllowed'], null);
 
         self::debug_log('ValidateItem normalized', [
             'query_tail4'        => self::tail4($queryValue),
             'qty'               => $qty,
+            'qty_source'        => $qty_source !== '' ? $qty_source : '-',
             'blocked'           => $blocked ? 1 : 0,
             'allocated'         => $allocated ? 1 : 0,
             'itemNumber_tail4'  => self::tail4($itemNumber),
             'canDropship'       => ($canDropship === null ? 'null' : ($canDropship ? 'true' : 'false')),
+            'row_keys'          => array_slice(array_keys($row), 0, 20),
         ]);
 
         return [
@@ -546,6 +562,229 @@ final class LipseysIntegrationAPI
             return 'OUT_OF_STOCK';
         }
         return '';
+    }
+
+    /**
+     * Parse mixed truthy/falsy value safely.
+     *
+     * IMPORTANT:
+     * - Avoid native (bool) cast on strings: (bool) "false" === true.
+     */
+    private static function to_bool_default($value, bool $default): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return ((float) $value) != 0.0;
+        }
+
+        if (is_string($value)) {
+            $v = strtolower(trim($value));
+            if ($v === '') {
+                return $default;
+            }
+            if (in_array($v, ['1', 'true', 'yes', 'y', 'on'], true)) {
+                return true;
+            }
+            if (in_array($v, ['0', 'false', 'no', 'n', 'off', 'null', 'none'], true)) {
+                return false;
+            }
+            if (is_numeric($v)) {
+                return ((float) $v) != 0.0;
+            }
+        }
+
+        return $default;
+    }
+
+    /**
+     * Parse qty-like mixed values into int.
+     * Accepts values like: 12, "12", "12.0", "12+", "Qty: 12".
+     */
+    private static function parse_int_mixed($value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_float($value)) {
+            return (int) floor($value);
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $v = trim($value);
+        if ($v === '') {
+            return null;
+        }
+
+        $v = str_replace(',', '', $v);
+
+        if (is_numeric($v)) {
+            return (int) floor((float) $v);
+        }
+
+        if (preg_match('/-?\d+(?:\.\d+)?/', $v, $m) === 1 && isset($m[0])) {
+            return (int) floor((float) $m[0]);
+        }
+
+        return null;
+    }
+
+    private static function parse_float_mixed($value): ?float
+    {
+        if (is_int($value) || is_float($value)) {
+            return (float) $value;
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $v = trim($value);
+        if ($v === '') {
+            return null;
+        }
+
+        $v = str_replace(',', '', $v);
+
+        if (is_numeric($v)) {
+            return (float) $v;
+        }
+
+        if (preg_match('/-?\d+(?:\.\d+)?/', $v, $m) === 1 && isset($m[0])) {
+            return (float) $m[0];
+        }
+
+        return null;
+    }
+
+    /**
+     * Case-insensitive field extraction helpers.
+     *
+     * @param array<string,mixed> $row
+     * @param string[] $keys
+     */
+    private static function extract_first_int_field(array $row, array $keys, int $default, string &$source = ''): int
+    {
+        foreach ($keys as $k) {
+            if (!array_key_exists($k, $row)) {
+                continue;
+            }
+            $parsed = self::parse_int_mixed($row[$k]);
+            if ($parsed !== null) {
+                $source = $k;
+                return $parsed;
+            }
+        }
+
+        $lower = array_change_key_case($row, CASE_LOWER);
+        foreach ($keys as $k) {
+            $lk = strtolower($k);
+            if (!array_key_exists($lk, $lower)) {
+                continue;
+            }
+            $parsed = self::parse_int_mixed($lower[$lk]);
+            if ($parsed !== null) {
+                $source = $lk;
+                return $parsed;
+            }
+        }
+
+        return $default;
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @param string[] $keys
+     */
+    private static function extract_first_float_field(array $row, array $keys, ?float $default, string &$source = ''): ?float
+    {
+        foreach ($keys as $k) {
+            if (!array_key_exists($k, $row)) {
+                continue;
+            }
+            $parsed = self::parse_float_mixed($row[$k]);
+            if ($parsed !== null) {
+                $source = $k;
+                return $parsed;
+            }
+        }
+
+        $lower = array_change_key_case($row, CASE_LOWER);
+        foreach ($keys as $k) {
+            $lk = strtolower($k);
+            if (!array_key_exists($lk, $lower)) {
+                continue;
+            }
+            $parsed = self::parse_float_mixed($lower[$lk]);
+            if ($parsed !== null) {
+                $source = $lk;
+                return $parsed;
+            }
+        }
+
+        return $default;
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @param string[] $keys
+     */
+    private static function extract_first_bool_field(array $row, array $keys, ?bool $default): ?bool
+    {
+        foreach ($keys as $k) {
+            if (!array_key_exists($k, $row)) {
+                continue;
+            }
+            return self::to_bool_default($row[$k], (bool) $default);
+        }
+
+        $lower = array_change_key_case($row, CASE_LOWER);
+        foreach ($keys as $k) {
+            $lk = strtolower($k);
+            if (!array_key_exists($lk, $lower)) {
+                continue;
+            }
+            return self::to_bool_default($lower[$lk], (bool) $default);
+        }
+
+        return $default;
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @param string[] $keys
+     */
+    private static function extract_first_string_field(array $row, array $keys, string $default): string
+    {
+        foreach ($keys as $k) {
+            if (!array_key_exists($k, $row)) {
+                continue;
+            }
+            $v = trim((string) $row[$k]);
+            if ($v !== '') {
+                return $v;
+            }
+        }
+
+        $lower = array_change_key_case($row, CASE_LOWER);
+        foreach ($keys as $k) {
+            $lk = strtolower($k);
+            if (!array_key_exists($lk, $lower)) {
+                continue;
+            }
+            $v = trim((string) $lower[$lk]);
+            if ($v !== '') {
+                return $v;
+            }
+        }
+
+        return $default;
     }
 
     /**
