@@ -305,10 +305,8 @@ class DistributorLipseys extends DistributorBase
                 continue;
             }
 
-            if (($norm['canDropship'] ?? null) === false) {
-                $blocked_msgs[] = "UPC={$upc} canDropship=false";
-                continue;
-            }
+            // Non-dropship items are valid in the new fulfillment model (dealer fulfilled),
+            // so canDropship=false must not block checkout validation.
 
             if (($norm['allocated'] ?? false) === true) {
                 $blocked_msgs[] = "UPC={$upc} allocated=true";
