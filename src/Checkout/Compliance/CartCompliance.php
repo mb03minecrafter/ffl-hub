@@ -198,6 +198,214 @@ final class CartCompliance
         );
     }
 
+    private function dbg_line(string $message): void
+    {
+        $enabled = $this->debug_enabled();
+        if (!$enabled) {
+            return;
+        }
+
+        DebugLogUtil::log_if(
+            $enabled,
+            self::DEBUG_PREFIX,
+            $message,
+            self::DEBUG_ENV
+        );
+    }
+
+    private static function log_text(string $value, int $max = 120): string
+    {
+        $value = trim((string) $value);
+        $value = (string) preg_replace('/\s+/', ' ', $value);
+
+        if ($value === '') {
+            return '';
+        }
+
+        if ($max > 3 && strlen($value) > $max) {
+            return substr($value, 0, $max - 3) . '...';
+        }
+
+        return $value;
+    }
+
+    private static function log_scalar($value): string
+    {
+        if ($value === null) {
+            return '-';
+        }
+
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return (string) $value;
+        }
+
+        if (!is_scalar($value)) {
+            return '-';
+        }
+
+        $s = self::log_text((string) $value, 90);
+        return ($s !== '') ? $s : '-';
+    }
+
+    /**
+     * @param array<string,mixed> $details
+     * @return array<string,mixed>
+     */
+    private function summarize_validation_details(array $details): array
+    {
+        $out = [];
+
+        if (isset($details['required_by_upc']) && is_array($details['required_by_upc'])) {
+            $required_rows = [];
+            foreach ($details['required_by_upc'] as $upc => $qty) {
+                $upc = trim((string) $upc);
+                if ($upc === '') {
+                    continue;
+                }
+
+                $required_rows[] = [
+                    'upc' => $upc,
+                    'qty' => (int) $qty,
+                ];
+            }
+
+            $out['required_count'] = count($required_rows);
+            if (!empty($required_rows)) {
+                $out['required'] = array_slice($required_rows, 0, 8);
+                if (count($required_rows) > 8) {
+                    $out['required_more'] = count($required_rows) - 8;
+                }
+            }
+        }
+
+        if (isset($details['items']) && is_array($details['items'])) {
+            $item_rows = [];
+
+            foreach ($details['items'] as $key => $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                $upc = preg_replace('/\D+/', '', (string) $key);
+                if (!is_string($upc)) {
+                    $upc = '';
+                }
+                if ($upc === '') {
+                    $upc = preg_replace('/\D+/', '', (string) ($row['upc'] ?? ''));
+                    if (!is_string($upc)) {
+                        $upc = '';
+                    }
+                }
+                if ($upc === '') {
+                    $upc = trim((string) $key);
+                }
+
+                $item = ['upc' => $upc];
+
+                if (array_key_exists('requiredQty', $row)) {
+                    $item['required'] = (int) $row['requiredQty'];
+                }
+                if (array_key_exists('qty', $row)) {
+                    $item['qty'] = (int) $row['qty'];
+                }
+                if (array_key_exists('blocked', $row)) {
+                    $item['blocked'] = ((bool) $row['blocked']) ? 1 : 0;
+                }
+                if (array_key_exists('allocated', $row)) {
+                    $item['allocated'] = ((bool) $row['allocated']) ? 1 : 0;
+                }
+                if (array_key_exists('canDropship', $row)) {
+                    $cd = $row['canDropship'];
+                    $item['can_dropship'] = ($cd === null) ? 'null' : (((bool) $cd) ? 1 : 0);
+                }
+
+                $reason = self::log_text((string) ($row['reason'] ?? ''), 40);
+                if ($reason !== '') {
+                    $item['reason'] = $reason;
+                }
+
+                $msg = self::log_text((string) ($row['message'] ?? ''), 80);
+                if ($msg !== '' && strtoupper($msg) !== 'OK') {
+                    $item['msg'] = $msg;
+                }
+
+                $item_rows[] = $item;
+            }
+
+            $out['item_count'] = count($item_rows);
+            if (!empty($item_rows)) {
+                $out['items'] = array_slice($item_rows, 0, 10);
+                if (count($item_rows) > 10) {
+                    $out['items_more'] = count($item_rows) - 10;
+                }
+            }
+        }
+
+        foreach (['local_only', 'quota_triggered', 'cache_ttl_seconds'] as $k) {
+            if (array_key_exists($k, $details)) {
+                $out[$k] = $details[$k];
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param string[] $buckets
+     * @param string[] $codes
+     * @param array<string,mixed> $details_summary
+     */
+    private function dbg_vote_blocked_pretty(
+        string $cart_dist_id,
+        string $voter_id,
+        string $label,
+        array $buckets,
+        array $codes,
+        string $message,
+        array $details_summary
+    ): void {
+        $bucket_str = empty($buckets) ? '-' : implode(',', array_map('strval', $buckets));
+        $code_str   = empty($codes) ? '-' : implode(',', array_map('strval', $codes));
+
+        $this->dbg_line(sprintf(
+            'BLOCKED cart=%s voter=%s label=%s buckets=%s codes=%s msg="%s"',
+            $cart_dist_id,
+            $voter_id,
+            self::log_text($label, 28),
+            $bucket_str,
+            $code_str,
+            self::log_text($message, 170)
+        ));
+
+        if (isset($details_summary['items']) && is_array($details_summary['items'])) {
+            foreach ($details_summary['items'] as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                $this->dbg_line(sprintf(
+                    'BLOCKED_ITEM upc=%s req=%s qty=%s blocked=%s allocated=%s canDropship=%s reason=%s msg=%s',
+                    self::log_scalar($row['upc'] ?? null),
+                    self::log_scalar($row['required'] ?? null),
+                    self::log_scalar($row['qty'] ?? null),
+                    self::log_scalar($row['blocked'] ?? null),
+                    self::log_scalar($row['allocated'] ?? null),
+                    self::log_scalar($row['can_dropship'] ?? null),
+                    self::log_scalar($row['reason'] ?? null),
+                    self::log_scalar($row['msg'] ?? null)
+                ));
+            }
+
+            if (isset($details_summary['items_more'])) {
+                $this->dbg_line(sprintf('BLOCKED_ITEM more=%s', self::log_scalar($details_summary['items_more'])));
+            }
+        }
+    }
+
     /**
      * Attempt to extract stable identifiers from a cart/order line.
      * This is best-effort and never affects behavior.
@@ -679,19 +887,27 @@ final class CartCompliance
 
                     // Ignore out-of-stock blocks unless the voter is the cart's source distributor.
                     if ($this->should_ignore_vote_for_cart_source($cart_dist_id, $voter_id_str, $vr)) {
+                        $details_summary = $this->summarize_validation_details(
+                            is_array($vr->details) ? $vr->details : []
+                        );
+
                         $this->dbg('vote.ignored_oos_non_source', [
                             'cart_dist_id' => $cart_dist_id,
                             'voter_id'     => strtolower(trim($voter_id_str)),
                             'label'        => $label,
                             'codes'        => is_array($vr->codes) ? $vr->codes : [],
                             'message'      => (string) ($vr->message ?? ''),
-                            'details'      => is_array($vr->details) ? $vr->details : [],
+                            'details'      => $details_summary,
                         ]);
                         continue;
                     }
 
                     // Vague message for system-ish failures; otherwise show pretty restriction messaging
                     if ($this->should_use_vague_customer_message($vr)) {
+                        $details_summary = $this->summarize_validation_details(
+                            is_array($vr->details) ? $vr->details : []
+                        );
+
                         $this->dbg('vote.blocked.vague', [
                             'cart_dist_id' => $cart_dist_id,
                             'voter_id'     => strtolower(trim($voter_id_str)),
@@ -699,8 +915,8 @@ final class CartCompliance
                             'bucket'       => 'single',
                             'codes'        => is_array($vr->codes) ? $vr->codes : [],
                             'message'      => (string) ($vr->message ?? ''),
-                            'details'      => is_array($vr->details) ? $vr->details : [],
-                            'lines'        => $this->summarize_lines($lines_for_voter),
+                            'details'      => $details_summary,
+                            'line_count'   => count($lines_for_voter),
                         ]);
 
                         $blocked[] = [
@@ -718,6 +934,9 @@ final class CartCompliance
                     }
 
                     $buckets = $this->resolve_buckets_for_pretty($vr, $voter_req);
+                    $details_summary = $this->summarize_validation_details(
+                        is_array($vr->details) ? $vr->details : []
+                    );
 
                     $this->dbg('vote.blocked.pretty', [
                         'cart_dist_id' => $cart_dist_id,
@@ -726,9 +945,19 @@ final class CartCompliance
                         'buckets'      => $buckets,
                         'codes'        => is_array($vr->codes) ? $vr->codes : [],
                         'message'      => (string) ($vr->message ?? ''),
-                        'details'      => is_array($vr->details) ? $vr->details : [],
-                        'lines'        => $this->summarize_lines($lines_for_voter),
+                        'details'      => $details_summary,
+                        'line_count'   => count($lines_for_voter),
                     ]);
+
+                    $this->dbg_vote_blocked_pretty(
+                        $cart_dist_id,
+                        strtolower(trim($voter_id_str)),
+                        $label,
+                        $buckets,
+                        is_array($vr->codes) ? $vr->codes : [],
+                        (string) ($vr->message ?? ''),
+                        $details_summary
+                    );
 
                     foreach ($buckets as $bucket) {
                         $pretty_msgs = CheckoutOrderRequestBuilder::build_pretty_validation_messages(
