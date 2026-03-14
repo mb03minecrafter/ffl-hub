@@ -129,13 +129,12 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         $this->log_debug(
             sprintf(
-                '[FFLHub][Shipping] START fee_percent=%.4f f=%.4f fallback=%.2f min=%.2f max=%.2f items=%d',
+                'START items=%d fee_percent=%.2f fallback=%s clamp_min=%s clamp_max=%s',
+                is_array($package['contents'] ?? null) ? count($package['contents']) : 0,
                 $fee_percent,
-                $f,
-                $fallback_ship,
-                $min_cart_ship,
-                $max_cart_ship,
-                is_array($package['contents'] ?? null) ? count($package['contents']) : 0
+                $this->fmt_money($fallback_ship),
+                $this->fmt_money($min_cart_ship),
+                $this->fmt_money($max_cart_ship)
             )
         );
 
@@ -144,13 +143,14 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         // Planner input lines (shared model with future order routing work)
         $routing_lines = [];
+        $line_debug_rows = [];
 
         // Cart-level profit (net after fee) across ALL FFLHub items in this package
         $profit_net_total = 0.0;
 
         foreach (($package['contents'] ?? []) as $item_key => $item) {
             if (empty($item['data']) || empty($item['quantity'])) {
-                $this->log_debug(sprintf('[FFLHub][Shipping] SKIP item_key=%s missing data/quantity', (string) $item_key));
+                $this->log_debug(sprintf('SKIP line_id=%s reason=missing_data_or_quantity', (string) $item_key));
                 continue;
             }
 
@@ -168,7 +168,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             if ($dist_id === '') {
                 $this->log_debug(
                     sprintf(
-                        '[FFLHub][Shipping] SKIP item product_id=%d non-FFLHub product',
+                        'SKIP product_id=%d reason=non_fflhub_item',
                         $product_id
                     )
                 );
@@ -216,37 +216,98 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $line_profit_net = ($line_revenue - ($true_cost * $qty)) * (1.0 - $f);
             $profit_net_total += $line_profit_net;
 
-            $this->log_debug(
-                sprintf(
-                    '[FFLHub][Shipping] item product_id=%d dist=%s bucket=%s dropship=%d qty=%d ship=%.2f (raw=%s) weight_oz=%.2f line_weight_oz=%.2f revenue=%.2f true_cost=%.2f profit_net=%.2f',
-                    $product_id,
-                    $dist_id,
-                    $is_ffl ? 'FFL' : 'NON',
-                    $dropship_enabled ? 1 : 0,
-                    $qty,
-                    $ship,
-                    ($ship_raw === '' || $ship_raw === null) ? 'fallback' : (string) $ship_raw,
-                    $weight_oz,
-                    $line_weight_oz,
-                    $line_revenue,
-                    $true_cost,
-                    $line_profit_net
-                )
-            );
+            $line_debug_rows[] = [
+                'line_id'        => (string) $item_key,
+                'product_id'     => $product_id,
+                'dist_id'        => strtolower(trim((string) $dist_id)),
+                'qty'            => $qty,
+                'ffl_required'   => $is_ffl,
+                'dropship'       => $dropship_enabled,
+                'lane_fee'       => $ship,
+                'weight_oz'      => $weight_oz,
+                'line_weight_oz' => $line_weight_oz,
+                'line_revenue'   => $line_revenue,
+                'true_cost'      => $true_cost,
+                'profit_net'     => $line_profit_net,
+            ];
         }
 
         // 1) Compute optimal shipping cost-to-you from routing planner
         $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan($routing_lines);
         $shipping_cost_total = max(0.0, (float) ($plan['total_cost'] ?? 0.0));
         $by_dist = (isset($plan['by_dist']) && is_array($plan['by_dist'])) ? $plan['by_dist'] : [];
+        $assignments = (isset($plan['assignments']) && is_array($plan['assignments'])) ? $plan['assignments'] : [];
+
+        foreach ($line_debug_rows as $idx => $row) {
+            $line_id = (string) ($row['line_id'] ?? '');
+            $route = isset($assignments[$line_id]) ? (string) $assignments[$line_id] : (!empty($row['dropship']) ? 'direct_ship' : 'dealer_fulfilled');
+
+            $this->log_debug(
+                sprintf(
+                    'LINE %d product=%d dist=%s qty=%d ffl=%d dropship=%d route=%s lane_fee=%s wt_oz=%.2f line_wt_oz=%.2f revenue=%s true_cost=%s profit_net=%s',
+                    $idx + 1,
+                    (int) ($row['product_id'] ?? 0),
+                    (string) ($row['dist_id'] ?? ''),
+                    (int) ($row['qty'] ?? 0),
+                    !empty($row['ffl_required']) ? 1 : 0,
+                    !empty($row['dropship']) ? 1 : 0,
+                    $route,
+                    $this->fmt_money((float) ($row['lane_fee'] ?? 0.0)),
+                    (float) ($row['weight_oz'] ?? 0.0),
+                    (float) ($row['line_weight_oz'] ?? 0.0),
+                    $this->fmt_money((float) ($row['line_revenue'] ?? 0.0)),
+                    $this->fmt_money((float) ($row['true_cost'] ?? 0.0)),
+                    $this->fmt_money((float) ($row['profit_net'] ?? 0.0))
+                )
+            );
+        }
+
+        foreach ($by_dist as $dist_id => $dist_row) {
+            $lanes = [];
+            if (!empty($dist_row['dealer_inbound'])) {
+                $lanes[] = 'dealer_inbound';
+            }
+            if (!empty($dist_row['direct_home'])) {
+                $lanes[] = 'direct_home';
+            }
+            if (!empty($dist_row['direct_ffl'])) {
+                $lanes[] = 'direct_ffl';
+            }
+
+            $this->log_debug(
+                sprintf(
+                    'DIST %s lane_fee=%s lanes=%s active=%d dist_cost=%s',
+                    (string) $dist_id,
+                    $this->fmt_money((float) ($dist_row['lane_fee'] ?? 0.0)),
+                    empty($lanes) ? '-' : implode(',', $lanes),
+                    (int) ($dist_row['active_lanes'] ?? 0),
+                    $this->fmt_money((float) ($dist_row['cost'] ?? 0.0))
+                )
+            );
+        }
+
+        $dealer_home_cost = (float) ($plan['dealer_outbound_home_cost'] ?? 0.0);
+        $dealer_ffl_cost = (float) ($plan['dealer_outbound_ffl_cost'] ?? 0.0);
+        $dealer_home_oz = (float) ($plan['dealer_outbound_home_oz'] ?? 0.0);
+        $dealer_ffl_oz = (float) ($plan['dealer_outbound_ffl_oz'] ?? 0.0);
+        $outbound_total = $dealer_home_cost + $dealer_ffl_cost;
 
         $this->log_debug(
             sprintf(
-                '[FFLHub][Shipping] planner total=%.2f dist_total=%.2f dealer_home=%.2f dealer_ffl=%.2f decision_lines=%d combos=%d',
-                $shipping_cost_total,
-                (float) ($plan['distributor_cost_total'] ?? 0.0),
-                (float) ($plan['dealer_outbound_home_cost'] ?? 0.0),
-                (float) ($plan['dealer_outbound_ffl_cost'] ?? 0.0),
+                'OUTBOUND dealer_home wt_oz=%.2f cost=%s | dealer_ffl wt_oz=%.2f cost=%s',
+                $dealer_home_oz,
+                $this->fmt_money($dealer_home_cost),
+                $dealer_ffl_oz,
+                $this->fmt_money($dealer_ffl_cost)
+            )
+        );
+
+        $this->log_debug(
+            sprintf(
+                'PLAN total=%s dist_total=%s outbound_total=%s decision_lines=%d combos=%d',
+                $this->fmt_money($shipping_cost_total),
+                $this->fmt_money((float) ($plan['distributor_cost_total'] ?? 0.0)),
+                $this->fmt_money($outbound_total),
                 (int) (($plan['meta']['decision_lines'] ?? 0)),
                 (int) (($plan['meta']['combinations_evaluated'] ?? 0))
             )
@@ -257,29 +318,29 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         if ($shipping_cost_total <= 0.0) {
             $customer_charge = 0.0;
-            $this->log_debug('[FFLHub][Shipping] shipping_cost_total <= 0, customer_charge=0');
+            $this->log_debug('RULE shipping_cost_total=0 so customer_charge=$0.00');
         } else {
             $free_threshold = 0.5 * (float) $profit_net_total;
 
             $this->log_debug(
                 sprintf(
-                    '[FFLHub][Shipping] totals profit_net_total=%.2f shipping_cost_total=%.2f free_threshold(0.5xprofit)=%.2f',
-                    $profit_net_total,
-                    $shipping_cost_total,
-                    $free_threshold
+                    'RULE profit_net_total=%s shipping_cost_total=%s free_threshold=%s',
+                    $this->fmt_money($profit_net_total),
+                    $this->fmt_money($shipping_cost_total),
+                    $this->fmt_money($free_threshold)
                 )
             );
 
             if ($profit_net_total > 0.0 && $shipping_cost_total < $free_threshold) {
                 $customer_charge = 0.0;
-                $this->log_debug('[FFLHub][Shipping] FREE SHIPPING applied (shipping_cost_total < .5x profit)');
+                $this->log_debug('RULE free_shipping=yes');
             } else {
                 $customer_charge = ($f >= 0.99) ? $shipping_cost_total : ($shipping_cost_total / (1.0 - $f));
                 $this->log_debug(
                     sprintf(
-                        '[FFLHub][Shipping] charged full shipping grossed-up: customer_charge=%.2f (net_to_you=%.2f)',
-                        $customer_charge,
-                        $shipping_cost_total
+                        'RULE free_shipping=no customer_charge=%s net_shipping_cost=%s',
+                        $this->fmt_money($customer_charge),
+                        $this->fmt_money($shipping_cost_total)
                     )
                 );
             }
@@ -296,11 +357,11 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         if (abs($customer_charge - $before_clamp) > 0.0001) {
             $this->log_debug(
                 sprintf(
-                    '[FFLHub][Shipping] clamps applied: before=%.2f after=%.2f (min=%.2f max=%.2f)',
-                    $before_clamp,
-                    $customer_charge,
-                    $min_cart_ship,
-                    $max_cart_ship
+                    'CLAMP before=%s after=%s min=%s max=%s',
+                    $this->fmt_money($before_clamp),
+                    $this->fmt_money($customer_charge),
+                    $this->fmt_money($min_cart_ship),
+                    $this->fmt_money($max_cart_ship)
                 )
             );
         }
@@ -339,8 +400,8 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         $this->log_debug(
             sprintf(
-                '[FFLHub][Shipping] END customer_charge=%.2f elapsed_ms=%.2f',
-                $customer_charge,
+                'END customer_charge=%s elapsed_ms=%.2f',
+                $this->fmt_money($customer_charge),
                 $elapsed_ms
             )
         );
@@ -349,6 +410,11 @@ class FFLHubShippingMethod extends WC_Shipping_Method
     private function log_debug(string $message): void
     {
         DebugLogUtil::log('FFLHUB_DEBUG_SHIPPING', '[FFLHub][ShippingMethod]', $message);
+    }
+
+    private function fmt_money(float $value): string
+    {
+        return '$' . number_format($value, 2, '.', '');
     }
 
     /**
