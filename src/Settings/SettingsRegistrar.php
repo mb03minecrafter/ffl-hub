@@ -41,6 +41,7 @@ final class SettingsRegistrar
     public static function register_all_settings(): void
     {
         self::register_global_settings();
+        self::register_usps_settings();
         self::register_distributor_settings();
     }
 
@@ -77,6 +78,14 @@ final class SettingsRegistrar
                 'default'           => (string) Options::default_global_markup(),
             ]
         );
+    }
+
+    /**
+     * Register USPS outbound estimate settings.
+     */
+    private static function register_usps_settings(): void
+    {
+        $group = Options::usps_settings_group();
 
         register_setting(
             $group,

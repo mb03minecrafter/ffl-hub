@@ -470,7 +470,7 @@ class AdminPage
             </p>
 
             <form method="post" action="options.php" class="fflhub-distributor-settings-form">
-                <?php settings_fields('fflhub_global_settings'); ?>
+                <?php settings_fields(Options::usps_settings_group()); ?>
 
                 <table class="form-table">
                     <tbody>

@@ -95,6 +95,14 @@ final class Options
     }
 
     /**
+     * Settings group for USPS outbound estimate configuration.
+     */
+    public static function usps_settings_group(): string
+    {
+        return 'fflhub_usps_settings';
+    }
+
+    /**
      * Settings group for a specific distributor's schema-driven options.
      */
     public static function distributor_settings_group(string $distributor_id): string
