@@ -421,6 +421,9 @@ class DistributorProductsPage
         $p_msrp      = $selected_product->msrp ?? null;
         $p_quantity  = $selected_product->quantity ?? null;
         $p_shipping_weight = $selected_product->shipping_weight ?? null;
+        $p_shipping_length_in = $selected_product->shipping_length_in ?? null;
+        $p_shipping_width_in  = $selected_product->shipping_width_in ?? null;
+        $p_shipping_height_in = $selected_product->shipping_height_in ?? null;
         $p_shipping  = $selected_product->shipping_cost ?? null;
         $p_true_cost = $selected_product->true_cost ?? null;
 
@@ -558,6 +561,16 @@ class DistributorProductsPage
                         ?>
                     </p>
                     <p>
+                        <strong><?php esc_html_e('Shipping Dimensions (in):', 'ffl-hub'); ?></strong>
+                        <?php
+                        echo ' ' . esc_html($this->format_dimensions(
+                            $p_shipping_length_in,
+                            $p_shipping_width_in,
+                            $p_shipping_height_in
+                        ));
+                        ?>
+                    </p>
+                    <p>
                         <strong><?php esc_html_e('FFL Required:', 'ffl-hub'); ?></strong>
                         <?php
                         echo ' ' . ($p_ffl_required
@@ -637,6 +650,9 @@ class DistributorProductsPage
                     $msrp     = $payload_row->msrp ?? null;
                     $shipping = $payload_row->shipping_cost ?? null;
                     $shipping_weight_row = $payload_row->shipping_weight ?? null;
+                    $shipping_length_row = $payload_row->shipping_length_in ?? null;
+                    $shipping_width_row  = $payload_row->shipping_width_in ?? null;
+                    $shipping_height_row = $payload_row->shipping_height_in ?? null;
                     $qty      = $payload_row->quantity ?? null;
                     $ffl_req_row = (bool) ($payload_row->ffl_required ?? false);
                     $sot_req_row = (bool) ($payload_row->sot_required ?? false);
@@ -672,6 +688,16 @@ class DistributorProductsPage
                                 <?php
                                 $shipping_weight_row_text = trim((string) ($shipping_weight_row ?? ''));
                                 echo ' ' . esc_html($shipping_weight_row_text !== '' ? $shipping_weight_row_text : __('N/A', 'ffl-hub'));
+                                ?>
+                            </span>
+                            <span>
+                                <strong><?php esc_html_e('Dims (in):', 'ffl-hub'); ?></strong>
+                                <?php
+                                echo ' ' . esc_html($this->format_dimensions(
+                                    $shipping_length_row,
+                                    $shipping_width_row,
+                                    $shipping_height_row
+                                ));
                                 ?>
                             </span>
                             <span>
@@ -716,6 +742,21 @@ class DistributorProductsPage
         $formatted = number_format_i18n($price, 2);
 
         return '$' . $formatted;
+    }
+
+    private function format_dimensions(?string $length_in, ?string $width_in, ?string $height_in): string
+    {
+        $l = trim((string) ($length_in ?? ''));
+        $w = trim((string) ($width_in ?? ''));
+        $h = trim((string) ($height_in ?? ''));
+
+        if ($l === '' && $w === '' && $h === '') {
+            return __('N/A', 'ffl-hub');
+        }
+
+        return ($l !== '' ? $l : '?')
+            . ' x ' . ($w !== '' ? $w : '?')
+            . ' x ' . ($h !== '' ? $h : '?');
     }
 
     private function log_debug(string $message): void

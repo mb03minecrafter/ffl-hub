@@ -617,6 +617,9 @@ abstract class DistributorBase implements DistributorInterface
         $msrp     = (float) ($this->get_float_field($row, $map['msrp'] ?? []) ?? 0.0);
         $quantity = (int)   ($this->get_int_field($row, $map['quantity'] ?? []) ?? 0);
         $shipping_weight = $this->get_string_field($row, $map['shipping_weight'] ?? ['shipping_weight']);
+        $shipping_length_in = $this->get_string_field($row, $map['shipping_length_in'] ?? ['shipping_length_in']);
+        $shipping_width_in  = $this->get_string_field($row, $map['shipping_width_in'] ?? ['shipping_width_in']);
+        $shipping_height_in = $this->get_string_field($row, $map['shipping_height_in'] ?? ['shipping_height_in']);
 
         $shipping = (float) ($this->get_shipping_cost_by_upc($normalized_upc) ?? 0.0);
 
@@ -673,7 +676,10 @@ abstract class DistributorBase implements DistributorInterface
             $recommended_category,
             $row,
             $shipping_weight,
-            $sot_required
+            $sot_required,
+            $shipping_length_in,
+            $shipping_width_in,
+            $shipping_height_in
         );
     }
 

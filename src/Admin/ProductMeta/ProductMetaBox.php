@@ -70,6 +70,9 @@ class ProductMetaBox
             ProductMeta::FFLHUB_LAST_SHIPPING_COST_META            => __('Shipping Cost', 'ffl-hub'),
             ProductMeta::FFLHUB_DROPSHIP_ENABLED_META    => __('Drop Ship Enabled', 'ffl-hub'),
             ProductMeta::FFLHUB_SHIPPING_WEIGHT_META     => __('Shipping Weight (oz)', 'ffl-hub'),
+            ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META  => __('Shipping Length (in)', 'ffl-hub'),
+            ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META   => __('Shipping Width (in)', 'ffl-hub'),
+            ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META  => __('Shipping Height (in)', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_SYNC_META           => __('Last Sync At', 'ffl-hub'),
         );
 
@@ -92,6 +95,18 @@ class ProductMetaBox
                         $weight = rtrim(rtrim(number_format((float) $weight, 2, '.', ''), '0'), '.');
                     }
                     $display_value = $weight . ' oz';
+                }
+            } elseif (
+                $key === ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META
+                || $key === ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META
+                || $key === ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META
+            ) {
+                if ($value !== '' || (string) $value === '0') {
+                    $dim = trim((string) $value);
+                    if (is_numeric($dim)) {
+                        $dim = rtrim(rtrim(number_format((float) $dim, 2, '.', ''), '0'), '.');
+                    }
+                    $display_value = $dim . ' in';
                 }
             } elseif ($value !== '' || (string) $value === '0') {
                 $display_value = (string) $value;

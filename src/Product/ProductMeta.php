@@ -68,5 +68,8 @@ class ProductMeta
     public const FFLHUB_LAST_SHIPPING_COST_META = '_fflhub_last_shipping_cost';
     public const FFLHUB_DROPSHIP_ENABLED_META   = '_fflhub_dropship_enabled';
     public const FFLHUB_SHIPPING_WEIGHT_META    = '_fflhub_shipping_weight';
+    public const FFLHUB_SHIPPING_LENGTH_IN_META = '_fflhub_shipping_length_in';
+    public const FFLHUB_SHIPPING_WIDTH_IN_META  = '_fflhub_shipping_width_in';
+    public const FFLHUB_SHIPPING_HEIGHT_IN_META = '_fflhub_shipping_height_in';
 
 }

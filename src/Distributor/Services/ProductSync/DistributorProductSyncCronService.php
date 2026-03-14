@@ -558,7 +558,8 @@ final class DistributorProductSyncCronService extends AbstractCronService
             ($product instanceof WC_Product_Simple) ? $product : $product,
             $selected_dist_id,
             $selected_payload,
-            (float) $recommended_price
+            (float) $recommended_price,
+            $offers
         );
 
         $needs_save = ($stock_changed || $price_changed || $meta_changed);

@@ -59,9 +59,18 @@ final class DistributorProductPayload
      * Product shipping weight as provided by the distributor catalog.
      *
      * NOTE:
-     * Units are distributor-specific (do not assume lbs/oz globally).
+     * FFLHub normalizes this to ounces where possible.
      */
     public ?string $shipping_weight;
+
+    /** Shipping package length in inches (string/null to preserve source formatting). */
+    public ?string $shipping_length_in;
+
+    /** Shipping package width in inches (string/null to preserve source formatting). */
+    public ?string $shipping_width_in;
+
+    /** Shipping package height in inches (string/null to preserve source formatting). */
+    public ?string $shipping_height_in;
 
     /**
      * Estimated shipping cost for this line item (0.0 if unknown).
@@ -162,6 +171,9 @@ final class DistributorProductPayload
      * @param mixed  $raw
      * @param string|null $shipping_weight
      * @param bool $sot_required
+     * @param string|null $shipping_length_in
+     * @param string|null $shipping_width_in
+     * @param string|null $shipping_height_in
      */
     public function __construct(
         string $upc,
@@ -180,7 +192,10 @@ final class DistributorProductPayload
         ?array $recommended_category,
         $raw = null,
         ?string $shipping_weight = null,
-        bool $sot_required = false
+        bool $sot_required = false,
+        ?string $shipping_length_in = null,
+        ?string $shipping_width_in = null,
+        ?string $shipping_height_in = null
     ) {
         // Strings: trim only; higher-level builders decide formatting/casing rules.
         $this->upc = trim($upc);
@@ -198,6 +213,15 @@ final class DistributorProductPayload
 
         $shipping_weight = trim((string) ($shipping_weight ?? ''));
         $this->shipping_weight = ($shipping_weight !== '') ? $shipping_weight : null;
+
+        $shipping_length_in = trim((string) ($shipping_length_in ?? ''));
+        $this->shipping_length_in = ($shipping_length_in !== '') ? $shipping_length_in : null;
+
+        $shipping_width_in = trim((string) ($shipping_width_in ?? ''));
+        $this->shipping_width_in = ($shipping_width_in !== '') ? $shipping_width_in : null;
+
+        $shipping_height_in = trim((string) ($shipping_height_in ?? ''));
+        $this->shipping_height_in = ($shipping_height_in !== '') ? $shipping_height_in : null;
 
         // Shipping / true cost: never negative (and finite).
         $this->shipping_cost = max(0.0, self::finite_float($shipping_cost));

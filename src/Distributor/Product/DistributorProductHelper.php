@@ -112,7 +112,8 @@ class DistributorProductHelper
             $upc,
             $selected_dist_id,
             $selected_product,
-            $recommended_price
+            $recommended_price,
+            $offers
         );
 
         // NEW: persist an offers snapshot for debugging / future auto-switch logic
@@ -284,13 +285,16 @@ class DistributorProductHelper
      * - FFL required flag
      * - Pricing mode defaults
      * - LAST_SYNC timestamp
+     *
+     * @param array<string,DistributorOffer> $offers
      */
     public static function apply_fflhub_meta_from_payload(
         WC_Product_Simple $product,
         string $upc,
         string $selected_dist_id,
         DistributorProductPayload $selected_product,
-        float $recommended_price
+        float $recommended_price,
+        array $offers = []
     ): void {
         $upc = trim($upc);
         $selected_dist_id = trim($selected_dist_id);
@@ -304,6 +308,7 @@ class DistributorProductHelper
         $sot_required = (bool) ($selected_product->sot_required ?? false);
         $dropship_enabled = (bool) ($selected_product->dropship_enabled ?? true);
         $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
+        $dims = self::resolve_shipping_dimensions_for_meta($selected_product, $offers);
 
         $ship_cost = $selected_product->shipping_cost ?? null;
 
@@ -330,6 +335,9 @@ class DistributorProductHelper
         $product->update_meta_data(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required ? 1 : 0);
         $product->update_meta_data(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled ? 1 : 0);
         $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight);
+        $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length']);
+        $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width']);
+        $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height']);
         $product->update_meta_data(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required ? 1 : 0);
 
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, ProductMeta::MARKUP_MODE_GLOBAL);
@@ -354,7 +362,8 @@ class DistributorProductHelper
         WC_Product_Simple $product,
         string $selected_dist_id,
         DistributorProductPayload $selected_product,
-        float $recommended_price
+        float $recommended_price,
+        array $offers = []
     ): bool {
         $changed = false;
 
@@ -366,6 +375,7 @@ class DistributorProductHelper
         $ship_cost = $selected_product->shipping_cost ?? null;
         $dropship_enabled = ($selected_product->dropship_enabled ?? true) ? 1 : 0;
         $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
+        $dims = self::resolve_shipping_dimensions_for_meta($selected_product, $offers);
 
         $ffl_required = ($selected_product->ffl_required ?? false) ? 1 : 0;
         $sot_required = ($selected_product->sot_required ?? false) ? 1 : 0;
@@ -420,8 +430,79 @@ class DistributorProductHelper
         $set_meta_if_diff(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required, 0);
         $set_meta_if_diff(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled, 0);
         $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length'], 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width'], 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height'], 4);
 
         return $changed;
+    }
+
+    /**
+     * Resolve shipping dimensions for meta persistence.
+     *
+     * Strategy:
+     * - Prefer selected payload dimensions when complete (L/W/H present).
+     * - If incomplete, scan other distributor offers for the first complete set.
+     * - If no complete fallback exists, keep selected partial values.
+     *
+     * @param array<string,DistributorOffer> $offers
+     * @return array{length:string,width:string,height:string}
+     */
+    private static function resolve_shipping_dimensions_for_meta(
+        DistributorProductPayload $selected_product,
+        array $offers = []
+    ): array {
+        $selected_len = self::normalize_dimension_value($selected_product->shipping_length_in ?? null);
+        $selected_wid = self::normalize_dimension_value($selected_product->shipping_width_in ?? null);
+        $selected_hei = self::normalize_dimension_value($selected_product->shipping_height_in ?? null);
+
+        if (self::has_complete_dimensions($selected_len, $selected_wid, $selected_hei)) {
+            return [
+                'length' => $selected_len,
+                'width'  => $selected_wid,
+                'height' => $selected_hei,
+            ];
+        }
+
+        foreach ($offers as $offer) {
+            if (!($offer instanceof DistributorOffer)) {
+                continue;
+            }
+
+            $payload = $offer->product ?? null;
+            if (!($payload instanceof DistributorProductPayload)) {
+                continue;
+            }
+
+            $len = self::normalize_dimension_value($payload->shipping_length_in ?? null);
+            $wid = self::normalize_dimension_value($payload->shipping_width_in ?? null);
+            $hei = self::normalize_dimension_value($payload->shipping_height_in ?? null);
+
+            if (self::has_complete_dimensions($len, $wid, $hei)) {
+                return [
+                    'length' => $len,
+                    'width'  => $wid,
+                    'height' => $hei,
+                ];
+            }
+        }
+
+        return [
+            'length' => $selected_len,
+            'width'  => $selected_wid,
+            'height' => $selected_hei,
+        ];
+    }
+
+    private static function normalize_dimension_value($value): string
+    {
+        $v = trim((string) ($value ?? ''));
+        return ($v === '' || strtolower($v) === 'null') ? '' : $v;
+    }
+
+    private static function has_complete_dimensions(string $length, string $width, string $height): bool
+    {
+        return $length !== '' && $width !== '' && $height !== '';
     }
 
     /**
@@ -517,6 +598,10 @@ class DistributorProductHelper
                 'map'           => (float) ($p->map ?? 0),
                 'msrp'          => (float) ($p->msrp ?? 0),
                 'shipping_cost' => (float) ($p->shipping_cost ?? 0),
+                'shipping_weight' => (string) ($p->shipping_weight ?? ''),
+                'shipping_length_in' => (string) ($p->shipping_length_in ?? ''),
+                'shipping_width_in'  => (string) ($p->shipping_width_in ?? ''),
+                'shipping_height_in' => (string) ($p->shipping_height_in ?? ''),
                 'qty'           => (int) ($p->quantity ?? 0),
                 'ffl_required'  => ($p->ffl_required ?? false) ? 1 : 0,
                 'sot_required'  => ($p->sot_required ?? false) ? 1 : 0,
