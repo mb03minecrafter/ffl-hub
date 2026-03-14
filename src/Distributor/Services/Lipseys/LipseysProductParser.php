@@ -75,8 +75,10 @@ class LipseysProductParser {
         $sights         = $this->get_string( $item, 'sights' );
         $stock_grips    = $this->get_string( $item, 'stockFrameGrips' );
         $magazine       = $this->get_string( $item, 'magazine' );
-        $weight         = $this->get_string( $item, 'weight' );          // e.g. "18.6 oz."
-        $shipping_weight = $this->get_string( $item, 'shippingWeight' ); // e.g. "2.9"
+        $weight          = $this->get_string( $item, 'weight' );          // e.g. "18.6 oz."
+        $shipping_weight = $this->pounds_to_ounces_or_blank(
+            $this->get_string( $item, 'shippingWeight' )                  // e.g. "2.9" (lbs)
+        );
         $frame          = $this->get_string( $item, 'frame' );
         $country        = $this->get_string( $item, 'countryOfOrigin' );
 
@@ -204,5 +206,33 @@ class LipseysProductParser {
             return '1';
         }
         return '0';
+    }
+
+    /**
+     * Lipsey's shippingWeight is treated as pounds.
+     * Convert to ounces for standardized storage.
+     *
+     * @param string $raw
+     * @return string Ounces with 2 decimals, or '' when blank/invalid.
+     */
+    protected function pounds_to_ounces_or_blank( string $raw ): string {
+        $raw = trim( $raw );
+        if ( $raw === '' || $raw === '""' ) {
+            return '';
+        }
+
+        $clean = preg_replace( '/[^0-9\.\-]/', '', $raw );
+        $clean = trim( (string) $clean );
+        if ( $clean === '' || $clean === '-' || $clean === '.' || $clean === '-.' ) {
+            return '';
+        }
+
+        $pounds = (float) $clean;
+        if ( ! is_finite( $pounds ) || $pounds < 0 ) {
+            return '';
+        }
+
+        $ounces = $pounds * 16.0;
+        return number_format( $ounces, 2, '.', '' );
     }
 }
