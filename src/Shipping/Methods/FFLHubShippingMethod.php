@@ -2,6 +2,7 @@
 
 namespace FFLHub\Shipping\Methods;
 
+use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Util\DebugLogUtil;
 use WC_Shipping_Method;
@@ -12,23 +13,18 @@ if (! defined('ABSPATH')) {
 }
 
 /**
- * FFL Hub Shipping (per distributor, split FFL vs non-FFL, cart-level free shipping rule)
+ * FFL Hub Shipping (routing-aware, cart-level free shipping rule)
  *
- * RULES:
- * 1) Group cart items by source distributor.
- * 2) For each distributor group:
- *    - Split items into two buckets:
- *        a) FFL-required items
- *        b) Non-FFL items
- *    - Shipping cost for that distributor:
- *        ship_dist = max(ship_cost among FFL items) + max(ship_cost among non-FFL items)
- *      (empty bucket => 0)
- * 3) Total shipping cost-to-you:
- *      S_total = sum(ship_dist) across distributors.
+ * Routing model:
+ * - Non-dropship lines are always dealer_fulfilled.
+ * - Dropship-enabled lines are optimized as direct_ship vs dealer_fulfilled.
+ * - Cost includes:
+ *   - distributor lane fees (dealer_inbound/direct_home/direct_ffl)
+ *   - dealer outbound home/ffl costs from total weight.
  *
  * FREE SHIPPING RULE:
  * - Compute cart profit P_total (net after processor fee) using stored true cost meta.
- * - If S_total < 2 * P_total, customer shipping = 0.
+ * - If S_total < 0.5 * P_total, customer shipping = 0.
  * - Else customer pays full shipping grossed-up so you net S_total after processor fee:
  *      customer_charge = S_total / (1 - f)
  *
@@ -42,7 +38,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $this->id                 = 'fflhub_shipping';
         $this->instance_id        = absint($instance_id);
         $this->method_title       = 'FFL Hub Shipping';
-        $this->method_description = 'Shipping grouped by distributor, split into FFL vs non-FFL shipments, with cart-level free shipping rule.';
+        $this->method_description = 'Shipping optimized across direct-ship and dealer-fulfilled lanes with cart-level free shipping rule.';
         $this->supports           = ['shipping-zones', 'instance-settings'];
 
         $this->init();
@@ -143,15 +139,13 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             )
         );
 
-        /**
-         * dist_id => [
-         *   'ffl_ship_max' => float,
-         *   'non_ship_max' => float,
-         * ]
-         */
         $by_dist = [];
+        $plan = [];
 
-        // Cart-level profit (net after fee) across ALL items
+        // Planner input lines (shared model with future order routing work)
+        $routing_lines = [];
+
+        // Cart-level profit (net after fee) across ALL FFLHub items in this package
         $profit_net_total = 0.0;
 
         foreach (($package['contents'] ?? []) as $item_key => $item) {
@@ -185,28 +179,31 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $ffl_required_raw = $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true);
             $is_ffl = ! empty($ffl_required_raw) && (string) $ffl_required_raw !== '0';
 
-            // Shipping estimate for this item
+            // Dropship eligibility (default true if unset).
+            $dropship_enabled_raw = $product->get_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true);
+            $dropship_enabled = $this->to_boolish($dropship_enabled_raw, true);
+
+            // Distributor lane fee for this line (used as per-lane fee by planner).
             $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
             $ship = ($ship_raw === '' || $ship_raw === null) ? $fallback_ship : (float) $ship_raw;
             if (! is_finite($ship) || $ship < 0) {
                 $ship = $fallback_ship;
             }
 
-            if (! isset($by_dist[$dist_id])) {
-                $by_dist[$dist_id] = [
-                    'ffl_ship_max' => 0.0,
-                    'non_ship_max' => 0.0,
-                ];
-            }
+            // Per-unit shipping weight in ounces.
+            $weight_raw = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true);
+            $weight_oz  = $this->to_non_negative_float($weight_raw, 0.0);
+            $line_weight_oz = $weight_oz * (float) $qty;
 
-            $prev_ffl = (float) $by_dist[$dist_id]['ffl_ship_max'];
-            $prev_non = (float) $by_dist[$dist_id]['non_ship_max'];
-
-            if ($is_ffl) {
-                $by_dist[$dist_id]['ffl_ship_max'] = max($prev_ffl, $ship);
-            } else {
-                $by_dist[$dist_id]['non_ship_max'] = max($prev_non, $ship);
-            }
+            $routing_lines[] = [
+                'line_id'          => (string) $item_key,
+                'dist_id'          => strtolower(trim((string) $dist_id)),
+                'qty'              => $qty,
+                'weight_oz'        => $weight_oz,
+                'ffl_required'     => $is_ffl ? 1 : 0,
+                'dropship_enabled' => $dropship_enabled ? 1 : 0,
+                'dist_lane_fee'    => $ship,
+            ];
 
             // Stored true cost (used exactly like your previous method)
             $true_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
@@ -221,13 +218,16 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
             $this->log_debug(
                 sprintf(
-                    '[FFLHub][Shipping] item product_id=%d dist=%s bucket=%s qty=%d ship=%.2f (raw=%s) revenue=%.2f true_cost=%.2f profit_net=%.2f',
+                    '[FFLHub][Shipping] item product_id=%d dist=%s bucket=%s dropship=%d qty=%d ship=%.2f (raw=%s) weight_oz=%.2f line_weight_oz=%.2f revenue=%.2f true_cost=%.2f profit_net=%.2f',
                     $product_id,
                     $dist_id,
                     $is_ffl ? 'FFL' : 'NON',
+                    $dropship_enabled ? 1 : 0,
                     $qty,
                     $ship,
                     ($ship_raw === '' || $ship_raw === null) ? 'fallback' : (string) $ship_raw,
+                    $weight_oz,
+                    $line_weight_oz,
                     $line_revenue,
                     $true_cost,
                     $line_profit_net
@@ -235,26 +235,22 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             );
         }
 
-        // 1) Compute total shipping cost-to-you as sum of per-dist split maxima
-        $shipping_cost_total = 0.0;
+        // 1) Compute optimal shipping cost-to-you from routing planner
+        $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan($routing_lines);
+        $shipping_cost_total = max(0.0, (float) ($plan['total_cost'] ?? 0.0));
+        $by_dist = (isset($plan['by_dist']) && is_array($plan['by_dist'])) ? $plan['by_dist'] : [];
 
-        foreach ($by_dist as $dist_id => $g) {
-            $ffl_max = (float) ($g['ffl_ship_max'] ?? 0.0);
-            $non_max = (float) ($g['non_ship_max'] ?? 0.0);
-
-            $ship_dist = max(0.0, $ffl_max) + max(0.0, $non_max);
-            $shipping_cost_total += $ship_dist;
-
-            $this->log_debug(
-                sprintf(
-                    '[FFLHub][Shipping] dist=%s ffl_max=%.2f non_max=%.2f ship_dist=%.2f',
-                    (string) $dist_id,
-                    $ffl_max,
-                    $non_max,
-                    $ship_dist
-                )
-            );
-        }
+        $this->log_debug(
+            sprintf(
+                '[FFLHub][Shipping] planner total=%.2f dist_total=%.2f dealer_home=%.2f dealer_ffl=%.2f decision_lines=%d combos=%d',
+                $shipping_cost_total,
+                (float) ($plan['distributor_cost_total'] ?? 0.0),
+                (float) ($plan['dealer_outbound_home_cost'] ?? 0.0),
+                (float) ($plan['dealer_outbound_ffl_cost'] ?? 0.0),
+                (int) (($plan['meta']['decision_lines'] ?? 0)),
+                (int) (($plan['meta']['combinations_evaluated'] ?? 0))
+            )
+        );
 
         // 2) Apply cart-level free shipping rule
         $customer_charge = 0.0;
@@ -328,8 +324,10 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 // Processor fee percent used
                 'fflhub_processor_fee_percent' => (string) wc_format_decimal($fee_percent, 4),
 
-                // Full grouping details (dist -> ffl_max/non_max) for auditing + PO allocation later
+                // Planner output details (distributor lanes + routing assignments)
                 'fflhub_shipping_by_dist' => wp_json_encode($by_dist),
+                'fflhub_shipping_plan_version' => 'dealer_fulfilled_v1',
+                'fflhub_shipping_plan' => wp_json_encode($plan),
 
                 // Optional: record whether free shipping rule triggered
                 'fflhub_free_shipping_applied' => ($customer_charge <= 0.0001) ? '1' : '0',
@@ -351,6 +349,66 @@ class FFLHubShippingMethod extends WC_Shipping_Method
     private function log_debug(string $message): void
     {
         DebugLogUtil::log('FFLHUB_DEBUG_SHIPPING', '[FFLHub][ShippingMethod]', $message);
+    }
+
+    /**
+     * Parse truthy/falsey values from product meta with a default fallback.
+     *
+     * @param mixed $value
+     */
+    private function to_boolish($value, bool $default): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        $raw = strtolower(trim((string) $value));
+        if ($raw === '') {
+            return $default;
+        }
+
+        if (in_array($raw, ['1', 'true', 't', 'yes', 'y', 'on'], true)) {
+            return true;
+        }
+
+        if (in_array($raw, ['0', 'false', 'f', 'no', 'n', 'off'], true)) {
+            return false;
+        }
+
+        if (is_numeric($raw)) {
+            return ((float) $raw) !== 0.0;
+        }
+
+        return $default;
+    }
+
+    /**
+     * Parse a non-negative float from product meta.
+     *
+     * @param mixed $value
+     */
+    private function to_non_negative_float($value, float $default = 0.0): float
+    {
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return max(0.0, $default);
+        }
+
+        $num = $raw;
+        if (!is_numeric($num)) {
+            $num = trim((string) preg_replace('/[^0-9\.\-]/', '', $raw));
+        }
+
+        if ($num === '' || !is_numeric($num)) {
+            return max(0.0, $default);
+        }
+
+        $v = (float) $num;
+        if (!is_finite($v) || $v < 0.0) {
+            return max(0.0, $default);
+        }
+
+        return $v;
     }
 
     private function package_has_fflhub_items($package): bool
