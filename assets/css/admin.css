@@ -163,6 +163,72 @@
     display: block;
 }
 
+.fflhub-global-settings-card {
+    background: #fff;
+    border: 1px solid #dcdcde;
+    border-radius: 6px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.fflhub-section-title {
+    margin: 0 0 12px;
+}
+
+.fflhub-field-row {
+    margin-bottom: 14px;
+}
+
+.fflhub-field-label {
+    display: inline-block;
+    min-width: 220px;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.fflhub-field-input {
+    width: 320px;
+    max-width: 100%;
+}
+
+.fflhub-field-suffix {
+    margin-left: 8px;
+    font-weight: 600;
+}
+
+.fflhub-status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    line-height: 1.6;
+    font-weight: 600;
+}
+
+.fflhub-status-enabled {
+    background: #e6f6ed;
+    color: #146c43;
+}
+
+.fflhub-status-disabled {
+    background: #f6f7f7;
+    color: #50575e;
+}
+
+.fflhub-usps-shortcut-wrap {
+    margin-bottom: 22px;
+}
+
+.fflhub-usps-card {
+    width: 100%;
+    max-width: 460px;
+}
+
+.fflhub-usps-card-icon {
+    background: #fff;
+    border: 1px solid #dcdcde;
+}
+
 
 
 
