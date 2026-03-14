@@ -450,6 +450,11 @@ class DistributorProductsPage
         /** @var array<string, DistributorOffer> $offers */
         $offers = (array) ($state['offers'] ?? []);
 
+        $resolved_dims = $this->resolve_dimensions_for_display($selected_product, $offers);
+        $p_shipping_length_in = $resolved_dims['length'];
+        $p_shipping_width_in  = $resolved_dims['width'];
+        $p_shipping_height_in = $resolved_dims['height'];
+
     ?>
         <hr />
 
@@ -757,6 +762,61 @@ class DistributorProductsPage
         return ($l !== '' ? $l : '?')
             . ' x ' . ($w !== '' ? $w : '?')
             . ' x ' . ($h !== '' ? $h : '?');
+    }
+
+    /**
+     * Resolve dimensions for selected-product display using cross-offer fallback.
+     *
+     * @param array<string,DistributorOffer> $offers
+     * @return array{length:string,width:string,height:string}
+     */
+    private function resolve_dimensions_for_display(
+        DistributorProductPayload $selected_product,
+        array $offers
+    ): array {
+        $selected = [
+            'length' => $this->normalize_dimension((string) ($selected_product->shipping_length_in ?? '')),
+            'width'  => $this->normalize_dimension((string) ($selected_product->shipping_width_in ?? '')),
+            'height' => $this->normalize_dimension((string) ($selected_product->shipping_height_in ?? '')),
+        ];
+
+        if ($this->has_complete_dimensions($selected['length'], $selected['width'], $selected['height'])) {
+            return $selected;
+        }
+
+        foreach ($offers as $offer) {
+            if (!($offer instanceof DistributorOffer)) {
+                continue;
+            }
+
+            $payload = $offer->product ?? null;
+            if (!($payload instanceof DistributorProductPayload)) {
+                continue;
+            }
+
+            $candidate = [
+                'length' => $this->normalize_dimension((string) ($payload->shipping_length_in ?? '')),
+                'width'  => $this->normalize_dimension((string) ($payload->shipping_width_in ?? '')),
+                'height' => $this->normalize_dimension((string) ($payload->shipping_height_in ?? '')),
+            ];
+
+            if ($this->has_complete_dimensions($candidate['length'], $candidate['width'], $candidate['height'])) {
+                return $candidate;
+            }
+        }
+
+        return $selected;
+    }
+
+    private function normalize_dimension(string $value): string
+    {
+        $v = trim($value);
+        return ($v === '' || strtolower($v) === 'null') ? '' : $v;
+    }
+
+    private function has_complete_dimensions(string $length, string $width, string $height): bool
+    {
+        return $length !== '' && $width !== '' && $height !== '';
     }
 
     private function log_debug(string $message): void
