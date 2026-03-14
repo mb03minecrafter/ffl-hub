@@ -434,6 +434,43 @@ final class USPSRateHelper
             $base_url = $use_test_env ? self::DEFAULT_TEST_BASE_URL : self::DEFAULT_PROD_BASE_URL;
         }
 
+        // USPS v3 requires valid enum values for these fields.
+        $mail_class = strtoupper(trim($this->read_string(
+            'FFLHUB_USPS_MAIL_CLASS',
+            'fflhub_usps_mail_class',
+            'USPS_GROUND_ADVANTAGE'
+        )));
+        if ($mail_class === '') {
+            $mail_class = 'USPS_GROUND_ADVANTAGE';
+        }
+
+        $processing_category = strtoupper(trim($this->read_string(
+            'FFLHUB_USPS_PROCESSING_CATEGORY',
+            'fflhub_usps_processing_category',
+            'MACHINABLE'
+        )));
+        if ($processing_category === '') {
+            $processing_category = 'MACHINABLE';
+        }
+
+        $destination_entry_facility_type = strtoupper(trim($this->read_string(
+            'FFLHUB_USPS_DEST_ENTRY_FACILITY_TYPE',
+            'fflhub_usps_destination_entry_facility_type',
+            'NONE'
+        )));
+        if ($destination_entry_facility_type === '') {
+            $destination_entry_facility_type = 'NONE';
+        }
+
+        $price_type = strtoupper(trim($this->read_string(
+            'FFLHUB_USPS_PRICE_TYPE',
+            'fflhub_usps_price_type',
+            'COMMERCIAL'
+        )));
+        if ($price_type === '') {
+            $price_type = 'COMMERCIAL';
+        }
+
         return [
             'enabled'                         => $enabled,
             'base_url'                        => rtrim($base_url, '/'),
@@ -444,15 +481,11 @@ final class USPSRateHelper
             ),
             'account_type'                    => $this->read_string('FFLHUB_USPS_ACCOUNT_TYPE', 'fflhub_usps_account_type', 'EPS'),
             'account_number'                  => $this->read_string('FFLHUB_USPS_ACCOUNT_NUMBER', 'fflhub_usps_account_number', ''),
-            'mail_class'                      => $this->read_string('FFLHUB_USPS_MAIL_CLASS', 'fflhub_usps_mail_class', 'USPS_GROUND_ADVANTAGE'),
-            'processing_category'             => $this->read_string('FFLHUB_USPS_PROCESSING_CATEGORY', 'fflhub_usps_processing_category', 'MACHINABLE'),
-            'destination_entry_facility_type' => $this->read_string(
-                'FFLHUB_USPS_DEST_ENTRY_FACILITY_TYPE',
-                'fflhub_usps_destination_entry_facility_type',
-                'NONE'
-            ),
+            'mail_class'                      => $mail_class,
+            'processing_category'             => $processing_category,
+            'destination_entry_facility_type' => $destination_entry_facility_type,
             'rate_indicator'                  => $this->read_string('FFLHUB_USPS_RATE_INDICATOR', 'fflhub_usps_rate_indicator', ''),
-            'price_type'                      => $this->read_string('FFLHUB_USPS_PRICE_TYPE', 'fflhub_usps_price_type', 'COMMERCIAL'),
+            'price_type'                      => $price_type,
             'timeout_sec'                     => max(
                 3,
                 min(
