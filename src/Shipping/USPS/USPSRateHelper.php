@@ -146,6 +146,13 @@ final class USPSRateHelper
             'body'    => wp_json_encode($payload),
         ];
 
+        $this->log('rate.request', [
+            'url'        => $url,
+            'timeout'    => (int) $cfg['timeout_sec'],
+            'payload'    => $payload,
+            'cache_key'  => $cache_key,
+        ]);
+
         $started = microtime(true);
         $res = wp_remote_post($url, $request_args);
         $elapsed_ms = (microtime(true) - $started) * 1000.0;
@@ -156,11 +163,15 @@ final class USPSRateHelper
                 'USPS rate request error: ' . $res->get_error_message()
             );
             $result['elapsed_ms'] = round($elapsed_ms, 2);
+            $result['request_url'] = $url;
+            $result['request_payload'] = $payload;
             self::$requestCache[$cache_key] = $result;
 
             $this->log('rate.error', [
                 'error'      => (string) $result['error'],
                 'elapsed_ms' => $result['elapsed_ms'],
+                'url'        => $url,
+                'payload'    => $payload,
             ]);
 
             return $result;
@@ -178,12 +189,17 @@ final class USPSRateHelper
             $result['http_code'] = $http_code;
             $result['elapsed_ms'] = round($elapsed_ms, 2);
             $result['response_excerpt'] = $this->excerpt($body, 200);
+            $result['request_url'] = $url;
+            $result['request_payload'] = $payload;
             self::$requestCache[$cache_key] = $result;
 
             $this->log('rate.http_fail', [
                 'http_code'  => $http_code,
                 'elapsed_ms' => $result['elapsed_ms'],
                 'excerpt'    => $result['response_excerpt'],
+                'response_body' => $body,
+                'url'        => $url,
+                'payload'    => $payload,
             ]);
 
             return $result;
@@ -194,6 +210,8 @@ final class USPSRateHelper
             $result['http_code'] = $http_code;
             $result['elapsed_ms'] = round($elapsed_ms, 2);
             $result['response_excerpt'] = $this->excerpt($body, 200);
+            $result['request_url'] = $url;
+            $result['request_payload'] = $payload;
             self::$requestCache[$cache_key] = $result;
             return $result;
         }
@@ -204,6 +222,8 @@ final class USPSRateHelper
             $result['http_code'] = $http_code;
             $result['elapsed_ms'] = round($elapsed_ms, 2);
             $result['response_excerpt'] = $this->excerpt($body, 200);
+            $result['request_url'] = $url;
+            $result['request_payload'] = $payload;
             self::$requestCache[$cache_key] = $result;
             return $result;
         }
@@ -218,6 +238,8 @@ final class USPSRateHelper
             'error_code'  => '',
             'error'       => '',
             'elapsed_ms'  => round($elapsed_ms, 2),
+            'request_url' => $url,
+            'request_payload' => $payload,
         ];
 
         self::$requestCache[$cache_key] = $result;
@@ -572,4 +594,3 @@ final class USPSRateHelper
         DebugLogUtil::log_ctx('FFLHUB_DEBUG_SHIPPING', '[FFLHub][USPSRateHelper]', $msg, $ctx);
     }
 }
-
