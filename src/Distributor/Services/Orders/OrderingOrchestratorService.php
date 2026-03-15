@@ -194,7 +194,6 @@ final class OrderingOrchestratorService
      *   order_id:int,
      *   dist_id:string,
      *   bucket:string,
-     *   lane:string,
      *   lines:array<int,array{upc:string,qty:int,ffl_required:int,dropship_enabled:int}>
      * }>
      */
@@ -422,7 +421,6 @@ final class OrderingOrchestratorService
                     'order_id' => $oid,
                     'dist_id'  => (string) $dist_id,
                     'bucket'   => (string) $lane,
-                    'lane'     => (string) $lane,
                     'lines'    => $lines,
                 ];
             }
