@@ -317,8 +317,8 @@ class ValidateOrderAuditCommand
                     'FFLHub CartCompliance audit dummy order (vote model)'
                 );
 
-                $cart_ffl = count($base_req->ffl_lines());
-                $cart_non = count($base_req->non_ffl_lines());
+                $cart_ffl = count($base_req->ffl_required_lines());
+                $cart_non = count($base_req->non_ffl_required_lines());
 
                 foreach ($voters as $voter_id => $voter) {
                     $voter_inst  = $voter['instance'];
@@ -360,8 +360,8 @@ class ValidateOrderAuditCommand
                             'FFLHub CartCompliance audit dummy order (vote model; filtered lines)'
                         );
 
-                        $voter_ffl = count($voter_req->ffl_lines());
-                        $voter_non = count($voter_req->non_ffl_lines());
+                        $voter_ffl = count($voter_req->ffl_required_lines());
+                        $voter_non = count($voter_req->non_ffl_required_lines());
 
                         try {
                             $res = $voter_inst->validate_order_request($voter_req);

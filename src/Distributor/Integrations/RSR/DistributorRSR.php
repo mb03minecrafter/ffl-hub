@@ -475,8 +475,8 @@ class DistributorRSR extends DistributorBase
         DistributorOrderRequest $request,
         array $required_by_upc
     ): DistributorOrderValidationResult {
-        $lines_non = $request->non_ffl_lines();
-        $lines_ffl = $request->ffl_lines();
+        $lines_non = $request->non_ffl_required_lines();
+        $lines_ffl = $request->ffl_required_lines();
 
         if (empty($lines_non) && empty($lines_ffl)) {
             return DistributorOrderValidationResult::allow('No valid order lines to validate.');
@@ -908,7 +908,7 @@ class DistributorRSR extends DistributorBase
             ];
         }
 
-        $ship = $request->ship_to_for_lane($ffl_lane);
+        $ship = $request->ship_to_for_ffl_requirement($ffl_lane);
 
         $ship_check = RSRDirectConnectAPI::validate_ship_to_required_fields($ship);
         if (! $ship_check['ok']) {

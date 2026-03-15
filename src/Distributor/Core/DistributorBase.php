@@ -1489,7 +1489,7 @@ abstract class DistributorBase implements DistributorInterface
      */
     protected function require_ffl_shipto_if_ffl_lines(DistributorOrderRequest $request, string $code_prefix): ?DistributorOrderValidationResult
     {
-        $ffl_lines = method_exists($request, 'ffl_lines') ? (array) $request->ffl_lines() : [];
+        $ffl_lines = (array) $request->ffl_required_lines();
 
         if (empty($ffl_lines)) {
             return null;
@@ -1574,8 +1574,8 @@ abstract class DistributorBase implements DistributorInterface
             return $guard;
         }
 
-        $lines_non = method_exists($request, 'non_ffl_lines') ? (array) $request->non_ffl_lines() : [];
-        $lines_ffl = method_exists($request, 'ffl_lines') ? (array) $request->ffl_lines() : [];
+        $lines_non = (array) $request->non_ffl_required_lines();
+        $lines_ffl = (array) $request->ffl_required_lines();
         $all_lines = method_exists($request, 'valid_lines') ? (array) $request->valid_lines() : [];
 
         if (empty($all_lines)) {

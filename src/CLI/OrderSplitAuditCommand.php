@@ -271,8 +271,8 @@ class OrderSplitAuditCommand
                 $map_non_ok = true;
                 $msg_parts = [];
 
-                $ffl_lines = $req->ffl_lines();
-                $non_lines = $req->non_ffl_lines();
+                $ffl_lines = $req->ffl_required_lines();
+                $non_lines = $req->non_ffl_required_lines();
 
                 $items_ffl = $this->map_lines_to_items(
                     $ffl_lines,

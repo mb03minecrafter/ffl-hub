@@ -880,9 +880,9 @@ final class CartCompliance
                             'cart_dist_id' => $cart_dist_id,
                             'voter_id'     => strtolower(trim($voter_id_str)),
                             'label'        => $label,
-                            'lane_hint'  => (!empty($voter_req->ffl_lines()) && empty($voter_req->non_ffl_lines()))
+                            'lane_hint'  => (!empty($voter_req->ffl_required_lines()) && empty($voter_req->non_ffl_required_lines()))
                                 ? 'direct_ship_ffl'
-                                : ((!empty($voter_req->non_ffl_lines()) && empty($voter_req->ffl_lines()))
+                                : ((!empty($voter_req->non_ffl_required_lines()) && empty($voter_req->ffl_required_lines()))
                                     ? 'direct_ship_non_ffl'
                                     : 'mixed'),
                         ]);
@@ -1042,8 +1042,8 @@ final class CartCompliance
             return array_values(array_unique($out));
         }
 
-        $has_non = !empty($voter_req->non_ffl_lines());
-        $has_ffl = !empty($voter_req->ffl_lines());
+        $has_non = !empty($voter_req->non_ffl_required_lines());
+        $has_ffl = !empty($voter_req->ffl_required_lines());
 
         if ($has_ffl && !$has_non) return ['direct_ship_ffl'];
         if ($has_non && !$has_ffl) return ['direct_ship_non_ffl'];

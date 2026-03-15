@@ -14,7 +14,8 @@ if (! defined('ABSPATH')) {
  *   - direct_ship_non_ffl
  *   - direct_ship_ffl
  *   - dealer_fulfilled
- * - Split helpers keep deterministic order and are cached.
+ * - Split helpers in this DTO are based on `ffl_required` only.
+ *   They do not represent routing lanes.
  */
 final class DistributorOrderRequest
 {
@@ -33,8 +34,8 @@ final class DistributorOrderRequest
     public bool $contains_ffl_lines;
     public bool $contains_non_ffl_lines;
 
-    /** @var array{direct_ship_ffl: DistributorOrderLine[], direct_ship_non_ffl: DistributorOrderLine[]} | null */
-    private ?array $lane_cache = null;
+    /** @var array{ffl_required: DistributorOrderLine[], non_ffl_required: DistributorOrderLine[]} | null */
+    private ?array $ffl_requirement_cache = null;
 
     /**
      * @param DistributorOrderLine[] $lines
@@ -96,28 +97,30 @@ final class DistributorOrderRequest
     }
 
     /** @return DistributorOrderLine[] */
-    public function ffl_lines(): array
+    public function ffl_required_lines(): array
     {
-        return $this->lines_by_lane()['direct_ship_ffl'];
+        return $this->lines_by_ffl_requirement()['ffl_required'];
     }
 
     /** @return DistributorOrderLine[] */
-    public function non_ffl_lines(): array
+    public function non_ffl_required_lines(): array
     {
-        return $this->lines_by_lane()['direct_ship_non_ffl'];
+        return $this->lines_by_ffl_requirement()['non_ffl_required'];
     }
 
     /**
-     * @return array{direct_ship_ffl: DistributorOrderLine[], direct_ship_non_ffl: DistributorOrderLine[]}
+     * Split lines by FFL requirement.
+     *
+     * @return array{ffl_required: DistributorOrderLine[], non_ffl_required: DistributorOrderLine[]}
      */
-    public function lines_by_lane(): array
+    public function lines_by_ffl_requirement(): array
     {
-        if ($this->lane_cache !== null) {
-            return $this->lane_cache;
+        if ($this->ffl_requirement_cache !== null) {
+            return $this->ffl_requirement_cache;
         }
 
-        $direct_ship_ffl = [];
-        $direct_ship_non_ffl = [];
+        $ffl_required = [];
+        $non_ffl_required = [];
 
         foreach ($this->lines as $l) {
             if (! ($l instanceof DistributorOrderLine)) {
@@ -125,27 +128,27 @@ final class DistributorOrderRequest
             }
 
             if ($l->ffl_required) {
-                $direct_ship_ffl[] = $l;
+                $ffl_required[] = $l;
             } else {
-                $direct_ship_non_ffl[] = $l;
+                $non_ffl_required[] = $l;
             }
         }
 
-        $this->lane_cache = [
-            'direct_ship_ffl'     => $direct_ship_ffl,
-            'direct_ship_non_ffl' => $direct_ship_non_ffl,
+        $this->ffl_requirement_cache = [
+            'ffl_required'     => $ffl_required,
+            'non_ffl_required' => $non_ffl_required,
         ];
 
-        return $this->lane_cache;
+        return $this->ffl_requirement_cache;
     }
 
     /** @return DistributorOrderLine[] */
-    public function lines_for_lane(bool $ffl_required): array
+    public function lines_for_ffl_requirement(bool $ffl_required): array
     {
-        return $ffl_required ? $this->ffl_lines() : $this->non_ffl_lines();
+        return $ffl_required ? $this->ffl_required_lines() : $this->non_ffl_required_lines();
     }
 
-    public function ship_to_for_lane(bool $ffl_required): DistributorShipTo
+    public function ship_to_for_ffl_requirement(bool $ffl_required): DistributorShipTo
     {
         return $this->ship_to_for($ffl_required);
     }
@@ -153,8 +156,8 @@ final class DistributorOrderRequest
     /** @return DistributorOrderLine[] */
     public function valid_lines(): array
     {
-        if ($this->lane_cache !== null) {
-            return array_merge($this->lane_cache['direct_ship_ffl'], $this->lane_cache['direct_ship_non_ffl']);
+        if ($this->ffl_requirement_cache !== null) {
+            return array_merge($this->ffl_requirement_cache['ffl_required'], $this->ffl_requirement_cache['non_ffl_required']);
         }
 
         $out = [];
