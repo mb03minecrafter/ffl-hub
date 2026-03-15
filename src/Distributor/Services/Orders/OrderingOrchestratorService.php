@@ -64,6 +64,10 @@ final class OrderingOrchestratorService
     {
         // Canonical trigger: ONLY start ordering after payment is complete.
         add_action('woocommerce_payment_complete', [$this, 'handle_payment_complete'], 10, 1);
+
+        // Manual trigger for testing/debugging via wp eval:
+        // do_action('fflhub_ordering_force_start', <order_id>);
+        add_action('fflhub_ordering_force_start', [$this, 'handle_manual_force_start'], 10, 1);
     }
 
     /**
@@ -93,6 +97,25 @@ final class OrderingOrchestratorService
         }
 
         $this->start_pipeline_if_needed($order, 'payment_complete');
+    }
+
+    /**
+     * Manual trigger entrypoint (intended for local/VPS testing).
+     *
+     * @param int|string $order_id
+     */
+    public function handle_manual_force_start($order_id): void
+    {
+        $order_id_i = (int) $order_id;
+        $order = wc_get_order($order_id_i);
+        if (!($order instanceof WC_Order)) {
+            $this->log_ctx('manual_force_order_not_found', [
+                'order_id' => $order_id_i,
+            ]);
+            return;
+        }
+
+        $this->start_pipeline_if_needed($order, 'manual_force_start');
     }
 
     /**
