@@ -20,7 +20,7 @@ final class OrderPlacementJobRow
 
     public string $job_key;
     public string $dist_id;
-    public string $bucket;
+    public string $lane;
     public string $status;
 
     public int $attempts;
@@ -69,7 +69,7 @@ final class OrderPlacementJobRow
 
         $this->job_key = (string) ($row['job_key'] ?? '');
         $this->dist_id = (string) ($row['dist_id'] ?? '');
-        $this->bucket  = (string) ($row['bucket'] ?? '');
+        $this->lane    = (string) ($row['lane'] ?? '');
         $this->status  = (string) ($row['status'] ?? '');
 
         $this->attempts = (int) ($row['attempts'] ?? 0);
@@ -106,14 +106,14 @@ final class OrderPlacementJobRow
 
     /* ===================== Convenience booleans ===================== */
 
-    public function is_ffl_bucket(): bool
+    public function is_direct_ship_ffl_lane(): bool
     {
-        return OrderPlacementKeysUtil::is_ffl_bucket($this->bucket_norm());
+        return OrderPlacementKeysUtil::is_direct_ship_ffl_lane($this->lane_norm());
     }
 
-    public function is_non_ffl_bucket(): bool
+    public function is_direct_ship_non_ffl_lane(): bool
     {
-        return OrderPlacementKeysUtil::is_non_bucket($this->bucket_norm());
+        return OrderPlacementKeysUtil::is_direct_ship_non_ffl_lane($this->lane_norm());
     }
 
     public function has_merchant_po(): bool
@@ -166,11 +166,11 @@ final class OrderPlacementJobRow
         return $v !== '' ? $v : strtolower(trim((string) $this->dist_id));
     }
 
-    public function payload_bucket(): string
+    public function payload_lane(): string
     {
         $p = $this->payload();
-        $v = isset($p['bucket']) ? strtolower(trim((string) $p['bucket'])) : '';
-        return $v !== '' ? $v : strtolower(trim((string) $this->bucket));
+        $v = isset($p['lane']) ? strtolower(trim((string) $p['lane'])) : '';
+        return $v !== '' ? $v : strtolower(trim((string) $this->lane));
     }
 
     /**
@@ -181,8 +181,8 @@ final class OrderPlacementJobRow
     public function payload_lines(): array
     {
         $p = $this->payload();
-        $bucket = $this->payload_bucket();
-        $default_ffl_required = OrderPlacementKeysUtil::is_ffl_bucket($bucket);
+        $lane = $this->payload_lane();
+        $default_ffl_required = OrderPlacementKeysUtil::is_direct_ship_ffl_lane($lane);
 
         $lines = $p['lines'] ?? [];
         if (!is_array($lines) || empty($lines)) {
@@ -378,10 +378,10 @@ final class OrderPlacementJobRow
         return $v !== '' ? $v : $this->payload_dist_id();
     }
 
-    public function bucket_norm(): string
+    public function lane_norm(): string
     {
-        $v = strtolower(trim((string) $this->bucket));
-        return $v !== '' ? $v : $this->payload_bucket();
+        $v = strtolower(trim((string) $this->lane));
+        return $v !== '' ? $v : $this->payload_lane();
     }
 
     public function merchant_po_or_empty(): string
@@ -422,7 +422,7 @@ final class OrderPlacementJobRow
             }
         }
 
-        return OrderPlacementKeysUtil::is_ffl_bucket($this->payload_bucket());
+        return OrderPlacementKeysUtil::is_direct_ship_ffl_lane($this->payload_lane());
     }
 
     public function payload_lines_count(): int
@@ -445,7 +445,7 @@ final class OrderPlacementJobRow
             'job_id'   => (int) $this->id,
             'job_key'  => (string) $this->job_key_norm(),
             'dist_id'  => (string) $this->dist_id_norm(),
-            'bucket'   => (string) $this->bucket_norm(),
+            'lane'     => (string) $this->lane_norm(),
             'lines'    => (int) $this->payload_lines_count(),
             'attempt'  => $attempt,
         ];

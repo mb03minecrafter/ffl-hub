@@ -56,7 +56,7 @@ final class ShippingJobStore
      *
      * @param OrderPlacementJobsTable $jobs_table Jobs table manager (table name resolution).
      * @param int $order_id WooCommerce order id.
-     * @param string $job_key Job key (dist|bucket).
+     * @param string $job_key Job key (dist|lane).
      */
     public static function touch_last_shipping_poll_at(OrderPlacementJobsTable $jobs_table, int $order_id, string $job_key): void
     {

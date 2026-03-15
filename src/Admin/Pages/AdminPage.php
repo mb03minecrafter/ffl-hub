@@ -486,7 +486,7 @@ class AdminPage
                                     type="checkbox"
                                     value="1"
                                     <?php checked($usps_estimate_enabled, '1'); ?> />
-                                <p class="description"><?php esc_html_e('Turns USPS API pricing on for dealer->home and dealer->FFL buckets.', 'ffl-hub'); ?></p>
+                                <p class="description"><?php esc_html_e('Turns USPS API pricing on for dealer->home and dealer->FFL LANES.', 'ffl-hub'); ?></p>
                             </td>
                         </tr>
 
@@ -844,3 +844,4 @@ class AdminPage
 <?php
     }
 }
+

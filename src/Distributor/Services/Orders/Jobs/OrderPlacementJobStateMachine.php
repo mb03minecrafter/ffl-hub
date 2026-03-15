@@ -84,7 +84,7 @@ final class OrderPlacementJobStateMachine
      *
      * @param OrderPlacementJobsTable $jobs_table Jobs table helper.
      * @param WC_Order $order WooCommerce order.
-     * @param string $job_key Job key (dist|bucket). May be non-normalized; will be normalized.
+     * @param string $job_key Job key (dist|lane). May be non-normalized; will be normalized.
      * @param DistributorOrderValidationResult $vr Distributor validation result.
      * @param int $attempt_n Current attempt count (already incremented by lifecycle claim).
      * @return array{action:'continue'|'exit', reason?:string}
@@ -155,7 +155,7 @@ final class OrderPlacementJobStateMachine
      *
      * @param OrderPlacementJobsTable $jobs_table Jobs table helper.
      * @param WC_Order $order WooCommerce order.
-     * @param string $job_key Job key (dist|bucket). May be non-normalized; will be normalized.
+     * @param string $job_key Job key (dist|lane). May be non-normalized; will be normalized.
      * @param DistributorOrderResult $or Distributor place-order result.
      * @param int $attempt_n Current attempt count.
      * @return array{action:'continue'|'exit', reason?:string}

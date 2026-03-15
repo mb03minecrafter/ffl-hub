@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
  * Result of validating an order request (preflight).
  *
  * This runs *before* attempting to place an order and answers:
- *   “Given the current cart + ship-to context, is it permissible to attempt ordering?”
+ *   "Given the current cart + ship-to context, is it permissible to attempt ordering?"
  *
  * Typical callers:
  * - Cart/checkout compliance layer
@@ -18,13 +18,13 @@ if (!defined('ABSPATH')) {
  *
  * How to interpret the result (worker-facing)
  * ------------------------------------------
- * - ALLOW          => safe to call place_order()
- * - BLOCK_FATAL    => do not retry; requires human intervention or data correction
+ * - ALLOW           => safe to call place_order()
+ * - BLOCK_FATAL     => do not retry; requires human intervention or data correction
  * - BLOCK_RETRYABLE => transient validation failure; retry with backoff
  *
  * Notes on retryability:
  * - Retryable validation should be rare (e.g., quota/rate-limit on a validation API).
- * - Most “validation failed” cases are business rules (restricted) or bad input and should be fatal.
+ * - Most "validation failed" cases are business rules (restricted) or bad input and should be fatal.
  *
  * Compatibility / style
  * ---------------------
@@ -85,7 +85,7 @@ final class DistributorOrderValidationResult
      * Arbitrary details for debugging/auditing (keep small + redacted).
      *
      * Good uses:
-     * - bucket breakdowns
+     * - LANE breakdowns
      * - local_only flag
      * - a few item tails, counts, and summarized fields
      *
@@ -242,3 +242,4 @@ final class DistributorOrderValidationResult
         return ($this->code === self::CODE_BLOCK_FATAL);
     }
 }
+

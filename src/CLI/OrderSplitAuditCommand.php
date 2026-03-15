@@ -186,7 +186,7 @@ class OrderSplitAuditCommand
                 'timestamp_utc',
                 'distributor_id',
                 'order_index',
-                'bucket',
+                'LANE',
                 'raw_upc',
                 'normalized_upc',
                 'quantity',
@@ -283,7 +283,7 @@ class OrderSplitAuditCommand
                     $fh_fail,
                     $dist_id,
                     $i,
-                    'ffl'
+                    'direct_ship_ffl'
                 );
 
                 $items_non = $this->map_lines_to_items(
@@ -295,7 +295,7 @@ class OrderSplitAuditCommand
                     $fh_fail,
                     $dist_id,
                     $i,
-                    'non'
+                    'direct_ship_non_ffl'
                 );
 
                 $ok = ($split_ok && $map_ffl_ok && $map_non_ok);
@@ -348,7 +348,7 @@ class OrderSplitAuditCommand
         $fh_fail,
         string $dist_id,
         int $order_index,
-        string $bucket
+        string $lane
     ): array {
         $items = [];
 
@@ -363,7 +363,7 @@ class OrderSplitAuditCommand
             if ($norm === null) {
                 $ok = false;
                 $msg_parts[] = 'Invalid UPC after normalization.';
-                $this->write_failure($fh_fail, $dist_id, $order_index, $bucket, $l, $raw_upc, null, 'invalid_upc');
+                $this->write_failure($fh_fail, $dist_id, $order_index, $lane, $l, $raw_upc, null, 'invalid_upc');
                 continue;
             }
 
@@ -372,7 +372,7 @@ class OrderSplitAuditCommand
             if ($mapped === '') {
                 $ok = false;
                 $msg_parts[] = "Cannot map UPC {$raw_upc}";
-                $this->write_failure($fh_fail, $dist_id, $order_index, $bucket, $l, $raw_upc, $norm, 'missing_map_key');
+                $this->write_failure($fh_fail, $dist_id, $order_index, $lane, $l, $raw_upc, $norm, 'missing_map_key');
                 continue;
             }
 
@@ -383,7 +383,7 @@ class OrderSplitAuditCommand
         return $items;
     }
 
-    private function write_failure($fh, string $dist, int $order, string $bucket, DistributorOrderLine $l, string $raw_upc, ?string $norm, string $reason): void
+    private function write_failure($fh, string $dist, int $order, string $lane, DistributorOrderLine $l, string $raw_upc, ?string $norm, string $reason): void
     {
         if (!is_resource($fh)) {
             return;
@@ -393,7 +393,7 @@ class OrderSplitAuditCommand
             gmdate('c'),
             $dist,
             $order,
-            $bucket,
+            $lane,
             $raw_upc,
             $norm ?? '',
             (int) $l->quantity,
@@ -403,7 +403,7 @@ class OrderSplitAuditCommand
     }
 
     /**
-     * Turn a clean UPC into a “sloppy” variant to exercise trimming/cleanup paths.
+     * Turn a clean UPC into a "sloppy" variant to exercise trimming/cleanup paths.
      */
     private function make_sloppy_upc(string $upc): string
     {
@@ -521,3 +521,4 @@ class OrderSplitAuditCommand
         return is_array($rows) ? $rows : [];
     }
 }
+

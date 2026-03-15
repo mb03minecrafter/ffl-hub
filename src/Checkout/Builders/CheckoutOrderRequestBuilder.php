@@ -185,9 +185,9 @@ final class CheckoutOrderRequestBuilder
 
             if (!isset($agg[$dist_id]['by_key'][$key])) {
                 $agg[$dist_id]['by_key'][$key] = [
-                    'upc' => $upc,
-                    'qty' => 0,
-                    'ffl' => $ffl_required,
+                    'upc'          => $upc,
+                    'qty'          => 0,
+                    'ffl_required' => $ffl_required,
                 ];
             }
 
@@ -204,7 +204,7 @@ final class CheckoutOrderRequestBuilder
             $lines = [];
 
             foreach (($row['by_key'] ?? []) as $r) {
-                $lines[] = new DistributorOrderLine((string) $r['upc'], (int) $r['qty'], (bool) $r['ffl']);
+                $lines[] = new DistributorOrderLine((string) $r['upc'], (int) $r['qty'], (bool) ($r['ffl_required'] ?? false));
             }
 
             if (!empty($lines)) {
@@ -614,7 +614,7 @@ final class CheckoutOrderRequestBuilder
     public static function build_pretty_validation_messages(
         string $label,
         DistributorOrderValidationResult $vr,
-        string $bucket,
+        string $lane,
         DistributorShipTo $ship_customer,
         ?DistributorShipTo $ship_ffl
     ): array {
@@ -623,13 +623,13 @@ final class CheckoutOrderRequestBuilder
             return [sprintf(__('Cannot ship one or more items in your cart (via %s).', 'ffl-hub'), $label)];
         }
 
-        $candidate = self::pick_bucket_details($details, $bucket);
+        $candidate = self::pick_lane_details($details, $lane);
 
         $items = (isset($candidate['items']) && is_array($candidate['items']))
             ? $candidate['items']
             : [];
 
-        $state = self::resolve_state_for_bucket($bucket, $ship_customer, $ship_ffl);
+        $state = self::resolve_state_for_lane($lane, $ship_customer, $ship_ffl);
 
         $upcs = self::extract_upcs_from_validation_items($items);
         $upcs = array_values(array_unique(array_filter($upcs)));
@@ -639,8 +639,8 @@ final class CheckoutOrderRequestBuilder
             foreach ($upcs as $upc) {
                 $name = self::find_cart_item_name_by_upc($upc) ?: ('Item (UPC ' . $upc . ')');
                 $out[] = ($state !== '')
-                    ? sprintf(__('Cannot ship “%s” to your state of residence (%s).', 'ffl-hub'), $name, $state)
-                    : sprintf(__('Cannot ship “%s” to your state of residence.', 'ffl-hub'), $name);
+                    ? sprintf(__('Cannot ship "%s" to your state of residence (%s).', 'ffl-hub'), $name, $state)
+                    : sprintf(__('Cannot ship "%s" to your state of residence.', 'ffl-hub'), $name);
             }
             return $out;
         }
@@ -656,31 +656,35 @@ final class CheckoutOrderRequestBuilder
      * @param array<string,mixed> $details
      * @return array<string,mixed>
      */
-    private static function pick_bucket_details(array $details, string $bucket): array
+    private static function pick_lane_details(array $details, string $lane): array
     {
-        if ($bucket === 'non' && isset($details['non']) && is_array($details['non'])) {
-            return $details['non'];
+        if ($lane === 'direct_ship_non_ffl' && isset($details['direct_ship_non_ffl']) && is_array($details['direct_ship_non_ffl'])) {
+            return $details['direct_ship_non_ffl'];
         }
-        if ($bucket === 'ffl' && isset($details['ffl']) && is_array($details['ffl'])) {
-            return $details['ffl'];
+        if ($lane === 'direct_ship_ffl' && isset($details['direct_ship_ffl']) && is_array($details['direct_ship_ffl'])) {
+            return $details['direct_ship_ffl'];
         }
-        if (isset($details['non']) && is_array($details['non'])) {
-            return $details['non'];
+        if ($lane === 'dealer_fulfilled' && isset($details['dealer_fulfilled']) && is_array($details['dealer_fulfilled'])) {
+            return $details['dealer_fulfilled'];
         }
-        if (isset($details['ffl']) && is_array($details['ffl'])) {
-            return $details['ffl'];
+
+        if (isset($details['direct_ship_non_ffl']) && is_array($details['direct_ship_non_ffl'])) {
+            return $details['direct_ship_non_ffl'];
+        }
+        if (isset($details['direct_ship_ffl']) && is_array($details['direct_ship_ffl'])) {
+            return $details['direct_ship_ffl'];
+        }
+        if (isset($details['dealer_fulfilled']) && is_array($details['dealer_fulfilled'])) {
+            return $details['dealer_fulfilled'];
         }
 
         return $details;
     }
 
-    private static function resolve_state_for_bucket(
-        string $bucket,
-        DistributorShipTo $ship_customer,
-        ?DistributorShipTo $ship_ffl
-    ): string {
+    private static function resolve_state_for_lane(string $lane, DistributorShipTo $ship_customer, ?DistributorShipTo $ship_ffl): string
+    {
         $state = '';
-        if ($bucket === 'ffl' && $ship_ffl instanceof DistributorShipTo) {
+        if ($lane === 'direct_ship_ffl' && $ship_ffl instanceof DistributorShipTo) {
             $state = strtoupper(trim((string) $ship_ffl->state));
         } else {
             $state = strtoupper(trim((string) $ship_customer->state));
@@ -771,3 +775,4 @@ final class CheckoutOrderRequestBuilder
         return is_string($v) ? $v : '';
     }
 }
+

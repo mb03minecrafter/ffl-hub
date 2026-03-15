@@ -45,7 +45,7 @@ final class OrderPlacementJobRunner
      *
      * @param OrderPlacementJobsTable $jobs_table Jobs table helper.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket). Runner normalizes.
+     * @param string                  $job_key    Job key (dist|lane). Runner normalizes.
      * @param DistributorHandler      $handler    Distributor registry/handler.
      */
     public static function run(
@@ -106,15 +106,15 @@ final class OrderPlacementJobRunner
         $job_key = $job->job_key_norm();
 
         $dist_id = (string) $job->dist_id_norm();
-        $bucket  = (string) $job->bucket_norm();
+        $lane    = (string) $job->lane_norm();
 
         $sm = new OrderPlacementJobStateMachine();
 
         try {
             // Validate job row basics.
-            $bucket_ok = OrderPlacementKeysUtil::is_valid_bucket($bucket);
-            if ($dist_id === '' || !$bucket_ok) {
-                throw new \RuntimeException('Invalid job: missing dist_id or invalid bucket');
+            $lane_ok = OrderPlacementKeysUtil::is_valid_lane($lane);
+            if ($dist_id === '' || !$lane_ok) {
+                throw new \RuntimeException('Invalid job: missing dist_id or invalid lane');
             }
 
             $ffl_required = (bool) $job->ffl_required();
@@ -157,7 +157,8 @@ final class OrderPlacementJobRunner
                 $merchant_order_id,
                 $dest_state,
                 $receiving_ffl_number,
-                'FFLHub order placement job'
+                'FFLHub order placement job',
+                $lane
             );
 
             // Distributor resolve.

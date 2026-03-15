@@ -37,15 +37,15 @@ final class OrderPlacementPOUtil
             $dist = 'DIST';
         }
 
-        $bucket = $job->bucket_norm();
-        $bucket_code = OrderPlacementKeysUtil::bucket_code($bucket);
+        $lane = $job->lane_norm();
+        $lane_code = OrderPlacementKeysUtil::lane_code($lane);
 
         $i = (int) $split_index;
         if ($i < 1) {
             $i = 1;
         }
 
-        $po = sprintf('FH-%s-%d-%s%d', $dist, $order_id, $bucket_code, $i);
+        $po = sprintf('FH-%s-%d-%s%d', $dist, $order_id, $lane_code, $i);
         return self::sanitize_po($po, 22);
     }
 

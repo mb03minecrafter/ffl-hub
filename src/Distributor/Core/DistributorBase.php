@@ -599,12 +599,12 @@ abstract class DistributorBase implements DistributorInterface
         $raw_name        = trim((string) preg_replace('/\s+/', ' ', $raw_name));
         $raw_description = trim((string) preg_replace('/\s+/', ' ', $raw_description));
 
-        // Prefer "Name – Description" unless description is already inside the name.
+        // Prefer "Name - Description" unless description is already inside the name.
         if ($raw_name !== '' && $raw_description !== '') {
             if (stripos($raw_name, $raw_description) !== false) {
                 $name = $raw_name;
             } else {
-                $name = $raw_name . ' – ' . $raw_description;
+                $name = $raw_name . ' - ' . $raw_description;
             }
         } else {
             $name = $raw_name !== '' ? $raw_name : $raw_description;
@@ -955,9 +955,9 @@ abstract class DistributorBase implements DistributorInterface
      * Normalize shipment carrier/service string to a standard carrier name.
      *
      * Examples:
-     *   "usps USPS Ground Advantage" → "USPS"
-     *   "UPS Next Day Air"           → "UPS"
-     *   "Federal Express"            → "FEDEX"
+     *   "usps USPS Ground Advantage" -> "USPS"
+     *   "UPS Next Day Air"           -> "UPS"
+     *   "Federal Express"            -> "FEDEX"
      *
      * @param string|null $raw
      * @return string|null  Canonical carrier (USPS|UPS|FEDEX) or null if unknown.
@@ -1041,7 +1041,7 @@ abstract class DistributorBase implements DistributorInterface
      * - lookup row by UPC in local fulfillment table
      * - parse inventory quantity safely
      * - unknown qty policy (default: block)
-     * - optional bucket enforcement against row flag (e.g., ffl_required)
+     * - optional lane enforcement against row flag (e.g., ffl_required)
      *
      * IMPORTANT (fix):
      * - Missing row is NOT the same as qty=0.
@@ -1055,7 +1055,7 @@ abstract class DistributorBase implements DistributorInterface
      *   max_unique?:int,
      *   inventory_keys?:string[],
      *   unknown_qty_blocks?:bool,
-     *   bucket?:string,
+     *   lane?:string,
      *   enforce_ffl_required?:null|int,
      *   ffl_required_row_keys?:string[],
      *   extra_row_checks?:null|callable(array $row,string $normalized_upc,int $requiredQty):array{ok:bool,message?:string,details?:array},
@@ -1130,7 +1130,7 @@ abstract class DistributorBase implements DistributorInterface
 
         $unknown_qty_blocks = array_key_exists('unknown_qty_blocks', $opts) ? (bool) $opts['unknown_qty_blocks'] : true;
 
-        $bucket = isset($opts['bucket']) ? trim((string) $opts['bucket']) : '';
+        $lane = isset($opts['lane']) ? trim((string) $opts['lane']) : '';
         $enforce_ffl_required = array_key_exists('enforce_ffl_required', $opts) ? $opts['enforce_ffl_required'] : null;
         if ($enforce_ffl_required !== null) {
             $enforce_ffl_required = (int) $enforce_ffl_required;
@@ -1149,7 +1149,7 @@ abstract class DistributorBase implements DistributorInterface
 
         $details = [
             'label' => $label,
-            'bucket' => $bucket,
+            'lane' => $lane,
             'required_by_upc' => $required_by_upc,
             'items' => [],
             'policy' => [
@@ -1168,7 +1168,7 @@ abstract class DistributorBase implements DistributorInterface
         $has_not_carried      = false;
         $has_unknown_qty      = false;
         $has_insufficient     = false;
-        $has_bucket_mismatch  = false;
+        $has_lane_mismatch    = false;
         $has_extra_row_fail   = false;
 
         foreach ($required_by_upc as $upc => $requiredQty) {
@@ -1224,9 +1224,9 @@ abstract class DistributorBase implements DistributorInterface
                 $item_details['ffl_required'] = $ffl_flag;
 
                 if ($ffl_flag !== $enforce_ffl_required) {
-                    $has_bucket_mismatch = true;
-                    $fail_msgs[] = "UPC={$normalized} bucket_mismatch ffl_required={$ffl_flag} expected={$enforce_ffl_required}";
-                    $item_details['reason'] = 'bucket_mismatch';
+                    $has_lane_mismatch = true;
+                    $fail_msgs[] = "UPC={$normalized} lane_mismatch ffl_required={$ffl_flag} expected={$enforce_ffl_required}";
+                    $item_details['reason'] = 'lane_mismatch';
                     $details['items'][$normalized] = $item_details;
                     continue;
                 }
@@ -1286,7 +1286,7 @@ abstract class DistributorBase implements DistributorInterface
             if ($has_not_carried)     $codes[] = $code_prefix . '_NOT_CARRIED';
             if ($has_unknown_qty)     $codes[] = $code_prefix . '_UNKNOWN_QTY';
             if ($has_insufficient)    $codes[] = $code_prefix . '_OUT_OF_STOCK';
-            if ($has_bucket_mismatch) $codes[] = $code_prefix . '_BUCKET_MISMATCH';
+            if ($has_lane_mismatch)   $codes[] = $code_prefix . '_LANE_MISMATCH';
             if ($has_extra_row_fail)  $codes[] = $code_prefix . '_EXTRA_ROW_CHECKS_FAILED';
 
             $details['failure_flags'] = [
@@ -1294,7 +1294,7 @@ abstract class DistributorBase implements DistributorInterface
                 'not_carried'     => $has_not_carried ? 1 : 0,
                 'unknown_qty'     => $has_unknown_qty ? 1 : 0,
                 'insufficient'    => $has_insufficient ? 1 : 0,
-                'bucket_mismatch' => $has_bucket_mismatch ? 1 : 0,
+                'lane_mismatch' => $has_lane_mismatch ? 1 : 0,
                 'extra_row_checks' => $has_extra_row_fail ? 1 : 0,
             ];
 
@@ -1465,7 +1465,7 @@ abstract class DistributorBase implements DistributorInterface
         $opts = $this->validation_local_options($request, $required_by_upc, $local_only);
 
         // Note: validate_local_* will rebuild required_by_upc internally.
-        // That’s fine; if you want to avoid that later, we can add an optional
+        // That's fine; if you want to avoid that later, we can add an optional
         // 'required_by_upc' override to validate_local_*.
         return $this->validate_local_fulfillment_required_qty_by_upc($request->lines, $opts);
     }
@@ -1513,24 +1513,27 @@ abstract class DistributorBase implements DistributorInterface
     }
 
     /**
-     * Shared helper: infer bucket/enforcement from request->bucket or line ffl_required flags.
+     * Shared helper: infer lane/enforcement from request->lane or line ffl_required flags.
      *
-     * Returns: ['bucket' => 'ffl'|'non'|'', 'enforce_ffl_required' => 1|0|null]
+     * Returns: ['lane' => 'direct_ship_ffl'|'direct_ship_non_ffl'|'dealer_fulfilled'|'', 'enforce_ffl_required' => 1|0|null]
      *
-     * @return array{bucket:string,enforce_ffl_required:null|int}
+     * @return array{lane:string,enforce_ffl_required:null|int}
      */
-    protected function infer_bucket_and_ffl_enforcement(DistributorOrderRequest $request): array
+    protected function infer_lane_and_ffl_enforcement(DistributorOrderRequest $request): array
     {
-        $bucket = '';
+        $lane = '';
         $enforce = null;
 
-        if (property_exists($request, 'bucket')) {
-            $b = strtolower(trim((string) ($request->bucket ?? '')));
-            if ($b === 'ffl') {
-                return ['bucket' => 'ffl', 'enforce_ffl_required' => 1];
+        if (property_exists($request, 'lane')) {
+            $l = strtolower(trim((string) ($request->lane ?? '')));
+            if ($l === 'direct_ship_ffl') {
+                return ['lane' => 'direct_ship_ffl', 'enforce_ffl_required' => 1];
             }
-            if ($b === 'non') {
-                return ['bucket' => 'non', 'enforce_ffl_required' => 0];
+            if ($l === 'direct_ship_non_ffl') {
+                return ['lane' => 'direct_ship_non_ffl', 'enforce_ffl_required' => 0];
+            }
+            if ($l === 'dealer_fulfilled') {
+                return ['lane' => 'dealer_fulfilled', 'enforce_ffl_required' => null];
             }
         }
 
@@ -1546,10 +1549,10 @@ abstract class DistributorBase implements DistributorInterface
         $flags = array_values(array_unique($flags));
         if (count($flags) === 1) {
             $enforce = (int) $flags[0];
-            $bucket = ($enforce === 1) ? 'ffl' : 'non';
+            $lane = ($enforce === 1) ? 'direct_ship_ffl' : 'direct_ship_non_ffl';
         }
 
-        return ['bucket' => $bucket, 'enforce_ffl_required' => $enforce];
+        return ['lane' => $lane, 'enforce_ffl_required' => $enforce];
     }
 
 
@@ -1573,8 +1576,9 @@ abstract class DistributorBase implements DistributorInterface
 
         $lines_non = method_exists($request, 'non_ffl_lines') ? (array) $request->non_ffl_lines() : [];
         $lines_ffl = method_exists($request, 'ffl_lines') ? (array) $request->ffl_lines() : [];
+        $all_lines = method_exists($request, 'valid_lines') ? (array) $request->valid_lines() : [];
 
-        if (empty($lines_non) && empty($lines_ffl)) {
+        if (empty($all_lines)) {
             return DistributorOrderResult::block_fatal(
                 'No valid order lines after normalization.',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
@@ -1586,25 +1590,37 @@ abstract class DistributorBase implements DistributorInterface
 
         $stop_on_first_failure = $this->place_order_stop_on_first_failure();
 
-        if (!empty($lines_non)) {
-            $res = $this->place_order_bucket($request, 'non', $lines_non, $external_ids);
+        $explicit_lane = strtolower(trim((string) ($request->lane ?? '')));
+        $plan = [];
 
-            if (!$this->order_result_code_ok($res)) {
-                $res->external_order_ids = $external_ids;
-
-                if ($stop_on_first_failure || $this->place_order_should_short_circuit_on_failure($res)) {
-                    return $res;
-                }
-
-                $errors[] = (string) $res->message;
-            } else {
-                // in case bucket handler returned OK with ids in result
-                $external_ids = $this->merge_external_ids($external_ids, (array) $res->external_order_ids);
+        if ($explicit_lane === 'dealer_fulfilled') {
+            $plan[] = ['lane' => 'dealer_fulfilled', 'lines' => $all_lines];
+        } elseif ($explicit_lane === 'direct_ship_non_ffl') {
+            if (!empty($lines_non)) {
+                $plan[] = ['lane' => 'direct_ship_non_ffl', 'lines' => $lines_non];
+            }
+        } elseif ($explicit_lane === 'direct_ship_ffl') {
+            if (!empty($lines_ffl)) {
+                $plan[] = ['lane' => 'direct_ship_ffl', 'lines' => $lines_ffl];
+            }
+        } else {
+            // Legacy/unscoped fallback: execute direct-ship non-FFL + direct-ship FFL passes.
+            if (!empty($lines_non)) {
+                $plan[] = ['lane' => 'direct_ship_non_ffl', 'lines' => $lines_non];
+            }
+            if (!empty($lines_ffl)) {
+                $plan[] = ['lane' => 'direct_ship_ffl', 'lines' => $lines_ffl];
             }
         }
 
-        if (!empty($lines_ffl)) {
-            $res = $this->place_order_bucket($request, 'ffl', $lines_ffl, $external_ids);
+        foreach ($plan as $step) {
+            $lane = (string) ($step['lane'] ?? '');
+            $lines = isset($step['lines']) && is_array($step['lines']) ? $step['lines'] : [];
+            if ($lane === '' || empty($lines)) {
+                continue;
+            }
+
+            $res = $this->place_order_lane($request, $lane, $lines, $external_ids);
 
             if (!$this->order_result_code_ok($res)) {
                 $res->external_order_ids = $external_ids;
@@ -1615,6 +1631,7 @@ abstract class DistributorBase implements DistributorInterface
 
                 $errors[] = (string) $res->message;
             } else {
+                // In case lane handler returned OK with ids in result.
                 $external_ids = $this->merge_external_ids($external_ids, (array) $res->external_order_ids);
             }
         }
@@ -1640,7 +1657,7 @@ abstract class DistributorBase implements DistributorInterface
 
     protected function place_order_stop_on_first_failure(): bool
     {
-        // RSR/Zanders want true. Lipsey’s wants false (it can attempt both).
+        // RSR/Zanders want true. Lipsey's wants false (it can attempt both).
         return true;
     }
 
@@ -1670,18 +1687,18 @@ abstract class DistributorBase implements DistributorInterface
     }
 
     /**
-     * @param 'non'|'ffl' $bucket
+     * @param 'direct_ship_non_ffl'|'direct_ship_ffl'|'dealer_fulfilled' $lane
      * @param array<int,mixed> $lines
      * @param array<int,string> $external_ids accumulator (pass-by-ref)
      */
-    protected function place_order_bucket(
+    protected function place_order_lane(
         DistributorOrderRequest $request,
-        string $bucket,
+        string $lane,
         array $lines,
         array &$external_ids
     ): DistributorOrderResult {
         return DistributorOrderResult::block_fatal(
-            'place_order_bucket not implemented for this distributor.',
+            'place_order_lane not implemented for this distributor.',
             [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED]
         );
     }
@@ -1759,3 +1776,4 @@ abstract class DistributorBase implements DistributorInterface
         return is_string($s) ? $s : '';
     }
 }
+

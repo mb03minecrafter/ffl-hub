@@ -58,7 +58,7 @@ final class OrderPlacementJobPatch
     private const ALLOWED = [
         // identity / routing
         'dist_id',
-        'bucket',
+        'lane',
 
         // execution / status
         'status',

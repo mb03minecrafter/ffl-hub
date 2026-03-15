@@ -11,22 +11,21 @@ if (!defined('ABSPATH')) {
  *
  * Responsibility:
  * - Canonical normalization + construction for order-placement keys:
- *   - job_key (dist|bucket)
+ *   - job_key (dist|lane)
  *   - dist_id
- *   - bucket
+ *   - lane
  */
 final class OrderPlacementKeysUtil
 {
-    // Lane-style values only.
-    public const BUCKET_DIRECT_SHIP_NON_FFL = 'direct_ship_non_ffl';
-    public const BUCKET_DIRECT_SHIP_FFL     = 'direct_ship_ffl';
-    public const BUCKET_DEALER_FULFILLED    = 'dealer_fulfilled';
+    public const LANE_DIRECT_SHIP_NON_FFL = 'direct_ship_non_ffl';
+    public const LANE_DIRECT_SHIP_FFL     = 'direct_ship_ffl';
+    public const LANE_DEALER_FULFILLED    = 'dealer_fulfilled';
 
     /** @var string[] */
-    private const VALID_BUCKETS = [
-        self::BUCKET_DIRECT_SHIP_NON_FFL,
-        self::BUCKET_DIRECT_SHIP_FFL,
-        self::BUCKET_DEALER_FULFILLED,
+    private const VALID_LANES = [
+        self::LANE_DIRECT_SHIP_NON_FFL,
+        self::LANE_DIRECT_SHIP_FFL,
+        self::LANE_DEALER_FULFILLED,
     ];
 
     // -----------------------------
@@ -34,7 +33,7 @@ final class OrderPlacementKeysUtil
     // -----------------------------
 
     /**
-     * Normalize a job key into canonical form: "dist|bucket".
+     * Normalize a job key into canonical form: "dist|lane".
      */
     public static function normalize_job_key(string $job_key): string
     {
@@ -47,13 +46,13 @@ final class OrderPlacementKeysUtil
         if (strpos($job_key, '|') !== false) {
             $parts = explode('|', $job_key, 2);
             $dist  = self::normalize_dist_id($parts[0] ?? '');
-            $buck  = self::normalize_bucket($parts[1] ?? '');
+            $lane  = self::normalize_lane($parts[1] ?? '');
 
-            if ($dist === '' || !self::is_valid_bucket($buck)) {
+            if ($dist === '' || !self::is_valid_lane($lane)) {
                 return '';
             }
 
-            return $dist . '|' . $buck;
+            return $dist . '|' . $lane;
         }
 
         // If no pipe, treat as invalid (caller should build via build_job_key()).
@@ -71,56 +70,56 @@ final class OrderPlacementKeysUtil
     }
 
     /**
-     * Normalize bucket.
+     * Normalize lane.
      * Rule: trim + lowercase.
      */
-    public static function normalize_bucket(string $bucket): string
+    public static function normalize_lane(string $lane): string
     {
-        $bucket = strtolower(trim((string) $bucket));
-        return $bucket;
+        $lane = strtolower(trim((string) $lane));
+        return $lane;
     }
 
     // -----------------------------
     // Validation / helpers
     // -----------------------------
 
-    public static function is_valid_bucket(string $bucket): bool
+    public static function is_valid_lane(string $lane): bool
     {
-        $b = self::normalize_bucket($bucket);
-        return in_array($b, self::VALID_BUCKETS, true);
+        $l = self::normalize_lane($lane);
+        return in_array($l, self::VALID_LANES, true);
     }
 
-    public static function is_ffl_bucket(string $bucket): bool
+    public static function is_direct_ship_ffl_lane(string $lane): bool
     {
-        $b = self::normalize_bucket($bucket);
-        return ($b === self::BUCKET_DIRECT_SHIP_FFL);
+        $l = self::normalize_lane($lane);
+        return ($l === self::LANE_DIRECT_SHIP_FFL);
     }
 
-    public static function is_non_bucket(string $bucket): bool
+    public static function is_direct_ship_non_ffl_lane(string $lane): bool
     {
-        $b = self::normalize_bucket($bucket);
-        return ($b === self::BUCKET_DIRECT_SHIP_NON_FFL);
+        $l = self::normalize_lane($lane);
+        return ($l === self::LANE_DIRECT_SHIP_NON_FFL);
     }
 
-    public static function is_dealer_fulfilled_bucket(string $bucket): bool
+    public static function is_dealer_fulfilled_lane(string $lane): bool
     {
-        return self::normalize_bucket($bucket) === self::BUCKET_DEALER_FULFILLED;
+        return self::normalize_lane($lane) === self::LANE_DEALER_FULFILLED;
     }
 
     /**
-     * Convert bucket to the code used in correlation IDs / POs.
+     * Convert lane to the code used in correlation IDs / POs.
      * Returns:
      * - 'F' for direct_ship_ffl
      * - 'N' for direct_ship_non_ffl
      * - 'D' for dealer_fulfilled
      * - 'U' for unknown/invalid
      */
-    public static function bucket_code(string $bucket): string
+    public static function lane_code(string $lane): string
     {
-        $b = self::normalize_bucket($bucket);
-        if ($b === self::BUCKET_DIRECT_SHIP_FFL) return 'F';
-        if ($b === self::BUCKET_DIRECT_SHIP_NON_FFL) return 'N';
-        if ($b === self::BUCKET_DEALER_FULFILLED) return 'D';
+        $l = self::normalize_lane($lane);
+        if ($l === self::LANE_DIRECT_SHIP_FFL) return 'F';
+        if ($l === self::LANE_DIRECT_SHIP_NON_FFL) return 'N';
+        if ($l === self::LANE_DEALER_FULFILLED) return 'D';
         return 'U';
     }
 
@@ -129,38 +128,38 @@ final class OrderPlacementKeysUtil
     // -----------------------------
 
     /**
-     * Build a canonical job key "dist|bucket".
+     * Build a canonical job key "dist|lane".
      * Returns empty string if inputs are invalid.
      */
-    public static function build_job_key(string $dist_id, string $bucket): string
+    public static function build_job_key(string $dist_id, string $lane): string
     {
         $dist = self::normalize_dist_id($dist_id);
-        $buck = self::normalize_bucket($bucket);
+        $lane = self::normalize_lane($lane);
 
-        if ($dist === '' || !self::is_valid_bucket($buck)) {
+        if ($dist === '' || !self::is_valid_lane($lane)) {
             return '';
         }
 
-        return $dist . '|' . $buck;
+        return $dist . '|' . $lane;
     }
 
     /**
-     * Split a job key into [dist_id, bucket] (both normalized).
-     * Returns ['dist_id' => '', 'bucket' => ''] if invalid.
+     * Split a job key into [dist_id, lane] (both normalized).
+     * Returns ['dist_id' => '', 'lane' => ''] if invalid.
      *
-     * @return array{dist_id:string,bucket:string}
+     * @return array{dist_id:string,lane:string}
      */
     public static function split_job_key(string $job_key): array
     {
         $norm = self::normalize_job_key($job_key);
         if ($norm === '' || strpos($norm, '|') === false) {
-            return ['dist_id' => '', 'bucket' => ''];
+            return ['dist_id' => '', 'lane' => ''];
         }
 
         $parts = explode('|', $norm, 2);
         return [
             'dist_id' => (string) ($parts[0] ?? ''),
-            'bucket'  => (string) ($parts[1] ?? ''),
+            'lane'    => (string) ($parts[1] ?? ''),
         ];
     }
 

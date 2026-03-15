@@ -466,7 +466,7 @@ final class StressCreateProductsCommand
 
             // Helper returns array on success/warn OR WP_Error on failure
             if (is_wp_error($create_res)) {
-                $lookup_error++; // treat as "create_error bucket"
+                $lookup_error++; // treat as "create_error LANE"
 
                 $this->write_csv($csv_fh, [
                     $upc,
@@ -724,3 +724,4 @@ final class StressCreateProductsCommand
         return $latest;
     }
 }
+

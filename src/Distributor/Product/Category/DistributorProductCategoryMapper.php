@@ -32,7 +32,7 @@ if (!defined('ABSPATH')) {
 class DistributorProductCategoryMapper
 {
     /**
-     * Map Lipsey's item_group → unified category path.
+     * Map Lipsey's item_group -> unified category path.
      *
      * Normalization rules:
      * - Trims whitespace
@@ -153,7 +153,7 @@ class DistributorProductCategoryMapper
     }
 
     /**
-     * Map RSR department number → unified category path.
+     * Map RSR department number -> unified category path.
      *
      * Accepts:
      * - int
@@ -217,7 +217,7 @@ class DistributorProductCategoryMapper
 
 
     /**
-     * Map Zanders category string → unified category path.
+     * Map Zanders category string -> unified category path.
      *
      * Zanders feed uses a relatively clean top-level Category column.
      * We map the obvious ones precisely, then use a few conservative
@@ -264,7 +264,7 @@ class DistributorProductCategoryMapper
             'SCOPE MOUNTS AND RINGS' => [CategorySchema::CAT_OPTICS, 'Optic Mounts & Rings'],
             'SCOPE COVERS'          => [CategorySchema::CAT_OPTICS, 'Optics Accessories'],
             'BORE SIGHTERS'         => [CategorySchema::CAT_OPTICS, 'Optics Accessories'],
-            'NIGHT VISION'          => [CategorySchema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'], // best-fit bucket for now
+            'NIGHT VISION'          => [CategorySchema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'], // best-fit LANE for now
 
             // Lights / lasers
             'LASERS'                => [CategorySchema::CAT_LIGHTS],
@@ -334,7 +334,7 @@ class DistributorProductCategoryMapper
             return [CategorySchema::CAT_LIGHTS];
         }
 
-        // If we can’t confidently map it (outdoors/archery/apparel/etc.), return null.
+        // If we can't confidently map it (outdoors/archery/apparel/etc.), return null.
         return null;
     }
 
@@ -374,3 +374,4 @@ class DistributorProductCategoryMapper
         return 0;
     }
 }
+

@@ -86,8 +86,8 @@ class DistributorZanders extends DistributorBase
         array $required_by_upc,
         bool $local_only
     ): array {
-        // Bucket + enforcement is shared in base helper you added.
-        $b = $this->infer_bucket_and_ffl_enforcement($request);
+        // lane + enforcement is shared in the base helper.
+        $b = $this->infer_lane_and_ffl_enforcement($request);
 
         return [
             'label'                => 'Zanders validation (local)',
@@ -95,7 +95,7 @@ class DistributorZanders extends DistributorBase
             'inventory_keys'       => ['inventory_quantity'],
             'unknown_qty_blocks'   => true,
 
-            'bucket'               => $b['bucket'],
+            'lane'                 => $b['lane'],
             'enforce_ffl_required' => $b['enforce_ffl_required'],
             'ffl_required_row_keys' => ['ffl_required'],
 
@@ -146,19 +146,13 @@ class DistributorZanders extends DistributorBase
     /**
      * @return array{ok:bool,message:string,payload:array{username?:string,password?:string}}
      */
-    private function get_zanders_auth_for_bucket(string $bucket): array
+    private function get_zanders_auth_for_lane(string $lane): array
     {
-        $bucket = strtolower(trim((string) $bucket));
-        if ($bucket === 'direct_ship_ffl') {
-            $bucket = 'ffl';
-        } elseif ($bucket === 'direct_ship_non_ffl' || $bucket === 'dealer_fulfilled') {
-            $bucket = 'non';
-        } else {
-            $bucket = ($bucket === 'ffl') ? 'ffl' : 'non';
-        }
+        $lane = strtolower(trim((string) $lane));
+        $auth_lane = ($lane === 'direct_ship_ffl') ? 'direct_ship_ffl' : 'direct_ship_non_ffl';
 
-        $u_key = ($bucket === 'ffl') ? 'gun_username' : 'accessory_username';
-        $p_key = ($bucket === 'ffl') ? 'gun_password' : 'accessory_password';
+        $u_key = ($auth_lane === 'direct_ship_ffl') ? 'gun_username' : 'accessory_username';
+        $p_key = ($auth_lane === 'direct_ship_ffl') ? 'gun_password' : 'accessory_password';
 
         $u = trim((string) \FFLHub\Settings\Options::get_distributor_option('zanders', $u_key, ''));
         $p = trim((string) \FFLHub\Settings\Options::get_distributor_option('zanders', $p_key, ''));
@@ -166,7 +160,7 @@ class DistributorZanders extends DistributorBase
         if ($u === '' || $p === '') {
             return [
                 'ok' => false,
-                'message' => "Missing Zanders SOAP creds for bucket={$bucket} (keys: {$u_key}/{$p_key}).",
+                'message' => "Missing Zanders SOAP creds for lane={$auth_lane} (keys: {$u_key}/{$p_key}).",
                 'payload' => [],
             ];
         }
@@ -237,16 +231,29 @@ class DistributorZanders extends DistributorBase
     }
 
 
-    protected function place_order_bucket(
+    protected function place_order_lane(
         DistributorOrderRequest $request,
-        string $bucket,
+        string $lane,
         array $lines,
         array &$external_ids
     ): DistributorOrderResult {
-        $auth = $this->get_zanders_auth_for_bucket($bucket);
+        $lane = strtolower(trim((string) $lane));
+
+        if ($lane === 'dealer_fulfilled') {
+            return DistributorOrderResult::block_fatal(
+                'Zanders dealer_fulfilled lane is not implemented yet.',
+                [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED],
+                [],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        $auth = $this->get_zanders_auth_for_lane($lane);
         if (empty($auth['ok'])) {
             $r = DistributorOrderResult::block_fatal(
-                'Zanders: missing credentials for bucket=' . $bucket,
+                'Zanders: missing credentials for lane=' . $lane,
                 [DistributorOrderResult::REASON_FATAL_MISSING_CREDS],
                 ['auth' => ['message' => (string)($auth['message'] ?? '')]]
             );
@@ -270,10 +277,10 @@ class DistributorZanders extends DistributorBase
             return $items;
         }
 
-        if ($bucket === 'non') {
+        if ($lane === 'direct_ship_non_ffl') {
             if (!($request->ship_to_customer instanceof DistributorShipTo)) {
                 return DistributorOrderResult::block_fatal(
-                    'Zanders NON: missing ship_to_customer (ship-to address required).',
+                    'Zanders direct-ship non-FFL: missing ship_to_customer (ship-to address required).',
                     [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
                     [],
                     0,
@@ -288,7 +295,7 @@ class DistributorZanders extends DistributorBase
 
             if (!($ship_check['ok'] ?? false)) {
                 return DistributorOrderResult::block_fatal(
-                    'Zanders NON: ' . (string) ($ship_check['message'] ?? 'Invalid ship-to.'),
+                    'Zanders direct-ship non-FFL: ' . (string) ($ship_check['message'] ?? 'Invalid ship-to.'),
                     [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
                     ['ship_check' => $ship_check],
                     0,
@@ -318,23 +325,34 @@ class DistributorZanders extends DistributorBase
 
             $soap = ZandersDirectShipAPI::create_order($orders_client, $auth['payload'], $order_map, $testing);
             if (!($soap['ok'] ?? false)) {
-                $r = $this->classify_zanders_transport_failure($soap, 'Zanders NON');
+                $r = $this->classify_zanders_transport_failure($soap, 'Zanders direct-ship non-FFL');
                 $r->external_order_ids = $external_ids;
                 return $r;
             }
 
-            $norm = ZandersDirectShipAPI::normalize_order_response($soap, 'Zanders NON');
+            $norm = ZandersDirectShipAPI::normalize_order_response($soap, 'Zanders direct-ship non-FFL');
             if (!($norm['ok'] ?? false)) {
-                $r = $this->classify_zanders_order_failure($norm, 'Zanders NON');
+                $r = $this->classify_zanders_order_failure($norm, 'Zanders direct-ship non-FFL');
                 $r->external_order_ids = $external_ids;
                 return $r;
             }
 
             $external_ids[] = (string) ($norm['order_number'] ?? '');
-            return DistributorOrderResult::ok('Zanders NON order submitted.', $external_ids);
+            return DistributorOrderResult::ok('Zanders direct-ship non-FFL order submitted.', $external_ids);
         }
 
-        // bucket === 'ffl'
+        if ($lane !== 'direct_ship_ffl') {
+            return DistributorOrderResult::block_fatal(
+                'Zanders: unsupported lane "' . $lane . '".',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                [],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        // direct_ship_ffl lane
         if (!($request->ship_to_ffl instanceof DistributorShipTo)) {
             return DistributorOrderResult::block_fatal(
                 'Zanders FFL: missing ship_to_ffl (transfer dealer address required).',
@@ -453,20 +471,20 @@ class DistributorZanders extends DistributorBase
 
         $soap = ZandersDirectShipAPI::create_order($orders_client, $auth['payload'], $order_map, $testing);
         if (!($soap['ok'] ?? false)) {
-            $r = $this->classify_zanders_transport_failure($soap, 'Zanders FFL');
+            $r = $this->classify_zanders_transport_failure($soap, 'Zanders direct-ship FFL');
             $r->external_order_ids = $external_ids;
             return $r;
         }
 
-        $norm = ZandersDirectShipAPI::normalize_order_response($soap, 'Zanders FFL');
+        $norm = ZandersDirectShipAPI::normalize_order_response($soap, 'Zanders direct-ship FFL');
         if (!($norm['ok'] ?? false)) {
-            $r = $this->classify_zanders_order_failure($norm, 'Zanders FFL');
+            $r = $this->classify_zanders_order_failure($norm, 'Zanders direct-ship FFL');
             $r->external_order_ids = $external_ids;
             return $r;
         }
 
         $external_ids[] = (string) ($norm['order_number'] ?? '');
-        return DistributorOrderResult::ok('Zanders FFL order submitted.', $external_ids);
+        return DistributorOrderResult::ok('Zanders direct-ship FFL order submitted.', $external_ids);
     }
 
 
@@ -474,50 +492,50 @@ class DistributorZanders extends DistributorBase
 
 
     /**
-     * Decide which Zanders credential bucket to use from our merchant PO encoding.
+     * Decide which Zanders credential lane to use from our merchant PO encoding.
      *
      * Expected examples:
-     *   FH-ZANDERS-6722-N1  => non
-     *   FH-ZANDERS-6722-F1  => ffl
+     *   FH-ZANDERS-6722-N1  => direct_ship_non_ffl
+     *   FH-ZANDERS-6722-F1  => direct_ship_ffl
      *
-     * Fallback: 'non' (safe default) unless we explicitly detect ffl.
+     * Fallback: direct_ship_non_ffl (safe default) unless we explicitly detect ffl.
      */
-    private static function infer_bucket_from_po(string $po): string
+    private static function infer_lane_from_po(string $po): string
     {
 
         $po = strtoupper(trim($po));
         if ($po === '') {
-            return 'non';
+            return 'direct_ship_non_ffl';
         }
 
         // Split on '-' and look at the last token
         $parts = preg_split('/-+/', $po);
         $last  = is_array($parts) && !empty($parts) ? strtoupper((string) end($parts)) : '';
 
-        // Your current encoding uses N1. We'll treat anything starting with 'N' as non.
+        // Your current encoding uses N1. Treat anything starting with N as direct-ship non-FFL.
         if ($last !== '' && preg_match('/^N\d*$/', $last)) {
-            return 'non';
+            return 'direct_ship_non_ffl';
         }
 
-        // Common encoding for firearms bucket
+        // Common encoding for direct-ship FFL lane.
         if ($last !== '' && preg_match('/^F\d*$/', $last)) {
-            return 'ffl';
+            return 'direct_ship_ffl';
         }
 
         // Lane-oriented codes
         if ($last !== '' && preg_match('/^DSF\d*$/', $last)) {
-            return 'ffl';
+            return 'direct_ship_ffl';
         }
         if ($last !== '' && preg_match('/^(DSN|D)\d*$/', $last)) {
-            return 'non';
+            return 'direct_ship_non_ffl';
         }
 
         // Extra safety: if PO contains obvious marker anywhere
         if (strpos($po, '-FFL-') !== false || strpos($po, '_FFL_') !== false) {
-            return 'ffl';
+            return 'direct_ship_ffl';
         }
 
-        return 'non';
+        return 'direct_ship_non_ffl';
     }
 
 
@@ -536,11 +554,11 @@ class DistributorZanders extends DistributorBase
         $testing       = $this->is_testing_mode();
         $orders_client = $this->make_orders_client();
 
-        // Use PO encoding to select the correct credential bucket (non vs ffl).
-        $bucket = self::infer_bucket_from_po($po_number);
-        $this->log('Shipment poll: inferred bucket', ['po' => $po_number, 'bucket' => $bucket, 'external_ids' => $external_ids]);
+        // Use PO encoding to select the correct credential lane.
+        $lane = self::infer_lane_from_po($po_number);
+        $this->log('Shipment poll: inferred lane', ['po' => $po_number, 'lane' => $lane, 'external_ids' => $external_ids]);
 
-        $auth = $this->get_zanders_auth_for_bucket($bucket);
+        $auth = $this->get_zanders_auth_for_lane($lane);
         if (!is_array($auth) || empty($auth['ok']) || empty($auth['payload']) || !is_array($auth['payload'])) {
             return null;
         }
@@ -627,7 +645,7 @@ class DistributorZanders extends DistributorBase
                     'po_number'    => $po_number,
                     'external_ids' => $external_ids,
                     'raw'          => $raw,
-                    'bucket'       => $bucket,
+                    'lane'         => $lane,
                 ]
             );
         }
@@ -759,9 +777,9 @@ class DistributorZanders extends DistributorBase
         $reason = (string) ($norm['reason'] ?? '');
         $removed = $norm['removed_items'] ?? [];
 
-        // Zanders “returnCode=9” is commonly out-of-stock with removed items.
+        // Zanders "returnCode=9" is commonly out-of-stock with removed items.
         // For now: treat as fatal (bad request / cannot fulfill) and include removed items.
-        // If you later want partial-fill behavior, this is where you’d change it.
+        // If you later want partial-fill behavior, this is where you would change it.
         $msg = $ctx . ': Zanders order rejected (returnCode=' . $code . ')';
         if ($reason !== '') {
             $msg .= ' reason=' . $reason;
@@ -993,7 +1011,7 @@ class DistributorZanders extends DistributorBase
         $local_path = $dir . '/' . $filename;
         $public_url = rtrim((string) $uploads['baseurl'], '/\\') . '/' . $subdir . '/' . rawurlencode($filename);
 
-        // ✅ CACHE HIT
+        // CACHE HIT
         if (is_file($local_path) && filesize($local_path) > 1024) {
             $this->log('Image: cache hit', [
                 'item_no' => $item_no,
@@ -1046,7 +1064,7 @@ class DistributorZanders extends DistributorBase
 
             $remote_size = $ftp->get_remote_size($remote_path);
 
-            // ✅ REMOTE MISSING
+            // REMOTE MISSING
             if ($remote_size <= 0) {
                 set_transient($missing_key, 1, DAY_IN_SECONDS);
                 $this->log('Image: remote missing (cached)', [
@@ -1072,7 +1090,7 @@ class DistributorZanders extends DistributorBase
             return '';
         }
 
-        // ✅ DOWNLOAD SUCCESS
+        // DOWNLOAD SUCCESS
         if (is_file($local_path) && filesize($local_path) > 1024) {
             $this->log('Image: download success', [
                 'local' => $local_path,
@@ -1240,3 +1258,4 @@ class DistributorZanders extends DistributorBase
         return [];
     }
 }
+

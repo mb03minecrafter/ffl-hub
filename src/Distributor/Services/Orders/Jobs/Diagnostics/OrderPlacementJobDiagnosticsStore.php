@@ -56,7 +56,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      * @param string                  $message    Error message (caller should avoid secrets).
      */
     public static function set_job_last_error(
@@ -76,7 +76,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      * @return string Last error message, or '' if none/missing.
      */
     public static function get_job_last_error(
@@ -97,7 +97,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      * @param array<int,mixed>        $codes      Code list; will be normalized by patch writer.
      */
     public static function set_job_last_error_codes(
@@ -117,7 +117,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      * @return string[] Normalized, unique, capped list of codes.
      */
     public static function get_job_last_error_codes(
@@ -162,7 +162,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      * @param string                  $step       Step label (e.g. validate|place|'').
      */
     public static function set_job_last_step(
@@ -182,7 +182,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      * @return string Step label, or '' if missing.
      */
     public static function get_job_last_step(
@@ -203,7 +203,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table      Table manager instance.
      * @param WC_Order                $order           WooCommerce order.
-     * @param string                  $job_key         Job key (dist|bucket).
+     * @param string                  $job_key         Job key (dist|lane).
      * @param string                  $next_run_at_iso ISO 8601 timestamp; invalid/empty clears next_run_at.
      */
     public static function set_job_next_run_at(
@@ -225,7 +225,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      * @return string ISO timestamp, or '' if missing.
      */
     public static function get_job_next_run_at(
@@ -250,7 +250,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      * @param string                  $action_id  Action ID string (digits). Invalid/empty clears action_id.
      */
     public static function set_job_action_id(
@@ -273,7 +273,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      * @return string Action ID as string, or '' if missing.
      */
     public static function get_job_action_id(
@@ -296,7 +296,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      */
     public static function clear_job_action_id(
         OrderPlacementJobsTable $jobs_table,
@@ -322,7 +322,7 @@ final class OrderPlacementJobDiagnosticsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param int                     $order_id   Woo order ID.
-     * @param string                  $job_key    Job key (dist|bucket).
+     * @param string                  $job_key    Job key (dist|lane).
      * @param string                  $column     Allowlisted column name.
      * @return mixed Scalar value or null if missing/invalid.
      */

@@ -73,7 +73,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             ],
 
             'fallback_shipping' => [
-                'title'       => 'Fallback shipping (per bucket)',
+                'title'       => 'Fallback shipping (per LANE)',
                 'type'        => 'price',
                 'description' => 'Used when product shipping meta is missing/empty.',
                 'default'     => '15.00',
@@ -180,7 +180,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 continue;
             }
 
-            // FFL bucket?
+            // FFL LANE?
             $ffl_required_raw = $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true);
             $is_ffl = ! empty($ffl_required_raw) && (string) $ffl_required_raw !== '0';
 
@@ -310,8 +310,8 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $dealer_home_cost_formula = (float) ($plan['dealer_outbound_home_cost'] ?? 0.0);
         $dealer_ffl_cost_formula = (float) ($plan['dealer_outbound_ffl_cost'] ?? 0.0);
 
-        $dealer_home_pkg = $this->build_dealer_bucket_package($line_debug_rows, $assignments, false);
-        $dealer_ffl_pkg  = $this->build_dealer_bucket_package($line_debug_rows, $assignments, true);
+        $dealer_home_pkg = $this->build_dealer_lane_package($line_debug_rows, $assignments, false);
+        $dealer_ffl_pkg  = $this->build_dealer_lane_package($line_debug_rows, $assignments, true);
 
         $dealer_home_cost = $dealer_home_cost_formula;
         $dealer_ffl_cost  = $dealer_ffl_cost_formula;
@@ -481,9 +481,9 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             'label' => $this->title,
             'cost'  => wc_format_decimal($customer_charge, wc_get_price_decimals()),
 
-            // ✅ Internal meta that will be copied onto the order later
+            // Internal meta that will be copied onto the order later
             'meta_data' => [
-                // What YOU pay (net) for shipping this order, per your dist/bucket rule
+                // What YOU pay (net) for shipping this order, per your dist/LANE rule
                 'fflhub_shipping_cost_total' => (string) wc_format_decimal($shipping_cost_total, 4),
 
                 // What customer was charged at checkout for shipping (already in 'cost', but nice to have)
@@ -610,7 +610,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
     }
 
     /**
-     * Resolve checkout destination ZIP for non-FFL outbound bucket.
+     * Resolve checkout destination ZIP for non-FFL outbound LANE.
      *
      * @param array<string,mixed> $package
      */
@@ -638,7 +638,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
     }
 
     /**
-     * Resolve receiving FFL ZIP for FFL outbound bucket.
+     * Resolve receiving FFL ZIP for FFL outbound LANE.
      */
     private function resolve_receiving_ffl_zip(): string
     {
@@ -691,13 +691,13 @@ class FFLHubShippingMethod extends WC_Shipping_Method
     }
 
     /**
-     * Build package-level stats for a dealer outbound bucket.
+     * Build package-level stats for a dealer outbound LANE.
      *
      * @param array<int,array<string,mixed>> $line_debug_rows
      * @param array<string,string> $assignments
      * @return array<string,mixed>
      */
-    private function build_dealer_bucket_package(array $line_debug_rows, array $assignments, bool $ffl_bucket): array
+    private function build_dealer_lane_package(array $line_debug_rows, array $assignments, bool $ffl_lane): array
     {
         $weight_oz = 0.0;
         $volume_cuin = 0.0;
@@ -716,7 +716,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             }
 
             $is_ffl_line = !empty($row['ffl_required']);
-            if ($is_ffl_line !== $ffl_bucket) {
+            if ($is_ffl_line !== $ffl_lane) {
                 continue;
             }
 
@@ -920,3 +920,4 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         return false;
     }
 }
+

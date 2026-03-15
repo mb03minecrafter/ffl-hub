@@ -39,7 +39,7 @@ if (!defined('ABSPATH')) {
  * - next_run_at (MySQL UTC datetime) is used by a recurring dispatcher to pull ready rows.
  *
  * Safety:
- * - job_key/dist_id/bucket are normalized and validated.
+ * - job_key/dist_id/lane are normalized and validated.
  * - Atomic claim is implemented with a single UPDATE constrained by eligible statuses.
  */
 final class OrderPlacementJobLifeCycle
@@ -57,17 +57,17 @@ final class OrderPlacementJobLifeCycle
      *     - payload_json
      *     - updated_at
      *     - dist_id
-     *     - bucket
+     *     - lane
      *   Does NOT overwrite status/attempts/merchant_po/external ids/shipping fields/snapshots/etc.
      *
      * Important:
-     * - This is the *only* place that creates new rows for bucket jobs.
+     * - This is the *only* place that creates new rows for lane jobs.
      * - payload_json is considered the canonical "job payload" for the runner.
      *
      * @param OrderPlacementJobsTable $jobs_table Table helper (provides physical table name).
      * @param WC_Order $order WooCommerce order.
-     * @param string $job_key Job key (dist|bucket). Normalized before use.
-     * @param array<string,mixed> $payload Minimal payload used by runner (dist_id,bucket,lines,...).
+     * @param string $job_key Job key (dist|lane). Normalized before use.
+     * @param array<string,mixed> $payload Minimal payload used by runner (dist_id,lane,lines,...).
      * @return void
      */
     public static function init_job_meta(
@@ -93,25 +93,25 @@ final class OrderPlacementJobLifeCycle
             return;
         }
 
-        // Derive dist_id + bucket from payload first, then fallback to job_key convention.
+        // Derive dist_id + lane from payload first, then fallback to job_key convention.
         $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) ($payload['dist_id'] ?? ''));
-        $bucket  = OrderPlacementKeysUtil::normalize_bucket((string) ($payload['bucket'] ?? ''));
+        $lane    = OrderPlacementKeysUtil::normalize_lane((string) ($payload['lane'] ?? ''));
 
-        if ($dist_id === '' || $bucket === '') {
+        if ($dist_id === '' || $lane === '') {
             $parts = explode('|', $job_key, 2);
             if ($dist_id === '' && isset($parts[0])) {
                 $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) $parts[0]);
             }
-            if ($bucket === '' && isset($parts[1])) {
-                $bucket = OrderPlacementKeysUtil::normalize_bucket((string) $parts[1]);
+            if ($lane === '' && isset($parts[1])) {
+                $lane = OrderPlacementKeysUtil::normalize_lane((string) $parts[1]);
             }
         }
 
         if ($dist_id === '') {
             $dist_id = 'unknown';
         }
-        if (!OrderPlacementKeysUtil::is_valid_bucket($bucket)) {
-            $bucket = 'unknown';
+        if (!OrderPlacementKeysUtil::is_valid_lane($lane)) {
+            $lane = 'unknown';
         }
 
         $now = OrderPlacementTimeUtil::now_mysql_utc();
@@ -129,7 +129,7 @@ final class OrderPlacementJobLifeCycle
         // NOTE: Column list must match your table schema.
         $sql = "
             INSERT INTO {$table}
-            (order_id, job_key, dist_id, bucket, status, attempts, created_at, updated_at,
+            (order_id, job_key, dist_id, lane, status, attempts, created_at, updated_at,
              action_id, next_run_at, last_step, last_error, last_codes_json, done_at,
              payload_json, validate_result_json, place_result_json, merchant_po, external_order_ids_json)
             VALUES
@@ -140,7 +140,7 @@ final class OrderPlacementJobLifeCycle
               payload_json = VALUES(payload_json),
               updated_at   = VALUES(updated_at),
               dist_id      = VALUES(dist_id),
-              bucket       = VALUES(bucket)
+              lane         = VALUES(lane)
         ";
 
         $wpdb->query(
@@ -149,7 +149,7 @@ final class OrderPlacementJobLifeCycle
                 $oid,
                 $job_key,
                 $dist_id,
-                $bucket,
+                $lane,
                 (string) OrderPlacementKeys::JOB_STATUS_QUEUED,
                 0,
                 $now,
@@ -177,7 +177,7 @@ final class OrderPlacementJobLifeCycle
      *
      * @param OrderPlacementJobsTable $jobs_table
      * @param WC_Order $order
-     * @param string $job_key Job key (dist|bucket).
+     * @param string $job_key Job key (dist|lane).
      * @param string $status New status.
      * @return void
      */
@@ -198,7 +198,7 @@ final class OrderPlacementJobLifeCycle
      *
      * @param OrderPlacementJobsTable $jobs_table
      * @param WC_Order $order
-     * @param string $job_key Job key (dist|bucket). Normalized before use.
+     * @param string $job_key Job key (dist|lane). Normalized before use.
      * @return string Status, or '' if missing/invalid.
      */
     public static function get_job_status(OrderPlacementJobsTable $jobs_table, WC_Order $order, string $job_key): string
@@ -255,7 +255,7 @@ final class OrderPlacementJobLifeCycle
      *
      * @param OrderPlacementJobsTable $jobs_table
      * @param WC_Order $order
-     * @param string $job_key Job key (dist|bucket). Normalized before use.
+     * @param string $job_key Job key (dist|lane). Normalized before use.
      * @return int Attempts after increment; 0 if not claimed.
      */
     public static function increment_job_attempts_and_mark_running(
@@ -340,7 +340,7 @@ final class OrderPlacementJobLifeCycle
      *
      * @param OrderPlacementJobsTable $jobs_table
      * @param WC_Order $order
-     * @param string $job_key Job key (dist|bucket).
+     * @param string $job_key Job key (dist|lane).
      * @param string $done_at Optional ISO8601 timestamp; if empty uses now.
      * @return void
      */
@@ -378,7 +378,7 @@ final class OrderPlacementJobLifeCycle
      *
      * @param OrderPlacementJobsTable $jobs_table
      * @param WC_Order $order
-     * @param string $job_key Job key (dist|bucket).
+     * @param string $job_key Job key (dist|lane).
      * @param string $error_message Failure reason.
      * @return void
      */
@@ -414,7 +414,7 @@ final class OrderPlacementJobLifeCycle
      *
      * @param OrderPlacementJobsTable $jobs_table
      * @param WC_Order $order
-     * @param string $job_key Job key (dist|bucket).
+     * @param string $job_key Job key (dist|lane).
      * @param string $next_run_at_mysql_utc MySQL UTC datetime (e.g., '2026-01-31 19:30:00').
      * @param string $reason Human-readable retry reason.
      * @param array<int,string> $codes Optional machine-readable codes (normalized/deduped).

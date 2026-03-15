@@ -204,7 +204,7 @@ class DistributorLipseys extends DistributorBase
             'max_unique'         => self::VALIDATEITEM_MAX_UNIQUE_ITEMS,
             'inventory_keys'     => ['inventory_quantity'],
             'unknown_qty_blocks' => true,
-            'bucket'             => '',
+            'lane'               => '',
             'enforce_ffl_required' => null,
         ];
     }
@@ -494,7 +494,7 @@ class DistributorLipseys extends DistributorBase
 
     protected function place_order_stop_on_first_failure(): bool
     {
-        return false; // Lipsey’s can attempt both buckets
+        return false; // Lipsey's can attempt both direct-ship lanes
     }
 
     /**
@@ -534,7 +534,7 @@ class DistributorLipseys extends DistributorBase
         // Drop-ship requires a consumer ship-to address.
         if (!($request->ship_to_customer instanceof DistributorShipTo)) {
             return DistributorOrderResult::block_fatal(
-                'Missing ship_to_customer (required for Lipsey’s drop-ship).',
+                'Missing ship_to_customer (required for Lipsey\'s drop-ship).',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
             );
         }
@@ -549,7 +549,7 @@ class DistributorLipseys extends DistributorBase
             );
         }
 
-        // stash client so bucket handler doesn’t re-init
+        // Stash client so lane handler does not re-init
         $this->lipseys_client = $client_res['client'];
 
         return null;
@@ -558,12 +558,14 @@ class DistributorLipseys extends DistributorBase
     /** @var \FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient|null */
     protected $lipseys_client = null;
 
-    protected function place_order_bucket(
+    protected function place_order_lane(
         DistributorOrderRequest $request,
-        string $bucket,
+        string $lane,
         array $lines,
         array &$external_ids
     ): DistributorOrderResult {
+        $lane = strtolower(trim((string) $lane));
+
         /** @var \FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient $client */
         $client = $this->lipseys_client;
 
@@ -572,7 +574,7 @@ class DistributorLipseys extends DistributorBase
         if (!$client || $email === '' || $password === '') {
             // Should not happen because precheck guards it, but keep it defensive.
             return DistributorOrderResult::block_retryable(
-                'Lipseys client missing during bucket placement.',
+                'Lipseys client missing during lane placement.',
                 [DistributorOrderResult::REASON_RETRY_UNKNOWN],
                 [],
                 0,
@@ -607,7 +609,18 @@ class DistributorLipseys extends DistributorBase
         /** @var DistributorShipTo $customer */
         $customer = $request->ship_to_customer;
 
-        if ($bucket === 'non') {
+        if ($lane === 'dealer_fulfilled') {
+            return DistributorOrderResult::block_fatal(
+                'Lipseys dealer_fulfilled lane is not implemented yet.',
+                [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED],
+                [],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        if ($lane === 'direct_ship_non_ffl') {
             $po = $base_po . '-NON';
 
             $payload = [
@@ -642,16 +655,27 @@ class DistributorLipseys extends DistributorBase
 
             $norm = LipseysIntegrationAPI::normalize_order_response($resp, $po, 'DropShip');
             if (!($norm['ok'] ?? false)) {
-                $r = $this->classify_lipseys_order_failure($norm, 'Lipseys NON');
+                $r = $this->classify_lipseys_order_failure($norm, 'Lipseys direct-ship non-FFL');
                 $r->external_order_ids = $external_ids;
                 return $r;
             }
 
             $external_ids[] = (string) ($norm['external_id'] ?? '');
-            return DistributorOrderResult::ok('Lipseys NON order submitted.', $external_ids);
+            return DistributorOrderResult::ok('Lipseys direct-ship non-FFL order submitted.', $external_ids);
         }
 
-        // bucket === 'ffl'
+        if ($lane !== 'direct_ship_ffl') {
+            return DistributorOrderResult::block_fatal(
+                'Lipseys: unsupported lane "' . $lane . '".',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                [],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        // direct_ship_ffl lane
         $ffl_num = strtoupper(trim((string) $request->receiving_ffl_number));
         if ($ffl_num === '') {
             return DistributorOrderResult::block_fatal(
@@ -707,13 +731,13 @@ class DistributorLipseys extends DistributorBase
 
         $norm = LipseysIntegrationAPI::normalize_order_response($resp, $po, 'DropShipFirearm');
         if (!($norm['ok'] ?? false)) {
-            $r = $this->classify_lipseys_order_failure($norm, 'Lipseys FFL');
+            $r = $this->classify_lipseys_order_failure($norm, 'Lipseys direct-ship FFL');
             $r->external_order_ids = $external_ids;
             return $r;
         }
 
         $external_ids[] = (string) ($norm['external_id'] ?? '');
-        return DistributorOrderResult::ok('Lipseys FFL order submitted.', $external_ids);
+        return DistributorOrderResult::ok('Lipseys direct-ship FFL order submitted.', $external_ids);
     }
 
 
@@ -850,9 +874,9 @@ class DistributorLipseys extends DistributorBase
             function (string $item_no, int $qty, string $normalized_upc, string $raw_upc, DistributorOrderLine $line): array {
                 return ['ItemNo' => $item_no, 'Quantity' => $qty];
             },
-            'Cannot map UPC to Lipsey’s item number: %s',
+            'Cannot map UPC to Lipsey\'s item number: %s',
             !$allow_empty,
-            'No valid Lipsey’s line items after normalization.'
+            'No valid Lipsey\'s line items after normalization.'
         );
     }
 
@@ -1164,5 +1188,6 @@ class DistributorLipseys extends DistributorBase
     }
 
 }
+
 
 

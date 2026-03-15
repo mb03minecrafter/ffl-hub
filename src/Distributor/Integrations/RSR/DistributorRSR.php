@@ -212,11 +212,11 @@ class DistributorRSR extends DistributorBase
 
     protected function place_order_stop_on_first_failure(): bool
     {
-        return true; // no partial “same job” ordering
+        return true; // no partial same-job ordering
     }
 
     /**
-     * Pre-checks shared by both buckets.
+     * Pre-checks shared by both LANES.
      */
     protected function place_order_precheck(DistributorOrderRequest $request): ?DistributorOrderResult
     {
@@ -238,15 +238,17 @@ class DistributorRSR extends DistributorBase
     }
 
     /**
-     * @param 'non'|'ffl' $bucket
+     * @param 'direct_ship_non_ffl'|'direct_ship_ffl'|'dealer_fulfilled' $lane
      * @param array<int,mixed> $lines
      */
-    protected function place_order_bucket(
+    protected function place_order_lane(
         DistributorOrderRequest $request,
-        string $bucket,
+        string $lane,
         array $lines,
         array &$external_ids
     ): DistributorOrderResult {
+        $lane = strtolower(trim((string) $lane));
+
         $auth = $this->get_rsr_auth_payload(); // already validated in precheck
         $api_base_url = $this->get_api_base_url();
 
@@ -263,10 +265,21 @@ class DistributorRSR extends DistributorBase
             return $items;
         }
 
-        if ($bucket === 'non') {
+        if ($lane === 'dealer_fulfilled') {
+            return DistributorOrderResult::block_fatal(
+                'RSR dealer_fulfilled lane is not implemented yet.',
+                [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED],
+                [],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        if ($lane === 'direct_ship_non_ffl') {
             if (!($request->ship_to_customer instanceof DistributorShipTo)) {
                 return DistributorOrderResult::block_fatal(
-                    'RSR NON: missing ship_to_customer (ship-to address required).',
+                    'RSR direct-ship non-FFL: missing ship_to_customer (ship-to address required).',
                     [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
                     [],
                     0,
@@ -281,7 +294,7 @@ class DistributorRSR extends DistributorBase
 
             if (!($ship_check['ok'] ?? false)) {
                 return DistributorOrderResult::block_fatal(
-                    'RSR NON: ' . (string) ($ship_check['message'] ?? 'Invalid ship-to.'),
+                    'RSR direct-ship non-FFL: ' . (string) ($ship_check['message'] ?? 'Invalid ship-to.'),
                     [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
                     ['ship_check' => $ship_check],
                     0,
@@ -304,16 +317,27 @@ class DistributorRSR extends DistributorBase
 
             $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
             if (!($resp['ok'] ?? false)) {
-                $failure = $this->classify_rsr_place_order_failure($resp, 'RSR NON');
+                $failure = $this->classify_rsr_place_order_failure($resp, 'RSR direct-ship non-FFL');
                 $failure->external_order_ids = $external_ids;
                 return $failure;
             }
 
             $external_ids[] = (string) ($resp['external_id'] ?? '');
-            return DistributorOrderResult::ok('RSR NON order submitted.', $external_ids);
+            return DistributorOrderResult::ok('RSR direct-ship non-FFL order submitted.', $external_ids);
         }
 
-        // bucket === 'ffl'
+        if ($lane !== 'direct_ship_ffl') {
+            return DistributorOrderResult::block_fatal(
+                'RSR: unsupported lane "' . $lane . '".',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                [],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
+        // direct_ship_ffl lane
         $ffl_num = strtoupper(trim((string) $request->receiving_ffl_number));
         if ($ffl_num === '') {
             return DistributorOrderResult::block_fatal(
@@ -376,15 +400,15 @@ class DistributorRSR extends DistributorBase
             $ship_ctx
         );
 
-        $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
+            $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
         if (!($resp['ok'] ?? false)) {
-            $failure = $this->classify_rsr_place_order_failure($resp, 'RSR FFL');
+            $failure = $this->classify_rsr_place_order_failure($resp, 'RSR direct-ship FFL');
             $failure->external_order_ids = $external_ids;
             return $failure;
         }
 
         $external_ids[] = (string) ($resp['external_id'] ?? '');
-        return DistributorOrderResult::ok('RSR FFL order submitted.', $external_ids);
+        return DistributorOrderResult::ok('RSR direct-ship FFL order submitted.', $external_ids);
     }
 
     //END OF ORDERING SECTION
@@ -443,7 +467,7 @@ class DistributorRSR extends DistributorBase
     }
 
     /**
-     * Remote validation via RSR check-catalog (bucketed).
+     * Remote validation via RSR check-catalog (lane-aware).
      *
      * @param array<string,int> $required_by_upc
      */
@@ -469,8 +493,8 @@ class DistributorRSR extends DistributorBase
         $details = [];
 
         if (!empty($lines_non)) {
-            $res = $this->rsr_check_catalog_for_bucket($auth['payload'], $request, false, $lines_non);
-            $details['non'] = $res;
+            $res = $this->rsr_check_catalog_for_lane($auth['payload'], $request, false, $lines_non);
+            $details['direct_ship_non_ffl'] = $res;
 
             $early = $this->rsr_map_check_catalog_failure_to_validation_result(
                 $res,
@@ -485,8 +509,8 @@ class DistributorRSR extends DistributorBase
         if (!empty($lines_ffl)) {
             // FFL invariants already enforced by base precheck hook.
 
-            $res = $this->rsr_check_catalog_for_bucket($auth['payload'], $request, true, $lines_ffl);
-            $details['ffl'] = $res;
+            $res = $this->rsr_check_catalog_for_lane($auth['payload'], $request, true, $lines_ffl);
+            $details['direct_ship_ffl'] = $res;
 
             $early = $this->rsr_map_check_catalog_failure_to_validation_result(
                 $res,
@@ -502,7 +526,7 @@ class DistributorRSR extends DistributorBase
     }
 
     /**
-     * Convert a check-catalog bucket response to a validation result (or null if ok).
+     * Convert a check-catalog LANE response to a validation result (or null if ok).
      *
      * @param array<string,mixed> $res
      * @param array<string,mixed> $details
@@ -866,7 +890,7 @@ class DistributorRSR extends DistributorBase
      *   error?:array{code:string,provider_error_code:string}
      * }
      */
-    private function rsr_check_catalog_for_bucket(array $auth_payload, DistributorOrderRequest $request, bool $ffl_bucket, array $lines): array
+    private function rsr_check_catalog_for_lane(array $auth_payload, DistributorOrderRequest $request, bool $ffl_lane, array $lines): array
     {
         $items = $this->build_rsr_check_catalog_items_from_lines($lines);
         if ($items instanceof DistributorOrderResult) {
@@ -884,7 +908,7 @@ class DistributorRSR extends DistributorBase
             ];
         }
 
-        $ship = $request->ship_to_for_bucket($ffl_bucket);
+        $ship = $request->ship_to_for_lane($ffl_lane);
 
         $ship_check = RSRDirectConnectAPI::validate_ship_to_required_fields($ship);
         if (! $ship_check['ok']) {
@@ -897,7 +921,7 @@ class DistributorRSR extends DistributorBase
             ];
         }
 
-        if ($ffl_bucket) {
+        if ($ffl_lane) {
             $id_check = RSRDirectConnectAPI::validate_customer_identity_for_firearm_dropship($request->ship_to_customer);
             if (! $id_check['ok']) {
                 return [
@@ -922,7 +946,7 @@ class DistributorRSR extends DistributorBase
             ]
         );
 
-        if ($ffl_bucket) {
+        if ($ffl_lane) {
             $payload['ShipFFL'] = strtoupper(trim((string) $request->receiving_ffl_number));
         }
 
@@ -1211,10 +1235,11 @@ class DistributorRSR extends DistributorBase
             // Don't recursively shrink; just cap json size.
             $json = wp_json_encode($raw);
             if (is_string($json) && strlen($json) > 2000) {
-                return substr($json, 0, 2000) . '…';
+                return substr($json, 0, 2000) . '...';
             }
             return $raw;
         }
         return $raw;
     }
 }
+

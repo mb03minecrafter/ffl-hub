@@ -9,9 +9,9 @@ if (!defined('ABSPATH')) {
 /**
  * Result of attempting to PLACE an order with a distributor API.
  *
- * This is the “execution result” analogue to DistributorOrderValidationResult.
- * Validation answers: “Should we try to place an order?”
- * This answers:       “We tried; what happened and what should the job runner do next?”
+ * This is the "execution result" analogue to DistributorOrderValidationResult.
+ * Validation answers: "Should we try to place an order?"
+ * This answers:       "We tried; what happened and what should the job runner do next?"
  *
  * Design goals
  * -----------
@@ -22,10 +22,10 @@ if (!defined('ABSPATH')) {
  *
  * 2) Machine-readable reason codes (codes[]):
  *    - Do not overload the primary code. Primary code is control-plane.
- *    - codes[] supports analytics, alerting, and “why did we fail?” summaries.
+ *    - codes[] supports analytics, alerting, and "why did we fail?" summaries.
  *
  * 3) Stable, compact details:
- *    - details is intentionally “small and redacted”
+ *    - details is intentionally "small and redacted"
  *    - do NOT shove raw request/response blobs here (you already have safe_raw_summary helpers).
  *
  * 4) PHP 7 compatibility:
@@ -37,7 +37,7 @@ if (!defined('ABSPATH')) {
  * - ok (bool) duplicates code but is convenient for legacy checks.
  * - http_status is optional and may be 0 when unknown or non-HTTP transport.
  * - provider_error_code is optional; used for vendor StatusCode, auth error code, etc.
- * - external_order_ids supports multi-bucket distributors (Lipsey’s NON + FFL, etc.)
+ * - external_order_ids supports multi-lane distributors (Lipsey's direct-ship non-FFL + direct-ship FFL, etc.)
  */
 final class DistributorOrderResult
 {
@@ -118,8 +118,8 @@ final class DistributorOrderResult
      * Some distributors may create >1 external order id.
      *
      * Example:
-     * - Lipsey’s: NON bucket returns one id, FFL bucket returns another.
-     * - Future-proofing for scenarios where a single “job” places multiple sub-orders.
+     * - Lipsey's: direct-ship non-FFL returns one id, direct-ship FFL returns another.
+     * - Future-proofing for scenarios where a single "job" places multiple sub-orders.
      *
      * @var string[]
      */
@@ -139,8 +139,8 @@ final class DistributorOrderResult
      *
      * Examples:
      * - RSR StatusCode
-     * - “NOT_AUTHORIZED”
-     * - “RATE_LIMIT”
+     * - "NOT_AUTHORIZED"
+     * - "RATE_LIMIT"
      *
      * @var string
      */
@@ -150,7 +150,7 @@ final class DistributorOrderResult
      * Optional small debug details (redacted).
      *
      * Intended for:
-     * - small structured context (e.g., which PO failed, which bucket, a few item tails)
+     * - small structured context (e.g., which PO failed, which LANE, a few item tails)
      * - safe summaries of payload/response (not the full raw)
      *
      * @var array<string,mixed>
@@ -368,3 +368,4 @@ final class DistributorOrderResult
         return isset($this->external_order_ids[0]) ? $this->external_order_ids[0] : null;
     }
 }
+

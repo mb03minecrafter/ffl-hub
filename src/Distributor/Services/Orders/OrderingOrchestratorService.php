@@ -128,7 +128,7 @@ final class OrderingOrchestratorService
     {
         $oid = (int) $order->get_id();
 
-        // Atomic “claim” to prevent concurrent double-start.
+        // Atomic "claim" to prevent concurrent double-start.
         $lock_key = '_fflhub_order_place_pipeline_lock';
 
         // add_post_meta returns false if meta already exists when $unique=true.
@@ -193,7 +193,7 @@ final class OrderingOrchestratorService
      * @return array<string, array{
      *   order_id:int,
      *   dist_id:string,
-     *   bucket:string,
+     *   lane:string,
      *   lines:array<int,array{upc:string,qty:int,ffl_required:int,dropship_enabled:int}>
      * }>
      */
@@ -332,7 +332,7 @@ final class OrderingOrchestratorService
                 : (!empty($row['dropship_enabled']) ? 'direct_ship' : 'dealer_fulfilled');
 
             $lane = $this->lane_for_route($route, !empty($row['ffl_required']));
-            if (!OrderPlacementKeysUtil::is_valid_bucket($lane)) {
+            if (!OrderPlacementKeysUtil::is_valid_lane($lane)) {
                 $this->log_ctx('skip_line_invalid_lane', [
                     'order_id' => $oid,
                     'line_id'  => $line_id,
@@ -376,7 +376,7 @@ final class OrderingOrchestratorService
             ksort($lanes, SORT_STRING);
 
             foreach ($lanes as $lane => $by_line_key) {
-                if (!OrderPlacementKeysUtil::is_valid_bucket($lane)) {
+                if (!OrderPlacementKeysUtil::is_valid_lane($lane)) {
                     continue;
                 }
 
@@ -420,7 +420,7 @@ final class OrderingOrchestratorService
                 $jobs[$job_key] = [
                     'order_id' => $oid,
                     'dist_id'  => (string) $dist_id,
-                    'bucket'   => (string) $lane,
+                    'lane'     => (string) $lane,
                     'lines'    => $lines,
                 ];
             }
@@ -436,19 +436,19 @@ final class OrderingOrchestratorService
         $route = strtolower(trim($route));
 
         if ($route === 'dealer_fulfilled') {
-            return OrderPlacementKeysUtil::BUCKET_DEALER_FULFILLED;
+            return OrderPlacementKeysUtil::LANE_DEALER_FULFILLED;
         }
 
         if ($route === 'direct_ship') {
             return $ffl_required
-                ? OrderPlacementKeysUtil::BUCKET_DIRECT_SHIP_FFL
-                : OrderPlacementKeysUtil::BUCKET_DIRECT_SHIP_NON_FFL;
+                ? OrderPlacementKeysUtil::LANE_DIRECT_SHIP_FFL
+                : OrderPlacementKeysUtil::LANE_DIRECT_SHIP_NON_FFL;
         }
 
         // Defensive fallback for unknown route labels.
         return $ffl_required
-            ? OrderPlacementKeysUtil::BUCKET_DIRECT_SHIP_FFL
-            : OrderPlacementKeysUtil::BUCKET_DIRECT_SHIP_NON_FFL;
+            ? OrderPlacementKeysUtil::LANE_DIRECT_SHIP_FFL
+            : OrderPlacementKeysUtil::LANE_DIRECT_SHIP_NON_FFL;
     }
 
     /**
@@ -490,7 +490,7 @@ final class OrderingOrchestratorService
      * Mark DB-backed job rows as eligible for the dispatcher to process.
      *
      * @param WC_Order $order
-     * @param array<string, array{order_id:int,dist_id:string,bucket:string,lines:array<int,array{upc:string,qty:int,ffl_required?:int,dropship_enabled?:int}>}> $lane_jobs
+     * @param array<string, array{order_id:int,dist_id:string,lane:string,lines:array<int,array{upc:string,qty:int,ffl_required?:int,dropship_enabled?:int}>}> $lane_jobs
      */
     private function mark_jobs_eligible_for_processing(WC_Order $order, array $lane_jobs): void
     {

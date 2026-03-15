@@ -11,7 +11,7 @@ if (! defined('ABSPATH')) {
  *
  * This is the *canonical* line-item shape used throughout:
  * - order validation
- * - distributor bucketing (FFL vs non-FFL)
+ * - distributor lane routing (FFL vs non-FFL)
  * - check-catalog calls
  * - place-order payload construction
  *
@@ -48,7 +48,7 @@ final class DistributorOrderLine
      * Whether this line requires an FFL transfer.
      *
      * Used to:
-     * - split orders into FFL vs non-FFL buckets
+     * - split orders into FFL vs non-FFL LANES
      * - enforce ship_to_ffl + ShipFFL validation
      * - drive distributor-specific firearm logic
      */
@@ -73,3 +73,4 @@ final class DistributorOrderLine
         $this->ffl_required = (bool) $ffl_required;
     }
 }
+

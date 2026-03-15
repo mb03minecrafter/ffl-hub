@@ -44,7 +44,7 @@ final class OrderPlacementJobSnapshotsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key     Job key (dist|bucket). Normalized downstream.
+     * @param string                  $job_key     Job key (dist|lane). Normalized downstream.
      * @param array<string,mixed>     $snapshot    Structured snapshot array (JSON-encoded).
      */
     public static function set_job_validation_result(
@@ -69,7 +69,7 @@ final class OrderPlacementJobSnapshotsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key     Job key (dist|bucket). Normalized downstream.
+     * @param string                  $job_key     Job key (dist|lane). Normalized downstream.
      * @return array<string,mixed>|null Snapshot array, or null if missing/invalid.
      */
     public static function get_job_validation_result(
@@ -95,7 +95,7 @@ final class OrderPlacementJobSnapshotsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key     Job key (dist|bucket). Normalized downstream.
+     * @param string                  $job_key     Job key (dist|lane). Normalized downstream.
      * @param array<string,mixed>     $snapshot    Structured snapshot array (JSON-encoded).
      */
     public static function set_job_place_result(
@@ -133,7 +133,7 @@ final class OrderPlacementJobSnapshotsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order.
-     * @param string                  $job_key     Job key (dist|bucket). Normalized downstream.
+     * @param string                  $job_key     Job key (dist|lane). Normalized downstream.
      * @return array<string,mixed>|null Snapshot array, or null if missing/invalid.
      */
     public static function get_job_place_result(
@@ -159,7 +159,7 @@ final class OrderPlacementJobSnapshotsStore
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param int                     $order_id   Woo order ID.
-     * @param string                  $job_key    Job key (dist|bucket). Normalized before use.
+     * @param string                  $job_key    Job key (dist|lane). Normalized before use.
      * @param string                  $column     One of: validate_result_json | place_result_json
      * @return string Raw JSON string, or empty string if missing/invalid inputs.
      */

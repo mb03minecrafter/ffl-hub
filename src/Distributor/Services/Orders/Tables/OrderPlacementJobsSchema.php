@@ -44,7 +44,7 @@ final class OrderPlacementJobsSchema
     {
         return [
             'dist_id',
-            'bucket',
+            'lane',
             'status',
             'attempts',
             'action_id',
@@ -86,7 +86,7 @@ final class OrderPlacementJobsSchema
             'order_id'                => 'BIGINT UNSIGNED NOT NULL',
             'job_key'                 => 'VARCHAR(80) NOT NULL',
             'dist_id'                 => 'VARCHAR(32) NOT NULL',
-            'bucket'                  => 'VARCHAR(32) NOT NULL',
+            'lane'                    => 'VARCHAR(32) NOT NULL',
             'status'                  => 'VARCHAR(24) NOT NULL',
             'attempts'                => 'INT UNSIGNED NOT NULL DEFAULT 0',
             'created_at'              => 'DATETIME NOT NULL',
@@ -128,7 +128,7 @@ final class OrderPlacementJobsSchema
             'KEY idx_order_id (order_id)',
             'KEY idx_status_next_run (status, next_run_at)',
             'KEY idx_action_id (action_id)',
-            'KEY idx_dist_bucket (dist_id, bucket)',
+            'KEY idx_dist_lane (dist_id, lane)',
             'KEY idx_merchant_po (merchant_po)',
             'KEY idx_external_order_id (external_order_id)',
             'KEY idx_last_ship_poll (last_shipping_poll_at)',

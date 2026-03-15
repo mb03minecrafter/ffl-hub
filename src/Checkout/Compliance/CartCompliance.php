@@ -355,7 +355,7 @@ final class CartCompliance
     }
 
     /**
-     * @param string[] $buckets
+     * @param string[] $lanes
      * @param string[] $codes
      * @param array<string,mixed> $details_summary
      */
@@ -363,20 +363,20 @@ final class CartCompliance
         string $cart_dist_id,
         string $voter_id,
         string $label,
-        array $buckets,
+        array $lanes,
         array $codes,
         string $message,
         array $details_summary
     ): void {
-        $bucket_str = empty($buckets) ? '-' : implode(',', array_map('strval', $buckets));
+        $lane_str = empty($lanes) ? '-' : implode(',', array_map('strval', $lanes));
         $code_str   = empty($codes) ? '-' : implode(',', array_map('strval', $codes));
 
         $this->dbg_line(sprintf(
-            'BLOCKED cart=%s voter=%s label=%s buckets=%s codes=%s msg="%s"',
+            'BLOCKED cart=%s voter=%s label=%s lanes=%s codes=%s msg="%s"',
             $cart_dist_id,
             $voter_id,
             self::log_text($label, 28),
-            $bucket_str,
+            $lane_str,
             $code_str,
             self::log_text($message, 170)
         ));
@@ -559,7 +559,7 @@ final class CartCompliance
                     return [
                         'id'     => $b['id'] ?? '',
                         'label'  => $b['label'] ?? '',
-                        'bucket' => $b['bucket'] ?? '',
+                        'lane' => $b['lane'] ?? '',
                         'codes'  => $b['codes'] ?? [],
                         'msg'    => $b['message'] ?? '',
                     ];
@@ -653,7 +653,7 @@ final class CartCompliance
     }
 
     /**
-     * @param array<int,array{id:string,label:string,message:string,codes:array,details:array,bucket:string,pretty?:array}> $blocked
+     * @param array<int,array{id:string,label:string,message:string,codes:array,details:array,lane:string,pretty?:array}> $blocked
      */
     private function emit_blocked_notices(array $blocked, ?\WP_Error $errors = null): void
     {
@@ -686,7 +686,7 @@ final class CartCompliance
                     continue;
                 }
 
-                $fallback = __('We couldn’t validate one or more items in your cart. Please contact us for help.', 'ffl-hub');
+                $fallback = __('We couldn\'t validate one or more items in your cart. Please contact us for help.', 'ffl-hub');
                 if (isset($seen[$fallback])) {
                     continue;
                 }
@@ -703,7 +703,7 @@ final class CartCompliance
     }
 
     /**
-     * @return array<int,array{id:string,label:string,message:string,codes:array,details:array,bucket:string,pretty?:array}>
+     * @return array<int,array{id:string,label:string,message:string,codes:array,details:array,lane:string,pretty?:array}>
      */
     private function run_distributor_validations(
         DistributorHandler $handler,
@@ -785,7 +785,7 @@ final class CartCompliance
                     continue;
                 }
 
-                $this->dbg('cart.dist.bucket', [
+                $this->dbg('cart.dist.lane', [
                     'cart_dist_id' => $cart_dist_id,
                     'has_ffl'      => $has_ffl ? 1 : 0,
                     'line_count'   => count($lines),
@@ -800,7 +800,7 @@ final class CartCompliance
                         'receiving_ffl_present' => $receiving_ffl_number ? 1 : 0,
                         'ship_ffl_present'      => ($ship_ffl instanceof DistributorShipTo) ? 1 : 0,
                         'codes'                 => ['FFLHUB_RECEIVING_FFL_REQUIRED'],
-                        'bucket'                => 'ffl_missing',
+                        'lane'                => 'ffl_missing',
                     ]);
 
                     $blocked[] = [
@@ -809,7 +809,7 @@ final class CartCompliance
                         'message' => 'FFL required but not selected',
                         'codes'   => ['FFLHUB_RECEIVING_FFL_REQUIRED'],
                         'details' => [],
-                        'bucket'  => 'ffl_missing',
+                        'lane'   => 'ffl_missing',
                         'pretty'  => [
                             __('This cart contains items that must ship to a receiving FFL. Please select a receiving FFL to continue checkout.', 'ffl-hub'),
                         ],
@@ -880,7 +880,11 @@ final class CartCompliance
                             'cart_dist_id' => $cart_dist_id,
                             'voter_id'     => strtolower(trim($voter_id_str)),
                             'label'        => $label,
-                            'bucket_hint'  => (!empty($voter_req->ffl_lines()) && empty($voter_req->non_ffl_lines())) ? 'ffl' : ((!empty($voter_req->non_ffl_lines()) && empty($voter_req->ffl_lines())) ? 'non' : 'mixed'),
+                            'lane_hint'  => (!empty($voter_req->ffl_lines()) && empty($voter_req->non_ffl_lines()))
+                                ? 'direct_ship_ffl'
+                                : ((!empty($voter_req->non_ffl_lines()) && empty($voter_req->ffl_lines()))
+                                    ? 'direct_ship_non_ffl'
+                                    : 'mixed'),
                         ]);
                         continue;
                     }
@@ -912,7 +916,7 @@ final class CartCompliance
                             'cart_dist_id' => $cart_dist_id,
                             'voter_id'     => strtolower(trim($voter_id_str)),
                             'label'        => $label,
-                            'bucket'       => 'single',
+                            'lane'       => 'single',
                             'codes'        => is_array($vr->codes) ? $vr->codes : [],
                             'message'      => (string) ($vr->message ?? ''),
                             'details'      => $details_summary,
@@ -925,15 +929,15 @@ final class CartCompliance
                             'message' => (string) ($vr->message ?: 'Validation failed'),
                             'codes'   => is_array($vr->codes) ? $vr->codes : [],
                             'details' => [],
-                            'bucket'  => 'single',
+                            'lane'   => 'single',
                             'pretty'  => [
-                                __('We couldn’t validate one or more items in your cart. Please contact us for help.', 'ffl-hub'),
+                                __('We couldn\'t validate one or more items in your cart. Please contact us for help.', 'ffl-hub'),
                             ],
                         ];
                         continue;
                     }
 
-                    $buckets = $this->resolve_buckets_for_pretty($vr, $voter_req);
+                    $lanes = $this->resolve_lanes_for_pretty($vr, $voter_req);
                     $details_summary = $this->summarize_validation_details(
                         is_array($vr->details) ? $vr->details : []
                     );
@@ -942,7 +946,7 @@ final class CartCompliance
                         'cart_dist_id' => $cart_dist_id,
                         'voter_id'     => strtolower(trim($voter_id_str)),
                         'label'        => $label,
-                        'buckets'      => $buckets,
+                        'lanes'        => $lanes,
                         'codes'        => is_array($vr->codes) ? $vr->codes : [],
                         'message'      => (string) ($vr->message ?? ''),
                         'details'      => $details_summary,
@@ -953,17 +957,17 @@ final class CartCompliance
                         $cart_dist_id,
                         strtolower(trim($voter_id_str)),
                         $label,
-                        $buckets,
+                        $lanes,
                         is_array($vr->codes) ? $vr->codes : [],
                         (string) ($vr->message ?? ''),
                         $details_summary
                     );
 
-                    foreach ($buckets as $bucket) {
+                    foreach ($lanes as $lane) {
                         $pretty_msgs = CheckoutOrderRequestBuilder::build_pretty_validation_messages(
                             $label,
                             $vr,
-                            $bucket,
+                            $lane,
                             $ship_customer,
                             $ship_ffl
                         );
@@ -974,7 +978,7 @@ final class CartCompliance
                             'message' => (string) ($vr->message ?: 'Validation failed'),
                             'codes'   => is_array($vr->codes) ? $vr->codes : [],
                             'details' => is_array($vr->details) ? $vr->details : [],
-                            'bucket'  => $bucket,
+                            'lane'   => $lane,
                             'pretty'  => $pretty_msgs,
                         ];
                     }
@@ -1015,20 +1019,23 @@ final class CartCompliance
     }
 
     /**
-     * @return string[] each of: 'non'|'ffl'
+     * @return string[] each of: 'direct_ship_non_ffl'|'direct_ship_ffl'
      */
-    private function resolve_buckets_for_pretty(
+    private function resolve_lanes_for_pretty(
         DistributorOrderValidationResult $vr,
         DistributorOrderRequest $voter_req
     ): array {
         $details = is_array($vr->details) ? $vr->details : [];
 
         $out = [];
-        if (isset($details['non']) && is_array($details['non'])) {
-            $out[] = 'non';
+        if (isset($details['direct_ship_non_ffl']) && is_array($details['direct_ship_non_ffl'])) {
+            $out[] = 'direct_ship_non_ffl';
         }
-        if (isset($details['ffl']) && is_array($details['ffl'])) {
-            $out[] = 'ffl';
+        if (isset($details['direct_ship_ffl']) && is_array($details['direct_ship_ffl'])) {
+            $out[] = 'direct_ship_ffl';
+        }
+        if (isset($details['dealer_fulfilled']) && is_array($details['dealer_fulfilled'])) {
+            $out[] = 'dealer_fulfilled';
         }
 
         if (!empty($out)) {
@@ -1038,10 +1045,10 @@ final class CartCompliance
         $has_non = !empty($voter_req->non_ffl_lines());
         $has_ffl = !empty($voter_req->ffl_lines());
 
-        if ($has_ffl && !$has_non) return ['ffl'];
-        if ($has_non && !$has_ffl) return ['non'];
+        if ($has_ffl && !$has_non) return ['direct_ship_ffl'];
+        if ($has_non && !$has_ffl) return ['direct_ship_non_ffl'];
 
-        return ['non', 'ffl'];
+        return ['direct_ship_non_ffl', 'direct_ship_ffl'];
     }
 
     private function call_validate(
@@ -1140,3 +1147,4 @@ final class CartCompliance
         return false;
     }
 }
+

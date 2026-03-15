@@ -83,7 +83,7 @@ final class OrderPlacementJobsRepository
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param int                     $order_id   Woo order ID.
-     * @param string                  $job_key    Canonical key (dist|bucket). Normalized before use.
+     * @param string                  $job_key    Canonical key (dist|lane). Normalized before use.
      * @return OrderPlacementJobRow|null DTO if found, null if missing.
      */
     public static function get_job(OrderPlacementJobsTable $jobs_table, int $order_id, string $job_key): ?OrderPlacementJobRow
@@ -108,7 +108,7 @@ final class OrderPlacementJobsRepository
         $sql = $wpdb->prepare(
             "
             SELECT
-                id, order_id, job_key, dist_id, bucket, status,
+                id, order_id, job_key, dist_id, lane, status,
                 attempts, created_at, updated_at,
                 action_id, next_run_at,
                 last_step, last_error, last_codes_json,
@@ -134,7 +134,7 @@ final class OrderPlacementJobsRepository
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param WC_Order                $order      WooCommerce order object.
-     * @param string                  $job_key    Canonical key (dist|bucket). Normalized before use.
+     * @param string                  $job_key    Canonical key (dist|lane). Normalized before use.
      * @return OrderPlacementJobRow|null DTO if found, null if missing.
      */
     public static function get_job_for_order(OrderPlacementJobsTable $jobs_table, WC_Order $order, string $job_key): ?OrderPlacementJobRow
@@ -147,7 +147,7 @@ final class OrderPlacementJobsRepository
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param int                     $order_id   Woo order ID.
-     * @param string                  $job_key    Canonical key (dist|bucket). Normalized before use.
+     * @param string                  $job_key    Canonical key (dist|lane). Normalized before use.
      * @return DistributorOrderLine[] Parsed order lines (may be empty if job/payload missing).
      */
     public static function get_job_payload_lines(OrderPlacementJobsTable $jobs_table, int $order_id, string $job_key): array
@@ -201,7 +201,7 @@ final class OrderPlacementJobsRepository
         $sql = $wpdb->prepare(
             "
             SELECT
-                id, order_id, job_key, dist_id, bucket, status,
+                id, order_id, job_key, dist_id, lane, status,
                 attempts, created_at, updated_at,
                 action_id, next_run_at,
                 last_step, last_error, last_codes_json,
@@ -336,7 +336,7 @@ final class OrderPlacementJobsRepository
         $sql = $wpdb->prepare(
             "
             SELECT
-                id, order_id, job_key, dist_id, bucket, status,
+                id, order_id, job_key, dist_id, lane, status,
                 attempts, created_at, updated_at,
                 action_id, next_run_at,
                 last_step, last_error, last_codes_json,
