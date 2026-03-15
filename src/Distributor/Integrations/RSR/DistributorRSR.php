@@ -482,7 +482,7 @@ class DistributorRSR extends DistributorBase
             return DistributorOrderValidationResult::allow('No valid order lines to validate.');
         }
 
-        $auth = $this->get_rsr_auth_payload();
+        $auth = $this->get_rsr_auth_payload('validation');
         if (!($auth['ok'] ?? false)) {
             return DistributorOrderValidationResult::block(
                 (string) ($auth['message'] ?? 'Missing RSR auth payload.'),
@@ -1113,16 +1113,29 @@ class DistributorRSR extends DistributorBase
      *   payload:array{Username:string,Password:string,POS:string}
      * }
      */
-    private function get_rsr_auth_payload(): array
+    private function get_rsr_auth_payload(string $purpose = 'ordering'): array
     {
-        $username = $this->get_dropship_username();
-        $password = $this->get_dropship_password();
+        $purpose = strtolower(trim((string) $purpose));
+        $is_validation = ($purpose === 'validation');
+
+        if ($is_validation) {
+            $username = $this->get_main_username();
+            $password = $this->get_main_password();
+        } else {
+            $username = $this->get_dropship_username();
+            $password = $this->get_dropship_password();
+        }
+
         $pos      = $this->get_pos_indicator();
 
         if ($username === '' || $password === '') {
+            $missing_message = $is_validation
+                ? 'Missing RSR main credentials (main_account_number/password).'
+                : 'Missing RSR dropship credentials (dropship_account_number/password).';
+
             return [
                 'ok' => false,
-                'message' => 'Missing RSR dropship credentials (dropship_account_number/password).',
+                'message' => $missing_message,
                 'payload' => ['Username' => '', 'Password' => '', 'POS' => ''],
             ];
         }
@@ -1176,6 +1189,16 @@ class DistributorRSR extends DistributorBase
     private function get_dropship_password(): string
     {
         return trim((string) get_option($this->get_option_name('dropship_account_password'), ''));
+    }
+
+    private function get_main_username(): string
+    {
+        return trim((string) get_option($this->get_option_name('main_account_number'), ''));
+    }
+
+    private function get_main_password(): string
+    {
+        return trim((string) get_option($this->get_option_name('main_account_password'), ''));
     }
 
     private function get_pos_indicator(): string
