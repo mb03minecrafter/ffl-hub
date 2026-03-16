@@ -517,29 +517,68 @@ class DistributorZanders extends DistributorBase
         ];
 
         if ($this->is_test_order_debug_enabled()) {
-            $call_payload = [
+            $shipto_payload = [
                 'username'    => (string) ($auth['payload']['username'] ?? ''),
                 'password'    => (string) ($auth['payload']['password'] ?? ''),
                 'addressinfo' => $addrinfo,
                 'testing'     => (bool) $testing,
             ];
-            $xml = $shipto_client->build_request_xml_preview(
+
+            $shipto_xml = $shipto_client->build_request_xml_preview(
                 ZandersDirectShipAPI::OP_USE_SHIP_TO,
-                $call_payload,
+                $shipto_payload,
                 ZandersDirectShipAPI::SHIPTO_NS_HTTPS,
+                ['mode' => 'zanders_rpc_encoded']
+            );
+
+            $customer_name = '';
+            $customer_phone = '';
+            if ($request->ship_to_customer instanceof DistributorShipTo) {
+                $customer_name = (string) $request->ship_to_customer->name;
+                $customer_phone = (string) $request->ship_to_customer->phone;
+            }
+
+            // In test debug mode we do not call useShipTo(), so shipToNo is unknown here.
+            $preview_ship_to_no = '__FROM_USESHIPTO__';
+            $ship_instructions = self::build_fixed_80_ship_instructions($customer_name, $customer_phone);
+
+            $order_map_preview = [
+                'shipToNo'            => $preview_ship_to_no,
+                'shipDate'            => $ship_date,
+                'shipViaCode'         => 'UG',
+                'shipInstructions'    => $ship_instructions,
+                'purchaseOrderNumber' => $po,
+                'items'               => $items,
+            ];
+
+            $create_payload = [
+                'username' => (string) ($auth['payload']['username'] ?? ''),
+                'password' => (string) ($auth['payload']['password'] ?? ''),
+                'order'    => $order_map_preview,
+                'testing'  => (bool) $testing,
+            ];
+
+            $create_xml = $orders_client->build_request_xml_preview(
+                ZandersDirectShipAPI::OP_CREATE_ORDER,
+                $create_payload,
+                ZandersDirectShipAPI::ORDERS_NS_HTTPS,
                 ['mode' => 'zanders_rpc_encoded']
             );
 
             return $this->build_test_order_debug_block(
                 $lane,
-                $this->strip_wsdl_suffix(ZandersDirectShipAPI::SHIPTO_WSDL),
+                $this->strip_wsdl_suffix(ZandersDirectShipAPI::ORDERS_WSDL),
                 'POST',
                 'xml',
-                $this->redact_soap_xml_for_debug($xml),
+                $this->redact_soap_xml_for_debug($create_xml),
                 [
                     'po' => $po,
-                    'operation' => ZandersDirectShipAPI::OP_USE_SHIP_TO,
+                    'operation' => ZandersDirectShipAPI::OP_CREATE_ORDER,
                     'item_count' => count($items),
+                    'debug_note' => 'createOrder preview uses placeholder shipToNo because useShipTo is not executed in test order debug mode.',
+                    'debug_preflight_operation' => ZandersDirectShipAPI::OP_USE_SHIP_TO,
+                    'debug_preflight_endpoint' => $this->strip_wsdl_suffix(ZandersDirectShipAPI::SHIPTO_WSDL),
+                    'debug_request_body_preflight' => $this->redact_soap_xml_for_debug($shipto_xml),
                 ],
                 $external_ids
             );

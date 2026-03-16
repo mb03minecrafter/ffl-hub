@@ -296,6 +296,11 @@ final class OrderPlacementMetaBox
                 $debug_endpoint       = isset($details['debug_endpoint']) ? (string) $details['debug_endpoint'] : '';
                 $debug_method         = isset($details['debug_method']) ? (string) $details['debug_method'] : '';
                 $debug_lane           = isset($details['debug_lane']) ? (string) $details['debug_lane'] : '';
+                $debug_preflight_request_body   = isset($details['debug_request_body_preflight']) ? (string) $details['debug_request_body_preflight'] : '';
+                $debug_preflight_request_format = isset($details['debug_request_format_preflight']) ? (string) $details['debug_request_format_preflight'] : '';
+                $debug_preflight_endpoint       = isset($details['debug_preflight_endpoint']) ? (string) $details['debug_preflight_endpoint'] : '';
+                $debug_preflight_method         = isset($details['debug_preflight_method']) ? (string) $details['debug_preflight_method'] : '';
+                $debug_preflight_operation      = isset($details['debug_preflight_operation']) ? (string) $details['debug_preflight_operation'] : '';
 
                 $p_pill_class = self::place_pill_class($ok, $code, $codes);
 
@@ -357,6 +362,32 @@ final class OrderPlacementMetaBox
                     }
                     echo '</div>';
                     echo '<pre class="fflhub-pre">' . esc_html($pretty_debug_request) . '</pre>';
+                    echo '</details>';
+                }
+
+                if ($debug_preflight_request_body !== '') {
+                    $pretty_preflight_request = self::pretty_debug_request_body($debug_preflight_request_body, $debug_preflight_request_format);
+
+                    echo '<details class="fflhub-details">';
+                    echo '<summary>Outbound preflight request preview (test debug)</summary>';
+                    echo '<div class="fflhub-kv">';
+                    if ($debug_lane !== '') {
+                        echo self::kv('Lane', '<span class="fflhub-mono">' . esc_html($debug_lane) . '</span>');
+                    }
+                    if ($debug_preflight_operation !== '') {
+                        echo self::kv('Operation', '<span class="fflhub-mono">' . esc_html($debug_preflight_operation) . '</span>');
+                    }
+                    if ($debug_preflight_method !== '') {
+                        echo self::kv('Method', '<span class="fflhub-mono">' . esc_html($debug_preflight_method) . '</span>');
+                    }
+                    if ($debug_preflight_endpoint !== '') {
+                        echo self::kv('Endpoint', '<span class="fflhub-mono">' . esc_html($debug_preflight_endpoint) . '</span>');
+                    }
+                    if ($debug_preflight_request_format !== '') {
+                        echo self::kv('Format', '<span class="fflhub-mono">' . esc_html($debug_preflight_request_format) . '</span>');
+                    }
+                    echo '</div>';
+                    echo '<pre class="fflhub-pre">' . esc_html($pretty_preflight_request) . '</pre>';
                     echo '</details>';
                 }
 
