@@ -1,20 +1,21 @@
 .fflhub-wrap {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 14px;
 }
 
 .fflhub-card {
     background: #111827;
     border: 1px solid #243043;
-    border-radius: 10px;
-    padding: 10px;
+    border-radius: 12px;
+    padding: 14px;
     color: #e5e7eb;
 }
 
 .fflhub-card-title {
     font-weight: 700;
-    margin-bottom: 8px;
+    font-size: 14px;
+    margin-bottom: 10px;
 }
 
 .fflhub-muted {
@@ -24,13 +25,14 @@
 .fflhub-kv {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
 }
 
 .fflhub-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 10px;
+    display: grid;
+    grid-template-columns: minmax(130px, 180px) minmax(0, 1fr);
+    align-items: start;
+    gap: 12px;
 }
 
 .fflhub-key {
@@ -39,9 +41,10 @@
 }
 
 .fflhub-val {
-    text-align: right;
+    text-align: left;
     word-break: break-word;
-    max-width: 70%;
+    max-width: none;
+    line-height: 1.4;
 }
 
 .fflhub-badges {
@@ -64,12 +67,12 @@
     justify-content: space-between;
     align-items: center;
     gap: 10px;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
 }
 
 .fflhub-job-title {
     font-weight: 800;
-    font-size: 13px;
+    font-size: 14px;
 }
 
 .fflhub-pill {
@@ -114,27 +117,27 @@
     cursor: pointer;
     color: #93c5fd;
     font-weight: 700;
-    margin-top: 8px;
+    margin-top: 10px;
 }
 
 .fflhub-pre {
     background: #0b1220;
     border: 1px solid #22314a;
     border-radius: 8px;
-    padding: 8px;
+    padding: 12px;
     overflow: auto;
     color: #e5e7eb;
-    font-size: 12px;
-    line-height: 1.35;
-    max-height: 260px;
+    font-size: 13px;
+    line-height: 1.45;
+    max-height: 520px;
 }
 
 .fflhub-error {
-    margin-top: 8px;
+    margin-top: 10px;
     background: #2a0d0d;
     border: 1px solid #7f1d1d;
     border-radius: 8px;
-    padding: 8px;
+    padding: 10px;
 }
 
 .fflhub-error-title {
@@ -145,17 +148,17 @@
 
 .fflhub-error-msg {
     color: #fee2e2;
-    font-size: 12px;
+    font-size: 13px;
     white-space: pre-wrap;
     word-break: break-word;
 }
 
 .fflhub-subcard {
-    margin-top: 8px;
+    margin-top: 10px;
     background: #0b1220;
     border: 1px solid #22314a;
     border-radius: 8px;
-    padding: 8px;
+    padding: 12px;
 }
 
 .fflhub-subcard-title {
@@ -166,9 +169,37 @@
 
 .fflhub-mono {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    font-size: 12px;
+    font-size: 13px;
 }
 
 .fflhub-retry-wrap {
-    margin-top: 8px;
+    margin-top: 10px;
+}
+
+@media (max-width: 960px) {
+    .fflhub-row {
+        grid-template-columns: minmax(110px, 150px) minmax(0, 1fr);
+        gap: 10px;
+    }
+}
+
+@media (max-width: 782px) {
+    .fflhub-wrap {
+        gap: 10px;
+    }
+
+    .fflhub-card,
+    .fflhub-subcard {
+        padding: 10px;
+    }
+
+    .fflhub-row {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .fflhub-pre {
+        max-height: 360px;
+    }
 }

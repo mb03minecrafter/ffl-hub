@@ -64,7 +64,7 @@ final class OrderPlacementMetaBox
             self::META_BOX_TITLE,
             [$this, 'render_metabox'],
             null,
-            'side',
+            'normal',
             'high'
         );
     }
