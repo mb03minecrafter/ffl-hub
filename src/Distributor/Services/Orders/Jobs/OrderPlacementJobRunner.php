@@ -150,6 +150,7 @@ final class OrderPlacementJobRunner
             }
 
             // Build DistributorOrderRequest.
+            $job_note = 'FFLHub order placement job for Woo Order (' . $order_id . ')';
             $req = new DistributorOrderRequest(
                 $lines,
                 $ship_customer,
@@ -157,7 +158,7 @@ final class OrderPlacementJobRunner
                 $merchant_order_id,
                 $dest_state,
                 $receiving_ffl_number,
-                'FFLHub order placement job',
+                $job_note,
                 $lane
             );
 

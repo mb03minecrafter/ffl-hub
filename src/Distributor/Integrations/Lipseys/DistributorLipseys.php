@@ -630,6 +630,16 @@ class DistributorLipseys extends DistributorBase
 
         if ($lane === 'dealer_fulfilled') {
             $po = $base_po . '-DF';
+            $item_note = trim((string) $request->notes);
+            if ($item_note !== '') {
+                foreach ($items as &$item_row) {
+                    if (!is_array($item_row)) {
+                        continue;
+                    }
+                    $item_row['Note'] = $item_note;
+                }
+                unset($item_row);
+            }
 
             $payload = [
                 'PONumber'     => $po,
