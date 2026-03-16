@@ -290,6 +290,12 @@ final class OrderPlacementMetaBox
                 $codes = isset($pl['codes']) && is_array($pl['codes']) ? $pl['codes'] : [];
                 $http  = isset($pl['http']) ? (int) $pl['http'] : 0;
                 $ext   = isset($pl['ext_ids']) && is_array($pl['ext_ids']) ? $pl['ext_ids'] : [];
+                $details = (isset($pl['details']) && is_array($pl['details'])) ? $pl['details'] : [];
+                $debug_request_body   = isset($details['debug_request_body']) ? (string) $details['debug_request_body'] : '';
+                $debug_request_format = isset($details['debug_request_format']) ? (string) $details['debug_request_format'] : '';
+                $debug_endpoint       = isset($details['debug_endpoint']) ? (string) $details['debug_endpoint'] : '';
+                $debug_method         = isset($details['debug_method']) ? (string) $details['debug_method'] : '';
+                $debug_lane           = isset($details['debug_lane']) ? (string) $details['debug_lane'] : '';
 
                 $p_pill_class = self::place_pill_class($ok, $code, $codes);
 
@@ -330,6 +336,29 @@ final class OrderPlacementMetaBox
                 }
 
                 echo '</div>';
+
+                if ($debug_request_body !== '') {
+                    $pretty_debug_request = self::pretty_debug_request_body($debug_request_body, $debug_request_format);
+
+                    echo '<details class="fflhub-details">';
+                    echo '<summary>Outbound request preview (test debug)</summary>';
+                    echo '<div class="fflhub-kv">';
+                    if ($debug_lane !== '') {
+                        echo self::kv('Lane', '<span class="fflhub-mono">' . esc_html($debug_lane) . '</span>');
+                    }
+                    if ($debug_method !== '') {
+                        echo self::kv('Method', '<span class="fflhub-mono">' . esc_html($debug_method) . '</span>');
+                    }
+                    if ($debug_endpoint !== '') {
+                        echo self::kv('Endpoint', '<span class="fflhub-mono">' . esc_html($debug_endpoint) . '</span>');
+                    }
+                    if ($debug_request_format !== '') {
+                        echo self::kv('Format', '<span class="fflhub-mono">' . esc_html($debug_request_format) . '</span>');
+                    }
+                    echo '</div>';
+                    echo '<pre class="fflhub-pre">' . esc_html($pretty_debug_request) . '</pre>';
+                    echo '</details>';
+                }
 
                 $pretty_pl = self::pretty_json($place_raw);
                 echo '<details class="fflhub-details">';
@@ -609,6 +638,68 @@ final class OrderPlacementMetaBox
         }
 
         return wp_json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    }
+
+    private static function pretty_debug_request_body(string $raw, string $format = ''): string
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return '';
+        }
+
+        $fmt = strtolower(trim($format));
+        if ($fmt === 'json' || ($fmt === '' && self::looks_like_json($raw))) {
+            return self::pretty_json($raw);
+        }
+
+        if ($fmt === 'xml' || ($fmt === '' && self::looks_like_xml($raw))) {
+            return self::pretty_xml($raw);
+        }
+
+        return $raw;
+    }
+
+    private static function pretty_xml(string $raw): string
+    {
+        $raw = trim($raw);
+        if ($raw === '' || !class_exists('\\DOMDocument')) {
+            return $raw;
+        }
+
+        $previous = libxml_use_internal_errors(true);
+
+        $dom = new \DOMDocument('1.0', 'UTF-8');
+        $loaded = @$dom->loadXML($raw);
+        if (!$loaded) {
+            libxml_clear_errors();
+            libxml_use_internal_errors($previous);
+            return $raw;
+        }
+
+        $dom->formatOutput = true;
+        $pretty = $dom->saveXML();
+
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        return is_string($pretty) && $pretty !== '' ? $pretty : $raw;
+    }
+
+    private static function looks_like_json(string $raw): bool
+    {
+        $trim = ltrim($raw);
+        if ($trim === '') {
+            return false;
+        }
+
+        $first = substr($trim, 0, 1);
+        return ($first === '{' || $first === '[');
+    }
+
+    private static function looks_like_xml(string $raw): bool
+    {
+        $trim = ltrim($raw);
+        return ($trim !== '' && substr($trim, 0, 1) === '<');
     }
 
     /**
