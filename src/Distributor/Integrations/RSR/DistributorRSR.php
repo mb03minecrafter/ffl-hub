@@ -225,7 +225,9 @@ class DistributorRSR extends DistributorBase
             return $base;
         }
 
-        $auth = $this->get_rsr_auth_payload();
+        $lane = strtolower(trim((string) ($request->lane ?? '')));
+        $auth_purpose = ($lane === 'dealer_fulfilled') ? 'dealer_fulfilled' : 'ordering';
+        $auth = $this->get_rsr_auth_payload($auth_purpose);
         if (!($auth['ok'] ?? false)) {
             return DistributorOrderResult::block_fatal(
                 (string) ($auth['message'] ?? 'Missing RSR credentials.'),
@@ -249,7 +251,8 @@ class DistributorRSR extends DistributorBase
     ): DistributorOrderResult {
         $lane = strtolower(trim((string) $lane));
 
-        $auth = $this->get_rsr_auth_payload(); // already validated in precheck
+        $auth_purpose = ($lane === 'dealer_fulfilled') ? 'dealer_fulfilled' : 'ordering';
+        $auth = $this->get_rsr_auth_payload($auth_purpose); // already validated in precheck
         $api_base_url = $this->get_api_base_url();
 
         $base_po = RSRDirectConnectAPI::sanitize_rsr_po((string) $request->merchant_order_id);
@@ -266,14 +269,39 @@ class DistributorRSR extends DistributorBase
         }
 
         if ($lane === 'dealer_fulfilled') {
-            return DistributorOrderResult::block_fatal(
-                'RSR dealer_fulfilled lane is not implemented yet.',
-                [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED],
-                [],
-                0,
-                '',
-                $external_ids
+            $payload = array_merge(
+                $auth['payload'],
+                $this->build_rsr_dealer_email_payload(),
+                [
+                    'PONum' => $po,
+                    'Items' => $items,
+                ]
             );
+
+            if ($this->is_test_order_debug_enabled()) {
+                return $this->build_test_order_debug_block(
+                    $lane,
+                    rtrim($api_base_url, '/') . '/place-order',
+                    'POST',
+                    'json',
+                    $this->encode_debug_json_payload($this->redact_rsr_payload_for_debug($payload)),
+                    [
+                        'po' => $po,
+                        'item_count' => count($items),
+                    ],
+                    $external_ids
+                );
+            }
+
+            $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
+            if (!($resp['ok'] ?? false)) {
+                $failure = $this->classify_rsr_place_order_failure($resp, 'RSR dealer-fulfilled');
+                $failure->external_order_ids = $external_ids;
+                return $failure;
+            }
+
+            $external_ids[] = (string) ($resp['external_id'] ?? '');
+            return DistributorOrderResult::ok('RSR dealer-fulfilled order submitted.', $external_ids);
         }
 
         if ($lane === 'direct_ship_non_ffl') {
@@ -314,6 +342,21 @@ class DistributorRSR extends DistributorBase
                 ],
                 $ship_ctx
             );
+
+            if ($this->is_test_order_debug_enabled()) {
+                return $this->build_test_order_debug_block(
+                    $lane,
+                    rtrim($api_base_url, '/') . '/place-order',
+                    'POST',
+                    'json',
+                    $this->encode_debug_json_payload($this->redact_rsr_payload_for_debug($payload)),
+                    [
+                        'po' => $po,
+                        'item_count' => count($items),
+                    ],
+                    $external_ids
+                );
+            }
 
             $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
             if (!($resp['ok'] ?? false)) {
@@ -400,7 +443,22 @@ class DistributorRSR extends DistributorBase
             $ship_ctx
         );
 
-            $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
+        if ($this->is_test_order_debug_enabled()) {
+            return $this->build_test_order_debug_block(
+                $lane,
+                rtrim($api_base_url, '/') . '/place-order',
+                'POST',
+                'json',
+                $this->encode_debug_json_payload($this->redact_rsr_payload_for_debug($payload)),
+                [
+                    'po' => $po,
+                    'item_count' => count($items),
+                ],
+                $external_ids
+            );
+        }
+
+        $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
         if (!($resp['ok'] ?? false)) {
             $failure = $this->classify_rsr_place_order_failure($resp, 'RSR direct-ship FFL');
             $failure->external_order_ids = $external_ids;
@@ -1117,8 +1175,9 @@ class DistributorRSR extends DistributorBase
     {
         $purpose = strtolower(trim((string) $purpose));
         $is_validation = ($purpose === 'validation');
+        $is_dealer_fulfilled = ($purpose === 'dealer_fulfilled');
 
-        if ($is_validation) {
+        if ($is_validation || $is_dealer_fulfilled) {
             $username = $this->get_main_username();
             $password = $this->get_main_password();
         } else {
@@ -1129,9 +1188,13 @@ class DistributorRSR extends DistributorBase
         $pos      = $this->get_pos_indicator();
 
         if ($username === '' || $password === '') {
-            $missing_message = $is_validation
-                ? 'Missing RSR main credentials (main_account_number/password).'
-                : 'Missing RSR dropship credentials (dropship_account_number/password).';
+            if ($is_validation) {
+                $missing_message = 'Missing RSR main credentials (main_account_number/password).';
+            } elseif ($is_dealer_fulfilled) {
+                $missing_message = 'Missing RSR main credentials (main_account_number/password) required for dealer-fulfilled ordering.';
+            } else {
+                $missing_message = 'Missing RSR dropship credentials (dropship_account_number/password).';
+            }
 
             return [
                 'ok' => false,
@@ -1263,6 +1326,22 @@ class DistributorRSR extends DistributorBase
             return $raw;
         }
         return $raw;
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>
+     */
+    private function redact_rsr_payload_for_debug(array $payload): array
+    {
+        if (array_key_exists('Username', $payload)) {
+            $payload['Username'] = '***REDACTED***';
+        }
+        if (array_key_exists('Password', $payload)) {
+            $payload['Password'] = '***REDACTED***';
+        }
+
+        return $payload;
     }
 }
 

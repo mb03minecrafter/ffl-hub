@@ -78,6 +78,16 @@ final class SettingsRegistrar
                 'default'           => (string) Options::default_global_markup(),
             ]
         );
+
+        register_setting(
+            $group,
+            Options::OPTION_TEST_ORDER_DEBUG_ENABLED,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_test_order_debug_enabled() ? '1' : '0',
+            ]
+        );
     }
 
     /**

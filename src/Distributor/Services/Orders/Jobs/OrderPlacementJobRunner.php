@@ -243,9 +243,6 @@ final class OrderPlacementJobRunner
     /**
      * Place an order with the distributor and persist a machine-readable snapshot.
      *
-     * NOTE: Still contains DEBUG stub logic (your existing TODO).
-     * Replace the stub with $dist->place_order($req) when ready.
-     *
      * @throws \RuntimeException on exception or invalid return type
      */
     private static function place_and_persist_result(
@@ -259,13 +256,7 @@ final class OrderPlacementJobRunner
         $job_key = $job->job_key_norm();
 
         try {
-            //$or = $dist->place_order($req);
-            
-            $or = DistributorOrderResult::block_fatal("TEST DEBUG BLOCK TO TEST VALIDATION");
-
-            ///WE NEED TO CHANGE THIS TO ORDER FOR REAL WHEN WE GO TO PROD
-
-
+            $or = $dist->place_order($req);
         } catch (\Throwable $e) {
             $snap = OrderPlacementSnapshotUtil::invalid_place_return_snapshot($job->ctx($attempt_n));
             OrderPlacementJobSnapshotsStore::set_job_place_result($jobs_table, $order, $job_key, $snap);
@@ -284,10 +275,6 @@ final class OrderPlacementJobRunner
             $job_key,
             OrderPlacementSnapshotUtil::place_snapshot($or, $job->ctx($attempt_n))
         );
-
-
-        //here?
-
 
         return $or;
     }

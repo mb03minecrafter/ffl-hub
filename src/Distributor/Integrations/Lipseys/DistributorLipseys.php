@@ -521,18 +521,30 @@ class DistributorLipseys extends DistributorBase
             return $base;
         }
 
-        $email    = $this->get_dealer_email();
-        $password = $this->get_dealer_password();
+        $lane = strtolower(trim((string) ($request->lane ?? '')));
+        $dealer_fulfilled = ($lane === 'dealer_fulfilled');
+
+        if ($dealer_fulfilled) {
+            $email    = $this->get_main_account_email();
+            $password = $this->get_main_account_password();
+        } else {
+            $email    = $this->get_dealer_email();
+            $password = $this->get_dealer_password();
+        }
 
         if ($email === '' || $password === '') {
+            $msg = $dealer_fulfilled
+                ? 'Missing Lipsey\'s main account credentials (main_account_email / main_account_password).'
+                : 'Missing Lipsey\'s dealer credentials (dealer_email / dealer_password).';
+
             return DistributorOrderResult::block_fatal(
-                'Missing Lipsey\'s credentials (dealer_email / dealer_password).',
+                $msg,
                 [DistributorOrderResult::REASON_FATAL_MISSING_CREDS]
             );
         }
 
-        // Drop-ship requires a consumer ship-to address.
-        if (!($request->ship_to_customer instanceof DistributorShipTo)) {
+        // Direct-ship lanes require a consumer ship-to address.
+        if (!$dealer_fulfilled && !($request->ship_to_customer instanceof DistributorShipTo)) {
             return DistributorOrderResult::block_fatal(
                 'Missing ship_to_customer (required for Lipsey\'s drop-ship).',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
@@ -569,9 +581,7 @@ class DistributorLipseys extends DistributorBase
         /** @var \FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient $client */
         $client = $this->lipseys_client;
 
-        $email    = $this->get_dealer_email();
-        $password = $this->get_dealer_password();
-        if (!$client || $email === '' || $password === '') {
+        if (!$client) {
             // Should not happen because precheck guards it, but keep it defensive.
             return DistributorOrderResult::block_retryable(
                 'Lipseys client missing during lane placement.',
@@ -610,14 +620,53 @@ class DistributorLipseys extends DistributorBase
         $customer = $request->ship_to_customer;
 
         if ($lane === 'dealer_fulfilled') {
-            return DistributorOrderResult::block_fatal(
-                'Lipseys dealer_fulfilled lane is not implemented yet.',
-                [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED],
-                [],
-                0,
-                '',
-                $external_ids
-            );
+            $po = $base_po . '-DF';
+
+            $payload = [
+                'PONumber'     => $po,
+                'DisableEmail' => true,
+                'Items'        => $items,
+            ];
+
+            if ($this->is_test_order_debug_enabled()) {
+                return $this->build_test_order_debug_block(
+                    $lane,
+                    'https://api.lipseys.com/api/Integration/Order/APIOrder',
+                    'POST',
+                    'json',
+                    $this->encode_debug_json_payload($payload),
+                    [
+                        'po' => $po,
+                        'item_count' => count($items),
+                    ],
+                    $external_ids
+                );
+            }
+
+            try {
+                $resp = $client->Order($payload); // APIOrder
+            } catch (\Throwable $e) {
+                $r = $this->classify_lipseys_exception_as_order_result($e, 'Lipseys dealer-fulfilled APIOrder', $po);
+                $r->external_order_ids = $external_ids;
+                return $r;
+            }
+
+            $norm = LipseysIntegrationAPI::normalize_order_response($resp, $po, 'APIOrder');
+
+            $item_issues = $this->collect_lipseys_api_order_item_issues($resp);
+            if (!empty($item_issues)) {
+                $norm['ok'] = false;
+                $norm['message'] = 'APIOrder line errors: ' . $this->join_msgs($item_issues, 10);
+            }
+
+            if (!($norm['ok'] ?? false)) {
+                $r = $this->classify_lipseys_order_failure($norm, 'Lipseys dealer-fulfilled');
+                $r->external_order_ids = $external_ids;
+                return $r;
+            }
+
+            $external_ids[] = (string) ($norm['external_id'] ?? '');
+            return DistributorOrderResult::ok('Lipseys dealer-fulfilled order submitted.', $external_ids);
         }
 
         if ($lane === 'direct_ship_non_ffl') {
@@ -644,6 +693,21 @@ class DistributorLipseys extends DistributorBase
                 'Overnight'    => false,
                 'Items'        => $items,
             ];
+
+            if ($this->is_test_order_debug_enabled()) {
+                return $this->build_test_order_debug_block(
+                    $lane,
+                    'https://api.lipseys.com/api/Integration/Order/DropShipAccessories',
+                    'POST',
+                    'json',
+                    $this->encode_debug_json_payload($payload),
+                    [
+                        'po' => $po,
+                        'item_count' => count($items),
+                    ],
+                    $external_ids
+                );
+            }
 
             try {
                 $resp = $client->DropShipAccessories($payload);
@@ -720,6 +784,21 @@ class DistributorLipseys extends DistributorBase
             'DisableEmail'  => true,
             'Items'         => $items,
         ];
+
+        if ($this->is_test_order_debug_enabled()) {
+            return $this->build_test_order_debug_block(
+                $lane,
+                'https://api.lipseys.com/api/Integration/Order/DropShipFirearms',
+                'POST',
+                'json',
+                $this->encode_debug_json_payload($payload),
+                [
+                    'po' => $po,
+                    'item_count' => count($items),
+                ],
+                $external_ids
+            );
+        }
 
         try {
             $resp = $client->DropShipFirearms($payload);
@@ -906,6 +985,84 @@ class DistributorLipseys extends DistributorBase
         $item_no = trim((string) $item_no);
 
         return $item_no !== '' ? $item_no : null;
+    }
+
+    /**
+     * Collect APIOrder per-line issues from Lipsey's response payload.
+     *
+     * @param mixed $resp
+     * @return string[]
+     */
+    private function collect_lipseys_api_order_item_issues($resp): array
+    {
+        if (!is_array($resp)) {
+            return [];
+        }
+
+        $rows = $resp['data'] ?? null;
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $id = trim((string) ($row['itemNumber'] ?? $row['lipseysItemNumber'] ?? 'unknown'));
+            $parts = [];
+
+            if ($this->to_boolish($row['blocked'] ?? false, false)) {
+                $parts[] = 'blocked';
+            }
+            if ($this->to_boolish($row['allocated'] ?? false, false)) {
+                $parts[] = 'allocated';
+            }
+            if (array_key_exists('validForCart', $row) && !$this->to_boolish($row['validForCart'], true)) {
+                $parts[] = 'invalid_for_cart';
+            }
+            if (array_key_exists('validForShipTo', $row) && !$this->to_boolish($row['validForShipTo'], true)) {
+                $parts[] = 'invalid_for_shipto';
+            }
+            if ($this->to_boolish($row['orderError'] ?? false, false)) {
+                $parts[] = 'order_error';
+            }
+
+            $requested = isset($row['requestedQuantity']) ? max(0, (int) $row['requestedQuantity']) : 0;
+            $fulfilled = isset($row['fulfilledQuantity']) ? max(0, (int) $row['fulfilledQuantity']) : 0;
+            if ($requested > 0 && $fulfilled < $requested) {
+                $parts[] = 'fulfilled=' . $fulfilled . '/' . $requested;
+            }
+
+            if (isset($row['errors']) && is_array($row['errors']) && !empty($row['errors'])) {
+                $errs = [];
+                foreach ($row['errors'] as $e) {
+                    $s = trim((string) $e);
+                    if ($s !== '') {
+                        $errs[] = $s;
+                    }
+                    if (count($errs) >= 2) {
+                        break;
+                    }
+                }
+                if (!empty($errs)) {
+                    $parts[] = implode('; ', $errs);
+                }
+            }
+
+            if (!empty($parts)) {
+                $out[] = $id . ': ' . implode(', ', $parts);
+            }
+
+            if (count($out) >= 12) {
+                $out[] = '...';
+                break;
+            }
+        }
+
+        return $out;
     }
 
     /* -------------------------------------------------------------------------

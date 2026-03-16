@@ -149,10 +149,19 @@ class DistributorZanders extends DistributorBase
     private function get_zanders_auth_for_lane(string $lane): array
     {
         $lane = strtolower(trim((string) $lane));
-        $auth_lane = ($lane === 'direct_ship_ffl') ? 'direct_ship_ffl' : 'direct_ship_non_ffl';
-
-        $u_key = ($auth_lane === 'direct_ship_ffl') ? 'gun_username' : 'accessory_username';
-        $p_key = ($auth_lane === 'direct_ship_ffl') ? 'gun_password' : 'accessory_password';
+        if ($lane === 'dealer_fulfilled') {
+            $auth_lane = 'dealer_fulfilled';
+            $u_key = 'main_username';
+            $p_key = 'main_password';
+        } elseif ($lane === 'direct_ship_ffl') {
+            $auth_lane = 'direct_ship_ffl';
+            $u_key = 'gun_username';
+            $p_key = 'gun_password';
+        } else {
+            $auth_lane = 'direct_ship_non_ffl';
+            $u_key = 'accessory_username';
+            $p_key = 'accessory_password';
+        }
 
         $u = trim((string) \FFLHub\Settings\Options::get_distributor_option('zanders', $u_key, ''));
         $p = trim((string) \FFLHub\Settings\Options::get_distributor_option('zanders', $p_key, ''));
@@ -239,17 +248,6 @@ class DistributorZanders extends DistributorBase
     ): DistributorOrderResult {
         $lane = strtolower(trim((string) $lane));
 
-        if ($lane === 'dealer_fulfilled') {
-            return DistributorOrderResult::block_fatal(
-                'Zanders dealer_fulfilled lane is not implemented yet.',
-                [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED],
-                [],
-                0,
-                '',
-                $external_ids
-            );
-        }
-
         $auth = $this->get_zanders_auth_for_lane($lane);
         if (empty($auth['ok'])) {
             $r = DistributorOrderResult::block_fatal(
@@ -266,15 +264,91 @@ class DistributorZanders extends DistributorBase
         $shipto_client = $this->make_shipto_client();
 
 
-        $po = $this->sanitize_and_truncate_po((string) $request->merchant_order_id, 22);
+        $po = $this->sanitize_and_truncate_po(
+            (string) $request->merchant_order_id,
+            ($lane === 'dealer_fulfilled') ? 25 : 22
+        );
 
 
         $ship_date = (string) apply_filters('fflhub_zanders_ship_date', gmdate('Y-m-d'), $request);
 
-        $items = $this->build_zanders_items($lines);
+        $items = $this->build_zanders_items(
+            $lines,
+            $lane === 'dealer_fulfilled',
+            $lane === 'dealer_fulfilled'
+        );
         if ($items instanceof DistributorOrderResult) {
             $items->external_order_ids = $external_ids;
             return $items;
+        }
+
+        if ($lane === 'dealer_fulfilled') {
+            $customer_email = '';
+            if (($request->ship_to_customer instanceof DistributorShipTo) && trim((string) $request->ship_to_customer->email) !== '') {
+                $customer_email = trim((string) $request->ship_to_customer->email);
+            }
+            if ($customer_email === '') {
+                $customer_email = trim((string) get_option('admin_email', ''));
+            }
+            if ($customer_email === '') {
+                $customer_email = 'dealer@example.com';
+            }
+
+            $order_map = [
+                'shipToNo'             => '0001',
+                'shipDate'             => $ship_date,
+                'shipViaCode'          => 'BW',
+                'shipInstructions'     => self::truncate_string((string) $request->notes, 80),
+                'orderCommentsEmail'   => self::truncate_string($customer_email, 40),
+                'purchaseOrderNumber'  => $po,
+                'items'                => $items,
+            ];
+
+            if ($this->is_test_order_debug_enabled()) {
+                $call_payload = [
+                    'username' => (string) ($auth['payload']['username'] ?? ''),
+                    'password' => (string) ($auth['payload']['password'] ?? ''),
+                    'order'    => $order_map,
+                    'testing'  => (bool) $testing,
+                ];
+                $xml = $orders_client->build_request_xml_preview(
+                    ZandersDirectShipAPI::OP_CREATE_ORDER,
+                    $call_payload,
+                    ZandersDirectShipAPI::ORDERS_NS_HTTPS,
+                    ['mode' => 'zanders_rpc_encoded']
+                );
+
+                return $this->build_test_order_debug_block(
+                    $lane,
+                    $this->strip_wsdl_suffix(ZandersDirectShipAPI::ORDERS_WSDL),
+                    'POST',
+                    'xml',
+                    $this->redact_soap_xml_for_debug($xml),
+                    [
+                        'po' => $po,
+                        'operation' => ZandersDirectShipAPI::OP_CREATE_ORDER,
+                        'item_count' => count($items),
+                    ],
+                    $external_ids
+                );
+            }
+
+            $soap = ZandersDirectShipAPI::create_order($orders_client, $auth['payload'], $order_map, $testing);
+            if (!($soap['ok'] ?? false)) {
+                $r = $this->classify_zanders_transport_failure($soap, 'Zanders dealer-fulfilled');
+                $r->external_order_ids = $external_ids;
+                return $r;
+            }
+
+            $norm = ZandersDirectShipAPI::normalize_order_response($soap, 'Zanders dealer-fulfilled');
+            if (!($norm['ok'] ?? false)) {
+                $r = $this->classify_zanders_order_failure($norm, 'Zanders dealer-fulfilled');
+                $r->external_order_ids = $external_ids;
+                return $r;
+            }
+
+            $external_ids[] = (string) ($norm['order_number'] ?? '');
+            return DistributorOrderResult::ok('Zanders dealer-fulfilled order submitted.', $external_ids);
         }
 
         if ($lane === 'direct_ship_non_ffl') {
@@ -322,6 +396,35 @@ class DistributorZanders extends DistributorBase
                 'purchaseOrderNumber' => $po,
                 'items'               => $items,
             ];
+
+            if ($this->is_test_order_debug_enabled()) {
+                $call_payload = [
+                    'username' => (string) ($auth['payload']['username'] ?? ''),
+                    'password' => (string) ($auth['payload']['password'] ?? ''),
+                    'order'    => $order_map,
+                    'testing'  => (bool) $testing,
+                ];
+                $xml = $orders_client->build_request_xml_preview(
+                    ZandersDirectShipAPI::OP_CREATE_ORDER,
+                    $call_payload,
+                    ZandersDirectShipAPI::ORDERS_NS_HTTPS,
+                    ['mode' => 'zanders_rpc_encoded']
+                );
+
+                return $this->build_test_order_debug_block(
+                    $lane,
+                    $this->strip_wsdl_suffix(ZandersDirectShipAPI::ORDERS_WSDL),
+                    'POST',
+                    'xml',
+                    $this->redact_soap_xml_for_debug($xml),
+                    [
+                        'po' => $po,
+                        'operation' => ZandersDirectShipAPI::OP_CREATE_ORDER,
+                        'item_count' => count($items),
+                    ],
+                    $external_ids
+                );
+            }
 
             $soap = ZandersDirectShipAPI::create_order($orders_client, $auth['payload'], $order_map, $testing);
             if (!($soap['ok'] ?? false)) {
@@ -413,6 +516,35 @@ class DistributorZanders extends DistributorBase
             'fflexp'   => $fflexp,
         ];
 
+        if ($this->is_test_order_debug_enabled()) {
+            $call_payload = [
+                'username'    => (string) ($auth['payload']['username'] ?? ''),
+                'password'    => (string) ($auth['payload']['password'] ?? ''),
+                'addressinfo' => $addrinfo,
+                'testing'     => (bool) $testing,
+            ];
+            $xml = $shipto_client->build_request_xml_preview(
+                ZandersDirectShipAPI::OP_USE_SHIP_TO,
+                $call_payload,
+                ZandersDirectShipAPI::SHIPTO_NS_HTTPS,
+                ['mode' => 'zanders_rpc_encoded']
+            );
+
+            return $this->build_test_order_debug_block(
+                $lane,
+                $this->strip_wsdl_suffix(ZandersDirectShipAPI::SHIPTO_WSDL),
+                'POST',
+                'xml',
+                $this->redact_soap_xml_for_debug($xml),
+                [
+                    'po' => $po,
+                    'operation' => ZandersDirectShipAPI::OP_USE_SHIP_TO,
+                    'item_count' => count($items),
+                ],
+                $external_ids
+            );
+        }
+
 
         $soap_shipto = ZandersDirectShipAPI::use_ship_to($shipto_client, $auth['payload'], $addrinfo, $testing);
         if (!($soap_shipto['ok'] ?? false)) {
@@ -497,6 +629,7 @@ class DistributorZanders extends DistributorBase
      * Expected examples:
      *   FH-ZANDERS-6722-N1  => direct_ship_non_ffl
      *   FH-ZANDERS-6722-F1  => direct_ship_ffl
+     *   FH-ZANDERS-6722-D1  => dealer_fulfilled
      *
      * Fallback: direct_ship_non_ffl (safe default) unless we explicitly detect ffl.
      */
@@ -521,18 +654,27 @@ class DistributorZanders extends DistributorBase
         if ($last !== '' && preg_match('/^F\d*$/', $last)) {
             return 'direct_ship_ffl';
         }
+        if ($last !== '' && preg_match('/^D\d*$/', $last)) {
+            return 'dealer_fulfilled';
+        }
 
         // Lane-oriented codes
         if ($last !== '' && preg_match('/^DSF\d*$/', $last)) {
             return 'direct_ship_ffl';
         }
-        if ($last !== '' && preg_match('/^(DSN|D)\d*$/', $last)) {
+        if ($last !== '' && preg_match('/^DSN\d*$/', $last)) {
             return 'direct_ship_non_ffl';
+        }
+        if ($last !== '' && preg_match('/^DSD\d*$/', $last)) {
+            return 'dealer_fulfilled';
         }
 
         // Extra safety: if PO contains obvious marker anywhere
         if (strpos($po, '-FFL-') !== false || strpos($po, '_FFL_') !== false) {
             return 'direct_ship_ffl';
+        }
+        if (strpos($po, '-DEALER-') !== false || strpos($po, '_DEALER_') !== false || strpos($po, '-DF-') !== false) {
+            return 'dealer_fulfilled';
         }
 
         return 'direct_ship_non_ffl';
@@ -667,9 +809,10 @@ class DistributorZanders extends DistributorBase
     /**
      * @param DistributorOrderLine[] $lines
      * @param bool $require_non_empty When true, returns fatal result if no valid items map to item numbers.
-     * @return array<int,array{itemNumber:string,quantity:int,allowBackOrder:string}>|DistributorOrderResult
+     * @param bool $allow_backorder Whether items should be submitted with allowBackOrder=true.
+     * @return array<int,array{itemNumber:string,quantity:int,allowBackOrder:bool}>|DistributorOrderResult
      */
-    private function build_zanders_items(array $lines, bool $require_non_empty  = false)
+    private function build_zanders_items(array $lines, bool $require_non_empty = false, bool $allow_backorder = false)
     {
         return $this->map_order_lines_to_items(
             $lines,
@@ -677,11 +820,11 @@ class DistributorZanders extends DistributorBase
                 $item_no = $this->lookup_zanders_item_number_by_upc($normalized_upc);
                 return $item_no !== '' ? $item_no : null;
             },
-            function (string $item_no, int $qty, string $normalized_upc, string $raw_upc, DistributorOrderLine $line): array {
+            function (string $item_no, int $qty, string $normalized_upc, string $raw_upc, DistributorOrderLine $line) use ($allow_backorder): array {
                 return [
                     'itemNumber'     => $item_no,
                     'quantity'       => $qty,
-                    'allowBackOrder' => 'false',
+                    'allowBackOrder' => $allow_backorder ? true : false,
                 ];
             },
             'Zanders: cannot map UPC to itemNumber: %s',
@@ -1116,6 +1259,31 @@ class DistributorZanders extends DistributorBase
 
         // Example: /Inventory/Images_2/00061.jpg
         return '/Inventory/Images_2/' . $item_no . '.jpg';
+    }
+
+    private function strip_wsdl_suffix(string $url): string
+    {
+        return (string) preg_replace('/\?wsdl$/i', '', trim($url));
+    }
+
+    private function redact_soap_xml_for_debug(string $xml): string
+    {
+        $tags = [
+            'username',
+            'password',
+            'Username',
+            'Password',
+        ];
+
+        foreach ($tags as $tag) {
+            $xml = (string) preg_replace(
+                '#(<' . preg_quote($tag, '#') . '\b[^>]*>)(.*?)(</' . preg_quote($tag, '#') . '>)#is',
+                '$1***REDACTED***$3',
+                $xml
+            );
+        }
+
+        return $xml;
     }
 
     /**

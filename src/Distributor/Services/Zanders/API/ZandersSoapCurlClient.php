@@ -49,6 +49,34 @@ final class ZandersSoapCurlClient
     }
 
     /**
+     * Build a SOAP envelope preview without performing a network call.
+     *
+     * Options:
+     * - mode: 'zanders_rpc_encoded' | 'soap11_literal' (default: soap11_literal)
+     * - auth: ['username' => '...', 'password' => '...'] (soap11_literal only)
+     *
+     * @param array<string,mixed> $params
+     * @param array<string,mixed> $options
+     */
+    public function build_request_xml_preview(
+        string $operation,
+        array $params,
+        string $ns,
+        array $options = []
+    ): string {
+        $operation = trim($operation);
+        $ns        = trim($ns);
+        $mode      = (string) ($options['mode'] ?? 'soap11_literal');
+
+        if ($mode === 'zanders_rpc_encoded') {
+            return $this->build_envelope_zanders_rpc_encoded($operation, $params, $ns);
+        }
+
+        $auth = isset($options['auth']) && is_array($options['auth']) ? $options['auth'] : [];
+        return $this->build_envelope_soap11_literal($operation, $params, $ns, $auth);
+    }
+
+    /**
      * Call a SOAP operation.
      *
      * Options:

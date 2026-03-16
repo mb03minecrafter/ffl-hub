@@ -73,11 +73,14 @@ final class OrderPlacementSnapshotUtil
     /** @return array<string,mixed> */
     public static function place_snapshot(DistributorOrderResult $or, array $ctx): array
     {
+        $details = is_array($or->details) ? $or->details : [];
+
         return [
             'ok'      => (bool) $or->ok,
             'code'    => (string) $or->code,
             'message' => self::truncate((string) $or->message, 1200),
             'codes'   => self::normalize_codes(is_array($or->codes) ? $or->codes : []),
+            'details' => self::normalize_details($details),
             'http'    => isset($or->http_status) ? (int) $or->http_status : 0,
             'ext_ids' => is_array($or->external_order_ids)
                 ? OrderPlacementJobsStoreUtil::normalize_external_ids($or->external_order_ids)
@@ -152,7 +155,15 @@ final class OrderPlacementSnapshotUtil
             }
 
             if (is_string($v)) {
-                $out[$ks] = self::truncate($v, 1200);
+                $max = 1200;
+                if (
+                    strpos($k_lc, 'debug_request_body') !== false ||
+                    strpos($k_lc, 'debug_request_xml') !== false
+                ) {
+                    $max = 20000;
+                }
+
+                $out[$ks] = self::truncate($v, $max);
                 continue;
             }
             if (is_bool($v) || is_int($v) || is_float($v) || $v === null) {

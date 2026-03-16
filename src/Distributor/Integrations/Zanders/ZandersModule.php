@@ -108,10 +108,22 @@ final class ZandersModule implements DistributorModuleInterface
     {
         return [
             // ---------------------------
-            // Main account (if you use it)
+            // Main account (dealer-fulfilled ordering)
             // ---------------------------
-            
-            
+            'main_username' => [
+                'label'       => 'Main Account Username',
+                'type'        => 'text',
+                'placeholder' => '',
+                'description' => 'Main Zanders API username (typically your main account email) used for dealer-fulfilled orders.',
+                'default'     => '',
+            ],
+            'main_password' => [
+                'label'       => 'Main Account Password',
+                'type'        => 'password',
+                'placeholder' => '',
+                'description' => 'Main Zanders API password/passcode used for dealer-fulfilled orders.',
+                'default'     => '',
+            ],
 
             // ---------------------------
             // FTP feed (fulfillment table)

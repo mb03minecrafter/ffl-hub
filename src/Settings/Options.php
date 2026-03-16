@@ -43,6 +43,7 @@ final class Options
      */
     public const OPTION_PAYMENT_PROCESSOR_FEE_PERCENT = 'fflhub_payment_processor_fee_percent';
     public const OPTION_GLOBAL_MARKUP                 = 'fflhub_global_markup';
+    public const OPTION_TEST_ORDER_DEBUG_ENABLED      = 'fflhub_test_order_debug_enabled';
     public const OPTION_USPS_ESTIMATE_ENABLED         = 'fflhub_usps_estimate_enabled';
     public const OPTION_USPS_USE_TEST_ENV             = 'fflhub_usps_use_test_env';
     public const OPTION_USPS_BASE_URL                 = 'fflhub_usps_base_url';
@@ -67,6 +68,7 @@ final class Options
      */
     private const DEFAULT_PAYMENT_PROCESSOR_FEE_PERCENT = 2.9;  // %
     private const DEFAULT_GLOBAL_MARKUP                 = 10.0; // %
+    private const DEFAULT_TEST_ORDER_DEBUG_ENABLED      = true;
     private const DEFAULT_USPS_ESTIMATE_ENABLED         = false;
     private const DEFAULT_USPS_USE_TEST_ENV             = true;
     private const DEFAULT_USPS_BASE_URL                 = '';
@@ -137,6 +139,11 @@ final class Options
     public static function default_global_markup(): float
     {
         return self::DEFAULT_GLOBAL_MARKUP;
+    }
+
+    public static function default_test_order_debug_enabled(): bool
+    {
+        return self::DEFAULT_TEST_ORDER_DEBUG_ENABLED;
     }
 
     public static function default_usps_estimate_enabled(): bool
@@ -237,6 +244,10 @@ final class Options
                 self::OPTION_GLOBAL_MARKUP,
                 (string) self::DEFAULT_GLOBAL_MARKUP
             );
+        }
+
+        if (get_option(self::OPTION_TEST_ORDER_DEBUG_ENABLED, null) === null) {
+            add_option(self::OPTION_TEST_ORDER_DEBUG_ENABLED, self::DEFAULT_TEST_ORDER_DEBUG_ENABLED ? '1' : '0');
         }
 
         if (get_option(self::OPTION_USPS_ESTIMATE_ENABLED, null) === null) {
@@ -417,6 +428,14 @@ final class Options
     public static function set_global_markup(float $percent): void
     {
         update_option(self::OPTION_GLOBAL_MARKUP, (string) $percent);
+    }
+
+    public static function get_test_order_debug_enabled(): bool
+    {
+        return ((string) get_option(
+            self::OPTION_TEST_ORDER_DEBUG_ENABLED,
+            self::DEFAULT_TEST_ORDER_DEBUG_ENABLED ? '1' : '0'
+        )) === '1';
     }
 
     public static function get_usps_estimate_enabled(): bool

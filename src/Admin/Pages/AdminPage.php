@@ -170,6 +170,7 @@ class AdminPage
         $global_settings = [
             'payment_fee_percent'   => (string) Options::get_payment_processor_fee_percent(),
             'global_markup_percent' => (string) Options::get_global_markup(),
+            'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
 
             'usps_estimate_enabled' => Options::get_usps_estimate_enabled() ? '1' : '0',
             'usps_use_test_env'     => Options::get_usps_use_test_env() ? '1' : '0',
@@ -223,6 +224,7 @@ class AdminPage
     {
         $payment_fee_percent   = (string) ($settings['payment_fee_percent'] ?? '');
         $global_markup_percent = (string) ($settings['global_markup_percent'] ?? '');
+        $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
 
     ?>
         <form method="post" action="options.php" class="fflhub-global-settings-form">
@@ -274,6 +276,27 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'Default markup applied to your true cost when calculating prices.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_test_order_debug_enabled"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Test order debug mode', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_test_order_debug_enabled" value="0" />
+                    <input
+                        id="fflhub_test_order_debug_enabled"
+                        name="fflhub_test_order_debug_enabled"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($test_order_debug_enabled); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'When enabled, order jobs build distributor payloads but stop before outbound API calls. Place result stores the exact outbound message (JSON for Lipsey\'s/RSR, SOAP XML for Zanders).',
                             'ffl-hub'
                         ); ?>
                     </p>

@@ -1707,6 +1707,66 @@ abstract class DistributorBase implements DistributorInterface
  * Small internal helpers
  * -------------------- */
 
+    protected function is_test_order_debug_enabled(): bool
+    {
+        return \FFLHub\Settings\Options::get_test_order_debug_enabled();
+    }
+
+    /**
+     * Build a terminal result used by "test order debug mode".
+     * This intentionally blocks before making outbound distributor API calls.
+     *
+     * @param array<string,mixed> $extra_details
+     * @param array<int,string>   $external_ids
+     */
+    protected function build_test_order_debug_block(
+        string $lane,
+        string $endpoint,
+        string $method,
+        string $request_format,
+        string $request_body,
+        array $extra_details = [],
+        array $external_ids = []
+    ): DistributorOrderResult {
+        $details = array_merge(
+            [
+                'debug_mode'          => 'test_order_debug',
+                'debug_distributor'   => $this->get_id(),
+                'debug_lane'          => strtolower(trim($lane)),
+                'debug_endpoint'      => trim($endpoint),
+                'debug_method'        => strtoupper(trim($method)),
+                'debug_request_format' => strtolower(trim($request_format)),
+                'debug_request_body'  => $request_body,
+            ],
+            $extra_details
+        );
+
+        return DistributorOrderResult::block_fatal(
+            $this->get_label() . ' test order debug is enabled: outbound API call was blocked before placement.',
+            ['TEST_ORDER_DEBUG_BLOCK'],
+            $details,
+            0,
+            '',
+            $external_ids
+        );
+    }
+
+    /**
+     * Pretty JSON encoder for debug payload snapshots.
+     *
+     * @param array<string,mixed> $payload
+     */
+    protected function encode_debug_json_payload(array $payload): string
+    {
+        $json = wp_json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        if (is_string($json) && $json !== '') {
+            return $json;
+        }
+
+        $fallback = @json_encode($payload);
+        return is_string($fallback) && $fallback !== '' ? $fallback : '{}';
+    }
+
     protected function order_result_code_ok(DistributorOrderResult $res): bool
     {
         // Use code, not $res->ok (dry_run has code=OK but ok=false).
