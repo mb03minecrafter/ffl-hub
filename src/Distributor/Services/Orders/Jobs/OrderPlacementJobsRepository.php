@@ -165,6 +165,7 @@ final class OrderPlacementJobsRepository
      *
      * Eligible jobs:
      * - status matches $status (typically JOB_STATUS_SUCCESS)
+     * - lane is direct-ship (dealer_fulfilled is intentionally excluded; shipped manually)
      * - merchant_po present (we need a PO to query shipments)
      * - not shipped yet (shipped_at is NULL/zero)
      * - last_shipping_poll_at is NULL/zero or older than $poll_cutoff_mysql_utc
@@ -198,6 +199,8 @@ final class OrderPlacementJobsRepository
 
         // If you ever decide to poll "recently shipped" jobs for extra tracking numbers,
         // this cutoff becomes relevant. Right now we still include it for correctness with the doc.
+        $lane_non = OrderPlacementKeysUtil::LANE_DIRECT_SHIP_NON_FFL;
+        $lane_ffl = OrderPlacementKeysUtil::LANE_DIRECT_SHIP_FFL;
         $sql = $wpdb->prepare(
             "
             SELECT
@@ -213,6 +216,7 @@ final class OrderPlacementJobsRepository
             FROM {$table}
             WHERE
                 status = %s
+                AND lane IN (%s, %s)
                 AND merchant_po IS NOT NULL
                 AND merchant_po <> ''
                 AND (
@@ -232,6 +236,8 @@ final class OrderPlacementJobsRepository
             LIMIT %d
             ",
             (string) $status,
+            (string) $lane_non,
+            (string) $lane_ffl,
             (string) $poll_cutoff_mysql_utc,
             (string) $ship_cutoff_mysql_utc,
             $limit
