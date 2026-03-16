@@ -150,7 +150,11 @@ final class OrderPlacementJobRunner
             }
 
             // Build DistributorOrderRequest.
-            $job_note = 'FFLHub order placement job for Woo Order (' . $order_id . ')';
+            $customer_name = trim((string) $ship_customer->name);
+            if ($customer_name === '') {
+                $customer_name = 'Unknown';
+            }
+            $job_note = 'FFLHub order placement job for Woo Order (' . $order_id . ') Customer (' . $customer_name . ')';
             $req = new DistributorOrderRequest(
                 $lines,
                 $ship_customer,
