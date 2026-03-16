@@ -503,7 +503,16 @@ class DistributorLipseys extends DistributorBase
      */
     protected function place_order_should_short_circuit_on_failure(DistributorOrderResult $res): bool
     {
-        return $res->is_retryable();
+        if ($res->is_retryable()) {
+            return true;
+        }
+
+        $codes = is_array($res->codes) ? array_map('strval', $res->codes) : [];
+        if (in_array('TEST_ORDER_DEBUG_BLOCK', $codes, true)) {
+            return true;
+        }
+
+        return false;
     }
 
     protected function place_order_precheck(DistributorOrderRequest $request): ?DistributorOrderResult
