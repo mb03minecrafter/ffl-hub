@@ -69,6 +69,7 @@ final class BOMMetaBox
                 'source_ref'         => '',
                 'manual_unit_price'  => null,
                 'manual_qty_on_hand' => null,
+                '_row_mode'          => 'seed',
             ];
         }
 
@@ -101,7 +102,12 @@ final class BOMMetaBox
                 </thead>
                 <tbody id="fflhub-bom-rows">
                     <?php foreach ($rows as $row) : ?>
-                        <?php self::render_bom_row($row, false); ?>
+                        <?php
+                        if (!isset($row['_row_mode'])) {
+                            $row['_row_mode'] = 'row';
+                        }
+                        self::render_bom_row($row, false);
+                        ?>
                     <?php endforeach; ?>
                     <?php self::render_bom_row([
                         'name'               => '',
@@ -111,6 +117,7 @@ final class BOMMetaBox
                         'source_ref'         => '',
                         'manual_unit_price'  => null,
                         'manual_qty_on_hand' => null,
+                        '_row_mode'          => 'template',
                     ], true); ?>
                 </tbody>
             </table>
@@ -167,6 +174,18 @@ final class BOMMetaBox
                     if (stockCell) {
                         stockCell.textContent = '-';
                     }
+
+                    var modeField = row.querySelector('.fflhub-bom-row-mode');
+                    if (modeField) {
+                        modeField.value = 'row';
+                    }
+                }
+
+                function enableRow(row) {
+                    var fields = row.querySelectorAll('input, textarea, select, button');
+                    for (var i = 0; i < fields.length; i++) {
+                        fields[i].disabled = false;
+                    }
                 }
 
                 addBtn.addEventListener('click', function(event) {
@@ -180,6 +199,7 @@ final class BOMMetaBox
                     var clone = template.cloneNode(true);
                     clone.classList.remove('fflhub-bom-template');
                     clone.style.display = '';
+                    enableRow(clone);
                     resetRow(clone);
                     rowsWrap.appendChild(clone);
                 });
@@ -229,6 +249,7 @@ final class BOMMetaBox
         $source_ref = trim((string) ($row['source_ref'] ?? ''));
         $manual_unit_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
         $manual_qty_on_hand = self::to_int_or_null($row['manual_qty_on_hand'] ?? null);
+        $row_mode = trim((string) ($row['_row_mode'] ?? ($is_template ? 'template' : 'row')));
 
         $preview = $is_template
             ? ['unit_price' => '-', 'stock' => '-']
@@ -244,16 +265,19 @@ final class BOMMetaBox
 
         $row_class = $is_template ? 'fflhub-bom-template' : '';
         $row_style = $is_template ? 'display:none;' : '';
+        $disabled = $is_template ? 'disabled="disabled"' : '';
         $source_options = self::source_options();
 ?>
         <tr class="<?php echo esc_attr($row_class); ?>" style="<?php echo esc_attr($row_style); ?>">
             <td>
+                <input type="hidden" class="fflhub-bom-row-mode" name="fflhub_bom_row_mode[]" value="<?php echo esc_attr($row_mode); ?>" <?php echo $disabled; ?> />
                 <input
                     type="text"
                     name="fflhub_bom_name[]"
                     value="<?php echo esc_attr($name); ?>"
                     style="width:100%;"
                     placeholder="<?php echo esc_attr__('Component name', 'ffl-hub'); ?>"
+                    <?php echo $disabled; ?>
                 />
             </td>
             <td>
@@ -262,6 +286,7 @@ final class BOMMetaBox
                     rows="2"
                     style="width:100%;"
                     placeholder="<?php echo esc_attr__('Optional notes', 'ffl-hub'); ?>"
+                    <?php echo $disabled; ?>
                 ><?php echo esc_textarea($notes); ?></textarea>
             </td>
             <td style="width:90px;">
@@ -272,10 +297,11 @@ final class BOMMetaBox
                     name="fflhub_bom_qty[]"
                     value="<?php echo esc_attr(self::format_qty($qty)); ?>"
                     style="width:100%;"
+                    <?php echo $disabled; ?>
                 />
             </td>
             <td style="width:150px;">
-                <select name="fflhub_bom_source_type[]" style="width:100%;">
+                <select name="fflhub_bom_source_type[]" style="width:100%;" <?php echo $disabled; ?>>
                     <?php foreach ($source_options as $value => $label) : ?>
                         <option value="<?php echo esc_attr($value); ?>" <?php selected($source_type, $value); ?>>
                             <?php echo esc_html($label); ?>
@@ -290,6 +316,7 @@ final class BOMMetaBox
                     value="<?php echo esc_attr($source_ref); ?>"
                     style="width:100%;"
                     placeholder="<?php echo esc_attr__('UPC, URL, or Product ID', 'ffl-hub'); ?>"
+                    <?php echo $disabled; ?>
                 />
             </td>
             <td style="width:110px;">
@@ -301,6 +328,7 @@ final class BOMMetaBox
                     value="<?php echo esc_attr($manual_unit_price !== null ? (string) $manual_unit_price : ''); ?>"
                     style="width:100%;"
                     placeholder="0.00"
+                    <?php echo $disabled; ?>
                 />
             </td>
             <td style="width:100px;">
@@ -312,6 +340,7 @@ final class BOMMetaBox
                     value="<?php echo esc_attr($manual_qty_on_hand !== null ? (string) $manual_qty_on_hand : ''); ?>"
                     style="width:100%;"
                     placeholder="0"
+                    <?php echo $disabled; ?>
                 />
             </td>
             <td class="fflhub-bom-derived-price" style="white-space:nowrap;">
@@ -321,7 +350,7 @@ final class BOMMetaBox
                 <?php echo esc_html((string) ($preview['stock'] ?? '-')); ?>
             </td>
             <td style="width:78px;">
-                <button type="button" class="button-link-delete fflhub-bom-remove-row">
+                <button type="button" class="button-link-delete fflhub-bom-remove-row" <?php echo $disabled; ?>>
                     <?php echo esc_html__('Remove', 'ffl-hub'); ?>
                 </button>
             </td>
@@ -352,17 +381,20 @@ final class BOMMetaBox
         $enabled = isset($_POST['fflhub_bom_enabled']) ? 1 : 0;
         update_post_meta($post_id, ProductMeta::FFLHUB_BOM_ENABLED_META, $enabled);
 
-        $rows = self::collect_rows_from_request();
         $table = self::get_bom_table();
         self::ensure_table_ready($table);
 
+        if ($enabled !== 1) {
+            BOMRepository::replace_rows_for_parent($table, $post_id, []);
+            return;
+        }
+
+        $rows = self::collect_rows_from_request();
         BOMRepository::replace_rows_for_parent($table, $post_id, $rows);
 
         // Always refresh cached source data on save (including draft saves).
         // Manual price override is respected by BOMRowSyncService.
-        if ($enabled === 1) {
-            BOMRowSyncService::sync_parent_rows($table, self::$handler, $post_id);
-        }
+        BOMRowSyncService::sync_parent_rows($table, self::$handler, $post_id);
     }
 
     /**
@@ -377,6 +409,7 @@ final class BOMMetaBox
         $source_refs = isset($_POST['fflhub_bom_source_ref']) ? (array) wp_unslash($_POST['fflhub_bom_source_ref']) : [];
         $manual_prices = isset($_POST['fflhub_bom_manual_price']) ? (array) wp_unslash($_POST['fflhub_bom_manual_price']) : [];
         $manual_qtys = isset($_POST['fflhub_bom_manual_qty']) ? (array) wp_unslash($_POST['fflhub_bom_manual_qty']) : [];
+        $row_modes = isset($_POST['fflhub_bom_row_mode']) ? (array) wp_unslash($_POST['fflhub_bom_row_mode']) : [];
 
         $max_rows = max(
             count($names),
@@ -385,7 +418,8 @@ final class BOMMetaBox
             count($source_types),
             count($source_refs),
             count($manual_prices),
-            count($manual_qtys)
+            count($manual_qtys),
+            count($row_modes)
         );
 
         $rows = [];
@@ -399,6 +433,7 @@ final class BOMMetaBox
                 'source_ref'         => sanitize_text_field((string) ($source_refs[$i] ?? '')),
                 'manual_unit_price'  => sanitize_text_field((string) ($manual_prices[$i] ?? '')),
                 'manual_qty_on_hand' => sanitize_text_field((string) ($manual_qtys[$i] ?? '')),
+                'row_mode'           => sanitize_text_field((string) ($row_modes[$i] ?? 'row')),
             ];
         }
 

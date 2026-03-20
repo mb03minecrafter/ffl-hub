@@ -215,6 +215,11 @@ final class BOMRepository
      */
     private static function normalize_input_row(array $row): ?array
     {
+        $row_mode = strtolower(trim((string) ($row['row_mode'] ?? 'row')));
+        if ($row_mode === 'template') {
+            return null;
+        }
+
         $source_type = self::normalize_source_type((string) ($row['source_type'] ?? ''));
         if ($source_type === '') {
             return null;
@@ -263,7 +268,7 @@ final class BOMRepository
             ($manual_qty_on_hand !== null) ||
             (abs($qty - 1.0) > 0.000001);
 
-        if (!$has_user_data) {
+        if (!$has_user_data && ($row_mode === 'seed' || $row_mode === 'template')) {
             return null;
         }
 
