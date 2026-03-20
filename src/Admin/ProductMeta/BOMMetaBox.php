@@ -989,7 +989,17 @@ final class BOMMetaBox
             return false;
         }
 
-        return in_array($error_code, ['external_http_403', 'external_http_429'], true);
+        if (strpos($error_code, 'external_http_403') === 0 || strpos($error_code, 'external_http_429') === 0) {
+            return true;
+        }
+
+        foreach (['_cloudflare', '_sucuri', '_incapsula', '_akamai', '_captcha', '_waf'] as $needle) {
+            if (strpos($error_code, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
