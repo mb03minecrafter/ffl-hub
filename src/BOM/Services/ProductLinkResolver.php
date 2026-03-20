@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\BOM\Services;
 
+use FFLHub\Util\DebugLogUtil;
 use WC_Product;
 
 if (!defined('ABSPATH')) {
@@ -17,6 +18,8 @@ final class ProductLinkResolver
     private const STOCK_IN_STOCK = 'in_stock';
     private const STOCK_OUT_OF_STOCK = 'out_of_stock';
     private const STOCK_UNKNOWN = 'unknown';
+    private const DEBUG_CONST = 'FFLHUB_ADMIN_DEBUG';
+    private const LOG_PREFIX = '[FFLHub][BOM][LinkResolver]';
 
     /**
      * @var array<string,array{
@@ -134,6 +137,11 @@ final class ProductLinkResolver
         ]);
 
         if (is_wp_error($response)) {
+            self::debug_ctx('external_url request failed', [
+                'url' => $url,
+                'error' => $response->get_error_message(),
+            ]);
+
             $api_fallback = self::resolve_external_woo_store_api($url);
             if ($api_fallback !== null) {
                 self::$external_cache[$url] = $api_fallback;
@@ -147,6 +155,11 @@ final class ProductLinkResolver
 
         $status_code = (int) wp_remote_retrieve_response_code($response);
         $html = (string) wp_remote_retrieve_body($response);
+        self::debug_ctx('external_url response', [
+            'url' => $url,
+            'status_code' => $status_code,
+            'html_len' => strlen($html),
+        ]);
         if ($status_code < 200 || $status_code >= 400 || $html === '') {
             $api_fallback = self::resolve_external_woo_store_api($url);
             if ($api_fallback !== null) {
@@ -184,73 +197,98 @@ final class ProductLinkResolver
     {
         $slug = self::extract_product_slug_from_url($url);
         if ($slug === '') {
+            self::debug_ctx('store_api fallback skip: missing slug', ['url' => $url]);
             return null;
         }
 
         $parts = wp_parse_url($url);
         if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+            self::debug_ctx('store_api fallback skip: invalid url parts', ['url' => $url]);
             return null;
         }
 
         $base = strtolower((string) $parts['scheme']) . '://' . strtolower((string) $parts['host']);
-        $api = $base . '/wp-json/wc/store/products?slug=' . rawurlencode($slug);
+        $api_candidates = [
+            $base . '/wp-json/wc/store/v1/products?slug=' . rawurlencode($slug),
+            $base . '/wp-json/wc/store/products?slug=' . rawurlencode($slug),
+        ];
 
-        $response = wp_remote_get($api, [
-            'timeout'     => 10,
-            'redirection' => 4,
-            'user-agent'  => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'headers'     => [
-                'Accept' => 'application/json, text/plain;q=0.9, */*;q=0.8',
-                'Accept-Language' => 'en-US,en;q=0.9',
-            ],
-        ]);
+        foreach ($api_candidates as $api) {
+            $response = wp_remote_get($api, [
+                'timeout'     => 10,
+                'redirection' => 4,
+                'user-agent'  => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'headers'     => [
+                    'Accept' => 'application/json, text/plain;q=0.9, */*;q=0.8',
+                    'Accept-Language' => 'en-US,en;q=0.9',
+                ],
+            ]);
 
-        if (is_wp_error($response)) {
-            return null;
-        }
-
-        $status_code = (int) wp_remote_retrieve_response_code($response);
-        if ($status_code < 200 || $status_code >= 400) {
-            return null;
-        }
-
-        $body = (string) wp_remote_retrieve_body($response);
-        if ($body === '') {
-            return null;
-        }
-
-        $decoded = json_decode($body, true);
-        if (!is_array($decoded) || empty($decoded) || !is_array($decoded[0])) {
-            return null;
-        }
-
-        $item = $decoded[0];
-
-        $price = null;
-        if (isset($item['prices']) && is_array($item['prices'])) {
-            $raw_minor = isset($item['prices']['price']) ? (string) $item['prices']['price'] : '';
-            $minor_unit = isset($item['prices']['currency_minor_unit']) ? (int) $item['prices']['currency_minor_unit'] : 2;
-
-            if ($raw_minor !== '' && ctype_digit($raw_minor)) {
-                $divisor = 1;
-                for ($i = 0; $i < max(0, min(6, $minor_unit)); $i++) {
-                    $divisor *= 10;
-                }
-                $price = ((float) $raw_minor) / (float) $divisor;
+            if (is_wp_error($response)) {
+                self::debug_ctx('store_api request failed', [
+                    'api' => $api,
+                    'error' => $response->get_error_message(),
+                ]);
+                continue;
             }
+
+            $status_code = (int) wp_remote_retrieve_response_code($response);
+            $body = (string) wp_remote_retrieve_body($response);
+            self::debug_ctx('store_api response', [
+                'api' => $api,
+                'status_code' => $status_code,
+                'body_len' => strlen($body),
+            ]);
+
+            if ($status_code < 200 || $status_code >= 400 || $body === '') {
+                continue;
+            }
+
+            $decoded = json_decode($body, true);
+            if (!is_array($decoded) || empty($decoded) || !is_array($decoded[0])) {
+                continue;
+            }
+
+            $item = $decoded[0];
+
+            $price = null;
+            if (isset($item['prices']) && is_array($item['prices'])) {
+                $raw_minor = isset($item['prices']['price']) ? (string) $item['prices']['price'] : '';
+                $minor_unit = isset($item['prices']['currency_minor_unit']) ? (int) $item['prices']['currency_minor_unit'] : 2;
+
+                if ($raw_minor !== '' && ctype_digit($raw_minor)) {
+                    $divisor = 1;
+                    for ($i = 0; $i < max(0, min(6, $minor_unit)); $i++) {
+                        $divisor *= 10;
+                    }
+                    $price = ((float) $raw_minor) / (float) $divisor;
+                }
+            }
+
+            $stock_state = self::STOCK_UNKNOWN;
+            $stock_status_raw = strtolower(trim((string) ($item['stock_status'] ?? '')));
+            if ($stock_status_raw === 'instock') {
+                $stock_state = self::STOCK_IN_STOCK;
+            } elseif ($stock_status_raw === 'outofstock') {
+                $stock_state = self::STOCK_OUT_OF_STOCK;
+            } elseif (array_key_exists('is_in_stock', $item)) {
+                $stock_state = !empty($item['is_in_stock']) ? self::STOCK_IN_STOCK : self::STOCK_OUT_OF_STOCK;
+            }
+
+            self::debug_ctx('store_api resolved', [
+                'api' => $api,
+                'slug' => $slug,
+                'price' => $price,
+                'stock_state' => $stock_state,
+            ]);
+            return self::result(true, 'external_woo_api', $price, $stock_state, null, $url, '');
         }
 
-        $stock_state = self::STOCK_UNKNOWN;
-        $stock_status_raw = strtolower(trim((string) ($item['stock_status'] ?? '')));
-        if ($stock_status_raw === 'instock') {
-            $stock_state = self::STOCK_IN_STOCK;
-        } elseif ($stock_status_raw === 'outofstock') {
-            $stock_state = self::STOCK_OUT_OF_STOCK;
-        } elseif (array_key_exists('is_in_stock', $item)) {
-            $stock_state = !empty($item['is_in_stock']) ? self::STOCK_IN_STOCK : self::STOCK_OUT_OF_STOCK;
-        }
-
-        return self::result(true, 'external_woo_api', $price, $stock_state, null, $url, '');
+        self::debug_ctx('store_api fallback exhausted', [
+            'url' => $url,
+            'slug' => $slug,
+        ]);
+        return null;
     }
 
     private static function extract_product_slug_from_url(string $url): string
@@ -384,11 +422,20 @@ final class ProductLinkResolver
     {
         $hay = strtolower($html);
 
+        // Most reliable Woo selectors first.
         if (strpos($hay, 'class="stock out-of-stock"') !== false || strpos($hay, "class='stock out-of-stock'") !== false) {
             return self::STOCK_OUT_OF_STOCK;
         }
         if (strpos($hay, 'class="stock in-stock"') !== false || strpos($hay, "class='stock in-stock'") !== false) {
             return self::STOCK_IN_STOCK;
+        }
+
+        // Structured data availability is usually reliable on product pages.
+        if (preg_match('/"availability"\s*:\s*"https?:\/\/schema\.org\/instock"/i', $html) === 1) {
+            return self::STOCK_IN_STOCK;
+        }
+        if (preg_match('/"availability"\s*:\s*"https?:\/\/schema\.org\/outofstock"/i', $html) === 1) {
+            return self::STOCK_OUT_OF_STOCK;
         }
 
         $out_of_stock_needles = [
@@ -398,9 +445,11 @@ final class ProductLinkResolver
             'unavailable',
             'currently unavailable',
         ];
+        $found_out = false;
         foreach ($out_of_stock_needles as $needle) {
             if (strpos($hay, $needle) !== false) {
-                return self::STOCK_OUT_OF_STOCK;
+                $found_out = true;
+                break;
             }
         }
 
@@ -410,10 +459,26 @@ final class ProductLinkResolver
             'instock',
             'available',
         ];
+        $found_in = false;
         foreach ($in_stock_needles as $needle) {
             if (strpos($hay, $needle) !== false) {
-                return self::STOCK_IN_STOCK;
+                $found_in = true;
+                break;
             }
+        }
+
+        // If both phrases appear (common on related products/widgets), use add-to-cart state as a tiebreaker.
+        $has_add_to_cart = (bool) preg_match('/single_add_to_cart_button/i', $html);
+        $has_disabled_add_to_cart = (bool) preg_match('/single_add_to_cart_button[^>]*\bdisabled\b/i', $html);
+        if ($has_add_to_cart && !$has_disabled_add_to_cart) {
+            return self::STOCK_IN_STOCK;
+        }
+
+        if ($found_in && !$found_out) {
+            return self::STOCK_IN_STOCK;
+        }
+        if ($found_out && !$found_in) {
+            return self::STOCK_OUT_OF_STOCK;
         }
 
         return self::STOCK_UNKNOWN;
@@ -452,5 +517,13 @@ final class ProductLinkResolver
             'url'        => trim($url),
             'error_code' => trim($error_code),
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private static function debug_ctx(string $msg, array $ctx): void
+    {
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
     }
 }
