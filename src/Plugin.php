@@ -10,9 +10,12 @@ use FFLHub\Admin\Orders\OrderPlacementMetaBox;
 use FFLHub\Admin\Pages\AdminPage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
+use FFLHub\Admin\ProductMeta\BOMMetaBox;
 use FFLHub\Admin\ProductMeta\OrderFFLPanel;
 use FFLHub\Admin\ProductMeta\ProductMetaBox;
 use FFLHub\Admin\WPCronWarning;
+use FFLHub\BOM\Tables\BOMSchema;
+use FFLHub\BOM\Tables\BOMTable;
 use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Fields\CheckoutFields;
@@ -39,6 +42,8 @@ final class Plugin
 
     public FFLSchema $ffl_table_schema;
     public FFLTable $ffl_table;
+    public BOMSchema $bom_table_schema;
+    public BOMTable $bom_table;
 
     public FFLApi $ffl_api;
 
@@ -78,6 +83,9 @@ final class Plugin
 
         $this->ffl_table = new FFLTable($this->ffl_table_schema);
 
+        $this->bom_table_schema = new BOMSchema();
+        $this->bom_table = new BOMTable($this->bom_table_schema);
+
         $this->ffl_api = new FFLApi($this->ffl_table);
         $this->ffl_api->register();
 
@@ -115,6 +123,7 @@ final class Plugin
             OrderFFLPanel::init();
 
             ProductMetaBox::init();
+            BOMMetaBox::init($this->distributor_handler);
 
             return;
         }
@@ -137,6 +146,10 @@ final class Plugin
         $ffl_table_schema = new FFLSchema();
         $ffl_table        = new FFLTable($ffl_table_schema);
         $ffl_table->createTables();
+
+        $bom_table_schema = new BOMSchema();
+        $bom_table        = new BOMTable($bom_table_schema);
+        $bom_table->createTables();
 
         $handler = new DistributorHandler($ffl_table);
         $handler->on_activate();
