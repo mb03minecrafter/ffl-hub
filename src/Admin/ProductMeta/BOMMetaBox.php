@@ -3,6 +3,7 @@
 namespace FFLHub\Admin\ProductMeta;
 
 use FFLHub\BOM\Data\BOMRepository;
+use FFLHub\BOM\Services\ProductLinkResolver;
 use FFLHub\BOM\Tables\BOMSchema;
 use FFLHub\BOM\Tables\BOMTable;
 use FFLHub\Distributor\Core\DistributorHandler;
@@ -474,24 +475,27 @@ final class BOMMetaBox
                 return ['unit_price' => '-', 'stock' => __('Missing product link', 'ffl-hub')];
             }
 
-            $pid = self::resolve_product_link_product_id($source_ref);
-            if ($pid <= 0) {
-                return ['unit_price' => '-', 'stock' => __('Link not resolved to a product', 'ffl-hub')];
+            $resolved = ProductLinkResolver::resolve($source_ref);
+            if (!empty($resolved['resolved'])) {
+                $stock_state = (string) ($resolved['stock_state'] ?? 'unknown');
+                $stock_label = ($stock_state === 'out_of_stock')
+                    ? __('Out of stock', 'ffl-hub')
+                    : __('In stock', 'ffl-hub');
+
+                return [
+                    'unit_price' => self::format_price(self::to_float_or_null($resolved['unit_price'] ?? null)),
+                    'stock'      => $stock_label,
+                ];
             }
 
-            $product = wc_get_product($pid);
-            if (!($product instanceof WC_Product)) {
+            $error_code = (string) ($resolved['error_code'] ?? '');
+            if ($error_code === 'local_product_missing') {
                 return ['unit_price' => '-', 'stock' => __('Linked product not found', 'ffl-hub')];
             }
 
-            $price_raw = (string) $product->get_price();
-            $price = is_numeric($price_raw) ? (float) $price_raw : null;
-
             return [
-                'unit_price' => self::format_price($price),
-                'stock'      => $product->is_in_stock()
-                    ? __('In stock', 'ffl-hub')
-                    : __('Out of stock', 'ffl-hub'),
+                'unit_price' => '-',
+                'stock'      => __('Link not resolved to a product', 'ffl-hub'),
             ];
         }
 
@@ -561,56 +565,5 @@ final class BOMMetaBox
         $formatted = rtrim($formatted, '.');
 
         return ($formatted === '') ? '1' : $formatted;
-    }
-
-    private static function resolve_product_link_product_id(string $source_ref): int
-    {
-        $source_ref = trim($source_ref);
-        if ($source_ref === '') {
-            return 0;
-        }
-
-        if (ctype_digit($source_ref)) {
-            $id = (int) $source_ref;
-            return $id > 0 ? $id : 0;
-        }
-
-        if (function_exists('url_to_postid')) {
-            $id = (int) url_to_postid($source_ref);
-            if ($id > 0) {
-                return $id;
-            }
-        }
-
-        $url = esc_url_raw($source_ref);
-        if ($url === '') {
-            return 0;
-        }
-
-        $parts = wp_parse_url($url);
-        if (!is_array($parts) || !isset($parts['query'])) {
-            return 0;
-        }
-
-        $query = [];
-        parse_str((string) $parts['query'], $query);
-
-        foreach (['product_id', 'product', 'post', 'p'] as $k) {
-            if (!isset($query[$k])) {
-                continue;
-            }
-
-            $v = (string) $query[$k];
-            if (!is_numeric($v)) {
-                continue;
-            }
-
-            $id = (int) $v;
-            if ($id > 0) {
-                return $id;
-            }
-        }
-
-        return 0;
     }
 }

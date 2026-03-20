@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\BOM\Data;
 
+use FFLHub\BOM\Services\ProductLinkResolver;
 use FFLHub\BOM\Tables\BOMSchema;
 use FFLHub\BOM\Tables\BOMTable;
 
@@ -218,7 +219,7 @@ final class BOMRepository
         if ($source_type === BOMSchema::SOURCE_DISTRIBUTOR_UPC) {
             $source_ref = self::normalize_upc($source_ref);
         } elseif ($source_type === BOMSchema::SOURCE_PRODUCT_LINK) {
-            $source_ref = self::normalize_product_link_ref($source_ref);
+            $source_ref = ProductLinkResolver::normalize_source_ref($source_ref);
         } else {
             $source_ref = '';
         }
@@ -272,23 +273,4 @@ final class BOMRepository
         ];
     }
 
-    private static function normalize_product_link_ref(string $raw): string
-    {
-        $raw = trim($raw);
-        if ($raw === '') {
-            return '';
-        }
-
-        if (ctype_digit($raw)) {
-            $id = (int) $raw;
-            return $id > 0 ? (string) $id : '';
-        }
-
-        $url = esc_url_raw($raw);
-        if ($url !== '') {
-            return $url;
-        }
-
-        return sanitize_text_field($raw);
-    }
 }
