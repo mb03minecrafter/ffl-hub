@@ -74,5 +74,6 @@ class ProductMeta
 
     // BOM / build product metadata
     public const FFLHUB_BOM_ENABLED_META = '_fflhub_bom_enabled';
+    public const FFLHUB_BOM_TOTAL_COST_META = '_fflhub_bom_total_cost';
 
 }

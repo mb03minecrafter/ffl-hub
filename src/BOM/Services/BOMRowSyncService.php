@@ -27,6 +27,7 @@ final class BOMRowSyncService
     private const DEBUG_CONST = 'FFLHUB_ADMIN_DEBUG';
     private const LOG_PREFIX = '[FFLHub][BOM][Sync]';
     private const STOCK_MANUAL_VERIFICATION = 'manual_verification';
+    private const STOCK_NOT_APPLICABLE = 'not_applicable';
 
     /**
      * @return array{total:int,updated:int}
@@ -233,6 +234,10 @@ final class BOMRowSyncService
             } else {
                 $stock_state = $stock_qty > 0 ? 'in_stock' : 'out_of_stock';
             }
+        } elseif ($source_type === BOMSchema::SOURCE_SHIPPING_COST) {
+            $price = $manual_unit_price;
+            $stock_qty = null;
+            $stock_state = self::STOCK_NOT_APPLICABLE;
         } else {
             $error_code = 'invalid_source_type';
         }
@@ -323,6 +328,9 @@ final class BOMRowSyncService
         }
         if ($raw === self::STOCK_MANUAL_VERIFICATION) {
             return self::STOCK_MANUAL_VERIFICATION;
+        }
+        if ($raw === self::STOCK_NOT_APPLICABLE) {
+            return self::STOCK_NOT_APPLICABLE;
         }
 
         return 'unknown';

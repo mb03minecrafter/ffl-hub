@@ -68,6 +68,7 @@ class ProductMetaBox
             ProductMeta::FFLHUB_LAST_MSRP_META           => __('Last MSRP', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META => __('Last Computed Price', 'ffl-hub'),
             ProductMeta::FFLHUB_LAST_SHIPPING_COST_META            => __('Shipping Cost', 'ffl-hub'),
+            ProductMeta::FFLHUB_BOM_TOTAL_COST_META                => __('BOM Total Cost', 'ffl-hub'),
             ProductMeta::FFLHUB_DROPSHIP_ENABLED_META    => __('Drop Ship Enabled', 'ffl-hub'),
             ProductMeta::FFLHUB_SHIPPING_WEIGHT_META     => __('Shipping Weight (oz)', 'ffl-hub'),
             ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META  => __('Shipping Length (in)', 'ffl-hub'),
@@ -107,6 +108,15 @@ class ProductMetaBox
                         $dim = rtrim(rtrim(number_format((float) $dim, 2, '.', ''), '0'), '.');
                     }
                     $display_value = $dim . ' in';
+                }
+            } elseif ($key === ProductMeta::FFLHUB_BOM_TOTAL_COST_META) {
+                if ($value !== '' || (string) $value === '0') {
+                    $raw_total = trim((string) $value);
+                    if (is_numeric($raw_total)) {
+                        $display_value = '$' . number_format((float) $raw_total, 2, '.', '');
+                    } else {
+                        $display_value = $raw_total;
+                    }
                 }
             } elseif ($value !== '' || (string) $value === '0') {
                 $display_value = (string) $value;

@@ -65,6 +65,9 @@ final class BOMMetaBox
 
         $enabled = ((int) $product->get_meta(ProductMeta::FFLHUB_BOM_ENABLED_META, true) === 1);
         $rows    = self::load_rows((int) $post->ID);
+        $stored_total = self::to_float_or_null($product->get_meta(ProductMeta::FFLHUB_BOM_TOTAL_COST_META, true));
+        $computed_total = self::calculate_total_from_rows($rows);
+        $display_total = ($stored_total !== null) ? $stored_total : $computed_total;
 
         if (empty($rows)) {
             $rows[] = [
@@ -88,6 +91,10 @@ final class BOMMetaBox
             <p style="margin:6px 0 0;color:#6b7280;">
                 <?php echo esc_html__('Define component rows used to build this product. Rows are stored in the BOM table.', 'ffl-hub'); ?>
             </p>
+            <p style="margin:6px 0 0;">
+                <strong><?php echo esc_html__('BOM Cost Total:', 'ffl-hub'); ?></strong>
+                <?php echo esc_html(self::format_price($display_total)); ?>
+            </p>
         </div>
 
         <div id="fflhub-bom-editor" style="border:1px solid #e5e7eb;padding:10px;">
@@ -100,7 +107,7 @@ final class BOMMetaBox
                         <th><?php echo esc_html__('Source', 'ffl-hub'); ?></th>
                         <th><?php echo esc_html__('Source Ref', 'ffl-hub'); ?></th>
                         <th><?php echo esc_html__('Manual Price', 'ffl-hub'); ?></th>
-                        <th><?php echo esc_html__('Manual Qty', 'ffl-hub'); ?></th>
+                        <th><?php echo esc_html__('Manual Qty (Internal)', 'ffl-hub'); ?></th>
                         <th><?php echo esc_html__('Resolved Price', 'ffl-hub'); ?></th>
                         <th><?php echo esc_html__('Stock Status', 'ffl-hub'); ?></th>
                         <th><?php echo esc_html__('Actions', 'ffl-hub'); ?></th>
@@ -211,6 +218,34 @@ final class BOMMetaBox
                     }
                 }
 
+                function syncSourceRefState(row) {
+                    if (!row) {
+                        return;
+                    }
+
+                    var sourceTypeField = row.querySelector('select[name="fflhub_bom_source_type[]"]');
+                    var sourceRefField = row.querySelector('input[name="fflhub_bom_source_ref[]"]');
+                    if (!sourceTypeField || !sourceRefField) {
+                        return;
+                    }
+
+                    var sourceType = String(sourceTypeField.value || '');
+                    var usesRef = (sourceType === 'distributor_upc' || sourceType === 'product_link');
+                    if (!usesRef) {
+                        sourceRefField.value = '';
+                        sourceRefField.disabled = true;
+                        sourceRefField.setAttribute('disabled', 'disabled');
+                    } else {
+                        sourceRefField.disabled = false;
+                        sourceRefField.removeAttribute('disabled');
+                    }
+                }
+
+                function syncRowSourceState(row) {
+                    syncManualQtyState(row);
+                    syncSourceRefState(row);
+                }
+
                 function enableRow(row) {
                     var fields = row.querySelectorAll('input, textarea, select, button');
                     for (var i = 0; i < fields.length; i++) {
@@ -248,13 +283,17 @@ final class BOMMetaBox
                         if (sourceType === 'internal_stock') {
                             manualQty = readValue(row, 'input[name="fflhub_bom_manual_qty[]"]', '');
                         }
+                        var sourceRef = '';
+                        if (sourceType === 'distributor_upc' || sourceType === 'product_link') {
+                            sourceRef = readValue(row, 'input[name="fflhub_bom_source_ref[]"]', '');
+                        }
 
                         payload.push({
                             name: readValue(row, 'input[name="fflhub_bom_name[]"]', ''),
                             notes: readValue(row, 'textarea[name="fflhub_bom_notes[]"]', ''),
                             qty: readValue(row, 'input[name="fflhub_bom_qty[]"]', '1'),
                             source_type: sourceType,
-                            source_ref: readValue(row, 'input[name="fflhub_bom_source_ref[]"]', ''),
+                            source_ref: sourceRef,
                             manual_unit_price: readValue(row, 'input[name="fflhub_bom_manual_price[]"]', ''),
                             manual_qty_on_hand: manualQty,
                             row_mode: 'row'
@@ -277,7 +316,7 @@ final class BOMMetaBox
                     clone.style.display = '';
                     enableRow(clone);
                     resetRow(clone);
-                    syncManualQtyState(clone);
+                    syncRowSourceState(clone);
                     rowsWrap.appendChild(clone);
                     refreshPayload();
                 });
@@ -311,7 +350,7 @@ final class BOMMetaBox
                         return;
                     }
 
-                    syncManualQtyState(row);
+                    syncRowSourceState(row);
                     refreshPayload();
                 });
 
@@ -330,7 +369,7 @@ final class BOMMetaBox
                     if (initRow.classList.contains('fflhub-bom-template')) {
                         continue;
                     }
-                    syncManualQtyState(initRow);
+                    syncRowSourceState(initRow);
                 }
 
                 toggleEditor();
@@ -378,6 +417,9 @@ final class BOMMetaBox
         $row_class = $is_template ? 'fflhub-bom-template' : '';
         $row_style = $is_template ? 'display:none;' : '';
         $disabled = $is_template ? 'disabled="disabled"' : '';
+        $source_ref_enabled = in_array($source_type, [BOMSchema::SOURCE_DISTRIBUTOR_UPC, BOMSchema::SOURCE_PRODUCT_LINK], true);
+        $source_ref_disabled = ($is_template || !$source_ref_enabled) ? 'disabled="disabled"' : '';
+        $source_ref_value = $source_ref_enabled ? $source_ref : '';
         $manual_qty_disabled = ($is_template || $source_type !== BOMSchema::SOURCE_INTERNAL_STOCK)
             ? 'disabled="disabled"'
             : '';
@@ -431,10 +473,10 @@ final class BOMMetaBox
                 <input
                     type="text"
                     name="fflhub_bom_source_ref[]"
-                    value="<?php echo esc_attr($source_ref); ?>"
+                    value="<?php echo esc_attr($source_ref_value); ?>"
                     style="width:100%;"
                     placeholder="<?php echo esc_attr__('UPC, URL, or Product ID', 'ffl-hub'); ?>"
-                    <?php echo $disabled; ?>
+                    <?php echo $source_ref_disabled; ?>
                 />
             </td>
             <td style="width:110px;">
@@ -549,6 +591,7 @@ final class BOMMetaBox
 
         if ($enabled !== 1) {
             BOMRepository::replace_rows_for_parent($table, $post_id, []);
+            delete_post_meta($post_id, ProductMeta::FFLHUB_BOM_TOTAL_COST_META);
             self::debug_ctx('save_bom_meta disabled: rows cleared', ['post_id' => $post_id]);
             return;
         }
@@ -574,6 +617,8 @@ final class BOMMetaBox
             ['post_id' => $post_id],
             $sync_result
         ));
+
+        self::persist_total_meta($post_id, $table);
     }
 
     /**
@@ -682,6 +727,54 @@ final class BOMMetaBox
         return BOMRepository::get_rows_for_parent($table, $product_id);
     }
 
+    private static function persist_total_meta(int $product_id, BOMTable $table): void
+    {
+        $rows = BOMRepository::get_rows_for_parent($table, $product_id);
+        $total = self::calculate_total_from_rows($rows);
+        update_post_meta($product_id, ProductMeta::FFLHUB_BOM_TOTAL_COST_META, $total);
+
+        self::debug_ctx('persist_total_meta', [
+            'post_id' => $product_id,
+            'row_count' => count($rows),
+            'total' => $total,
+        ]);
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $rows
+     */
+    private static function calculate_total_from_rows(array $rows): float
+    {
+        $total = 0.0;
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $qty = (float) ($row['qty'] ?? 1.0);
+            if (!is_finite($qty) || $qty <= 0.0) {
+                $qty = 1.0;
+            }
+
+            $unit_price = self::to_float_or_null($row['resolved_unit_price'] ?? null);
+            if ($unit_price === null) {
+                $unit_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
+            }
+            if ($unit_price === null) {
+                continue;
+            }
+
+            $total += max(0.0, $qty) * max(0.0, $unit_price);
+        }
+
+        if (!is_finite($total) || $total < 0.0) {
+            return 0.0;
+        }
+
+        return (float) number_format($total, 4, '.', '');
+    }
+
     private static function get_bom_table(): BOMTable
     {
         return new BOMTable(new BOMSchema());
@@ -702,6 +795,7 @@ final class BOMMetaBox
             BOMSchema::SOURCE_DISTRIBUTOR_UPC => __('Distributor UPC', 'ffl-hub'),
             BOMSchema::SOURCE_PRODUCT_LINK    => __('Product Link', 'ffl-hub'),
             BOMSchema::SOURCE_INTERNAL_STOCK  => __('Internal Stock', 'ffl-hub'),
+            BOMSchema::SOURCE_SHIPPING_COST   => __('Shipping Cost Row', 'ffl-hub'),
         ];
     }
 
@@ -792,6 +886,14 @@ final class BOMMetaBox
             ];
         }
 
+        if ($source_type === BOMSchema::SOURCE_SHIPPING_COST) {
+            $manual_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
+            return [
+                'unit_price' => self::format_price($manual_price),
+                'stock'      => __('N/A', 'ffl-hub'),
+            ];
+        }
+
         $manual_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
         $manual_qty = self::to_int_or_null($row['manual_qty_on_hand'] ?? null);
 
@@ -819,7 +921,7 @@ final class BOMMetaBox
             ? self::to_int_or_null($row['manual_qty_on_hand'] ?? null)
             : null;
         $has_resolved_stock = ($resolved_qty !== null)
-            || in_array(strtolower($resolved_state), ['in_stock', 'out_of_stock', 'manual_verification'], true);
+            || in_array(strtolower($resolved_state), ['in_stock', 'out_of_stock', 'manual_verification', 'not_applicable'], true);
 
         if ($manual_price !== null) {
             $resolved_price = $manual_price;
@@ -872,6 +974,9 @@ final class BOMMetaBox
         }
         if ($state === 'manual_verification') {
             return __('Manual Verification', 'ffl-hub');
+        }
+        if ($state === 'not_applicable') {
+            return __('N/A', 'ffl-hub');
         }
 
         return __('Unknown', 'ffl-hub');

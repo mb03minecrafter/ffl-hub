@@ -213,6 +213,9 @@ final class BOMRepository
         if ($source_type === BOMSchema::SOURCE_INTERNAL_STOCK) {
             return BOMSchema::SOURCE_INTERNAL_STOCK;
         }
+        if ($source_type === BOMSchema::SOURCE_SHIPPING_COST) {
+            return BOMSchema::SOURCE_SHIPPING_COST;
+        }
 
         return '';
     }
@@ -327,6 +330,8 @@ final class BOMRepository
                 $name = 'UPC ' . $source_ref;
             } elseif ($source_type === BOMSchema::SOURCE_PRODUCT_LINK && $source_ref !== '' && (int) $source_ref > 0) {
                 $name = 'Product #' . (string) ((int) $source_ref);
+            } elseif ($source_type === BOMSchema::SOURCE_SHIPPING_COST) {
+                $name = 'Shipping Cost';
             } else {
                 $name = 'BOM Item';
             }

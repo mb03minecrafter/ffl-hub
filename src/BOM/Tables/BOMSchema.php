@@ -17,6 +17,7 @@ final class BOMSchema
     public const SOURCE_DISTRIBUTOR_UPC = 'distributor_upc';
     public const SOURCE_PRODUCT_LINK    = 'product_link';
     public const SOURCE_INTERNAL_STOCK  = 'internal_stock';
+    public const SOURCE_SHIPPING_COST   = 'shipping_cost';
 
     public function get_base_table_key(): string
     {
