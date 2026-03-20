@@ -246,8 +246,8 @@ final class BOMRowSyncService
             $stock_state = self::STOCK_MANUAL_VERIFICATION;
         }
 
-        // Manual qty override wins for all source types.
-        if ($manual_qty_on_hand !== null) {
+        // Manual qty override is only for internal stock rows.
+        if ($source_type === BOMSchema::SOURCE_INTERNAL_STOCK && $manual_qty_on_hand !== null) {
             $stock_qty = max(0, $manual_qty_on_hand);
             $stock_state = $stock_qty > 0 ? 'in_stock' : 'out_of_stock';
         }

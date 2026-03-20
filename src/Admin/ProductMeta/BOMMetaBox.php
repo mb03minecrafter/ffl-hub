@@ -189,6 +189,28 @@ final class BOMMetaBox
                     }
                 }
 
+                function syncManualQtyState(row) {
+                    if (!row) {
+                        return;
+                    }
+
+                    var sourceTypeField = row.querySelector('select[name="fflhub_bom_source_type[]"]');
+                    var manualQtyField = row.querySelector('input[name="fflhub_bom_manual_qty[]"]');
+                    if (!sourceTypeField || !manualQtyField) {
+                        return;
+                    }
+
+                    var isInternal = String(sourceTypeField.value || '') === 'internal_stock';
+                    if (!isInternal) {
+                        manualQtyField.value = '';
+                        manualQtyField.disabled = true;
+                        manualQtyField.setAttribute('disabled', 'disabled');
+                    } else {
+                        manualQtyField.disabled = false;
+                        manualQtyField.removeAttribute('disabled');
+                    }
+                }
+
                 function enableRow(row) {
                     var fields = row.querySelectorAll('input, textarea, select, button');
                     for (var i = 0; i < fields.length; i++) {
@@ -221,14 +243,20 @@ final class BOMMetaBox
                             continue;
                         }
 
+                        var sourceType = readValue(row, 'select[name="fflhub_bom_source_type[]"]', 'internal_stock');
+                        var manualQty = '';
+                        if (sourceType === 'internal_stock') {
+                            manualQty = readValue(row, 'input[name="fflhub_bom_manual_qty[]"]', '');
+                        }
+
                         payload.push({
                             name: readValue(row, 'input[name="fflhub_bom_name[]"]', ''),
                             notes: readValue(row, 'textarea[name="fflhub_bom_notes[]"]', ''),
                             qty: readValue(row, 'input[name="fflhub_bom_qty[]"]', '1'),
-                            source_type: readValue(row, 'select[name="fflhub_bom_source_type[]"]', 'internal_stock'),
+                            source_type: sourceType,
                             source_ref: readValue(row, 'input[name="fflhub_bom_source_ref[]"]', ''),
                             manual_unit_price: readValue(row, 'input[name="fflhub_bom_manual_price[]"]', ''),
-                            manual_qty_on_hand: readValue(row, 'input[name="fflhub_bom_manual_qty[]"]', ''),
+                            manual_qty_on_hand: manualQty,
                             row_mode: 'row'
                         });
                     }
@@ -249,6 +277,7 @@ final class BOMMetaBox
                     clone.style.display = '';
                     enableRow(clone);
                     resetRow(clone);
+                    syncManualQtyState(clone);
                     rowsWrap.appendChild(clone);
                     refreshPayload();
                 });
@@ -271,6 +300,20 @@ final class BOMMetaBox
 
                 rowsWrap.addEventListener('input', refreshPayload);
                 rowsWrap.addEventListener('change', refreshPayload);
+                rowsWrap.addEventListener('change', function(event) {
+                    var target = event.target;
+                    if (!target || target.name !== 'fflhub_bom_source_type[]') {
+                        return;
+                    }
+
+                    var row = target.closest('tr');
+                    if (!row) {
+                        return;
+                    }
+
+                    syncManualQtyState(row);
+                    refreshPayload();
+                });
 
                 if (enabledBox) {
                     enabledBox.addEventListener('change', toggleEditor);
@@ -279,6 +322,15 @@ final class BOMMetaBox
                 var postForm = document.getElementById('post');
                 if (postForm) {
                     postForm.addEventListener('submit', refreshPayload);
+                }
+
+                var initRows = rowsWrap.querySelectorAll('tr');
+                for (var i = 0; i < initRows.length; i++) {
+                    var initRow = initRows[i];
+                    if (initRow.classList.contains('fflhub-bom-template')) {
+                        continue;
+                    }
+                    syncManualQtyState(initRow);
                 }
 
                 toggleEditor();
@@ -326,6 +378,12 @@ final class BOMMetaBox
         $row_class = $is_template ? 'fflhub-bom-template' : '';
         $row_style = $is_template ? 'display:none;' : '';
         $disabled = $is_template ? 'disabled="disabled"' : '';
+        $manual_qty_disabled = ($is_template || $source_type !== BOMSchema::SOURCE_INTERNAL_STOCK)
+            ? 'disabled="disabled"'
+            : '';
+        $manual_qty_value = ($source_type === BOMSchema::SOURCE_INTERNAL_STOCK && $manual_qty_on_hand !== null)
+            ? (string) $manual_qty_on_hand
+            : '';
         $source_options = self::source_options();
 ?>
         <tr class="<?php echo esc_attr($row_class); ?>" style="<?php echo esc_attr($row_style); ?>">
@@ -397,10 +455,10 @@ final class BOMMetaBox
                     step="1"
                     min="0"
                     name="fflhub_bom_manual_qty[]"
-                    value="<?php echo esc_attr($manual_qty_on_hand !== null ? (string) $manual_qty_on_hand : ''); ?>"
+                    value="<?php echo esc_attr($manual_qty_value); ?>"
                     style="width:100%;"
-                    placeholder="0"
-                    <?php echo $disabled; ?>
+                    placeholder="<?php echo esc_attr__('Internal only', 'ffl-hub'); ?>"
+                    <?php echo $manual_qty_disabled; ?>
                 />
             </td>
             <td class="fflhub-bom-derived-price" style="white-space:nowrap;">
@@ -695,7 +753,6 @@ final class BOMMetaBox
             }
 
             $manual_unit_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
-            $manual_qty_on_hand = self::to_int_or_null($row['manual_qty_on_hand'] ?? null);
             $resolved = ProductLinkResolver::resolve($source_ref);
             if (!empty($resolved['resolved'])) {
                 $stock_state = (string) ($resolved['stock_state'] ?? 'unknown');
@@ -718,13 +775,6 @@ final class BOMMetaBox
                 return [
                     'unit_price' => self::format_price($resolved_price),
                     'stock'      => $stock_label,
-                ];
-            }
-
-            if ($manual_qty_on_hand !== null) {
-                return [
-                    'unit_price' => self::format_price($manual_unit_price),
-                    'stock'      => (string) max(0, $manual_qty_on_hand),
                 ];
             }
 
@@ -759,12 +809,15 @@ final class BOMMetaBox
      */
     private static function resolve_preview_for_row(array $row): array
     {
+        $source_type = BOMRepository::normalize_source_type((string) ($row['source_type'] ?? ''));
         $resolved_price = self::to_float_or_null($row['resolved_unit_price'] ?? null);
         $resolved_state = trim((string) ($row['resolved_stock_state'] ?? ''));
         $resolved_qty = self::to_int_or_null($row['resolved_stock_qty'] ?? null);
         $resolved_error_code = trim((string) ($row['resolved_error_code'] ?? ''));
         $manual_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
-        $manual_qty = self::to_int_or_null($row['manual_qty_on_hand'] ?? null);
+        $manual_qty = ($source_type === BOMSchema::SOURCE_INTERNAL_STOCK)
+            ? self::to_int_or_null($row['manual_qty_on_hand'] ?? null)
+            : null;
         $has_resolved_stock = ($resolved_qty !== null)
             || in_array(strtolower($resolved_state), ['in_stock', 'out_of_stock', 'manual_verification'], true);
 
