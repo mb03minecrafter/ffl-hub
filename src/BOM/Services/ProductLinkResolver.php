@@ -18,6 +18,8 @@ final class ProductLinkResolver
     private const STOCK_IN_STOCK = 'in_stock';
     private const STOCK_OUT_OF_STOCK = 'out_of_stock';
     private const STOCK_UNKNOWN = 'unknown';
+    /** @var array<int,string> */
+    private const DEFAULT_SKIP_DOMAINS = ['luth-ar.com', 'palmettostatearmory.com'];
     private const DEBUG_CONST = 'FFLHUB_ADMIN_DEBUG';
     private const LOG_PREFIX = '[FFLHub][BOM][LinkResolver]';
 
@@ -116,6 +118,19 @@ final class ProductLinkResolver
 
         if (isset(self::$external_cache[$url])) {
             return self::$external_cache[$url];
+        }
+
+        $skip_ctx = self::skip_context_for_url($url);
+        if (isset($skip_ctx['should_skip']) && !empty($skip_ctx['should_skip'])) {
+            self::debug_ctx('external_url skip domain', [
+                'url' => $url,
+                'host' => (string) ($skip_ctx['host'] ?? ''),
+                'matched_domain' => (string) ($skip_ctx['matched_domain'] ?? ''),
+            ]);
+
+            $out = self::result(true, 'external_url', null, self::STOCK_UNKNOWN, null, $url, 'external_domain_skip');
+            self::$external_cache[$url] = $out;
+            return $out;
         }
 
         $request_args = self::build_request_args($url, false, 'external_url');
@@ -632,6 +647,167 @@ final class ProductLinkResolver
         return function_exists('mb_substr')
             ? (string) mb_substr($text, 0, 180)
             : substr($text, 0, 180);
+    }
+
+    /**
+     * @return array{should_skip:bool,host:string,matched_domain:string}
+     */
+    private static function skip_context_for_url(string $url): array
+    {
+        $host = self::host_from_url($url);
+        if ($host === '') {
+            return [
+                'should_skip' => false,
+                'host' => '',
+                'matched_domain' => '',
+            ];
+        }
+
+        $domains = self::skip_domains_for_url($url);
+        foreach ($domains as $domain) {
+            if (self::host_matches_domain($host, $domain)) {
+                return [
+                    'should_skip' => true,
+                    'host' => $host,
+                    'matched_domain' => $domain,
+                ];
+            }
+        }
+
+        return [
+            'should_skip' => false,
+            'host' => $host,
+            'matched_domain' => '',
+        ];
+    }
+
+    private static function host_from_url(string $url): string
+    {
+        $parts = wp_parse_url($url);
+        if (!is_array($parts) || empty($parts['host'])) {
+            return '';
+        }
+
+        return strtolower(trim((string) $parts['host']));
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private static function skip_domains_for_url(string $url): array
+    {
+        $domains = self::DEFAULT_SKIP_DOMAINS;
+        $raw = get_option('fflhub_bom_link_skip_domains', []);
+
+        if (is_array($raw)) {
+            foreach ($raw as $entry) {
+                if (!is_scalar($entry)) {
+                    continue;
+                }
+                $domains[] = (string) $entry;
+            }
+        } elseif (is_string($raw) && trim($raw) !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $entry) {
+                    if (!is_scalar($entry)) {
+                        continue;
+                    }
+                    $domains[] = (string) $entry;
+                }
+            } else {
+                $parts = preg_split('/[\r\n,]+/', $raw) ?: [];
+                foreach ($parts as $entry) {
+                    $domains[] = (string) $entry;
+                }
+            }
+        }
+
+        $filtered = apply_filters('fflhub_bom_link_resolver_skip_domains', $domains, $url);
+        if (is_string($filtered)) {
+            $filtered = preg_split('/[\r\n,]+/', $filtered) ?: [];
+        }
+        if (!is_array($filtered)) {
+            $filtered = $domains;
+        }
+
+        $out = [];
+        foreach ($filtered as $entry) {
+            if (!is_scalar($entry)) {
+                continue;
+            }
+            $domain = self::normalize_domain_value((string) $entry);
+            if ($domain === '') {
+                continue;
+            }
+            $out[$domain] = $domain;
+        }
+
+        return array_values($out);
+    }
+
+    private static function normalize_domain_value(string $raw): string
+    {
+        $raw = strtolower(trim($raw));
+        if ($raw === '') {
+            return '';
+        }
+
+        $is_wildcard = false;
+        if (strpos($raw, '*.') === 0) {
+            $is_wildcard = true;
+            $raw = substr($raw, 2);
+        }
+
+        if (strpos($raw, '://') !== false) {
+            $host = wp_parse_url($raw, PHP_URL_HOST);
+            $raw = is_string($host) ? $host : '';
+        } elseif (strpos($raw, '/') !== false) {
+            $host = wp_parse_url('https://' . ltrim($raw, '/'), PHP_URL_HOST);
+            $raw = is_string($host) ? $host : '';
+        }
+
+        $raw = trim($raw, ". \t\n\r\0\x0B");
+        if ($raw === '') {
+            return '';
+        }
+
+        $colon_pos = strpos($raw, ':');
+        if ($colon_pos !== false) {
+            $raw = substr($raw, 0, $colon_pos);
+        }
+
+        return $is_wildcard ? ('*.' . $raw) : $raw;
+    }
+
+    private static function host_matches_domain(string $host, string $domain): bool
+    {
+        $host = strtolower(trim($host));
+        $domain = strtolower(trim($domain));
+        if ($host === '' || $domain === '') {
+            return false;
+        }
+
+        $is_wildcard = false;
+        if (strpos($domain, '*.') === 0) {
+            $is_wildcard = true;
+            $domain = substr($domain, 2);
+        }
+
+        if ($domain === '') {
+            return false;
+        }
+
+        if ($host === $domain) {
+            return !$is_wildcard;
+        }
+
+        $suffix = '.' . $domain;
+        if (strlen($host) <= strlen($suffix)) {
+            return false;
+        }
+
+        return substr($host, -strlen($suffix)) === $suffix;
     }
 
     /**

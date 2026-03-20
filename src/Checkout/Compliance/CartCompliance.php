@@ -23,7 +23,6 @@ use FFLHub\Util\DebugLogUtil;
 final class CartCompliance
 {
     private const SESSION_KEY_RECEIVING_FFL    = 'fflhub_receiving_ffl_number';
-    private const SESSION_KEY_RECEIVING_FFL_FP = 'fflhub_receiving_ffl_cart_fp';
     private const ORDER_META_KEY_RECEIVING_FFL = 'fflhub_receiving_ffl_number';
     private const NOTICE_DATA_KEY              = 'fflhub_code';
     private const NOTICE_DATA_VAL              = 'cart_compliance';
@@ -617,14 +616,6 @@ final class CartCompliance
                     self::SESSION_KEY_RECEIVING_FFL,
                     null
                 );
-
-                if (function_exists('WC') && WC()->session) {
-                    $fp_now = CheckoutOrderRequestBuilder::current_cart_ffl_fingerprint();
-                    WC()->session->set(
-                        self::SESSION_KEY_RECEIVING_FFL_FP,
-                        ($receiving_ffl_number !== null && $fp_now !== '') ? $fp_now : null
-                    );
-                }
             }
 
             $ship_ffl = null;
@@ -798,40 +789,6 @@ final class CartCompliance
             if (empty($enabled_distributors)) {
                 return [];
             }
-
-            $cart_has_any_ffl = false;
-            foreach ($by_dist as $ctx) {
-                if (!empty($ctx['has_ffl'])) {
-                    $cart_has_any_ffl = true;
-                    break;
-                }
-            }
-
-            // --- stale session guard ---
-            $fp_now = self::prof('current_cart_ffl_fingerprint', function () {
-                return CheckoutOrderRequestBuilder::current_cart_ffl_fingerprint();
-            });
-
-            $fp_set = self::prof('read_session_ffl_fp', function () {
-                return (function_exists('WC') && WC()->session)
-                    ? (string) WC()->session->get(self::SESSION_KEY_RECEIVING_FFL_FP)
-                    : '';
-            });
-
-            $this->dbg('ffl_fp.guard', [
-                'cart_has_any_ffl' => $cart_has_any_ffl ? 1 : 0,
-                'fp_now_set'       => ($fp_now !== '') ? 1 : 0,
-                'fp_session_set'   => ($fp_set !== '') ? 1 : 0,
-                'fp_match'         => ($fp_now !== '' && $fp_set !== '') ? (hash_equals($fp_set, $fp_now) ? 1 : 0) : null,
-            ]);
-
-            if ($cart_has_any_ffl) {
-                if ($fp_now !== '' && $fp_set !== '' && !hash_equals($fp_set, $fp_now)) {
-                    $receiving_ffl_number = null;
-                    $ship_ffl = null;
-                }
-            }
-            // ------------------------------------------------------------------------------
 
             $blocked = [];
 
