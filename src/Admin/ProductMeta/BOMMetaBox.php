@@ -320,6 +320,7 @@ final class BOMMetaBox
                 'resolved_unit_price' => self::to_float_or_null($row['resolved_unit_price'] ?? null),
                 'resolved_stock_state' => trim((string) ($row['resolved_stock_state'] ?? '')),
                 'resolved_stock_qty'   => self::to_int_or_null($row['resolved_stock_qty'] ?? null),
+                'resolved_error_code'  => trim((string) ($row['resolved_error_code'] ?? '')),
             ]);
 
         $row_class = $is_template ? 'fflhub-bom-template' : '';
@@ -698,10 +699,13 @@ final class BOMMetaBox
             $resolved = ProductLinkResolver::resolve($source_ref);
             if (!empty($resolved['resolved'])) {
                 $stock_state = (string) ($resolved['stock_state'] ?? 'unknown');
+                $resolved_error_code = strtolower(trim((string) ($resolved['error_code'] ?? '')));
                 if ($stock_state === 'out_of_stock') {
                     $stock_label = __('Out of stock', 'ffl-hub');
                 } elseif ($stock_state === 'in_stock') {
                     $stock_label = __('In stock', 'ffl-hub');
+                } elseif (self::is_blocked_stock_error($resolved_error_code)) {
+                    $stock_label = __('Manual Verification', 'ffl-hub');
                 } else {
                     $stock_label = __('Unknown stock', 'ffl-hub');
                 }
@@ -727,6 +731,9 @@ final class BOMMetaBox
             $error_code = (string) ($resolved['error_code'] ?? '');
             if ($error_code === 'local_product_missing') {
                 return ['unit_price' => '-', 'stock' => __('Linked product not found', 'ffl-hub')];
+            }
+            if (self::is_blocked_stock_error($error_code)) {
+                return ['unit_price' => self::format_price($manual_unit_price), 'stock' => __('Manual Verification', 'ffl-hub')];
             }
 
             return [
@@ -755,9 +762,11 @@ final class BOMMetaBox
         $resolved_price = self::to_float_or_null($row['resolved_unit_price'] ?? null);
         $resolved_state = trim((string) ($row['resolved_stock_state'] ?? ''));
         $resolved_qty = self::to_int_or_null($row['resolved_stock_qty'] ?? null);
+        $resolved_error_code = trim((string) ($row['resolved_error_code'] ?? ''));
         $manual_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
         $manual_qty = self::to_int_or_null($row['manual_qty_on_hand'] ?? null);
-        $has_resolved_stock = ($resolved_qty !== null) || in_array(strtolower($resolved_state), ['in_stock', 'out_of_stock'], true);
+        $has_resolved_stock = ($resolved_qty !== null)
+            || in_array(strtolower($resolved_state), ['in_stock', 'out_of_stock', 'manual_verification'], true);
 
         if ($manual_price !== null) {
             $resolved_price = $manual_price;
@@ -767,6 +776,13 @@ final class BOMMetaBox
             $resolved_qty = max(0, $manual_qty);
             $resolved_state = $resolved_qty > 0 ? 'in_stock' : 'out_of_stock';
             $has_resolved_stock = true;
+        }
+
+        if (!$has_resolved_stock && self::is_blocked_stock_error($resolved_error_code)) {
+            return [
+                'unit_price' => self::format_price($resolved_price),
+                'stock'      => __('Manual Verification', 'ffl-hub'),
+            ];
         }
 
         if ($resolved_price !== null && !$has_resolved_stock) {
@@ -801,8 +817,21 @@ final class BOMMetaBox
         if ($state === 'out_of_stock') {
             return __('Out of stock', 'ffl-hub');
         }
+        if ($state === 'manual_verification') {
+            return __('Manual Verification', 'ffl-hub');
+        }
 
         return __('Unknown', 'ffl-hub');
+    }
+
+    private static function is_blocked_stock_error(string $error_code): bool
+    {
+        $error_code = strtolower(trim($error_code));
+        if ($error_code === '') {
+            return false;
+        }
+
+        return in_array($error_code, ['external_http_403', 'external_http_429'], true);
     }
 
     /**

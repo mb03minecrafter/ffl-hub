@@ -26,6 +26,7 @@ final class BOMRowSyncService
 {
     private const DEBUG_CONST = 'FFLHUB_ADMIN_DEBUG';
     private const LOG_PREFIX = '[FFLHub][BOM][Sync]';
+    private const STOCK_MANUAL_VERIFICATION = 'manual_verification';
 
     /**
      * @return array{total:int,updated:int}
@@ -241,6 +242,10 @@ final class BOMRowSyncService
             $price = $manual_unit_price;
         }
 
+        if ($stock_state === 'unknown' && self::is_blocked_stock_error($error_code)) {
+            $stock_state = self::STOCK_MANUAL_VERIFICATION;
+        }
+
         // Manual qty override wins for all source types.
         if ($manual_qty_on_hand !== null) {
             $stock_qty = max(0, $manual_qty_on_hand);
@@ -316,8 +321,21 @@ final class BOMRowSyncService
         if ($raw === 'out_of_stock') {
             return 'out_of_stock';
         }
+        if ($raw === self::STOCK_MANUAL_VERIFICATION) {
+            return self::STOCK_MANUAL_VERIFICATION;
+        }
 
         return 'unknown';
+    }
+
+    private static function is_blocked_stock_error(string $error_code): bool
+    {
+        $error_code = strtolower(trim($error_code));
+        if ($error_code === '') {
+            return false;
+        }
+
+        return in_array($error_code, ['external_http_403', 'external_http_429'], true);
     }
 
     /**
