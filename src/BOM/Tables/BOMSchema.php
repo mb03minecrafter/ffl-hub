@@ -59,7 +59,8 @@ final class BOMSchema
             'component_notes'   => 'TEXT NULL',
             'quantity_required' => 'DECIMAL(12,4) NOT NULL DEFAULT 1.0000',
             'source_type'       => 'VARCHAR(32) NOT NULL',
-            'source_ref'        => 'VARCHAR(128) NULL',
+            // Product-link URLs can be long (especially with tracking params).
+            'source_ref'        => 'VARCHAR(512) NULL',
             'manual_unit_price' => 'DECIMAL(12,4) NULL',
             'manual_qty_on_hand' => 'INT NULL',
             'resolved_unit_price' => 'DECIMAL(12,4) NULL',

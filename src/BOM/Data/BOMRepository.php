@@ -130,6 +130,7 @@ final class BOMRepository
         $now = gmdate('Y-m-d H:i:s');
         $sort_order = 0;
         $skipped = 0;
+        $inserted = 0;
 
         foreach ($rows as $raw_row) {
             if (!is_array($raw_row)) {
@@ -143,7 +144,7 @@ final class BOMRepository
                 continue;
             }
 
-            $wpdb->insert(
+            $ok = $wpdb->insert(
                 $table_name,
                 [
                     'parent_product_id' => $parent_product_id,
@@ -173,13 +174,29 @@ final class BOMRepository
                 ]
             );
 
+            if ($ok === false) {
+                $skipped++;
+                self::debug_ctx('replace_rows_for_parent insert failed', [
+                    'parent_product_id' => $parent_product_id,
+                    'sort_order' => $sort_order,
+                    'source_type' => (string) $normalized['source_type'],
+                    'source_ref_len' => strlen((string) $normalized['source_ref']),
+                    'name_len' => strlen((string) $normalized['name']),
+                    'wpdb_error' => isset($wpdb->last_error) ? (string) $wpdb->last_error : '',
+                ]);
+                $sort_order++;
+                continue;
+            }
+
+            $inserted++;
             $sort_order++;
         }
 
         self::debug_ctx('replace_rows_for_parent done', [
             'parent_product_id' => $parent_product_id,
-            'inserted_rows' => $sort_order,
+            'inserted_rows' => $inserted,
             'skipped_rows' => $skipped,
+            'attempted_rows' => $sort_order,
         ]);
     }
 

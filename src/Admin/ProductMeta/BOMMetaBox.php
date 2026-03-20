@@ -794,7 +794,7 @@ final class BOMMetaBox
      * @param array<int,array<string,mixed>> $rows
      * @return array<int,array<string,mixed>>
      */
-    private static function row_sample(array $rows, int $max = 3): array
+    private static function row_sample(array $rows, int $max = 10): array
     {
         $out = [];
         $limit = max(1, $max);

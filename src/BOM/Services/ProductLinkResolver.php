@@ -115,13 +115,31 @@ final class ProductLinkResolver
             return self::$external_cache[$url];
         }
 
-        $response = wp_remote_get($url, [
-            'timeout'     => 8,
+        $fetch_args = [
+            'timeout'     => 10,
             'redirection' => 4,
-            'user-agent'  => 'FFLHub-BOM/1.0',
+            // Browser-like UA helps avoid basic bot rejections on some retail sites.
+            'user-agent'  => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'headers'     => [
+                'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language' => 'en-US,en;q=0.9',
+            ],
+        ];
+
+        $response = wp_remote_get($url, [
+            'timeout'     => (int) $fetch_args['timeout'],
+            'redirection' => (int) $fetch_args['redirection'],
+            'user-agent'  => (string) $fetch_args['user-agent'],
+            'headers'     => (array) $fetch_args['headers'],
         ]);
 
         if (is_wp_error($response)) {
+            $api_fallback = self::resolve_external_woo_store_api($url);
+            if ($api_fallback !== null) {
+                self::$external_cache[$url] = $api_fallback;
+                return $api_fallback;
+            }
+
             $out = self::result(true, 'external_url', null, self::STOCK_UNKNOWN, null, $url, 'external_request_failed');
             self::$external_cache[$url] = $out;
             return $out;
@@ -130,6 +148,12 @@ final class ProductLinkResolver
         $status_code = (int) wp_remote_retrieve_response_code($response);
         $html = (string) wp_remote_retrieve_body($response);
         if ($status_code < 200 || $status_code >= 400 || $html === '') {
+            $api_fallback = self::resolve_external_woo_store_api($url);
+            if ($api_fallback !== null) {
+                self::$external_cache[$url] = $api_fallback;
+                return $api_fallback;
+            }
+
             $out = self::result(true, 'external_url', null, self::STOCK_UNKNOWN, null, $url, 'external_bad_response');
             self::$external_cache[$url] = $out;
             return $out;
@@ -141,6 +165,117 @@ final class ProductLinkResolver
         $out = self::result(true, 'external_url', $price, $stock_state, null, $url, '');
         self::$external_cache[$url] = $out;
         return $out;
+    }
+
+    /**
+     * Fallback for WooCommerce storefronts that block direct HTML scraping.
+     *
+     * @return array{
+     *   resolved:bool,
+     *   source:string,
+     *   unit_price:?float,
+     *   stock_state:string,
+     *   product_id:?int,
+     *   url:string,
+     *   error_code:string
+     * }|null
+     */
+    private static function resolve_external_woo_store_api(string $url): ?array
+    {
+        $slug = self::extract_product_slug_from_url($url);
+        if ($slug === '') {
+            return null;
+        }
+
+        $parts = wp_parse_url($url);
+        if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+            return null;
+        }
+
+        $base = strtolower((string) $parts['scheme']) . '://' . strtolower((string) $parts['host']);
+        $api = $base . '/wp-json/wc/store/products?slug=' . rawurlencode($slug);
+
+        $response = wp_remote_get($api, [
+            'timeout'     => 10,
+            'redirection' => 4,
+            'user-agent'  => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'headers'     => [
+                'Accept' => 'application/json, text/plain;q=0.9, */*;q=0.8',
+                'Accept-Language' => 'en-US,en;q=0.9',
+            ],
+        ]);
+
+        if (is_wp_error($response)) {
+            return null;
+        }
+
+        $status_code = (int) wp_remote_retrieve_response_code($response);
+        if ($status_code < 200 || $status_code >= 400) {
+            return null;
+        }
+
+        $body = (string) wp_remote_retrieve_body($response);
+        if ($body === '') {
+            return null;
+        }
+
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded) || empty($decoded) || !is_array($decoded[0])) {
+            return null;
+        }
+
+        $item = $decoded[0];
+
+        $price = null;
+        if (isset($item['prices']) && is_array($item['prices'])) {
+            $raw_minor = isset($item['prices']['price']) ? (string) $item['prices']['price'] : '';
+            $minor_unit = isset($item['prices']['currency_minor_unit']) ? (int) $item['prices']['currency_minor_unit'] : 2;
+
+            if ($raw_minor !== '' && ctype_digit($raw_minor)) {
+                $divisor = 1;
+                for ($i = 0; $i < max(0, min(6, $minor_unit)); $i++) {
+                    $divisor *= 10;
+                }
+                $price = ((float) $raw_minor) / (float) $divisor;
+            }
+        }
+
+        $stock_state = self::STOCK_UNKNOWN;
+        $stock_status_raw = strtolower(trim((string) ($item['stock_status'] ?? '')));
+        if ($stock_status_raw === 'instock') {
+            $stock_state = self::STOCK_IN_STOCK;
+        } elseif ($stock_status_raw === 'outofstock') {
+            $stock_state = self::STOCK_OUT_OF_STOCK;
+        } elseif (array_key_exists('is_in_stock', $item)) {
+            $stock_state = !empty($item['is_in_stock']) ? self::STOCK_IN_STOCK : self::STOCK_OUT_OF_STOCK;
+        }
+
+        return self::result(true, 'external_woo_api', $price, $stock_state, null, $url, '');
+    }
+
+    private static function extract_product_slug_from_url(string $url): string
+    {
+        $parts = wp_parse_url($url);
+        if (!is_array($parts) || empty($parts['path'])) {
+            return '';
+        }
+
+        $path = trim((string) $parts['path']);
+        if ($path === '') {
+            return '';
+        }
+
+        // Prefer /product/{slug}/ style URLs.
+        if (preg_match('~/(?:product|products)/([^/?#]+)/?~i', $path, $m)) {
+            return sanitize_title((string) ($m[1] ?? ''));
+        }
+
+        $segments = array_values(array_filter(explode('/', trim($path, '/')), static fn($s): bool => $s !== ''));
+        if (empty($segments)) {
+            return '';
+        }
+
+        return sanitize_title((string) end($segments));
     }
 
     private static function resolve_product_id_from_ref(string $source_ref): int
