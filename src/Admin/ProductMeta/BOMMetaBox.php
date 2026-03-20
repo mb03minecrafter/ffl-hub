@@ -281,7 +281,7 @@ final class BOMMetaBox
                     name="fflhub_bom_source_ref[]"
                     value="<?php echo esc_attr($source_ref); ?>"
                     style="width:100%;"
-                    placeholder="<?php echo esc_attr__('UPC or Product ID', 'ffl-hub'); ?>"
+                    placeholder="<?php echo esc_attr__('UPC, URL, or Product ID', 'ffl-hub'); ?>"
                 />
             </td>
             <td style="width:110px;">
@@ -470,9 +470,13 @@ final class BOMMetaBox
         }
 
         if ($source_type === BOMSchema::SOURCE_PRODUCT_LINK) {
-            $pid = absint($source_ref);
+            if ($source_ref === '') {
+                return ['unit_price' => '-', 'stock' => __('Missing product link', 'ffl-hub')];
+            }
+
+            $pid = self::resolve_product_link_product_id($source_ref);
             if ($pid <= 0) {
-                return ['unit_price' => '-', 'stock' => __('Missing product ID', 'ffl-hub')];
+                return ['unit_price' => '-', 'stock' => __('Link not resolved to a product', 'ffl-hub')];
             }
 
             $product = wc_get_product($pid);
@@ -557,5 +561,56 @@ final class BOMMetaBox
         $formatted = rtrim($formatted, '.');
 
         return ($formatted === '') ? '1' : $formatted;
+    }
+
+    private static function resolve_product_link_product_id(string $source_ref): int
+    {
+        $source_ref = trim($source_ref);
+        if ($source_ref === '') {
+            return 0;
+        }
+
+        if (ctype_digit($source_ref)) {
+            $id = (int) $source_ref;
+            return $id > 0 ? $id : 0;
+        }
+
+        if (function_exists('url_to_postid')) {
+            $id = (int) url_to_postid($source_ref);
+            if ($id > 0) {
+                return $id;
+            }
+        }
+
+        $url = esc_url_raw($source_ref);
+        if ($url === '') {
+            return 0;
+        }
+
+        $parts = wp_parse_url($url);
+        if (!is_array($parts) || !isset($parts['query'])) {
+            return 0;
+        }
+
+        $query = [];
+        parse_str((string) $parts['query'], $query);
+
+        foreach (['product_id', 'product', 'post', 'p'] as $k) {
+            if (!isset($query[$k])) {
+                continue;
+            }
+
+            $v = (string) $query[$k];
+            if (!is_numeric($v)) {
+                continue;
+            }
+
+            $id = (int) $v;
+            if ($id > 0) {
+                return $id;
+            }
+        }
+
+        return 0;
     }
 }

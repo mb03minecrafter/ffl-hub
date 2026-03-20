@@ -218,7 +218,7 @@ final class BOMRepository
         if ($source_type === BOMSchema::SOURCE_DISTRIBUTOR_UPC) {
             $source_ref = self::normalize_upc($source_ref);
         } elseif ($source_type === BOMSchema::SOURCE_PRODUCT_LINK) {
-            $source_ref = (string) max(0, absint($source_ref));
+            $source_ref = self::normalize_product_link_ref($source_ref);
         } else {
             $source_ref = '';
         }
@@ -236,6 +236,19 @@ final class BOMRepository
             if ($qty_on_hand_raw !== '' && is_numeric($qty_on_hand_raw)) {
                 $manual_qty_on_hand = max(0, (int) $qty_on_hand_raw);
             }
+        }
+
+        // Ignore completely blank draft/template rows from the admin repeater.
+        $has_user_data =
+            ($name !== '') ||
+            ($notes !== '') ||
+            ($source_ref !== '') ||
+            ($manual_unit_price !== null) ||
+            ($manual_qty_on_hand !== null) ||
+            (abs($qty - 1.0) > 0.000001);
+
+        if (!$has_user_data) {
+            return null;
         }
 
         if ($name === '') {
@@ -257,5 +270,25 @@ final class BOMRepository
             'manual_unit_price'  => $manual_unit_price,
             'manual_qty_on_hand' => $manual_qty_on_hand,
         ];
+    }
+
+    private static function normalize_product_link_ref(string $raw): string
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return '';
+        }
+
+        if (ctype_digit($raw)) {
+            $id = (int) $raw;
+            return $id > 0 ? (string) $id : '';
+        }
+
+        $url = esc_url_raw($raw);
+        if ($url !== '') {
+            return $url;
+        }
+
+        return sanitize_text_field($raw);
     }
 }
