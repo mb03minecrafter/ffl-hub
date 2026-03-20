@@ -25,6 +25,8 @@ final class CartCompliance
     private const SESSION_KEY_RECEIVING_FFL    = 'fflhub_receiving_ffl_number';
     private const SESSION_KEY_RECEIVING_FFL_FP = 'fflhub_receiving_ffl_cart_fp';
     private const ORDER_META_KEY_RECEIVING_FFL = 'fflhub_receiving_ffl_number';
+    private const NOTICE_DATA_KEY              = 'fflhub_code';
+    private const NOTICE_DATA_VAL              = 'cart_compliance';
 
     // -----------------------------
     // PROFILING (unchanged behavior)
@@ -662,6 +664,10 @@ final class CartCompliance
         ]);
 
         try {
+            // Always clear prior FFLHub compliance notices so stale errors do not linger
+            // after a subsequent successful real-time revalidation.
+            $this->clear_existing_compliance_notices();
+
             $seen = [];
 
             foreach ($blocked as $b) {
@@ -678,7 +684,9 @@ final class CartCompliance
                         }
                         $seen[$msg] = true;
 
-                        wc_add_notice($msg, 'error');
+                        wc_add_notice($msg, 'error', [
+                            self::NOTICE_DATA_KEY => self::NOTICE_DATA_VAL,
+                        ]);
                         if ($errors instanceof \WP_Error) {
                             $errors->add('fflhub_cart_compliance', $msg);
                         }
@@ -692,7 +700,9 @@ final class CartCompliance
                 }
                 $seen[$fallback] = true;
 
-                wc_add_notice($fallback, 'error');
+                wc_add_notice($fallback, 'error', [
+                    self::NOTICE_DATA_KEY => self::NOTICE_DATA_VAL,
+                ]);
                 if ($errors instanceof \WP_Error) {
                     $errors->add('fflhub_cart_compliance', $fallback);
                 }
@@ -700,6 +710,59 @@ final class CartCompliance
         } finally {
             self::prof_end('emit_blocked_notices.total');
         }
+    }
+
+    /**
+     * Remove only FFLHub cart-compliance notices from the Woo notice bag.
+     * Leaves unrelated checkout errors intact.
+     */
+    private function clear_existing_compliance_notices(): void
+    {
+        if (!function_exists('wc_get_notices') || !function_exists('wc_set_notices')) {
+            return;
+        }
+
+        $all = wc_get_notices();
+        if (!is_array($all) || empty($all)) {
+            return;
+        }
+
+        $missing_msg = __(
+            'This cart contains items that must ship to a receiving FFL. Please select a receiving FFL to continue checkout.',
+            'ffl-hub'
+        );
+        $fallback_msg = __('We couldn\'t validate one or more items in your cart. Please contact us for help.', 'ffl-hub');
+
+        foreach ($all as $type => $notices) {
+            if (!is_array($notices)) {
+                continue;
+            }
+
+            $kept = [];
+
+            foreach ($notices as $notice) {
+                if (!is_array($notice)) {
+                    $kept[] = $notice;
+                    continue;
+                }
+
+                $data = isset($notice['data']) && is_array($notice['data']) ? $notice['data'] : [];
+                $msg  = trim((string) ($notice['notice'] ?? ''));
+
+                $is_marked = (($data[self::NOTICE_DATA_KEY] ?? '') === self::NOTICE_DATA_VAL);
+                $is_legacy_known = ($msg !== '' && ($msg === $missing_msg || $msg === $fallback_msg));
+
+                if ($is_marked || $is_legacy_known) {
+                    continue;
+                }
+
+                $kept[] = $notice;
+            }
+
+            $all[$type] = $kept;
+        }
+
+        wc_set_notices($all);
     }
 
     /**
@@ -792,8 +855,9 @@ final class CartCompliance
                     'lines'        => $this->summarize_lines($lines),
                 ]);
 
-                // If there are FFL-required lines, require receiving FFL + ship_to_ffl.
-                if ($has_ffl && (!$receiving_ffl_number || !($ship_ffl instanceof DistributorShipTo))) {
+                // This customer-facing message is specifically about a missing selection.
+                // Only fire it when the receiving FFL number itself is absent.
+                if ($has_ffl && !$receiving_ffl_number) {
                     $this->dbg('block.ffl_missing', [
                         'cart_dist_id'          => $cart_dist_id,
                         'has_ffl'               => 1,
