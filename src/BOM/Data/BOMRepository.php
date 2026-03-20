@@ -6,6 +6,7 @@ namespace FFLHub\BOM\Data;
 use FFLHub\BOM\Services\ProductLinkResolver;
 use FFLHub\BOM\Tables\BOMSchema;
 use FFLHub\BOM\Tables\BOMTable;
+use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -16,6 +17,9 @@ if (!defined('ABSPATH')) {
  */
 final class BOMRepository
 {
+    private const DEBUG_CONST = 'FFLHUB_ADMIN_DEBUG';
+    private const LOG_PREFIX = '[FFLHub][BOM][Repo]';
+
     /**
      * @return array<int,array<string,mixed>>
      */
@@ -109,6 +113,11 @@ final class BOMRepository
             return;
         }
 
+        self::debug_ctx('replace_rows_for_parent start', [
+            'parent_product_id' => $parent_product_id,
+            'incoming_rows' => count($rows),
+        ]);
+
         global $wpdb;
 
         $table_name = $table->get_table_name();
@@ -120,14 +129,17 @@ final class BOMRepository
 
         $now = gmdate('Y-m-d H:i:s');
         $sort_order = 0;
+        $skipped = 0;
 
         foreach ($rows as $raw_row) {
             if (!is_array($raw_row)) {
+                $skipped++;
                 continue;
             }
 
             $normalized = self::normalize_input_row($raw_row);
             if ($normalized === null) {
+                $skipped++;
                 continue;
             }
 
@@ -163,6 +175,12 @@ final class BOMRepository
 
             $sort_order++;
         }
+
+        self::debug_ctx('replace_rows_for_parent done', [
+            'parent_product_id' => $parent_product_id,
+            'inserted_rows' => $sort_order,
+            'skipped_rows' => $skipped,
+        ]);
     }
 
     public static function normalize_source_type(string $source_type): string
@@ -217,11 +235,22 @@ final class BOMRepository
     {
         $row_mode = strtolower(trim((string) ($row['row_mode'] ?? 'row')));
         if ($row_mode === 'template') {
+            self::debug_ctx('normalize_input_row skip', [
+                'reason' => 'template_row',
+                'row_mode' => $row_mode,
+                'source_type' => (string) ($row['source_type'] ?? ''),
+                'source_ref' => (string) ($row['source_ref'] ?? ''),
+            ]);
             return null;
         }
 
         $source_type = self::normalize_source_type((string) ($row['source_type'] ?? ''));
         if ($source_type === '') {
+            self::debug_ctx('normalize_input_row skip', [
+                'reason' => 'invalid_source_type',
+                'row_mode' => $row_mode,
+                'source_type_raw' => (string) ($row['source_type'] ?? ''),
+            ]);
             return null;
         }
 
@@ -269,6 +298,11 @@ final class BOMRepository
             (abs($qty - 1.0) > 0.000001);
 
         if (!$has_user_data && ($row_mode === 'seed' || $row_mode === 'template')) {
+            self::debug_ctx('normalize_input_row skip', [
+                'reason' => 'blank_seed_or_template',
+                'row_mode' => $row_mode,
+                'source_type' => $source_type,
+            ]);
             return null;
         }
 
@@ -291,6 +325,14 @@ final class BOMRepository
             'manual_unit_price'  => $manual_unit_price,
             'manual_qty_on_hand' => $manual_qty_on_hand,
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private static function debug_ctx(string $msg, array $ctx): void
+    {
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
     }
 
     /**

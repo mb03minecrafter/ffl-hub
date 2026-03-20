@@ -8,6 +8,7 @@ use FFLHub\BOM\Tables\BOMSchema;
 use FFLHub\BOM\Tables\BOMTable;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOffer;
+use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -23,12 +24,19 @@ if (!defined('ABSPATH')) {
  */
 final class BOMRowSyncService
 {
+    private const DEBUG_CONST = 'FFLHUB_ADMIN_DEBUG';
+    private const LOG_PREFIX = '[FFLHub][BOM][Sync]';
+
     /**
      * @return array{total:int,updated:int}
      */
     public static function sync_parent_rows(BOMTable $table, ?DistributorHandler $handler, int $parent_product_id): array
     {
         $rows = BOMRepository::get_rows_for_parent($table, $parent_product_id);
+        self::debug_ctx('sync_parent_rows start', [
+            'parent_product_id' => $parent_product_id,
+            'rows' => count($rows),
+        ]);
         if (empty($rows)) {
             return ['total' => 0, 'updated' => 0];
         }
@@ -49,6 +57,12 @@ final class BOMRowSyncService
             BOMRepository::update_row_resolution($table, $row_id, $resolution);
             $updated++;
         }
+
+        self::debug_ctx('sync_parent_rows done', [
+            'parent_product_id' => $parent_product_id,
+            'total' => count($rows),
+            'updated' => $updated,
+        ]);
 
         return [
             'total'   => count($rows),
@@ -145,6 +159,7 @@ final class BOMRowSyncService
         $source_ref = trim((string) ($row['source_ref'] ?? ''));
         $manual_unit_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
         $manual_qty_on_hand = self::to_int_or_null($row['manual_qty_on_hand'] ?? null);
+        $row_id = (int) ($row['id'] ?? 0);
 
         $price = null;
         $stock_state = 'unknown';
@@ -190,8 +205,24 @@ final class BOMRowSyncService
                 if ($resolved_error !== '') {
                     $error_code = $resolved_error;
                 }
+                self::debug_ctx('resolve product_link', [
+                    'row_id' => $row_id,
+                    'source_ref' => $source_ref,
+                    'resolved' => 1,
+                    'stock_state' => $stock_state,
+                    'resolved_price' => $price,
+                    'resolved_error' => $resolved_error,
+                    'manual_price' => $manual_unit_price,
+                ]);
             } else {
                 $error_code = trim((string) ($resolved['error_code'] ?? 'unresolved'));
+                self::debug_ctx('resolve product_link', [
+                    'row_id' => $row_id,
+                    'source_ref' => $source_ref,
+                    'resolved' => 0,
+                    'error_code' => $error_code,
+                    'manual_price' => $manual_unit_price,
+                ]);
             }
         } elseif ($source_type === BOMSchema::SOURCE_INTERNAL_STOCK) {
             $price = $manual_unit_price;
@@ -209,6 +240,18 @@ final class BOMRowSyncService
         if ($manual_unit_price !== null) {
             $price = $manual_unit_price;
         }
+
+        self::debug_ctx('resolve_row_snapshot final', [
+            'row_id' => $row_id,
+            'source_type' => $source_type,
+            'source_ref' => $source_ref,
+            'manual_price' => $manual_unit_price,
+            'manual_qty_on_hand' => $manual_qty_on_hand,
+            'resolved_unit_price' => $price,
+            'resolved_stock_state' => self::normalize_stock_state($stock_state),
+            'resolved_stock_qty' => $stock_qty,
+            'resolved_error_code' => $error_code,
+        ]);
 
         return [
             'resolved_unit_price' => $price,
@@ -269,5 +312,13 @@ final class BOMRowSyncService
         }
 
         return 'unknown';
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private static function debug_ctx(string $msg, array $ctx): void
+    {
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
     }
 }

@@ -10,6 +10,7 @@ use FFLHub\BOM\Tables\BOMTable;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Product\ProductMeta;
+use FFLHub\Util\DebugLogUtil;
 use WC_Product;
 use WP_Post;
 
@@ -24,6 +25,8 @@ final class BOMMetaBox
 {
     private const NONCE_FIELD  = 'fflhub_bom_nonce';
     private const NONCE_ACTION = 'fflhub_save_product_bom';
+    private const DEBUG_CONST  = 'FFLHUB_ADMIN_DEBUG';
+    private const LOG_PREFIX   = '[FFLHub][BOM][Admin]';
 
     private static ?DistributorHandler $handler = null;
     /** @var array<int,bool> */
@@ -416,7 +419,14 @@ final class BOMMetaBox
 
     public static function save_bom_meta_fallback(int $post_id, WP_Post $post, bool $update): void
     {
+        self::debug_ctx('save_bom_meta_fallback called', [
+            'post_id' => $post_id,
+            'update' => $update ? 1 : 0,
+            'has_nonce' => isset($_POST[self::NONCE_FIELD]) ? 1 : 0,
+        ]);
+
         if (!isset($_POST[self::NONCE_FIELD])) {
+            self::debug('save_bom_meta_fallback skipped: nonce missing');
             return;
         }
 
@@ -426,28 +436,48 @@ final class BOMMetaBox
     public static function save_bom_meta(int $post_id): void
     {
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+            self::debug_ctx('save_bom_meta skipped: autosave', ['post_id' => $post_id]);
             return;
         }
 
-        if (
-            !isset($_POST[self::NONCE_FIELD]) ||
-            !wp_verify_nonce(
+        $has_nonce = isset($_POST[self::NONCE_FIELD]);
+        $nonce_ok = $has_nonce
+            && wp_verify_nonce(
                 sanitize_text_field(wp_unslash($_POST[self::NONCE_FIELD])),
                 self::NONCE_ACTION
-            )
+            );
+
+        self::debug_ctx('save_bom_meta entry', [
+            'post_id' => $post_id,
+            'has_nonce' => $has_nonce ? 1 : 0,
+            'nonce_ok' => $nonce_ok ? 1 : 0,
+            'has_form_present' => isset($_POST['fflhub_bom_form_present']) ? 1 : 0,
+            'enabled_posted' => isset($_POST['fflhub_bom_enabled']) ? 1 : 0,
+            'has_payload' => isset($_POST['fflhub_bom_payload']) ? 1 : 0,
+            'payload_len' => isset($_POST['fflhub_bom_payload']) ? strlen((string) wp_unslash($_POST['fflhub_bom_payload'])) : 0,
+            'name_count' => isset($_POST['fflhub_bom_name']) && is_array($_POST['fflhub_bom_name']) ? count($_POST['fflhub_bom_name']) : 0,
+        ]);
+
+        if (
+            !$has_nonce ||
+            !$nonce_ok
         ) {
+            self::debug_ctx('save_bom_meta skipped: nonce validation failed', ['post_id' => $post_id]);
             return;
         }
 
         if (!current_user_can('edit_post', $post_id)) {
+            self::debug_ctx('save_bom_meta skipped: capability failed', ['post_id' => $post_id]);
             return;
         }
 
         if (!isset($_POST['fflhub_bom_form_present'])) {
+            self::debug_ctx('save_bom_meta skipped: form marker missing', ['post_id' => $post_id]);
             return;
         }
 
         if (isset(self::$save_guard[$post_id])) {
+            self::debug_ctx('save_bom_meta skipped: guard hit', ['post_id' => $post_id]);
             return;
         }
         self::$save_guard[$post_id] = true;
@@ -460,15 +490,31 @@ final class BOMMetaBox
 
         if ($enabled !== 1) {
             BOMRepository::replace_rows_for_parent($table, $post_id, []);
+            self::debug_ctx('save_bom_meta disabled: rows cleared', ['post_id' => $post_id]);
             return;
         }
 
         $rows = self::collect_rows_from_request();
+        self::debug_ctx('save_bom_meta collected rows', [
+            'post_id' => $post_id,
+            'row_count' => count($rows),
+            'sample' => self::row_sample($rows),
+        ]);
         BOMRepository::replace_rows_for_parent($table, $post_id, $rows);
+        $stored_rows = BOMRepository::get_rows_for_parent($table, $post_id);
+        self::debug_ctx('save_bom_meta rows persisted', [
+            'post_id' => $post_id,
+            'stored_count' => count($stored_rows),
+            'stored_sample' => self::row_sample($stored_rows),
+        ]);
 
         // Always refresh cached source data on save (including draft saves).
         // Manual price override is respected by BOMRowSyncService.
-        BOMRowSyncService::sync_parent_rows($table, self::$handler, $post_id);
+        $sync_result = BOMRowSyncService::sync_parent_rows($table, self::$handler, $post_id);
+        self::debug_ctx('save_bom_meta sync completed', array_merge(
+            ['post_id' => $post_id],
+            $sync_result
+        ));
     }
 
     /**
@@ -479,6 +525,11 @@ final class BOMMetaBox
         $payload = isset($_POST['fflhub_bom_payload'])
             ? wp_unslash($_POST['fflhub_bom_payload'])
             : '';
+
+        self::debug_ctx('collect_rows_from_request start', [
+            'has_payload' => is_string($payload) && trim($payload) !== '' ? 1 : 0,
+            'payload_len' => is_string($payload) ? strlen($payload) : 0,
+        ]);
 
         if (is_string($payload) && trim($payload) !== '') {
             $decoded = json_decode($payload, true);
@@ -501,8 +552,14 @@ final class BOMMetaBox
                     ];
                 }
 
+                self::debug_ctx('collect_rows_from_request used payload', [
+                    'rows' => count($rows),
+                    'sample' => self::row_sample($rows),
+                ]);
                 return $rows;
             }
+
+            self::debug('collect_rows_from_request payload decode failed, falling back to array inputs');
         }
 
         $names = isset($_POST['fflhub_bom_name']) ? (array) wp_unslash($_POST['fflhub_bom_name']) : [];
@@ -539,6 +596,19 @@ final class BOMMetaBox
                 'row_mode'           => sanitize_text_field((string) ($row_modes[$i] ?? 'row')),
             ];
         }
+
+        self::debug_ctx('collect_rows_from_request used array inputs', [
+            'max_rows' => $max_rows,
+            'name_count' => count($names),
+            'notes_count' => count($notes),
+            'qty_count' => count($qtys),
+            'source_type_count' => count($source_types),
+            'source_ref_count' => count($source_refs),
+            'manual_price_count' => count($manual_prices),
+            'manual_qty_count' => count($manual_qtys),
+            'row_mode_count' => count($row_modes),
+            'sample' => self::row_sample($rows),
+        ]);
 
         return $rows;
     }
@@ -718,6 +788,51 @@ final class BOMMetaBox
         }
 
         return __('Unknown', 'ffl-hub');
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $rows
+     * @return array<int,array<string,mixed>>
+     */
+    private static function row_sample(array $rows, int $max = 3): array
+    {
+        $out = [];
+        $limit = max(1, $max);
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $out[] = [
+                'name' => trim((string) ($row['name'] ?? '')),
+                'qty' => trim((string) ($row['qty'] ?? '')),
+                'source_type' => trim((string) ($row['source_type'] ?? '')),
+                'source_ref' => trim((string) ($row['source_ref'] ?? '')),
+                'manual_unit_price' => trim((string) ($row['manual_unit_price'] ?? '')),
+                'manual_qty_on_hand' => trim((string) ($row['manual_qty_on_hand'] ?? '')),
+                'row_mode' => trim((string) ($row['row_mode'] ?? ($row['_row_mode'] ?? ''))),
+            ];
+
+            if (count($out) >= $limit) {
+                break;
+            }
+        }
+
+        return $out;
+    }
+
+    private static function debug(string $msg): void
+    {
+        DebugLogUtil::log(self::DEBUG_CONST, self::LOG_PREFIX, $msg);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private static function debug_ctx(string $msg, array $ctx): void
+    {
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
     }
 
     /**
