@@ -241,6 +241,12 @@ final class BOMRowSyncService
             $price = $manual_unit_price;
         }
 
+        // Manual qty override wins for all source types.
+        if ($manual_qty_on_hand !== null) {
+            $stock_qty = max(0, $manual_qty_on_hand);
+            $stock_state = $stock_qty > 0 ? 'in_stock' : 'out_of_stock';
+        }
+
         self::debug_ctx('resolve_row_snapshot final', [
             'row_id' => $row_id,
             'source_type' => $source_type,

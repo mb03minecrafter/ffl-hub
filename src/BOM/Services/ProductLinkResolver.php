@@ -167,7 +167,10 @@ final class ProductLinkResolver
                 return $api_fallback;
             }
 
-            $out = self::result(true, 'external_url', null, self::STOCK_UNKNOWN, null, $url, 'external_bad_response');
+            $error_code = ($status_code > 0)
+                ? ('external_http_' . (string) $status_code)
+                : 'external_bad_response';
+            $out = self::result(true, 'external_url', null, self::STOCK_UNKNOWN, null, $url, $error_code);
             self::$external_cache[$url] = $out;
             return $out;
         }

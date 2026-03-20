@@ -296,13 +296,11 @@ final class BOMRepository
             $manual_unit_price = max(0.0, (float) $price_raw);
         }
 
+        // Manual quantity override is allowed for ANY source type.
         $manual_qty_on_hand = null;
-
-        if ($source_type === BOMSchema::SOURCE_INTERNAL_STOCK) {
-            $qty_on_hand_raw = trim((string) ($row['manual_qty_on_hand'] ?? ''));
-            if ($qty_on_hand_raw !== '' && is_numeric($qty_on_hand_raw)) {
-                $manual_qty_on_hand = max(0, (int) $qty_on_hand_raw);
-            }
+        $qty_on_hand_raw = trim((string) ($row['manual_qty_on_hand'] ?? ''));
+        if ($qty_on_hand_raw !== '' && is_numeric($qty_on_hand_raw)) {
+            $manual_qty_on_hand = max(0, (int) $qty_on_hand_raw);
         }
 
         // Ignore completely blank draft/template rows from the admin repeater.

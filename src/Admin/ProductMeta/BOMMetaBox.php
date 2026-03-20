@@ -694,6 +694,7 @@ final class BOMMetaBox
             }
 
             $manual_unit_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
+            $manual_qty_on_hand = self::to_int_or_null($row['manual_qty_on_hand'] ?? null);
             $resolved = ProductLinkResolver::resolve($source_ref);
             if (!empty($resolved['resolved'])) {
                 $stock_state = (string) ($resolved['stock_state'] ?? 'unknown');
@@ -713,6 +714,13 @@ final class BOMMetaBox
                 return [
                     'unit_price' => self::format_price($resolved_price),
                     'stock'      => $stock_label,
+                ];
+            }
+
+            if ($manual_qty_on_hand !== null) {
+                return [
+                    'unit_price' => self::format_price($manual_unit_price),
+                    'stock'      => (string) max(0, $manual_qty_on_hand),
                 ];
             }
 
@@ -748,10 +756,17 @@ final class BOMMetaBox
         $resolved_state = trim((string) ($row['resolved_stock_state'] ?? ''));
         $resolved_qty = self::to_int_or_null($row['resolved_stock_qty'] ?? null);
         $manual_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
+        $manual_qty = self::to_int_or_null($row['manual_qty_on_hand'] ?? null);
         $has_resolved_stock = ($resolved_qty !== null) || in_array(strtolower($resolved_state), ['in_stock', 'out_of_stock'], true);
 
         if ($manual_price !== null) {
             $resolved_price = $manual_price;
+        }
+
+        if ($manual_qty !== null) {
+            $resolved_qty = max(0, $manual_qty);
+            $resolved_state = $resolved_qty > 0 ? 'in_stock' : 'out_of_stock';
+            $has_resolved_stock = true;
         }
 
         if ($resolved_price !== null && !$has_resolved_stock) {
