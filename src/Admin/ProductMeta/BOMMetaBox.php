@@ -26,6 +26,8 @@ final class BOMMetaBox
     private const NONCE_ACTION = 'fflhub_save_product_bom';
 
     private static ?DistributorHandler $handler = null;
+    /** @var array<int,bool> */
+    private static array $save_guard = [];
 
     public static function init(?DistributorHandler $handler = null): void
     {
@@ -33,6 +35,7 @@ final class BOMMetaBox
 
         add_action('add_meta_boxes', [__CLASS__, 'add_meta_box']);
         add_action('woocommerce_process_product_meta', [__CLASS__, 'save_bom_meta'], 1001, 1);
+        add_action('save_post_product', [__CLASS__, 'save_bom_meta_fallback'], 1001, 3);
     }
 
     public static function add_meta_box(): void
@@ -128,6 +131,8 @@ final class BOMMetaBox
             <button type="submit" class="button button-secondary" name="fflhub_bom_sync_now" value="1">
                 <?php echo esc_html__('Update Source Data', 'ffl-hub'); ?>
             </button>
+            <input type="hidden" id="fflhub-bom-payload" name="fflhub_bom_payload" value="" />
+            <input type="hidden" name="fflhub_bom_form_present" value="1" />
         </div>
 
         <script>
@@ -185,7 +190,47 @@ final class BOMMetaBox
                     var fields = row.querySelectorAll('input, textarea, select, button');
                     for (var i = 0; i < fields.length; i++) {
                         fields[i].disabled = false;
+                        fields[i].removeAttribute('disabled');
                     }
+                }
+
+                function readValue(row, selector, fallback) {
+                    var field = row.querySelector(selector);
+                    if (!field) {
+                        return (typeof fallback === 'string') ? fallback : '';
+                    }
+
+                    return String(field.value || '');
+                }
+
+                function refreshPayload() {
+                    var payloadField = document.getElementById('fflhub-bom-payload');
+                    if (!payloadField) {
+                        return;
+                    }
+
+                    var rows = rowsWrap.querySelectorAll('tr');
+                    var payload = [];
+
+                    for (var i = 0; i < rows.length; i++) {
+                        var row = rows[i];
+                        if (row.classList.contains('fflhub-bom-template')) {
+                            continue;
+                        }
+
+                        payload.push({
+                            name: readValue(row, 'input[name="fflhub_bom_name[]"]', ''),
+                            notes: readValue(row, 'textarea[name="fflhub_bom_notes[]"]', ''),
+                            qty: readValue(row, 'input[name="fflhub_bom_qty[]"]', '1'),
+                            source_type: readValue(row, 'select[name="fflhub_bom_source_type[]"]', 'internal_stock'),
+                            source_ref: readValue(row, 'input[name="fflhub_bom_source_ref[]"]', ''),
+                            manual_unit_price: readValue(row, 'input[name="fflhub_bom_manual_price[]"]', ''),
+                            manual_qty_on_hand: readValue(row, 'input[name="fflhub_bom_manual_qty[]"]', ''),
+                            row_mode: 'row'
+                        });
+                    }
+
+                    payloadField.value = JSON.stringify(payload);
                 }
 
                 addBtn.addEventListener('click', function(event) {
@@ -202,6 +247,7 @@ final class BOMMetaBox
                     enableRow(clone);
                     resetRow(clone);
                     rowsWrap.appendChild(clone);
+                    refreshPayload();
                 });
 
                 rowsWrap.addEventListener('click', function(event) {
@@ -217,13 +263,23 @@ final class BOMMetaBox
                     }
 
                     row.parentNode.removeChild(row);
+                    refreshPayload();
                 });
+
+                rowsWrap.addEventListener('input', refreshPayload);
+                rowsWrap.addEventListener('change', refreshPayload);
 
                 if (enabledBox) {
                     enabledBox.addEventListener('change', toggleEditor);
                 }
 
+                var postForm = document.getElementById('post');
+                if (postForm) {
+                    postForm.addEventListener('submit', refreshPayload);
+                }
+
                 toggleEditor();
+                refreshPayload();
             })();
         </script>
 <?php
@@ -358,6 +414,15 @@ final class BOMMetaBox
 <?php
     }
 
+    public static function save_bom_meta_fallback(int $post_id, WP_Post $post, bool $update): void
+    {
+        if (!isset($_POST[self::NONCE_FIELD])) {
+            return;
+        }
+
+        self::save_bom_meta($post_id);
+    }
+
     public static function save_bom_meta(int $post_id): void
     {
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
@@ -377,6 +442,15 @@ final class BOMMetaBox
         if (!current_user_can('edit_post', $post_id)) {
             return;
         }
+
+        if (!isset($_POST['fflhub_bom_form_present'])) {
+            return;
+        }
+
+        if (isset(self::$save_guard[$post_id])) {
+            return;
+        }
+        self::$save_guard[$post_id] = true;
 
         $enabled = isset($_POST['fflhub_bom_enabled']) ? 1 : 0;
         update_post_meta($post_id, ProductMeta::FFLHUB_BOM_ENABLED_META, $enabled);
@@ -402,6 +476,35 @@ final class BOMMetaBox
      */
     private static function collect_rows_from_request(): array
     {
+        $payload = isset($_POST['fflhub_bom_payload'])
+            ? wp_unslash($_POST['fflhub_bom_payload'])
+            : '';
+
+        if (is_string($payload) && trim($payload) !== '') {
+            $decoded = json_decode($payload, true);
+            if (is_array($decoded)) {
+                $rows = [];
+                foreach ($decoded as $row) {
+                    if (!is_array($row)) {
+                        continue;
+                    }
+
+                    $rows[] = [
+                        'name'               => sanitize_text_field((string) ($row['name'] ?? '')),
+                        'notes'              => sanitize_textarea_field((string) ($row['notes'] ?? '')),
+                        'qty'                => sanitize_text_field((string) ($row['qty'] ?? '1')),
+                        'source_type'        => sanitize_text_field((string) ($row['source_type'] ?? '')),
+                        'source_ref'         => sanitize_text_field((string) ($row['source_ref'] ?? '')),
+                        'manual_unit_price'  => sanitize_text_field((string) ($row['manual_unit_price'] ?? '')),
+                        'manual_qty_on_hand' => sanitize_text_field((string) ($row['manual_qty_on_hand'] ?? '')),
+                        'row_mode'           => 'row',
+                    ];
+                }
+
+                return $rows;
+            }
+        }
+
         $names = isset($_POST['fflhub_bom_name']) ? (array) wp_unslash($_POST['fflhub_bom_name']) : [];
         $notes = isset($_POST['fflhub_bom_notes']) ? (array) wp_unslash($_POST['fflhub_bom_notes']) : [];
         $qtys = isset($_POST['fflhub_bom_qty']) ? (array) wp_unslash($_POST['fflhub_bom_qty']) : [];
@@ -520,12 +623,17 @@ final class BOMMetaBox
                 return ['unit_price' => '-', 'stock' => __('Missing product link', 'ffl-hub')];
             }
 
+            $manual_unit_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
             $resolved = ProductLinkResolver::resolve($source_ref);
             if (!empty($resolved['resolved'])) {
                 $stock_state = (string) ($resolved['stock_state'] ?? 'unknown');
-                $stock_label = ($stock_state === 'out_of_stock')
-                    ? __('Out of stock', 'ffl-hub')
-                    : __('In stock', 'ffl-hub');
+                if ($stock_state === 'out_of_stock') {
+                    $stock_label = __('Out of stock', 'ffl-hub');
+                } elseif ($stock_state === 'in_stock') {
+                    $stock_label = __('In stock', 'ffl-hub');
+                } else {
+                    $stock_label = __('Unknown stock', 'ffl-hub');
+                }
 
                 $resolved_price = self::to_float_or_null($resolved['unit_price'] ?? null);
                 if ($manual_unit_price !== null) {
@@ -570,12 +678,21 @@ final class BOMMetaBox
         $resolved_state = trim((string) ($row['resolved_stock_state'] ?? ''));
         $resolved_qty = self::to_int_or_null($row['resolved_stock_qty'] ?? null);
         $manual_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
+        $has_resolved_stock = ($resolved_qty !== null) || in_array(strtolower($resolved_state), ['in_stock', 'out_of_stock'], true);
 
         if ($manual_price !== null) {
             $resolved_price = $manual_price;
         }
 
-        if ($resolved_price !== null || $resolved_state !== '' || $resolved_qty !== null) {
+        if ($resolved_price !== null && !$has_resolved_stock) {
+            $source_preview = self::resolve_source_preview($row);
+            return [
+                'unit_price' => self::format_price($resolved_price),
+                'stock'      => (string) ($source_preview['stock'] ?? __('Unknown', 'ffl-hub')),
+            ];
+        }
+
+        if ($resolved_price !== null || $has_resolved_stock) {
             return [
                 'unit_price' => self::format_price($resolved_price),
                 'stock'      => self::format_stock_label($resolved_state, $resolved_qty),

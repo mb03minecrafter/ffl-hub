@@ -186,6 +186,10 @@ final class BOMRowSyncService
                 $price = self::to_float_or_null($resolved['unit_price'] ?? null);
                 $stock_state_raw = trim((string) ($resolved['stock_state'] ?? 'unknown'));
                 $stock_state = self::normalize_stock_state($stock_state_raw);
+                $resolved_error = trim((string) ($resolved['error_code'] ?? ''));
+                if ($resolved_error !== '') {
+                    $error_code = $resolved_error;
+                }
             } else {
                 $error_code = trim((string) ($resolved['error_code'] ?? 'unresolved'));
             }
