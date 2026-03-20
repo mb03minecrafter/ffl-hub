@@ -37,6 +37,11 @@ final class BOMSchema
             'source_ref',
             'manual_unit_price',
             'manual_qty_on_hand',
+            'resolved_unit_price',
+            'resolved_stock_state',
+            'resolved_stock_qty',
+            'resolved_error_code',
+            'resolved_at',
             'updated_at',
         ];
     }
@@ -57,6 +62,11 @@ final class BOMSchema
             'source_ref'        => 'VARCHAR(128) NULL',
             'manual_unit_price' => 'DECIMAL(12,4) NULL',
             'manual_qty_on_hand' => 'INT NULL',
+            'resolved_unit_price' => 'DECIMAL(12,4) NULL',
+            'resolved_stock_state' => 'VARCHAR(24) NULL',
+            'resolved_stock_qty' => 'INT NULL',
+            'resolved_error_code' => 'VARCHAR(64) NULL',
+            'resolved_at'       => 'DATETIME NULL',
             'created_at'        => 'DATETIME NOT NULL',
             'updated_at'        => 'DATETIME NOT NULL',
         ];

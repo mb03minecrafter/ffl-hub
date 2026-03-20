@@ -3,6 +3,7 @@
 namespace FFLHub\Admin\ProductMeta;
 
 use FFLHub\BOM\Data\BOMRepository;
+use FFLHub\BOM\Services\BOMRowSyncService;
 use FFLHub\BOM\Services\ProductLinkResolver;
 use FFLHub\BOM\Tables\BOMSchema;
 use FFLHub\BOM\Tables\BOMTable;
@@ -117,6 +118,9 @@ final class BOMMetaBox
             <button type="button" class="button" id="fflhub-bom-add-row">
                 <?php echo esc_html__('Add BOM Item', 'ffl-hub'); ?>
             </button>
+            <button type="submit" class="button button-secondary" name="fflhub_bom_sync_now" value="1">
+                <?php echo esc_html__('Update Source Data', 'ffl-hub'); ?>
+            </button>
         </div>
 
         <script>
@@ -228,11 +232,14 @@ final class BOMMetaBox
 
         $preview = $is_template
             ? ['unit_price' => '-', 'stock' => '-']
-            : self::resolve_source_preview([
-                'source_type'        => $source_type,
-                'source_ref'         => $source_ref,
-                'manual_unit_price'  => $manual_unit_price,
-                'manual_qty_on_hand' => $manual_qty_on_hand,
+            : self::resolve_preview_for_row([
+                'source_type'         => $source_type,
+                'source_ref'          => $source_ref,
+                'manual_unit_price'   => $manual_unit_price,
+                'manual_qty_on_hand'  => $manual_qty_on_hand,
+                'resolved_unit_price' => self::to_float_or_null($row['resolved_unit_price'] ?? null),
+                'resolved_stock_state' => trim((string) ($row['resolved_stock_state'] ?? '')),
+                'resolved_stock_qty'   => self::to_int_or_null($row['resolved_stock_qty'] ?? null),
             ]);
 
         $row_class = $is_template ? 'fflhub-bom-template' : '';
@@ -347,9 +354,15 @@ final class BOMMetaBox
 
         $rows = self::collect_rows_from_request();
         $table = self::get_bom_table();
-        self::ensure_table_exists($table);
+        self::ensure_table_ready($table);
 
         BOMRepository::replace_rows_for_parent($table, $post_id, $rows);
+
+        // Always refresh cached source data on save (including draft saves).
+        // Manual price override is respected by BOMRowSyncService.
+        if ($enabled === 1) {
+            BOMRowSyncService::sync_parent_rows($table, self::$handler, $post_id);
+        }
     }
 
     /**
@@ -397,7 +410,9 @@ final class BOMMetaBox
      */
     private static function load_rows(int $product_id): array
     {
-        return BOMRepository::get_rows_for_parent(self::get_bom_table(), $product_id);
+        $table = self::get_bom_table();
+        self::ensure_table_ready($table);
+        return BOMRepository::get_rows_for_parent($table, $product_id);
     }
 
     private static function get_bom_table(): BOMTable
@@ -405,15 +420,10 @@ final class BOMMetaBox
         return new BOMTable(new BOMSchema());
     }
 
-    private static function ensure_table_exists(BOMTable $table): void
+    private static function ensure_table_ready(BOMTable $table): void
     {
-        global $wpdb;
-
-        $table_name = $table->get_table_name();
-        $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
-        if (!is_string($exists) || $exists === '') {
-            $table->createTables();
-        }
+        // dbDelta is idempotent and also applies schema additions (new columns/indexes).
+        $table->createTables();
     }
 
     /**
@@ -482,8 +492,13 @@ final class BOMMetaBox
                     ? __('Out of stock', 'ffl-hub')
                     : __('In stock', 'ffl-hub');
 
+                $resolved_price = self::to_float_or_null($resolved['unit_price'] ?? null);
+                if ($manual_unit_price !== null) {
+                    $resolved_price = $manual_unit_price;
+                }
+
                 return [
-                    'unit_price' => self::format_price(self::to_float_or_null($resolved['unit_price'] ?? null)),
+                    'unit_price' => self::format_price($resolved_price),
                     'stock'      => $stock_label,
                 ];
             }
@@ -508,6 +523,49 @@ final class BOMMetaBox
                 ? (string) $manual_qty
                 : __('Unknown qty', 'ffl-hub'),
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @return array{unit_price:string,stock:string}
+     */
+    private static function resolve_preview_for_row(array $row): array
+    {
+        $resolved_price = self::to_float_or_null($row['resolved_unit_price'] ?? null);
+        $resolved_state = trim((string) ($row['resolved_stock_state'] ?? ''));
+        $resolved_qty = self::to_int_or_null($row['resolved_stock_qty'] ?? null);
+        $manual_price = self::to_float_or_null($row['manual_unit_price'] ?? null);
+
+        if ($manual_price !== null) {
+            $resolved_price = $manual_price;
+        }
+
+        if ($resolved_price !== null || $resolved_state !== '' || $resolved_qty !== null) {
+            return [
+                'unit_price' => self::format_price($resolved_price),
+                'stock'      => self::format_stock_label($resolved_state, $resolved_qty),
+            ];
+        }
+
+        return self::resolve_source_preview($row);
+    }
+
+    private static function format_stock_label(string $state, ?int $qty): string
+    {
+        $state = strtolower(trim($state));
+
+        if ($qty !== null) {
+            return (string) max(0, $qty);
+        }
+
+        if ($state === 'in_stock') {
+            return __('In stock', 'ffl-hub');
+        }
+        if ($state === 'out_of_stock') {
+            return __('Out of stock', 'ffl-hub');
+        }
+
+        return __('Unknown', 'ffl-hub');
     }
 
     /**

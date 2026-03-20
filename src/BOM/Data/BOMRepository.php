@@ -44,7 +44,12 @@ final class BOMRepository
                 source_type,
                 source_ref,
                 manual_unit_price,
-                manual_qty_on_hand
+                manual_qty_on_hand,
+                resolved_unit_price,
+                resolved_stock_state,
+                resolved_stock_qty,
+                resolved_error_code,
+                resolved_at
              FROM {$table_name}
              WHERE parent_product_id = %d
              ORDER BY sort_order ASC, id ASC",
@@ -77,6 +82,15 @@ final class BOMRepository
                 'manual_qty_on_hand' => is_numeric((string) ($row['manual_qty_on_hand'] ?? null))
                     ? max(0, (int) $row['manual_qty_on_hand'])
                     : null,
+                'resolved_unit_price' => is_numeric((string) ($row['resolved_unit_price'] ?? null))
+                    ? max(0.0, (float) $row['resolved_unit_price'])
+                    : null,
+                'resolved_stock_state' => trim((string) ($row['resolved_stock_state'] ?? '')),
+                'resolved_stock_qty' => is_numeric((string) ($row['resolved_stock_qty'] ?? null))
+                    ? max(0, (int) $row['resolved_stock_qty'])
+                    : null,
+                'resolved_error_code' => trim((string) ($row['resolved_error_code'] ?? '')),
+                'resolved_at' => trim((string) ($row['resolved_at'] ?? '')),
             ];
         }
 
@@ -224,15 +238,16 @@ final class BOMRepository
             $source_ref = '';
         }
 
+        // Manual price is allowed for ANY source type and acts as a price override.
         $manual_unit_price = null;
+        $price_raw = trim((string) ($row['manual_unit_price'] ?? ''));
+        if ($price_raw !== '' && is_numeric($price_raw)) {
+            $manual_unit_price = max(0.0, (float) $price_raw);
+        }
+
         $manual_qty_on_hand = null;
 
         if ($source_type === BOMSchema::SOURCE_INTERNAL_STOCK) {
-            $price_raw = trim((string) ($row['manual_unit_price'] ?? ''));
-            if ($price_raw !== '' && is_numeric($price_raw)) {
-                $manual_unit_price = max(0.0, (float) $price_raw);
-            }
-
             $qty_on_hand_raw = trim((string) ($row['manual_qty_on_hand'] ?? ''));
             if ($qty_on_hand_raw !== '' && is_numeric($qty_on_hand_raw)) {
                 $manual_qty_on_hand = max(0, (int) $qty_on_hand_raw);
@@ -271,6 +286,81 @@ final class BOMRepository
             'manual_unit_price'  => $manual_unit_price,
             'manual_qty_on_hand' => $manual_qty_on_hand,
         ];
+    }
+
+    /**
+     * @param array{
+     *   resolved_unit_price:?float,
+     *   resolved_stock_state:string,
+     *   resolved_stock_qty:?int,
+     *   resolved_error_code:string,
+     *   resolved_at:string
+     * } $resolution
+     */
+    public static function update_row_resolution(BOMTable $table, int $row_id, array $resolution): void
+    {
+        $row_id = (int) $row_id;
+        if ($row_id <= 0) {
+            return;
+        }
+
+        global $wpdb;
+
+        $table_name = $table->get_table_name();
+
+        $wpdb->update(
+            $table_name,
+            [
+                'resolved_unit_price' => self::float_or_null($resolution['resolved_unit_price'] ?? null),
+                'resolved_stock_state' => sanitize_text_field((string) ($resolution['resolved_stock_state'] ?? '')),
+                'resolved_stock_qty' => self::int_or_null($resolution['resolved_stock_qty'] ?? null),
+                'resolved_error_code' => sanitize_text_field((string) ($resolution['resolved_error_code'] ?? '')),
+                'resolved_at' => sanitize_text_field((string) ($resolution['resolved_at'] ?? '')),
+                'updated_at' => gmdate('Y-m-d H:i:s'),
+            ],
+            ['id' => $row_id],
+            ['%f', '%s', '%d', '%s', '%s', '%s'],
+            ['%d']
+        );
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function float_or_null($value): ?float
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $raw = trim((string) $value);
+        if ($raw === '' || !is_numeric($raw)) {
+            return null;
+        }
+
+        $num = (float) $raw;
+        if (!is_finite($num)) {
+            return null;
+        }
+
+        return max(0.0, $num);
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function int_or_null($value): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $raw = trim((string) $value);
+        if ($raw === '' || !is_numeric($raw)) {
+            return null;
+        }
+
+        return max(0, (int) $raw);
     }
 
 }
