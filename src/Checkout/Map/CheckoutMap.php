@@ -18,8 +18,6 @@ if (! defined('ABSPATH')) {
  */
 class CheckoutMap
 {
-    private const DEFAULT_FFL_SEARCH_LIMIT = 200;
-
     /**
      * Initialize hooks.
      */
@@ -28,7 +26,7 @@ class CheckoutMap
         // Front-end styles & JS (only when needed).
         add_action('wp_enqueue_scripts', array(__CLASS__, 'enqueue_assets'));
 
-        // Inject HTML around the Additional information block on Checkout.
+        // Inject HTML after the Additional information block on Checkout.
         add_filter('render_block', array(__CLASS__, 'inject_picker_after_additional_information'), 10, 2);
     }
 
@@ -73,20 +71,20 @@ class CheckoutMap
             );
 
             // Expose REST settings to JS, using your existing API:
-            // GET /wp-json/fflhub/v1/ffls?zip=XXXXX&limit=200
+            // GET /wp-json/fflhub/v1/ffls?zip=XXXXX&limit=50
             wp_localize_script(
                 'fflhub-checkout-ffl-picker',
                 'fflhubFFLPickerSettings',
                 array(
                     'restUrl'      => esc_url_raw(rest_url('fflhub/v1/ffls')),
-                    'defaultLimit' => self::DEFAULT_FFL_SEARCH_LIMIT,
+                    'defaultLimit' => 50,
                 )
             );
         }
     }
 
     /**
-     * Prepend the FFL picker HTML before the "Additional information" Checkout block
+     * Append the FFL picker HTML after the "Additional information" Checkout block
      * when the cart contains at least one FFL-required product.
      *
      * @param string $block_content HTML content for the current block.
@@ -174,7 +172,7 @@ class CheckoutMap
         <?php
         $picker_html = ob_get_clean();
 
-        return $picker_html . $block_content;
+        return $block_content . $picker_html;
     }
 
     /**
