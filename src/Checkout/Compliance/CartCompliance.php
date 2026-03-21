@@ -496,8 +496,15 @@ final class CartCompliance
             return;
         }
 
+        $uri = (string) ($_SERVER['REQUEST_URI'] ?? '');
+        $session_raw = CheckoutOrderRequestBuilder::get_session_receiving_ffl_number_raw(self::SESSION_KEY_RECEIVING_FFL);
+
         $this->dbg('checkout_gate.hit', [
-            'uri' => (string) ($_SERVER['REQUEST_URI'] ?? ''),
+            'uri' => $uri,
+            'method' => (string) ($_SERVER['REQUEST_METHOD'] ?? ''),
+            'is_calc_totals' => (str_contains($uri, '__experimental_calc_totals=true')) ? 1 : 0,
+            'order_id' => (int) $order->get_id(),
+            'session_ffl_raw' => is_scalar($session_raw) ? (string) $session_raw : gettype($session_raw),
         ]);
 
         try {
@@ -591,13 +598,25 @@ final class CartCompliance
 
         try {
             $resolved_from_order = false;
+            $session_raw = CheckoutOrderRequestBuilder::get_session_receiving_ffl_number_raw(self::SESSION_KEY_RECEIVING_FFL);
+            $order_meta_raw = ($order instanceof \WC_Order)
+                ? (string) $order->get_meta(self::ORDER_META_KEY_RECEIVING_FFL, true)
+                : '';
+
+            $this->dbg('resolve_ffl_context.input', [
+                'verify_session' => $verify_session ? 1 : 0,
+                'session_ffl_raw' => is_scalar($session_raw) ? (string) $session_raw : gettype($session_raw),
+                'order_meta_ffl_raw' => $order_meta_raw !== '' ? $order_meta_raw : null,
+            ]);
 
             $receiving_ffl_number = self::prof(
                 'resolve_receiving_ffl_number',
                 function () {
                     return CheckoutOrderRequestBuilder::resolve_receiving_ffl_number(
                         self::SESSION_KEY_RECEIVING_FFL,
-                        null
+                        function (string $message, array $ctx): void {
+                            $this->dbg('builder.resolve_receiving_ffl_number', array_merge(['msg' => $message], $ctx));
+                        }
                     );
                 }
             );
@@ -614,7 +633,9 @@ final class CartCompliance
                 CheckoutOrderRequestBuilder::persist_receiving_ffl_to_session(
                     $receiving_ffl_number,
                     self::SESSION_KEY_RECEIVING_FFL,
-                    null
+                    function (string $message, array $ctx): void {
+                        $this->dbg('builder.persist_receiving_ffl_to_session', array_merge(['msg' => $message], $ctx));
+                    }
                 );
             }
 
@@ -624,7 +645,9 @@ final class CartCompliance
                 $ship_ffl = CheckoutOrderRequestBuilder::build_ship_to_ffl_or_null(
                     $this->ffl_table,
                     (string) $receiving_ffl_number,
-                    null
+                    function (string $message, array $ctx): void {
+                        $this->dbg('builder.build_ship_to_ffl_or_null', array_merge(['msg' => $message], $ctx));
+                    }
                 );
 
                 if (!($ship_ffl instanceof DistributorShipTo)) {
