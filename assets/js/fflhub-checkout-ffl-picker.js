@@ -31,6 +31,32 @@
       return receivingFieldContainer.querySelector("input");
     }
 
+    function placeMapAboveReceivingField() {
+      const mapWrapper = document.querySelector(".fflhub-checkout-map-wrapper");
+      const receivingInput = document.querySelector(
+        '[data-fflhub-receiving-ffl-input="1"]'
+      );
+      if (!mapWrapper || !receivingInput) return;
+
+      const fieldRow =
+        receivingInput.closest(".wc-block-components-text-input") ||
+        receivingInput.closest(".wc-block-components-checkout-step__container") ||
+        receivingInput.parentElement;
+
+      if (!fieldRow || !fieldRow.parentNode) return;
+      if (mapWrapper.nextElementSibling === fieldRow) return;
+
+      fieldRow.parentNode.insertBefore(mapWrapper, fieldRow);
+    }
+
+    placeMapAboveReceivingField();
+
+    const checkoutRoot = document.querySelector(".wc-block-checkout");
+    if (checkoutRoot) {
+      const observer = new MutationObserver(() => placeMapAboveReceivingField());
+      observer.observe(checkoutRoot, { childList: true, subtree: true });
+    }
+
 
     const zipInput = picker.querySelector("#fflhub-ffl-picker-zip");
     const searchButton = picker.querySelector(
