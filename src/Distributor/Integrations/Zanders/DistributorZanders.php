@@ -323,7 +323,7 @@ class DistributorZanders extends DistributorBase
                     $this->strip_wsdl_suffix(ZandersDirectShipAPI::ORDERS_WSDL),
                     'POST',
                     'xml',
-                    $this->redact_soap_xml_for_debug($xml),
+                    $xml,
                     [
                         'po' => $po,
                         'operation' => ZandersDirectShipAPI::OP_CREATE_ORDER,
@@ -416,7 +416,7 @@ class DistributorZanders extends DistributorBase
                     $this->strip_wsdl_suffix(ZandersDirectShipAPI::ORDERS_WSDL),
                     'POST',
                     'xml',
-                    $this->redact_soap_xml_for_debug($xml),
+                    $xml,
                     [
                         'po' => $po,
                         'operation' => ZandersDirectShipAPI::OP_CREATE_ORDER,
@@ -570,7 +570,7 @@ class DistributorZanders extends DistributorBase
                 $this->strip_wsdl_suffix(ZandersDirectShipAPI::ORDERS_WSDL),
                 'POST',
                 'xml',
-                $this->redact_soap_xml_for_debug($create_xml),
+                $create_xml,
                 [
                     'po' => $po,
                     'operation' => ZandersDirectShipAPI::OP_CREATE_ORDER,
@@ -578,7 +578,7 @@ class DistributorZanders extends DistributorBase
                     'debug_note' => 'createOrder preview uses placeholder shipToNo because useShipTo is not executed in test order debug mode.',
                     'debug_preflight_operation' => ZandersDirectShipAPI::OP_USE_SHIP_TO,
                     'debug_preflight_endpoint' => $this->strip_wsdl_suffix(ZandersDirectShipAPI::SHIPTO_WSDL),
-                    'debug_request_body_preflight' => $this->redact_soap_xml_for_debug($shipto_xml),
+                    'debug_request_body_preflight' => $shipto_xml,
                 ],
                 $external_ids
             );
@@ -1303,26 +1303,6 @@ class DistributorZanders extends DistributorBase
     private function strip_wsdl_suffix(string $url): string
     {
         return (string) preg_replace('/\?wsdl$/i', '', trim($url));
-    }
-
-    private function redact_soap_xml_for_debug(string $xml): string
-    {
-        $tags = [
-            'username',
-            'password',
-            'Username',
-            'Password',
-        ];
-
-        foreach ($tags as $tag) {
-            $xml = (string) preg_replace(
-                '#(<' . preg_quote($tag, '#') . '\b[^>]*>)(.*?)(</' . preg_quote($tag, '#') . '>)#is',
-                '$1***REDACTED***$3',
-                $xml
-            );
-        }
-
-        return $xml;
     }
 
     /**

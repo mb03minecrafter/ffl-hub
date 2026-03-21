@@ -284,7 +284,7 @@ class DistributorRSR extends DistributorBase
                     rtrim($api_base_url, '/') . '/place-order',
                     'POST',
                     'json',
-                    $this->encode_debug_json_payload($this->redact_rsr_payload_for_debug($payload)),
+                    $this->encode_debug_json_payload($payload),
                     [
                         'po' => $po,
                         'item_count' => count($items),
@@ -349,7 +349,7 @@ class DistributorRSR extends DistributorBase
                     rtrim($api_base_url, '/') . '/place-order',
                     'POST',
                     'json',
-                    $this->encode_debug_json_payload($this->redact_rsr_payload_for_debug($payload)),
+                    $this->encode_debug_json_payload($payload),
                     [
                         'po' => $po,
                         'item_count' => count($items),
@@ -449,7 +449,7 @@ class DistributorRSR extends DistributorBase
                 rtrim($api_base_url, '/') . '/place-order',
                 'POST',
                 'json',
-                $this->encode_debug_json_payload($this->redact_rsr_payload_for_debug($payload)),
+                $this->encode_debug_json_payload($payload),
                 [
                     'po' => $po,
                     'item_count' => count($items),
@@ -1328,20 +1328,5 @@ class DistributorRSR extends DistributorBase
         return $raw;
     }
 
-    /**
-     * @param array<string,mixed> $payload
-     * @return array<string,mixed>
-     */
-    private function redact_rsr_payload_for_debug(array $payload): array
-    {
-        if (array_key_exists('Username', $payload)) {
-            $payload['Username'] = '***REDACTED***';
-        }
-        if (array_key_exists('Password', $payload)) {
-            $payload['Password'] = '***REDACTED***';
-        }
-
-        return $payload;
-    }
 }
 
