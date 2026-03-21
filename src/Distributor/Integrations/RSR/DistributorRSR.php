@@ -295,7 +295,12 @@ class DistributorRSR extends DistributorBase
 
             $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
             if (!($resp['ok'] ?? false)) {
-                $failure = $this->classify_rsr_place_order_failure($resp, 'RSR dealer-fulfilled');
+                $failure = $this->classify_rsr_place_order_failure(
+                    $resp,
+                    'RSR dealer-fulfilled',
+                    $payload,
+                    rtrim($api_base_url, '/') . '/place-order'
+                );
                 $failure->external_order_ids = $external_ids;
                 return $failure;
             }
@@ -360,7 +365,12 @@ class DistributorRSR extends DistributorBase
 
             $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
             if (!($resp['ok'] ?? false)) {
-                $failure = $this->classify_rsr_place_order_failure($resp, 'RSR direct-ship non-FFL');
+                $failure = $this->classify_rsr_place_order_failure(
+                    $resp,
+                    'RSR direct-ship non-FFL',
+                    $payload,
+                    rtrim($api_base_url, '/') . '/place-order'
+                );
                 $failure->external_order_ids = $external_ids;
                 return $failure;
             }
@@ -460,7 +470,12 @@ class DistributorRSR extends DistributorBase
 
         $resp = RSRDirectConnectAPI::place_order($payload, $api_base_url, 60);
         if (!($resp['ok'] ?? false)) {
-            $failure = $this->classify_rsr_place_order_failure($resp, 'RSR direct-ship FFL');
+            $failure = $this->classify_rsr_place_order_failure(
+                $resp,
+                'RSR direct-ship FFL',
+                $payload,
+                rtrim($api_base_url, '/') . '/place-order'
+            );
             $failure->external_order_ids = $external_ids;
             return $failure;
         }
@@ -798,8 +813,14 @@ class DistributorRSR extends DistributorBase
      * Classify an RSR place-order failure into retryable vs fatal (NEW shape).
      *
      * @param array<string,mixed> $resp
+     * @param array<string,mixed> $request_payload
      */
-    private function classify_rsr_place_order_failure(array $resp, string $prefix = 'RSR'): DistributorOrderResult
+    private function classify_rsr_place_order_failure(
+        array $resp,
+        string $prefix = 'RSR',
+        array $request_payload = [],
+        string $request_url = ''
+    ): DistributorOrderResult
     {
         $http = isset($resp['http_status']) ? (int) $resp['http_status'] : 0;
         $msg  = (string) ($resp['message'] ?? 'Unknown error');
@@ -807,6 +828,16 @@ class DistributorRSR extends DistributorBase
         $details = [
             'raw' => $this->safe_raw_summary($resp['raw'] ?? null),
         ];
+        if (!empty($request_payload)) {
+            $details['request_payload'] = $request_payload;
+            $request_json = wp_json_encode($request_payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            if (is_string($request_json) && $request_json !== '') {
+                $details['request_body_json'] = $request_json;
+            }
+        }
+        if ($request_url !== '') {
+            $details['request_url'] = $request_url;
+        }
 
         // HTTP-based classification first (best signal).
         if ($http === 429) {
