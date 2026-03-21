@@ -24,6 +24,7 @@ final class CartCompliance
 {
     private const SESSION_KEY_RECEIVING_FFL    = 'fflhub_receiving_ffl_number';
     private const ORDER_META_KEY_RECEIVING_FFL = 'fflhub_receiving_ffl_number';
+    private const CHECKOUT_FIELD_ID_RECEIVING_FFL = 'ffl-hub/receiving-ffl';
     private const NOTICE_DATA_KEY              = 'fflhub_code';
     private const NOTICE_DATA_VAL              = 'cart_compliance';
 
@@ -64,10 +65,10 @@ final class CartCompliance
     public function register(): void
     {
         add_action(
-            'woocommerce_store_api_checkout_update_order_meta',
+            'woocommerce_store_api_checkout_update_order_from_request',
             [$this, 'storeapi_checkout_gate'],
             1000,
-            1
+            2
         );
     }
 
@@ -474,41 +475,84 @@ final class CartCompliance
 
     /* ---------------- Hook gates ---------------- */
 
-    private function is_real_checkout_submit_request(): bool
+    private function is_real_checkout_submit_request(?\WP_REST_Request $request = null): bool
     {
         $method = (string) ($_SERVER['REQUEST_METHOD'] ?? '');
+        if ($request instanceof \WP_REST_Request) {
+            $method = strtoupper((string) $request->get_method());
+        }
         if ($method !== 'POST') {
             return false;
         }
 
         $uri = (string) ($_SERVER['REQUEST_URI'] ?? '');
+        if ($request instanceof \WP_REST_Request) {
+            $route = (string) $request->get_route();
+            if ($route !== '' && substr($route, 0, 1) !== '/') {
+                $route = '/' . $route;
+            }
+            if ($route !== '' && !str_contains($uri, $route)) {
+                $uri = $route;
+            }
+        }
+
+        $is_calc_totals = false;
+        if ($request instanceof \WP_REST_Request) {
+            $calc = $request->get_param('__experimental_calc_totals');
+            $is_calc_totals = ($calc === true || $calc === 1 || $calc === '1' || $calc === 'true');
+        }
+        if (!$is_calc_totals && str_contains($uri, '__experimental_calc_totals=true')) {
+            $is_calc_totals = true;
+        }
 
         // Store API checkout endpoint used by Blocks
-        return str_contains($uri, '/wp-json/wc/store/v1/checkout');
+        if (!str_contains($uri, '/wc/store/v1/checkout') && !str_contains($uri, '/wp-json/wc/store/v1/checkout')) {
+            return false;
+        }
+
+        // This realtime recalculation request fires before additional fields are fully persisted.
+        // Skip it and validate on real submit.
+        return !$is_calc_totals;
     }
 
-    public function storeapi_checkout_gate(\WC_Order $order): void
+    public function storeapi_checkout_gate(\WC_Order $order, ?\WP_REST_Request $request = null): void
     {
         // unique id for this request execution
         $this->run_id = gmdate('His') . '-' . substr(sha1((string) microtime(true)), 0, 6);
 
-        if (!$this->is_real_checkout_submit_request()) {
+        if (!$this->is_real_checkout_submit_request($request)) {
             return;
         }
 
         $uri = (string) ($_SERVER['REQUEST_URI'] ?? '');
+        if ($request instanceof \WP_REST_Request) {
+            $route = (string) $request->get_route();
+            if ($route !== '' && substr($route, 0, 1) !== '/') {
+                $route = '/' . $route;
+            }
+            if ($route !== '') {
+                $uri = $route;
+            }
+        }
         $session_raw = CheckoutOrderRequestBuilder::get_session_receiving_ffl_number_raw(self::SESSION_KEY_RECEIVING_FFL);
+        $is_calc_totals = false;
+        if ($request instanceof \WP_REST_Request) {
+            $calc = $request->get_param('__experimental_calc_totals');
+            $is_calc_totals = ($calc === true || $calc === 1 || $calc === '1' || $calc === 'true');
+        }
 
         $this->dbg('checkout_gate.hit', [
             'uri' => $uri,
-            'method' => (string) ($_SERVER['REQUEST_METHOD'] ?? ''),
-            'is_calc_totals' => (str_contains($uri, '__experimental_calc_totals=true')) ? 1 : 0,
+            'method' => ($request instanceof \WP_REST_Request)
+                ? strtoupper((string) $request->get_method())
+                : (string) ($_SERVER['REQUEST_METHOD'] ?? ''),
+            'is_calc_totals' => $is_calc_totals ? 1 : 0,
             'order_id' => (int) $order->get_id(),
             'session_ffl_raw' => is_scalar($session_raw) ? (string) $session_raw : gettype($session_raw),
         ]);
 
         try {
-            $this->validate_cart_for_compliance($order);
+            $this->validate_cart_for_compliance($order, $request);
         } catch (\Throwable $e) {
             $order->add_order_note('FFLHub: Checkout blocked by compliance validation: ' . $e->getMessage());
             $order->save();
@@ -524,7 +568,7 @@ final class CartCompliance
 
     /* ---------------- Entry points ---------------- */
 
-    public function validate_cart_for_compliance(?\WC_Order $order = null): void
+    public function validate_cart_for_compliance(?\WC_Order $order = null, ?\WP_REST_Request $request = null): void
     {
         self::prof_start('validate_cart_for_compliance.total');
 
@@ -549,8 +593,8 @@ final class CartCompliance
 
             [$receiving_ffl_number, $ship_ffl] = self::prof(
                 'resolve_ffl_context(cart)',
-                function () use ($order) {
-                    return $this->resolve_ffl_context(true, $order);
+                function () use ($order, $request) {
+                    return $this->resolve_ffl_context(true, $order, $request);
                 }
             );
 
@@ -588,25 +632,34 @@ final class CartCompliance
     }
 
     /**
-     * Session-only resolution (intended).
+     * Resolve receiving FFL from session first, then request payload, then order meta.
      *
      * @return array{0:?string,1:?DistributorShipTo}
      */
-    private function resolve_ffl_context(bool $verify_session, ?\WC_Order $order = null): array
+    private function resolve_ffl_context(bool $verify_session, ?\WC_Order $order = null, ?\WP_REST_Request $request = null): array
     {
         self::prof_start('resolve_ffl_context.total', ['verify_session' => $verify_session ? '1' : '0']);
 
         try {
             $resolved_from_order = false;
+            $resolved_from_request = false;
             $session_raw = CheckoutOrderRequestBuilder::get_session_receiving_ffl_number_raw(self::SESSION_KEY_RECEIVING_FFL);
             $order_meta_raw = ($order instanceof \WC_Order)
                 ? (string) $order->get_meta(self::ORDER_META_KEY_RECEIVING_FFL, true)
                 : '';
+            $request_ffl_raw = null;
+            if ($request instanceof \WP_REST_Request) {
+                $additional = $request->get_param('additional_fields');
+                if (is_array($additional) && array_key_exists(self::CHECKOUT_FIELD_ID_RECEIVING_FFL, $additional)) {
+                    $request_ffl_raw = $additional[self::CHECKOUT_FIELD_ID_RECEIVING_FFL];
+                }
+            }
 
             $this->dbg('resolve_ffl_context.input', [
                 'verify_session' => $verify_session ? 1 : 0,
                 'session_ffl_raw' => is_scalar($session_raw) ? (string) $session_raw : gettype($session_raw),
                 'order_meta_ffl_raw' => $order_meta_raw !== '' ? $order_meta_raw : null,
+                'request_ffl_raw' => is_scalar($request_ffl_raw) ? (string) $request_ffl_raw : (is_null($request_ffl_raw) ? null : gettype($request_ffl_raw)),
             ]);
 
             $receiving_ffl_number = self::prof(
@@ -620,6 +673,14 @@ final class CartCompliance
                     );
                 }
             );
+
+            if ($receiving_ffl_number === null && $request_ffl_raw !== null) {
+                $from_request = strtoupper(trim((string) $request_ffl_raw));
+                if ($from_request !== '' && preg_match('/^[A-Z0-9-]+$/', $from_request)) {
+                    $receiving_ffl_number = $from_request;
+                    $resolved_from_request = true;
+                }
+            }
 
             if ($receiving_ffl_number === null && $order instanceof \WC_Order) {
                 $from_order = strtoupper(trim((string) $order->get_meta(self::ORDER_META_KEY_RECEIVING_FFL, true)));
@@ -659,6 +720,7 @@ final class CartCompliance
                 'verify_session'       => $verify_session ? 1 : 0,
                 'receiving_ffl_number' => $receiving_ffl_number !== null ? (string) $receiving_ffl_number : null,
                 'ship_ffl_ok'          => ($ship_ffl instanceof DistributorShipTo) ? 1 : 0,
+                'resolved_from_request'  => $resolved_from_request ? 1 : 0,
                 'resolved_from_order'  => $resolved_from_order ? 1 : 0,
             ]);
 
