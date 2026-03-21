@@ -80,7 +80,8 @@ final class OrderPlacementSnapshotUtil
             'code'    => (string) $or->code,
             'message' => self::truncate((string) $or->message, 1200),
             'codes'   => self::normalize_codes(is_array($or->codes) ? $or->codes : []),
-            'details' => self::normalize_details($details),
+            // Place snapshots are primary production diagnostics: keep full detail payloads.
+            'details' => self::normalize_details($details, false, 0, false),
             'http'    => isset($or->http_status) ? (int) $or->http_status : 0,
             'ext_ids' => is_array($or->external_order_ids)
                 ? OrderPlacementJobsStoreUtil::normalize_external_ids($or->external_order_ids)
@@ -119,20 +120,28 @@ final class OrderPlacementSnapshotUtil
     /**
      * Normalize details for storage:
      * - shallow only
-     * - cap key count
-     * - cap string lengths
+     * - optional key-count cap
+     * - optional string-length cap
      * - redact obvious secret-ish keys
      *
      * @param array<string,mixed> $details
+     * @param bool                $omit_arrays When true, arrays are replaced with an omitted marker.
+     * @param int                 $max_keys    Max number of top-level keys; 0 disables cap.
+     * @param bool                $truncate_strings When true, long strings are truncated.
      * @return array<string,mixed>
      */
-    private static function normalize_details(array $details): array
+    private static function normalize_details(
+        array $details,
+        bool $omit_arrays = true,
+        int $max_keys = 25,
+        bool $truncate_strings = true
+    ): array
     {
         $out = [];
         $i = 0;
 
         foreach ($details as $k => $v) {
-            if ($i >= 25) {
+            if ($max_keys > 0 && $i >= $max_keys) {
                 $out['__more__'] = true;
                 break;
             }
@@ -155,15 +164,19 @@ final class OrderPlacementSnapshotUtil
             }
 
             if (is_string($v)) {
-                $max = 1200;
-                if (
-                    strpos($k_lc, 'debug_request_body') !== false ||
-                    strpos($k_lc, 'debug_request_xml') !== false
-                ) {
-                    $max = 20000;
-                }
+                if ($truncate_strings) {
+                    $max = 1200;
+                    if (
+                        strpos($k_lc, 'debug_request_body') !== false ||
+                        strpos($k_lc, 'debug_request_xml') !== false
+                    ) {
+                        $max = 20000;
+                    }
 
-                $out[$ks] = self::truncate($v, $max);
+                    $out[$ks] = self::truncate($v, $max);
+                } else {
+                    $out[$ks] = $v;
+                }
                 continue;
             }
             if (is_bool($v) || is_int($v) || is_float($v) || $v === null) {
@@ -171,7 +184,11 @@ final class OrderPlacementSnapshotUtil
                 continue;
             }
             if (is_array($v)) {
-                $out[$ks] = ['__omitted_array__' => true, 'count' => count($v)];
+                if ($omit_arrays) {
+                    $out[$ks] = ['__omitted_array__' => true, 'count' => count($v)];
+                } else {
+                    $out[$ks] = $v;
+                }
                 continue;
             }
             if (is_object($v)) {
