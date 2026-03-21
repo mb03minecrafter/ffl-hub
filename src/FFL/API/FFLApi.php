@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
  * Public REST API endpoints for FFL search/autocomplete.
  *
  * Route:
- *   GET /wp-json/fflhub/v1/ffls?zip=70801&limit=50
+ *   GET /wp-json/fflhub/v1/ffls?zip=70801&limit=200
  *
  * Response:
  *   {
@@ -68,7 +68,7 @@ final class FFLApi
                         'description' => 'Maximum number of FFLs to return (clamped to 1..200).',
                         'type'        => 'integer',
                         'required'    => false,
-                        'default'     => 50,
+                        'default'     => 200,
                     ],
                 ],
             ]

@@ -53,7 +53,7 @@
     // e.g. restUrl = "https://example.com/wp-json/fflhub/v1/ffls"
     const settings = window.fflhubFFLPickerSettings || {};
     const restUrl = settings.restUrl || "";
-    const defaultLimit = parseInt(settings.defaultLimit || 50, 10);
+    const defaultLimit = parseInt(settings.defaultLimit || 200, 10);
 
     let currentSelection = null;
 
@@ -233,7 +233,7 @@
       listContainer.appendChild(loadingMsg);
 
       const limit =
-        defaultLimit && !Number.isNaN(defaultLimit) ? defaultLimit : 50;
+        defaultLimit && !Number.isNaN(defaultLimit) ? defaultLimit : 200;
 
       const url =
         restUrl +
