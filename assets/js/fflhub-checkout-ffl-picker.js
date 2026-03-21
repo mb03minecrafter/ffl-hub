@@ -299,7 +299,31 @@
     }
 
     if (searchButton) {
-      searchButton.addEventListener("click", handleSearchClick);
+      let lastTouchTs = 0;
+
+      const triggerSearch = function (event) {
+        if (event) {
+          event.preventDefault();
+        }
+        handleSearchClick();
+      };
+
+      searchButton.addEventListener("touchend", function (event) {
+        lastTouchTs = Date.now();
+        triggerSearch(event);
+      }, { passive: false });
+
+      searchButton.addEventListener("pointerup", function (event) {
+        triggerSearch(event);
+      });
+
+      searchButton.addEventListener("click", function (event) {
+        // Mobile browsers often fire click after touchend.
+        if (Date.now() - lastTouchTs < 500) {
+          return;
+        }
+        triggerSearch(event);
+      });
     }
 
     // Optional: allow pressing Enter in the ZIP field to trigger search.
