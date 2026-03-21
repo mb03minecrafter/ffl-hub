@@ -172,7 +172,7 @@ class CheckoutMap
         <?php
         $picker_html = ob_get_clean();
 
-        return $block_content . $picker_html;
+        return $picker_html . $block_content;
     }
 
     /**
