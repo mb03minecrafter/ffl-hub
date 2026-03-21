@@ -132,6 +132,13 @@ final class RSRModule implements DistributorModuleInterface
                 'description' => 'Your RSR POS indicator for API requests.',
                 'default'     => '',
             ],
+            'order_email' => [
+                'label'       => 'Order Email',
+                'type'        => 'email',
+                'placeholder' => '',
+                'description' => 'Email sent in RSR API order payloads (Email field).',
+                'default'     => '',
+            ],
             'dropship_account_number' => [
                 'label'       => 'Drop-Ship Account Number',
                 'type'        => 'text',

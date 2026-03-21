@@ -1271,7 +1271,10 @@ class DistributorRSR extends DistributorBase
 
     private function resolve_dealer_email(): string
     {
-        $email = trim((string) get_option('admin_email', ''));
+        $email = trim((string) get_option($this->get_option_name('order_email'), ''));
+        if ($email === '') {
+            $email = trim((string) get_option('admin_email', ''));
+        }
         if ($email === '') {
             $email = 'dealer@example.com';
         }
