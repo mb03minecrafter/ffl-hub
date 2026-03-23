@@ -44,7 +44,7 @@ class RSRProductTableSchema implements ProductSchemaInterface
             'shipping_weight'          => 'VARCHAR(32)   NULL',
             'sot_required'             => 'TINYINT(1) NOT NULL DEFAULT 0',
             'model'                    => 'VARCHAR(128)  NULL',
-            'full_manufacturer_name'   => 'VARCHAR(255)  NULL',
+            'manufacturer'             => 'VARCHAR(255)  NULL',
             'manufacturer_part_number' => 'VARCHAR(128)  NULL',
             'expanded_product_description' => 'TEXT       NULL',
             'image_name'               => 'VARCHAR(255)  NULL',

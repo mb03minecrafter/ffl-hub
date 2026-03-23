@@ -196,7 +196,7 @@ class RSRProductImporterService
                                                END,
                 inventory_quantity           = TRIM(TRIM(BOTH '\\r' FROM @c8)),
                 model                        = TRIM(TRIM(BOTH '\\r' FROM @c9)),
-                full_manufacturer_name       = TRIM(TRIM(BOTH '\\r' FROM @c10)),
+                manufacturer                 = TRIM(TRIM(BOTH '\\r' FROM @c10)),
                 manufacturer_part_number     = TRIM(TRIM(BOTH '\\r' FROM @c11)),
                 allocation_status            = TRIM(TRIM(BOTH '\\r' FROM @c12)),
                 expanded_product_description = TRIM(TRIM(BOTH '\\r' FROM @c13)),

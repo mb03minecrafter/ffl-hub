@@ -125,9 +125,10 @@ class DoubleBufferedProductTable implements DistributorTableInterface
     }
 
     /**
-     * Create both v1 and v2 tables (if missing).
+     * Create or migrate both v1 and v2 tables.
      *
-     * We only run dbDelta for v1; v2 is cloned via CREATE TABLE ... LIKE ...
+     * We run dbDelta for each table so schema updates are applied to existing
+     * installs as well as first-time installs.
      */
     public function createTables(): void
     {
@@ -137,19 +138,6 @@ class DoubleBufferedProductTable implements DistributorTableInterface
         $table_v1 = $this->get_table_name_with_suffix('v1');
         $table_v2 = $this->get_table_name_with_suffix('v2');
         $charset  = $wpdb->get_charset_collate();
-
-        $existing_v1 = $wpdb->get_var(
-            $wpdb->prepare('SHOW TABLES LIKE %s', $table_v1)
-        );
-        $existing_v2 = $wpdb->get_var(
-            $wpdb->prepare('SHOW TABLES LIKE %s', $table_v2)
-        );
-
-        // If both exist, just normalize the live option and bail.
-        if ($existing_v1 === $table_v1 && $existing_v2 === $table_v2) {
-            $this->get_live_table_name();
-            return;
-        }
 
         $cols    = $this->productSchema->get_column_definitions();
         $indexes = $this->productSchema->get_index_definitions();
@@ -165,13 +153,19 @@ class DoubleBufferedProductTable implements DistributorTableInterface
         }
 
         $create_v1 = "CREATE TABLE {$table_v1} (\n" . implode(",\n", $lines) . "\n) {$charset};";
+        $create_v2 = "CREATE TABLE {$table_v2} (\n" . implode(",\n", $lines) . "\n) {$charset};";
 
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
-        // Use dbDelta for v1 so WP can manage future schema changes.
+        // Use dbDelta for both tables so existing sites receive schema updates.
         dbDelta($create_v1);
+        dbDelta($create_v2);
 
-        // v2: clone structure + indexes from v1 if v2 does not exist yet.
+        $existing_v2 = $wpdb->get_var(
+            $wpdb->prepare('SHOW TABLES LIKE %s', $table_v2)
+        );
+
+        // Defensive fallback if dbDelta fails to create v2 on some environments.
         if ($existing_v2 !== $table_v2) {
             // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $wpdb->query("CREATE TABLE {$table_v2} LIKE {$table_v1}");

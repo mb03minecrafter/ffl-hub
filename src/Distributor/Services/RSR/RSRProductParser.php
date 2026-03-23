@@ -97,7 +97,7 @@ class RSRProductParser
         $shipping_weight        = $get( $columns, 7 );
         $inventory_quantity     = $get( $columns, 8 );
         $model                  = $get( $columns, 9 );
-        $full_manufacturer_name = $get( $columns, 10 );
+        $manufacturer           = $get( $columns, 10 );
         $manufacturer_part_no   = $get( $columns, 11 );
         $allocation_status      = $get( $columns, 12 );
         $expanded_product_desc  = $get( $columns, 13 );
@@ -218,7 +218,7 @@ class RSRProductParser
             'shipping_weight'              => $shipping_weight,
             'sot_required'                 => $sot_required,
             'model'                        => $model,
-            'full_manufacturer_name'       => $full_manufacturer_name,
+            'manufacturer'                 => $manufacturer,
             'manufacturer_part_number'     => $manufacturer_part_no,
             'expanded_product_description' => $expanded_product_desc,
             'image_name'                   => $image_name,
