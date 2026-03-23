@@ -119,6 +119,7 @@ class DistributorLipseys extends DistributorBase
                 'upc'          => ['upc'],
                 'name'         => ['manufacturer', 'model', 'caliber_gauge'],
                 'description'  => ['product_description'],
+                'brand'        => ['manufacturer'],
                 'price'        => ['distributor_price'],
                 'map'          => ['retail_map'],
                 'msrp'         => ['retail_msrp'],

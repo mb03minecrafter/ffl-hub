@@ -1071,6 +1071,7 @@ class DistributorZanders extends DistributorBase
         $upc     = $this->normalize_upc((string) $upc_raw) ?? $normalized_upc;
 
         $manufacturer = trim((string) ($this->get_string_field($row, ['manufacturer']) ?? ''));
+        $brand = $manufacturer;
 
         // New schema: description is already combined.
         $raw_desc = trim((string) ($this->get_string_field($row, ['product_description']) ?? ''));
@@ -1138,7 +1139,11 @@ class DistributorZanders extends DistributorBase
             $recommended_category,
             $row,
             $shipping_weight,
-            $sot_required
+            $sot_required,
+            null,
+            null,
+            null,
+            $brand
         );
     }
 

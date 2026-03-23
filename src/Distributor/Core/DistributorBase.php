@@ -595,6 +595,7 @@ abstract class DistributorBase implements DistributorInterface
 
         $raw_name        = $this->get_string_field($row, $map['name'] ?? []) ?? '';
         $raw_description = $this->get_string_field($row, $map['description'] ?? []) ?? '';
+        $brand = $this->get_string_field($row, $map['brand'] ?? ['manufacturer']);
 
         $raw_name        = trim((string) preg_replace('/\s+/', ' ', $raw_name));
         $raw_description = trim((string) preg_replace('/\s+/', ' ', $raw_description));
@@ -679,7 +680,8 @@ abstract class DistributorBase implements DistributorInterface
             $sot_required,
             $shipping_length_in,
             $shipping_width_in,
-            $shipping_height_in
+            $shipping_height_in,
+            $brand
         );
     }
 

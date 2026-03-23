@@ -47,6 +47,55 @@ class DistributorProductHelper
      * potential auto-switch logic.
      */
     private const OFFERS_SNAPSHOT_META_KEY = 'fflhub_offers_snapshot';
+    private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
+    private const BRAND_ALIASES = [
+        'smithandwesson' => 'Smith & Wesson',
+        'smithwesson' => 'Smith & Wesson',
+        'sig' => 'SIG SAUER',
+        'sigsauer' => 'SIG SAUER',
+        'sigsaueroffduty' => 'SIG SAUER',
+        'fnamerica' => 'FN',
+        'eotech' => 'EOTECH',
+        'promagindustries' => 'ProMag',
+        'promag' => 'ProMag',
+        'keltec' => 'Kel-Tec',
+        'huxwrxsafetyco' => 'HUXWRX',
+        'huxwrx' => 'HUXWRX',
+        'yankeehillmachineco' => 'Yankee Hill Machine',
+        'yankeehillmachinecompany' => 'Yankee Hill Machine',
+        'yankeehillmachine' => 'Yankee Hill Machine',
+        'americantacticalinc' => 'American Tactical',
+        'americantactical' => 'American Tactical',
+        'henry' => 'Henry Repeating Arms',
+        'savage' => 'Savage Arms',
+        'warnescopemounts' => 'Warne',
+        'hecklerandkochhkusa' => 'Heckler & Koch',
+        'hecklerkoch' => 'Heckler & Koch',
+        'iwiisraelweaponindustries' => 'IWI',
+        'iwiusinc' => 'IWI',
+        'thompsoncenter' => 'Thompson/Center',
+        'autoordnancethompson' => 'Auto-Ordnance',
+        'autoordnance' => 'Auto-Ordnance',
+        'kriss' => 'KRISS USA',
+        'krissusainc' => 'KRISS USA',
+        'taurususa' => 'Taurus',
+        'walther' => 'Walther Arms',
+        'springfield' => 'Springfield Armory',
+        'hi-pointfirearms' => 'Hi-Point',
+        'atncorp' => 'ATN',
+        'banishsuppressors' => 'BANISH',
+        'bntusa' => 'B&T',
+        'militaryarmscorporation' => 'Military Armament Corp',
+        'uspalm' => 'US PALM',
+        'magview' => 'MagView',
+        'shadowsystemsdefense' => 'Shadow Systems',
+        'gforcearms' => 'GForce Arms',
+        'truglo' => 'TRUGLO',
+        'hiviz' => 'Hi-Viz',
+        'europeanamericanarmory' => 'EAA Corp',
+        'advancedarmamentcompany' => 'AAC (Advanced Armament)',
+        'advancedarmamentcorp' => 'AAC (Advanced Armament)',
+    ];
 
     /**
      * Create a WooCommerce product from a selected distributor payload,
@@ -118,6 +167,9 @@ class DistributorProductHelper
 
         // NEW: persist an offers snapshot for debugging / future auto-switch logic
         self::store_offers_snapshot_meta($product, $offers, $selected_dist_id);
+
+        // Apply Woo product brand from distributor payload.
+        self::sync_product_brand_from_payload($product_id, $selected_product);
 
         // Validate offers includes selected distributor (log + continue)
         if ($selected_dist_id !== '' && !isset($offers[$selected_dist_id])) {
@@ -438,6 +490,70 @@ class DistributorProductHelper
     }
 
     /**
+     * Sync Woo product brand term from payload brand/manufacturer.
+     *
+     * Returns true when terms were changed.
+     */
+    public static function sync_product_brand_from_payload(
+        int $product_id,
+        DistributorProductPayload $selected_product
+    ): bool {
+        if ($product_id <= 0) {
+            return false;
+        }
+
+        $brand = self::normalize_brand_name((string) ($selected_product->brand ?? ''));
+        if ($brand === '') {
+            return false;
+        }
+
+        $taxonomy = self::resolve_brand_taxonomy();
+        if ($taxonomy === '') {
+            return false;
+        }
+
+        $term = term_exists($brand, $taxonomy);
+        if ($term === 0 || $term === null) {
+            $created = wp_insert_term($brand, $taxonomy);
+            if (is_wp_error($created)) {
+                self::log_debug('[FFLHub][DistributorProductHelper] Brand term create failed: ' . $created->get_error_message());
+                return false;
+            }
+            $term_id = (int) ($created['term_id'] ?? 0);
+        } elseif (is_array($term)) {
+            $term_id = (int) ($term['term_id'] ?? $term['id'] ?? 0);
+        } else {
+            $term_id = (int) $term;
+        }
+
+        if ($term_id <= 0) {
+            return false;
+        }
+
+        $current_term_ids = wp_get_object_terms($product_id, $taxonomy, ['fields' => 'ids']);
+        if (is_wp_error($current_term_ids)) {
+            return false;
+        }
+
+        $current_term_ids = array_values(array_unique(array_map('intval', is_array($current_term_ids) ? $current_term_ids : [])));
+        $target_term_ids = [$term_id];
+
+        sort($current_term_ids);
+        sort($target_term_ids);
+        if ($current_term_ids === $target_term_ids) {
+            return false;
+        }
+
+        $set = wp_set_object_terms($product_id, $target_term_ids, $taxonomy, false);
+        if (is_wp_error($set)) {
+            self::log_debug('[FFLHub][DistributorProductHelper] Brand term assign failed: ' . $set->get_error_message());
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * Resolve shipping dimensions for meta persistence.
      *
      * Strategy:
@@ -602,6 +718,7 @@ class DistributorProductHelper
                 'shipping_length_in' => (string) ($p->shipping_length_in ?? ''),
                 'shipping_width_in'  => (string) ($p->shipping_width_in ?? ''),
                 'shipping_height_in' => (string) ($p->shipping_height_in ?? ''),
+                'brand'         => (string) ($p->brand ?? ''),
                 'qty'           => (int) ($p->quantity ?? 0),
                 'ffl_required'  => ($p->ffl_required ?? false) ? 1 : 0,
                 'sot_required'  => ($p->sot_required ?? false) ? 1 : 0,
@@ -934,5 +1051,40 @@ class DistributorProductHelper
     private static function log_debug(string $message): void
     {
         DebugLogUtil::log('FFLHUB_ADMIN_DEBUG', '[FFLHub][DistributorProductHelper]', $message);
+    }
+
+    private static function resolve_brand_taxonomy(): string
+    {
+        foreach (self::BRAND_TAXONOMY_CANDIDATES as $taxonomy) {
+            if (taxonomy_exists($taxonomy)) {
+                return $taxonomy;
+            }
+        }
+
+        return '';
+    }
+
+    private static function normalize_brand_name(string $brand): string
+    {
+        $brand = wp_strip_all_tags($brand);
+        $brand = trim((string) preg_replace('/\s+/', ' ', $brand));
+        $brand = trim($brand, " \t\n\r\0\x0B-_,.;:/\\|");
+        if ($brand === '') {
+            return '';
+        }
+
+        $alias_key = self::brand_alias_key($brand);
+        if ($alias_key !== '' && isset(self::BRAND_ALIASES[$alias_key])) {
+            return self::BRAND_ALIASES[$alias_key];
+        }
+
+        return $brand;
+    }
+
+    private static function brand_alias_key(string $brand): string
+    {
+        $s = strtolower(trim($brand));
+        $s = (string) preg_replace('/[^a-z0-9]+/', '', $s);
+        return $s;
     }
 }

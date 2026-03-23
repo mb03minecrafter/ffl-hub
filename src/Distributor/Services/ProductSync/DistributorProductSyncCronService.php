@@ -418,6 +418,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         }
 
         $selected_dist_id = (string) $selected_offer->distributor_id;
+        $brand_changed = DistributorProductHelper::sync_product_brand_from_payload($product_id, $selected_payload);
 
         $qty = (int) ($selected_payload->quantity ?? 0);
         $true_cost = (is_numeric($selected_payload->true_cost) && (float) $selected_payload->true_cost > 0)
@@ -461,6 +462,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'upc'        => $upc,
                 'selected'   => $selected_dist_id,
                 'qty'        => $desired_qty,
+                'brand_changed' => $brand_changed ? 1 : 0,
                 'saved'      => $needs_save ? 1 : 0,
             ));
 
@@ -518,6 +520,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'selected'   => $selected_dist_id,
                 'sell'       => $recommended_price,
                 'floor'      => $min_profitable_price,
+                'brand_changed' => $brand_changed ? 1 : 0,
                 'saved'      => $needs_save ? 1 : 0,
             ));
 
@@ -584,6 +587,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'stock_changed' => $stock_changed ? 1 : 0,
             'price_changed' => $price_changed ? 1 : 0,
             'meta_changed'  => $meta_changed ? 1 : 0,
+            'brand_changed' => $brand_changed ? 1 : 0,
             'saved'         => $needs_save ? 1 : 0,
         ));
 

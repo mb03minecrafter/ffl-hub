@@ -39,6 +39,9 @@ final class DistributorProductPayload
     /** Product description / long title / model string. */
     public string $description;
 
+    /** Brand / manufacturer name, if known. */
+    public ?string $brand;
+
     // -----------------------------
     // Pricing & availability
     // -----------------------------
@@ -174,6 +177,7 @@ final class DistributorProductPayload
      * @param string|null $shipping_length_in
      * @param string|null $shipping_width_in
      * @param string|null $shipping_height_in
+     * @param string|null $brand
      */
     public function __construct(
         string $upc,
@@ -195,13 +199,16 @@ final class DistributorProductPayload
         bool $sot_required = false,
         ?string $shipping_length_in = null,
         ?string $shipping_width_in = null,
-        ?string $shipping_height_in = null
+        ?string $shipping_height_in = null,
+        ?string $brand = null
     ) {
         // Strings: trim only; higher-level builders decide formatting/casing rules.
         $this->upc = trim($upc);
         $this->sku = trim($sku);
         $this->name = trim($name);
         $this->description = trim($description);
+        $brand = trim((string) ($brand ?? ''));
+        $this->brand = ($brand !== '') ? $brand : null;
 
         // Money floats: normalize to finite values.
         $this->price = self::finite_float($price);
