@@ -48,9 +48,16 @@ class DistributorProductHelper
      */
     private const OFFERS_SNAPSHOT_META_KEY = 'fflhub_offers_snapshot';
     private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
+    private const BRAND_TERM_ALIAS_MIGRATION_OPTION = 'fflhub_brand_term_alias_migration_v1';
+    private const BRAND_TERM_ALIAS_MIGRATIONS = [
+        'Holosun Technologies' => 'Holosun',
+        'Holoson Technologies' => 'Holosun',
+    ];
     private const BRAND_ALIASES = [
         'smithandwesson' => 'Smith & Wesson',
         'smithwesson' => 'Smith & Wesson',
+        'holosuntechnologies' => 'Holosun',
+        'holosontechnologies' => 'Holosun',
         'sig' => 'SIG SAUER',
         'sigsauer' => 'SIG SAUER',
         'sigsaueroffduty' => 'SIG SAUER',
@@ -502,13 +509,15 @@ class DistributorProductHelper
             return false;
         }
 
-        $brand = self::normalize_brand_name((string) ($selected_product->brand ?? ''));
-        if ($brand === '') {
+        $taxonomy = self::resolve_brand_taxonomy();
+        if ($taxonomy === '') {
             return false;
         }
 
-        $taxonomy = self::resolve_brand_taxonomy();
-        if ($taxonomy === '') {
+        self::maybe_run_brand_term_alias_migration($taxonomy);
+
+        $brand = self::normalize_brand_name((string) ($selected_product->brand ?? ''));
+        if ($brand === '') {
             return false;
         }
 
@@ -1051,6 +1060,198 @@ class DistributorProductHelper
     private static function log_debug(string $message): void
     {
         DebugLogUtil::log('FFLHUB_ADMIN_DEBUG', '[FFLHub][DistributorProductHelper]', $message);
+    }
+
+    private static function maybe_run_brand_term_alias_migration(string $taxonomy): void
+    {
+        if ((string) get_option(self::BRAND_TERM_ALIAS_MIGRATION_OPTION, '') === '1') {
+            return;
+        }
+
+        if ($taxonomy === '' || !taxonomy_exists($taxonomy)) {
+            return;
+        }
+
+        $target_term_id_by_key = [];
+        foreach (self::BRAND_TERM_ALIAS_MIGRATIONS as $source_name => $target_name) {
+            $target_name = self::normalize_brand_name((string) $target_name);
+            if ($target_name === '') {
+                continue;
+            }
+
+            $target_key = self::brand_alias_key($target_name);
+            if ($target_key === '' || isset($target_term_id_by_key[$target_key])) {
+                continue;
+            }
+
+            $term = term_exists($target_name, $taxonomy);
+            if ($term === 0 || $term === null) {
+                $created = wp_insert_term($target_name, $taxonomy);
+                if (is_wp_error($created)) {
+                    self::log_debug('[FFLHub][DistributorProductHelper] Brand alias migration target create failed: ' . $created->get_error_message());
+                    return;
+                }
+                $target_term_id = (int) ($created['term_id'] ?? 0);
+            } elseif (is_array($term)) {
+                $target_term_id = (int) ($term['term_id'] ?? $term['id'] ?? 0);
+            } else {
+                $target_term_id = (int) $term;
+            }
+
+            if ($target_term_id <= 0) {
+                self::log_debug('[FFLHub][DistributorProductHelper] Brand alias migration target resolve failed for: ' . $target_name);
+                return;
+            }
+
+            $target_term_id_by_key[$target_key] = $target_term_id;
+        }
+
+        if (empty($target_term_id_by_key)) {
+            update_option(self::BRAND_TERM_ALIAS_MIGRATION_OPTION, '1', false);
+            return;
+        }
+
+        $source_target_key_map = [];
+        foreach (self::BRAND_TERM_ALIAS_MIGRATIONS as $source_name => $target_name) {
+            $source_key = self::brand_alias_key((string) $source_name);
+            $target_key = self::brand_alias_key(self::normalize_brand_name((string) $target_name));
+            if ($source_key !== '' && $target_key !== '') {
+                $source_target_key_map[$source_key] = $target_key;
+            }
+        }
+
+        if (empty($source_target_key_map)) {
+            update_option(self::BRAND_TERM_ALIAS_MIGRATION_OPTION, '1', false);
+            return;
+        }
+
+        $terms = get_terms([
+            'taxonomy'   => $taxonomy,
+            'hide_empty' => false,
+        ]);
+        if (is_wp_error($terms)) {
+            self::log_debug('[FFLHub][DistributorProductHelper] Brand alias migration get_terms failed: ' . $terms->get_error_message());
+            return;
+        }
+
+        $source_term_ids_by_target = [];
+        foreach ((array) $terms as $term_obj) {
+            if (!is_object($term_obj) || !isset($term_obj->term_id, $term_obj->name)) {
+                continue;
+            }
+
+            $source_term_id = (int) $term_obj->term_id;
+            if ($source_term_id <= 0) {
+                continue;
+            }
+
+            $source_name = trim((string) $term_obj->name);
+            $source_key = self::brand_alias_key($source_name);
+            if ($source_key === '' || !isset($source_target_key_map[$source_key])) {
+                continue;
+            }
+
+            $target_key = (string) $source_target_key_map[$source_key];
+            $target_term_id = (int) ($target_term_id_by_key[$target_key] ?? 0);
+            if ($target_term_id <= 0 || $target_term_id === $source_term_id) {
+                continue;
+            }
+
+            if (!isset($source_term_ids_by_target[$target_term_id])) {
+                $source_term_ids_by_target[$target_term_id] = [];
+            }
+            $source_term_ids_by_target[$target_term_id][$source_term_id] = $source_term_id;
+        }
+
+        if (empty($source_term_ids_by_target)) {
+            update_option(self::BRAND_TERM_ALIAS_MIGRATION_OPTION, '1', false);
+            return;
+        }
+
+        $had_errors = false;
+        $updated_products = 0;
+        $deleted_terms = 0;
+
+        foreach ($source_term_ids_by_target as $target_term_id => $source_term_ids_map) {
+            $source_term_ids = array_values(array_map('intval', (array) $source_term_ids_map));
+            if (empty($source_term_ids)) {
+                continue;
+            }
+
+            $object_id_map = [];
+            foreach ($source_term_ids as $source_term_id) {
+                $object_ids = get_objects_in_term($source_term_id, $taxonomy);
+                if (is_wp_error($object_ids)) {
+                    $had_errors = true;
+                    self::log_debug('[FFLHub][DistributorProductHelper] Brand alias migration get_objects_in_term failed: ' . $object_ids->get_error_message());
+                    continue;
+                }
+
+                foreach ((array) $object_ids as $object_id) {
+                    $object_id = (int) $object_id;
+                    if ($object_id > 0) {
+                        $object_id_map[$object_id] = $object_id;
+                    }
+                }
+            }
+
+            foreach ($object_id_map as $object_id) {
+                $current_term_ids = wp_get_object_terms($object_id, $taxonomy, ['fields' => 'ids']);
+                if (is_wp_error($current_term_ids)) {
+                    $had_errors = true;
+                    self::log_debug('[FFLHub][DistributorProductHelper] Brand alias migration wp_get_object_terms failed: ' . $current_term_ids->get_error_message());
+                    continue;
+                }
+
+                $current_term_ids = array_values(array_unique(array_map('intval', is_array($current_term_ids) ? $current_term_ids : [])));
+                $next_term_ids = array_values(array_diff($current_term_ids, $source_term_ids));
+                if (!in_array((int) $target_term_id, $next_term_ids, true)) {
+                    $next_term_ids[] = (int) $target_term_id;
+                }
+
+                $current_sorted = $current_term_ids;
+                $next_sorted = array_values(array_unique(array_map('intval', $next_term_ids)));
+                sort($current_sorted);
+                sort($next_sorted);
+                if ($current_sorted === $next_sorted) {
+                    continue;
+                }
+
+                $set = wp_set_object_terms($object_id, $next_sorted, $taxonomy, false);
+                if (is_wp_error($set)) {
+                    $had_errors = true;
+                    self::log_debug('[FFLHub][DistributorProductHelper] Brand alias migration wp_set_object_terms failed: ' . $set->get_error_message());
+                    continue;
+                }
+
+                $updated_products++;
+            }
+
+            foreach ($source_term_ids as $source_term_id) {
+                $deleted = wp_delete_term($source_term_id, $taxonomy);
+                if ($deleted === false || is_wp_error($deleted)) {
+                    $had_errors = true;
+                    $err = is_wp_error($deleted) ? $deleted->get_error_message() : 'unknown';
+                    self::log_debug('[FFLHub][DistributorProductHelper] Brand alias migration wp_delete_term failed: ' . $err);
+                    continue;
+                }
+
+                $deleted_terms++;
+            }
+        }
+
+        if ($had_errors) {
+            return;
+        }
+
+        update_option(self::BRAND_TERM_ALIAS_MIGRATION_OPTION, '1', false);
+        self::log_debug(
+            sprintf(
+                '[FFLHub][DistributorProductHelper] Brand alias migration complete: updated_products=%d, deleted_terms=%d',
+                $updated_products,
+                $deleted_terms
+            )
+        );
     }
 
     private static function resolve_brand_taxonomy(): string
