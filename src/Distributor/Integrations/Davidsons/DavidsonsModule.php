@@ -8,6 +8,9 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
+use FFLHub\Distributor\Services\Davidsons\DavidsonsServices;
+use FFLHub\Distributor\Services\Davidsons\Tables\DavidsonsProductTableSchema;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 
 /**
  * Davidson's module definition.
@@ -54,7 +57,15 @@ final class DavidsonsModule implements DistributorModuleInterface
 
     public function build_distributor(): DistributorBase
     {
-        return new DistributorDavidsons($this);
+        $schema = new DavidsonsProductTableSchema();
+
+        $table = new DoubleBufferedProductTable(
+            $schema,
+            'fflhub_davidsons_fulfillment_last_swap'
+        );
+
+        $services = new DavidsonsServices($table);
+
+        return new DistributorDavidsons($this, $services);
     }
 }
-
