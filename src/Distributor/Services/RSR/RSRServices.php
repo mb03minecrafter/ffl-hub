@@ -14,7 +14,7 @@ use FFLHub\Util\DebugLogUtil;
 
 class RSRServices extends DistributorServicesBase
 {
-    private const MANUFACTURER_COLUMN_MIGRATION_OPTION = 'fflhub_rsr_migration_manufacturer_column_v1';
+    private const MANUFACTURER_COLUMN_MIGRATION_OPTION = 'fflhub_rsr_migration_manufacturer_column_v2';
 
     public function __construct(
         DoubleBufferedProductTable $fulfillmentTable,
@@ -74,6 +74,8 @@ class RSRServices extends DistributorServicesBase
 
         $had_errors = false;
         $total_backfilled = 0;
+        $legacy_dropped_tables = 0;
+        $manufacturer_reordered_tables = 0;
 
         foreach ($table_names as $table_name) {
             if (! $this->is_safe_table_name($table_name)) {
@@ -85,11 +87,34 @@ class RSRServices extends DistributorServicesBase
             $has_manufacturer = $this->table_has_column($table_name, 'manufacturer');
             $has_legacy = $this->table_has_column($table_name, 'full_manufacturer_name');
 
-            if (! $has_manufacturer || ! $has_legacy) {
+            if (! $has_manufacturer) {
+                $had_errors = true;
+                $this->log_debug('[RSR manufacturer migration] missing required manufacturer column: ' . $table_name);
+                continue;
+            }
+
+            $has_model = $this->table_has_column($table_name, 'model');
+            if (! $has_model) {
+                $had_errors = true;
+                $this->log_debug('[RSR manufacturer migration] missing required model column: ' . $table_name);
                 continue;
             }
 
             $quoted_table = '`' . str_replace('`', '``', $table_name) . '`';
+            $reorder_sql = "ALTER TABLE {$quoted_table} MODIFY COLUMN `manufacturer` VARCHAR(255) NULL AFTER `model`";
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $reordered = $wpdb->query($reorder_sql);
+            if ($reordered === false) {
+                $had_errors = true;
+                $this->log_debug('[RSR manufacturer migration] reorder manufacturer column failed for ' . $table_name . ': ' . (string) $wpdb->last_error);
+                continue;
+            }
+            $manufacturer_reordered_tables++;
+
+            if (! $has_legacy) {
+                continue;
+            }
+
             $sql = "
                 UPDATE {$quoted_table}
                 SET manufacturer = TRIM(full_manufacturer_name)
@@ -107,6 +132,17 @@ class RSRServices extends DistributorServicesBase
             }
 
             $total_backfilled += (int) $updated;
+
+            $drop_sql = "ALTER TABLE {$quoted_table} DROP COLUMN `full_manufacturer_name`";
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $dropped = $wpdb->query($drop_sql);
+            if ($dropped === false) {
+                $had_errors = true;
+                $this->log_debug('[RSR manufacturer migration] drop legacy column failed for ' . $table_name . ': ' . (string) $wpdb->last_error);
+                continue;
+            }
+
+            $legacy_dropped_tables++;
         }
 
         if ($had_errors) {
@@ -114,7 +150,7 @@ class RSRServices extends DistributorServicesBase
         }
 
         update_option(self::MANUFACTURER_COLUMN_MIGRATION_OPTION, '1', false);
-        $this->log_debug(sprintf('[RSR manufacturer migration] complete; backfilled_rows=%d', $total_backfilled));
+        $this->log_debug(sprintf('[RSR manufacturer migration] complete; backfilled_rows=%d; legacy_dropped_tables=%d; manufacturer_reordered_tables=%d', $total_backfilled, $legacy_dropped_tables, $manufacturer_reordered_tables));
     }
 
     private function table_has_column(string $table_name, string $column_name): bool
