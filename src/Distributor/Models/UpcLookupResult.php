@@ -25,6 +25,11 @@ if (!defined('ABSPATH')) {
  */
 final class UpcLookupResult
 {
+    private const DIST_ID_RSR = 'rsr';
+    private const DIST_ID_ZANDERS = 'zanders';
+    private const RSR_ZANDERS_PREFERENCE_DELTA = 1.00;
+    private const FLOAT_EPSILON = 0.000001;
+
     /**
      * Map of distributor_id => offer.
      *
@@ -143,7 +148,7 @@ final class UpcLookupResult
                 ? $this->cheapest_any->get_true_cost()
                 : null;
 
-            if ($this->cheapest_any === null || ($best_any_cost !== null && $true_cost < (float) $best_any_cost)) {
+            if ($this->should_replace_best_offer($offer, (float) $true_cost, $this->cheapest_any, $best_any_cost)) {
                 $this->cheapest_any = $offer;
             }
 
@@ -152,10 +157,53 @@ final class UpcLookupResult
                     ? $this->cheapest_in_stock->get_true_cost()
                     : null;
 
-                if ($this->cheapest_in_stock === null || ($best_stock_cost !== null && $true_cost < (float) $best_stock_cost)) {
+                if ($this->should_replace_best_offer($offer, (float) $true_cost, $this->cheapest_in_stock, $best_stock_cost)) {
                     $this->cheapest_in_stock = $offer;
                 }
             }
         }
+    }
+
+    private function should_replace_best_offer(
+        DistributorOffer $candidate_offer,
+        float $candidate_cost,
+        ?DistributorOffer $current_offer,
+        ?float $current_cost
+    ): bool {
+        if (!($current_offer instanceof DistributorOffer) || $current_cost === null) {
+            return true;
+        }
+
+        if ($this->is_rsr_zanders_pair($candidate_offer, $current_offer)) {
+            $delta = abs($candidate_cost - (float) $current_cost);
+            if ($delta <= (self::RSR_ZANDERS_PREFERENCE_DELTA + self::FLOAT_EPSILON)) {
+                $candidate_id = $this->offer_dist_id($candidate_offer);
+                $current_id = $this->offer_dist_id($current_offer);
+
+                if ($candidate_id === self::DIST_ID_ZANDERS && $current_id === self::DIST_ID_RSR) {
+                    return true;
+                }
+
+                if ($candidate_id === self::DIST_ID_RSR && $current_id === self::DIST_ID_ZANDERS) {
+                    return false;
+                }
+            }
+        }
+
+        return $candidate_cost < ((float) $current_cost - self::FLOAT_EPSILON);
+    }
+
+    private function is_rsr_zanders_pair(DistributorOffer $a, DistributorOffer $b): bool
+    {
+        $a_id = $this->offer_dist_id($a);
+        $b_id = $this->offer_dist_id($b);
+
+        return ($a_id === self::DIST_ID_RSR && $b_id === self::DIST_ID_ZANDERS)
+            || ($a_id === self::DIST_ID_ZANDERS && $b_id === self::DIST_ID_RSR);
+    }
+
+    private function offer_dist_id(DistributorOffer $offer): string
+    {
+        return strtolower(trim((string) $offer->distributor_id));
     }
 }
