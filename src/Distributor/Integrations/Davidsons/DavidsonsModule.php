@@ -8,15 +8,14 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
+use FFLHub\Distributor\Services\Davidsons\Cron\DavidsonsInventoryCronService;
+use FFLHub\Distributor\Services\Davidsons\Cron\DavidsonsProductCronService;
 use FFLHub\Distributor\Services\Davidsons\DavidsonsServices;
 use FFLHub\Distributor\Services\Davidsons\Tables\DavidsonsProductTableSchema;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 
 /**
  * Davidson's module definition.
- *
- * For now this module only exposes metadata + enable/disable support
- * and intentionally has no credentials/settings fields.
  */
 final class DavidsonsModule implements DistributorModuleInterface
 {
@@ -52,7 +51,22 @@ final class DavidsonsModule implements DistributorModuleInterface
 
     public function settings_schema(): array
     {
-        return [];
+        return [
+            'portal_username' => [
+                'label'       => 'Portal Username',
+                'type'        => 'text',
+                'placeholder' => '',
+                'description' => "Your Davidson's website username/email used to download the inventory CSV.",
+                'default'     => '',
+            ],
+            'portal_password' => [
+                'label'       => 'Portal Password',
+                'type'        => 'password',
+                'placeholder' => '',
+                'description' => "Your Davidson's website password used to download the inventory CSV.",
+                'default'     => '',
+            ],
+        ];
     }
 
     public function build_distributor(): DistributorBase
@@ -64,7 +78,14 @@ final class DavidsonsModule implements DistributorModuleInterface
             'fflhub_davidsons_fulfillment_last_swap'
         );
 
-        $services = new DavidsonsServices($table);
+        $fulfillmentCron = new DavidsonsProductCronService($table);
+        $inventoryCron = new DavidsonsInventoryCronService($table);
+
+        $services = new DavidsonsServices(
+            $table,
+            $fulfillmentCron,
+            $inventoryCron
+        );
 
         return new DistributorDavidsons($this, $services);
     }

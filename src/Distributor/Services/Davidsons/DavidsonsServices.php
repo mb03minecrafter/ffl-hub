@@ -7,6 +7,8 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\DistributorServicesBase;
+use FFLHub\Distributor\Services\Davidsons\Cron\DavidsonsInventoryCronService;
+use FFLHub\Distributor\Services\Davidsons\Cron\DavidsonsProductCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 
 /**
@@ -17,9 +19,15 @@ use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
  */
 class DavidsonsServices extends DistributorServicesBase
 {
-    public function __construct(DoubleBufferedProductTable $fulfillmentTable)
-    {
-        parent::__construct($fulfillmentTable);
+    public function __construct(
+        DoubleBufferedProductTable $fulfillmentTable,
+        DavidsonsProductCronService $fulfillmentCron,
+        DavidsonsInventoryCronService $inventoryCron
+    ) {
+        parent::__construct(
+            $fulfillmentTable,
+            $fulfillmentCron,
+            $inventoryCron
+        );
     }
 }
-
