@@ -48,16 +48,19 @@ class DistributorProductHelper
      */
     private const OFFERS_SNAPSHOT_META_KEY = 'fflhub_offers_snapshot';
     private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
-    private const BRAND_TERM_ALIAS_MIGRATION_OPTION = 'fflhub_brand_term_alias_migration_v1';
+    private const BRAND_TERM_ALIAS_MIGRATION_OPTION = 'fflhub_brand_term_alias_migration_v2';
     private const BRAND_TERM_ALIAS_MIGRATIONS = [
         'Holosun Technologies' => 'Holosun',
         'Holoson Technologies' => 'Holosun',
+        'Burris Optics' => 'Burris',
     ];
     private const BRAND_ALIASES = [
         'smithandwesson' => 'Smith & Wesson',
         'smithwesson' => 'Smith & Wesson',
         'holosuntechnologies' => 'Holosun',
         'holosontechnologies' => 'Holosun',
+        'burrisoptics' => 'Burris',
+        'burris' => 'Burris',
         'sig' => 'SIG SAUER',
         'sigsauer' => 'SIG SAUER',
         'sigsaueroffduty' => 'SIG SAUER',

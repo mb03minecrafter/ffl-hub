@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Davidsons\API\DavidsonsPortalInventoryClient;
+use FFLHub\Distributor\Services\Davidsons\DavidsonsProductImporterService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -15,12 +16,11 @@ use FFLHub\Util\DebugLogUtil;
 /**
  * Davidson's full catalog downloader cron.
  *
- * Current behavior:
+ * Behavior:
  * - Authenticates into the Davidson's portal.
  * - Downloads the `davidsons_inventory` CSV.
- * - Saves it locally for importer/swap processing.
- *
- * Import/swap logic will be wired in a follow-up step.
+ * - Imports into staging.
+ * - Swaps staging/live on success.
  */
 final class DavidsonsProductCronService extends AbstractTableCronService
 {
@@ -45,7 +45,7 @@ final class DavidsonsProductCronService extends AbstractTableCronService
 
     protected function get_interval_seconds(): int
     {
-        return 15 * MINUTE_IN_SECONDS;
+        return HOUR_IN_SECONDS;
     }
 
     public function get_action_group(): string
@@ -60,6 +60,10 @@ final class DavidsonsProductCronService extends AbstractTableCronService
 
     public function run(): void
     {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+
         update_option('fflhub_davidsons_fulfillment_last_run', current_time('mysql'));
 
         $creds = $this->get_portal_credentials();
@@ -99,10 +103,48 @@ final class DavidsonsProductCronService extends AbstractTableCronService
         update_option('fflhub_davidsons_fulfillment_last_download_path', $path);
         delete_option('fflhub_davidsons_fulfillment_last_download_error');
 
-        $this->log('Davidsons full catalog CSV downloaded (import/swap pending implementation).', [
+        $importer = new DavidsonsProductImporterService($this->table);
+        try {
+            $count = (int) $importer->import_from_downloaded_file();
+        } catch (\Throwable $e) {
+            update_option('fflhub_davidsons_fulfillment_last_import_error', current_time('mysql'));
+            $this->log('ERROR: Davidson full-catalog import exception.', [
+                'error' => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        if ($count <= 0) {
+            update_option('fflhub_davidsons_fulfillment_last_import_error', current_time('mysql'));
+            $this->log('ERROR: Davidson full-catalog import completed with 0 rows; swap skipped.', [
+                'request_name' => self::DOWNLOAD_NAME,
+                'path'         => $path,
+            ]);
+            return;
+        }
+
+        try {
+            $new_live = (string) $this->table->swap_live_and_staging();
+        } catch (\Throwable $e) {
+            update_option('fflhub_davidsons_fulfillment_last_swap_error', current_time('mysql'));
+            $this->log('ERROR: Davidson full-catalog swap exception.', [
+                'error' => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        update_option('fflhub_davidsons_fulfillment_last_import', current_time('mysql'));
+        update_option('fflhub_davidsons_fulfillment_last_import_count', (int) $count);
+        update_option('fflhub_davidsons_fulfillment_last_swap', current_time('mysql'));
+        delete_option('fflhub_davidsons_fulfillment_last_import_error');
+        delete_option('fflhub_davidsons_fulfillment_last_swap_error');
+
+        $this->log('Davidsons full catalog refresh complete.', [
             'request_name' => self::DOWNLOAD_NAME,
             'bytes'        => $bytes,
             'path'         => $path,
+            'imported_rows' => (int) $count,
+            'new_live'      => $new_live,
         ]);
     }
 
