@@ -18,17 +18,17 @@ if (!defined('ABSPATH')) {
  */
 final class USPSRateHelper
 {
-    private const TOKEN_TRANSIENT_PREFIX = 'fflhub_usps_token_';
-    private const DEFAULT_TIMEOUT_SEC    = 8;
-
-    private const DEFAULT_TEST_BASE_URL = 'https://apis-tem.usps.com';
-    private const DEFAULT_PROD_BASE_URL = 'https://apis.usps.com';
-
-    private const TOKEN_PATH      = '/oauth2/v3/token';
     private const BASE_RATES_PATH = '/prices/v3/base-rates/search';
 
     /** @var array<string,array<string,mixed>> */
     private static array $requestCache = [];
+
+    private USPSApiClient $api_client;
+
+    public function __construct(?USPSApiClient $api_client = null)
+    {
+        $this->api_client = $api_client ?? new USPSApiClient();
+    }
 
     public function is_enabled(): bool
     {
@@ -120,93 +120,40 @@ final class USPSRateHelper
             return self::$requestCache[$cache_key];
         }
 
-        $token_result = $this->get_access_token($cfg);
-        if (empty($token_result['ok'])) {
-            $result = $this->error_result(
-                (string) ($token_result['error_code'] ?? 'auth_failed'),
-                (string) ($token_result['error'] ?? 'USPS auth failed.')
-            );
-            self::$requestCache[$cache_key] = $result;
-            return $result;
-        }
-
-        $token = (string) ($token_result['token'] ?? '');
-        if ($token === '') {
-            $result = $this->error_result('auth_empty_token', 'USPS auth returned empty token.');
-            self::$requestCache[$cache_key] = $result;
-            return $result;
-        }
-
-        $url = rtrim($cfg['base_url'], '/') . self::BASE_RATES_PATH;
-
-        $request_args = [
-            'timeout' => (int) $cfg['timeout_sec'],
-            'headers' => [
-                'Accept'        => 'application/json',
-                'Content-Type'  => 'application/json',
-                'Authorization' => 'Bearer ' . $token,
-            ],
-            'body'    => wp_json_encode($payload),
-        ];
-
         $this->log('rate.request', [
-            'url'        => $url,
-            'timeout'    => (int) $cfg['timeout_sec'],
-            'payload'    => $payload,
-            'cache_key'  => $cache_key,
+            'endpoint'  => self::BASE_RATES_PATH,
+            'payload'   => $payload,
+            'cache_key' => $cache_key,
         ]);
 
-        $started = microtime(true);
-        $res = wp_remote_post($url, $request_args);
-        $elapsed_ms = (microtime(true) - $started) * 1000.0;
-
-        if (is_wp_error($res)) {
+        $api_result = $this->api_client->post_authenticated_json(self::BASE_RATES_PATH, $payload);
+        if (empty($api_result['ok'])) {
             $result = $this->error_result(
-                'http_error',
-                'USPS rate request error: ' . $res->get_error_message()
+                (string) ($api_result['error_code'] ?? 'http_error'),
+                (string) ($api_result['error'] ?? 'USPS rate request failed.')
             );
-            $result['elapsed_ms'] = round($elapsed_ms, 2);
-            $result['request_url'] = $url;
-            $result['request_payload'] = $payload;
+            $result['http_code']        = (int) ($api_result['http_code'] ?? 0);
+            $result['elapsed_ms']       = (float) ($api_result['elapsed_ms'] ?? 0.0);
+            $result['response_excerpt'] = $this->excerpt((string) ($api_result['response_body'] ?? ''), 200);
+            $result['request_url']      = (string) ($api_result['request_url'] ?? '');
+            $result['request_payload']  = $payload;
             self::$requestCache[$cache_key] = $result;
 
             $this->log('rate.error', [
+                'error_code' => (string) $result['error_code'],
                 'error'      => (string) $result['error'],
-                'elapsed_ms' => $result['elapsed_ms'],
-                'url'        => $url,
-                'payload'    => $payload,
+                'http_code'  => (int) $result['http_code'],
+                'elapsed_ms' => (float) $result['elapsed_ms'],
             ]);
 
             return $result;
         }
 
-        $http_code = (int) wp_remote_retrieve_response_code($res);
-        $body      = (string) wp_remote_retrieve_body($res);
-        $json      = json_decode($body, true);
-
-        if ($http_code < 200 || $http_code >= 300) {
-            $result = $this->error_result(
-                'http_' . (string) $http_code,
-                'USPS rate request failed with HTTP ' . (string) $http_code . '.'
-            );
-            $result['http_code'] = $http_code;
-            $result['elapsed_ms'] = round($elapsed_ms, 2);
-            $result['response_excerpt'] = $this->excerpt($body, 200);
-            $result['request_url'] = $url;
-            $result['request_payload'] = $payload;
-            self::$requestCache[$cache_key] = $result;
-
-            $this->log('rate.http_fail', [
-                'http_code'  => $http_code,
-                'elapsed_ms' => $result['elapsed_ms'],
-                'excerpt'    => $result['response_excerpt'],
-                'response_body' => $body,
-                'url'        => $url,
-                'payload'    => $payload,
-            ]);
-
-            return $result;
-        }
+        $http_code = (int) ($api_result['http_code'] ?? 0);
+        $elapsed_ms = (float) ($api_result['elapsed_ms'] ?? 0.0);
+        $url = (string) ($api_result['request_url'] ?? '');
+        $body = (string) ($api_result['response_body'] ?? '');
+        $json = (isset($api_result['json']) && is_array($api_result['json'])) ? $api_result['json'] : null;
 
         if (!is_array($json)) {
             $result = $this->error_result('invalid_json', 'USPS rate response was not valid JSON.');
@@ -258,81 +205,6 @@ final class USPSRateHelper
         ]);
 
         return $result;
-    }
-
-    /**
-     * @param array<string,mixed> $cfg
-     * @return array<string,mixed>
-     */
-    private function get_access_token(array $cfg): array
-    {
-        $transient_key = self::TOKEN_TRANSIENT_PREFIX . md5($cfg['base_url'] . '|' . $cfg['client_id']);
-        $cached = get_transient($transient_key);
-        if (is_array($cached) && !empty($cached['token'])) {
-            return [
-                'ok'    => true,
-                'token' => (string) $cached['token'],
-            ];
-        }
-
-        $url = rtrim((string) $cfg['base_url'], '/') . self::TOKEN_PATH;
-        $payload = [
-            'client_id'     => (string) $cfg['client_id'],
-            'client_secret' => (string) $cfg['client_secret'],
-            'grant_type'    => 'client_credentials',
-        ];
-
-        $request_args = [
-            'timeout' => (int) $cfg['timeout_sec'],
-            'headers' => [
-                'Accept'       => 'application/json',
-                'Content-Type' => 'application/json',
-            ],
-            'body'    => wp_json_encode($payload),
-        ];
-
-        $res = wp_remote_post($url, $request_args);
-        if (is_wp_error($res)) {
-            return [
-                'ok'         => false,
-                'error_code' => 'auth_http_error',
-                'error'      => 'USPS auth request error: ' . $res->get_error_message(),
-            ];
-        }
-
-        $http_code = (int) wp_remote_retrieve_response_code($res);
-        $body      = (string) wp_remote_retrieve_body($res);
-        $json      = json_decode($body, true);
-
-        if ($http_code < 200 || $http_code >= 300 || !is_array($json)) {
-            return [
-                'ok'         => false,
-                'error_code' => 'auth_http_' . (string) $http_code,
-                'error'      => 'USPS auth failed (HTTP ' . (string) $http_code . '): ' . $this->excerpt($body, 180),
-            ];
-        }
-
-        $token = isset($json['access_token']) ? trim((string) $json['access_token']) : '';
-        if ($token === '') {
-            return [
-                'ok'         => false,
-                'error_code' => 'auth_missing_token',
-                'error'      => 'USPS auth response missing access_token.',
-            ];
-        }
-
-        $expires_in = (int) ($json['expires_in'] ?? 0);
-        if ($expires_in <= 0) {
-            $expires_in = 3300;
-        }
-        $ttl = max(60, $expires_in - 60);
-
-        set_transient($transient_key, ['token' => $token], $ttl);
-
-        return [
-            'ok'    => true,
-            'token' => $token,
-        ];
     }
 
     /**
@@ -426,13 +298,8 @@ final class USPSRateHelper
      */
     private function read_config(): array
     {
-        $enabled      = $this->read_bool('FFLHUB_USPS_ESTIMATE_ENABLED', 'fflhub_usps_estimate_enabled', false);
-        $use_test_env = $this->read_bool('FFLHUB_USPS_USE_TEST_ENV', 'fflhub_usps_use_test_env', true);
-
-        $base_url = $this->read_string('FFLHUB_USPS_BASE_URL', 'fflhub_usps_base_url', '');
-        if ($base_url === '') {
-            $base_url = $use_test_env ? self::DEFAULT_TEST_BASE_URL : self::DEFAULT_PROD_BASE_URL;
-        }
+        $enabled = $this->read_bool('FFLHUB_USPS_ESTIMATE_ENABLED', 'fflhub_usps_estimate_enabled', false);
+        $shared_cfg = $this->api_client->get_shared_config();
 
         // USPS v3 requires valid enum values for these fields.
         $mail_class = strtoupper(trim($this->read_string(
@@ -473,9 +340,9 @@ final class USPSRateHelper
 
         return [
             'enabled'                         => $enabled,
-            'base_url'                        => rtrim($base_url, '/'),
-            'client_id'                       => $this->read_string('FFLHUB_USPS_CLIENT_ID', 'fflhub_usps_client_id', ''),
-            'client_secret'                   => $this->read_string('FFLHUB_USPS_CLIENT_SECRET', 'fflhub_usps_client_secret', ''),
+            'base_url'                        => (string) ($shared_cfg['base_url'] ?? ''),
+            'client_id'                       => (string) ($shared_cfg['client_id'] ?? ''),
+            'client_secret'                   => (string) ($shared_cfg['client_secret'] ?? ''),
             'origin_zip'                      => $this->normalize_us_zip(
                 $this->read_string('FFLHUB_USPS_ORIGIN_ZIP', 'fflhub_usps_origin_zip', '')
             ),
@@ -486,13 +353,7 @@ final class USPSRateHelper
             'destination_entry_facility_type' => $destination_entry_facility_type,
             'rate_indicator'                  => $this->read_string('FFLHUB_USPS_RATE_INDICATOR', 'fflhub_usps_rate_indicator', ''),
             'price_type'                      => $price_type,
-            'timeout_sec'                     => max(
-                3,
-                min(
-                    30,
-                    (int) $this->read_string('FFLHUB_USPS_TIMEOUT_SEC', 'fflhub_usps_timeout_sec', (string) self::DEFAULT_TIMEOUT_SEC)
-                )
-            ),
+            'timeout_sec'                     => (int) ($shared_cfg['timeout_sec'] ?? 8),
         ];
     }
 
