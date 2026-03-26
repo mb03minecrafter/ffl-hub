@@ -287,7 +287,9 @@ class DistributorProductHelper
             $product->set_sku($sku_to_use);
         }
 
-        $product->set_regular_price(wc_format_decimal($recommended_price, 2));
+        $prices = self::resolve_regular_and_sale_prices($recommended_price, $selected_product->msrp ?? null);
+        $product->set_regular_price($prices['regular']);
+        $product->set_sale_price($prices['sale']);
 
         $product->set_manage_stock(true);
         $product->set_stock_quantity($qty);
@@ -996,6 +998,7 @@ class DistributorProductHelper
         }
 
         $settings = self::get_pricing_settings_for_product($product_id);
+        $msrp = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true));
 
         if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
             $fixed = self::to_positive_float($settings['fixed_price'] ?? null);
@@ -1003,7 +1006,7 @@ class DistributorProductHelper
                 return;
             }
 
-            self::set_regular_price_and_save($product, $fixed);
+            self::set_sell_price_and_save($product, $fixed, $msrp);
             return;
         }
 
@@ -1028,7 +1031,7 @@ class DistributorProductHelper
             return;
         }
 
-        self::set_regular_price_and_save($product, (float) $sell);
+        self::set_sell_price_and_save($product, (float) $sell, $msrp);
     }
 
     /**
@@ -1046,12 +1049,47 @@ class DistributorProductHelper
     }
 
     /**
-     * Update regular price (and clear sale price) then persist.
+     * Resolve Woo regular/sale price pair from computed sell price and optional MSRP.
+     *
+     * Rules:
+     * - MSRP > 0 => regular price uses MSRP, sell price becomes sale price when lower than MSRP.
+     * - No valid MSRP => regular price uses sell price and sale price is cleared.
+     *
+     * @param mixed $msrp_raw
+     * @return array{regular:string,sale:string}
      */
-    private static function set_regular_price_and_save(WC_Product $product, float $price): void
+    public static function resolve_regular_and_sale_prices(float $sell_price, $msrp_raw): array
     {
-        $product->set_regular_price(wc_format_decimal($price, 2));
-        $product->set_sale_price('');
+        $sell = wc_format_decimal($sell_price, 2);
+        $msrp = self::to_positive_float($msrp_raw);
+
+        if ($msrp === null) {
+            return ['regular' => $sell, 'sale' => ''];
+        }
+
+        $regular = wc_format_decimal($msrp, 2);
+        $sale = '';
+
+        if ((float) $sell < (float) $regular) {
+            $sale = $sell;
+        }
+
+        return [
+            'regular' => $regular,
+            'sale'    => $sale,
+        ];
+    }
+
+    /**
+     * Update regular/sale price pair then persist.
+     *
+     * @param mixed $msrp_raw
+     */
+    private static function set_sell_price_and_save(WC_Product $product, float $sell_price, $msrp_raw): void
+    {
+        $prices = self::resolve_regular_and_sale_prices($sell_price, $msrp_raw);
+        $product->set_regular_price($prices['regular']);
+        $product->set_sale_price($prices['sale']);
         $product->save();
     }
 

@@ -21,7 +21,6 @@ use function get_post_meta;
 use function get_post_status;
 use function update_post_meta;
 use function wc_get_product;
-use function wc_format_decimal;
 
 if (! defined('ABSPATH')) {
     exit;
@@ -537,14 +536,20 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
         $desired_qty    = (int) $qty;
         $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
-        $desired_price  = (string) wc_format_decimal($recommended_price, 2);
+        $price_pair = DistributorProductHelper::resolve_regular_and_sale_prices(
+            (float) $recommended_price,
+            $selected_payload->msrp ?? null
+        );
+        $desired_regular_price = (string) ($price_pair['regular'] ?? '');
+        $desired_sale_price    = (string) ($price_pair['sale'] ?? '');
 
-        $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
-        $cur_status = (string) $product->get_stock_status();
-        $cur_price  = (string) $product->get_regular_price();
+        $cur_qty           = (int) ($product->get_stock_quantity() ?? 0);
+        $cur_status        = (string) $product->get_stock_status();
+        $cur_regular_price = (string) $product->get_regular_price();
+        $cur_sale_price    = (string) $product->get_sale_price();
 
         $stock_changed = ($cur_qty !== $desired_qty) || ($cur_status !== $desired_status);
-        $price_changed = ($cur_price !== $desired_price);
+        $price_changed = ($cur_regular_price !== $desired_regular_price) || ($cur_sale_price !== $desired_sale_price);
 
         if ($stock_changed) {
             $product->set_manage_stock(true);
@@ -553,7 +558,8 @@ final class DistributorProductSyncCronService extends AbstractCronService
         }
 
         if ($price_changed) {
-            $product->set_regular_price($desired_price);
+            $product->set_regular_price($desired_regular_price);
+            $product->set_sale_price($desired_sale_price);
         }
 
         // You said you updated this helper; it should now return bool $meta_changed.
@@ -597,7 +603,8 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'selected'     => $selected_dist_id,
             'final_qty'    => $desired_qty,
             'final_status' => $desired_status,
-            'final_regular' => $desired_price,
+            'final_regular' => $desired_regular_price,
+            'final_sale'   => $desired_sale_price,
             'saved'        => $needs_save ? 1 : 0,
         ));
 
