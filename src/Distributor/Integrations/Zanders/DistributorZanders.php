@@ -121,25 +121,11 @@ class DistributorZanders extends DistributorBase
 
     private function is_testing_mode(): bool
     {
-        // 1) wp-config constant wins
-        if (defined('FFLHUB_ZANDERS_TESTING')) {
-            return true;
-        }
+        // Source of truth: global Admin setting ("Test order debug mode").
+        $testing = \FFLHub\Settings\Options::get_test_order_debug_enabled();
 
-        // 2) env var
-        $env = getenv('FFLHUB_ZANDERS_TESTING');
-        if ($env !== false && $env !== '' && $env !== '0') {
-            return true;
-        }
-
-        // 3) option (if you add it later)
-        $opt = (string) \FFLHub\Settings\Options::get_distributor_option('zanders', 'testing_mode', '0');
-        if ($opt === '1' || strtoupper($opt) === 'Y' || strtoupper($opt) === 'TRUE') {
-            return true;
-        }
-
-        // 4) filter fallback
-        return (bool) apply_filters('fflhub_zanders_testing_mode', false);
+        // Keep filter hook for emergency overrides/custom deployments.
+        return (bool) apply_filters('fflhub_zanders_testing_mode', $testing);
     }
 
 
