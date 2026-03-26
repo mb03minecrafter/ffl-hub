@@ -108,11 +108,13 @@ class ShippingRegistrar
         if ($package_type === '') {
             $package_type = self::detect_package_type($package);
         }
+        $allow_coupon_free_shipping = self::has_active_free_shipping_coupon($package);
 
         if ($package_type === 'fflhub') {
             foreach ($rates as $rate_id => $rate) {
                 $method_id = self::get_rate_method_id($rate);
-                if ($method_id !== 'fflhub_shipping') {
+                $allow_free_shipping_rate = $allow_coupon_free_shipping && $method_id === 'free_shipping';
+                if ($method_id !== 'fflhub_shipping' && !$allow_free_shipping_rate) {
                     unset($rates[$rate_id]);
                 }
             }
@@ -144,6 +146,44 @@ class ShippingRegistrar
         }
 
         return max(0.0, $total);
+    }
+
+    /**
+     * Return true when an applied coupon grants free shipping.
+     *
+     * @param array<string, mixed> $package
+     */
+    private static function has_active_free_shipping_coupon(array $package): bool
+    {
+        if (function_exists('WC') && WC() && WC()->cart && method_exists(WC()->cart, 'get_coupons')) {
+            $coupons = WC()->cart->get_coupons();
+            if (is_array($coupons)) {
+                foreach ($coupons as $coupon) {
+                    if ($coupon instanceof \WC_Coupon && $coupon->get_free_shipping()) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        $coupon_codes = [];
+        if (isset($package['applied_coupons']) && is_array($package['applied_coupons'])) {
+            foreach ($package['applied_coupons'] as $code) {
+                $code = trim((string) $code);
+                if ($code !== '') {
+                    $coupon_codes[] = $code;
+                }
+            }
+        }
+
+        foreach (array_values(array_unique($coupon_codes)) as $code) {
+            $coupon = new \WC_Coupon($code);
+            if ($coupon instanceof \WC_Coupon && $coupon->get_id() > 0 && $coupon->get_free_shipping()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
