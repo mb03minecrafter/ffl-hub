@@ -4,7 +4,10 @@ namespace FFLHub\Admin\Orders;
 
 use WC_Order;
 
+use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
+use FFLHub\Distributor\Models\PartialShipmentEmailContext;
+use FFLHub\Distributor\Models\ShippingUpdateResult;
 use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
 use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
@@ -31,6 +34,8 @@ final class OrderPlacementMetaBox
 {
     private const META_BOX_ID    = 'fflhub_order_placement_jobs';
     private const META_BOX_TITLE = 'FFL Hub - Order Placement Jobs';
+    private const DEALER_TRACKING_META_BOX_ID    = 'fflhub_dealer_fulfilled_tracking';
+    private const DEALER_TRACKING_META_BOX_TITLE = 'FFL Hub - Dealer Fulfilled Tracking';
 
     private OrderPlacementJobsTable $jobs_table;
 
@@ -55,10 +60,22 @@ final class OrderPlacementMetaBox
 
         // Manual retry action (admin-post)
         add_action('admin_post_fflhub_retry_order_job', [$this, 'handle_retry_job_post']);
+
+        // Manual dealer-fulfilled shipment tracking update (admin-post)
+        add_action('admin_post_fflhub_set_dealer_tracking', [$this, 'handle_set_dealer_tracking_post']);
     }
 
     public function register_metabox(): void
     {
+        add_meta_box(
+            self::DEALER_TRACKING_META_BOX_ID,
+            self::DEALER_TRACKING_META_BOX_TITLE,
+            [$this, 'render_dealer_tracking_metabox'],
+            null,
+            'normal',
+            'high'
+        );
+
         add_meta_box(
             self::META_BOX_ID,
             self::META_BOX_TITLE,
@@ -153,6 +170,100 @@ final class OrderPlacementMetaBox
         }
 
         echo '</div>'; // wrap
+    }
+
+    /**
+     * Render order-level controls for manually setting tracking on dealer-fulfilled job rows.
+     *
+     * @param mixed $post_or_order WP_Post|WC_Order|order-like object depending on screen.
+     */
+    public function render_dealer_tracking_metabox($post_or_order): void
+    {
+        $order = self::resolve_order($post_or_order);
+        if (!($order instanceof WC_Order)) {
+            echo '<div class="fflhub-muted">Order not available.</div>';
+            return;
+        }
+
+        $order_id = (int) $order->get_id();
+        $dealer_job_keys = $this->get_dealer_fulfilled_job_keys($order);
+
+        $result = isset($_GET['fflhub_df_tracking'])
+            ? sanitize_text_field(wp_unslash((string) $_GET['fflhub_df_tracking']))
+            : '';
+        $result_order_id = isset($_GET['fflhub_df_order']) ? (int) $_GET['fflhub_df_order'] : 0;
+        $result_count = isset($_GET['fflhub_df_count']) ? max(0, (int) $_GET['fflhub_df_count']) : 0;
+        $result_email_count = isset($_GET['fflhub_df_email_count']) ? max(0, (int) $_GET['fflhub_df_email_count']) : 0;
+        $result_completed = !empty($_GET['fflhub_df_completed']);
+
+        if ($result_order_id === $order_id) {
+            if ($result === 'updated') {
+                $parts = [];
+                $parts[] = sprintf('Dealer-fulfilled tracking applied to %d row(s).', $result_count);
+                if ($result_email_count > 0) {
+                    $parts[] = sprintf('Tracking email sent %d time(s).', $result_email_count);
+                }
+                if ($result_completed) {
+                    $parts[] = 'Order status was updated to Completed.';
+                }
+
+                echo '<div class="notice notice-success inline"><p>'
+                    . esc_html(implode(' ', $parts))
+                    . '</p></div>';
+            } elseif ($result === 'no_rows') {
+                echo '<div class="notice notice-warning inline"><p>'
+                    . esc_html('No dealer-fulfilled job rows were found for this order.')
+                    . '</p></div>';
+            } elseif ($result === 'invalid') {
+                echo '<div class="notice notice-error inline"><p>'
+                    . esc_html('Tracking number is required.')
+                    . '</p></div>';
+            }
+        }
+
+        echo '<div class="fflhub-wrap">';
+        echo '<div class="fflhub-card">';
+        echo '<div class="fflhub-card-title">Apply One Tracking Number To Dealer-Fulfilled Rows</div>';
+
+        if (empty($dealer_job_keys)) {
+            echo '<div class="fflhub-muted">No dealer-fulfilled job rows found for this order.</div>';
+            echo '</div>';
+            echo '</div>';
+            return;
+        }
+
+        $job_keys_preview = implode(', ', array_slice($dealer_job_keys, 0, 6));
+        if (count($dealer_job_keys) > 6) {
+            $job_keys_preview .= ', ...';
+        }
+
+        echo '<div class="fflhub-kv">';
+        echo self::kv('Dealer rows', '<span class="fflhub-mono">' . esc_html((string) count($dealer_job_keys)) . '</span>');
+        echo self::kv('Job keys', '<span class="fflhub-mono">' . esc_html($job_keys_preview) . '</span>');
+        echo '</div>';
+
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:12px;">';
+        wp_nonce_field('fflhub_set_dealer_tracking_' . $order_id);
+        echo '<input type="hidden" name="action" value="fflhub_set_dealer_tracking" />';
+        echo '<input type="hidden" name="order_id" value="' . esc_attr((string) $order_id) . '" />';
+
+        echo '<p>';
+        echo '<label for="fflhub_dealer_tracking_number"><strong>Tracking Number</strong></label><br />';
+        echo '<input id="fflhub_dealer_tracking_number" name="tracking_number" type="text" class="regular-text" required />';
+        echo '</p>';
+
+        echo '<p>';
+        echo '<label for="fflhub_dealer_shipping_service"><strong>Shipping Service</strong></label><br />';
+        echo '<input id="fflhub_dealer_shipping_service" name="shipping_service" type="text" class="regular-text" value="N/A" />';
+        echo '</p>';
+
+        echo '<p class="description">This sets <code>shipped_at</code>, <code>tracking_numbers_json</code>, and <code>shipping_service</code> for every dealer-fulfilled job row on this order.</p>';
+
+        submit_button('Apply Dealer Tracking', 'primary', 'submit', false);
+        echo '</form>';
+
+        echo '</div>';
+        echo '</div>';
     }
 
     /**
@@ -607,6 +718,192 @@ final class OrderPlacementMetaBox
         self::redirect_back($order_id, $job_key, 'scheduled');
     }
 
+    /**
+     * Handle manual dealer-fulfilled shipment tracking updates.
+     *
+     * Behavior:
+     * - applies one tracking number to ALL dealer-fulfilled rows on the order
+     * - stamps shipped_at (UTC now)
+     * - sets shipping_service (or N/A when blank)
+     * - writes placeholder values for non-polled fields (invoice/weight/raw marker)
+     * - triggers the same partial-shipment email action used by shipping polling
+     * - marks order completed when all SUCCESS jobs now have tracking
+     */
+    public function handle_set_dealer_tracking_post(): void
+    {
+        if (!current_user_can('manage_woocommerce') && !current_user_can('edit_shop_orders')) {
+            wp_die('Insufficient permissions.');
+        }
+
+        $order_id = isset($_POST['order_id']) ? (int) $_POST['order_id'] : 0;
+        if ($order_id <= 0) {
+            wp_die('Missing order_id.');
+        }
+
+        check_admin_referer('fflhub_set_dealer_tracking_' . $order_id);
+
+        $tracking_number = isset($_POST['tracking_number'])
+            ? trim((string) sanitize_text_field(wp_unslash((string) $_POST['tracking_number'])))
+            : '';
+        $shipping_service = isset($_POST['shipping_service'])
+            ? trim((string) sanitize_text_field(wp_unslash((string) $_POST['shipping_service'])))
+            : '';
+
+        if ($tracking_number === '') {
+            self::redirect_back_dealer_tracking($order_id, 'invalid', 0);
+            return;
+        }
+
+        if ($shipping_service === '') {
+            $shipping_service = 'N/A';
+        }
+
+        $order = wc_get_order($order_id);
+        if (!($order instanceof WC_Order)) {
+            wp_die('Order not found.');
+        }
+
+        $dealer_job_keys = $this->get_dealer_fulfilled_job_keys($order);
+        if (empty($dealer_job_keys)) {
+            self::redirect_back_dealer_tracking($order_id, 'no_rows', 0);
+            return;
+        }
+
+        $now_utc = self::now_mysql_utc_plus(0);
+
+        $tracking_json = self::safe_json_encode([$tracking_number], '[]');
+        $invoice_json  = self::safe_json_encode(['N/A'], '[]');
+        $shipment_raw_json = self::safe_json_encode([
+            'source' => 'admin_manual_dealer_tracking',
+            'set_at_utc' => $now_utc,
+            'set_by_user_id' => (int) get_current_user_id(),
+            'tracking_numbers' => [$tracking_number],
+            'shipping_service' => $shipping_service,
+        ], '{}');
+
+        $updated = 0;
+        $emails_fired = 0;
+        $mailer_initialized = false;
+
+        foreach ($dealer_job_keys as $job_key) {
+            $job_key_norm = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
+            if ($job_key_norm === '') {
+                continue;
+            }
+
+            $job_row = OrderPlacementJobsRepository::get_job($this->jobs_table, $order_id, $job_key_norm);
+            if ($job_row === null) {
+                continue;
+            }
+
+            $patch = OrderPlacementJobPatch::empty()
+                ->with_field('shipped_at', $now_utc)
+                ->with_field('tracking_numbers_json', $tracking_json)
+                ->with_field('invoice_numbers_json', $invoice_json)
+                ->with_field('shipping_service', $shipping_service)
+                ->with_field('shipping_weight', 'N/A')
+                ->with_field('shipment_raw_json', $shipment_raw_json)
+                ->with_last_step('shipped');
+
+            OrderPlacementJobWriter::apply_patch($this->jobs_table, $order_id, $job_key_norm, $patch);
+            $updated++;
+
+            // Match poller email semantics: only fire when this submission introduces a new tracking value.
+            $existing_tracking = self::decode_string_list_json((string) ($job_row->tracking_numbers_json ?? ''));
+            $added_tracking = in_array($tracking_number, $existing_tracking, true) ? [] : [$tracking_number];
+
+            $shipping_update = new ShippingUpdateResult(
+                $added_tracking,
+                [],
+                [$tracking_number],
+                ['N/A']
+            );
+
+            if (!$shipping_update->has_changes()) {
+                continue;
+            }
+
+            $lines = [];
+            try {
+                $lines = OrderPlacementJobsRepository::get_job_payload_lines($this->jobs_table, $order_id, $job_key_norm);
+            } catch (\Throwable $e) {
+                $lines = [];
+            }
+
+            $manual_shipment = new DistributorShipment(
+                [$tracking_number],
+                ['N/A'],
+                $shipping_service,
+                'N/A',
+                [
+                    'source' => 'admin_manual_dealer_tracking',
+                    'set_at_utc' => $now_utc,
+                    'job_key' => $job_key_norm,
+                ]
+            );
+
+            $ctx = new PartialShipmentEmailContext($job_row, $shipping_update, $manual_shipment, $lines);
+
+            if (!$mailer_initialized) {
+                try {
+                    if (function_exists('WC') && WC()) {
+                        WC()->mailer()->get_emails();
+                    }
+                } catch (\Throwable $e) {
+                    // Best-effort bootstrap; continue to action trigger either way.
+                }
+                $mailer_initialized = true;
+            }
+
+            do_action('fflhub_trigger_partial_shipment_email', $order_id, $ctx);
+            $emails_fired++;
+        }
+
+        $did_complete_order = false;
+        if ($updated > 0) {
+            try {
+                $all_shipped = OrderPlacementJobsRepository::are_all_success_jobs_shipped($this->jobs_table, $order_id);
+                if ($all_shipped && $order->has_status(['processing', 'on-hold'])) {
+                    $order->update_status('completed', 'FFL Hub: all distributor jobs have tracking numbers (manual dealer-fulfilled update).');
+                    $did_complete_order = true;
+                }
+            } catch (\Throwable $e) {
+                $did_complete_order = false;
+            }
+        }
+
+        self::redirect_back_dealer_tracking($order_id, 'updated', $updated, $emails_fired, $did_complete_order);
+    }
+
+    /**
+     * @return string[]
+     */
+    private function get_dealer_fulfilled_job_keys(WC_Order $order): array
+    {
+        $job_keys = OrderPlacementJobsRepository::get_jobs_index($this->jobs_table, $order);
+        if (empty($job_keys)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($job_keys as $job_key) {
+            $job_key_norm = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
+            if ($job_key_norm === '') {
+                continue;
+            }
+
+            $parts = OrderPlacementKeysUtil::split_job_key($job_key_norm);
+            $lane = isset($parts['lane']) ? (string) $parts['lane'] : '';
+            if (!OrderPlacementKeysUtil::is_dealer_fulfilled_lane($lane)) {
+                continue;
+            }
+
+            $out[] = $job_key_norm;
+        }
+
+        return array_values(array_unique($out));
+    }
+
     private static function resolve_order($post_or_order): ?WC_Order
     {
         if ($post_or_order instanceof WC_Order) {
@@ -807,6 +1104,24 @@ final class OrderPlacementMetaBox
         return gmdate('Y-m-d H:i:s', $ts);
     }
 
+    /**
+     * @param mixed $value
+     */
+    private static function safe_json_encode($value, string $fallback): string
+    {
+        $json = wp_json_encode($value);
+        if (is_string($json) && $json !== '') {
+            return $json;
+        }
+
+        $json = @json_encode($value);
+        if (is_string($json) && $json !== '') {
+            return $json;
+        }
+
+        return $fallback;
+    }
+
     private static function redirect_back(int $order_id, string $job_key, string $result): void
     {
         $ref = wp_get_referer();
@@ -818,6 +1133,42 @@ final class OrderPlacementMetaBox
             'fflhub_retry' => $result,
             'fflhub_job'   => $job_key,
         ], $ref);
+
+        wp_safe_redirect($ref);
+        exit;
+    }
+
+    private static function redirect_back_dealer_tracking(
+        int $order_id,
+        string $result,
+        int $count,
+        int $emails_fired = 0,
+        bool $order_completed = false
+    ): void
+    {
+        $ref = wp_get_referer();
+        if (!$ref) {
+            $ref = admin_url('post.php?post=' . $order_id . '&action=edit');
+        }
+
+        $args = [
+            'fflhub_df_tracking' => $result,
+            'fflhub_df_order'    => $order_id,
+        ];
+
+        if ($count > 0) {
+            $args['fflhub_df_count'] = $count;
+        }
+
+        if ($emails_fired > 0) {
+            $args['fflhub_df_email_count'] = $emails_fired;
+        }
+
+        if ($order_completed) {
+            $args['fflhub_df_completed'] = 1;
+        }
+
+        $ref = add_query_arg($args, $ref);
 
         wp_safe_redirect($ref);
         exit;
