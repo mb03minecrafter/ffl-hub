@@ -405,6 +405,7 @@ final class RSRDirectConnectAPI
         $res = wp_remote_post($url, $args);
 
         if (is_wp_error($res)) {
+            self::log_response_transport_error((string) $res->get_error_message());
             return [
                 'ok' => false,
                 'message' => 'HTTP error: ' . $res->get_error_message(),
@@ -426,6 +427,8 @@ final class RSRDirectConnectAPI
                 $decoded = $tmp;
             }
         }
+
+        self::log_response_payload($code, $body, $decoded);
 
         if ($code < 200 || $code >= 300) {
             return [
@@ -870,5 +873,77 @@ final class RSRDirectConnectAPI
         }
 
         DebugLogUtil::log_if($enabled, '[FFLHub][RSRAPI]', 'Body JSON (RAW): ' . $json_body, self::DEBUG_CONST);
+    }
+
+    /**
+     * @param array<string,mixed>|null $decoded_body
+     */
+    private static function log_response_payload(int $http_status, string $raw_body, ?array $decoded_body): void
+    {
+        $enabled = self::debug_enabled();
+        if (!$enabled) {
+            return;
+        }
+
+        $is_raw = self::debug_raw_enabled();
+
+        DebugLogUtil::log_if($enabled, '[FFLHub][RSRAPI]', 'Response HTTP: ' . (string) $http_status, self::DEBUG_CONST);
+
+        if ($is_raw) {
+            DebugLogUtil::log_if(
+                $enabled,
+                '[FFLHub][RSRAPI]',
+                'Response Body (RAW): ' . self::truncate_for_log($raw_body),
+                self::DEBUG_CONST
+            );
+            return;
+        }
+
+        if (is_array($decoded_body)) {
+            $redacted = self::redact_payload_for_log($decoded_body);
+            DebugLogUtil::log_if(
+                $enabled,
+                '[FFLHub][RSRAPI]',
+                'Response (REDACTED): ' . self::json_for_log($redacted),
+                self::DEBUG_CONST
+            );
+            return;
+        }
+
+        DebugLogUtil::log_if(
+            $enabled,
+            '[FFLHub][RSRAPI]',
+            'Response Body (non-json, redacted mode): ' . self::truncate_for_log($raw_body),
+            self::DEBUG_CONST
+        );
+    }
+
+    private static function log_response_transport_error(string $message): void
+    {
+        $enabled = self::debug_enabled();
+        if (!$enabled) {
+            return;
+        }
+
+        DebugLogUtil::log_if(
+            $enabled,
+            '[FFLHub][RSRAPI]',
+            'Response transport error: ' . trim($message),
+            self::DEBUG_CONST
+        );
+    }
+
+    private static function truncate_for_log(string $text, int $max_len = 5000): string
+    {
+        $text = trim((string) $text);
+        if ($text === '') {
+            return '';
+        }
+
+        if (strlen($text) <= $max_len) {
+            return $text;
+        }
+
+        return substr($text, 0, $max_len) . '...(truncated)';
     }
 }
