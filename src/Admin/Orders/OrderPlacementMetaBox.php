@@ -165,6 +165,10 @@ final class OrderPlacementMetaBox
             return;
         }
 
+        $job_key_parts = OrderPlacementKeysUtil::split_job_key($job_key);
+        $lane          = isset($job_key_parts['lane']) ? (string) $job_key_parts['lane'] : '';
+        $is_dealer_fulfilled_lane = OrderPlacementKeysUtil::is_dealer_fulfilled_lane($lane);
+
         $row = $this->get_job_row_for_admin((int) $order->get_id(), $job_key);
 
         $status   = isset($row['status']) ? (string) $row['status'] : '';
@@ -425,12 +429,22 @@ final class OrderPlacementMetaBox
             $has_shipment = true;
         }
 
-        if (!$has_shipment) {
+        // Dealer-fulfilled jobs are manually shipped, so keep the shipment fields visible
+        // even before any data exists, which mirrors the layout used once shipment data appears.
+        $show_shipment_rows = $has_shipment || $is_dealer_fulfilled_lane;
+
+        if (!$show_shipment_rows) {
             echo '<div class="fflhub-muted">No shipment data yet.</div>';
         } else {
             echo '<div class="fflhub-kv">';
 
-            $ship_pill = ($shipped_at !== '' && $shipped_at !== '0000-00-00 00:00:00')
+            $is_shipped = (
+                ($shipped_at !== '' && $shipped_at !== '0000-00-00 00:00:00')
+                || !empty($tracking_list)
+                || !empty($invoice_list)
+            );
+
+            $ship_pill = $is_shipped
                 ? self::pill('shipped', 'success')
                 : self::pill('pending', 'muted');
 
