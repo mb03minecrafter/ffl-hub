@@ -541,7 +541,7 @@ class LipseysClient
             return $itemsCheck;
         }
 
-        return $this->post_with_auth_retry("integration/order/DropShipAccessory", $order, 'dropship_accessories');
+        return $this->post_with_auth_retry("integration/order/dropship", $order, 'dropship_accessories');
     }
 
     /**

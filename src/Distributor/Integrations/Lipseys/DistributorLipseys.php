@@ -32,8 +32,8 @@ use FFLHub\Util\DebugLogUtil;
  *     - Fall back to local fulfillment stock when rate-limited/quota-limited
  *     - Support local-only mode to avoid remote API calls (cron workloads / safety)
  * - Place orders through Lipsey's Integration API:
- *     - Non-FFL lines -> DropShipAccessories
- *     - FFL lines     -> DropShipFirearms
+ *     - Non-FFL lines -> DropShip
+ *     - FFL lines     -> DropShipFirearm
  * - Look up shipment/tracking by PO via Lipsey's shipment table (if enabled).
  *
  * Dependencies:
@@ -718,7 +718,7 @@ class DistributorLipseys extends DistributorBase
             if ($this->is_test_order_debug_enabled()) {
                 return $this->build_test_order_debug_block(
                     $lane,
-                    'https://api.lipseys.com/api/Integration/Order/DropShipAccessories',
+                    'https://api.lipseys.com/api/Integration/Order/DropShip',
                     'POST',
                     'json',
                     $this->encode_debug_json_payload($payload),
@@ -809,7 +809,7 @@ class DistributorLipseys extends DistributorBase
         if ($this->is_test_order_debug_enabled()) {
             return $this->build_test_order_debug_block(
                 $lane,
-                'https://api.lipseys.com/api/Integration/Order/DropShipFirearms',
+                'https://api.lipseys.com/api/Integration/Order/DropShipFirearm',
                 'POST',
                 'json',
                 $this->encode_debug_json_payload($payload),
