@@ -109,6 +109,7 @@ final class OrderPlacementJobRunner
         $lane    = (string) $job->lane_norm();
 
         $sm = new OrderPlacementJobStateMachine();
+        $place_step_started = false;
 
         try {
             // Validate job row basics.
@@ -186,11 +187,15 @@ final class OrderPlacementJobRunner
             }
 
             // Place + persist snapshot.
+            $place_step_started = true;
             $or = self::place_and_persist_result($jobs_table, $order, $job, $dist, $req, $attempt_n);
 
             // State machine after place.
             $dec2 = $sm->apply_place_order_result($jobs_table, $order, $job_key, $or, $attempt_n);
             if (($dec2['action'] ?? '') === 'exit') {
+                if (($dec2['reason'] ?? '') === 'failed') {
+                    self::send_place_failure_email($jobs_table, $order, $job_key, $dist_id, $lane, $attempt_n, null);
+                }
                 return;
             }
 
@@ -202,6 +207,9 @@ final class OrderPlacementJobRunner
                 OrderPlacementJobLifeCycle::mark_job_failed($jobs_table, $order, $job_key, $e->getMessage());
             } catch (\Throwable $ignored) {
                 // swallow
+            }
+            if ($place_step_started) {
+                self::send_place_failure_email($jobs_table, $order, $job_key, $dist_id, $lane, $attempt_n ?? 0, $e->getMessage());
             }
         }
     }
@@ -314,5 +322,152 @@ final class OrderPlacementJobRunner
         }
 
         return [$ship_ffl, $receiving_ffl_number];
+    }
+
+    /**
+     * Send a best-effort admin alert when place-order reaches terminal failure.
+     *
+     * Recipients default to admin_email and are filterable with:
+     * - fflhub_place_failure_email_recipients
+     * - fflhub_place_failure_email_subject
+     * - fflhub_place_failure_email_body
+     */
+    private static function send_place_failure_email(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $dist_id,
+        string $lane,
+        int $attempt_n,
+        ?string $fallback_error = null
+    ): void {
+        if (!function_exists('wp_mail')) {
+            return;
+        }
+
+        $order_id = (int) $order->get_id();
+        $job_key  = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
+        if ($order_id <= 0 || $job_key === '') {
+            return;
+        }
+
+        $job = null;
+        try {
+            $job = OrderPlacementJobsRepository::get_job_for_order($jobs_table, $order, $job_key);
+        } catch (\Throwable $ignored) {
+            $job = null;
+        }
+
+        $status = ($job instanceof OrderPlacementJobRow) ? trim((string) $job->status) : '';
+        $step   = ($job instanceof OrderPlacementJobRow) ? trim((string) $job->last_step) : '';
+
+        if ($status !== OrderPlacementKeys::JOB_STATUS_FAILED || $step !== 'place') {
+            return;
+        }
+
+        $last_error = ($job instanceof OrderPlacementJobRow) ? trim((string) $job->last_error) : '';
+        if ($last_error === '') {
+            $last_error = trim((string) $fallback_error);
+        }
+        if ($last_error === '') {
+            $last_error = 'Unknown place-order failure';
+        }
+
+        $merchant_po       = ($job instanceof OrderPlacementJobRow) ? trim((string) $job->merchant_po) : '';
+        $external_order_id = ($job instanceof OrderPlacementJobRow) ? trim((string) $job->external_order_id) : '';
+
+        $recipient_candidates = [];
+        $admin_email = trim((string) get_option('admin_email', ''));
+        if ($admin_email !== '') {
+            $recipient_candidates[] = $admin_email;
+        }
+
+        /** @var mixed $filtered */
+        $filtered = apply_filters(
+            'fflhub_place_failure_email_recipients',
+            $recipient_candidates,
+            $order_id,
+            $job_key,
+            $dist_id,
+            $lane
+        );
+
+        $recipient_candidates = [];
+        if (is_string($filtered)) {
+            $recipient_candidates = preg_split('/[,;\\s]+/', $filtered) ?: [];
+        } elseif (is_array($filtered)) {
+            $recipient_candidates = $filtered;
+        }
+
+        $recipients = [];
+        foreach ($recipient_candidates as $r) {
+            $email = sanitize_email((string) $r);
+            if ($email !== '' && is_email($email)) {
+                $recipients[$email] = true;
+            }
+        }
+
+        if (empty($recipients)) {
+            return;
+        }
+
+        $edit_url = function_exists('admin_url')
+            ? admin_url('post.php?post=' . $order_id . '&action=edit')
+            : '';
+
+        $subject = sprintf(
+            '[FFL Hub] Place-order FAILED - Order #%d - %s/%s',
+            $order_id,
+            $dist_id !== '' ? $dist_id : '-',
+            $lane !== '' ? $lane : '-'
+        );
+
+        $body_lines = [
+            'An order placement job failed at the PLACE step.',
+            '',
+            'Order ID: ' . $order_id,
+            'Job Key: ' . $job_key,
+            'Distributor: ' . ($dist_id !== '' ? $dist_id : '-'),
+            'Lane: ' . ($lane !== '' ? $lane : '-'),
+            'Attempt: ' . max(0, (int) $attempt_n),
+            'Merchant PO: ' . ($merchant_po !== '' ? $merchant_po : '-'),
+            'External Order ID: ' . ($external_order_id !== '' ? $external_order_id : '-'),
+            'Error: ' . $last_error,
+        ];
+
+        if ($edit_url !== '') {
+            $body_lines[] = 'Edit Order: ' . $edit_url;
+        }
+
+        $body = implode("\n", $body_lines);
+
+        /** @var mixed $subject_filtered */
+        $subject_filtered = apply_filters(
+            'fflhub_place_failure_email_subject',
+            $subject,
+            $order_id,
+            $job_key,
+            $dist_id,
+            $lane
+        );
+        if (is_string($subject_filtered) && trim($subject_filtered) !== '') {
+            $subject = trim($subject_filtered);
+        }
+
+        /** @var mixed $body_filtered */
+        $body_filtered = apply_filters(
+            'fflhub_place_failure_email_body',
+            $body,
+            $order_id,
+            $job_key,
+            $dist_id,
+            $lane,
+            $last_error
+        );
+        if (is_string($body_filtered) && trim($body_filtered) !== '') {
+            $body = $body_filtered;
+        }
+
+        wp_mail(array_keys($recipients), $subject, $body);
     }
 }
