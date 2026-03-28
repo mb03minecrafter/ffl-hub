@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Admin\Orders\OrderPlacementMetaBox;
 use FFLHub\Admin\Pages\AdminPage;
+use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
 use FFLHub\Admin\ProductMeta\BOMMetaBox;
@@ -53,6 +54,7 @@ final class Plugin
     public AdminPage $admin_page;
     public FFLImporterPage $ffl_importer_page;
     public DistributorProductsPage $distributor_products_page;
+    public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
     public OrderPlacementMetaBox $order_placement_metabox;
 
     // Frontend-only
@@ -113,6 +115,9 @@ final class Plugin
 
             $this->distributor_products_page = new DistributorProductsPage($this->distributor_handler);
             $this->distributor_products_page->register();
+
+            $this->dealer_fulfilled_jobs_page = new DealerFulfilledJobsPage($this->distributor_handler->ordering_jobs_table);
+            $this->dealer_fulfilled_jobs_page->register();
 
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();

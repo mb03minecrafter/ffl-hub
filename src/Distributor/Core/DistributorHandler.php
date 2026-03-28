@@ -12,6 +12,7 @@ use FFLHub\Distributor\Models\UpcLookupResult;
 use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
 use FFLHub\Distributor\Services\Orders\OrderingOrchestratorService;
 use FFLHub\Distributor\Services\Orders\OrderTrashJobsService;
+use FFLHub\Distributor\Services\Orders\Shipping\Cron\DealerFulfilledCronService;
 use FFLHub\Distributor\Services\Orders\Shipping\Cron\ShippingCronService;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsSchema;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
@@ -64,6 +65,7 @@ class DistributorHandler
 
     private OrderingOrchestratorService $orderPlacementOrchestratorService;
     private ShippingCronService $orderShippingCronService;
+    private DealerFulfilledCronService $orderDealerFulfilledCronService;
     private OrderingCronService $orderPlacementCronService;
 
     // ---------------------------------------------------------------------
@@ -134,6 +136,9 @@ class DistributorHandler
 
         $this->orderShippingCronService  = new ShippingCronService($this, $this->ordering_jobs_table);
         $log_step('new ShippingCronService');
+
+        $this->orderDealerFulfilledCronService = new DealerFulfilledCronService($this->ordering_jobs_table);
+        $log_step('new DealerFulfilledCronService');
 
         $this->orderTrashJobsService = new OrderTrashJobsService($this->ordering_jobs_table);
         $log_step('new OrderTrashJobsService');
@@ -242,6 +247,7 @@ class DistributorHandler
         $this->ordering_jobs_table->createTables();
 
         $this->orderShippingCronService->on_activation();
+        $this->orderDealerFulfilledCronService->on_activation();
         $this->orderPlacementCronService->on_activation();
 
         // OrderTrashJobsService is hook-based (not cron-based); no schedule lifecycle.
@@ -266,6 +272,7 @@ class DistributorHandler
 
         $this->productSyncCronService->on_deactivation();
         $this->orderShippingCronService->on_deactivation();
+        $this->orderDealerFulfilledCronService->on_deactivation();
         $this->orderPlacementCronService->on_deactivation();
     }
 
@@ -293,6 +300,7 @@ class DistributorHandler
 
         $this->orderPlacementOrchestratorService->register();
         $this->orderShippingCronService->register();
+        $this->orderDealerFulfilledCronService->register();
         $this->orderPlacementCronService->register();
 
         $this->orderTrashJobsService->register();
