@@ -15,6 +15,7 @@ if (! defined('ABSPATH')) {
 /**
  * Daily job:
  * - Calls Lipsey's Shipping/OneDay for the previous day (UTC)
+ *   using both dealer (dropship) and main credentials
  * - Normalizes response
  * - Upserts into Lipsey's shipment table keyed by PO + Tracking
  */
@@ -76,100 +77,127 @@ final class LipseysShipmentsDailyCronService extends AbstractCronService
         $ship_date = gmdate('n/j/Y', time() - DAY_IN_SECONDS);
         $this->log_debug('[FFLHub][Lipsey\'s Shipments Cron] target_date=' . $ship_date);
 
-        // ------------------------------------------------------------
-        // 1) Build API client
-        // ------------------------------------------------------------
-
-        $email    = trim((string) Options::get_distributor_option('lipseys', 'dealer_email', ''));
-        $password = trim((string) Options::get_distributor_option('lipseys', 'dealer_password', ''));
-
-
-
-
-        if ($email === '' || $password === '') {
-            $this->log_debug('[FFLHub][Lipsey\'s Shipments Cron] Missing Lipsey\'s credentials');
-            return;
-        }
-
-        try {
-            $client = new LipseysClient($email, $password);
-        } catch (\Throwable $e) {
-            $this->log_debug('[FFLHub][Lipsey\'s Shipments Cron] Client init failed: ' . $e->getMessage());
-            return;
-        }
-
-        // ------------------------------------------------------------
-        // 2) Call API
-        // ------------------------------------------------------------
-
-        $t_api    = microtime(true);
-        $response = $client->OneDaysShipping($ship_date);
-        $api_ms   = (microtime(true) - $t_api) * 1000.0;
-
-        $this->log_debug(
-            sprintf(
-                '[FFLHub][Lipsey\'s Shipments Cron] API call completed in %.2f ms',
-                $api_ms
-            )
-        );
-
-        $this->log_debug(
-            '[FFLHub][Lipsey\'s Shipments Cron] RAW_API_RESPONSE=' . wp_json_encode($response, JSON_PRETTY_PRINT)
-        );
-
-        // ------------------------------------------------------------
-        // 3) Validate response
-        // ------------------------------------------------------------
-
-        if (! is_array($response)) {
-            $this->log_debug('[FFLHub][Lipsey\'s Shipments Cron] Invalid API response type');
-            return;
-        }
-
-        if (
-            empty($response['authorized']) ||
-            empty($response['success'])
-        ) {
-            $this->log_debug(
-                '[FFLHub][Lipsey\'s Shipments Cron] API error: ' .
-                wp_json_encode($response['errors'] ?? [])
-            );
-            return;
-        }
-
-        $shipments = $response['data'] ?? [];
-
-        if (! is_array($shipments) || empty($shipments)) {
-            $this->log_debug(
-                '[FFLHub][Lipsey\'s Shipments Cron] No shipments returned for date ' . $ship_date
-            );
-            return;
-        }
-
-        $this->log_debug(
-            '[FFLHub][Lipsey\'s Shipments Cron] Shipments returned=' . count($shipments)
-        );
-
-        // ------------------------------------------------------------
-        // 4) Normalize rows
-        // ------------------------------------------------------------
-
         $ship_date_mysql = gmdate('Y-m-d', strtotime($ship_date));
+        $all_rows = [];
 
-        $t_norm = microtime(true);
-        $rows   = $this->normalize_rows($shipments, $ship_date_mysql);
-        $norm_ms = (microtime(true) - $t_norm) * 1000.0;
+        $credential_profiles = [
+            [
+                'label' => 'dealer',
+                'email' => trim((string) Options::get_distributor_option('lipseys', 'dealer_email', '')),
+                'password' => trim((string) Options::get_distributor_option('lipseys', 'dealer_password', '')),
+            ],
+            [
+                'label' => 'main',
+                'email' => trim((string) Options::get_distributor_option('lipseys', 'main_account_email', '')),
+                'password' => trim((string) Options::get_distributor_option('lipseys', 'main_account_password', '')),
+            ],
+        ];
 
-        $this->log_debug(
-            sprintf(
-                '[FFLHub][Lipsey\'s Shipments Cron] Normalized rows=%d in %.2f ms',
-                count($rows),
-                $norm_ms
-            )
-        );
+        foreach ($credential_profiles as $profile) {
+            $label = (string) ($profile['label'] ?? 'unknown');
+            $email = trim((string) ($profile['email'] ?? ''));
+            $password = trim((string) ($profile['password'] ?? ''));
 
-        if (empty($rows)) {
-            $this->log_debug('[FFLHub][Lipsey\'s Shipments Cron] No valid rows after normalization');
+            if ($email === '' || $password === '') {
+                $this->log_debug(
+                    '[FFLHub][Lipsey\'s Shipments Cron] Missing credentials for profile=' . $label
+                );
+                continue;
+            }
+
+            // ------------------------------------------------------------
+            // 1) Build API client
+            // ------------------------------------------------------------
+            try {
+                $client = new LipseysClient($email, $password);
+            } catch (\Throwable $e) {
+                $this->log_debug(
+                    '[FFLHub][Lipsey\'s Shipments Cron] Client init failed for profile='
+                    . $label . ': ' . $e->getMessage()
+                );
+                continue;
+            }
+
+            // ------------------------------------------------------------
+            // 2) Call API
+            // ------------------------------------------------------------
+            $t_api    = microtime(true);
+            $response = $client->OneDaysShipping($ship_date);
+            $api_ms   = (microtime(true) - $t_api) * 1000.0;
+
+            $this->log_debug(
+                sprintf(
+                    '[FFLHub][Lipsey\'s Shipments Cron] API call completed in %.2f ms (profile=%s)',
+                    $api_ms,
+                    $label
+                )
+            );
+
+            $this->log_debug(
+                '[FFLHub][Lipsey\'s Shipments Cron] RAW_API_RESPONSE profile='
+                . $label . ' payload=' . wp_json_encode($response, JSON_PRETTY_PRINT)
+            );
+
+            // ------------------------------------------------------------
+            // 3) Validate response
+            // ------------------------------------------------------------
+            if (!is_array($response)) {
+                $this->log_debug(
+                    '[FFLHub][Lipsey\'s Shipments Cron] Invalid API response type for profile=' . $label
+                );
+                continue;
+            }
+
+            if (
+                empty($response['authorized']) ||
+                empty($response['success'])
+            ) {
+                $this->log_debug(
+                    '[FFLHub][Lipsey\'s Shipments Cron] API error for profile='
+                    . $label . ': '
+                    . wp_json_encode($response['errors'] ?? [])
+                );
+                continue;
+            }
+
+            $shipments = $response['data'] ?? [];
+
+            if (!is_array($shipments) || empty($shipments)) {
+                $this->log_debug(
+                    '[FFLHub][Lipsey\'s Shipments Cron] No shipments returned for date '
+                    . $ship_date . ' (profile=' . $label . ')'
+                );
+                continue;
+            }
+
+            $this->log_debug(
+                '[FFLHub][Lipsey\'s Shipments Cron] Shipments returned='
+                . count($shipments) . ' (profile=' . $label . ')'
+            );
+
+            // ------------------------------------------------------------
+            // 4) Normalize rows
+            // ------------------------------------------------------------
+            $t_norm = microtime(true);
+            $rows   = $this->normalize_rows($shipments, $ship_date_mysql);
+            $norm_ms = (microtime(true) - $t_norm) * 1000.0;
+
+            $this->log_debug(
+                sprintf(
+                    '[FFLHub][Lipsey\'s Shipments Cron] Normalized rows=%d in %.2f ms (profile=%s)',
+                    count($rows),
+                    $norm_ms,
+                    $label
+                )
+            );
+
+            if (!empty($rows)) {
+                $all_rows = array_merge($all_rows, $rows);
+            }
+        }
+
+        if (empty($all_rows)) {
+            $this->log_debug('[FFLHub][Lipsey\'s Shipments Cron] No valid rows after normalization across all credential profiles');
             return;
         }
 
@@ -178,13 +206,14 @@ final class LipseysShipmentsDailyCronService extends AbstractCronService
         // ------------------------------------------------------------
 
         $t_insert = microtime(true);
-        $inserted = $this->shipmentTable->insert_rows($rows);
+        $inserted = $this->shipmentTable->insert_rows($all_rows);
         $insert_ms = (microtime(true) - $t_insert) * 1000.0;
 
         $this->log_debug(
             sprintf(
-                '[FFLHub][Lipsey\'s Shipments Cron] Inserted rows=%d (%.2f ms)',
+                '[FFLHub][Lipsey\'s Shipments Cron] Inserted rows=%d from normalized_total=%d (%.2f ms)',
                 $inserted,
+                count($all_rows),
                 $insert_ms
             )
         );

@@ -658,7 +658,13 @@ class DistributorRSR extends DistributorBase
             return null;
         }
 
-        $auth = $this->get_rsr_auth_payload();
+        // Match placement credential routing by lane:
+        // - dealer_fulfilled PO => main creds
+        // - direct_ship_* PO     => dropship creds
+        $lane = self::infer_lane_from_po($po_number);
+        $auth_purpose = ($lane === 'dealer_fulfilled') ? 'dealer_fulfilled' : 'ordering';
+
+        $auth = $this->get_rsr_auth_payload($auth_purpose);
         if (!is_array($auth) || empty($auth['ok'])) {
             return null;
         }
@@ -808,6 +814,62 @@ class DistributorRSR extends DistributorBase
                 'warehouses'         => $warehouses,
             ]
         );
+    }
+
+    /**
+     * Infer lane from our merchant PO format.
+     *
+     * Expected examples:
+     * - FH-RSR-2245-N1 => direct_ship_non_ffl
+     * - FH-RSR-2245-F1 => direct_ship_ffl
+     * - FH-RSR-2245-D1 => dealer_fulfilled
+     *
+     * Falls back to direct_ship_non_ffl for unknown formats to preserve
+     * previous behavior (dropship credentials).
+     */
+    private static function infer_lane_from_po(string $po): string
+    {
+        $po = strtoupper(trim($po));
+        if ($po === '') {
+            return 'direct_ship_non_ffl';
+        }
+
+        $parts = preg_split('/[-_]+/', $po);
+        if (!is_array($parts) || empty($parts)) {
+            return 'direct_ship_non_ffl';
+        }
+
+        $last = trim((string) end($parts));
+
+        if ($last !== '' && preg_match('/^F\d*$/', $last)) {
+            return 'direct_ship_ffl';
+        }
+        if ($last !== '' && preg_match('/^N\d*$/', $last)) {
+            return 'direct_ship_non_ffl';
+        }
+        if ($last !== '' && preg_match('/^D\d*$/', $last)) {
+            return 'dealer_fulfilled';
+        }
+
+        // Safety patterns if alternate lane tokens are used.
+        if ($last !== '' && preg_match('/^DSF\d*$/', $last)) {
+            return 'direct_ship_ffl';
+        }
+        if ($last !== '' && preg_match('/^DSN\d*$/', $last)) {
+            return 'direct_ship_non_ffl';
+        }
+        if ($last !== '' && preg_match('/^DSD\d*$/', $last)) {
+            return 'dealer_fulfilled';
+        }
+
+        if (strpos($po, '-DEALER-') !== false || strpos($po, '_DEALER_') !== false || strpos($po, '-DF-') !== false) {
+            return 'dealer_fulfilled';
+        }
+        if (strpos($po, '-FFL-') !== false || strpos($po, '_FFL_') !== false) {
+            return 'direct_ship_ffl';
+        }
+
+        return 'direct_ship_non_ffl';
     }
 
 
