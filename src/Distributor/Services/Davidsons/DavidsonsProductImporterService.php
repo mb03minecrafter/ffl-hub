@@ -130,8 +130,9 @@ class DavidsonsProductImporterService
                 davidsons_item_number = TRIM(BOTH '\\r' FROM TRIM(@c0)),
                 product_description   = TRIM(BOTH '\\r' FROM TRIM(@c1)),
 
-                retail_map         = NULLIF(REPLACE(REPLACE(TRIM(BOTH '\\r' FROM TRIM(@c2)), '$', ''), ',', ''), ''),
-                retail_msrp        = NULLIF(REPLACE(REPLACE(TRIM(BOTH '\\r' FROM TRIM(@c3)), '$', ''), ',', ''), ''),
+                @retail_msrp_clean := NULLIF(REPLACE(REPLACE(TRIM(BOTH '\\r' FROM TRIM(@c3)), '$', ''), ',', ''), ''),
+                retail_map         = @retail_msrp_clean,
+                retail_msrp        = @retail_msrp_clean,
                 distributor_price  = NULLIF(REPLACE(REPLACE(TRIM(BOTH '\\r' FROM TRIM(@c4)), '$', ''), ',', ''), ''),
                 sale_price         = NULLIF(REPLACE(REPLACE(TRIM(BOTH '\\r' FROM TRIM(@c5)), '$', ''), ',', ''), ''),
                 sale_ends          = TRIM(BOTH '\\r' FROM TRIM(@c6)),

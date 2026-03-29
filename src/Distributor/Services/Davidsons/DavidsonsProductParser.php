@@ -65,6 +65,8 @@ class DavidsonsProductParser
         $qty         = $this->to_int_string($this->get($csv, $header_map, 'quantity'));
         $stock_state = ((int) $qty > 0) ? 'in_stock' : 'out_of_stock';
 
+        $retail_msrp = $this->clean_money($this->get($csv, $header_map, 'retail price'));
+
         return [
             'upc'                  => $upc,
             'davidsons_item_number' => $item_number,
@@ -72,8 +74,8 @@ class DavidsonsProductParser
             'inventory_quantity' => $qty,
             'allocation_status'  => $stock_state,
             'distributor_price'  => $this->clean_money($this->get($csv, $header_map, 'dealer price')),
-            'retail_map'         => $this->clean_money($this->get($csv, $header_map, 'msp')),
-            'retail_msrp'        => $this->clean_money($this->get($csv, $header_map, 'retail price')),
+            'retail_map'         => $retail_msrp,
+            'retail_msrp'        => $retail_msrp,
             'sale_price'         => $this->clean_money($this->get($csv, $header_map, 'sale price')),
             'sale_ends'          => $this->get($csv, $header_map, 'sale ends'),
 
