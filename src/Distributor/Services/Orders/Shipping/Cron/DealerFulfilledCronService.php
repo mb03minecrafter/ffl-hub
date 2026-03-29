@@ -32,6 +32,8 @@ final class DealerFulfilledCronService extends AbstractCronService
 {
     private const LOG_PREFIX  = '[FFLHUB][DealerFulfilledPoller]';
     private const DEBUG_CONST = 'FFLHUB_DEBUG_SHIPPING';
+    private const FORCE_NO_COOLDOWN_CONST  = 'FFLHUB_DEALER_SHIPPING_FORCE_NO_COOLDOWN';
+    private const FORCE_NO_COOLDOWN_OPTION = 'fflhub_dealer_shipping_force_no_cooldown';
 
     public const CRON_HOOK = 'fflhub_place_dealer_fulfilled_poll';
 
@@ -72,8 +74,14 @@ final class DealerFulfilledCronService extends AbstractCronService
     {
         $run_started = microtime(true);
 
-        $cutoff_unix      = time() - ((int) self::JOB_MIN_POLL_INTERVAL_MINUTES * 60);
-        $cutoff_mysql_utc = OrderPlacementTimeUtil::unix_to_mysql_utc($cutoff_unix);
+        $force_no_cooldown = $this->should_force_no_cooldown();
+        if ($force_no_cooldown) {
+            // last_shipping_poll_at < cutoff, so a far-future cutoff effectively disables pace gating.
+            $cutoff_mysql_utc = '9999-12-31 23:59:59';
+        } else {
+            $cutoff_unix      = time() - ((int) self::JOB_MIN_POLL_INTERVAL_MINUTES * 60);
+            $cutoff_mysql_utc = OrderPlacementTimeUtil::unix_to_mysql_utc($cutoff_unix);
+        }
 
         $ship_cutoff_unix      = time() - ((int) self::MAX_DAYS_AFTER_FIRST_SHIP * DAY_IN_SECONDS);
         $ship_cutoff_mysql_utc = OrderPlacementTimeUtil::unix_to_mysql_utc($ship_cutoff_unix);
@@ -88,6 +96,7 @@ final class DealerFulfilledCronService extends AbstractCronService
             'shipment_found'          => 0,
             'tracking_added'          => 0,
             'email_fired'             => 0,
+            'skipped_zanders'         => 0,
             'skipped_invalid'         => 0,
             'skipped_no_po'           => 0,
             'skipped_suspended'       => 0,
@@ -106,6 +115,7 @@ final class DealerFulfilledCronService extends AbstractCronService
             'limit'                => $limit,
             'job_min_poll_min'     => (int) self::JOB_MIN_POLL_INTERVAL_MINUTES,
             'max_days_after_ship'  => (int) self::MAX_DAYS_AFTER_FIRST_SHIP,
+            'force_no_cooldown'    => $force_no_cooldown ? 1 : 0,
         ]);
 
         try {
@@ -169,6 +179,19 @@ final class DealerFulfilledCronService extends AbstractCronService
                     'job_key'  => $job_key,
                     'dist_id'  => $dist_id,
                     'lane'     => $lane,
+                ]);
+                continue;
+            }
+
+            // Temporary policy: ignore Zanders in dealer-fulfilled shipment polling.
+            if (strtolower(trim($dist_id)) === 'zanders') {
+                $stats['skipped_zanders']++;
+                $this->log_ctx('skip_zanders_for_dealer_poll', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'lane'     => $lane,
+                    'po'       => $po,
                 ]);
                 continue;
             }
@@ -332,6 +355,26 @@ final class DealerFulfilledCronService extends AbstractCronService
             'memory_kb'  => (int) (memory_get_usage(true) / 1024),
             'stats'      => $stats,
         ]);
+    }
+
+    private function should_force_no_cooldown(): bool
+    {
+        if (defined(self::FORCE_NO_COOLDOWN_CONST) && (bool) constant(self::FORCE_NO_COOLDOWN_CONST)) {
+            return true;
+        }
+
+        $raw = get_option(self::FORCE_NO_COOLDOWN_OPTION, false);
+        $enabled = false;
+
+        if (is_bool($raw)) {
+            $enabled = $raw;
+        } elseif (is_numeric($raw)) {
+            $enabled = ((int) $raw) === 1;
+        } elseif (is_string($raw)) {
+            $enabled = in_array(strtolower(trim($raw)), ['1', 'true', 'yes', 'on'], true);
+        }
+
+        return (bool) apply_filters('fflhub_dealer_shipping_force_no_cooldown', $enabled);
     }
 
     private function log(string $msg): void

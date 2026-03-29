@@ -83,6 +83,7 @@ fflhub_define_bool('FFLHUB_TRASH_ORDER_JOBS_DEBUG', true);
 
 // Shipping / tracking.
 fflhub_define_bool('FFLHUB_DEBUG_SHIPPING', true);
+fflhub_define_bool('FFLHUB_DEALER_SHIPPING_FORCE_NO_COOLDOWN', false);
 
 
 //init profiling

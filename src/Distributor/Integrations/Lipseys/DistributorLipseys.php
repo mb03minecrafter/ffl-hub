@@ -641,7 +641,7 @@ class DistributorLipseys extends DistributorBase
         }
 
         if ($lane === 'dealer_fulfilled') {
-            $po = $base_po . '-DF';
+            $po = $base_po;
 
             $payload = [
                 'PONumber'     => $po,
