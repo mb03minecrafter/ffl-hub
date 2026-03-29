@@ -35,6 +35,7 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
     private const STAGE_TABLE_SUFFIX = 'fflhub_davidsons_qty_stage';
     private const FORCE_NO_COOLDOWN_CONST  = 'FFLHUB_DAVIDSONS_INVENTORY_FORCE_NO_COOLDOWN';
     private const FORCE_NO_COOLDOWN_OPTION = 'fflhub_davidsons_inventory_force_no_cooldown';
+    private const PROFILE_FLAG = 'FFLHUB_DAVIDSONS_INVENTORY_PROFILE';
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -266,7 +267,8 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
         // -----------------------
         $t_stats = microtime(true);
 
-        $do_stats = defined(self::DEBUG_FLAG) && constant(self::DEBUG_FLAG);
+        // Expensive pre-join profiling is opt-in to avoid slowing regular cron runs.
+        $do_stats = defined(self::PROFILE_FLAG) && (bool) constant(self::PROFILE_FLAG);
         $join_matched = 0;
         $would_change = 0;
 
@@ -304,14 +306,11 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
         // -----------------------
         $t_join = microtime(true);
 
-        $join_sql = "
+        // Pass 1: fast indexed join by UPC.
+        $join_upc_sql = "
             UPDATE {$live_table} L
             INNER JOIN {$stage_table} S
-                ON (
-                    (S.upc IS NOT NULL AND S.upc <> '' AND L.upc = S.upc)
-                    OR
-                    (S.item_number IS NOT NULL AND S.item_number <> '' AND L.davidsons_item_number = S.item_number)
-                )
+                ON (S.upc IS NOT NULL AND S.upc <> '' AND L.upc = S.upc)
             SET
                 L.inventory_quantity = CAST(S.total_qty AS CHAR),
                 L.allocation_status  = CASE WHEN S.total_qty > 0 THEN 'in_stock' ELSE 'out_of_stock' END
@@ -320,10 +319,35 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
                 OR COALESCE(L.allocation_status, '') <> CASE WHEN S.total_qty > 0 THEN 'in_stock' ELSE 'out_of_stock' END
         ";
 
-        $join_updated = $wpdb->query($join_sql);
-        if ($join_updated === false) {
-            throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
+        $join_updated_upc = $wpdb->query($join_upc_sql);
+        if ($join_updated_upc === false) {
+            throw new \RuntimeException('JOIN update (UPC) failed: ' . (string) $wpdb->last_error);
         }
+
+        // Pass 2: fallback by Davidson item number only when there is no UPC match.
+        $join_item_sql = "
+            UPDATE {$live_table} L
+            INNER JOIN {$stage_table} S
+                ON (S.item_number IS NOT NULL AND S.item_number <> '' AND L.davidsons_item_number = S.item_number)
+            LEFT JOIN {$live_table} LU
+                ON (S.upc IS NOT NULL AND S.upc <> '' AND LU.upc = S.upc)
+            SET
+                L.inventory_quantity = CAST(S.total_qty AS CHAR),
+                L.allocation_status  = CASE WHEN S.total_qty > 0 THEN 'in_stock' ELSE 'out_of_stock' END
+            WHERE
+                LU.upc IS NULL
+                AND (
+                    COALESCE(L.inventory_quantity, '') <> CAST(S.total_qty AS CHAR)
+                    OR COALESCE(L.allocation_status, '') <> CASE WHEN S.total_qty > 0 THEN 'in_stock' ELSE 'out_of_stock' END
+                )
+        ";
+
+        $join_updated_item = $wpdb->query($join_item_sql);
+        if ($join_updated_item === false) {
+            throw new \RuntimeException('JOIN update (itemNumber fallback) failed: ' . (string) $wpdb->last_error);
+        }
+
+        $join_updated = (int) $join_updated_upc + (int) $join_updated_item;
 
         $join_ms = (microtime(true) - $t_join) * 1000.0;
         $drop_ms = 0.0; // persistent stage table
@@ -335,6 +359,8 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
             'join_matched'   => (int) $join_matched,
             'would_change'   => (int) $would_change,
             'join_updated'   => (int) $join_updated,
+            'join_updated_upc' => (int) $join_updated_upc,
+            'join_updated_item' => (int) $join_updated_item,
             'stage_table'    => (string) $stage_table,
             'ignore_lines'   => (int) $ignore_lines,
             'create_ms'      => number_format($create_ms, 2, '.', ''),
