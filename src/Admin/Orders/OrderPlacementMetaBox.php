@@ -41,6 +41,8 @@ final class OrderPlacementMetaBox
     private const DEALER_TRACKING_META_BOX_TITLE = 'FFL Hub - Dealer Fulfilled Tracking';
 
     private OrderPlacementJobsTable $jobs_table;
+    /** @var array<int,bool> */
+    private static array $dealer_tracking_save_guard = [];
 
     public function __construct(OrderPlacementJobsTable $jobs_table)
     {
@@ -68,6 +70,9 @@ final class OrderPlacementMetaBox
         add_action('admin_post_fflhub_set_dealer_tracking', [$this, 'handle_set_dealer_tracking_post']);
         // Manual dealer-fulfilled shipment tracking update (admin-ajax fallback for stacks blocking admin-post)
         add_action('wp_ajax_fflhub_set_dealer_tracking', [$this, 'handle_set_dealer_tracking_post']);
+
+        // Process dealer-tracking metabox fields during normal "Update order" saves (classic + HPOS).
+        add_action('woocommerce_process_shop_order_meta', [$this, 'handle_set_dealer_tracking_on_order_save'], 60, 2);
     }
 
     public function register_metabox(): void
@@ -221,7 +226,7 @@ final class OrderPlacementMetaBox
                     . '</p></div>';
             } elseif ($result === 'invalid') {
                 echo '<div class="notice notice-error inline"><p>'
-                    . esc_html('Tracking number is required.')
+                    . esc_html('Tracking number and shipping service are required.')
                     . '</p></div>';
             } elseif ($result === 'error') {
                 $msg = isset($_GET['fflhub_df_msg'])
@@ -257,35 +262,22 @@ final class OrderPlacementMetaBox
         echo self::kv('Job keys', '<span class="fflhub-mono">' . esc_html($job_keys_preview) . '</span>');
         echo '</div>';
 
-        // Submit through the existing order edit form using explicit button action.
-        // This avoids nested form issues inside Woo order admin screens.
         echo '<div style="margin-top:12px;">';
         wp_nonce_field('fflhub_set_dealer_tracking_' . $order_id, 'fflhub_set_dealer_tracking_nonce', false);
         echo '<input type="hidden" name="order_id" value="' . esc_attr((string) $order_id) . '" />';
+        echo '<input type="hidden" name="fflhub_dealer_tracking_present" value="1" />';
 
         echo '<p>';
         echo '<label for="fflhub_dealer_tracking_number"><strong>Tracking Number</strong></label><br />';
-        echo '<input id="fflhub_dealer_tracking_number" name="tracking_number" type="text" class="regular-text" />';
+        echo '<input id="fflhub_dealer_tracking_number" name="fflhub_dealer_tracking_number" type="text" class="regular-text" />';
         echo '</p>';
 
         echo '<p>';
         echo '<label for="fflhub_dealer_shipping_service"><strong>Shipping Service</strong></label><br />';
-        echo '<input id="fflhub_dealer_shipping_service" name="shipping_service" type="text" class="regular-text" value="N/A" />';
+        echo '<input id="fflhub_dealer_shipping_service" name="fflhub_dealer_shipping_service" type="text" class="regular-text" value="" />';
         echo '</p>';
 
-        echo '<p class="description">This sets <code>shipped_at</code>, <code>tracking_numbers_json</code>, and <code>shipping_service</code> for every dealer-fulfilled job row on this order.</p>';
-
-        submit_button(
-            'Apply Dealer Tracking',
-            'primary',
-                'fflhub_apply_dealer_tracking',
-                false,
-                [
-                'formaction'    => admin_url('admin-ajax.php?action=fflhub_set_dealer_tracking'),
-                'formmethod'    => 'post',
-                'formnovalidate' => 'formnovalidate',
-            ]
-        );
+        echo '<p class="description">Enter both tracking number and shipping service, then click the main WooCommerce <strong>Update order</strong> button. This updates <code>shipped_at</code>, <code>tracking_numbers_json</code>, and <code>shipping_service</code> for every dealer-fulfilled job row on this order and triggers the shipment email flow.</p>';
         echo '</div>';
 
         echo '</div>';
