@@ -338,6 +338,151 @@ class DistributorProductCategoryMapper
         return null;
     }
 
+    /**
+     * Map Davidson's item_type string -> unified category path.
+     *
+     * Known values are largely firearm lane strings such as:
+     * - "Pistol: Semi-Auto"
+     * - "Revolver: Double Action"
+     * - "Rifle: Bolt Action"
+     * - "Shotgun: Pump Action"
+     * - "AR Lower: Receiver Only"
+     *
+     * Unknown values return null so caller/default logic can place the product
+     * into an uncategorized fallback.
+     *
+     * @param string $item_type Davidson's item_type value
+     * @return array<int,string>|null
+     */
+    public static function map_davidsons(string $item_type): ?array
+    {
+        $raw = trim($item_type);
+        if ($raw === '') {
+            return null;
+        }
+
+        $t = strtoupper($raw);
+        $t = (string) preg_replace('/\s+/', ' ', $t);
+        $t = trim($t);
+        if ($t === '') {
+            return null;
+        }
+
+        $exact = [
+            'AR LOWER: RECEIVER ONLY'      => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'MINI CANNON: MUZZLELOADER'    => [CategorySchema::CAT_BLACK_POWDER, 'Guns'],
+
+            'PISTOL:'                      => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'PISTOL: BOLT ACTION'          => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'PISTOL: DERRINGER'            => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'PISTOL: LEVER ACTION'         => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'PISTOL: SEMI-AUTO'            => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'PISTOL: SEMI-AUTOMATIC'       => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'PISTOL: SINGLE ACTION'        => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'PISTOL: SINGLE SHOT'          => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+
+            'REVOLVER: DOUBLE ACTION'      => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'REVOLVER: DOUBLE ACTION ONLY' => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'REVOLVER: SINGLE ACTION'      => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+
+            'RIFLE: BOLT ACTION'           => [CategorySchema::CAT_FIREARMS, 'Rifles', 'Bolt Action'],
+            'RIFLE: BREAK ACTION'          => [CategorySchema::CAT_FIREARMS, 'Rifles', 'Single Shot / Break Action'],
+            'RIFLE: LEVER ACTION'          => [CategorySchema::CAT_FIREARMS, 'Rifles', 'Lever Action'],
+            'RIFLE: PUMP ACTION'           => [CategorySchema::CAT_FIREARMS, 'Rifles', 'Pump Action'],
+            'RIFLE: SEMI AUTO'             => [CategorySchema::CAT_FIREARMS, 'Rifles', 'Semi-Auto'],
+            'RIFLE: SEMI-AUTO'             => [CategorySchema::CAT_FIREARMS, 'Rifles', 'Semi-Auto'],
+            'RIFLE: SINGLE SHOT'           => [CategorySchema::CAT_FIREARMS, 'Rifles', 'Single Shot / Break Action'],
+
+            'SHOTGUN: BOLT ACTION'         => [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Bolt Action'],
+            'SHOTGUN: BREAK ACTION'        => [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Single Shot / Break Action'],
+            'SHOTGUN: LEVER ACTION'        => [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Lever Action'],
+            'SHOTGUN: OVER AND UNDER'      => [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Single Shot / Break Action'],
+            'SHOTGUN: PUMP ACTION'         => [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Pump Action'],
+            'SHOTGUN: SEMI-AUTO'           => [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Semi-Auto'],
+            'SHOTGUN: SIDE BY SIDE'        => [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Single Shot / Break Action'],
+            'SHOTGUN: SINGLE SHOT'         => [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Single Shot / Break Action'],
+
+            'RIFLE|SHOTGUN COMBO: ALL'     => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'RIFLE|SHOTGUN: ALL'           => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+        ];
+
+        if (isset($exact[$t])) {
+            return array_values($exact[$t]);
+        }
+
+        // Common "non-standard but present" values from Davidson's feed.
+        if (strpos($t, 'MUZZLELOADER') !== false) {
+            return [CategorySchema::CAT_BLACK_POWDER, 'Guns'];
+        }
+
+        if (strpos($t, 'AR LOWER') !== false || strpos($t, 'RECEIVER') !== false || strpos($t, ': UPPER') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Other / Specialty'];
+        }
+
+        if (strpos($t, 'RIFLE|SHOTGUN') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Other / Specialty'];
+        }
+
+        // Pistol/Revolver families.
+        if (strpos($t, 'REVOLVER:') === 0) {
+            return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'];
+        }
+        if (strpos($t, 'PISTOL:') === 0) {
+            if (strpos($t, 'AIR GUN') !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Other / Specialty'];
+            }
+            return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'];
+        }
+
+        // Rifle family.
+        if (strpos($t, 'RIFLE:') === 0) {
+            if (strpos($t, 'BOLT') !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Rifles', 'Bolt Action'];
+            }
+            if (strpos($t, 'LEVER') !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Rifles', 'Lever Action'];
+            }
+            if (strpos($t, 'PUMP') !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Rifles', 'Pump Action'];
+            }
+            if (strpos($t, 'SEMI AUTO') !== false || strpos($t, 'SEMI-AUTO') !== false || strpos($t, 'SEMI-AUTOMATIC') !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Rifles', 'Semi-Auto'];
+            }
+            if (strpos($t, 'BREAK') !== false || strpos($t, 'SINGLE SHOT') !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Rifles', 'Single Shot / Break Action'];
+            }
+            return [CategorySchema::CAT_FIREARMS, 'Other / Specialty'];
+        }
+
+        // Shotgun family.
+        if (strpos($t, 'SHOTGUN:') === 0) {
+            if (strpos($t, 'BOLT') !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Bolt Action'];
+            }
+            if (strpos($t, 'LEVER') !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Lever Action'];
+            }
+            if (strpos($t, 'PUMP') !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Pump Action'];
+            }
+            if (strpos($t, 'SEMI AUTO') !== false || strpos($t, 'SEMI-AUTO') !== false || strpos($t, 'SEMI-AUTOMATIC') !== false) {
+                return [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Semi-Auto'];
+            }
+            if (
+                strpos($t, 'BREAK') !== false ||
+                strpos($t, 'SINGLE SHOT') !== false ||
+                strpos($t, 'OVER AND UNDER') !== false ||
+                strpos($t, 'SIDE BY SIDE') !== false
+            ) {
+                return [CategorySchema::CAT_FIREARMS, 'Shotguns', 'Single Shot / Break Action'];
+            }
+            return [CategorySchema::CAT_FIREARMS, 'Other / Specialty'];
+        }
+
+        // Let caller/default rules put unknown values into uncategorized fallback.
+        return null;
+    }
+
 
 
 

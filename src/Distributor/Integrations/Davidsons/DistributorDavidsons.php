@@ -96,7 +96,7 @@ final class DistributorDavidsons extends DistributorBase
                 'sot_required'     => ['sot_required'],
                 'dropship_enabled' => ['dropship_enabled'],
             ],
-            [self::class, 'map_davidsons_category'],
+            static fn($raw_item_type): ?array => self::map_davidsons_category($raw_item_type),
             $lookup['normalized_upc'],
             $include_images
         );
@@ -188,7 +188,6 @@ final class DistributorDavidsons extends DistributorBase
             return null;
         }
 
-        // Reuse Zanders-style top-level category mapping as a conservative best effort.
-        return DistributorProductCategoryMapper::map_zanders($item_type);
+        return DistributorProductCategoryMapper::map_davidsons($item_type);
     }
 }
