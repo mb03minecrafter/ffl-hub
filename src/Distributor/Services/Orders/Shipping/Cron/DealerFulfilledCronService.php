@@ -454,6 +454,8 @@ final class DealerFulfilledCronService extends AbstractCronService
         $all_invoices   = !empty($result->all_invoices) ? implode(', ', $result->all_invoices) : '-';
         $shipping_service = trim((string) ($shipment->shipping_service ?? ''));
         $shipping_weight  = trim((string) ($shipment->shipping_weight ?? ''));
+        $added_tracking_links = $this->build_tracking_link_lines((array) $result->added_tracking, $shipping_service);
+        $all_tracking_links   = $this->build_tracking_link_lines((array) $result->all_tracking, $shipping_service);
 
         $body_lines = [
             'Dealer-fulfilled shipment update detected.',
@@ -469,6 +471,20 @@ final class DealerFulfilledCronService extends AbstractCronService
             'Service: ' . ($shipping_service !== '' ? $shipping_service : '-'),
             'Weight: ' . ($shipping_weight !== '' ? $shipping_weight : '-'),
         ];
+
+        if (!empty($added_tracking_links)) {
+            $body_lines[] = 'New Tracking Links:';
+            foreach ($added_tracking_links as $line) {
+                $body_lines[] = '- ' . $line;
+            }
+        }
+
+        if (!empty($all_tracking_links)) {
+            $body_lines[] = 'All Tracking Links:';
+            foreach ($all_tracking_links as $line) {
+                $body_lines[] = '- ' . $line;
+            }
+        }
 
         if ($edit_url !== '') {
             $body_lines[] = 'Edit Order: ' . $edit_url;
@@ -525,5 +541,100 @@ final class DealerFulfilledCronService extends AbstractCronService
     private function log_ctx(string $msg, array $ctx): void
     {
         DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
+    }
+
+    /**
+     * @param string[] $tracking_numbers
+     * @return string[]
+     */
+    private function build_tracking_link_lines(array $tracking_numbers, string $shipping_service): array
+    {
+        $lines = [];
+        $carrier_hint = self::normalize_carrier_hint($shipping_service);
+
+        foreach ($tracking_numbers as $tracking_raw) {
+            $tracking = trim((string) $tracking_raw);
+            if ($tracking === '') {
+                continue;
+            }
+
+            $carrier = $carrier_hint ?: self::infer_carrier_from_tracking($tracking);
+            $url = self::build_tracking_url($carrier, $tracking);
+            if ($url === '') {
+                continue;
+            }
+
+            $label = ($carrier !== null && $carrier !== '') ? $carrier : 'TRACK';
+            $lines[] = $label . ' ' . $tracking . ' -> ' . $url;
+        }
+
+        return $lines;
+    }
+
+    private static function normalize_carrier_hint(string $shipping_service): ?string
+    {
+        $v = strtoupper(trim($shipping_service));
+        if ($v === '') {
+            return null;
+        }
+
+        if (strpos($v, 'USPS') !== false || strpos($v, 'POSTAL') !== false) {
+            return 'USPS';
+        }
+
+        if (strpos($v, 'UPS') !== false) {
+            return 'UPS';
+        }
+
+        if (strpos($v, 'FEDEX') !== false || strpos($v, 'FED EX') !== false || strpos($v, 'FDX') !== false) {
+            return 'FEDEX';
+        }
+
+        return null;
+    }
+
+    private static function infer_carrier_from_tracking(string $tracking): ?string
+    {
+        $t = strtoupper(preg_replace('/[^A-Z0-9]/', '', $tracking) ?? '');
+        if ($t === '') {
+            return null;
+        }
+
+        if (strpos($t, '1Z') === 0) {
+            return 'UPS';
+        }
+
+        if (preg_match('/^9\d{15,29}$/', $t)) {
+            return 'USPS';
+        }
+
+        if (preg_match('/^\d{12}$|^\d{15}$|^\d{20}$|^\d{22}$/', $t)) {
+            return 'FEDEX';
+        }
+
+        return null;
+    }
+
+    private static function build_tracking_url(?string $carrier, string $tracking): string
+    {
+        $t = trim((string) $tracking);
+        if ($t === '') {
+            return '';
+        }
+
+        $carrier = strtoupper(trim((string) $carrier));
+        if ($carrier === 'UPS') {
+            return 'https://www.ups.com/track?tracknum=' . rawurlencode($t);
+        }
+
+        if ($carrier === 'USPS') {
+            return 'https://tools.usps.com/go/TrackConfirmAction?tLabels=' . rawurlencode($t);
+        }
+
+        if ($carrier === 'FEDEX') {
+            return 'https://www.fedex.com/fedextrack/?trknbr=' . rawurlencode($t);
+        }
+
+        return '';
     }
 }
