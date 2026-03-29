@@ -239,7 +239,8 @@ final class DavidsonsPortalInventoryClient
             }
 
             $first_line = strtok($body, "\r\n");
-            $is_expected_csv = is_string($first_line) && stripos($first_line, 'Item #') !== false;
+            $is_expected_csv = is_string($first_line)
+                && $this->matches_expected_csv_header((string) $first_line, $request_name);
             if (!$is_expected_csv) {
                 $this->log('Downloaded Davidson CSV but header did not match expected pattern.', [
                     'request_name' => $request_name,
@@ -555,6 +556,30 @@ final class DavidsonsPortalInventoryClient
         return strpos($head, '<!doctype html') === 0 || strpos($head, '<html') === 0;
     }
 
+    private function matches_expected_csv_header(string $firstLine, string $requestName): bool
+    {
+        $line = strtolower(trim($firstLine));
+        if ($line === '') {
+            return false;
+        }
+
+        // davidsons_quantity has a stricter known header shape.
+        if ($requestName === 'davidsons_quantity') {
+            return strpos($line, 'item_number') !== false
+                && strpos($line, 'upc_code') !== false
+                && strpos($line, 'quantity_nc') !== false
+                && strpos($line, 'quantity_az') !== false;
+        }
+
+        // davidsons_inventory historically starts with "Item #", but tolerate variants.
+        if ($requestName === 'davidsons_inventory') {
+            return strpos($line, 'item #') !== false || strpos($line, 'item_number') !== false;
+        }
+
+        // Fallback for unknown feed names.
+        return strpos($line, 'item') !== false && strpos($line, 'upc') !== false;
+    }
+
     private function truncate(string $value, int $max): string
     {
         $value = trim($value);
@@ -593,4 +618,3 @@ final class DavidsonsPortalInventoryClient
         DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $message, $ctx);
     }
 }
-

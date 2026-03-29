@@ -45,7 +45,7 @@ final class DavidsonsProductCronService extends AbstractTableCronService
 
     protected function get_interval_seconds(): int
     {
-        return HOUR_IN_SECONDS;
+        return DAY_IN_SECONDS;
     }
 
     public function get_action_group(): string
