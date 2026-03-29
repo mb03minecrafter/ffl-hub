@@ -93,7 +93,7 @@ class DavidsonsProductParser
 
             'ffl_required'         => $this->deduce_ffl_required($item_type),
             'sot_required'         => $this->deduce_sot_required($item_type),
-            'dropship_enabled'     => '1',
+            'dropship_enabled'     => '0',
             'dropship_block_reason' => '',
         ];
     }
@@ -188,4 +188,3 @@ class DavidsonsProductParser
         return preg_match('/SUPPRESSOR|SILENCER|NFA/', $t) ? '1' : '0';
     }
 }
-

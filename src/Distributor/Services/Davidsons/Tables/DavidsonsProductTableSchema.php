@@ -89,7 +89,7 @@ class DavidsonsProductTableSchema implements ProductSchemaInterface
             'shipping_weight' => 'DECIMAL(10,2) NULL',
             'ffl_required' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'sot_required' => 'TINYINT(1) NOT NULL DEFAULT 0',
-            'dropship_enabled' => 'TINYINT(1) NOT NULL DEFAULT 1',
+            'dropship_enabled' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'dropship_block_reason' => 'VARCHAR(255) NULL',
         ];
     }

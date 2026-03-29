@@ -97,7 +97,7 @@ final class DistributorDavidsons extends DistributorBase
             return null;
         }
 
-        return $this->build_payload_from_row(
+        $payload = $this->build_payload_from_row(
             $lookup['row'],
             [
                 'sku'              => ['davidsons_item_number', 'sku'],
@@ -119,6 +119,11 @@ final class DistributorDavidsons extends DistributorBase
             $lookup['normalized_upc'],
             $include_images
         );
+
+        // Davidson's is manual-order-only and does not support dropship lanes.
+        $payload->dropship_enabled = false;
+
+        return $payload;
     }
 
     /**

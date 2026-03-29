@@ -167,7 +167,7 @@ class DavidsonsProductImporterService
                                         THEN '1'
                                         ELSE '0'
                                     END,
-                dropship_enabled      = '1',
+                dropship_enabled      = '0',
                 dropship_block_reason = ''
         ";
 
@@ -384,4 +384,3 @@ class DavidsonsProductImporterService
         DebugLogUtil::log('FFLHUB_CRON_DEBUG', '[FFLHub][DavidsonsImporter]', $message);
     }
 }
-
