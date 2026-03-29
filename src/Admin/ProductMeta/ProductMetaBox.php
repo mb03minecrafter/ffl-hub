@@ -145,6 +145,20 @@ class ProductMetaBox
         $ffl_required = (string) $raw_required === '1' || $raw_required === 1 || $raw_required === true;
         $raw_sot_required = $product->get_meta(ProductMeta::FFLHUB_SOT_REQUIRED_META, true);
         $sot_required = (string) $raw_sot_required === '1' || $raw_sot_required === 1 || $raw_sot_required === true;
+        $raw_manual_shipping_override = $product->get_meta(ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, true);
+        $manual_shipping_override = self::is_truthy_meta($raw_manual_shipping_override);
+        $shipping_weight_input = self::normalize_decimal_for_input(
+            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true)
+        );
+        $shipping_length_input = self::normalize_decimal_for_input(
+            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, true)
+        );
+        $shipping_width_input = self::normalize_decimal_for_input(
+            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, true)
+        );
+        $shipping_height_input = self::normalize_decimal_for_input(
+            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, true)
+        );
 
         echo '<div style="margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb;">';
         echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;">';
@@ -166,6 +180,56 @@ class ProductMetaBox
         echo '</div>';
 
         // 🆕 Editable pricing controls
+        echo '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;">';
+        echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;">';
+        echo '<input id="fflhub_manual_shipping_override" type="checkbox" name="fflhub_manual_shipping_override" value="1" ' .
+            checked(true, $manual_shipping_override, false) .
+            ' />';
+        echo '<span style="font-weight:600;">' .
+            esc_html__('Manual Shipping Override', 'ffl-hub') .
+            '</span>';
+        echo '</label>';
+        echo '<span style="display:block;margin-top:4px;font-size:11px;color:#6b7280;">' .
+            esc_html__('When enabled, sync jobs will not overwrite these shipping values.', 'ffl-hub') .
+            '</span>';
+
+        echo '<p style="margin:8px 0 6px;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('Shipping Weight (oz)', 'ffl-hub') .
+            '</label>';
+        echo '<input id="fflhub_shipping_weight_manual" type="number" step="0.01" min="0" ' .
+            'name="fflhub_shipping_weight_manual" value="' . esc_attr($shipping_weight_input) . '" ' .
+            'style="width:100%;font-size:11px;" />';
+        echo '</p>';
+
+        echo '<p style="margin:0 0 6px;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('Shipping Length (in)', 'ffl-hub') .
+            '</label>';
+        echo '<input id="fflhub_shipping_length_manual" type="number" step="0.01" min="0" ' .
+            'name="fflhub_shipping_length_manual" value="' . esc_attr($shipping_length_input) . '" ' .
+            'style="width:100%;font-size:11px;" />';
+        echo '</p>';
+
+        echo '<p style="margin:0 0 6px;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('Shipping Width (in)', 'ffl-hub') .
+            '</label>';
+        echo '<input id="fflhub_shipping_width_manual" type="number" step="0.01" min="0" ' .
+            'name="fflhub_shipping_width_manual" value="' . esc_attr($shipping_width_input) . '" ' .
+            'style="width:100%;font-size:11px;" />';
+        echo '</p>';
+
+        echo '<p style="margin:0;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('Shipping Height (in)', 'ffl-hub') .
+            '</label>';
+        echo '<input id="fflhub_shipping_height_manual" type="number" step="0.01" min="0" ' .
+            'name="fflhub_shipping_height_manual" value="' . esc_attr($shipping_height_input) . '" ' .
+            'style="width:100%;font-size:11px;" />';
+        echo '</p>';
+        echo '</div>';
+
         $mode_raw = $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
         $mode     = ($mode_raw === '' && (string) $mode_raw !== '0')
             ? ProductMeta::MARKUP_MODE_GLOBAL
@@ -254,11 +318,35 @@ class ProductMetaBox
                     fixedEl.disabled = (mode !== MODE_FIXED_PRICE);
                 }
 
+                function applyManualShippingOverride() {
+                    var overrideEl = document.getElementById('fflhub_manual_shipping_override');
+                    if (!overrideEl) return;
+
+                    var fields = [
+                        document.getElementById('fflhub_shipping_weight_manual'),
+                        document.getElementById('fflhub_shipping_length_manual'),
+                        document.getElementById('fflhub_shipping_width_manual'),
+                        document.getElementById('fflhub_shipping_height_manual')
+                    ];
+
+                    var enabled = !!overrideEl.checked;
+                    fields.forEach(function(field) {
+                        if (field) {
+                            field.disabled = !enabled;
+                        }
+                    });
+                }
+
                 document.addEventListener('DOMContentLoaded', function() {
                     applyMode();
+                    applyManualShippingOverride();
                     var modeEl = document.getElementById('fflhub_markup_mode');
+                    var overrideEl = document.getElementById('fflhub_manual_shipping_override');
                     if (modeEl) {
                         modeEl.addEventListener('change', applyMode);
+                    }
+                    if (overrideEl) {
+                        overrideEl.addEventListener('change', applyManualShippingOverride);
                     }
                 });
             })();
@@ -308,6 +396,28 @@ class ProductMetaBox
         // SOT Required checkbox
         $sot_required = isset($_POST['fflhub_sot_required']) ? 1 : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required);
+
+        // Manual shipping override + values
+        $manual_shipping_override = isset($_POST['fflhub_manual_shipping_override']) ? 1 : 0;
+        $product->update_meta_data(ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, $manual_shipping_override);
+        if ($manual_shipping_override === 1) {
+            $product->update_meta_data(
+                ProductMeta::FFLHUB_SHIPPING_WEIGHT_META,
+                self::sanitize_shipping_decimal_post_value('fflhub_shipping_weight_manual')
+            );
+            $product->update_meta_data(
+                ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META,
+                self::sanitize_shipping_decimal_post_value('fflhub_shipping_length_manual')
+            );
+            $product->update_meta_data(
+                ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META,
+                self::sanitize_shipping_decimal_post_value('fflhub_shipping_width_manual')
+            );
+            $product->update_meta_data(
+                ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META,
+                self::sanitize_shipping_decimal_post_value('fflhub_shipping_height_manual')
+            );
+        }
 
         // Pricing mode
         $mode = isset($_POST['fflhub_markup_mode'])
@@ -373,5 +483,59 @@ class ProductMetaBox
                     . ' sale=' . $product->get_sale_price()
             );
         }
+    }
+
+    /**
+     * Normalize decimal product meta value for numeric input fields.
+     *
+     * @param mixed $value
+     */
+    private static function normalize_decimal_for_input($value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        $raw = trim((string) $value);
+        if ($raw === '' || !is_numeric($raw)) {
+            return '';
+        }
+
+        return rtrim(rtrim(wc_format_decimal((float) $raw, 4), '0'), '.');
+    }
+
+    /**
+     * Sanitize decimal shipping values posted from the meta box.
+     */
+    private static function sanitize_shipping_decimal_post_value(string $post_key): string
+    {
+        if (!isset($_POST[$post_key])) {
+            return '';
+        }
+
+        $raw = sanitize_text_field(wp_unslash($_POST[$post_key]));
+        $raw = trim((string) $raw);
+
+        if ($raw === '' || !is_numeric($raw)) {
+            return '';
+        }
+
+        $value = (float) $raw;
+        if ($value < 0) {
+            $value = 0.0;
+        }
+
+        return (string) wc_format_decimal($value, 4);
+    }
+
+    /**
+     * Normalize bool-like product meta values.
+     *
+     * @param mixed $value
+     */
+    private static function is_truthy_meta($value): bool
+    {
+        $normalized = strtolower(trim((string) $value));
+        return in_array($normalized, ['1', 'true', 'yes', 'y', 'on'], true);
     }
 }

@@ -443,6 +443,7 @@ class DistributorProductHelper
 
         $ffl_required = ($selected_product->ffl_required ?? false) ? 1 : 0;
         $sot_required = ($selected_product->sot_required ?? false) ? 1 : 0;
+        $manual_shipping_override = self::is_manual_shipping_override_enabled($product);
 
         /**
          * Only update meta if different (string-compare to avoid float noise).
@@ -493,10 +494,22 @@ class DistributorProductHelper
         $set_meta_if_diff(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required, 0);
         $set_meta_if_diff(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required, 0);
         $set_meta_if_diff(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled, 0);
-        $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length'], 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width'], 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height'], 4);
+
+        if (!$manual_shipping_override) {
+            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight, 4);
+            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length'], 4);
+            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width'], 4);
+            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height'], 4);
+        } else {
+            DebugLogUtil::log_ctx(
+                'FFLHUB_CRON_DEBUG',
+                'DistributorProductHelper',
+                'Skipping shipping meta sync because manual shipping override is enabled.',
+                [
+                    'product_id' => $product->get_id(),
+                ]
+            );
+        }
 
         return $changed;
     }
@@ -1046,6 +1059,16 @@ class DistributorProductHelper
         }
         $f = (float) $value;
         return $f > 0 ? $f : null;
+    }
+
+    /**
+     * Check whether manual shipping override is enabled on a product.
+     */
+    private static function is_manual_shipping_override_enabled(WC_Product $product): bool
+    {
+        $raw = $product->get_meta(ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, true);
+        $normalized = strtolower(trim((string) $raw));
+        return in_array($normalized, ['1', 'true', 'yes', 'y', 'on'], true);
     }
 
     /**
