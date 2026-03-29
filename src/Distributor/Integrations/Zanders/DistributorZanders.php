@@ -130,7 +130,14 @@ class DistributorZanders extends DistributorBase
 
 
     /**
-     * @return array{ok:bool,message:string,payload:array{username?:string,password?:string}}
+     * @return array{
+     *   ok:bool,
+     *   message:string,
+     *   lane:string,
+     *   username_key:string,
+     *   password_key:string,
+     *   payload:array{username?:string,password?:string}
+     * }
      */
     private function get_zanders_auth_for_lane(string $lane): array
     {
@@ -156,6 +163,9 @@ class DistributorZanders extends DistributorBase
             return [
                 'ok' => false,
                 'message' => "Missing Zanders SOAP creds for lane={$auth_lane} (keys: {$u_key}/{$p_key}).",
+                'lane' => $auth_lane,
+                'username_key' => $u_key,
+                'password_key' => $p_key,
                 'payload' => [],
             ];
         }
@@ -163,6 +173,9 @@ class DistributorZanders extends DistributorBase
         return [
             'ok' => true,
             'message' => 'OK',
+            'lane' => $auth_lane,
+            'username_key' => $u_key,
+            'password_key' => $p_key,
             'payload' => ['username' => $u, 'password' => $p],
         ];
     }
@@ -726,6 +739,15 @@ class DistributorZanders extends DistributorBase
         $this->log('Shipment poll: inferred lane', ['po' => $po_number, 'lane' => $lane, 'external_ids' => $external_ids]);
 
         $auth = $this->get_zanders_auth_for_lane($lane);
+        $this->log('Shipment poll: auth selection', [
+            'po'              => $po_number,
+            'inferred_lane'   => $lane,
+            'auth_lane'       => (string) ($auth['lane'] ?? ''),
+            'username_key'    => (string) ($auth['username_key'] ?? ''),
+            'password_key'    => (string) ($auth['password_key'] ?? ''),
+            'username_masked' => self::mask_value_for_log((string) ($auth['payload']['username'] ?? '')),
+            'auth_ok'         => (!empty($auth['ok']) ? 1 : 0),
+        ]);
         if (!is_array($auth) || empty($auth['ok']) || empty($auth['payload']) || !is_array($auth['payload'])) {
             return null;
         }
@@ -748,7 +770,13 @@ class DistributorZanders extends DistributorBase
                 $testing
             );
 
-            $raw[] = ['orderNumber' => $order_number, 'soap' => $soap];
+            $raw[] = [
+                'orderNumber'  => $order_number,
+                'inferredLane' => $lane,
+                'authLane'     => (string) ($auth['lane'] ?? ''),
+                'usernameKey'  => (string) ($auth['username_key'] ?? ''),
+                'soap'         => $soap,
+            ];
 
             if (empty($soap['ok'])) {
                 continue;
@@ -818,6 +846,35 @@ class DistributorZanders extends DistributorBase
         }
 
         return null;
+    }
+
+    private static function mask_value_for_log(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        if (strpos($value, '@') !== false) {
+            [$local, $domain] = array_pad(explode('@', $value, 2), 2, '');
+            return self::mask_local_part($local) . ($domain !== '' ? ('@' . $domain) : '');
+        }
+
+        return self::mask_local_part($value);
+    }
+
+    private static function mask_local_part(string $part): string
+    {
+        $part = trim($part);
+        $len  = strlen($part);
+        if ($len <= 2) {
+            return str_repeat('*', max(1, $len));
+        }
+        if ($len <= 4) {
+            return substr($part, 0, 1) . str_repeat('*', $len - 2) . substr($part, -1);
+        }
+
+        return substr($part, 0, 2) . str_repeat('*', $len - 4) . substr($part, -2);
     }
 
 

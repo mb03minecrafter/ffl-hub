@@ -2,8 +2,6 @@
 
 namespace FFLHub\Distributor\Services\Orders\Shipping\Cron;
 
-use WC_Order;
-
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorShipment;
@@ -90,7 +88,6 @@ final class DealerFulfilledCronService extends AbstractCronService
             'shipment_found'          => 0,
             'tracking_added'          => 0,
             'email_fired'             => 0,
-            'order_completed'         => 0,
             'skipped_invalid'         => 0,
             'skipped_no_po'           => 0,
             'skipped_suspended'       => 0,
@@ -99,7 +96,6 @@ final class DealerFulfilledCronService extends AbstractCronService
             'touch_failed'            => 0,
             'shipment_none'           => 0,
             'result_no_changes'       => 0,
-            'complete_skipped_status' => 0,
         ];
 
         $this->log_ctx('run_start', [
@@ -329,43 +325,6 @@ final class DealerFulfilledCronService extends AbstractCronService
                 ]);
             }
 
-            // Complete order if all shipped
-            try {
-                $all_shipped = OrderPlacementJobsRepository::are_all_success_jobs_shipped($this->jobs_table, $order_id);
-                $this->log_ctx('complete_check', [
-                    'order_id'    => $order_id,
-                    'all_shipped' => (bool) $all_shipped,
-                ]);
-
-                if ($all_shipped) {
-                    $order = wc_get_order($order_id);
-                    if ($order instanceof WC_Order) {
-                        $status = (string) $order->get_status();
-
-                        if ($order->has_status(['processing', 'on-hold'])) {
-                            $order->update_status('completed', 'FFL Hub: all distributor jobs have tracking numbers.');
-                            $stats['order_completed']++;
-
-                            $this->log_ctx('order_completed', [
-                                'order_id' => $order_id,
-                                'to'       => 'completed',
-                                'from'     => $status,
-                            ]);
-                        } else {
-                            $stats['complete_skipped_status']++;
-                            $this->log_ctx('complete_skip_status', [
-                                'order_id' => $order_id,
-                                'status'   => $status,
-                            ]);
-                        }
-                    }
-                }
-            } catch (\Throwable $e) {
-                $this->log_ctx('complete_exception', [
-                    'order_id' => $order_id,
-                    'err'      => $e->getMessage(),
-                ]);
-            }
         }
 
         $this->log_ctx('run_end', [
