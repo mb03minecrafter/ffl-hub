@@ -331,6 +331,19 @@ class DistributorHandler
                 $offer = $distributor->get_offer_by_upc($upc, $include_images);
             } catch (\Throwable $e) {
                 // Defensive: individual distributor failures should not break lookup.
+                // Log under admin debug so hidden lookup failures are diagnosable.
+                DebugLogUtil::log_ctx(
+                    'FFLHUB_ADMIN_DEBUG',
+                    '[FFLHub][DistributorHandler]',
+                    'UPC lookup distributor exception',
+                    [
+                        'upc' => $upc,
+                        'dist_id' => (string) $id,
+                        'include_images' => $include_images ? 1 : 0,
+                        'exception_class' => get_class($e),
+                        'exception_message' => (string) $e->getMessage(),
+                    ]
+                );
                 continue;
             }
 

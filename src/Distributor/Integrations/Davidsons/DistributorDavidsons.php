@@ -12,6 +12,7 @@ use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
+use FFLHub\Util\DebugLogUtil;
 
 /**
  * Davidson's runtime distributor.
@@ -115,7 +116,32 @@ final class DistributorDavidsons extends DistributorBase
             return null;
         }
 
-        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+        $table = $this->services->get_fulfillment_table();
+
+        // Primary exact lookup.
+        $row = $table->get_row_by_upc($normalized_upc);
+        if (!$row) {
+            // Fallbacks for common UPC formatting differences:
+            // - leading zero omitted by operator entry (11-digit input)
+            // - leading zero present in DB but not in search (or vice versa)
+            $candidates = $this->build_upc_lookup_candidates($normalized_upc);
+            foreach ($candidates as $candidate_upc) {
+                $row = $table->get_row_by_upc($candidate_upc);
+                if ($row) {
+                    DebugLogUtil::log_ctx(
+                        'FFLHUB_ADMIN_DEBUG',
+                        '[FFLHub][DistributorDavidsons]',
+                        'UPC lookup matched via fallback candidate',
+                        [
+                            'requested_upc' => $normalized_upc,
+                            'matched_upc' => $candidate_upc,
+                        ]
+                    );
+                    break;
+                }
+            }
+        }
+
         if (!$row) {
             return null;
         }
@@ -130,6 +156,25 @@ final class DistributorDavidsons extends DistributorBase
             'row'            => $row,
             'normalized_upc' => $normalized_upc,
         ];
+    }
+
+    /**
+     * Build non-primary UPC candidates for local-table lookups.
+     *
+     * @return array<int,string>
+     */
+    private function build_upc_lookup_candidates(string $normalized_upc): array
+    {
+        $candidates = [];
+        $len = strlen($normalized_upc);
+
+        if ($len === 11) {
+            $candidates[] = '0' . $normalized_upc;
+        } elseif ($len === 12 && strpos($normalized_upc, '0') === 0) {
+            $candidates[] = substr($normalized_upc, 1);
+        }
+
+        return $candidates;
     }
 
     /**
