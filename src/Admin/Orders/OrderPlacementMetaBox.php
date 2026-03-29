@@ -66,6 +66,8 @@ final class OrderPlacementMetaBox
 
         // Manual dealer-fulfilled shipment tracking update (admin-post)
         add_action('admin_post_fflhub_set_dealer_tracking', [$this, 'handle_set_dealer_tracking_post']);
+        // Manual dealer-fulfilled shipment tracking update (admin-ajax fallback for stacks blocking admin-post)
+        add_action('wp_ajax_fflhub_set_dealer_tracking', [$this, 'handle_set_dealer_tracking_post']);
     }
 
     public function register_metabox(): void
@@ -276,10 +278,10 @@ final class OrderPlacementMetaBox
         submit_button(
             'Apply Dealer Tracking',
             'primary',
-            'fflhub_apply_dealer_tracking',
-            false,
-            [
-                'formaction'    => admin_url('admin-post.php?action=fflhub_set_dealer_tracking'),
+                'fflhub_apply_dealer_tracking',
+                false,
+                [
+                'formaction'    => admin_url('admin-ajax.php?action=fflhub_set_dealer_tracking'),
                 'formmethod'    => 'post',
                 'formnovalidate' => 'formnovalidate',
             ]
