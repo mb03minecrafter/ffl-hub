@@ -137,7 +137,7 @@ class DistributorHandler
         $this->orderShippingCronService  = new ShippingCronService($this, $this->ordering_jobs_table);
         $log_step('new ShippingCronService');
 
-        $this->orderDealerFulfilledCronService = new DealerFulfilledCronService($this->ordering_jobs_table);
+        $this->orderDealerFulfilledCronService = new DealerFulfilledCronService($this, $this->ordering_jobs_table);
         $log_step('new DealerFulfilledCronService');
 
         $this->orderTrashJobsService = new OrderTrashJobsService($this->ordering_jobs_table);

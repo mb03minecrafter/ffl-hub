@@ -327,6 +327,96 @@ final class OrderPlacementJobsRepository
     }
 
     /**
+     * Select dealer-fulfilled jobs eligible for shipping polling.
+     *
+     * Eligible jobs:
+     * - status matches $status (typically JOB_STATUS_SUCCESS)
+     * - lane is dealer_fulfilled
+     * - merchant_po present
+     * - last_shipping_poll_at is NULL/zero or older than $poll_cutoff_mysql_utc
+     * - shipped_at is NULL/zero or newer than/equal to $ship_cutoff_mysql_utc
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param string                  $status Job status to include.
+     * @param string                  $poll_cutoff_mysql_utc Poll pacing cutoff.
+     * @param string                  $ship_cutoff_mysql_utc Recent-shipment cutoff.
+     * @param int                     $limit Max rows to return.
+     * @return OrderPlacementJobRow[] List of DTOs.
+     */
+    public static function find_jobs_for_dealer_shipping_poll(
+        OrderPlacementJobsTable $jobs_table,
+        string $status,
+        string $poll_cutoff_mysql_utc,
+        string $ship_cutoff_mysql_utc,
+        int $limit
+    ): array {
+        global $wpdb;
+
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return [];
+        }
+
+        $limit = max(1, (int) $limit);
+        $lane  = OrderPlacementKeysUtil::LANE_DEALER_FULFILLED;
+
+        $sql = $wpdb->prepare(
+            "
+            SELECT
+                id, order_id, job_key, dist_id, lane, status,
+                attempts, created_at, updated_at,
+                action_id, next_run_at,
+                last_step, last_error, last_codes_json,
+                done_at,
+                payload_json, validate_result_json, place_result_json,
+                merchant_po, external_order_ids_json, external_order_id,
+                shipped_at, tracking_numbers_json, invoice_numbers_json,
+                last_shipping_poll_at, shipping_service, shipping_weight, shipment_raw_json
+            FROM {$table}
+            WHERE
+                status = %s
+                AND lane = %s
+                AND merchant_po IS NOT NULL
+                AND merchant_po <> ''
+                AND (
+                    last_shipping_poll_at IS NULL
+                    OR last_shipping_poll_at = '0000-00-00 00:00:00'
+                    OR last_shipping_poll_at < %s
+                )
+                AND (
+                    shipped_at IS NULL
+                    OR shipped_at = '0000-00-00 00:00:00'
+                    OR shipped_at >= %s
+                )
+            ORDER BY
+                last_shipping_poll_at IS NULL DESC,
+                last_shipping_poll_at ASC,
+                id ASC
+            LIMIT %d
+            ",
+            (string) $status,
+            (string) $lane,
+            (string) $poll_cutoff_mysql_utc,
+            (string) $ship_cutoff_mysql_utc,
+            $limit
+        );
+
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $out[] = new OrderPlacementJobRow($row);
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * Returns true if all SUCCESS jobs for the order have at least one tracking number.
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
