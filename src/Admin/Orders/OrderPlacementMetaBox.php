@@ -737,15 +737,117 @@ final class OrderPlacementMetaBox
     }
 
     /**
-     * Handle manual dealer-fulfilled shipment tracking updates.
+     * Process dealer-tracking fields during normal Woo "Update order" saves.
      *
-     * Behavior:
-     * - applies one tracking number to ALL dealer-fulfilled rows on the order
-     * - stamps shipped_at (UTC now)
-     * - sets shipping_service (or N/A when blank)
-     * - writes placeholder values for non-polled fields (invoice/weight/raw marker)
-     * - triggers the same partial-shipment email action used by shipping polling
-     * - marks order completed when all SUCCESS jobs now have tracking
+     * Runs only when BOTH fields are present and non-empty.
+     *
+     * @param int $order_id
+     * @param mixed $order
+     */
+    public function handle_set_dealer_tracking_on_order_save($order_id, $order = null): void
+    {
+        $order_id = (int) $order_id;
+        if ($order_id <= 0) {
+            return;
+        }
+
+        if (isset(self::$dealer_tracking_save_guard[$order_id])) {
+            return;
+        }
+
+        if (!isset($_POST['fflhub_dealer_tracking_present'])) {
+            return;
+        }
+
+        $nonce = isset($_POST['fflhub_set_dealer_tracking_nonce'])
+            ? trim((string) sanitize_text_field(wp_unslash((string) $_POST['fflhub_set_dealer_tracking_nonce'])))
+            : '';
+        if ($nonce === '' || !wp_verify_nonce($nonce, 'fflhub_set_dealer_tracking_' . $order_id)) {
+            self::log_ctx('dealer_tracking save hook ABORT: invalid nonce', ['order_id' => $order_id]);
+            return;
+        }
+
+        $tracking_number = self::read_tracking_number_from_post();
+        $shipping_service = self::read_shipping_service_from_post();
+        if ($tracking_number === '' || $shipping_service === '') {
+            // Requirement: only run when BOTH tracking number and carrier are present.
+            self::log_ctx('dealer_tracking save hook SKIP: missing tracking/carrier fields', [
+                'order_id' => $order_id,
+                'has_tracking' => ($tracking_number !== '') ? 1 : 0,
+                'has_shipping_service' => ($shipping_service !== '') ? 1 : 0,
+            ]);
+            return;
+        }
+
+        self::$dealer_tracking_save_guard[$order_id] = true;
+        $result = $this->apply_dealer_tracking_update($order_id, $tracking_number, $shipping_service);
+
+        if (!empty($result['ok'])) {
+            if (class_exists('\WC_Admin_Meta_Boxes') && method_exists('\WC_Admin_Meta_Boxes', 'add_message')) {
+                $msg = sprintf(
+                    'Dealer tracking applied to %d row(s); shipment email fired %d time(s).',
+                    (int) ($result['updated'] ?? 0),
+                    (int) ($result['emails'] ?? 0)
+                );
+                \WC_Admin_Meta_Boxes::add_message($msg);
+            }
+            return;
+        }
+
+        if (class_exists('\WC_Admin_Meta_Boxes') && method_exists('\WC_Admin_Meta_Boxes', 'add_error')) {
+            \WC_Admin_Meta_Boxes::add_error((string) ($result['message'] ?? 'Dealer tracking update failed.'));
+        }
+    }
+
+    private static function read_tracking_number_from_post(): string
+    {
+        $candidates = [
+            'fflhub_dealer_tracking_number',
+            // Legacy/compat names (admin-post/old forms).
+            'tracking_number',
+            'fflhub_tracking_number',
+        ];
+
+        foreach ($candidates as $key) {
+            if (!isset($_POST[$key])) {
+                continue;
+            }
+
+            $value = trim((string) sanitize_text_field(wp_unslash((string) $_POST[$key])));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    private static function read_shipping_service_from_post(): string
+    {
+        $candidates = [
+            'fflhub_dealer_shipping_service',
+            // Legacy/compat names (admin-post/old forms).
+            'shipping_service',
+            'fflhub_shipping_service',
+            'carrier',
+        ];
+
+        foreach ($candidates as $key) {
+            if (!isset($_POST[$key])) {
+                continue;
+            }
+
+            $value = trim((string) sanitize_text_field(wp_unslash((string) $_POST[$key])));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Endpoint handler (admin-post / admin-ajax) retained for compatibility.
      */
     public function handle_set_dealer_tracking_post(): void
     {
@@ -755,7 +857,8 @@ final class OrderPlacementMetaBox
             'request_method' => $request_method,
             'order_id' => $raw_order_id,
             'has_post_order_id' => isset($_POST['order_id']) ? 1 : 0,
-            'has_tracking_number' => isset($_POST['tracking_number']) ? 1 : 0,
+            'has_tracking_number' => (self::read_tracking_number_from_post() !== '') ? 1 : 0,
+            'has_shipping_service' => (self::read_shipping_service_from_post() !== '') ? 1 : 0,
             'has_nonce' => isset($_POST['fflhub_set_dealer_tracking_nonce']) ? 1 : 0,
             'referer' => wp_get_referer() ?: '',
         ]);
@@ -787,42 +890,86 @@ final class OrderPlacementMetaBox
             return;
         }
 
-        $tracking_number = isset($_POST['tracking_number'])
-            ? trim((string) sanitize_text_field(wp_unslash((string) $_POST['tracking_number'])))
-            : '';
-        $shipping_service = isset($_POST['shipping_service'])
-            ? trim((string) sanitize_text_field(wp_unslash((string) $_POST['shipping_service'])))
-            : '';
-
-        if ($tracking_number === '') {
+        $tracking_number = self::read_tracking_number_from_post();
+        $shipping_service = self::read_shipping_service_from_post();
+        if ($tracking_number === '' || $shipping_service === '') {
             self::redirect_back_dealer_tracking($order_id, 'invalid', 0);
             return;
         }
 
-        if ($shipping_service === '') {
-            $shipping_service = 'N/A';
-        }
-
-        $order = wc_get_order($order_id);
-        if (!($order instanceof WC_Order)) {
-            self::log_ctx('dealer_tracking request ABORT: order not found', [
-                'order_id' => $order_id,
-            ]);
-            self::redirect_back_dealer_tracking($order_id, 'error', 0, 0, false, 'Order not found for dealer tracking update.');
+        $result = $this->apply_dealer_tracking_update($order_id, $tracking_number, $shipping_service);
+        if (!empty($result['ok'])) {
+            self::redirect_back_dealer_tracking(
+                $order_id,
+                'updated',
+                (int) ($result['updated'] ?? 0),
+                (int) ($result['emails'] ?? 0),
+                !empty($result['completed'])
+            );
             return;
         }
 
-        $dealer_job_keys = $this->get_dealer_fulfilled_job_keys($order);
-        if (empty($dealer_job_keys)) {
-            self::log_ctx('dealer_tracking request NOOP: no dealer job rows', [
-                'order_id' => $order_id,
-            ]);
+        $code = (string) ($result['code'] ?? '');
+        if ($code === 'no_rows') {
             self::redirect_back_dealer_tracking($order_id, 'no_rows', 0);
             return;
         }
 
-        $now_utc = self::now_mysql_utc_plus(0);
+        self::redirect_back_dealer_tracking(
+            $order_id,
+            'error',
+            0,
+            0,
+            false,
+            (string) ($result['message'] ?? 'Dealer tracking update failed.')
+        );
+    }
 
+    /**
+     * Apply dealer-tracking values to all dealer-fulfilled rows for an order.
+     *
+     * @return array{ok:bool,code:string,message:string,updated:int,emails:int,completed:bool}
+     */
+    private function apply_dealer_tracking_update(int $order_id, string $tracking_number, string $shipping_service): array
+    {
+        $tracking_number = trim($tracking_number);
+        $shipping_service = trim($shipping_service);
+        if ($tracking_number === '' || $shipping_service === '') {
+            return [
+                'ok' => false,
+                'code' => 'invalid',
+                'message' => 'Tracking number and shipping service are required.',
+                'updated' => 0,
+                'emails' => 0,
+                'completed' => false,
+            ];
+        }
+
+        $order = wc_get_order($order_id);
+        if (!($order instanceof WC_Order)) {
+            return [
+                'ok' => false,
+                'code' => 'order_not_found',
+                'message' => 'Order not found for dealer tracking update.',
+                'updated' => 0,
+                'emails' => 0,
+                'completed' => false,
+            ];
+        }
+
+        $dealer_job_keys = $this->get_dealer_fulfilled_job_keys($order);
+        if (empty($dealer_job_keys)) {
+            return [
+                'ok' => false,
+                'code' => 'no_rows',
+                'message' => 'No dealer-fulfilled job rows were found for this order.',
+                'updated' => 0,
+                'emails' => 0,
+                'completed' => false,
+            ];
+        }
+
+        $now_utc = self::now_mysql_utc_plus(0);
         $tracking_json = self::safe_json_encode([$tracking_number], '[]');
         $invoice_json  = self::safe_json_encode(['N/A'], '[]');
         $shipment_raw_json = self::safe_json_encode([
@@ -846,10 +993,6 @@ final class OrderPlacementMetaBox
 
                 $job_row = OrderPlacementJobsRepository::get_job($this->jobs_table, $order_id, $job_key_norm);
                 if ($job_row === null) {
-                    self::log_ctx('dealer_tracking row skip: job row missing', [
-                        'order_id' => $order_id,
-                        'job_key' => $job_key_norm,
-                    ]);
                     continue;
                 }
 
@@ -923,8 +1066,14 @@ final class OrderPlacementMetaBox
                 'exception_class' => get_class($e),
                 'exception_message' => $e->getMessage(),
             ]);
-            self::redirect_back_dealer_tracking($order_id, 'error', 0, 0, false, 'Dealer tracking update failed during processing. Check logs.');
-            return;
+            return [
+                'ok' => false,
+                'code' => 'exception',
+                'message' => 'Dealer tracking update failed during processing. Check logs.',
+                'updated' => $updated,
+                'emails' => $emails_fired,
+                'completed' => false,
+            ];
         }
 
         $did_complete_order = false;
@@ -947,7 +1096,14 @@ final class OrderPlacementMetaBox
             'did_complete_order' => $did_complete_order ? 1 : 0,
         ]);
 
-        self::redirect_back_dealer_tracking($order_id, 'updated', $updated, $emails_fired, $did_complete_order);
+        return [
+            'ok' => true,
+            'code' => 'updated',
+            'message' => 'Dealer tracking applied.',
+            'updated' => $updated,
+            'emails' => $emails_fired,
+            'completed' => $did_complete_order,
+        ];
     }
 
     /**
