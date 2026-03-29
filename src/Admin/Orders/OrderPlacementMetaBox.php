@@ -242,10 +242,10 @@ final class OrderPlacementMetaBox
         echo self::kv('Job keys', '<span class="fflhub-mono">' . esc_html($job_keys_preview) . '</span>');
         echo '</div>';
 
-        // Keep validation server-side in admin-post handler so this metabox never blocks normal order saves.
-        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:12px;" novalidate>';
-        wp_nonce_field('fflhub_set_dealer_tracking_' . $order_id);
-        echo '<input type="hidden" name="action" value="fflhub_set_dealer_tracking" />';
+        // Submit through the existing order edit form using explicit button action.
+        // This avoids nested form issues inside Woo order admin screens.
+        echo '<div style="margin-top:12px;">';
+        wp_nonce_field('fflhub_set_dealer_tracking_' . $order_id, 'fflhub_set_dealer_tracking_nonce', false);
         echo '<input type="hidden" name="order_id" value="' . esc_attr((string) $order_id) . '" />';
 
         echo '<p>';
@@ -260,8 +260,18 @@ final class OrderPlacementMetaBox
 
         echo '<p class="description">This sets <code>shipped_at</code>, <code>tracking_numbers_json</code>, and <code>shipping_service</code> for every dealer-fulfilled job row on this order.</p>';
 
-        submit_button('Apply Dealer Tracking', 'primary', 'submit', false);
-        echo '</form>';
+        submit_button(
+            'Apply Dealer Tracking',
+            'primary',
+            'fflhub_apply_dealer_tracking',
+            false,
+            [
+                'formaction'    => admin_url('admin-post.php?action=fflhub_set_dealer_tracking'),
+                'formmethod'    => 'post',
+                'formnovalidate' => 'formnovalidate',
+            ]
+        );
+        echo '</div>';
 
         echo '</div>';
         echo '</div>';
@@ -741,7 +751,12 @@ final class OrderPlacementMetaBox
             wp_die('Missing order_id.');
         }
 
-        check_admin_referer('fflhub_set_dealer_tracking_' . $order_id);
+        $nonce = isset($_POST['fflhub_set_dealer_tracking_nonce'])
+            ? trim((string) sanitize_text_field(wp_unslash((string) $_POST['fflhub_set_dealer_tracking_nonce'])))
+            : '';
+        if ($nonce === '' || !wp_verify_nonce($nonce, 'fflhub_set_dealer_tracking_' . $order_id)) {
+            wp_die('Invalid request nonce.');
+        }
 
         $tracking_number = isset($_POST['tracking_number'])
             ? trim((string) sanitize_text_field(wp_unslash((string) $_POST['tracking_number'])))
