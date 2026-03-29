@@ -58,6 +58,7 @@ final class Options
     public const OPTION_USPS_RATE_INDICATOR           = 'fflhub_usps_rate_indicator';
     public const OPTION_USPS_PRICE_TYPE               = 'fflhub_usps_price_type';
     public const OPTION_USPS_TIMEOUT_SEC              = 'fflhub_usps_timeout_sec';
+    public const OPTION_USPS_TARE_WEIGHT_OZ           = 'fflhub_usps_tare_weight_oz';
 
     /* -------------------------------------------------------------------------
      * Defaults
@@ -83,6 +84,7 @@ final class Options
     private const DEFAULT_USPS_RATE_INDICATOR           = '';
     private const DEFAULT_USPS_PRICE_TYPE               = 'COMMERCIAL';
     private const DEFAULT_USPS_TIMEOUT_SEC              = 8;
+    private const DEFAULT_USPS_TARE_WEIGHT_OZ           = 0.0;
 
     /* -------------------------------------------------------------------------
      * Settings groups (WP Settings API)
@@ -216,6 +218,11 @@ final class Options
         return self::DEFAULT_USPS_TIMEOUT_SEC;
     }
 
+    public static function default_usps_tare_weight_oz(): float
+    {
+        return self::DEFAULT_USPS_TARE_WEIGHT_OZ;
+    }
+
     /* -------------------------------------------------------------------------
      * Initialization
      * ---------------------------------------------------------------------- */
@@ -291,6 +298,9 @@ final class Options
         }
         if (get_option(self::OPTION_USPS_TIMEOUT_SEC, null) === null) {
             add_option(self::OPTION_USPS_TIMEOUT_SEC, (string) self::DEFAULT_USPS_TIMEOUT_SEC);
+        }
+        if (get_option(self::OPTION_USPS_TARE_WEIGHT_OZ, null) === null) {
+            add_option(self::OPTION_USPS_TARE_WEIGHT_OZ, (string) self::DEFAULT_USPS_TARE_WEIGHT_OZ);
         }
 
         self::sync_distributor_state();
@@ -519,6 +529,25 @@ final class Options
         if ($v <= 0) {
             $v = self::DEFAULT_USPS_TIMEOUT_SEC;
         }
+        return $v;
+    }
+
+    public static function get_usps_tare_weight_oz(): float
+    {
+        $raw = (string) get_option(self::OPTION_USPS_TARE_WEIGHT_OZ, (string) self::DEFAULT_USPS_TARE_WEIGHT_OZ);
+        if (!is_numeric($raw)) {
+            $raw = trim((string) preg_replace('/[^0-9.\-]/', '', $raw));
+        }
+
+        if ($raw === '' || !is_numeric($raw)) {
+            return self::DEFAULT_USPS_TARE_WEIGHT_OZ;
+        }
+
+        $v = (float) $raw;
+        if (!is_finite($v) || $v < 0.0) {
+            return self::DEFAULT_USPS_TARE_WEIGHT_OZ;
+        }
+
         return $v;
     }
 

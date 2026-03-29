@@ -13,12 +13,14 @@ if (!defined('ABSPATH')) {
  *
  * Responsibilities:
  * - Hold the set of offers keyed by distributor_id.
- * - Precompute (once) the cheapest offer overall and the cheapest offer that is in stock.
+ * - Precompute (once) the best offer overall and best in-stock offer.
+ *   Priority: drop-ship enabled first, then true_cost-based comparison.
  * - Provide a deterministic "best default" selection for UI/business logic.
  *
  * Notes / invariants:
  * - Offers are expected to be a map of distributor_id => DistributorOffer.
- * - Computation uses DistributorOffer::get_true_cost() for comparisons.
+ * - Computation compares DistributorOffer::get_true_cost() only after
+ *   drop-ship-enabled preference has been applied.
  * - Offers with missing/invalid true_cost are ignored for "cheapest" computations.
  * - "In stock" is defined by DistributorOffer::is_in_stock().
  * - No sorting or mutation of the offers map is performed.
@@ -38,12 +40,12 @@ final class UpcLookupResult
     private array $offers;
 
     /**
-     * Cheapest offer by true_cost among all offers (may include out-of-stock offers).
+     * Best offer among all offers (may include out-of-stock offers).
      */
     private ?DistributorOffer $cheapest_any = null;
 
     /**
-     * Cheapest offer by true_cost among offers currently in stock.
+     * Best offer among offers currently in stock.
      */
     private ?DistributorOffer $cheapest_in_stock = null;
 
@@ -87,7 +89,7 @@ final class UpcLookupResult
     }
 
     /**
-     * Cheapest offer by true_cost (may be out of stock), or null if none were comparable.
+     * Best offer (may be out of stock), or null if none were comparable.
      */
     public function cheapest_any(): ?DistributorOffer
     {
@@ -95,7 +97,7 @@ final class UpcLookupResult
     }
 
     /**
-     * Cheapest in-stock offer by true_cost, or null if none are in stock/comparable.
+     * Best in-stock offer, or null if none are in stock/comparable.
      */
     public function cheapest_in_stock(): ?DistributorOffer
     {
@@ -124,7 +126,8 @@ final class UpcLookupResult
      * Compute cheapest offers once.
      *
      * Comparison key:
-     * - DistributorOffer::get_true_cost() (null => not comparable)
+     * - First: DistributorProductPayload::dropship_enabled (true preferred)
+     * - Then: DistributorOffer::get_true_cost() (null => not comparable)
      *
      * In-stock determination:
      * - DistributorOffer::is_in_stock()
@@ -174,6 +177,15 @@ final class UpcLookupResult
             return true;
         }
 
+        // Product creation + sync policy:
+        // Always prefer drop-ship eligible offers over non-drop-ship offers.
+        $candidate_dropship = $this->offer_dropship_enabled($candidate_offer);
+        $current_dropship   = $this->offer_dropship_enabled($current_offer);
+
+        if ($candidate_dropship !== $current_dropship) {
+            return $candidate_dropship;
+        }
+
         if ($this->is_rsr_zanders_pair($candidate_offer, $current_offer)) {
             $delta = abs($candidate_cost - (float) $current_cost);
             if ($delta <= (self::RSR_ZANDERS_PREFERENCE_DELTA + self::FLOAT_EPSILON)) {
@@ -205,5 +217,10 @@ final class UpcLookupResult
     private function offer_dist_id(DistributorOffer $offer): string
     {
         return strtolower(trim((string) $offer->distributor_id));
+    }
+
+    private function offer_dropship_enabled(DistributorOffer $offer): bool
+    {
+        return (bool) ($offer->product->dropship_enabled ?? false);
     }
 }

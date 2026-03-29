@@ -65,7 +65,12 @@ final class USPSRateHelper
             return $this->error_result('missing_destination_zip', 'USPS destination ZIP is missing.');
         }
 
-        $weight_oz = $this->to_non_negative_float($args['weight_oz'] ?? 0.0, 0.0);
+        $base_weight_oz = $this->to_non_negative_float($args['weight_oz'] ?? 0.0, 0.0);
+        $tare_weight_oz = $this->to_non_negative_float($cfg['tare_weight_oz'] ?? 0.0, 0.0);
+        $weight_oz = $base_weight_oz;
+        if ($weight_oz > 0.0 && $tare_weight_oz > 0.0) {
+            $weight_oz += $tare_weight_oz;
+        }
         if ($weight_oz <= 0.0) {
             return [
                 'ok'          => true,
@@ -196,6 +201,9 @@ final class USPSRateHelper
 
         $this->log('rate.ok', [
             'destination_zip' => $destination_zip,
+            'base_weight_oz'  => $base_weight_oz,
+            'tare_weight_oz'  => $tare_weight_oz,
+            'quoted_weight_oz'=> $weight_oz,
             'weight_lb'       => $weight_lb,
             'dims_in'         => sprintf('%.2fx%.2fx%.2f', $length_in, $width_in, $height_in),
             'mail_class'      => (string) $result['mail_class'],
@@ -354,6 +362,10 @@ final class USPSRateHelper
             'rate_indicator'                  => $this->read_string('FFLHUB_USPS_RATE_INDICATOR', 'fflhub_usps_rate_indicator', ''),
             'price_type'                      => $price_type,
             'timeout_sec'                     => (int) ($shared_cfg['timeout_sec'] ?? 8),
+            'tare_weight_oz'                  => $this->to_non_negative_float(
+                $this->read_string('FFLHUB_USPS_TARE_WEIGHT_OZ', 'fflhub_usps_tare_weight_oz', '0'),
+                0.0
+            ),
         ];
     }
 

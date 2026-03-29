@@ -236,6 +236,16 @@ final class SettingsRegistrar
                 'default'           => (string) Options::default_usps_timeout_sec(),
             ]
         );
+
+        register_setting(
+            $group,
+            Options::OPTION_USPS_TARE_WEIGHT_OZ,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_non_negative_decimal_string'],
+                'default'           => (string) Options::default_usps_tare_weight_oz(),
+            ]
+        );
     }
 
     /* -------------------------------------------------------------------------
@@ -336,6 +346,21 @@ final class SettingsRegistrar
         $num = (int) $value;
         if ($num < 0) {
             $num = 0;
+        }
+        return (string) $num;
+    }
+
+    /**
+     * Non-negative decimal sanitizer.
+     *
+     * @param mixed $value
+     */
+    public static function sanitize_non_negative_decimal_string($value): string
+    {
+        $value = preg_replace('/[^0-9.\-]/', '', (string) $value);
+        $num = is_numeric($value) ? (float) $value : 0.0;
+        if ($num < 0.0 || !is_finite($num)) {
+            $num = 0.0;
         }
         return (string) $num;
     }

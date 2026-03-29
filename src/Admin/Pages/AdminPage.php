@@ -186,6 +186,7 @@ class AdminPage
             'usps_rate_indicator'   => (string) Options::get_usps_rate_indicator(),
             'usps_price_type'       => (string) Options::get_usps_price_type(),
             'usps_timeout_sec'      => (string) Options::get_usps_timeout_sec(),
+            'usps_tare_weight_oz'   => (string) Options::get_usps_tare_weight_oz(),
         ];
 ?>
         <div class="wrap fflhub-wrap">
@@ -482,6 +483,7 @@ class AdminPage
         $usps_rate_indicator   = (string) ($settings['usps_rate_indicator'] ?? '');
         $usps_price_type       = (string) ($settings['usps_price_type'] ?? '');
         $usps_timeout_sec      = (string) ($settings['usps_timeout_sec'] ?? '');
+        $usps_tare_weight_oz   = (string) ($settings['usps_tare_weight_oz'] ?? '0');
     ?>
         <div class="fflhub-distributor-settings-wrapper">
             <h2><?php esc_html_e('USPS Settings', 'ffl-hub'); ?></h2>
@@ -716,6 +718,22 @@ class AdminPage
                                     class="small-text"
                                     value="<?php echo esc_attr($usps_timeout_sec); ?>" />
                                 <p class="description"><?php esc_html_e('HTTP timeout for USPS token/rate requests.', 'ffl-hub'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">
+                                <label for="fflhub_usps_tare_weight_oz"><?php esc_html_e('Tare Weight (oz)', 'ffl-hub'); ?></label>
+                            </th>
+                            <td>
+                                <input
+                                    id="fflhub_usps_tare_weight_oz"
+                                    name="fflhub_usps_tare_weight_oz"
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    class="small-text"
+                                    value="<?php echo esc_attr($usps_tare_weight_oz); ?>" />
+                                <p class="description"><?php esc_html_e('Added to each USPS package quote weight to account for packaging materials.', 'ffl-hub'); ?></p>
                             </td>
                         </tr>
                     </tbody>
