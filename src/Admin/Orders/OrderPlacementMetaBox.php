@@ -242,14 +242,15 @@ final class OrderPlacementMetaBox
         echo self::kv('Job keys', '<span class="fflhub-mono">' . esc_html($job_keys_preview) . '</span>');
         echo '</div>';
 
-        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:12px;">';
+        // Keep validation server-side in admin-post handler so this metabox never blocks normal order saves.
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:12px;" novalidate>';
         wp_nonce_field('fflhub_set_dealer_tracking_' . $order_id);
         echo '<input type="hidden" name="action" value="fflhub_set_dealer_tracking" />';
         echo '<input type="hidden" name="order_id" value="' . esc_attr((string) $order_id) . '" />';
 
         echo '<p>';
         echo '<label for="fflhub_dealer_tracking_number"><strong>Tracking Number</strong></label><br />';
-        echo '<input id="fflhub_dealer_tracking_number" name="tracking_number" type="text" class="regular-text" required />';
+        echo '<input id="fflhub_dealer_tracking_number" name="tracking_number" type="text" class="regular-text" />';
         echo '</p>';
 
         echo '<p>';
