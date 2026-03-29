@@ -33,6 +33,8 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
     private const DOWNLOAD_FILE = 'davidsons_quantity.csv';
     private const DOWNLOAD_COOLDOWN_SECONDS = 300;
     private const STAGE_TABLE_SUFFIX = 'fflhub_davidsons_qty_stage';
+    private const FORCE_NO_COOLDOWN_CONST  = 'FFLHUB_DAVIDSONS_INVENTORY_FORCE_NO_COOLDOWN';
+    private const FORCE_NO_COOLDOWN_OPTION = 'fflhub_davidsons_inventory_force_no_cooldown';
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -71,14 +73,23 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
         $last_inventory_download = (int) get_option('fflhub_davidsons_inventory_last_download_ts', 0);
         $last_full_download = (int) get_option('fflhub_davidsons_fulfillment_last_download_ts', 0);
         $last_any_download = max($last_inventory_download, $last_full_download);
+        $force_no_cooldown = $this->should_force_no_cooldown();
 
-        if ($last_any_download > 0 && ($now - $last_any_download) < self::DOWNLOAD_COOLDOWN_SECONDS) {
+        if (!$force_no_cooldown && $last_any_download > 0 && ($now - $last_any_download) < self::DOWNLOAD_COOLDOWN_SECONDS) {
             $this->log('Skipping Davidson inventory download due to cooldown.', [
                 'cooldown_seconds' => self::DOWNLOAD_COOLDOWN_SECONDS,
                 'last_download_ts' => $last_any_download,
                 'age_seconds'      => $now - $last_any_download,
             ]);
             return;
+        }
+
+        if ($force_no_cooldown) {
+            $this->log('FORCE_NO_COOLDOWN enabled - bypassing Davidson inventory cooldown gate.', [
+                'cooldown_seconds' => self::DOWNLOAD_COOLDOWN_SECONDS,
+                'last_download_ts' => $last_any_download,
+                'age_seconds'      => $last_any_download > 0 ? ($now - $last_any_download) : null,
+            ]);
         }
 
         $creds = $this->get_portal_credentials();
@@ -357,6 +368,26 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
             'drop_ms'        => '0.00',
             'total_ms'       => '0.00',
         ];
+    }
+
+    private function should_force_no_cooldown(): bool
+    {
+        if (defined(self::FORCE_NO_COOLDOWN_CONST) && (bool) constant(self::FORCE_NO_COOLDOWN_CONST)) {
+            return true;
+        }
+
+        $raw = get_option(self::FORCE_NO_COOLDOWN_OPTION, false);
+        $enabled = false;
+
+        if (is_bool($raw)) {
+            $enabled = $raw;
+        } elseif (is_numeric($raw)) {
+            $enabled = ((int) $raw) === 1;
+        } elseif (is_string($raw)) {
+            $enabled = in_array(strtolower(trim($raw)), ['1', 'true', 'yes', 'on'], true);
+        }
+
+        return (bool) apply_filters('fflhub_davidsons_inventory_force_no_cooldown', $enabled);
     }
 
     /**
