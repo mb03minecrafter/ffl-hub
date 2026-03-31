@@ -72,6 +72,7 @@ class ProductMeta
     public const FFLHUB_SHIPPING_WIDTH_IN_META  = '_fflhub_shipping_width_in';
     public const FFLHUB_SHIPPING_HEIGHT_IN_META = '_fflhub_shipping_height_in';
     public const FFLHUB_MANUAL_SHIPPING_OVERRIDE_META = '_fflhub_manual_shipping_override';
+    public const FFLHUB_STOCK_OOS_OVERRIDE_META = '_fflhub_stock_oos_override';
 
     // BOM / build product metadata
     public const FFLHUB_BOM_ENABLED_META = '_fflhub_bom_enabled';

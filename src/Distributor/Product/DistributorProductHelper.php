@@ -407,6 +407,7 @@ class DistributorProductHelper
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, ProductMeta::MARKUP_MODE_GLOBAL);
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, 0);
         $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
+        $product->update_meta_data(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, 0);
 
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost);
 

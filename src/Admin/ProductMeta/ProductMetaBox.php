@@ -145,6 +145,8 @@ class ProductMetaBox
         $ffl_required = (string) $raw_required === '1' || $raw_required === 1 || $raw_required === true;
         $raw_sot_required = $product->get_meta(ProductMeta::FFLHUB_SOT_REQUIRED_META, true);
         $sot_required = (string) $raw_sot_required === '1' || $raw_sot_required === 1 || $raw_sot_required === true;
+        $raw_stock_oos_override = $product->get_meta(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true);
+        $stock_oos_override = self::is_truthy_meta($raw_stock_oos_override);
         $raw_manual_shipping_override = $product->get_meta(ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, true);
         $manual_shipping_override = self::is_truthy_meta($raw_manual_shipping_override);
         $shipping_weight_input = self::normalize_decimal_for_input(
@@ -177,6 +179,17 @@ class ProductMetaBox
             esc_html__('SOT Required', 'ffl-hub') .
             '</span>';
         echo '</label>';
+        echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;margin-top:6px;">';
+        echo '<input type="checkbox" name="fflhub_stock_oos_override" value="1" ' .
+            checked(true, $stock_oos_override, false) .
+            ' />';
+        echo '<span style="font-weight:600;">' .
+            esc_html__('Out of Stock Override', 'ffl-hub') .
+            '</span>';
+        echo '</label>';
+        echo '<span style="display:block;margin-top:4px;font-size:11px;color:#6b7280;">' .
+            esc_html__('When enabled, sync jobs will not overwrite stock quantity or stock status.', 'ffl-hub') .
+            '</span>';
         echo '</div>';
 
         // 🆕 Editable pricing controls
@@ -396,6 +409,10 @@ class ProductMetaBox
         // SOT Required checkbox
         $sot_required = isset($_POST['fflhub_sot_required']) ? 1 : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required);
+
+        // Out of stock override
+        $stock_oos_override = isset($_POST['fflhub_stock_oos_override']) ? 1 : 0;
+        $product->update_meta_data(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, $stock_oos_override);
 
         // Manual shipping override + values
         $manual_shipping_override = isset($_POST['fflhub_manual_shipping_override']) ? 1 : 0;
