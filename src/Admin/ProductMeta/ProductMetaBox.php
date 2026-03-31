@@ -413,6 +413,11 @@ class ProductMetaBox
         // Out of stock override
         $stock_oos_override = isset($_POST['fflhub_stock_oos_override']) ? 1 : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, $stock_oos_override);
+        if ($stock_oos_override === 1) {
+            $product->set_manage_stock(true);
+            $product->set_stock_quantity(0);
+            $product->set_stock_status('outofstock');
+        }
 
         // Manual shipping override + values
         $manual_shipping_override = isset($_POST['fflhub_manual_shipping_override']) ? 1 : 0;
