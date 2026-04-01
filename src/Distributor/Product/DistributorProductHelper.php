@@ -143,7 +143,7 @@ class DistributorProductHelper
         if ($recommended_price === null || $recommended_price <= 0) {
             $error_message = __('Could not compute a valid retail price for this product.', 'ffl-hub');
             if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-                $error_message = __('MAP Price mode requires a valid MAP value for this product.', 'ffl-hub');
+                $error_message = __('MAP Price mode requires a valid MAP or MSRP value for this product.', 'ffl-hub');
             }
 
             return new WP_Error(
@@ -902,7 +902,7 @@ class DistributorProductHelper
     /**
      * Resolve initial creation-time sell price for a payload.
      *
-     * - MAP Price mode: sell price equals payload MAP
+     * - MAP Price mode: sell price equals payload MAP (fallback to payload MSRP)
      * - Other modes: use global recommended price
      */
     private static function get_creation_sell_price_from_payload(
@@ -910,7 +910,10 @@ class DistributorProductHelper
         int $default_markup_mode
     ): ?float {
         if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            return self::to_positive_float($selected_product->map ?? null);
+            return self::resolve_map_mode_sell_price(
+                $selected_product->map ?? null,
+                $selected_product->msrp ?? null
+            );
         }
 
         return self::get_recommended_price_from_payload($selected_product);
@@ -936,7 +939,7 @@ class DistributorProductHelper
         }
 
         if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            return self::to_positive_float($payload->map ?? null);
+            return self::resolve_map_mode_sell_price($payload->map ?? null, $payload->msrp ?? null);
         }
 
         $pct = $settings['effective_percent'] ?? null;
@@ -1047,7 +1050,7 @@ class DistributorProductHelper
      * Apply the stored admin pricing settings to the WooCommerce product price.
      *
       * - Fixed price mode: set that value directly
-      * - MAP price mode: set to LAST_MAP meta
+      * - MAP price mode: set to LAST_MAP meta (fallback to LAST_MSRP)
       * - Percent modes: base cost comes from LAST_TRUE_COST else LAST_DEALER_PRICE
       */
     public static function apply_admin_pricing_to_woo_product(int $product_id): void
@@ -1071,12 +1074,15 @@ class DistributorProductHelper
         }
 
         if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            $map = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true));
-            if ($map === null) {
+            $map_or_msrp = self::resolve_map_mode_sell_price(
+                $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true),
+                $msrp
+            );
+            if ($map_or_msrp === null) {
                 return;
             }
 
-            self::set_sell_price_and_save($product, $map, $msrp);
+            self::set_sell_price_and_save($product, $map_or_msrp, $msrp);
             return;
         }
 
@@ -1116,6 +1122,19 @@ class DistributorProductHelper
         }
         $f = (float) $value;
         return $f > 0 ? $f : null;
+    }
+
+    /**
+     * Resolve MAP mode sell price.
+     *
+     * MAP has priority. MSRP is used only when MAP is unavailable.
+     *
+     * @param mixed $map_raw
+     * @param mixed $msrp_raw
+     */
+    private static function resolve_map_mode_sell_price($map_raw, $msrp_raw): ?float
+    {
+        return self::to_positive_float($map_raw) ?? self::to_positive_float($msrp_raw);
     }
 
     /**
