@@ -395,7 +395,7 @@ class MapPriceVisibility
         ];
 
         $sent = wp_mail($recipient, $subject, $message, $headers);
-        $saved_job = self::insert_quote_email_job($product, $first_name, $last_name, $email, $sent);
+        $saved_job = self::insert_quote_email_job($product, $first_name, $last_name, $email);
         if (!$saved_job) {
             self::redirect_with_quote_status($redirect_url, 'mail_error');
         }
@@ -530,8 +530,7 @@ class MapPriceVisibility
         WC_Product $product,
         string $first_name,
         string $last_name,
-        string $email,
-        bool $email_sent
+        string $email
     ): bool {
         global $wpdb;
 
@@ -554,7 +553,9 @@ class MapPriceVisibility
                 'quote_product_name'   => $product_name,
                 'submitted_at'         => $submitted_at,
                 'random_delay_minutes' => $random_delay_minutes,
-                'email_sent'           => $email_sent ? 1 : 0,
+                // This flag tracks the delayed customer-facing quote email, not
+                // the immediate internal/store notification sent on form submit.
+                'email_sent'           => 0,
             ],
             [
                 '%s',
