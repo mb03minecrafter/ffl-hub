@@ -96,6 +96,9 @@ fflhub_define_bool('FFLHUB_DEBUG_BOOT', true);
 fflhub_define_bool('FFLHUB_ZANDERS_SOAP_DEBUG', true);
 fflhub_define_bool('FFLHUB_ZANDERS_DEBUG', true);
 
+// Quote email testing: when true, ignore random delay and send due jobs immediately.
+fflhub_define_bool('FFLHUB_QUOTE_EMAIL_FORCE_NO_DELAY', true);
+
 /**
  * -------------------------------------------------------------------------
  * i18n + Woo Checkout Requirements
@@ -123,10 +126,15 @@ add_action('init', function (): void {
  * same key is used consistently anywhere else we check for this email.
  */
 add_filter('woocommerce_email_classes', function (array $emails): array {
-    $class = \FFLHub\Woo\Emails\FFLHubPartialShipment::class;
+    $classes = [
+        \FFLHub\Woo\Emails\FFLHubPartialShipment::class,
+        \FFLHub\Woo\Emails\FFLHubQuoteOffer::class,
+    ];
 
-    if (!isset($emails[$class])) {
-        $emails[$class] = new $class();
+    foreach ($classes as $class) {
+        if (!isset($emails[$class])) {
+            $emails[$class] = new $class();
+        }
     }
 
     return $emails;
