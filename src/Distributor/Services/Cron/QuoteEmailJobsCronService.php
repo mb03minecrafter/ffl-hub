@@ -331,15 +331,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
     private function compute_coupon_amount_for_product(WC_Product $product): float
     {
-        $recommended = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true);
-        if ($recommended <= 0.0) {
-            $recommended = (float) $product->get_regular_price();
-        }
-        if ($recommended <= 0.0) {
-            $recommended = (float) $product->get_price();
-        }
-
-        $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
+        $recommended = $this->recommended_price_for_product($product);
+        $map = $this->map_price_for_product($product);
         if ($recommended <= 0.0 || $map <= 0.0) {
             return 0.0;
         }
@@ -487,6 +480,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $expires_display = ($expires_ts > 0)
             ? wp_date('F j, Y g:i A T', $expires_ts)
             : __('48 hours from now', 'ffl-hub');
+        $final_price_display = $this->final_price_display_for_product($product, $coupon_amount);
 
         $subjects = [
             sprintf(__('Your custom quote is ready for %s', 'ffl-hub'), $product_name),
@@ -505,6 +499,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'variant_index' => $variant_index,
             'rep_name' => $rep_name,
             'coupon_code' => $coupon_code,
+            'final_price' => $final_price_display,
         ]);
 
         return new QuoteOfferEmailContext(
@@ -517,8 +512,48 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             $product_url,
             $coupon_code,
             $coupon_amount_display,
+            $final_price_display,
             $expires_display
         );
+    }
+
+    private function recommended_price_for_product(WC_Product $product): float
+    {
+        $recommended = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true);
+        if ($recommended <= 0.0) {
+            $recommended = (float) $product->get_regular_price();
+        }
+        if ($recommended <= 0.0) {
+            $recommended = (float) $product->get_price();
+        }
+
+        return ($recommended > 0.0) ? $recommended : 0.0;
+    }
+
+    private function map_price_for_product(WC_Product $product): float
+    {
+        $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
+        return ($map > 0.0) ? $map : 0.0;
+    }
+
+    private function final_price_display_for_product(WC_Product $product, float $coupon_amount): string
+    {
+        $final_price = $this->recommended_price_for_product($product);
+        if ($final_price <= 0.0) {
+            $map = $this->map_price_for_product($product);
+            if ($map > 0.0 && $coupon_amount > 0.0) {
+                $derived = round($map - $coupon_amount, 2);
+                if ($derived > 0.0) {
+                    $final_price = $derived;
+                }
+            }
+        }
+
+        if ($final_price <= 0.0) {
+            return __('See checkout for final product price', 'ffl-hub');
+        }
+
+        return wp_strip_all_tags(wc_price($final_price));
     }
 
     private function dispatch_quote_offer_email(QuoteOfferEmailContext $context): bool

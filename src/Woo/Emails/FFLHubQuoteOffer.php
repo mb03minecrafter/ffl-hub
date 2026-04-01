@@ -31,6 +31,8 @@ final class FFLHubQuoteOffer extends WC_Email
         $this->template_plain = 'Plain/FFLHubQuoteOfferTemplateVariant1.php';
 
         parent::__construct();
+
+        add_filter('woocommerce_email_footer_text', [$this, 'filter_footer_text_for_quote_email'], 10, 2);
     }
 
     public function trigger(QuoteOfferEmailContext $context): bool
@@ -96,6 +98,20 @@ final class FFLHubQuoteOffer extends WC_Email
         return (string) ob_get_clean();
     }
 
+    /**
+     * Remove WooCommerce default footer text for this custom quote email only.
+     *
+     * @param mixed $email
+     */
+    public function filter_footer_text_for_quote_email(string $footer_text, $email = null): string
+    {
+        if ($email instanceof self) {
+            return '';
+        }
+
+        return $footer_text;
+    }
+
     private function variant_html_template(int $variant_index): string
     {
         if ($variant_index === 1) {
@@ -120,4 +136,3 @@ final class FFLHubQuoteOffer extends WC_Email
         return 'Plain/FFLHubQuoteOfferTemplateVariant1.php';
     }
 }
-

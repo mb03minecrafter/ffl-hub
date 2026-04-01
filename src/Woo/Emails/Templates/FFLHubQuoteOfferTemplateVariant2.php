@@ -24,11 +24,11 @@ do_action('woocommerce_email_header', $email_heading, $email);
 </p>
 
 <p style="margin:0 0 14px;">
-    <?php echo esc_html__('Thanks for contacting us about pricing. We appreciate the chance to earn your business.', 'ffl-hub'); ?>
+    <?php echo esc_html__('Thanks for checking in with us on pricing. I took a look at your quote request and got this ready for you.', 'ffl-hub'); ?>
 </p>
 
 <p style="margin:0 0 14px;">
-    <?php echo esc_html__('Your quote request was reviewed, and your personalized one-time promo code is active now.', 'ffl-hub'); ?>
+    <?php echo esc_html__('Your personalized promo code is active now and ready to use at checkout.', 'ffl-hub'); ?>
 </p>
 
 <div style="border:1px solid <?php echo esc_attr($brand_border); ?>;border-radius:8px;padding:18px;background:#ffffff;margin:18px 0;">
@@ -39,7 +39,10 @@ do_action('woocommerce_email_header', $email_heading, $email);
         <?php echo esc_html($context->coupon_code); ?>
     </p>
     <p style="margin:0 0 8px;">
-        <?php echo sprintf(esc_html__('Approved savings: %s', 'ffl-hub'), esc_html($context->coupon_amount_display)); ?>
+        <?php echo sprintf(esc_html__('Final product price: %s + shipping', 'ffl-hub'), esc_html($context->final_price_display)); ?>
+    </p>
+    <p style="margin:0 0 8px;">
+        <?php echo sprintf(esc_html__('Savings from code: %s', 'ffl-hub'), esc_html($context->coupon_amount_display)); ?>
     </p>
     <p style="margin:0 0 8px;">
         <?php echo sprintf(esc_html__('Quoted product: %s', 'ffl-hub'), esc_html($context->product_name)); ?>
@@ -57,15 +60,15 @@ do_action('woocommerce_email_header', $email_heading, $email);
 </p>
 
 <p style="margin:0 0 10px;font-size:13px;color:<?php echo esc_attr($brand_muted); ?>;">
-    <?php echo esc_html__('This offer is tied to your email and may only be redeemed once.', 'ffl-hub'); ?>
+    <?php echo esc_html__('Quick heads up: this code is only for your email, only for this product, and one-time use only. It expires in 48 hours.', 'ffl-hub'); ?>
 </p>
 
 <p style="margin:0;">
-    <?php echo esc_html__('Thank you for reaching out to our team.', 'ffl-hub'); ?><br>
+    <?php echo esc_html__('Reply here if you want help with checkout or shipping options.', 'ffl-hub'); ?><br><br>
+    <?php echo esc_html__('Appreciate you,', 'ffl-hub'); ?><br>
     <?php echo esc_html($context->rep_name); ?><br>
     <?php echo esc_html__('Sales Team, Bickham Firearms', 'ffl-hub'); ?>
 </p>
 
 <?php
 do_action('woocommerce_email_footer', $email);
-

@@ -20,6 +20,7 @@ final class QuoteOfferEmailContext
     public string $product_url;
     public string $coupon_code;
     public string $coupon_amount_display;
+    public string $final_price_display;
     public string $expires_display;
 
     public function __construct(
@@ -32,6 +33,7 @@ final class QuoteOfferEmailContext
         string $product_url,
         string $coupon_code,
         string $coupon_amount_display,
+        string $final_price_display,
         string $expires_display
     ) {
         $this->recipient_email = trim($recipient_email);
@@ -43,7 +45,7 @@ final class QuoteOfferEmailContext
         $this->product_url = trim($product_url);
         $this->coupon_code = trim($coupon_code);
         $this->coupon_amount_display = trim($coupon_amount_display);
+        $this->final_price_display = trim($final_price_display);
         $this->expires_display = trim($expires_display);
     }
 }
-

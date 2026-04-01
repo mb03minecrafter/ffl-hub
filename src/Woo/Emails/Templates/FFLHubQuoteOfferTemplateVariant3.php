@@ -24,11 +24,11 @@ do_action('woocommerce_email_header', $email_heading, $email);
 </p>
 
 <p style="margin:0 0 14px;">
-    <?php echo esc_html__('We appreciate you reaching out for a custom quote. Your request has been reviewed by our sales team.', 'ffl-hub'); ?>
+    <?php echo esc_html__('Thanks for sending over your quote request. I reviewed it and got your code ready.', 'ffl-hub'); ?>
 </p>
 
 <p style="margin:0 0 14px;">
-    <?php echo esc_html__('Your customer-specific coupon code is below. Enter it at checkout for your approved quote discount.', 'ffl-hub'); ?>
+    <?php echo esc_html__('Drop this code in at checkout and it will apply your approved quote pricing.', 'ffl-hub'); ?>
 </p>
 
 <div style="border:1px solid <?php echo esc_attr($brand_border); ?>;border-radius:8px;padding:18px;background:#ffffff;margin:18px 0;">
@@ -39,13 +39,16 @@ do_action('woocommerce_email_header', $email_heading, $email);
         <?php echo esc_html($context->coupon_code); ?>
     </p>
     <p style="margin:0 0 8px;">
+        <?php echo sprintf(esc_html__('Final product price: %s + shipping', 'ffl-hub'), esc_html($context->final_price_display)); ?>
+    </p>
+    <p style="margin:0 0 8px;">
         <?php echo sprintf(esc_html__('Coupon value: %s', 'ffl-hub'), esc_html($context->coupon_amount_display)); ?>
     </p>
     <p style="margin:0 0 8px;">
         <?php echo sprintf(esc_html__('Product: %s', 'ffl-hub'), esc_html($context->product_name)); ?>
     </p>
     <p style="margin:0;">
-        <?php echo sprintf(esc_html__('Expiration: %s (48 hours)', 'ffl-hub'), esc_html($context->expires_display)); ?>
+        <?php echo sprintf(esc_html__('Expires: %s (48 hours)', 'ffl-hub'), esc_html($context->expires_display)); ?>
     </p>
 </div>
 
@@ -57,15 +60,15 @@ do_action('woocommerce_email_header', $email_heading, $email);
 </p>
 
 <p style="margin:0 0 10px;font-size:13px;color:<?php echo esc_attr($brand_muted); ?>;">
-    <?php echo esc_html__('This code is valid for one use only and is restricted to your email address.', 'ffl-hub'); ?>
+    <?php echo esc_html__('This code is for you only, tied to your email only, valid on this product only, and can be used one time within 48 hours.', 'ffl-hub'); ?>
 </p>
 
 <p style="margin:0;">
-    <?php echo esc_html__('Thank you for contacting us.', 'ffl-hub'); ?><br>
+    <?php echo esc_html__('If you have any questions at all, just hit reply and I can help.', 'ffl-hub'); ?><br><br>
+    <?php echo esc_html__('Talk soon,', 'ffl-hub'); ?><br>
     <?php echo esc_html($context->rep_name); ?><br>
     <?php echo esc_html__('Sales Team, Bickham Firearms', 'ffl-hub'); ?>
 </p>
 
 <?php
 do_action('woocommerce_email_footer', $email);
-
