@@ -12,6 +12,7 @@ if (!defined('ABSPATH')) {
 class MapPriceVisibility
 {
     private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
+    private const EMAIL_FOR_QUOTE_FORM_ACTION = 'fflhub_email_for_quote_submit';
 
     /** @var array<string,string>|null */
     private static ?array $policy_lookup_cache = null;
@@ -24,6 +25,10 @@ class MapPriceVisibility
         // Front-end style rules for MAP visibility + quote CTA.
         add_action('wp_enqueue_scripts', [self::class, 'enqueue_assets']);
 
+        // Handle quote form submissions from product pages.
+        add_action('admin_post_' . self::EMAIL_FOR_QUOTE_FORM_ACTION, [self::class, 'handle_email_for_quote_submit']);
+        add_action('admin_post_nopriv_' . self::EMAIL_FOR_QUOTE_FORM_ACTION, [self::class, 'handle_email_for_quote_submit']);
+
         // Replace price HTML everywhere except cart/checkout
         add_filter('woocommerce_get_price_html', [self::class, 'filter_price_html'], 99, 2);
 
@@ -35,6 +40,7 @@ class MapPriceVisibility
 
         // Render an email CTA on single-product pages for "Email for Quote" brands.
         add_action('woocommerce_single_product_summary', [self::class, 'render_email_for_quote_button'], 31);
+        add_action('wp_footer', [self::class, 'render_email_for_quote_modal']);
     }
 
     public static function enqueue_assets(): void
@@ -54,6 +60,20 @@ class MapPriceVisibility
             plugins_url($css_rel_path, FFLHUB_PLUGIN_FILE),
             [],
             (string) filemtime($css_abs_path)
+        );
+
+        $js_rel_path = 'assets/js/fflhub-map-price-visibility.js';
+        $js_abs_path = plugin_dir_path(FFLHUB_PLUGIN_FILE) . $js_rel_path;
+        if (!file_exists($js_abs_path)) {
+            return;
+        }
+
+        wp_enqueue_script(
+            'fflhub-map-price-visibility',
+            plugins_url($js_rel_path, FFLHUB_PLUGIN_FILE),
+            [],
+            (string) filemtime($js_abs_path),
+            true
         );
     }
 
@@ -217,21 +237,11 @@ class MapPriceVisibility
 
     public static function render_email_for_quote_button(): void
     {
-        if (!function_exists('is_product') || !is_product()) {
-            return;
-        }
-
-        global $product;
+        $product = self::current_product_for_quote();
         if (!($product instanceof WC_Product)) {
             return;
         }
-
         if (!self::is_email_for_quote_policy($product, null)) {
-            return;
-        }
-
-        $href = self::email_for_quote_href($product);
-        if ($href === '') {
             return;
         }
 
@@ -241,11 +251,146 @@ class MapPriceVisibility
             $product
         );
 
+        self::render_quote_notice(self::quote_request_status());
+
         echo '<p class="fflhub-email-for-quote-wrap">';
-        echo '<button type="button" class="button alt wp-element-button fflhub-email-for-quote-button" aria-label="' . esc_attr($label) . '" data-mailto="' . esc_attr($href) . '" onclick="window.location.href=this.getAttribute(\'data-mailto\');">';
+        echo '<button type="button" class="button alt wp-element-button fflhub-email-for-quote-button" aria-label="' . esc_attr($label) . '" data-fflhub-quote-open="1">';
         echo esc_html($label);
         echo '</button>';
         echo '</p>';
+    }
+
+    public static function render_email_for_quote_modal(): void
+    {
+        $product = self::current_product_for_quote();
+        if (!($product instanceof WC_Product)) {
+            return;
+        }
+        if (!self::is_email_for_quote_policy($product, null)) {
+            return;
+        }
+
+        $status = self::quote_request_status();
+        $open_on_load = self::should_auto_open_quote_modal($status);
+        $modal_classes = 'fflhub-email-for-quote-modal';
+        if ($open_on_load) {
+            $modal_classes .= ' is-open';
+        }
+
+        $redirect_url = self::quote_redirect_url((int) $product->get_id());
+
+        echo '<div id="fflhub-email-for-quote-modal" class="' . esc_attr($modal_classes) . '" aria-hidden="' . ($open_on_load ? 'false' : 'true') . '" data-open-on-load="' . ($open_on_load ? '1' : '0') . '">';
+        echo '<div class="fflhub-email-for-quote-modal__overlay" data-fflhub-quote-close="1"></div>';
+        echo '<div class="fflhub-email-for-quote-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="fflhub-email-for-quote-title">';
+        echo '<button type="button" class="fflhub-email-for-quote-modal__close" aria-label="' . esc_attr__('Close quote form', 'ffl-hub') . '" data-fflhub-quote-close="1">&times;</button>';
+
+        echo '<h2 id="fflhub-email-for-quote-title" class="fflhub-email-for-quote-modal__title">' . esc_html__('Request a Custom Price Quote', 'ffl-hub') . '</h2>';
+        echo '<p>' . esc_html__('Thank you for your interest in a custom price quote!', 'ffl-hub') . '</p>';
+        echo '<p>' . esc_html__('Please enter your name and email address and we will send you a promo code.', 'ffl-hub') . '</p>';
+        echo '<p>' . esc_html__('This form will be sent to and reviewed by a store associate who will evaluate each request individually and then contact you concerning product info and pricing. Any discount or promo code you may receive is specific to your email address. It cannot be shared or used by anyone else. It will be a one time use only code for YOU only.', 'ffl-hub') . '</p>';
+        echo '<p>' . esc_html__('Requests are only reviewed during business hours.', 'ffl-hub') . '</p>';
+        echo '<p><strong>' . esc_html__('Business Hours:', 'ffl-hub') . '</strong> ' . esc_html__('7am-6pm CST every day', 'ffl-hub') . '</p>';
+        echo '<p>' . sprintf(
+            /* translators: %s = sales phone number */
+            esc_html__('You may also contact our Sales team with any questions at %s option 1 during business hours. Thank you!', 'ffl-hub'),
+            esc_html('(254) 731-1450')
+        ) . '</p>';
+
+        echo '<form class="fflhub-email-for-quote-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+        echo '<input type="hidden" name="action" value="' . esc_attr(self::EMAIL_FOR_QUOTE_FORM_ACTION) . '">';
+        echo '<input type="hidden" name="fflhub_product_id" value="' . esc_attr((string) $product->get_id()) . '">';
+        echo '<input type="hidden" name="fflhub_redirect_url" value="' . esc_url($redirect_url) . '">';
+        wp_nonce_field('fflhub_email_for_quote_submit_' . $product->get_id(), 'fflhub_email_for_quote_nonce');
+
+        echo '<label for="fflhub-quote-first-name">' . esc_html__('First Name', 'ffl-hub') . '</label>';
+        echo '<input id="fflhub-quote-first-name" name="fflhub_first_name" type="text" required maxlength="100">';
+
+        echo '<label for="fflhub-quote-last-name">' . esc_html__('Last Name', 'ffl-hub') . '</label>';
+        echo '<input id="fflhub-quote-last-name" name="fflhub_last_name" type="text" required maxlength="100">';
+
+        echo '<label for="fflhub-quote-email">' . esc_html__('Email Address', 'ffl-hub') . '</label>';
+        echo '<input id="fflhub-quote-email" name="fflhub_email" type="email" required maxlength="190">';
+
+        echo '<button type="submit" class="button alt wp-element-button fflhub-email-for-quote-submit">' . esc_html__('Send Request', 'ffl-hub') . '</button>';
+        echo '</form>';
+
+        echo '</div>';
+        echo '</div>';
+    }
+
+    public static function handle_email_for_quote_submit(): void
+    {
+        $product_id = isset($_POST['fflhub_product_id']) ? absint(wp_unslash((string) $_POST['fflhub_product_id'])) : 0;
+        $posted_redirect = isset($_POST['fflhub_redirect_url']) ? (string) wp_unslash($_POST['fflhub_redirect_url']) : '';
+        $redirect_url = self::resolve_posted_redirect_url($product_id, $posted_redirect);
+
+        $nonce = isset($_POST['fflhub_email_for_quote_nonce']) ? (string) wp_unslash($_POST['fflhub_email_for_quote_nonce']) : '';
+        if ($product_id <= 0 || !wp_verify_nonce($nonce, 'fflhub_email_for_quote_submit_' . $product_id)) {
+            self::redirect_with_quote_status($redirect_url, 'invalid_request');
+        }
+
+        $first_name = sanitize_text_field((string) wp_unslash($_POST['fflhub_first_name'] ?? ''));
+        $last_name = sanitize_text_field((string) wp_unslash($_POST['fflhub_last_name'] ?? ''));
+        $email = sanitize_email((string) wp_unslash($_POST['fflhub_email'] ?? ''));
+
+        if ($first_name === '' || $last_name === '' || $email === '') {
+            self::redirect_with_quote_status($redirect_url, 'missing_fields');
+        }
+        if (!is_email($email)) {
+            self::redirect_with_quote_status($redirect_url, 'invalid_email');
+        }
+
+        $product = wc_get_product($product_id);
+        if (!($product instanceof WC_Product)) {
+            self::redirect_with_quote_status($redirect_url, 'invalid_request');
+        }
+
+        $recipient = sanitize_email((string) apply_filters(
+            'fflhub_email_for_quote_recipient',
+            (string) get_option('admin_email'),
+            $product
+        ));
+        if ($recipient === '') {
+            self::redirect_with_quote_status($redirect_url, 'invalid_request');
+        }
+
+        $subject = (string) apply_filters(
+            'fflhub_email_for_quote_subject',
+            sprintf(__('Quote request: %s', 'ffl-hub'), $product->get_name()),
+            $product
+        );
+
+        $product_url = get_permalink($product_id);
+        if (!is_string($product_url) || $product_url === '') {
+            $product_url = '';
+        }
+
+        $body_lines = [
+            __('A new custom price quote request has been submitted.', 'ffl-hub'),
+            '',
+            sprintf(__('First Name: %s', 'ffl-hub'), $first_name),
+            sprintf(__('Last Name: %s', 'ffl-hub'), $last_name),
+            sprintf(__('Email: %s', 'ffl-hub'), $email),
+            sprintf(__('Product: %s', 'ffl-hub'), $product->get_name()),
+            sprintf(__('SKU: %s', 'ffl-hub'), (string) $product->get_sku()),
+            sprintf(__('Product URL: %s', 'ffl-hub'), $product_url),
+            '',
+            __('Business Hours stated to customer: 7am-6pm CST every day.', 'ffl-hub'),
+        ];
+
+        $message = (string) apply_filters(
+            'fflhub_email_for_quote_body',
+            implode("\n", $body_lines),
+            $product
+        );
+
+        $headers = [
+            'Content-Type: text/plain; charset=UTF-8',
+            'Reply-To: ' . trim($first_name . ' ' . $last_name) . ' <' . $email . '>',
+        ];
+
+        $sent = wp_mail($recipient, $subject, $message, $headers);
+        self::redirect_with_quote_status($redirect_url, $sent ? 'success' : 'mail_error');
     }
 
     /**
@@ -261,53 +406,98 @@ class MapPriceVisibility
         return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_EMAIL_FOR_QUOTE;
     }
 
-    private static function email_for_quote_href(WC_Product $product): string
+    private static function current_product_for_quote(): ?WC_Product
     {
-        $recipient = sanitize_email((string) apply_filters(
-            'fflhub_email_for_quote_recipient',
-            (string) get_option('admin_email'),
-            $product
-        ));
-        if ($recipient === '') {
+        if (!function_exists('is_product') || !is_product()) {
+            return null;
+        }
+
+        global $product;
+        if ($product instanceof WC_Product) {
+            return $product;
+        }
+
+        $queried_id = function_exists('get_queried_object_id') ? (int) get_queried_object_id() : 0;
+        if ($queried_id <= 0) {
+            return null;
+        }
+
+        $queried_product = wc_get_product($queried_id);
+        return ($queried_product instanceof WC_Product) ? $queried_product : null;
+    }
+
+    private static function quote_request_status(): string
+    {
+        if (!isset($_GET['fflhub_quote_request'])) {
             return '';
         }
 
-        $subject = (string) apply_filters(
-            'fflhub_email_for_quote_subject',
-            sprintf(__('Quote request: %s', 'ffl-hub'), $product->get_name()),
-            $product
-        );
+        return sanitize_key((string) wp_unslash($_GET['fflhub_quote_request']));
+    }
 
-        $lines = [
-            __('Hi, I would like a quote for this product:', 'ffl-hub'),
-            '',
-            $product->get_name(),
-        ];
+    private static function should_auto_open_quote_modal(string $status): bool
+    {
+        return in_array($status, ['missing_fields', 'invalid_email', 'invalid_request', 'mail_error'], true);
+    }
 
-        $sku = trim((string) $product->get_sku());
-        if ($sku !== '') {
-            $lines[] = sprintf(__('SKU: %s', 'ffl-hub'), $sku);
+    private static function render_quote_notice(string $status): void
+    {
+        if ($status === '') {
+            return;
         }
 
-        $product_url = get_permalink($product->get_id());
-        if (is_string($product_url) && $product_url !== '') {
-            $lines[] = sprintf(__('Product URL: %s', 'ffl-hub'), $product_url);
+        $message = '';
+        $class = 'fflhub-email-for-quote-notice';
+
+        if ($status === 'success') {
+            $class .= ' is-success';
+            $message = __('Thanks, your quote request was submitted. A store associate will review it during business hours.', 'ffl-hub');
+        } else {
+            $class .= ' is-error';
+            if ($status === 'missing_fields') {
+                $message = __('Please complete First Name, Last Name, and Email Address.', 'ffl-hub');
+            } elseif ($status === 'invalid_email') {
+                $message = __('Please enter a valid email address.', 'ffl-hub');
+            } else {
+                $message = __('We could not submit your request right now. Please try again or call Sales at (254) 731-1450 option 1.', 'ffl-hub');
+            }
         }
 
-        $body = (string) apply_filters(
-            'fflhub_email_for_quote_body',
-            implode("\n", $lines),
-            $product
+        echo '<div class="' . esc_attr($class) . '">' . esc_html($message) . '</div>';
+    }
+
+    private static function quote_redirect_url(int $product_id): string
+    {
+        $permalink = ($product_id > 0) ? get_permalink($product_id) : home_url('/');
+        if (!is_string($permalink) || $permalink === '') {
+            $permalink = home_url('/');
+        }
+
+        return (string) remove_query_arg('fflhub_quote_request', $permalink);
+    }
+
+    private static function resolve_posted_redirect_url(int $product_id, string $posted_redirect): string
+    {
+        $fallback = self::quote_redirect_url($product_id);
+        $posted_redirect = trim($posted_redirect);
+        if ($posted_redirect === '') {
+            return $fallback;
+        }
+
+        $validated = wp_validate_redirect($posted_redirect, '');
+        return ($validated !== '') ? $validated : $fallback;
+    }
+
+    private static function redirect_with_quote_status(string $redirect_url, string $status): void
+    {
+        $target = add_query_arg(
+            'fflhub_quote_request',
+            $status,
+            (string) remove_query_arg('fflhub_quote_request', $redirect_url)
         );
 
-        $query = http_build_query(
-            ['subject' => $subject, 'body' => $body],
-            '',
-            '&',
-            PHP_QUERY_RFC3986
-        );
-
-        return 'mailto:' . $recipient . ($query !== '' ? ('?' . $query) : '');
+        wp_safe_redirect($target);
+        exit;
     }
 
     private static function map_policy_for_product(WC_Product $product, ?WC_Product $parent = null): string
