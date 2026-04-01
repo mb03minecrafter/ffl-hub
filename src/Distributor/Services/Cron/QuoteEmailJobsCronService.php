@@ -194,7 +194,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
                 'product_id' => (int) $product->get_id(),
                 'product_name' => (string) $product->get_name(),
                 'recommended_price' => (float) ($pricing['recommended'] ?? 0.0),
-                'map_price' => (float) ($pricing['map'] ?? 0.0),
+                'listed_sale_price' => (float) ($pricing['listed_sale_price'] ?? 0.0),
+                'listed_source' => (string) ($pricing['listed_source'] ?? 'unknown'),
                 'difference' => (float) ($pricing['difference'] ?? 0.0),
                 'markup_mode' => (int) $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true),
             ]);
@@ -343,24 +344,28 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     }
 
     /**
-     * @return array{recommended:float,map:float,difference:float}
+     * @return array{recommended:float,listed_sale_price:float,listed_source:string,difference:float}
      */
     private function quote_coupon_pricing_for_product(WC_Product $product): array
     {
         $recommended = $this->recommended_price_for_product($product);
-        $map = $this->map_price_for_product($product);
-        if ($recommended <= 0.0 || $map <= 0.0) {
+        $listed_details = $this->listed_sale_price_details_for_product($product);
+        $listed_sale_price = (float) ($listed_details['listed_sale_price'] ?? 0.0);
+        $listed_source = (string) ($listed_details['source'] ?? 'unknown');
+        if ($recommended <= 0.0 || $listed_sale_price <= 0.0) {
             return [
                 'recommended' => $recommended,
-                'map' => $map,
+                'listed_sale_price' => $listed_sale_price,
+                'listed_source' => $listed_source,
                 'difference' => 0.0,
             ];
         }
 
-        $difference = round($map - $recommended, 2);
+        $difference = round($listed_sale_price - $recommended, 2);
         return [
             'recommended' => $recommended,
-            'map' => $map,
+            'listed_sale_price' => $listed_sale_price,
+            'listed_source' => $listed_source,
             'difference' => $difference,
         ];
     }
@@ -552,19 +557,54 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         return ($recommended > 0.0) ? $recommended : 0.0;
     }
 
-    private function map_price_for_product(WC_Product $product): float
+    private function listed_sale_price_for_product(WC_Product $product): float
     {
-        $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
-        return ($map > 0.0) ? $map : 0.0;
+        $details = $this->listed_sale_price_details_for_product($product);
+        return (float) ($details['listed_sale_price'] ?? 0.0);
+    }
+
+    /**
+     * @return array{listed_sale_price:float,source:string}
+     */
+    private function listed_sale_price_details_for_product(WC_Product $product): array
+    {
+        $sale_price = (float) $product->get_sale_price();
+        if ($sale_price > 0.0) {
+            return [
+                'listed_sale_price' => $sale_price,
+                'source' => 'sale_price',
+            ];
+        }
+
+        $active_price = (float) $product->get_price();
+        if ($active_price > 0.0) {
+            return [
+                'listed_sale_price' => $active_price,
+                'source' => 'active_price',
+            ];
+        }
+
+        $regular_price = (float) $product->get_regular_price();
+        if ($regular_price > 0.0) {
+            return [
+                'listed_sale_price' => $regular_price,
+                'source' => 'regular_price',
+            ];
+        }
+
+        return [
+            'listed_sale_price' => 0.0,
+            'source' => 'missing',
+        ];
     }
 
     private function final_price_amount_for_product(WC_Product $product, float $coupon_amount): float
     {
         $final_price = $this->recommended_price_for_product($product);
         if ($final_price <= 0.0) {
-            $map = $this->map_price_for_product($product);
-            if ($map > 0.0 && $coupon_amount > 0.0) {
-                $derived = round($map - $coupon_amount, 2);
+            $listed_sale_price = $this->listed_sale_price_for_product($product);
+            if ($listed_sale_price > 0.0 && $coupon_amount > 0.0) {
+                $derived = round($listed_sale_price - $coupon_amount, 2);
                 if ($derived > 0.0) {
                     $final_price = $derived;
                 }
