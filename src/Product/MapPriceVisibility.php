@@ -21,6 +21,9 @@ class MapPriceVisibility
 
     public static function init(): void
     {
+        // Front-end style rules for MAP visibility + quote CTA.
+        add_action('wp_enqueue_scripts', [self::class, 'enqueue_assets']);
+
         // Replace price HTML everywhere except cart/checkout
         add_filter('woocommerce_get_price_html', [self::class, 'filter_price_html'], 99, 2);
 
@@ -32,6 +35,26 @@ class MapPriceVisibility
 
         // Render an email CTA on single-product pages for "Email for Quote" brands.
         add_action('woocommerce_single_product_summary', [self::class, 'render_email_for_quote_button'], 31);
+    }
+
+    public static function enqueue_assets(): void
+    {
+        if (!function_exists('is_product') || !is_product()) {
+            return;
+        }
+
+        $css_rel_path = 'assets/css/fflhub-map-price-visibility.css';
+        $css_abs_path = plugin_dir_path(FFLHUB_PLUGIN_FILE) . $css_rel_path;
+        if (!file_exists($css_abs_path)) {
+            return;
+        }
+
+        wp_enqueue_style(
+            'fflhub-map-price-visibility',
+            plugins_url($css_rel_path, FFLHUB_PLUGIN_FILE),
+            [],
+            (string) filemtime($css_abs_path)
+        );
     }
 
     private static function in_cart_flow(): bool
@@ -218,8 +241,8 @@ class MapPriceVisibility
             $product
         );
 
-        echo '<p class="fflhub-email-for-quote-wrap form-row form-row-wide">';
-        echo '<button type="button" class="single_add_to_cart_button button alt fflhub-email-for-quote-button" data-mailto="' . esc_attr($href) . '" onclick="window.location.href=this.getAttribute(\'data-mailto\');">';
+        echo '<p class="fflhub-email-for-quote-wrap">';
+        echo '<button type="button" class="button alt wp-element-button fflhub-email-for-quote-button" aria-label="' . esc_attr($label) . '" data-mailto="' . esc_attr($href) . '" onclick="window.location.href=this.getAttribute(\'data-mailto\');">';
         echo esc_html($label);
         echo '</button>';
         echo '</p>';

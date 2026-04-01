@@ -1,0 +1,31 @@
+.single-product .fflhub-email-for-quote-wrap {
+  margin: 12px 0 0;
+}
+
+.single-product .fflhub-email-for-quote-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  width: auto;
+  padding: 15px 30px !important;
+  border-width: 0 !important;
+  border-radius: 5px !important;
+  font-family: var(--wp--preset--font-family--primary, inherit) !important;
+  font-size: var(--wp--preset--font-size--x-small, 16px) !important;
+  font-weight: var(--wp--custom--font-weight--regular, 400) !important;
+  line-height: var(--wp--custom--line-height--medium, 1.5) !important;
+  text-decoration: none !important;
+  cursor: pointer;
+}
+
+.single-product .fflhub-email-for-quote-button:focus {
+  outline: 2px solid #2b2e33 !important;
+  outline-offset: 2px;
+}
+
+@media (max-width: 781px) {
+  .single-product .fflhub-email-for-quote-button {
+    width: 100%;
+  }
+}
