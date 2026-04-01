@@ -186,12 +186,17 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return 'skip_product_not_found';
         }
 
-        $coupon_amount = $this->compute_coupon_amount_for_product($product);
+        $pricing = $this->quote_coupon_pricing_for_product($product);
+        $coupon_amount = (float) ($pricing['difference'] ?? 0.0);
         if ($coupon_amount <= 0.0) {
             self::debug_ctx('skip job: coupon amount not positive', [
                 'job_id' => $job_id,
                 'product_id' => (int) $product->get_id(),
                 'product_name' => (string) $product->get_name(),
+                'recommended_price' => (float) ($pricing['recommended'] ?? 0.0),
+                'map_price' => (float) ($pricing['map'] ?? 0.0),
+                'difference' => (float) ($pricing['difference'] ?? 0.0),
+                'markup_mode' => (int) $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true),
             ]);
             return 'skip_coupon_amount_not_positive';
         }
@@ -332,14 +337,32 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
     private function compute_coupon_amount_for_product(WC_Product $product): float
     {
+        $pricing = $this->quote_coupon_pricing_for_product($product);
+        $difference = (float) ($pricing['difference'] ?? 0.0);
+        return ($difference > 0.0) ? $difference : 0.0;
+    }
+
+    /**
+     * @return array{recommended:float,map:float,difference:float}
+     */
+    private function quote_coupon_pricing_for_product(WC_Product $product): array
+    {
         $recommended = $this->recommended_price_for_product($product);
         $map = $this->map_price_for_product($product);
         if ($recommended <= 0.0 || $map <= 0.0) {
-            return 0.0;
+            return [
+                'recommended' => $recommended,
+                'map' => $map,
+                'difference' => 0.0,
+            ];
         }
 
         $difference = round($map - $recommended, 2);
-        return ($difference > 0.0) ? $difference : 0.0;
+        return [
+            'recommended' => $recommended,
+            'map' => $map,
+            'difference' => $difference,
+        ];
     }
 
     /**
