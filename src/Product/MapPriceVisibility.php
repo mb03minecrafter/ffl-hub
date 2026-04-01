@@ -72,7 +72,7 @@ class MapPriceVisibility
 
         $default_text = __('Add to cart to see price', 'ffl-hub');
         if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
-            $default_text = __('Email for quote', 'ffl-hub');
+            $default_text = __('Email for Quote', 'ffl-hub');
         }
 
         return (string) apply_filters(
@@ -237,7 +237,7 @@ class MapPriceVisibility
 
         $label = (string) apply_filters(
             'fflhub_email_for_quote_button_label',
-            __('Email for quote', 'ffl-hub'),
+            __('Email for Quote', 'ffl-hub'),
             $product
         );
 
