@@ -88,8 +88,9 @@ final class Options
     private const DEFAULT_USPS_TIMEOUT_SEC              = 8;
     private const DEFAULT_USPS_TARE_WEIGHT_OZ           = 0.0;
 
-    public const MAP_POLICY_ADD_TO_CART_FOR_PRICE = 'add_to_cart_for_price';
-    public const MAP_POLICY_EMAIL_FOR_QUOTE       = 'email_for_quote';
+    public const MAP_POLICY_ADD_TO_CART_FOR_PRICE   = 'add_to_cart_for_price';
+    public const MAP_POLICY_EMAIL_FOR_QUOTE         = 'email_for_quote';
+    public const MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART = 'no_email_no_add_to_cart';
 
     /* -------------------------------------------------------------------------
      * Settings groups (WP Settings API)
@@ -568,6 +569,10 @@ final class Options
 
         if ($policy === self::MAP_POLICY_EMAIL_FOR_QUOTE) {
             return self::MAP_POLICY_EMAIL_FOR_QUOTE;
+        }
+
+        if ($policy === self::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+            return self::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
         }
 
         return self::MAP_POLICY_ADD_TO_CART_FOR_PRICE;

@@ -421,7 +421,10 @@ final class SettingsRegistrar
             }
 
             $policy = strtolower(trim((string) ($row['policy'] ?? '')));
-            if ($policy !== Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+            if (
+                $policy !== Options::MAP_POLICY_EMAIL_FOR_QUOTE
+                && $policy !== Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART
+            ) {
                 $policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
             }
 

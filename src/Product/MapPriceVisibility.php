@@ -160,6 +160,11 @@ class MapPriceVisibility
             return false;
         }
 
+        // "No Email, No Add to Cart" brands should show MAP price.
+        if (self::is_no_email_no_add_to_cart_policy($product, $parent)) {
+            return false;
+        }
+
         // "Email for Quote" brands should still show MAP price.
         if (self::is_email_for_quote_policy($product, $parent)) {
             return false;
@@ -176,6 +181,13 @@ class MapPriceVisibility
 
         if (self::in_cart_flow()) {
             return $price_html;
+        }
+
+        if (self::should_force_map_price($product, null)) {
+            $map_html = self::map_price_html($product, null);
+            if ($map_html !== null) {
+                return $map_html;
+            }
         }
 
         // For "Email for Quote" brands, keep Woo regular/sale rendering unchanged.
@@ -197,6 +209,29 @@ class MapPriceVisibility
         }
 
         $parent_product = ($parent instanceof WC_Product) ? $parent : null;
+
+        if (self::should_force_map_price($variation, $parent_product)) {
+            $map = self::map_price_for_product($variation, $parent_product);
+            $map_html = self::map_price_html($variation, $parent_product);
+
+            if ($map_html !== null) {
+                $data['price_html'] = $map_html;
+            }
+
+            if (is_numeric($map) && (float) $map > 0.0) {
+                $map_value = (float) $map;
+                $map_decimal = function_exists('wc_format_decimal')
+                    ? wc_format_decimal($map_value, wc_get_price_decimals())
+                    : (string) $map_value;
+                $data['display_price'] = $map_value;
+                $data['display_regular_price'] = $map_value;
+                $data['price'] = $map_decimal;
+                $data['regular_price'] = $map_decimal;
+                $data['sale_price'] = '';
+            }
+
+            return $data;
+        }
 
         // For "Email for Quote" brands, keep Woo variation pricing data unchanged.
         if (self::is_email_for_quote_policy($variation, $parent_product)) {
@@ -222,6 +257,33 @@ class MapPriceVisibility
     public static function filter_structured_offer($offer, $product)
     {
         if (!($product instanceof WC_Product)) {
+            return $offer;
+        }
+
+        if (self::should_force_map_price($product, null)) {
+            $map = self::map_price_for_product($product, null);
+            if (!is_numeric($map) || (float) $map <= 0.0 || !is_array($offer)) {
+                return $offer;
+            }
+
+            $map_decimal = function_exists('wc_format_decimal')
+                ? wc_format_decimal((float) $map, wc_get_price_decimals())
+                : (string) $map;
+
+            foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
+                if (isset($offer[$price_key])) {
+                    $offer[$price_key] = $map_decimal;
+                }
+            }
+
+            if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
+                foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
+                    if (isset($offer['priceSpecification'][$price_spec_key])) {
+                        $offer['priceSpecification'][$price_spec_key] = $map_decimal;
+                    }
+                }
+            }
+
             return $offer;
         }
 
@@ -429,6 +491,61 @@ class MapPriceVisibility
     private static function is_email_for_quote_policy(WC_Product $product, ?WC_Product $parent = null): bool
     {
         return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_EMAIL_FOR_QUOTE;
+    }
+
+    private static function is_no_email_no_add_to_cart_policy(WC_Product $product, ?WC_Product $parent = null): bool
+    {
+        return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
+    }
+
+    private static function should_force_map_price(WC_Product $product, ?WC_Product $parent = null): bool
+    {
+        if (self::in_cart_flow()) {
+            return false;
+        }
+
+        if (!self::is_no_email_no_add_to_cart_policy($product, $parent)) {
+            return false;
+        }
+
+        if (!self::is_fflhub_managed($product, $parent)) {
+            return false;
+        }
+
+        return self::map_price_for_product($product, $parent) !== null;
+    }
+
+    private static function map_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
+    {
+        $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
+        if ($map <= 0.0 && $parent instanceof WC_Product) {
+            $map = (float) $parent->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
+        }
+
+        if ($map <= 0.0) {
+            return null;
+        }
+
+        return $map;
+    }
+
+    private static function map_price_html(WC_Product $product, ?WC_Product $parent = null): ?string
+    {
+        $map = self::map_price_for_product($product, $parent);
+        if (!is_numeric($map) || (float) $map <= 0.0) {
+            return null;
+        }
+
+        $display_price = (float) $map;
+        if (function_exists('wc_get_price_to_display')) {
+            $display_price = (float) wc_get_price_to_display($product, ['price' => (float) $map]);
+        }
+
+        if (function_exists('wc_price')) {
+            return (string) wc_price($display_price);
+        }
+
+        return (string) $display_price;
     }
 
     private static function current_product_for_quote(): ?WC_Product
@@ -750,6 +867,10 @@ class MapPriceVisibility
             $policy = strtolower(trim((string) $policy_lookup[$key]));
             if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
                 return Options::MAP_POLICY_EMAIL_FOR_QUOTE;
+            }
+
+            if ($policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+                return Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
             }
 
             return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;

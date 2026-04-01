@@ -893,12 +893,17 @@ class DistributorProductHelper
     /**
      * Determine default pricing mode for a payload at product creation.
      *
-     * MAP policy "Email for Quote" brands default to MAP Price mode.
+     * MAP policy "Email for Quote" and "No Email, No Add to Cart" brands
+     * default to MAP Price mode.
      */
     public static function default_markup_mode_for_payload(DistributorProductPayload $payload): int
     {
         $brand = self::normalize_brand_name((string) ($payload->brand ?? ''));
-        if ($brand !== '' && Options::get_map_policy_for_brand($brand) === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+        $map_policy = ($brand !== '') ? Options::get_map_policy_for_brand($brand) : '';
+        if (
+            $map_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE
+            || $map_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART
+        ) {
             return ProductMeta::MARKUP_MODE_MAP_PRICE;
         }
 
@@ -938,6 +943,13 @@ class DistributorProductHelper
      */
     public static function compute_sell_price_for_product(int $product_id, DistributorProductPayload $payload): ?float
     {
+        // "No Email, No Add to Cart" policy enforces MAP/MSRP pricing
+        // regardless of stored per-product markup mode.
+        $brand = self::normalize_brand_name((string) ($payload->brand ?? ''));
+        if ($brand !== '' && Options::get_map_policy_for_brand($brand) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+            return self::resolve_map_mode_sell_price($payload->map ?? null, $payload->msrp ?? null);
+        }
+
         $settings = self::get_pricing_settings_for_product($product_id);
 
         if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_FIXED_PRICE) {

@@ -191,8 +191,9 @@ final class MapPolicyPage
     {
         $selected = strtolower(trim($selected));
         $options = [
-            Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE => __('Add to Cart for Price', 'ffl-hub'),
-            Options::MAP_POLICY_EMAIL_FOR_QUOTE       => __('Email for Quote', 'ffl-hub'),
+            Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE   => __('Add to Cart for Price', 'ffl-hub'),
+            Options::MAP_POLICY_EMAIL_FOR_QUOTE         => __('Email for Quote', 'ffl-hub'),
+            Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART => __('No Email, No Add to Cart', 'ffl-hub'),
         ];
 
         foreach ($options as $value => $label) {
