@@ -859,12 +859,8 @@ class MapPriceVisibility
         }
 
         foreach ($brand_names as $brand_name) {
-            $key = Options::normalize_brand_policy_key($brand_name);
-            if ($key === '' || !isset($policy_lookup[$key])) {
-                continue;
-            }
-
-            $policy = strtolower(trim((string) $policy_lookup[$key]));
+            $policy = Options::get_map_policy_for_brand($brand_name);
+            $policy = strtolower(trim((string) $policy));
             if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
                 return Options::MAP_POLICY_EMAIL_FOR_QUOTE;
             }
@@ -872,8 +868,6 @@ class MapPriceVisibility
             if ($policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
                 return Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
             }
-
-            return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
         }
 
         return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;

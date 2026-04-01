@@ -557,10 +557,15 @@ class DistributorProductHelper
         if ($term === 0 || $term === null) {
             $created = wp_insert_term($brand, $taxonomy);
             if (is_wp_error($created)) {
-                self::log_debug('[FFLHub][DistributorProductHelper] Brand term create failed: ' . $created->get_error_message());
-                return false;
+                if ($created->get_error_code() === 'term_exists') {
+                    $term_id = (int) $created->get_error_data('term_exists');
+                } else {
+                    self::log_debug('[FFLHub][DistributorProductHelper] Brand term create failed: ' . $created->get_error_message());
+                    return false;
+                }
+            } else {
+                $term_id = (int) ($created['term_id'] ?? 0);
             }
-            $term_id = (int) ($created['term_id'] ?? 0);
         } elseif (is_array($term)) {
             $term_id = (int) ($term['term_id'] ?? $term['id'] ?? 0);
         } else {

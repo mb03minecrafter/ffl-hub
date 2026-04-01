@@ -484,10 +484,12 @@ final class Options
     public static function get_map_policy_for_brand(string $brand): string
     {
         $lookup = self::get_map_brand_policy_lookup();
-        $key = self::normalize_brand_policy_key($brand);
+        $candidate_keys = self::map_policy_lookup_keys_for_brand($brand);
 
-        if ($key !== '' && isset($lookup[$key])) {
-            return (string) $lookup[$key];
+        foreach ($candidate_keys as $key) {
+            if (isset($lookup[$key])) {
+                return (string) $lookup[$key];
+            }
         }
 
         return self::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
@@ -524,6 +526,41 @@ final class Options
     {
         $key = strtolower(trim($brand));
         return (string) preg_replace('/[^a-z0-9]+/', '', $key);
+    }
+
+    /**
+     * Build normalized lookup keys for tolerant brand matching.
+     *
+     * This handles common variants like:
+     * - "Smith & Wesson"
+     * - "Smith and Wesson"
+     * - "Smith Wesson"
+     *
+     * @return array<int,string>
+     */
+    private static function map_policy_lookup_keys_for_brand(string $brand): array
+    {
+        $brand = trim(wp_strip_all_tags($brand));
+        if ($brand === '') {
+            return [];
+        }
+
+        $variants = [
+            $brand,
+            str_replace('&', ' and ', $brand),
+            str_replace('&', ' ', $brand),
+            (string) preg_replace('/\band\b/i', ' ', str_replace('&', ' and ', $brand)),
+        ];
+
+        $keys = [];
+        foreach ($variants as $variant) {
+            $normalized = self::normalize_brand_policy_key((string) $variant);
+            if ($normalized !== '') {
+                $keys[$normalized] = $normalized;
+            }
+        }
+
+        return array_values($keys);
     }
 
     /**
