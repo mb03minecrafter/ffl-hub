@@ -7,6 +7,7 @@
   var openButtons = document.querySelectorAll("[data-fflhub-quote-open='1']");
   var closeButtons = modal.querySelectorAll("[data-fflhub-quote-close='1']");
   var firstInput = modal.querySelector("input[name='fflhub_first_name']");
+  var form = modal.querySelector(".fflhub-email-for-quote-form");
   var lastFocused = null;
 
   function openModal(focusSource) {
@@ -52,5 +53,24 @@
 
   if (modal.getAttribute("data-open-on-load") === "1") {
     openModal(null);
+  }
+
+  if (form) {
+    form.addEventListener("submit", function (event) {
+      if (form.getAttribute("data-submitting") === "1") {
+        event.preventDefault();
+        return false;
+      }
+
+      form.setAttribute("data-submitting", "1");
+      var submitButton = form.querySelector(".fflhub-email-for-quote-submit");
+      if (submitButton) {
+        var submittingLabel = submitButton.getAttribute("data-submitting-label") || "Sending...";
+        submitButton.setAttribute("aria-disabled", "true");
+        submitButton.disabled = true;
+        submitButton.textContent = submittingLabel;
+      }
+      return true;
+    });
   }
 })();

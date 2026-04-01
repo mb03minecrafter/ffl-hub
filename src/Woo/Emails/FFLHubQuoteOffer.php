@@ -114,25 +114,29 @@ final class FFLHubQuoteOffer extends WC_Email
 
     private function variant_html_template(int $variant_index): string
     {
-        if ($variant_index === 1) {
-            return 'FFLHubQuoteOfferTemplateVariant2.php';
-        }
-        if ($variant_index === 2) {
-            return 'FFLHubQuoteOfferTemplateVariant3.php';
-        }
+        $templates = [
+            'FFLHubQuoteOfferTemplateVariant1.php',
+            'FFLHubQuoteOfferTemplateVariant2.php',
+            'FFLHubQuoteOfferTemplateVariant3.php',
+            'FFLHubQuoteOfferTemplateVariant4.php',
+            'FFLHubQuoteOfferTemplateVariant5.php',
+            'FFLHubQuoteOfferTemplateVariant6.php',
+        ];
 
-        return 'FFLHubQuoteOfferTemplateVariant1.php';
+        return $templates[$variant_index] ?? $templates[0];
     }
 
     private function variant_plain_template(int $variant_index): string
     {
-        if ($variant_index === 1) {
-            return 'Plain/FFLHubQuoteOfferTemplateVariant2.php';
-        }
-        if ($variant_index === 2) {
-            return 'Plain/FFLHubQuoteOfferTemplateVariant3.php';
-        }
+        $templates = [
+            'Plain/FFLHubQuoteOfferTemplateVariant1.php',
+            'Plain/FFLHubQuoteOfferTemplateVariant2.php',
+            'Plain/FFLHubQuoteOfferTemplateVariant3.php',
+            'Plain/FFLHubQuoteOfferTemplateVariant4.php',
+            'Plain/FFLHubQuoteOfferTemplateVariant5.php',
+            'Plain/FFLHubQuoteOfferTemplateVariant6.php',
+        ];
 
-        return 'Plain/FFLHubQuoteOfferTemplateVariant1.php';
+        return $templates[$variant_index] ?? $templates[0];
     }
 }

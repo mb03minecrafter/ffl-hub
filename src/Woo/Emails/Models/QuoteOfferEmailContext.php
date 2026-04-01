@@ -38,7 +38,7 @@ final class QuoteOfferEmailContext
     ) {
         $this->recipient_email = trim($recipient_email);
         $this->subject = trim($subject);
-        $this->variant_index = ($variant_index >= 0 && $variant_index <= 2) ? $variant_index : 0;
+        $this->variant_index = ($variant_index >= 0 && $variant_index <= 5) ? $variant_index : 0;
         $this->first_name = trim($first_name);
         $this->rep_name = trim($rep_name);
         $this->product_name = trim($product_name);

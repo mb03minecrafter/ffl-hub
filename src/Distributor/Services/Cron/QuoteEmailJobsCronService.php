@@ -460,7 +460,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         $job_id = isset($job_row['id']) ? (int) $job_row['id'] : 0;
-        $variant_index = ($job_id > 0) ? ($job_id % 3) : 0;
+        $variant_index = ($job_id > 0) ? ($job_id % 6) : 0;
         $rep_index = ($job_id > 0) ? ($job_id % count(self::REP_NAMES)) : 0;
 
         $first_name = trim((string) ($job_row['request_first_name'] ?? ''));
@@ -482,13 +482,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             : __('48 hours from now', 'ffl-hub');
         $final_price_display = $this->final_price_display_for_product($product, $coupon_amount);
 
-        $subjects = [
-            sprintf(__('Your custom quote is ready for %s', 'ffl-hub'), $product_name),
-            sprintf(__('Custom price quote ready: %s', 'ffl-hub'), $product_name),
-            sprintf(__('Private promo code for your %s quote request', 'ffl-hub'), $product_name),
-        ];
-
-        $subject = $subjects[$variant_index] ?? $subjects[0];
+        $subject = sprintf(__('Quote for %s', 'ffl-hub'), $product_name);
         $rep_name = self::REP_NAMES[$rep_index] ?? self::REP_NAMES[0];
         $coupon_amount_display = wp_strip_all_tags(wc_price($coupon_amount));
 

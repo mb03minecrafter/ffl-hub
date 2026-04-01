@@ -15,6 +15,7 @@ class MapPriceVisibility
 {
     private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
     private const EMAIL_FOR_QUOTE_FORM_ACTION = 'fflhub_email_for_quote_submit';
+    private const QUOTE_SUBMISSION_DEDUPE_TTL_SECONDS = 180;
 
     /** @var array<string,string>|null */
     private static ?array $policy_lookup_cache = null;
@@ -316,7 +317,7 @@ class MapPriceVisibility
         echo '<label for="fflhub-quote-email">' . esc_html__('Email Address', 'ffl-hub') . '</label>';
         echo '<input id="fflhub-quote-email" name="fflhub_email" type="email" required maxlength="190">';
 
-        echo '<button type="submit" class="button alt wp-element-button fflhub-email-for-quote-submit">' . esc_html__('Send Request', 'ffl-hub') . '</button>';
+        echo '<button type="submit" class="button alt wp-element-button fflhub-email-for-quote-submit" data-submitting-label="' . esc_attr__('Sending...', 'ffl-hub') . '">' . esc_html__('Send Request', 'ffl-hub') . '</button>';
         echo '</form>';
 
         echo '</div>';
@@ -349,6 +350,18 @@ class MapPriceVisibility
         if (!($product instanceof WC_Product)) {
             self::redirect_with_quote_status($redirect_url, 'invalid_request');
         }
+
+        $submission_lock_key = self::quote_submission_lock_key($product_id, $first_name, $last_name, $email);
+        if (self::is_quote_submission_locked($submission_lock_key)) {
+            self::redirect_with_quote_status($redirect_url, 'success');
+        }
+
+        if (self::has_recent_duplicate_quote_job($product, $first_name, $last_name, $email)) {
+            self::set_quote_submission_lock($submission_lock_key);
+            self::redirect_with_quote_status($redirect_url, 'success');
+        }
+
+        self::set_quote_submission_lock($submission_lock_key);
 
         $recipient = sanitize_email((string) apply_filters(
             'fflhub_email_for_quote_recipient',
@@ -397,6 +410,7 @@ class MapPriceVisibility
         $sent = wp_mail($recipient, $subject, $message, $headers);
         $saved_job = self::insert_quote_email_job($product, $first_name, $last_name, $email);
         if (!$saved_job) {
+            self::clear_quote_submission_lock($submission_lock_key);
             self::redirect_with_quote_status($redirect_url, 'mail_error');
         }
 
@@ -543,6 +557,10 @@ class MapPriceVisibility
         $submitted_at = (string) current_time('mysql', true);
         $random_delay_minutes = (int) wp_rand(5, 30);
 
+        if (self::has_recent_duplicate_quote_job_values($table_name, $first_name, $last_name, $email, $upc, $product_name)) {
+            return true;
+        }
+
         $inserted = $wpdb->insert(
             $table_name,
             [
@@ -572,6 +590,81 @@ class MapPriceVisibility
         return $inserted === 1;
     }
 
+    private static function has_recent_duplicate_quote_job(
+        WC_Product $product,
+        string $first_name,
+        string $last_name,
+        string $email
+    ): bool {
+        global $wpdb;
+
+        $schema = new QuoteEmailJobsSchema();
+        $table = new QuoteEmailJobsTable($schema);
+        $table_name = $table->get_table_name();
+
+        $upc = self::quote_product_upc($product);
+        $product_name = self::truncate_quote_job_value((string) $product->get_name(), 255);
+
+        return self::has_recent_duplicate_quote_job_values($table_name, $first_name, $last_name, $email, $upc, $product_name);
+    }
+
+    private static function has_recent_duplicate_quote_job_values(
+        string $table_name,
+        string $first_name,
+        string $last_name,
+        string $email,
+        string $upc,
+        string $product_name
+    ): bool {
+        global $wpdb;
+
+        $since_utc = gmdate('Y-m-d H:i:s', time() - self::quote_submission_dedupe_ttl_seconds());
+        $first_name = self::truncate_quote_job_value($first_name, 100);
+        $last_name = self::truncate_quote_job_value($last_name, 100);
+        $email = self::truncate_quote_job_value($email, 190);
+        $upc = self::truncate_quote_job_value($upc, 64);
+        $product_name = self::truncate_quote_job_value($product_name, 255);
+
+        if ($upc !== '') {
+            $sql = $wpdb->prepare(
+                "SELECT id
+                 FROM {$table_name}
+                 WHERE request_email = %s
+                   AND request_first_name = %s
+                   AND request_last_name = %s
+                   AND quote_upc = %s
+                   AND submitted_at >= %s
+                 ORDER BY id DESC
+                 LIMIT 1",
+                $email,
+                $first_name,
+                $last_name,
+                $upc,
+                $since_utc
+            );
+        } else {
+            $sql = $wpdb->prepare(
+                "SELECT id
+                 FROM {$table_name}
+                 WHERE request_email = %s
+                   AND request_first_name = %s
+                   AND request_last_name = %s
+                   AND quote_product_name = %s
+                   AND submitted_at >= %s
+                 ORDER BY id DESC
+                 LIMIT 1",
+                $email,
+                $first_name,
+                $last_name,
+                $product_name,
+                $since_utc
+            );
+        }
+
+        $existing_id = (int) $wpdb->get_var($sql);
+        return $existing_id > 0;
+    }
+
     private static function quote_product_upc(WC_Product $product): string
     {
         $meta_keys = [
@@ -598,6 +691,41 @@ class MapPriceVisibility
         }
 
         return substr($value, 0, $max_length);
+    }
+
+    private static function quote_submission_dedupe_ttl_seconds(): int
+    {
+        $ttl = (int) apply_filters('fflhub_quote_submission_dedupe_ttl_seconds', self::QUOTE_SUBMISSION_DEDUPE_TTL_SECONDS);
+        return max(30, $ttl);
+    }
+
+    private static function quote_submission_lock_key(
+        int $product_id,
+        string $first_name,
+        string $last_name,
+        string $email
+    ): string {
+        $first_name = strtolower(self::truncate_quote_job_value($first_name, 100));
+        $last_name = strtolower(self::truncate_quote_job_value($last_name, 100));
+        $email = strtolower(self::truncate_quote_job_value($email, 190));
+
+        $fingerprint = md5($product_id . '|' . $first_name . '|' . $last_name . '|' . $email);
+        return 'fflhub_quote_submit_lock_' . $fingerprint;
+    }
+
+    private static function is_quote_submission_locked(string $lock_key): bool
+    {
+        return get_transient($lock_key) === '1';
+    }
+
+    private static function set_quote_submission_lock(string $lock_key): void
+    {
+        set_transient($lock_key, '1', self::quote_submission_dedupe_ttl_seconds());
+    }
+
+    private static function clear_quote_submission_lock(string $lock_key): void
+    {
+        delete_transient($lock_key);
     }
 
     private static function map_policy_for_product(WC_Product $product, ?WC_Product $parent = null): string
