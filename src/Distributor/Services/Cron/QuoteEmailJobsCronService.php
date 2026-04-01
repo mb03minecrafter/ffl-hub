@@ -5,6 +5,7 @@ namespace FFLHub\Distributor\Services\Cron;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
+use FFLHub\Util\DebugLogUtil;
 use FFLHub\Woo\Emails\FFLHubQuoteOffer;
 use FFLHub\Woo\Emails\Models\QuoteOfferEmailContext;
 use WC_Product;
@@ -21,6 +22,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     public const CRON_HOOK = 'fflhub_quote_email_jobs_poll';
 
     private const BATCH_LIMIT = 100;
+    private const DEBUG_CONST = 'FFLHUB_DEBUG_QUOTE_EMAIL_CRON';
+    private const LOG_PREFIX = '[FFLHub][QuoteEmailCron]';
     private const REP_NAMES = [
         'Matthew Bickham',
         'Thomas Bickham',
@@ -60,11 +63,20 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     {
         global $wpdb;
 
+        $run_started = microtime(true);
         $table_name = $this->jobs_table->get_table_name();
         $now_utc = (string) current_time('mysql', true);
         $limit = max(1, (int) self::BATCH_LIMIT);
+        $force_no_delay = self::force_no_delay_mode();
 
-        if (self::force_no_delay_mode()) {
+        self::debug_ctx('run start', [
+            'table' => $table_name,
+            'now_utc' => $now_utc,
+            'limit' => $limit,
+            'force_no_delay' => $force_no_delay ? 1 : 0,
+        ]);
+
+        if ($force_no_delay) {
             $sql = $wpdb->prepare(
                 "SELECT id, request_first_name, request_last_name, request_email, quote_upc, quote_product_name, submitted_at, random_delay_minutes, email_sent
                  FROM {$table_name}
@@ -87,20 +99,56 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         $due_jobs = $wpdb->get_results($sql, ARRAY_A);
-        if (!is_array($due_jobs) || empty($due_jobs)) {
+        if (!is_array($due_jobs)) {
+            self::debug_ctx('query failed', [
+                'last_error' => (string) $wpdb->last_error,
+            ]);
             return;
         }
 
+        if (empty($due_jobs)) {
+            self::debug('run complete: no due jobs');
+            return;
+        }
+
+        $rows_seen = 0;
+        $rows_sent = 0;
+        $rows_skipped = 0;
+        $status_counts = [];
+
         foreach ($due_jobs as $job_row) {
+            $rows_seen++;
+
             if (!is_array($job_row)) {
+                $rows_skipped++;
+                $status_counts['invalid_row'] = (int) ($status_counts['invalid_row'] ?? 0) + 1;
+                self::debug_ctx('skip row: invalid row type', ['row_index' => $rows_seen]);
                 continue;
             }
 
-            $this->handle_due_job($job_row);
+            $status = $this->handle_due_job($job_row);
+            $status_counts[$status] = (int) ($status_counts[$status] ?? 0) + 1;
+
+            if ($status === 'sent') {
+                $rows_sent++;
+            } else {
+                $rows_skipped++;
+            }
         }
+
+        self::debug_ctx('run complete', [
+            'rows_seen' => $rows_seen,
+            'rows_sent' => $rows_sent,
+            'rows_skipped' => $rows_skipped,
+            'status_counts' => $status_counts,
+            'elapsed_ms' => round((microtime(true) - $run_started) * 1000, 2),
+        ]);
     }
 
-    private function handle_due_job(array $job_row): void
+    /**
+     * @param array<string,mixed> $job_row
+     */
+    private function handle_due_job(array $job_row): string
     {
         /**
          * Keep this action for extension points and custom instrumentation.
@@ -109,34 +157,89 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
         $job_id = isset($job_row['id']) ? (int) $job_row['id'] : 0;
         $recipient = sanitize_email((string) ($job_row['request_email'] ?? ''));
+        $quote_upc = trim((string) ($job_row['quote_upc'] ?? ''));
+        $quote_product_name = trim((string) ($job_row['quote_product_name'] ?? ''));
+
+        self::debug_ctx('processing job', [
+            'job_id' => $job_id,
+            'recipient' => $recipient,
+            'quote_upc' => $quote_upc,
+            'quote_product_name' => $quote_product_name,
+        ]);
+
         if ($job_id <= 0 || $recipient === '' || !is_email($recipient)) {
-            return;
+            self::debug_ctx('skip job: invalid recipient/job id', [
+                'job_id' => $job_id,
+                'recipient' => $recipient,
+            ]);
+            return 'skip_invalid_recipient_or_job_id';
         }
 
         $product = $this->resolve_product_from_job_row($job_row);
         if (!($product instanceof WC_Product)) {
-            return;
+            self::debug_ctx('skip job: product not resolved', [
+                'job_id' => $job_id,
+                'quote_upc' => $quote_upc,
+                'quote_product_name' => $quote_product_name,
+            ]);
+            return 'skip_product_not_found';
         }
 
         $coupon_amount = $this->compute_coupon_amount_for_product($product);
         if ($coupon_amount <= 0.0) {
-            return;
+            self::debug_ctx('skip job: coupon amount not positive', [
+                'job_id' => $job_id,
+                'product_id' => (int) $product->get_id(),
+                'product_name' => (string) $product->get_name(),
+            ]);
+            return 'skip_coupon_amount_not_positive';
         }
 
         $coupon_payload = $this->create_or_refresh_quote_coupon($job_row, $product, $coupon_amount);
         if (!is_array($coupon_payload) || empty($coupon_payload['code'])) {
-            return;
+            self::debug_ctx('skip job: coupon creation failed', [
+                'job_id' => $job_id,
+                'product_id' => (int) $product->get_id(),
+                'coupon_amount' => $coupon_amount,
+            ]);
+            return 'skip_coupon_creation_failed';
         }
 
         $context = $this->build_quote_email_context($job_row, $product, $coupon_payload);
         if (!($context instanceof QuoteOfferEmailContext)) {
-            return;
+            self::debug_ctx('skip job: context build failed', [
+                'job_id' => $job_id,
+                'product_id' => (int) $product->get_id(),
+            ]);
+            return 'skip_context_build_failed';
         }
 
         $sent = $this->dispatch_quote_offer_email($context);
-        if ($sent) {
-            $this->mark_job_email_sent($job_id);
+        if (!$sent) {
+            self::debug_ctx('send failed', [
+                'job_id' => $job_id,
+                'recipient' => $context->recipient_email,
+                'subject' => $context->subject,
+                'variant_index' => $context->variant_index,
+            ]);
+            return 'send_failed';
         }
+
+        $marked = $this->mark_job_email_sent($job_id);
+        if (!$marked) {
+            self::debug_ctx('send succeeded but mark sent failed', [
+                'job_id' => $job_id,
+            ]);
+            return 'sent_but_mark_failed';
+        }
+
+        self::debug_ctx('send succeeded', [
+            'job_id' => $job_id,
+            'recipient' => $context->recipient_email,
+            'coupon_code' => $context->coupon_code,
+        ]);
+
+        return 'sent';
     }
 
     private function resolve_product_from_job_row(array $job_row): ?WC_Product
@@ -156,6 +259,11 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         $product = wc_get_product($product_id);
+        self::debug_ctx('resolved product', [
+            'product_id' => $product_id,
+            'upc' => $upc,
+            'product_name' => $product_name,
+        ]);
         return ($product instanceof WC_Product) ? $product : null;
     }
 
@@ -264,6 +372,16 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $expires_ts = (int) current_time('timestamp', true) + (48 * HOUR_IN_SECONDS);
         $product_name = (string) $product->get_name();
 
+        self::debug_ctx('creating/updating coupon', [
+            'product_id' => (int) $product->get_id(),
+            'product_name' => $product_name,
+            'coupon_code' => $coupon_code,
+            'existing_id' => $existing_id,
+            'coupon_amount' => $coupon_amount,
+            'recipient_email' => $email,
+            'expires_ts' => $expires_ts,
+        ]);
+
         $coupon->set_code($coupon_code);
         $coupon->set_discount_type('fixed_cart');
         $coupon->set_amount($coupon_amount);
@@ -294,12 +412,26 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         try {
             $coupon_id = (int) $coupon->save();
         } catch (\Throwable $e) {
+            self::debug_ctx('coupon save exception', [
+                'coupon_code' => $coupon_code,
+                'exception_class' => get_class($e),
+                'exception_message' => (string) $e->getMessage(),
+            ]);
             return null;
         }
 
         if ($coupon_id <= 0) {
+            self::debug_ctx('coupon save failed: invalid id', [
+                'coupon_code' => $coupon_code,
+                'coupon_id' => $coupon_id,
+            ]);
             return null;
         }
+
+        self::debug_ctx('coupon ready', [
+            'coupon_code' => (string) $coupon->get_code(),
+            'coupon_id' => $coupon_id,
+        ]);
 
         return [
             'code' => (string) $coupon->get_code(),
@@ -366,6 +498,15 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $rep_name = self::REP_NAMES[$rep_index] ?? self::REP_NAMES[0];
         $coupon_amount_display = wp_strip_all_tags(wc_price($coupon_amount));
 
+        self::debug_ctx('email context built', [
+            'job_id' => isset($job_row['id']) ? (int) $job_row['id'] : 0,
+            'recipient' => $recipient,
+            'subject' => $subject,
+            'variant_index' => $variant_index,
+            'rep_name' => $rep_name,
+            'coupon_code' => $coupon_code,
+        ]);
+
         return new QuoteOfferEmailContext(
             $recipient,
             $subject,
@@ -383,16 +524,19 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     private function dispatch_quote_offer_email(QuoteOfferEmailContext $context): bool
     {
         if (!function_exists('WC')) {
+            self::debug('dispatch skipped: WC() unavailable');
             return false;
         }
 
         $woo = WC();
         if (!$woo || !method_exists($woo, 'mailer')) {
+            self::debug('dispatch skipped: mailer unavailable');
             return false;
         }
 
         $mailer = $woo->mailer();
         if (!$mailer || !method_exists($mailer, 'get_emails')) {
+            self::debug('dispatch skipped: get_emails unavailable');
             return false;
         }
 
@@ -402,28 +546,66 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             $email = new FFLHubQuoteOffer();
         }
 
-        return $email->trigger($context);
+        $sent = $email->trigger($context);
+        self::debug_ctx('dispatch attempted', [
+            'recipient' => $context->recipient_email,
+            'subject' => $context->subject,
+            'variant_index' => $context->variant_index,
+            'sent' => $sent ? 1 : 0,
+        ]);
+
+        return $sent;
     }
 
-    private function mark_job_email_sent(int $job_id): void
+    private function mark_job_email_sent(int $job_id): bool
     {
         global $wpdb;
 
         if ($job_id <= 0) {
-            return;
+            return false;
         }
 
-        $wpdb->update(
+        $updated = $wpdb->update(
             $this->jobs_table->get_table_name(),
             ['email_sent' => 1],
             ['id' => $job_id],
             ['%d'],
             ['%d']
         );
+
+        if ($updated === false) {
+            self::debug_ctx('mark sent failed', [
+                'job_id' => $job_id,
+                'last_error' => (string) $wpdb->last_error,
+            ]);
+            return false;
+        }
+
+        if ((int) $updated < 1) {
+            self::debug_ctx('mark sent returned no updated rows', [
+                'job_id' => $job_id,
+            ]);
+            return false;
+        }
+
+        return true;
     }
 
     private static function force_no_delay_mode(): bool
     {
         return defined('FFLHUB_QUOTE_EMAIL_FORCE_NO_DELAY') && (bool) constant('FFLHUB_QUOTE_EMAIL_FORCE_NO_DELAY');
+    }
+
+    private static function debug(string $message): void
+    {
+        DebugLogUtil::log(self::DEBUG_CONST, self::LOG_PREFIX, $message);
+    }
+
+    /**
+     * @param array<string,mixed> $context
+     */
+    private static function debug_ctx(string $message, array $context): void
+    {
+        DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $message, $context);
     }
 }
