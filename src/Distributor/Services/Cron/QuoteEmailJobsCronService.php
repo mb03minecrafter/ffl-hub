@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Cron;
 
+use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
@@ -480,7 +481,9 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $expires_display = ($expires_ts > 0)
             ? wp_date('F j, Y g:i A T', $expires_ts)
             : __('48 hours from now', 'ffl-hub');
-        $final_price_display = $this->final_price_display_for_product($product, $coupon_amount);
+        $final_price_amount = $this->final_price_amount_for_product($product, $coupon_amount);
+        $final_price_display = $this->final_price_display_for_amount($final_price_amount);
+        $shipping_phrase = $this->shipping_phrase_for_quote_product($product, $final_price_amount);
 
         $subject = sprintf(__('Quote for %s', 'ffl-hub'), $product_name);
         $rep_name = self::REP_NAMES[$rep_index] ?? self::REP_NAMES[0];
@@ -494,6 +497,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'rep_name' => $rep_name,
             'coupon_code' => $coupon_code,
             'final_price' => $final_price_display,
+            'shipping_phrase' => $shipping_phrase,
         ]);
 
         return new QuoteOfferEmailContext(
@@ -507,6 +511,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             $coupon_code,
             $coupon_amount_display,
             $final_price_display,
+            $shipping_phrase,
             $expires_display
         );
     }
@@ -530,7 +535,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         return ($map > 0.0) ? $map : 0.0;
     }
 
-    private function final_price_display_for_product(WC_Product $product, float $coupon_amount): string
+    private function final_price_amount_for_product(WC_Product $product, float $coupon_amount): float
     {
         $final_price = $this->recommended_price_for_product($product);
         if ($final_price <= 0.0) {
@@ -543,11 +548,231 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             }
         }
 
+        return ($final_price > 0.0) ? $final_price : 0.0;
+    }
+
+    private function final_price_display_for_amount(float $final_price): string
+    {
         if ($final_price <= 0.0) {
             return __('See checkout for final product price', 'ffl-hub');
         }
 
         return wp_strip_all_tags(wc_price($final_price));
+    }
+
+    private function shipping_phrase_for_quote_product(WC_Product $product, float $line_revenue): string
+    {
+        $is_free_shipping = $this->is_free_shipping_for_quote_product($product, $line_revenue);
+
+        return $is_free_shipping
+            ? __('with free shipping', 'ffl-hub')
+            : __('+ shipping', 'ffl-hub');
+    }
+
+    private function is_free_shipping_for_quote_product(WC_Product $product, float $line_revenue): bool
+    {
+        $shipping_cost_total = $this->estimate_shipping_cost_total_for_quote_product($product);
+        if ($shipping_cost_total <= 0.0) {
+            return true;
+        }
+
+        $fee_percent = (float) get_option('fflhub_payment_processor_fee_percent', '2.9');
+        $f = $fee_percent / 100.0;
+        if ($f < 0.0) {
+            $f = 0.0;
+        }
+        if ($f >= 0.99) {
+            $f = 0.99;
+        }
+
+        $true_cost = $this->to_non_negative_float(
+            $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true),
+            0.0
+        );
+        $profit_net_total = ($line_revenue - $true_cost) * (1.0 - $f);
+
+        $customer_charge = 0.0;
+        $free_threshold = 0.5 * (float) $profit_net_total;
+        if ($profit_net_total > 0.0 && $shipping_cost_total < $free_threshold) {
+            $customer_charge = 0.0;
+        } else {
+            $customer_charge = ($f >= 0.99)
+                ? $shipping_cost_total
+                : ($shipping_cost_total / (1.0 - $f));
+        }
+
+        $shipping_settings = $this->shipping_method_settings_snapshot();
+        $min_cart_ship = (float) ($shipping_settings['min_shipping'] ?? 0.0);
+        $max_cart_ship = (float) ($shipping_settings['max_shipping'] ?? 0.0);
+
+        $customer_charge = max($min_cart_ship, $customer_charge);
+        if ($max_cart_ship > 0.0) {
+            $customer_charge = min($max_cart_ship, $customer_charge);
+        }
+
+        return $customer_charge <= 0.0001;
+    }
+
+    private function estimate_shipping_cost_total_for_quote_product(WC_Product $product): float
+    {
+        $shipping_settings = $this->shipping_method_settings_snapshot();
+        $fallback_ship = (float) ($shipping_settings['fallback_shipping'] ?? 15.0);
+
+        $dist_id = strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)));
+        if ($dist_id === '') {
+            return max(0.0, $fallback_ship);
+        }
+
+        $ffl_required_raw = $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true);
+        $ffl_required = !empty($ffl_required_raw) && (string) $ffl_required_raw !== '0';
+        $dropship_enabled = $this->to_boolish(
+            $product->get_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true),
+            true
+        );
+
+        $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
+        $dist_lane_fee = $this->to_non_negative_float($ship_raw, $fallback_ship);
+        $weight_oz = $this->to_non_negative_float(
+            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true),
+            0.0
+        );
+
+        $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan([
+            [
+                'line_id' => 'quote_line',
+                'dist_id' => $dist_id,
+                'qty' => 1,
+                'weight_oz' => $weight_oz,
+                'ffl_required' => $ffl_required ? 1 : 0,
+                'dropship_enabled' => $dropship_enabled ? 1 : 0,
+                'dist_lane_fee' => $dist_lane_fee,
+            ],
+        ]);
+
+        return max(0.0, (float) ($plan['total_cost'] ?? 0.0));
+    }
+
+    /**
+     * @return array{fallback_shipping:float,min_shipping:float,max_shipping:float}
+     */
+    private function shipping_method_settings_snapshot(): array
+    {
+        static $snapshot = null;
+        if (is_array($snapshot)) {
+            /** @var array{fallback_shipping:float,min_shipping:float,max_shipping:float} $snapshot */
+            return $snapshot;
+        }
+
+        $defaults = [
+            'fallback_shipping' => 15.0,
+            'min_shipping' => 0.0,
+            'max_shipping' => 0.0,
+        ];
+
+        $settings = null;
+        global $wpdb;
+
+        if (isset($wpdb) && $wpdb) {
+            $like = $wpdb->esc_like('woocommerce_fflhub_shipping_') . '%_settings';
+            $option_names = $wpdb->get_col(
+                $wpdb->prepare(
+                    "SELECT option_name
+                     FROM {$wpdb->options}
+                     WHERE option_name LIKE %s
+                     ORDER BY option_name ASC",
+                    $like
+                )
+            );
+
+            if (is_array($option_names)) {
+                foreach ($option_names as $option_name) {
+                    if (!is_string($option_name) || $option_name === '') {
+                        continue;
+                    }
+                    $value = get_option($option_name, null);
+                    if (is_array($value)) {
+                        $settings = $value;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!is_array($settings)) {
+            $legacy = get_option('woocommerce_fflhub_shipping_settings', null);
+            if (is_array($legacy)) {
+                $settings = $legacy;
+            }
+        }
+
+        if (!is_array($settings)) {
+            $snapshot = $defaults;
+            return $snapshot;
+        }
+
+        $snapshot = [
+            'fallback_shipping' => $this->to_non_negative_float($settings['fallback_shipping'] ?? null, $defaults['fallback_shipping']),
+            'min_shipping' => $this->to_non_negative_float($settings['min_shipping'] ?? null, $defaults['min_shipping']),
+            'max_shipping' => $this->to_non_negative_float($settings['max_shipping'] ?? null, $defaults['max_shipping']),
+        ];
+
+        return $snapshot;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function to_boolish($value, bool $default): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        $raw = strtolower(trim((string) $value));
+        if ($raw === '') {
+            return $default;
+        }
+
+        if (in_array($raw, ['1', 'true', 't', 'yes', 'y', 'on'], true)) {
+            return true;
+        }
+
+        if (in_array($raw, ['0', 'false', 'f', 'no', 'n', 'off'], true)) {
+            return false;
+        }
+
+        if (is_numeric($raw)) {
+            return ((float) $raw) !== 0.0;
+        }
+
+        return $default;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function to_non_negative_float($value, float $default = 0.0): float
+    {
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return max(0.0, $default);
+        }
+
+        $num = $raw;
+        if (!is_numeric($num)) {
+            $num = trim((string) preg_replace('/[^0-9\.\-]/', '', $raw));
+        }
+
+        if ($num === '' || !is_numeric($num)) {
+            return max(0.0, $default);
+        }
+
+        $v = (float) $num;
+        if (!is_finite($v) || $v < 0.0) {
+            return max(0.0, $default);
+        }
+
+        return $v;
     }
 
     private function dispatch_quote_offer_email(QuoteOfferEmailContext $context): bool
