@@ -132,11 +132,9 @@ class MapPriceVisibility
             return $price_html;
         }
 
+        // For "Email for Quote" brands, keep Woo regular/sale rendering unchanged.
         if (self::is_email_for_quote_policy($product, null)) {
-            $map_price = self::map_price_for_product($product, null);
-            if ($map_price !== null) {
-                return self::map_price_html($map_price);
-            }
+            return $price_html;
         }
 
         if (!self::should_hide_price($product, null)) {
@@ -154,22 +152,8 @@ class MapPriceVisibility
 
         $parent_product = ($parent instanceof WC_Product) ? $parent : null;
 
+        // For "Email for Quote" brands, keep Woo variation pricing data unchanged.
         if (self::is_email_for_quote_policy($variation, $parent_product)) {
-            $map_price = self::map_price_for_product($variation, $parent_product);
-            if ($map_price === null) {
-                return $data;
-            }
-
-            $price_raw = (string) wc_format_decimal($map_price, wc_get_price_decimals());
-            $price_num = (float) $price_raw;
-
-            $data['price_html'] = self::map_price_html($map_price);
-            $data['display_price'] = $price_num;
-            $data['display_regular_price'] = $price_num;
-            $data['price'] = $price_raw;
-            $data['regular_price'] = $price_raw;
-            $data['sale_price'] = '';
-
             return $data;
         }
 
@@ -195,23 +179,8 @@ class MapPriceVisibility
             return $offer;
         }
 
+        // For "Email for Quote" brands, keep Woo structured offer untouched.
         if (self::is_email_for_quote_policy($product, null)) {
-            $map_price = self::map_price_for_product($product, null);
-            if ($map_price !== null) {
-                $price_raw = (string) wc_format_decimal($map_price, wc_get_price_decimals());
-
-                if (is_array($offer)) {
-                    $offer['price'] = $price_raw;
-
-                    if (isset($offer['lowPrice'])) {
-                        $offer['lowPrice'] = $price_raw;
-                    }
-                    if (isset($offer['highPrice'])) {
-                        $offer['highPrice'] = $price_raw;
-                    }
-                }
-            }
-
             return $offer;
         }
 
@@ -249,10 +218,10 @@ class MapPriceVisibility
             $product
         );
 
-        echo '<p class="fflhub-email-for-quote-wrap">';
-        echo '<a class="button alt fflhub-email-for-quote-button" href="' . esc_url($href) . '">';
+        echo '<p class="fflhub-email-for-quote-wrap form-row form-row-wide">';
+        echo '<button type="button" class="single_add_to_cart_button button alt fflhub-email-for-quote-button" data-mailto="' . esc_attr($href) . '" onclick="window.location.href=this.getAttribute(\'data-mailto\');">';
         echo esc_html($label);
-        echo '</a>';
+        echo '</button>';
         echo '</p>';
     }
 
@@ -267,21 +236,6 @@ class MapPriceVisibility
     private static function is_email_for_quote_policy(WC_Product $product, ?WC_Product $parent = null): bool
     {
         return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_EMAIL_FOR_QUOTE;
-    }
-
-    private static function map_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
-    {
-        $map = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true));
-        if ($map === null && $parent instanceof WC_Product) {
-            $map = self::to_positive_float($parent->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true));
-        }
-
-        return $map;
-    }
-
-    private static function map_price_html(float $map_price): string
-    {
-        return '<span class="price fflhub-map-price">' . wc_price($map_price) . '</span>';
     }
 
     private static function email_for_quote_href(WC_Product $product): string
@@ -415,16 +369,4 @@ class MapPriceVisibility
         return self::$brand_names_by_product_id[$product_id];
     }
 
-    /**
-     * @param mixed $value
-     */
-    private static function to_positive_float($value): ?float
-    {
-        if (!is_numeric($value)) {
-            return null;
-        }
-
-        $float = (float) $value;
-        return $float > 0 ? $float : null;
-    }
 }
