@@ -2,6 +2,8 @@
 
 namespace FFLHub\Product;
 
+use FFLHub\Product\Tables\QuoteEmailJobsSchema;
+use FFLHub\Product\Tables\QuoteEmailJobsTable;
 use FFLHub\Settings\Options;
 use WC_Product;
 
@@ -393,6 +395,11 @@ class MapPriceVisibility
         ];
 
         $sent = wp_mail($recipient, $subject, $message, $headers);
+        $saved_job = self::insert_quote_email_job($product, $first_name, $last_name, $email, $sent);
+        if (!$saved_job) {
+            self::redirect_with_quote_status($redirect_url, 'mail_error');
+        }
+
         self::redirect_with_quote_status($redirect_url, $sent ? 'success' : 'mail_error');
     }
 
@@ -517,6 +524,79 @@ class MapPriceVisibility
         $phone = (string) get_option('woocommerce_store_phone', '');
         $phone = trim(sanitize_text_field($phone));
         return $phone;
+    }
+
+    private static function insert_quote_email_job(
+        WC_Product $product,
+        string $first_name,
+        string $last_name,
+        string $email,
+        bool $email_sent
+    ): bool {
+        global $wpdb;
+
+        $schema = new QuoteEmailJobsSchema();
+        $table = new QuoteEmailJobsTable($schema);
+        $table_name = $table->get_table_name();
+
+        $upc = self::quote_product_upc($product);
+        $product_name = self::truncate_quote_job_value((string) $product->get_name(), 255);
+        $submitted_at = (string) current_time('mysql', true);
+        $random_delay_minutes = (int) wp_rand(5, 30);
+
+        $inserted = $wpdb->insert(
+            $table_name,
+            [
+                'request_first_name'   => self::truncate_quote_job_value($first_name, 100),
+                'request_last_name'    => self::truncate_quote_job_value($last_name, 100),
+                'request_email'        => self::truncate_quote_job_value($email, 190),
+                'quote_upc'            => self::truncate_quote_job_value($upc, 64),
+                'quote_product_name'   => $product_name,
+                'submitted_at'         => $submitted_at,
+                'random_delay_minutes' => $random_delay_minutes,
+                'email_sent'           => $email_sent ? 1 : 0,
+            ],
+            [
+                '%s',
+                '%s',
+                '%s',
+                '%s',
+                '%s',
+                '%s',
+                '%d',
+                '%d',
+            ]
+        );
+
+        return $inserted === 1;
+    }
+
+    private static function quote_product_upc(WC_Product $product): string
+    {
+        $meta_keys = [
+            ProductMeta::FFLHUB_UPC_META,
+            '_upc',
+            'upc',
+        ];
+
+        foreach ($meta_keys as $meta_key) {
+            $candidate = trim((string) $product->get_meta($meta_key, true));
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return '';
+    }
+
+    private static function truncate_quote_job_value(string $value, int $max_length): string
+    {
+        $value = trim(sanitize_text_field($value));
+        if ($max_length <= 0 || strlen($value) <= $max_length) {
+            return $value;
+        }
+
+        return substr($value, 0, $max_length);
     }
 
     private static function map_policy_for_product(WC_Product $product, ?WC_Product $parent = null): string

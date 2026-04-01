@@ -28,6 +28,8 @@ use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Product\MapPriceVisibility;
+use FFLHub\Product\Tables\QuoteEmailJobsSchema;
+use FFLHub\Product\Tables\QuoteEmailJobsTable;
 use FFLHub\Settings\Options;
 use FFLHub\Settings\SettingsRegistrar;
 use FFLHub\Shipping\Wordpress\ShippingRegistrar;
@@ -37,6 +39,9 @@ use FFLHub\Shipping\Wordpress\ShippingRegistrar;
  */
 final class Plugin
 {
+    private const QUOTE_EMAIL_JOBS_SCHEMA_OPTION = 'fflhub_customer_quote_email_jobs_schema_v1';
+    private const QUOTE_EMAIL_JOBS_SCHEMA_VERSION = '2';
+
     /**
      * Singleton instance.
      */
@@ -89,6 +94,7 @@ final class Plugin
 
         $this->bom_table_schema = new BOMSchema();
         $this->bom_table = new BOMTable($this->bom_table_schema);
+        self::ensure_quote_email_jobs_table();
 
         $this->ffl_api = new FFLApi($this->ffl_table);
         $this->ffl_api->register();
@@ -152,6 +158,7 @@ final class Plugin
     {
         Options::init_defaults();
         CategoryInstaller::install_default_categories();
+        self::ensure_quote_email_jobs_table();
 
         $ffl_table_schema = new FFLSchema();
         $ffl_table        = new FFLTable($ffl_table_schema);
@@ -172,5 +179,23 @@ final class Plugin
 
         $handler = new DistributorHandler($ffl_table);
         $handler->on_deactivate();
+    }
+
+    private static function ensure_quote_email_jobs_table(): void
+    {
+        $installed_version = (string) get_option(self::QUOTE_EMAIL_JOBS_SCHEMA_OPTION, '');
+        if ($installed_version === self::QUOTE_EMAIL_JOBS_SCHEMA_VERSION) {
+            return;
+        }
+
+        $schema = new QuoteEmailJobsSchema();
+        $table = new QuoteEmailJobsTable($schema);
+        $table->createTables();
+
+        update_option(
+            self::QUOTE_EMAIL_JOBS_SCHEMA_OPTION,
+            self::QUOTE_EMAIL_JOBS_SCHEMA_VERSION,
+            false
+        );
     }
 }
