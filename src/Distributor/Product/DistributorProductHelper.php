@@ -138,9 +138,9 @@ class DistributorProductHelper
 
         // B) Compute initial sell price for product creation.
         $default_markup_mode = self::default_markup_mode_for_payload($selected_product);
-        $recommended_price = self::get_creation_sell_price_from_payload($selected_product, $default_markup_mode);
+        $sell_price = self::get_creation_sell_price_from_payload($selected_product, $default_markup_mode);
 
-        if ($recommended_price === null || $recommended_price <= 0) {
+        if ($sell_price === null || $sell_price <= 0) {
             $error_message = __('Could not compute a valid retail price for this product.', 'ffl-hub');
             if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
                 $error_message = __('MAP Price mode requires a valid MAP or MSRP value for this product.', 'ffl-hub');
@@ -152,11 +152,17 @@ class DistributorProductHelper
             );
         }
 
+        // Keep LAST_COMPUTED as "global markup recommended" even when sell price mode is MAP.
+        $computed_price_for_meta = self::get_recommended_price_from_payload($selected_product);
+        if ($computed_price_for_meta === null || $computed_price_for_meta <= 0) {
+            $computed_price_for_meta = (float) $sell_price;
+        }
+
         // C) Build WC product core fields (name/desc/sku/price/stock/status)
         $product = self::build_wc_product_from_payload(
             $upc,
             $selected_product,
-            $recommended_price
+            $sell_price
         );
 
         // D) Apply categories (recommended_category path)
@@ -177,7 +183,7 @@ class DistributorProductHelper
             $upc,
             $selected_dist_id,
             $selected_product,
-            $recommended_price,
+            (float) $computed_price_for_meta,
             $offers
         );
 
@@ -351,7 +357,7 @@ class DistributorProductHelper
      *
      * Stores:
      * - UPC, managed flag, selected distributor id
-     * - LAST_* snapshots: true_cost, dealer_price, MAP, MSRP, computed sell price, shipping cost
+     * - LAST_* snapshots: true_cost, dealer_price, MAP, MSRP, computed price, shipping cost
      * - FFL required flag
      * - Pricing mode defaults
      * - LAST_SYNC timestamp
@@ -363,7 +369,7 @@ class DistributorProductHelper
         string $upc,
         string $selected_dist_id,
         DistributorProductPayload $selected_product,
-        float $recommended_price,
+        float $computed_price_for_meta,
         array $offers = []
     ): void {
         $upc = trim($upc);
@@ -400,7 +406,7 @@ class DistributorProductHelper
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_MAP_META, $map);
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp);
 
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended_price);
+        $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $computed_price_for_meta);
 
         $product->update_meta_data(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required ? 1 : 0);
         $product->update_meta_data(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled ? 1 : 0);
@@ -434,7 +440,7 @@ class DistributorProductHelper
         WC_Product_Simple $product,
         string $selected_dist_id,
         DistributorProductPayload $selected_product,
-        float $recommended_price,
+        float $computed_price_for_meta,
         array $offers = []
     ): bool {
         $changed = false;
@@ -496,7 +502,7 @@ class DistributorProductHelper
         $set_meta_if_diff(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price, 4);
         $set_meta_if_diff(ProductMeta::FFLHUB_LAST_MAP_META, $map, 4);
         $set_meta_if_diff(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended_price, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $computed_price_for_meta, 4);
         $set_meta_if_diff(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost, 4);
         $set_meta_if_diff(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id, 0);
         $set_meta_if_diff(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required, 0);

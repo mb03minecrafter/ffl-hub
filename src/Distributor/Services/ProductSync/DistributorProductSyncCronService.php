@@ -431,16 +431,24 @@ final class DistributorProductSyncCronService extends AbstractCronService
             ? (float) $selected_payload->true_cost
             : null;
 
-        // Compute sell price
+        // Compute mode-aware sell price for storefront, plus global-markup computed
+        // price for LAST_COMPUTED meta (used by quote math).
         $t0 = microtime(true);
-        $recommended_price = DistributorProductHelper::compute_sell_price_for_product($product_id, $selected_payload);
+        $sell_price = DistributorProductHelper::compute_sell_price_for_product($product_id, $selected_payload);
+        $computed_price_for_meta = DistributorProductHelper::get_recommended_price_from_payload($selected_payload);
+        if (!is_numeric($computed_price_for_meta) || (float) $computed_price_for_meta <= 0) {
+            $computed_price_for_meta = $sell_price;
+        }
         $this->profile('compute_sell_price', $t0, array(
             'product_id' => $product_id,
             'selected'   => $selected_dist_id,
-            'ok'         => (is_numeric($recommended_price) && (float) $recommended_price > 0),
+            'ok'         => (is_numeric($sell_price) && (float) $sell_price > 0),
+            'computed_for_meta' => (is_numeric($computed_price_for_meta) && (float) $computed_price_for_meta > 0)
+                ? (float) $computed_price_for_meta
+                : null,
         ));
 
-        if (! is_numeric($recommended_price) || (float) $recommended_price <= 0) {
+        if (! is_numeric($sell_price) || (float) $sell_price <= 0) {
             $t0 = microtime(true);
 
             $desired_qty    = $qty;
@@ -481,7 +489,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
             return array('outcome' => 'BAD_PRICE_STOCK_ONLY', 'lookup_ms' => $t_lookup, 'write_ms' => $t_write);
         }
 
-        $recommended_price = (float) $recommended_price;
+        $sell_price = (float) $sell_price;
 
         // Profit floor
         $t0 = microtime(true);
@@ -502,7 +510,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'floor'      => $min_profitable_price,
         ));
 
-        if ($min_profitable_price !== null && $recommended_price < $min_profitable_price) {
+        if ($min_profitable_price !== null && $sell_price < $min_profitable_price) {
             $t0 = microtime(true);
 
             $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
@@ -525,7 +533,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'product_id' => $product_id,
                 'upc'        => $upc,
                 'selected'   => $selected_dist_id,
-                'sell'       => $recommended_price,
+                'sell'       => $sell_price,
                 'floor'      => $min_profitable_price,
                 'stock_override' => $stock_oos_override_enabled ? 1 : 0,
                 'brand_changed' => $brand_changed ? 1 : 0,
@@ -546,7 +554,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $desired_qty    = (int) $qty;
         $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
         $price_pair = DistributorProductHelper::resolve_regular_and_sale_prices(
-            (float) $recommended_price,
+            (float) $sell_price,
             $selected_payload->msrp ?? null
         );
         $desired_regular_price = (string) ($price_pair['regular'] ?? '');
@@ -576,7 +584,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
             ($product instanceof WC_Product_Simple) ? $product : $product,
             $selected_dist_id,
             $selected_payload,
-            (float) $recommended_price,
+            (float) $computed_price_for_meta,
             $offers
         );
 
@@ -598,7 +606,8 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'upc'           => $upc,
             'selected'      => $selected_dist_id,
             'qty'           => $desired_qty,
-            'sell'          => $recommended_price,
+            'sell'          => $sell_price,
+            'computed_for_meta' => (float) $computed_price_for_meta,
             'stock_override' => $stock_oos_override_enabled ? 1 : 0,
             'stock_changed' => $stock_changed ? 1 : 0,
             'price_changed' => $price_changed ? 1 : 0,
