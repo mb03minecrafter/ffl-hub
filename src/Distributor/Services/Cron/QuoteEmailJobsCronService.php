@@ -1,8 +1,7 @@
 <?php
 
-namespace FFLHub\Product\Cron;
+namespace FFLHub\Distributor\Services\Cron;
 
-use FFLHub\Distributor\Services\Cron\AbstractCronService;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
 
