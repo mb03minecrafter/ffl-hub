@@ -524,7 +524,10 @@ final class Options
      */
     public static function normalize_brand_policy_key(string $brand): string
     {
+        $brand = html_entity_decode($brand, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $brand = wp_strip_all_tags($brand);
         $key = strtolower(trim($brand));
+        $key = (string) preg_replace('/\s+/', ' ', $key);
         return (string) preg_replace('/[^a-z0-9]+/', '', $key);
     }
 

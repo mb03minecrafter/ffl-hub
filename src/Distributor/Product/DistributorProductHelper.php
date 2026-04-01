@@ -1430,6 +1430,7 @@ class DistributorProductHelper
 
     private static function normalize_brand_name(string $brand): string
     {
+        $brand = html_entity_decode($brand, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $brand = wp_strip_all_tags($brand);
         $brand = trim((string) preg_replace('/\s+/', ' ', $brand));
         $brand = trim($brand, " \t\n\r\0\x0B-_,.;:/\\|");
