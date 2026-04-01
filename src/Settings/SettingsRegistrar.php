@@ -41,6 +41,7 @@ final class SettingsRegistrar
     public static function register_all_settings(): void
     {
         self::register_global_settings();
+        self::register_map_policy_settings();
         self::register_usps_settings();
         self::register_distributor_settings();
     }
@@ -86,6 +87,24 @@ final class SettingsRegistrar
                 'type'              => 'string',
                 'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
                 'default'           => Options::default_test_order_debug_enabled() ? '1' : '0',
+            ]
+        );
+    }
+
+    /**
+     * Register MAP brand policy settings.
+     */
+    private static function register_map_policy_settings(): void
+    {
+        $group = Options::map_policy_settings_group();
+
+        register_setting(
+            $group,
+            Options::OPTION_MAP_BRAND_POLICIES,
+            [
+                'type'              => 'array',
+                'sanitize_callback' => [__CLASS__, 'sanitize_map_brand_policies'],
+                'default'           => [],
             ]
         );
     }
@@ -363,6 +382,56 @@ final class SettingsRegistrar
             $num = 0.0;
         }
         return (string) $num;
+    }
+
+    /**
+     * Sanitize MAP brand policy rows.
+     *
+     * Input shape:
+     * - array<int,array{brand:string,policy:string}>
+     *
+     * Output shape:
+     * - array<int,array{brand:string,policy:string}>
+     *
+     * @param mixed $value
+     * @return array<int,array{brand:string,policy:string}>
+     */
+    public static function sanitize_map_brand_policies($value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $normalized_rows = [];
+
+        foreach ($value as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $brand = sanitize_text_field((string) ($row['brand'] ?? ''));
+            $brand = trim((string) preg_replace('/\s+/', ' ', $brand));
+            if ($brand === '') {
+                continue;
+            }
+
+            $key = Options::normalize_brand_policy_key($brand);
+            if ($key === '') {
+                continue;
+            }
+
+            $policy = strtolower(trim((string) ($row['policy'] ?? '')));
+            if ($policy !== Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+                $policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+            }
+
+            $normalized_rows[$key] = [
+                'brand'  => $brand,
+                'policy' => $policy,
+            ];
+        }
+
+        return array_values($normalized_rows);
     }
 
     /**

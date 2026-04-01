@@ -2,6 +2,7 @@
 
 namespace FFLHub\Product;
 
+use FFLHub\Settings\Options;
 use WC_Product;
 
 if (!defined('ABSPATH')) {
@@ -10,6 +11,14 @@ if (!defined('ABSPATH')) {
 
 class MapPriceVisibility
 {
+    private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
+
+    /** @var array<string,string>|null */
+    private static ?array $policy_lookup_cache = null;
+
+    /** @var array<int,array<int,string>> */
+    private static array $brand_names_by_product_id = [];
+
     public static function init(): void
     {
         // Replace price HTML everywhere except cart/checkout
@@ -28,11 +37,24 @@ class MapPriceVisibility
             || (function_exists('is_checkout') && is_checkout());
     }
 
-    private static function hidden_text(): string
+    private static function hidden_text(?WC_Product $product = null, ?WC_Product $parent = null): string
     {
+        $policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        if ($product instanceof WC_Product) {
+            $policy = self::map_policy_for_product($product, $parent);
+        }
+
+        $default_text = __('Add to cart to see price', 'ffl-hub');
+        if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+            $default_text = __('Email for quote', 'ffl-hub');
+        }
+
         return (string) apply_filters(
             'fflhub_map_hidden_price_text',
-            __('Add to cart to see price', 'ffl-hub')
+            $default_text,
+            $product,
+            $parent,
+            $policy
         );
     }
 
@@ -98,7 +120,7 @@ class MapPriceVisibility
             return $price_html;
         }
 
-        return '<span class="fflhub-map-hidden-price">' . esc_html(self::hidden_text()) . '</span>';
+        return '<span class="fflhub-map-hidden-price">' . esc_html(self::hidden_text($product, null)) . '</span>';
     }
 
     public static function filter_available_variation(array $data, $parent, $variation): array
@@ -113,7 +135,7 @@ class MapPriceVisibility
             return $data;
         }
 
-        $data['price_html'] = '<span class="fflhub-map-hidden-price">' . esc_html(self::hidden_text()) . '</span>';
+        $data['price_html'] = '<span class="fflhub-map-hidden-price">' . esc_html(self::hidden_text($variation, $parent_product)) . '</span>';
 
         // Optional hardening (prevents themes/JS from showing numbers)
         $data['display_price'] = 0;
@@ -137,5 +159,95 @@ class MapPriceVisibility
         }
 
         return $offer;
+    }
+
+    /**
+     * Public accessor for other frontend/compliance flows.
+     */
+    public static function get_map_policy_for_product(WC_Product $product, ?WC_Product $parent = null): string
+    {
+        return self::map_policy_for_product($product, $parent);
+    }
+
+    private static function map_policy_for_product(WC_Product $product, ?WC_Product $parent = null): string
+    {
+        $policy_lookup = self::map_policy_lookup();
+        if (empty($policy_lookup)) {
+            return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        }
+
+        $brand_names = self::brand_names_for_product($product);
+        if (empty($brand_names) && $parent instanceof WC_Product) {
+            $brand_names = self::brand_names_for_product($parent);
+        }
+
+        foreach ($brand_names as $brand_name) {
+            $key = Options::normalize_brand_policy_key($brand_name);
+            if ($key === '' || !isset($policy_lookup[$key])) {
+                continue;
+            }
+
+            $policy = strtolower(trim((string) $policy_lookup[$key]));
+            if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+                return Options::MAP_POLICY_EMAIL_FOR_QUOTE;
+            }
+
+            return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        }
+
+        return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private static function map_policy_lookup(): array
+    {
+        if (self::$policy_lookup_cache === null) {
+            $lookup = Options::get_map_brand_policy_lookup();
+            self::$policy_lookup_cache = is_array($lookup) ? $lookup : [];
+        }
+
+        return self::$policy_lookup_cache;
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private static function brand_names_for_product(WC_Product $product): array
+    {
+        $product_id = (int) $product->get_id();
+        if ($product_id <= 0) {
+            return [];
+        }
+
+        if (isset(self::$brand_names_by_product_id[$product_id])) {
+            return self::$brand_names_by_product_id[$product_id];
+        }
+
+        $names = [];
+
+        foreach (self::BRAND_TAXONOMY_CANDIDATES as $taxonomy) {
+            if (!taxonomy_exists($taxonomy)) {
+                continue;
+            }
+
+            $terms = wp_get_post_terms($product_id, $taxonomy, ['fields' => 'names']);
+            if (is_wp_error($terms) || !is_array($terms)) {
+                continue;
+            }
+
+            foreach ($terms as $term_name) {
+                $name = trim((string) $term_name);
+                if ($name === '') {
+                    continue;
+                }
+
+                $names[$name] = $name;
+            }
+        }
+
+        self::$brand_names_by_product_id[$product_id] = array_values($names);
+        return self::$brand_names_by_product_id[$product_id];
     }
 }

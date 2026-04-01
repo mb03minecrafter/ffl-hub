@@ -44,6 +44,7 @@ final class Options
     public const OPTION_PAYMENT_PROCESSOR_FEE_PERCENT = 'fflhub_payment_processor_fee_percent';
     public const OPTION_GLOBAL_MARKUP                 = 'fflhub_global_markup';
     public const OPTION_TEST_ORDER_DEBUG_ENABLED      = 'fflhub_test_order_debug_enabled';
+    public const OPTION_MAP_BRAND_POLICIES            = 'fflhub_map_brand_policies';
     public const OPTION_USPS_ESTIMATE_ENABLED         = 'fflhub_usps_estimate_enabled';
     public const OPTION_USPS_USE_TEST_ENV             = 'fflhub_usps_use_test_env';
     public const OPTION_USPS_BASE_URL                 = 'fflhub_usps_base_url';
@@ -70,6 +71,7 @@ final class Options
     private const DEFAULT_PAYMENT_PROCESSOR_FEE_PERCENT = 2.9;  // %
     private const DEFAULT_GLOBAL_MARKUP                 = 10.0; // %
     private const DEFAULT_TEST_ORDER_DEBUG_ENABLED      = true;
+    private const DEFAULT_MAP_BRAND_POLICIES            = [];
     private const DEFAULT_USPS_ESTIMATE_ENABLED         = false;
     private const DEFAULT_USPS_USE_TEST_ENV             = true;
     private const DEFAULT_USPS_BASE_URL                 = '';
@@ -86,6 +88,9 @@ final class Options
     private const DEFAULT_USPS_TIMEOUT_SEC              = 8;
     private const DEFAULT_USPS_TARE_WEIGHT_OZ           = 0.0;
 
+    public const MAP_POLICY_ADD_TO_CART_FOR_PRICE = 'add_to_cart_for_price';
+    public const MAP_POLICY_EMAIL_FOR_QUOTE       = 'email_for_quote';
+
     /* -------------------------------------------------------------------------
      * Settings groups (WP Settings API)
      * ---------------------------------------------------------------------- */
@@ -96,6 +101,14 @@ final class Options
     public static function global_settings_group(): string
     {
         return 'fflhub_global_settings';
+    }
+
+    /**
+     * Settings group for MAP brand policy rules.
+     */
+    public static function map_policy_settings_group(): string
+    {
+        return 'fflhub_map_policy_settings';
     }
 
     /**
@@ -255,6 +268,10 @@ final class Options
 
         if (get_option(self::OPTION_TEST_ORDER_DEBUG_ENABLED, null) === null) {
             add_option(self::OPTION_TEST_ORDER_DEBUG_ENABLED, self::DEFAULT_TEST_ORDER_DEBUG_ENABLED ? '1' : '0');
+        }
+
+        if (get_option(self::OPTION_MAP_BRAND_POLICIES, null) === null) {
+            add_option(self::OPTION_MAP_BRAND_POLICIES, self::DEFAULT_MAP_BRAND_POLICIES);
         }
 
         if (get_option(self::OPTION_USPS_ESTIMATE_ENABLED, null) === null) {
@@ -438,6 +455,122 @@ final class Options
     public static function set_global_markup(float $percent): void
     {
         update_option(self::OPTION_GLOBAL_MARKUP, (string) $percent);
+    }
+
+    /**
+     * MAP policy rows keyed by brand names entered by admins.
+     *
+     * @return array<int,array{brand:string,policy:string}>
+     */
+    public static function get_map_brand_policies(): array
+    {
+        return self::normalize_map_brand_policies(
+            get_option(self::OPTION_MAP_BRAND_POLICIES, self::DEFAULT_MAP_BRAND_POLICIES)
+        );
+    }
+
+    /**
+     * @param array<int,array{brand?:string,policy?:string}> $policies
+     */
+    public static function set_map_brand_policies(array $policies): void
+    {
+        update_option(self::OPTION_MAP_BRAND_POLICIES, self::normalize_map_brand_policies($policies));
+    }
+
+    /**
+     * Resolve configured MAP policy for a brand name.
+     */
+    public static function get_map_policy_for_brand(string $brand): string
+    {
+        $lookup = self::get_map_brand_policy_lookup();
+        $key = self::normalize_brand_policy_key($brand);
+
+        if ($key !== '' && isset($lookup[$key])) {
+            return (string) $lookup[$key];
+        }
+
+        return self::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+    }
+
+    /**
+     * Fast lookup map: normalized brand key => policy.
+     *
+     * @return array<string,string>
+     */
+    public static function get_map_brand_policy_lookup(): array
+    {
+        $lookup = [];
+
+        foreach (self::get_map_brand_policies() as $row) {
+            $brand = (string) ($row['brand'] ?? '');
+            $policy = (string) ($row['policy'] ?? self::MAP_POLICY_ADD_TO_CART_FOR_PRICE);
+            $key = self::normalize_brand_policy_key($brand);
+
+            if ($key === '') {
+                continue;
+            }
+
+            $lookup[$key] = self::normalize_map_policy($policy);
+        }
+
+        return $lookup;
+    }
+
+    /**
+     * Normalize a brand name into an internal comparison key.
+     */
+    public static function normalize_brand_policy_key(string $brand): string
+    {
+        $key = strtolower(trim($brand));
+        return (string) preg_replace('/[^a-z0-9]+/', '', $key);
+    }
+
+    /**
+     * @param mixed $raw
+     * @return array<int,array{brand:string,policy:string}>
+     */
+    private static function normalize_map_brand_policies($raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $normalized_rows = [];
+
+        foreach ($raw as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $brand = sanitize_text_field((string) ($row['brand'] ?? ''));
+            $brand = trim((string) preg_replace('/\s+/', ' ', $brand));
+            if ($brand === '') {
+                continue;
+            }
+
+            $key = self::normalize_brand_policy_key($brand);
+            if ($key === '') {
+                continue;
+            }
+
+            $normalized_rows[$key] = [
+                'brand'  => $brand,
+                'policy' => self::normalize_map_policy((string) ($row['policy'] ?? '')),
+            ];
+        }
+
+        return array_values($normalized_rows);
+    }
+
+    private static function normalize_map_policy(string $policy): string
+    {
+        $policy = strtolower(trim($policy));
+
+        if ($policy === self::MAP_POLICY_EMAIL_FOR_QUOTE) {
+            return self::MAP_POLICY_EMAIL_FOR_QUOTE;
+        }
+
+        return self::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
     }
 
     public static function get_test_order_debug_enabled(): bool

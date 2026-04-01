@@ -11,6 +11,7 @@ use FFLHub\Admin\Pages\AdminPage;
 use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
+use FFLHub\Admin\Pages\MapPolicyPage;
 use FFLHub\Admin\ProductMeta\BOMMetaBox;
 use FFLHub\Admin\ProductMeta\OrderFFLPanel;
 use FFLHub\Admin\ProductMeta\ProductMetaBox;
@@ -55,6 +56,7 @@ final class Plugin
     public FFLImporterPage $ffl_importer_page;
     public DistributorProductsPage $distributor_products_page;
     public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
+    public MapPolicyPage $map_policy_page;
     public OrderPlacementMetaBox $order_placement_metabox;
 
     // Frontend-only
@@ -118,6 +120,9 @@ final class Plugin
 
             $this->dealer_fulfilled_jobs_page = new DealerFulfilledJobsPage($this->distributor_handler->ordering_jobs_table);
             $this->dealer_fulfilled_jobs_page->register();
+
+            $this->map_policy_page = new MapPolicyPage();
+            $this->map_policy_page->register();
 
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();
