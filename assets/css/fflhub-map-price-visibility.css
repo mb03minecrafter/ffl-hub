@@ -53,10 +53,14 @@ body.fflhub-quote-modal-open {
   position: fixed;
   inset: 0;
   z-index: 999999;
+  padding: 16px;
+  box-sizing: border-box;
 }
 
 .fflhub-email-for-quote-modal.is-open {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .fflhub-email-for-quote-modal__overlay {
@@ -68,10 +72,10 @@ body.fflhub-quote-modal-open {
 .fflhub-email-for-quote-modal__dialog {
   position: relative;
   z-index: 2;
-  width: min(680px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
+  width: min(680px, 100%);
+  max-height: 100%;
   overflow: auto;
-  margin: 16px auto;
+  margin: 0;
   padding: 24px 22px;
   border-radius: 8px;
   background: #ffffff;
@@ -111,7 +115,7 @@ body.fflhub-quote-modal-open {
   display: block;
   margin: 10px 0 6px;
   font-size: var(--wp--preset--font-size--x-small, 16px);
-  font-weight: var(--wp--custom--font-weight--regular, 400);
+  font-weight: var(--wp--custom--font-weight--bold, 700);
 }
 
 .fflhub-email-for-quote-form input[type="text"],
@@ -123,6 +127,7 @@ body.fflhub-quote-modal-open {
   border-radius: 5px;
   padding: 0 12px;
   font-size: var(--wp--preset--font-size--x-small, 16px);
+  font-weight: var(--wp--custom--font-weight--semi-bold, 600);
   line-height: 1.4;
 }
 
@@ -135,6 +140,9 @@ body.fflhub-quote-modal-open {
 
 .fflhub-email-for-quote-submit {
   margin-top: 16px;
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 @media (max-width: 781px) {
@@ -143,9 +151,8 @@ body.fflhub-quote-modal-open {
   }
 
   .fflhub-email-for-quote-modal__dialog {
-    margin: 8px auto;
-    width: min(680px, calc(100vw - 16px));
-    max-height: calc(100vh - 16px);
+    width: 100%;
+    max-height: 100%;
     padding: 18px 14px;
   }
 }

@@ -290,11 +290,14 @@ class MapPriceVisibility
         echo '<p>' . esc_html__('This form will be sent to and reviewed by a store associate who will evaluate each request individually and then contact you concerning product info and pricing. Any discount or promo code you may receive is specific to your email address. It cannot be shared or used by anyone else. It will be a one time use only code for YOU only.', 'ffl-hub') . '</p>';
         echo '<p>' . esc_html__('Requests are only reviewed during business hours.', 'ffl-hub') . '</p>';
         echo '<p><strong>' . esc_html__('Business Hours:', 'ffl-hub') . '</strong> ' . esc_html__('7am-6pm CST every day', 'ffl-hub') . '</p>';
-        echo '<p>' . sprintf(
-            /* translators: %s = sales phone number */
-            esc_html__('You may also contact our Sales team with any questions at %s option 1 during business hours. Thank you!', 'ffl-hub'),
-            esc_html('(254) 731-1450')
-        ) . '</p>';
+        $sales_phone = self::store_phone_for_quote();
+        if ($sales_phone !== '') {
+            echo '<p>' . sprintf(
+                /* translators: %s = sales phone number */
+                esc_html__('You may also contact our Sales team with any questions at %s option 1 during business hours. Thank you!', 'ffl-hub'),
+                esc_html($sales_phone)
+            ) . '</p>';
+        }
 
         echo '<form class="fflhub-email-for-quote-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         echo '<input type="hidden" name="action" value="' . esc_attr(self::EMAIL_FOR_QUOTE_FORM_ACTION) . '">';
@@ -459,7 +462,16 @@ class MapPriceVisibility
             } elseif ($status === 'invalid_email') {
                 $message = __('Please enter a valid email address.', 'ffl-hub');
             } else {
-                $message = __('We could not submit your request right now. Please try again or call Sales at (254) 731-1450 option 1.', 'ffl-hub');
+                $sales_phone = self::store_phone_for_quote();
+                if ($sales_phone !== '') {
+                    $message = sprintf(
+                        /* translators: %s = sales phone number */
+                        __('We could not submit your request right now. Please try again or call Sales at %s option 1.', 'ffl-hub'),
+                        $sales_phone
+                    );
+                } else {
+                    $message = __('We could not submit your request right now. Please try again.', 'ffl-hub');
+                }
             }
         }
 
@@ -498,6 +510,13 @@ class MapPriceVisibility
 
         wp_safe_redirect($target);
         exit;
+    }
+
+    private static function store_phone_for_quote(): string
+    {
+        $phone = (string) get_option('woocommerce_store_phone', '');
+        $phone = trim(sanitize_text_field($phone));
+        return $phone;
     }
 
     private static function map_policy_for_product(WC_Product $product, ?WC_Product $parent = null): string
