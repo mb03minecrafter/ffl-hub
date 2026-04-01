@@ -27,6 +27,7 @@ use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Product\CategoryInstaller;
+use FFLHub\Product\Cron\QuoteEmailJobsCronService;
 use FFLHub\Product\MapPriceVisibility;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
@@ -69,6 +70,7 @@ final class Plugin
 
     // Always-on
     public CartCompliance $cart_compliance;
+    private QuoteEmailJobsCronService $quote_email_jobs_cron_service;
 
     public static function instance(): self
     {
@@ -95,6 +97,8 @@ final class Plugin
         $this->bom_table_schema = new BOMSchema();
         $this->bom_table = new BOMTable($this->bom_table_schema);
         self::ensure_quote_email_jobs_table();
+        $this->quote_email_jobs_cron_service = new QuoteEmailJobsCronService();
+        $this->quote_email_jobs_cron_service->register();
 
         $this->ffl_api = new FFLApi($this->ffl_table);
         $this->ffl_api->register();
@@ -159,6 +163,8 @@ final class Plugin
         Options::init_defaults();
         CategoryInstaller::install_default_categories();
         self::ensure_quote_email_jobs_table();
+        $quote_email_jobs_cron = new QuoteEmailJobsCronService();
+        $quote_email_jobs_cron->on_activation();
 
         $ffl_table_schema = new FFLSchema();
         $ffl_table        = new FFLTable($ffl_table_schema);
@@ -174,6 +180,9 @@ final class Plugin
 
     public static function deactivate(): void
     {
+        $quote_email_jobs_cron = new QuoteEmailJobsCronService();
+        $quote_email_jobs_cron->on_deactivation();
+
         $ffl_table_schema = new FFLSchema();
         $ffl_table        = new FFLTable($ffl_table_schema);
 
