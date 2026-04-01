@@ -56,10 +56,12 @@ class ProductMeta
      * 0 = Global Markup Percent (uses Options::get_global_markup())
      * 1 = Fixed Percent (uses FFLHUB_MARKUP_PERCENT_META)
      * 2 = Fixed Price (uses FFLHUB_FIXED_PRICE_META)
+     * 3 = MAP Price (uses FFLHUB_LAST_MAP_META)
      */
     public const MARKUP_MODE_GLOBAL      = 0;
     public const MARKUP_MODE_FIXED_PCT   = 1;
     public const MARKUP_MODE_FIXED_PRICE = 2;
+    public const MARKUP_MODE_MAP_PRICE   = 3;
 
     public const FFLHUB_MARKUP_PERCENT_META = '_fflhub_markup_percent'; // float, 0-100
     public const FFLHUB_FIXED_PRICE_META    = '_fflhub_fixed_price';    // 🆕 float, final sell price

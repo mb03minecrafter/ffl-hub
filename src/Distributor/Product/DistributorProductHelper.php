@@ -136,13 +136,19 @@ class DistributorProductHelper
             return self::build_existing_product_response($existing_id);
         }
 
-        // B) Compute retail price (based on selected payload)
-        $recommended_price = self::get_recommended_price_from_payload($selected_product);
+        // B) Compute initial sell price for product creation.
+        $default_markup_mode = self::default_markup_mode_for_payload($selected_product);
+        $recommended_price = self::get_creation_sell_price_from_payload($selected_product, $default_markup_mode);
 
         if ($recommended_price === null || $recommended_price <= 0) {
+            $error_message = __('Could not compute a valid retail price for this product.', 'ffl-hub');
+            if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
+                $error_message = __('MAP Price mode requires a valid MAP value for this product.', 'ffl-hub');
+            }
+
             return new WP_Error(
                 'fflhub_no_price',
-                __('Could not compute a valid retail price for this product.', 'ffl-hub')
+                $error_message
             );
         }
 
@@ -404,7 +410,8 @@ class DistributorProductHelper
         $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height']);
         $product->update_meta_data(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required ? 1 : 0);
 
-        $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, ProductMeta::MARKUP_MODE_GLOBAL);
+        $default_markup_mode = self::default_markup_mode_for_payload($selected_product);
+        $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, $default_markup_mode);
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, 0);
         $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
         $product->update_meta_data(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, 0);
@@ -878,6 +885,38 @@ class DistributorProductHelper
     }
 
     /**
+     * Determine default pricing mode for a payload at product creation.
+     *
+     * MAP policy "Email for Quote" brands default to MAP Price mode.
+     */
+    public static function default_markup_mode_for_payload(DistributorProductPayload $payload): int
+    {
+        $brand = self::normalize_brand_name((string) ($payload->brand ?? ''));
+        if ($brand !== '' && Options::get_map_policy_for_brand($brand) === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+            return ProductMeta::MARKUP_MODE_MAP_PRICE;
+        }
+
+        return ProductMeta::MARKUP_MODE_GLOBAL;
+    }
+
+    /**
+     * Resolve initial creation-time sell price for a payload.
+     *
+     * - MAP Price mode: sell price equals payload MAP
+     * - Other modes: use global recommended price
+     */
+    private static function get_creation_sell_price_from_payload(
+        DistributorProductPayload $selected_product,
+        int $default_markup_mode
+    ): ?float {
+        if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            return self::to_positive_float($selected_product->map ?? null);
+        }
+
+        return self::get_recommended_price_from_payload($selected_product);
+    }
+
+    /**
      * Compute sell price for a given product using its stored pricing settings.
      *
      * Modes:
@@ -894,6 +933,10 @@ class DistributorProductHelper
 
         if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
             return $settings['fixed_price'] ?? null;
+        }
+
+        if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            return self::to_positive_float($payload->map ?? null);
         }
 
         $pct = $settings['effective_percent'] ?? null;
@@ -921,8 +964,8 @@ class DistributorProductHelper
      * Returns:
      * - mode: one of ProductMeta::MARKUP_MODE_*
      * - percent: the product-level percent (normalized to decimal, e.g. 0.15)
-     * - fixed_price: the fixed price if present
-     * - effective_percent: the percent that will actually be applied (or null for fixed price mode)
+      * - fixed_price: the fixed price if present
+      * - effective_percent: the percent that will actually be applied (or null for fixed/map modes)
      *
      * Normalization rules:
      * - Percent meta > 1.0 is treated as "15" meaning 15% and converted to 0.15.
@@ -961,6 +1004,8 @@ class DistributorProductHelper
         } elseif ($mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
             $effective_percent = $percent;
         } elseif ($mode === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
+            $effective_percent = null;
+        } elseif ($mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
             $effective_percent = null;
         }
 
@@ -1001,9 +1046,10 @@ class DistributorProductHelper
     /**
      * Apply the stored admin pricing settings to the WooCommerce product price.
      *
-     * - Fixed price mode: set that value directly
-     * - Percent modes: base cost comes from LAST_TRUE_COST else LAST_DEALER_PRICE
-     */
+      * - Fixed price mode: set that value directly
+      * - MAP price mode: set to LAST_MAP meta
+      * - Percent modes: base cost comes from LAST_TRUE_COST else LAST_DEALER_PRICE
+      */
     public static function apply_admin_pricing_to_woo_product(int $product_id): void
     {
         $product = wc_get_product($product_id);
@@ -1021,6 +1067,16 @@ class DistributorProductHelper
             }
 
             self::set_sell_price_and_save($product, $fixed, $msrp);
+            return;
+        }
+
+        if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            $map = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true));
+            if ($map === null) {
+                return;
+            }
+
+            self::set_sell_price_and_save($product, $map, $msrp);
             return;
         }
 

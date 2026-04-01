@@ -282,6 +282,11 @@ class ProductMetaBox
             esc_html__('Fixed Price', 'ffl-hub') .
             '</option>';
 
+        echo '<option value="' . esc_attr((string) ProductMeta::MARKUP_MODE_MAP_PRICE) . '" ' .
+            selected($mode, ProductMeta::MARKUP_MODE_MAP_PRICE, false) . '>' .
+            esc_html__('MAP Price', 'ffl-hub') .
+            '</option>';
+
         echo '</select>';
         echo '</p>';
 
@@ -450,6 +455,7 @@ class ProductMetaBox
             ProductMeta::MARKUP_MODE_GLOBAL,
             ProductMeta::MARKUP_MODE_FIXED_PCT,
             ProductMeta::MARKUP_MODE_FIXED_PRICE,
+            ProductMeta::MARKUP_MODE_MAP_PRICE,
         ], true)) {
             $mode = ProductMeta::MARKUP_MODE_GLOBAL;
         }
