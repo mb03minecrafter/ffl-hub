@@ -59,9 +59,24 @@ foreach ($order->get_items() as $item_id => $item) {
     }
 }
 
-// Fallback: if we can't match, show all items (safer than showing none).
-if (empty($shipment_items)) {
-    $shipment_items = $order->get_items();
+// Fallback lines (job-row scope only): render UPC + qty when order-item matching fails.
+$fallback_lines = [];
+foreach ($lines as $ln) {
+    if (!($ln instanceof \FFLHub\Distributor\Models\DistributorOrderLine)) {
+        continue;
+    }
+    $u = trim((string) $ln->upc);
+    $q = (int) $ln->quantity;
+    if ($u === '') {
+        continue;
+    }
+    if ($q < 1) {
+        $q = 1;
+    }
+    $fallback_lines[] = [
+        'upc' => $u,
+        'qty' => $q,
+    ];
 }
 
 // NEW-only deltas (what we want to notify about)
@@ -112,20 +127,37 @@ do_action('woocommerce_email_header', $email_heading, $email);
     <table class="td font-family email-order-details" cellspacing="0" cellpadding="6" border="0" style='color: <?php echo esc_attr($brand_muted); ?>; border: 0; vertical-align: middle; font-family: "Helvetica Neue",Helvetica,Roboto,Arial,sans-serif; width: 100%;' width="100%">
         <tbody>
             <?php
-            // ✅ This outputs rows that match Woo's completed-order styling.
-            // ✅ And we pass ONLY the shipped items.
-            echo wc_get_email_order_items(
-                $order,
-                [
-                    'items'              => $shipment_items,
-                    'show_sku'           => false,
-                    'show_image'         => true,
-                    'image_size'         => [48, 48],
-                    'show_purchase_note' => false,
-                    'plain_text'         => false,
-                    'sent_to_admin'      => false,
-                ]
-            );
+            if (!empty($shipment_items)) {
+                // ✅ This outputs rows that match Woo's completed-order styling.
+                // ✅ We pass ONLY the shipped job-row items.
+                echo wc_get_email_order_items(
+                    $order,
+                    [
+                        'items'              => $shipment_items,
+                        'show_sku'           => false,
+                        'show_image'         => true,
+                        'image_size'         => [48, 48],
+                        'show_purchase_note' => false,
+                        'plain_text'         => false,
+                        'sent_to_admin'      => false,
+                    ]
+                );
+            } elseif (!empty($fallback_lines)) {
+                foreach ($fallback_lines as $row) {
+                    echo '<tr>';
+                    echo '<td style="padding:10px 0;color:' . esc_attr($brand_text) . ';">' .
+                        esc_html('UPC ' . $row['upc']) .
+                        '</td>';
+                    echo '<td style="padding:10px 0;text-align:right;color:' . esc_attr($brand_text) . ';">' .
+                        esc_html('x' . (string) $row['qty']) .
+                        '</td>';
+                    echo '</tr>';
+                }
+            } else {
+                echo '<tr><td style="padding:10px 0;color:' . esc_attr($brand_muted) . ';">' .
+                    esc_html__('No line items found for this shipment job.', 'ffl-hub') .
+                    '</td></tr>';
+            }
             ?>
         </tbody>
     </table>

@@ -36,9 +36,24 @@ foreach ($order->get_items() as $item_id => $item) {
     }
 }
 
-// Fallback: show all items if we can't match UPCs
-if (empty($shipment_items)) {
-    $shipment_items = $order->get_items();
+// Fallback lines (job-row scope only): render UPC + qty when order-item matching fails.
+$fallback_lines = [];
+foreach ($lines as $ln) {
+    if (!($ln instanceof \FFLHub\Distributor\Models\DistributorOrderLine)) {
+        continue;
+    }
+    $u = trim((string) $ln->upc);
+    $q = (int) $ln->quantity;
+    if ($u === '') {
+        continue;
+    }
+    if ($q < 1) {
+        $q = 1;
+    }
+    $fallback_lines[] = [
+        'upc' => $u,
+        'qty' => $q,
+    ];
 }
 
 $added_tracking = (isset($context->update) && isset($context->update->added_tracking) && is_array($context->update->added_tracking))
@@ -107,11 +122,19 @@ if ($dist_id !== '') {
 }
 
 echo "\nItems in this shipment update:\n";
-foreach ($shipment_items as $item) {
-    /** @var WC_Order_Item_Product $item */
-    $name = (string) $item->get_name();
-    $qty  = (int) $item->get_quantity();
-    echo " - {$name} x{$qty}\n";
+if (!empty($shipment_items)) {
+    foreach ($shipment_items as $item) {
+        /** @var WC_Order_Item_Product $item */
+        $name = (string) $item->get_name();
+        $qty  = (int) $item->get_quantity();
+        echo " - {$name} x{$qty}\n";
+    }
+} elseif (!empty($fallback_lines)) {
+    foreach ($fallback_lines as $row) {
+        echo ' - UPC ' . $row['upc'] . ' x' . (int) $row['qty'] . "\n";
+    }
+} else {
+    echo " - No line items found for this shipment job.\n";
 }
 
 echo "\nView your order:\n";

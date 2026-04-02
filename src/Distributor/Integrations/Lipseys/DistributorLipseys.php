@@ -691,7 +691,7 @@ class DistributorLipseys extends DistributorBase
         }
 
         if ($lane === 'direct_ship_non_ffl') {
-            $po = $base_po . '-NON';
+            $po = $base_po;
 
             $payload = [
                 'PoNumber' => $po,
@@ -773,7 +773,7 @@ class DistributorLipseys extends DistributorBase
             );
         }
 
-        $po = $base_po . '-FFL';
+        $po = $base_po;
 
         $cust_name = trim((string) $customer->name);
         if ($cust_name === '') {
@@ -875,6 +875,20 @@ class DistributorLipseys extends DistributorBase
         }
 
         $rows = $table->get_rows_by_po($po_number);
+        if (empty($rows) || !is_array($rows)) {
+            // Back-compat for older orders that were submitted with lane suffixes.
+            $suffix_variants = [
+                $po_number . '-NON',
+                $po_number . '-FFL',
+            ];
+            foreach ($suffix_variants as $variant_po) {
+                $variant_rows = $table->get_rows_by_po($variant_po);
+                if (!empty($variant_rows) && is_array($variant_rows)) {
+                    $rows = $variant_rows;
+                    break;
+                }
+            }
+        }
         if (empty($rows) || !is_array($rows)) {
             return null;
         }
