@@ -256,10 +256,10 @@ class ProductMetaBox
 
         $map_real_mode_raw = $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true);
         $map_real_mode = ($map_real_mode_raw === '' && (string) $map_real_mode_raw !== '0')
-            ? ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET
+            ? ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED
             : (int) $map_real_mode_raw;
-        if (! in_array($map_real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE], true)) {
-            $map_real_mode = ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET;
+        if (! in_array($map_real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE, ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED], true)) {
+            $map_real_mode = ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED;
         }
 
         $map_real_offset_raw = $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true);
@@ -339,6 +339,10 @@ class ProductMetaBox
             esc_html__('MAP Price Real Price Mode', 'ffl-hub') .
             '</label>';
         echo '<select id="fflhub_map_real_price_mode" name="fflhub_map_real_price_mode" style="width:100%;font-size:11px;">';
+        echo '<option value="' . esc_attr((string) ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED) . '" ' .
+            selected($map_real_mode, ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED, false) . '>' .
+            esc_html__('Default (Recommended Price)', 'ffl-hub') .
+            '</option>';
         echo '<option value="' . esc_attr((string) ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET) . '" ' .
             selected($map_real_mode, ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, false) . '>' .
             esc_html__('Fixed Offset', 'ffl-hub') .
@@ -397,6 +401,7 @@ class ProductMetaBox
                     var MODE_FIXED_PRICE = <?php echo (int) ProductMeta::MARKUP_MODE_FIXED_PRICE; ?>;
                     var MODE_MAP_PRICE = <?php echo (int) ProductMeta::MARKUP_MODE_MAP_PRICE; ?>;
                     var MAP_REAL_MODE_FIXED_OFFSET = <?php echo (int) ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET; ?>;
+                    var MAP_REAL_MODE_PERCENTAGE = <?php echo (int) ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE; ?>;
                     var mapRealMode = parseInt(mapRealModeEl.value, 10);
 
                     pctEl.disabled = (mode !== MODE_FIXED_PCT);
@@ -405,7 +410,7 @@ class ProductMetaBox
                     var mapModeActive = (mode === MODE_MAP_PRICE);
                     mapRealModeEl.disabled = !mapModeActive;
                     mapOffsetEl.disabled = !mapModeActive || mapRealMode !== MAP_REAL_MODE_FIXED_OFFSET;
-                    mapPercentEl.disabled = !mapModeActive || mapRealMode === MAP_REAL_MODE_FIXED_OFFSET;
+                    mapPercentEl.disabled = !mapModeActive || mapRealMode !== MAP_REAL_MODE_PERCENTAGE;
                 }
 
                 function applyManualShippingOverride() {
@@ -573,9 +578,9 @@ class ProductMetaBox
         if ($mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
             $map_real_mode = isset($_POST['fflhub_map_real_price_mode'])
                 ? (int) sanitize_text_field(wp_unslash($_POST['fflhub_map_real_price_mode']))
-                : ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET;
-            if (! in_array($map_real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE], true)) {
-                $map_real_mode = ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET;
+                : ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED;
+            if (! in_array($map_real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE, ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED], true)) {
+                $map_real_mode = ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED;
             }
             $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, $map_real_mode);
 

@@ -924,6 +924,25 @@ class DistributorProductHelper
             return null;
         }
 
+        $real_mode_raw = $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true);
+        $real_mode = ($real_mode_raw === '' && (string) $real_mode_raw !== '0')
+            ? ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED
+            : (int) $real_mode_raw;
+        if (!in_array($real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE, ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED], true)) {
+            $real_mode = ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED;
+        }
+
+        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED) {
+            $recommended = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true));
+            if ($recommended === null) {
+                $recommended = self::to_positive_float($product->get_regular_price());
+            }
+            if ($recommended === null) {
+                $recommended = self::to_positive_float($product->get_price());
+            }
+            return $recommended;
+        }
+
         $map_base = self::resolve_map_mode_sell_price(
             $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true),
             $product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true)
@@ -933,14 +952,6 @@ class DistributorProductHelper
         }
         if ($map_base === null) {
             return null;
-        }
-
-        $real_mode_raw = $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true);
-        $real_mode = ($real_mode_raw === '' && (string) $real_mode_raw !== '0')
-            ? ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET
-            : (int) $real_mode_raw;
-        if (!in_array($real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE], true)) {
-            $real_mode = ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET;
         }
 
         $discount = 0.0;

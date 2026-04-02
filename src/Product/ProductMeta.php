@@ -43,7 +43,7 @@ class ProductMeta
     public const FFLHUB_LAST_MSRP_META = '_fflhub_last_msrp'; //last MSRP price of product : float
     public const FFLHUB_LAST_COMPUTED_PRICE_META = '_fflhub_last_computed_price'; //last computed price (using our markup) of product : float
    
-    public const FFLHUB_MAP_REAL_PRICE_MODE_META = '_fflhub_map_real_price_mode'; // 0=fixed offset, 1=percentage
+    public const FFLHUB_MAP_REAL_PRICE_MODE_META = '_fflhub_map_real_price_mode'; // 0=fixed offset, 1=percentage, 2=default recommended
     public const FFLHUB_MAP_REAL_PRICE_OFFSET_META = '_fflhub_map_real_price_offset'; // float, subtract from MAP/MSRP base
     public const FFLHUB_MAP_REAL_PRICE_PERCENT_META = '_fflhub_map_real_price_percent'; // float percent, subtract from MAP/MSRP base
 
@@ -69,6 +69,7 @@ class ProductMeta
 
     public const MAP_REAL_PRICE_MODE_FIXED_OFFSET = 0;
     public const MAP_REAL_PRICE_MODE_PERCENTAGE = 1;
+    public const MAP_REAL_PRICE_MODE_RECOMMENDED = 2;
 
     public const FFLHUB_MARKUP_PERCENT_META = '_fflhub_markup_percent'; // float, 0-100
     public const FFLHUB_FIXED_PRICE_META    = '_fflhub_fixed_price';    // 🆕 float, final sell price
