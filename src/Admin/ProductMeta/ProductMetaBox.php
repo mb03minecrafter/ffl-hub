@@ -254,6 +254,11 @@ class ProductMetaBox
         $fixed_raw   = $product->get_meta(ProductMeta::FFLHUB_FIXED_PRICE_META, true);
         $fixed_value = is_numeric($fixed_raw) ? (string) $fixed_raw : '';
 
+        $recommended_override_raw = $product->get_meta(ProductMeta::FFLHUB_RECOMMENDED_PRICE_OVERRIDE_META, true);
+        $recommended_override_value = (is_numeric($recommended_override_raw) && (float) $recommended_override_raw > 0)
+            ? (string) $recommended_override_raw
+            : '';
+
         echo '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;">';
         echo '<div style="font-size:11px;font-weight:700;margin-bottom:6px;">' .
             esc_html__('FFLHub Pricing', 'ffl-hub') .
@@ -313,6 +318,18 @@ class ProductMetaBox
             'style="width:100%;font-size:11px;" />';
         echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
             esc_html__('Used only in Fixed Price mode (final sell price).', 'ffl-hub') .
+            '</span>';
+        echo '</p>';
+
+        echo '<p style="margin:8px 0 0;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('Recommended Price Override', 'ffl-hub') .
+            '</label>';
+        echo '<input id="fflhub_recommended_price_override" type="number" step="0.01" min="0" ' .
+            'name="fflhub_recommended_price_override" value="' . esc_attr($recommended_override_value) . '" ' .
+            'style="width:100%;font-size:11px;" />';
+        echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+            esc_html__('Optional. When set, sync uses this as Last Computed Price (recommended price) instead of auto markup calculation.', 'ffl-hub') .
             '</span>';
         echo '</p>';
 
@@ -494,7 +511,21 @@ class ProductMetaBox
             $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
         }
 
-        // ✅ Save meta first
+        // Recommended/Last Computed override (optional)
+        $recommended_override_raw = isset($_POST['fflhub_recommended_price_override'])
+            ? sanitize_text_field(wp_unslash($_POST['fflhub_recommended_price_override']))
+            : '';
+
+        $recommended_override = is_numeric($recommended_override_raw) ? (float) $recommended_override_raw : 0.0;
+        if ($recommended_override > 0.0) {
+            $recommended_override = (float) wc_format_decimal($recommended_override, 2);
+            $product->update_meta_data(ProductMeta::FFLHUB_RECOMMENDED_PRICE_OVERRIDE_META, $recommended_override);
+            $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended_override);
+        } else {
+            $product->update_meta_data(ProductMeta::FFLHUB_RECOMMENDED_PRICE_OVERRIDE_META, '');
+        }
+
+        // Save all updated metadata before applying pricing.
         $product->save();
 
         // ✅ Then update Woo regular price based on the meta we just saved

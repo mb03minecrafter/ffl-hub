@@ -431,14 +431,15 @@ final class DistributorProductSyncCronService extends AbstractCronService
             ? (float) $selected_payload->true_cost
             : null;
 
-        // Compute mode-aware sell price for storefront, plus global-markup computed
-        // price for LAST_COMPUTED meta (used by quote math).
+        // Compute mode-aware sell price for storefront, plus recommended price
+        // for LAST_COMPUTED meta (manual override first, then auto markup math).
         $t0 = microtime(true);
         $sell_price = DistributorProductHelper::compute_sell_price_for_product($product_id, $selected_payload);
-        $computed_price_for_meta = DistributorProductHelper::get_recommended_price_from_payload($selected_payload);
-        if (!is_numeric($computed_price_for_meta) || (float) $computed_price_for_meta <= 0) {
-            $computed_price_for_meta = $sell_price;
-        }
+        $computed_price_for_meta = DistributorProductHelper::resolve_recommended_price_for_sync(
+            $product,
+            $selected_payload,
+            is_numeric($sell_price) ? (float) $sell_price : null
+        );
         $this->profile('compute_sell_price', $t0, array(
             'product_id' => $product_id,
             'selected'   => $selected_dist_id,

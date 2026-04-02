@@ -886,6 +886,52 @@ class DistributorProductHelper
     }
 
     /**
+     * Read optional product-level recommended-price override.
+     *
+     * @return float|null Positive override value when present.
+     */
+    public static function get_recommended_price_override_for_product(WC_Product $product): ?float
+    {
+        $raw = $product->get_meta(ProductMeta::FFLHUB_RECOMMENDED_PRICE_OVERRIDE_META, true);
+        if (!is_numeric($raw)) {
+            return null;
+        }
+
+        $value = (float) $raw;
+        return ($value > 0.0) ? $value : null;
+    }
+
+    /**
+     * Resolve the value to store in LAST_COMPUTED_PRICE during sync.
+     *
+     * Priority:
+     * 1) Product-level recommended-price override
+     * 2) Automatic global-markup recommendation from payload
+     * 3) Optional fallback sell price
+     */
+    public static function resolve_recommended_price_for_sync(
+        WC_Product $product,
+        DistributorProductPayload $selected_product,
+        ?float $fallback_sell_price = null
+    ): float {
+        $override = self::get_recommended_price_override_for_product($product);
+        if (is_numeric($override) && (float) $override > 0.0) {
+            return (float) $override;
+        }
+
+        $recommended = self::get_recommended_price_from_payload($selected_product);
+        if (is_numeric($recommended) && (float) $recommended > 0.0) {
+            return (float) $recommended;
+        }
+
+        if (is_numeric($fallback_sell_price) && (float) $fallback_sell_price > 0.0) {
+            return (float) $fallback_sell_price;
+        }
+
+        return 0.0;
+    }
+
+    /**
      * Back-compat misspelled method (keep existing callers working).
      *
      * Remove later once you’ve replaced all call sites.

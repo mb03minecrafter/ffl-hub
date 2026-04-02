@@ -42,6 +42,7 @@ class ProductMeta
     public const FFLHUB_LAST_MAP_META = '_fflhub_last_map'; //last MAP price of product : float
     public const FFLHUB_LAST_MSRP_META = '_fflhub_last_msrp'; //last MSRP price of product : float
     public const FFLHUB_LAST_COMPUTED_PRICE_META = '_fflhub_last_computed_price'; //last computed price (using our markup) of product : float
+    public const FFLHUB_RECOMMENDED_PRICE_OVERRIDE_META = '_fflhub_recommended_price_override'; // optional manual override for recommended/last computed price
    
 
     public const FFLHUB_SOT_REQUIRED_META = '_fflhub_sot_required'; // 0/1 flag
