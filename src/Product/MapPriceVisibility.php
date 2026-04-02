@@ -673,7 +673,7 @@ class MapPriceVisibility
         $upc = self::quote_product_upc($product);
         $product_name = self::truncate_quote_job_value((string) $product->get_name(), 255);
         $submitted_at = (string) current_time('mysql', true);
-        $random_delay_minutes = (int) wp_rand(5, 30);
+        $random_delay_minutes = (int) wp_rand(5, 15);
 
         if (self::has_recent_duplicate_quote_job_values($table_name, $first_name, $last_name, $email, $upc, $product_name)) {
             return true;
