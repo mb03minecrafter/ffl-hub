@@ -97,7 +97,7 @@ fflhub_define_bool('FFLHUB_ZANDERS_SOAP_DEBUG', true);
 fflhub_define_bool('FFLHUB_ZANDERS_DEBUG', true);
 
 // Quote email testing: when true, ignore random delay and send due jobs immediately.
-fflhub_define_bool('FFLHUB_QUOTE_EMAIL_FORCE_NO_DELAY', true);
+fflhub_define_bool('FFLHUB_QUOTE_EMAIL_FORCE_NO_DELAY', false);
 fflhub_define_bool('FFLHUB_DEBUG_QUOTE_EMAIL_CRON', true);
 
 /**
