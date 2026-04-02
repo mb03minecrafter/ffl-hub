@@ -254,9 +254,22 @@ class ProductMetaBox
         $fixed_raw   = $product->get_meta(ProductMeta::FFLHUB_FIXED_PRICE_META, true);
         $fixed_value = is_numeric($fixed_raw) ? (string) $fixed_raw : '';
 
-        $recommended_override_raw = $product->get_meta(ProductMeta::FFLHUB_RECOMMENDED_PRICE_OVERRIDE_META, true);
-        $recommended_override_value = (is_numeric($recommended_override_raw) && (float) $recommended_override_raw > 0)
-            ? (string) $recommended_override_raw
+        $map_real_mode_raw = $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true);
+        $map_real_mode = ($map_real_mode_raw === '' && (string) $map_real_mode_raw !== '0')
+            ? ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET
+            : (int) $map_real_mode_raw;
+        if (! in_array($map_real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE], true)) {
+            $map_real_mode = ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET;
+        }
+
+        $map_real_offset_raw = $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true);
+        $map_real_offset_value = (is_numeric($map_real_offset_raw) && (float) $map_real_offset_raw >= 0)
+            ? (string) $map_real_offset_raw
+            : '';
+
+        $map_real_percent_raw = $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, true);
+        $map_real_percent_value = (is_numeric($map_real_percent_raw) && (float) $map_real_percent_raw >= 0)
+            ? (string) $map_real_percent_raw
             : '';
 
         echo '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;">';
@@ -289,7 +302,7 @@ class ProductMetaBox
 
         echo '<option value="' . esc_attr((string) ProductMeta::MARKUP_MODE_MAP_PRICE) . '" ' .
             selected($mode, ProductMeta::MARKUP_MODE_MAP_PRICE, false) . '>' .
-            esc_html__('MAP Price', 'ffl-hub') .
+            esc_html__('MAP Price Quote Required Mode', 'ffl-hub') .
             '</option>';
 
         echo '</select>';
@@ -321,15 +334,46 @@ class ProductMetaBox
             '</span>';
         echo '</p>';
 
-        echo '<p style="margin:8px 0 0;">';
+        echo '<p style="margin:8px 0 6px;">';
         echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
-            esc_html__('Recommended Price Override', 'ffl-hub') .
+            esc_html__('MAP Price Real Price Mode', 'ffl-hub') .
             '</label>';
-        echo '<input id="fflhub_recommended_price_override" type="number" step="0.01" min="0" ' .
-            'name="fflhub_recommended_price_override" value="' . esc_attr($recommended_override_value) . '" ' .
+        echo '<select id="fflhub_map_real_price_mode" name="fflhub_map_real_price_mode" style="width:100%;font-size:11px;">';
+        echo '<option value="' . esc_attr((string) ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET) . '" ' .
+            selected($map_real_mode, ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, false) . '>' .
+            esc_html__('Fixed Offset', 'ffl-hub') .
+            '</option>';
+        echo '<option value="' . esc_attr((string) ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE) . '" ' .
+            selected($map_real_mode, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE, false) . '>' .
+            esc_html__('Percentage', 'ffl-hub') .
+            '</option>';
+        echo '</select>';
+        echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+            esc_html__('Available only when Pricing Mode is MAP Price Quote Required Mode.', 'ffl-hub') .
+            '</span>';
+        echo '</p>';
+
+        echo '<p style="margin:0 0 6px;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('MAP Real Price Offset', 'ffl-hub') .
+            '</label>';
+        echo '<input id="fflhub_map_real_price_offset" type="number" step="0.01" min="0" ' .
+            'name="fflhub_map_real_price_offset" value="' . esc_attr($map_real_offset_value) . '" ' .
             'style="width:100%;font-size:11px;" />';
         echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
-            esc_html__('Optional. When set, sync uses this as Last Computed Price (recommended price) instead of auto markup calculation.', 'ffl-hub') .
+            esc_html__('Used only in Fixed Offset mode (subtract this amount from MAP/MSRP).', 'ffl-hub') .
+            '</span>';
+        echo '</p>';
+
+        echo '<p style="margin:0;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('MAP Real Price Percentage', 'ffl-hub') .
+            '</label>';
+        echo '<input id="fflhub_map_real_price_percent" type="number" step="0.01" min="0" ' .
+            'name="fflhub_map_real_price_percent" value="' . esc_attr($map_real_percent_value) . '" ' .
+            'style="width:100%;font-size:11px;" />';
+        echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+            esc_html__('Used only in Percentage mode (enter 10 for 10% below MAP/MSRP).', 'ffl-hub') .
             '</span>';
         echo '</p>';
 
@@ -343,14 +387,25 @@ class ProductMetaBox
                     var modeEl = document.getElementById('fflhub_markup_mode');
                     var pctEl = document.getElementById('fflhub_markup_percent');
                     var fixedEl = document.getElementById('fflhub_fixed_price');
-                    if (!modeEl || !pctEl || !fixedEl) return;
+                    var mapRealModeEl = document.getElementById('fflhub_map_real_price_mode');
+                    var mapOffsetEl = document.getElementById('fflhub_map_real_price_offset');
+                    var mapPercentEl = document.getElementById('fflhub_map_real_price_percent');
+                    if (!modeEl || !pctEl || !fixedEl || !mapRealModeEl || !mapOffsetEl || !mapPercentEl) return;
 
                     var mode = parseInt(modeEl.value, 10);
                     var MODE_FIXED_PCT = <?php echo (int) ProductMeta::MARKUP_MODE_FIXED_PCT; ?>;
                     var MODE_FIXED_PRICE = <?php echo (int) ProductMeta::MARKUP_MODE_FIXED_PRICE; ?>;
+                    var MODE_MAP_PRICE = <?php echo (int) ProductMeta::MARKUP_MODE_MAP_PRICE; ?>;
+                    var MAP_REAL_MODE_FIXED_OFFSET = <?php echo (int) ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET; ?>;
+                    var mapRealMode = parseInt(mapRealModeEl.value, 10);
 
                     pctEl.disabled = (mode !== MODE_FIXED_PCT);
                     fixedEl.disabled = (mode !== MODE_FIXED_PRICE);
+
+                    var mapModeActive = (mode === MODE_MAP_PRICE);
+                    mapRealModeEl.disabled = !mapModeActive;
+                    mapOffsetEl.disabled = !mapModeActive || mapRealMode !== MAP_REAL_MODE_FIXED_OFFSET;
+                    mapPercentEl.disabled = !mapModeActive || mapRealMode === MAP_REAL_MODE_FIXED_OFFSET;
                 }
 
                 function applyManualShippingOverride() {
@@ -376,9 +431,13 @@ class ProductMetaBox
                     applyMode();
                     applyManualShippingOverride();
                     var modeEl = document.getElementById('fflhub_markup_mode');
+                    var mapRealModeEl = document.getElementById('fflhub_map_real_price_mode');
                     var overrideEl = document.getElementById('fflhub_manual_shipping_override');
                     if (modeEl) {
                         modeEl.addEventListener('change', applyMode);
+                    }
+                    if (mapRealModeEl) {
+                        mapRealModeEl.addEventListener('change', applyMode);
                     }
                     if (overrideEl) {
                         overrideEl.addEventListener('change', applyManualShippingOverride);
@@ -511,18 +570,38 @@ class ProductMetaBox
             $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
         }
 
-        // Recommended/Last Computed override (optional)
-        $recommended_override_raw = isset($_POST['fflhub_recommended_price_override'])
-            ? sanitize_text_field(wp_unslash($_POST['fflhub_recommended_price_override']))
-            : '';
+        if ($mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            $map_real_mode = isset($_POST['fflhub_map_real_price_mode'])
+                ? (int) sanitize_text_field(wp_unslash($_POST['fflhub_map_real_price_mode']))
+                : ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET;
+            if (! in_array($map_real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE], true)) {
+                $map_real_mode = ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET;
+            }
+            $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, $map_real_mode);
 
-        $recommended_override = is_numeric($recommended_override_raw) ? (float) $recommended_override_raw : 0.0;
-        if ($recommended_override > 0.0) {
-            $recommended_override = (float) wc_format_decimal($recommended_override, 2);
-            $product->update_meta_data(ProductMeta::FFLHUB_RECOMMENDED_PRICE_OVERRIDE_META, $recommended_override);
-            $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $recommended_override);
-        } else {
-            $product->update_meta_data(ProductMeta::FFLHUB_RECOMMENDED_PRICE_OVERRIDE_META, '');
+            $map_real_offset_raw = isset($_POST['fflhub_map_real_price_offset'])
+                ? sanitize_text_field(wp_unslash($_POST['fflhub_map_real_price_offset']))
+                : '';
+            $map_real_offset = is_numeric($map_real_offset_raw) ? (float) $map_real_offset_raw : 0.0;
+            if ($map_real_offset < 0.0) {
+                $map_real_offset = 0.0;
+            }
+            $product->update_meta_data(
+                ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META,
+                (float) wc_format_decimal($map_real_offset, 2)
+            );
+
+            $map_real_percent_raw = isset($_POST['fflhub_map_real_price_percent'])
+                ? sanitize_text_field(wp_unslash($_POST['fflhub_map_real_price_percent']))
+                : '';
+            $map_real_percent = is_numeric($map_real_percent_raw) ? (float) $map_real_percent_raw : 0.0;
+            if ($map_real_percent < 0.0) {
+                $map_real_percent = 0.0;
+            }
+            $product->update_meta_data(
+                ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META,
+                (float) wc_format_decimal($map_real_percent, 2)
+            );
         }
 
         // Save all updated metadata before applying pricing.

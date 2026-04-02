@@ -42,8 +42,11 @@ class ProductMeta
     public const FFLHUB_LAST_MAP_META = '_fflhub_last_map'; //last MAP price of product : float
     public const FFLHUB_LAST_MSRP_META = '_fflhub_last_msrp'; //last MSRP price of product : float
     public const FFLHUB_LAST_COMPUTED_PRICE_META = '_fflhub_last_computed_price'; //last computed price (using our markup) of product : float
-    public const FFLHUB_RECOMMENDED_PRICE_OVERRIDE_META = '_fflhub_recommended_price_override'; // optional manual override for recommended/last computed price
    
+    public const FFLHUB_MAP_REAL_PRICE_MODE_META = '_fflhub_map_real_price_mode'; // 0=fixed offset, 1=percentage
+    public const FFLHUB_MAP_REAL_PRICE_OFFSET_META = '_fflhub_map_real_price_offset'; // float, subtract from MAP/MSRP base
+    public const FFLHUB_MAP_REAL_PRICE_PERCENT_META = '_fflhub_map_real_price_percent'; // float percent, subtract from MAP/MSRP base
+
 
     public const FFLHUB_SOT_REQUIRED_META = '_fflhub_sot_required'; // 0/1 flag
     public const FFLHUB_LAST_SYNC_META = '_fflhub_last_sync_at'; //markup percent of product for override: float
@@ -57,12 +60,15 @@ class ProductMeta
      * 0 = Global Markup Percent (uses Options::get_global_markup())
      * 1 = Fixed Percent (uses FFLHUB_MARKUP_PERCENT_META)
      * 2 = Fixed Price (uses FFLHUB_FIXED_PRICE_META)
-     * 3 = MAP Price (uses FFLHUB_LAST_MAP_META, fallback FFLHUB_LAST_MSRP_META)
+     * 3 = MAP Price Quote Required (uses FFLHUB_LAST_MAP_META, fallback FFLHUB_LAST_MSRP_META)
      */
     public const MARKUP_MODE_GLOBAL      = 0;
     public const MARKUP_MODE_FIXED_PCT   = 1;
     public const MARKUP_MODE_FIXED_PRICE = 2;
     public const MARKUP_MODE_MAP_PRICE   = 3;
+
+    public const MAP_REAL_PRICE_MODE_FIXED_OFFSET = 0;
+    public const MAP_REAL_PRICE_MODE_PERCENTAGE = 1;
 
     public const FFLHUB_MARKUP_PERCENT_META = '_fflhub_markup_percent'; // float, 0-100
     public const FFLHUB_FIXED_PRICE_META    = '_fflhub_fixed_price';    // 🆕 float, final sell price

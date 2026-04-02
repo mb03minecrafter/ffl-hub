@@ -143,7 +143,7 @@ class DistributorProductHelper
         if ($sell_price === null || $sell_price <= 0) {
             $error_message = __('Could not compute a valid retail price for this product.', 'ffl-hub');
             if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-                $error_message = __('MAP Price mode requires a valid MAP or MSRP value for this product.', 'ffl-hub');
+                $error_message = __('MAP Price Quote Required mode requires a valid MAP or MSRP value for this product.', 'ffl-hub');
             }
 
             return new WP_Error(
@@ -886,39 +886,16 @@ class DistributorProductHelper
     }
 
     /**
-     * Read optional product-level recommended-price override.
-     *
-     * @return float|null Positive override value when present.
-     */
-    public static function get_recommended_price_override_for_product(WC_Product $product): ?float
-    {
-        $raw = $product->get_meta(ProductMeta::FFLHUB_RECOMMENDED_PRICE_OVERRIDE_META, true);
-        if (!is_numeric($raw)) {
-            return null;
-        }
-
-        $value = (float) $raw;
-        return ($value > 0.0) ? $value : null;
-    }
-
-    /**
      * Resolve the value to store in LAST_COMPUTED_PRICE during sync.
      *
      * Priority:
-     * 1) Product-level recommended-price override
-     * 2) Automatic global-markup recommendation from payload
-     * 3) Optional fallback sell price
+     * 1) Automatic global-markup recommendation from payload
+     * 2) Optional fallback sell price
      */
     public static function resolve_recommended_price_for_sync(
-        WC_Product $product,
         DistributorProductPayload $selected_product,
         ?float $fallback_sell_price = null
     ): float {
-        $override = self::get_recommended_price_override_for_product($product);
-        if (is_numeric($override) && (float) $override > 0.0) {
-            return (float) $override;
-        }
-
         $recommended = self::get_recommended_price_from_payload($selected_product);
         if (is_numeric($recommended) && (float) $recommended > 0.0) {
             return (float) $recommended;
@@ -929,6 +906,53 @@ class DistributorProductHelper
         }
 
         return 0.0;
+    }
+
+    /**
+     * Resolve MAP quote real price from product-level MAP real-price settings.
+     *
+     * Returns null when the product is not in MAP quote-required mode, has no MAP/MSRP base,
+     * or computes to a non-positive value.
+     */
+    public static function get_map_real_price_for_product(WC_Product $product): ?float
+    {
+        $mode_raw = $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
+        $mode = ($mode_raw === '' && (string) $mode_raw !== '0')
+            ? ProductMeta::MARKUP_MODE_GLOBAL
+            : (int) $mode_raw;
+        if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            return null;
+        }
+
+        $map_base = self::resolve_map_mode_sell_price(
+            $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true),
+            $product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true)
+        );
+        if ($map_base === null) {
+            $map_base = self::to_positive_float($product->get_price());
+        }
+        if ($map_base === null) {
+            return null;
+        }
+
+        $real_mode_raw = $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true);
+        $real_mode = ($real_mode_raw === '' && (string) $real_mode_raw !== '0')
+            ? ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET
+            : (int) $real_mode_raw;
+        if (!in_array($real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE], true)) {
+            $real_mode = ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET;
+        }
+
+        $discount = 0.0;
+        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE) {
+            $pct = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, true)) ?? 0.0;
+            $discount = $map_base * ($pct / 100.0);
+        } else {
+            $discount = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true)) ?? 0.0;
+        }
+
+        $real_price = round($map_base - $discount, 2);
+        return ($real_price > 0.0) ? $real_price : null;
     }
 
     /**
@@ -1177,6 +1201,20 @@ class DistributorProductHelper
         }
 
         self::set_sell_price_and_save($product, (float) $sell, $msrp);
+    }
+
+    /**
+     * Convert a value to a non-negative float (>= 0), otherwise null.
+     *
+     * @param mixed $value
+     */
+    private static function to_non_negative_float($value): ?float
+    {
+        if (!is_numeric($value)) {
+            return null;
+        }
+        $f = (float) $value;
+        return $f >= 0 ? $f : null;
     }
 
     /**

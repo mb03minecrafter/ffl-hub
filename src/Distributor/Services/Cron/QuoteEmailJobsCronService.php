@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Cron;
 
+use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
@@ -546,6 +547,11 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
     private function recommended_price_for_product(WC_Product $product): float
     {
+        $map_real_price = DistributorProductHelper::get_map_real_price_for_product($product);
+        if (is_numeric($map_real_price) && (float) $map_real_price > 0.0) {
+            return (float) $map_real_price;
+        }
+
         $recommended = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true);
         if ($recommended <= 0.0) {
             $recommended = (float) $product->get_regular_price();
