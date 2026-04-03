@@ -177,6 +177,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
         $job_id = isset($job_row['id']) ? (int) $job_row['id'] : 0;
         $recipient = sanitize_email((string) ($job_row['request_email'] ?? ''));
+        $request_first_name = trim((string) ($job_row['request_first_name'] ?? ''));
+        $request_last_name = trim((string) ($job_row['request_last_name'] ?? ''));
         $quote_upc = trim((string) ($job_row['quote_upc'] ?? ''));
         $quote_product_name = trim((string) ($job_row['quote_product_name'] ?? ''));
 
@@ -195,8 +197,38 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return 'skip_invalid_recipient_or_job_id';
         }
 
+        if ($this->is_blocked_request_name($request_first_name, $request_last_name)) {
+            $warning_sent = $this->send_quote_processing_block_warning_email(
+                $job_row,
+                $recipient,
+                'blocked_name_dennis_joe'
+            );
+            $marked = $this->mark_job_email_sent($job_id);
+
+            self::debug_ctx('blocked job: request name disallowed', [
+                'job_id' => $job_id,
+                'recipient' => $recipient,
+                'request_first_name' => $request_first_name,
+                'request_last_name' => $request_last_name,
+                'warning_sent' => $warning_sent ? 1 : 0,
+                'marked_sent' => $marked ? 1 : 0,
+            ]);
+
+            if (!$marked) {
+                return 'blocked_name_mark_failed';
+            }
+
+            return $warning_sent
+                ? 'blocked_name'
+                : 'blocked_name_warning_failed';
+        }
+
         if ($this->is_holosun_domain_recipient($recipient)) {
-            $warning_sent = $this->send_holosun_domain_block_warning_email($job_row, $recipient);
+            $warning_sent = $this->send_quote_processing_block_warning_email(
+                $job_row,
+                $recipient,
+                'blocked_email_domain_holosun'
+            );
             $marked = $this->mark_job_email_sent($job_id);
 
             self::debug_ctx('blocked job: recipient domain disallowed', [
@@ -1023,13 +1055,14 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     /**
      * @param array<string,mixed> $job_row
      */
-    private function send_holosun_domain_block_warning_email(array $job_row, string $blocked_recipient): bool
+    private function send_quote_processing_block_warning_email(array $job_row, string $blocked_recipient, string $reason_code): bool
     {
         $warning_recipient = sanitize_email((string) apply_filters(
             'fflhub_quote_email_block_warning_recipient',
             (string) get_option('admin_email'),
             $job_row,
-            $blocked_recipient
+            $blocked_recipient,
+            $reason_code
         ));
 
         if ($warning_recipient === '' || !is_email($warning_recipient)) {
@@ -1051,16 +1084,18 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
         $subject = (string) apply_filters(
             'fflhub_quote_email_block_warning_subject',
-            sprintf('[FFLHub] Quote email blocked for %s', $blocked_recipient),
+            sprintf('[FFLHub] Quote email blocked (%s) for %s', $reason_code, $blocked_recipient),
             $job_row,
-            $blocked_recipient
+            $blocked_recipient,
+            $reason_code
         );
 
         $message = (string) apply_filters(
             'fflhub_quote_email_block_warning_body',
             implode("\n", [
-                'A quote email job was blocked because the recipient matched @holosun.com.',
+                'A quote email job was blocked.',
                 '',
+                'Reason: ' . $reason_code,
                 'Blocked Recipient: ' . $blocked_recipient,
                 'Job ID: ' . (string) $job_id,
                 'Request Name: ' . trim($request_first_name . ' ' . $request_last_name),
@@ -1070,7 +1105,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
                 'Submitted (UTC): ' . $submitted_at,
             ]),
             $job_row,
-            $blocked_recipient
+            $blocked_recipient,
+            $reason_code
         );
 
         $headers = ['Content-Type: text/plain; charset=UTF-8'];
@@ -1084,6 +1120,13 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         ]);
 
         return (bool) $sent;
+    }
+
+    private function is_blocked_request_name(string $first_name, string $last_name): bool
+    {
+        $first = strtolower(trim($first_name));
+        $last = strtolower(trim($last_name));
+        return ($first === 'dennis' && $last === 'joe');
     }
 
     private static function force_no_delay_mode(): bool

@@ -454,6 +454,39 @@ class MapPriceVisibility
         if (self::is_out_of_stock_for_quote($product)) {
             self::redirect_with_quote_status($redirect_url, 'invalid_request');
         }
+        if (self::is_blocked_quote_name($first_name, $last_name)) {
+            self::send_quote_block_warning_email(
+                'blocked_name_dennis_joe',
+                [
+                    'first_name' => $first_name,
+                    'last_name' => $last_name,
+                    'email' => $email,
+                    'product_id' => (int) $product->get_id(),
+                    'product_name' => (string) $product->get_name(),
+                ]
+            );
+            self::redirect_with_quote_status($redirect_url, 'invalid_request');
+        }
+
+        $geo_block_ctx = self::quote_geo_block_context();
+        if (!empty($geo_block_ctx['blocked'])) {
+            self::send_quote_block_warning_email(
+                'blocked_geo_city_of_industry_ca',
+                [
+                    'first_name' => $first_name,
+                    'last_name' => $last_name,
+                    'email' => $email,
+                    'product_id' => (int) $product->get_id(),
+                    'product_name' => (string) $product->get_name(),
+                    'ip' => (string) ($geo_block_ctx['ip'] ?? ''),
+                    'country' => (string) ($geo_block_ctx['country'] ?? ''),
+                    'state' => (string) ($geo_block_ctx['state'] ?? ''),
+                    'city' => (string) ($geo_block_ctx['city'] ?? ''),
+                    'postcode' => (string) ($geo_block_ctx['postcode'] ?? ''),
+                ]
+            );
+            self::redirect_with_quote_status($redirect_url, 'invalid_request');
+        }
 
         $submission_lock_key = self::quote_submission_lock_key($product_id, $first_name, $last_name, $email);
         if (self::is_quote_submission_locked($submission_lock_key)) {
@@ -898,6 +931,118 @@ class MapPriceVisibility
         }
 
         return $normalized;
+    }
+
+    private static function is_blocked_quote_name(string $first_name, string $last_name): bool
+    {
+        $first = strtolower(trim(sanitize_text_field($first_name)));
+        $last = strtolower(trim(sanitize_text_field($last_name)));
+        return ($first === 'dennis' && $last === 'joe');
+    }
+
+    /**
+     * @return array{blocked:bool,ip:string,country:string,state:string,city:string,postcode:string}
+     */
+    private static function quote_geo_block_context(): array
+    {
+        $ctx = [
+            'blocked' => false,
+            'ip' => '',
+            'country' => '',
+            'state' => '',
+            'city' => '',
+            'postcode' => '',
+        ];
+
+        if (!class_exists('\WC_Geolocation')) {
+            return $ctx;
+        }
+
+        $ip = (string) \WC_Geolocation::get_ip_address();
+        $ctx['ip'] = trim($ip);
+        if ($ctx['ip'] === '') {
+            return $ctx;
+        }
+
+        $geo = \WC_Geolocation::geolocate_ip($ctx['ip'], true, true);
+        if (!is_array($geo)) {
+            return $ctx;
+        }
+
+        $ctx['country'] = strtoupper(trim((string) ($geo['country'] ?? '')));
+        $ctx['state'] = strtoupper(trim((string) ($geo['state'] ?? '')));
+        $ctx['city'] = trim((string) ($geo['city'] ?? ''));
+        $ctx['postcode'] = trim((string) ($geo['postcode'] ?? ''));
+
+        $city_lc = strtolower($ctx['city']);
+        $is_city_of_industry = ($city_lc === 'city of industry') || ($city_lc === 'industry');
+        $is_ca = ($ctx['state'] === 'CA') || (strtolower($ctx['state']) === 'california');
+        $is_us = ($ctx['country'] === 'US');
+
+        if ($is_city_of_industry && $is_ca && $is_us) {
+            $ctx['blocked'] = true;
+        }
+
+        return $ctx;
+    }
+
+    /**
+     * @param array<string,mixed> $context
+     */
+    private static function send_quote_block_warning_email(string $reason_code, array $context): void
+    {
+        $recipient = sanitize_email((string) apply_filters(
+            'fflhub_quote_request_block_warning_recipient',
+            (string) get_option('admin_email'),
+            $reason_code,
+            $context
+        ));
+        if ($recipient === '' || !is_email($recipient)) {
+            return;
+        }
+
+        $subject = (string) apply_filters(
+            'fflhub_quote_request_block_warning_subject',
+            sprintf('[FFLHub] Quote request blocked (%s)', $reason_code),
+            $reason_code,
+            $context
+        );
+
+        $lines = [
+            'A quote request was blocked.',
+            '',
+            'Reason: ' . $reason_code,
+        ];
+
+        $fields = [
+            'first_name' => 'First Name',
+            'last_name' => 'Last Name',
+            'email' => 'Email',
+            'product_id' => 'Product ID',
+            'product_name' => 'Product Name',
+            'ip' => 'IP',
+            'country' => 'Country',
+            'state' => 'State',
+            'city' => 'City',
+            'postcode' => 'Postcode',
+        ];
+
+        foreach ($fields as $key => $label) {
+            $value = trim((string) ($context[$key] ?? ''));
+            if ($value === '') {
+                continue;
+            }
+            $lines[] = $label . ': ' . $value;
+        }
+
+        $message = (string) apply_filters(
+            'fflhub_quote_request_block_warning_body',
+            implode("\n", $lines),
+            $reason_code,
+            $context
+        );
+
+        wp_mail($recipient, $subject, $message, ['Content-Type: text/plain; charset=UTF-8']);
     }
 
     private static function quote_submission_dedupe_ttl_seconds(): int
