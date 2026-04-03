@@ -432,7 +432,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $coupon->set_code($coupon_code);
         $coupon->set_discount_type('fixed_cart');
         $coupon->set_amount($coupon_amount);
-        $coupon->set_individual_use(true);
+        // Allow stacking with other coupons for quote flows.
+        $coupon->set_individual_use(false);
         $coupon->set_usage_limit(1);
         $coupon->set_usage_limit_per_user(1);
         $coupon->set_email_restrictions([$email]);

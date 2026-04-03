@@ -124,6 +124,36 @@ class MapPriceVisibility
         return in_array((string) $val, ['1', 'true', 'yes', 'on'], true) || $val === true;
     }
 
+    /**
+     * Hide Email-for-Quote flows when the product is out of stock.
+     */
+    private static function is_out_of_stock_for_quote(WC_Product $product): bool
+    {
+        $stock_status = strtolower(trim((string) $product->get_stock_status()));
+        if ($stock_status === 'outofstock') {
+            return true;
+        }
+
+        if (method_exists($product, 'is_in_stock') && !$product->is_in_stock()) {
+            return true;
+        }
+
+        return self::is_truthy_value($product->get_meta(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true));
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function is_truthy_value($value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        $raw = strtolower(trim((string) $value));
+        return in_array($raw, ['1', 'true', 'yes', 'y', 'on'], true);
+    }
+
     private static function is_map_restricted(WC_Product $product, ?WC_Product $parent = null): bool
     {
         // Only enforce MAP hiding on FFLHub-managed products
@@ -309,6 +339,9 @@ class MapPriceVisibility
         if (!self::is_email_for_quote_policy($product, null)) {
             return;
         }
+        if (self::is_out_of_stock_for_quote($product)) {
+            return;
+        }
 
         $label = (string) apply_filters(
             'fflhub_email_for_quote_button_label',
@@ -332,6 +365,9 @@ class MapPriceVisibility
             return;
         }
         if (!self::is_email_for_quote_policy($product, null)) {
+            return;
+        }
+        if (self::is_out_of_stock_for_quote($product)) {
             return;
         }
 
@@ -413,6 +449,9 @@ class MapPriceVisibility
 
         $product = wc_get_product($product_id);
         if (!($product instanceof WC_Product)) {
+            self::redirect_with_quote_status($redirect_url, 'invalid_request');
+        }
+        if (self::is_out_of_stock_for_quote($product)) {
             self::redirect_with_quote_status($redirect_url, 'invalid_request');
         }
 
