@@ -8,13 +8,75 @@
   var closeButtons = modal.querySelectorAll("[data-fflhub-quote-close='1']");
   var firstInput = modal.querySelector("input[name='fflhub_first_name']");
   var form = modal.querySelector(".fflhub-email-for-quote-form");
+  var rootElement = document.documentElement;
   var lastFocused = null;
+  var scrollLockState = null;
+
+  function lockPageScroll() {
+    if (scrollLockState) {
+      return;
+    }
+
+    var currentScrollY = window.pageYOffset || window.scrollY || 0;
+    scrollLockState = {
+      scrollY: currentScrollY,
+      position: document.body.style.position || "",
+      top: document.body.style.top || "",
+      left: document.body.style.left || "",
+      right: document.body.style.right || "",
+      width: document.body.style.width || "",
+      overflow: document.body.style.overflow || "",
+      touchAction: document.body.style.touchAction || ""
+    };
+
+    rootElement.classList.add("fflhub-quote-modal-open");
+    document.body.classList.add("fflhub-quote-modal-open");
+    document.body.style.position = "fixed";
+    document.body.style.top = "-" + String(currentScrollY) + "px";
+    document.body.style.left = "0";
+    document.body.style.right = "0";
+    document.body.style.width = "100%";
+    document.body.style.overflow = "hidden";
+    document.body.style.touchAction = "none";
+  }
+
+  function unlockPageScroll() {
+    if (!scrollLockState) {
+      rootElement.classList.remove("fflhub-quote-modal-open");
+      document.body.classList.remove("fflhub-quote-modal-open");
+      return;
+    }
+
+    var previousScrollY = scrollLockState.scrollY;
+    document.body.style.position = scrollLockState.position;
+    document.body.style.top = scrollLockState.top;
+    document.body.style.left = scrollLockState.left;
+    document.body.style.right = scrollLockState.right;
+    document.body.style.width = scrollLockState.width;
+    document.body.style.overflow = scrollLockState.overflow;
+    document.body.style.touchAction = scrollLockState.touchAction;
+
+    rootElement.classList.remove("fflhub-quote-modal-open");
+    document.body.classList.remove("fflhub-quote-modal-open");
+
+    scrollLockState = null;
+    window.scrollTo(0, previousScrollY);
+  }
+
+  function shouldPreventOutsideScroll(target) {
+    var dialog = modal.querySelector(".fflhub-email-for-quote-modal__dialog");
+    if (!dialog) {
+      return true;
+    }
+
+    return !dialog.contains(target);
+  }
 
   function openModal(focusSource) {
     lastFocused = focusSource || document.activeElement;
     modal.classList.add("is-open");
     modal.setAttribute("aria-hidden", "false");
-    document.body.classList.add("fflhub-quote-modal-open");
+    lockPageScroll();
 
     if (firstInput) {
       firstInput.focus();
@@ -24,12 +86,26 @@
   function closeModal() {
     modal.classList.remove("is-open");
     modal.setAttribute("aria-hidden", "true");
-    document.body.classList.remove("fflhub-quote-modal-open");
+    unlockPageScroll();
 
     if (lastFocused && typeof lastFocused.focus === "function") {
       lastFocused.focus();
     }
   }
+
+  modal.addEventListener(
+    "touchmove",
+    function (event) {
+      if (!modal.classList.contains("is-open")) {
+        return;
+      }
+
+      if (shouldPreventOutsideScroll(event.target)) {
+        event.preventDefault();
+      }
+    },
+    { passive: false }
+  );
 
   for (var i = 0; i < openButtons.length; i += 1) {
     openButtons[i].addEventListener("click", function (event) {

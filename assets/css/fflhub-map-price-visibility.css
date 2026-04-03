@@ -44,8 +44,14 @@
   outline-offset: 2px;
 }
 
+html.fflhub-quote-modal-open,
 body.fflhub-quote-modal-open {
   overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body.fflhub-quote-modal-open {
+  touch-action: none;
 }
 
 .fflhub-email-for-quote-modal {
@@ -55,6 +61,8 @@ body.fflhub-quote-modal-open {
   z-index: 999999;
   padding: 16px;
   box-sizing: border-box;
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 .fflhub-email-for-quote-modal.is-open {
@@ -73,14 +81,24 @@ body.fflhub-quote-modal-open {
   position: relative;
   z-index: 2;
   width: min(680px, 100%);
-  max-height: 100%;
-  overflow: auto;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   margin: 0;
   padding: 24px 22px;
   border-radius: 8px;
   background: #ffffff;
   color: #2b2e33;
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+
+@supports not (height: 100dvh) {
+  .fflhub-email-for-quote-modal__dialog {
+    max-height: calc(100vh - 32px);
+  }
 }
 
 .fflhub-email-for-quote-modal__title {
@@ -152,7 +170,7 @@ body.fflhub-quote-modal-open {
 
   .fflhub-email-for-quote-modal__dialog {
     width: 100%;
-    max-height: 100%;
+    max-height: calc(100dvh - 32px);
     padding: 18px 14px;
   }
 }
