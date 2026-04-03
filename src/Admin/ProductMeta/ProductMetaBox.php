@@ -350,6 +350,16 @@ class ProductMetaBox
         if (!is_finite($preview_fee_percent) || $preview_fee_percent < 0.0) {
             $preview_fee_percent = 0.0;
         }
+        $preview_fee_fraction = min(0.99, max(0.0, $preview_fee_percent / 100.0));
+        $preview_processor_fee_amount = (is_numeric($map_real_preview_price) && (float) $map_real_preview_price > 0.0)
+            ? round(((float) $map_real_preview_price) * $preview_fee_fraction, 2)
+            : null;
+        $preview_true_cost_value = '$' . number_format($preview_cost_base, 2, '.', '');
+        $preview_shipping_value = '$' . number_format($preview_shipping, 2, '.', '');
+        $preview_processor_fee_value = ($preview_processor_fee_amount !== null)
+            ? '$' . number_format((float) $preview_processor_fee_amount, 2, '.', '')
+            : __('N/A', 'ffl-hub');
+        $preview_fee_percent_label = number_format($preview_fee_percent, 2, '.', '');
 
         echo '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;">';
         echo '<div style="font-size:11px;font-weight:700;margin-bottom:6px;">' .
@@ -483,6 +493,15 @@ class ProductMetaBox
         echo '<span id="fflhub_map_real_price_preview_value" style="display:block;font-size:14px;font-weight:700;">' .
             esc_html($map_real_preview_value) .
             '</span>';
+        echo '<span id="fflhub_map_real_price_preview_true_cost" style="display:block;margin-top:4px;font-size:11px;color:#111827;">' .
+            esc_html(sprintf(__('True Cost: %s', 'ffl-hub'), $preview_true_cost_value)) .
+            '</span>';
+        echo '<span id="fflhub_map_real_price_preview_shipping_cost" style="display:block;font-size:11px;color:#111827;">' .
+            esc_html(sprintf(__('Shipping Cost: %s', 'ffl-hub'), $preview_shipping_value)) .
+            '</span>';
+        echo '<span id="fflhub_map_real_price_preview_processor_fee" style="display:block;font-size:11px;color:#111827;">' .
+            esc_html(sprintf(__('Processor Fee (%1$s%%): %2$s', 'ffl-hub'), $preview_fee_percent_label, $preview_processor_fee_value)) .
+            '</span>';
         echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
             esc_html__('Applies to MAP Price Quote Required mode and updates as you edit these MAP real-price fields.', 'ffl-hub') .
             '</span>';
@@ -516,7 +535,10 @@ class ProductMetaBox
                     var mapFreeShipOverrideEl = document.getElementById('fflhub_map_real_price_free_shipping_override');
                     var mapPreviewWrapEl = document.getElementById('fflhub_map_real_price_preview_wrap');
                     var mapPreviewValueEl = document.getElementById('fflhub_map_real_price_preview_value');
-                    if (!modeEl || !pctEl || !fixedEl || !mapRealModeEl || !mapOffsetEl || !mapPercentEl || !mapProfitEl || !mapFreeShipOverrideEl || !mapPreviewWrapEl || !mapPreviewValueEl) return;
+                    var mapPreviewTrueCostEl = document.getElementById('fflhub_map_real_price_preview_true_cost');
+                    var mapPreviewShippingEl = document.getElementById('fflhub_map_real_price_preview_shipping_cost');
+                    var mapPreviewProcessorFeeEl = document.getElementById('fflhub_map_real_price_preview_processor_fee');
+                    if (!modeEl || !pctEl || !fixedEl || !mapRealModeEl || !mapOffsetEl || !mapPercentEl || !mapProfitEl || !mapFreeShipOverrideEl || !mapPreviewWrapEl || !mapPreviewValueEl || !mapPreviewTrueCostEl || !mapPreviewShippingEl || !mapPreviewProcessorFeeEl) return;
 
                     var mode = parseInt(modeEl.value, 10);
                     var MODE_FIXED_PCT = <?php echo (int) ProductMeta::MARKUP_MODE_FIXED_PCT; ?>;
@@ -532,6 +554,8 @@ class ProductMetaBox
                     var previewMapBase = <?php echo json_encode((float) $preview_map_base); ?>;
                     var previewRecommended = <?php echo json_encode((float) $preview_recommended); ?>;
                     var previewFeePercent = <?php echo json_encode((float) $preview_fee_percent); ?>;
+                    var previewFeeFraction = <?php echo json_encode((float) $preview_fee_fraction); ?>;
+                    var previewFeePercentLabel = <?php echo json_encode((string) $preview_fee_percent_label); ?>;
 
                     function asNonNegFloat(v) {
                         var n = parseFloat(v);
@@ -583,12 +607,18 @@ class ProductMetaBox
                     function updateMapRealPreview() {
                         var mapModeActive = (mode === MODE_MAP_PRICE);
                         mapPreviewWrapEl.style.opacity = mapModeActive ? "1" : "0.65";
+                        mapPreviewTrueCostEl.textContent = "True Cost: " + formatMoney(Math.round(previewCostBase * 100) / 100);
+                        mapPreviewShippingEl.textContent = "Shipping Cost: " + formatMoney(Math.round(previewShipping * 100) / 100);
                         var computed = computePreviewPrice();
                         if (computed === null) {
                             mapPreviewValueEl.textContent = "<?php echo esc_js(__('N/A', 'ffl-hub')); ?>";
+                            mapPreviewProcessorFeeEl.textContent = "Processor Fee (" + previewFeePercentLabel + "%): <?php echo esc_js(__('N/A', 'ffl-hub')); ?>";
                             return;
                         }
-                        mapPreviewValueEl.textContent = formatMoney(Math.round(computed * 100) / 100);
+                        var roundedComputed = Math.round(computed * 100) / 100;
+                        mapPreviewValueEl.textContent = formatMoney(roundedComputed);
+                        var feeAmount = Math.round((roundedComputed * previewFeeFraction) * 100) / 100;
+                        mapPreviewProcessorFeeEl.textContent = "Processor Fee (" + previewFeePercentLabel + "%): " + formatMoney(feeAmount);
                     }
 
                     pctEl.disabled = (mode !== MODE_FIXED_PCT);
