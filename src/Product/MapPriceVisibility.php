@@ -673,7 +673,7 @@ class MapPriceVisibility
         $upc = self::quote_product_upc($product);
         $product_name = self::truncate_quote_job_value((string) $product->get_name(), 255);
         $submitted_at = (string) current_time('mysql', true);
-        $random_delay_minutes = (int) wp_rand(5, 15);
+        $random_delay_minutes = self::preferred_quote_delay_minutes();
 
         if (self::has_recent_duplicate_quote_job_values($table_name, $first_name, $last_name, $email, $upc, $product_name)) {
             return true;
@@ -706,6 +706,29 @@ class MapPriceVisibility
         );
 
         return $inserted === 1;
+    }
+
+    /**
+     * Generate a 5-15 minute delay biased toward values closer to 5.
+     */
+    private static function preferred_quote_delay_minutes(): int
+    {
+        $min = 5;
+        $max = 15;
+        $choices = ($max - $min) + 1; // inclusive count
+
+        // Uniform [0,1), squared to bias toward 0 (lower delays).
+        $u = (float) wp_rand(0, 999999) / 1000000.0;
+        $biased = $u * $u;
+        $offset = (int) floor($biased * $choices);
+        if ($offset < 0) {
+            $offset = 0;
+        }
+        if ($offset >= $choices) {
+            $offset = $choices - 1;
+        }
+
+        return $min + $offset;
     }
 
     private static function has_recent_duplicate_quote_job(
