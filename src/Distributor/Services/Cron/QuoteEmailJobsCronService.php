@@ -26,6 +26,9 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     private const BATCH_LIMIT = 100;
     private const DEBUG_CONST = 'FFLHUB_DEBUG_QUOTE_EMAIL_CRON';
     private const LOG_PREFIX = '[FFLHub][QuoteEmailCron]';
+    private const BUSINESS_HOURS_TZ = 'America/Chicago';
+    private const BUSINESS_HOUR_START = 7;  // 7:00 local
+    private const BUSINESS_HOUR_END = 18;   // 18:00 local (end-exclusive)
     private const REP_NAMES = [
         'Matthew Bickham',
         'Thomas Bickham',
@@ -70,13 +73,28 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $now_utc = (string) current_time('mysql', true);
         $limit = max(1, (int) self::BATCH_LIMIT);
         $force_no_delay = self::force_no_delay_mode();
+        $hours_ctx = self::business_hours_context();
 
         self::debug_ctx('run start', [
             'table' => $table_name,
             'now_utc' => $now_utc,
             'limit' => $limit,
             'force_no_delay' => $force_no_delay ? 1 : 0,
+            'business_hours_open' => !empty($hours_ctx['is_open']) ? 1 : 0,
+            'business_hours_now_local' => (string) ($hours_ctx['now_local'] ?? ''),
+            'business_hours_tz' => self::BUSINESS_HOURS_TZ,
         ]);
+
+        if (!$force_no_delay && empty($hours_ctx['is_open'])) {
+            self::debug_ctx('run skipped: outside business hours', [
+                'now_local' => (string) ($hours_ctx['now_local'] ?? ''),
+                'hour_local' => (int) ($hours_ctx['hour_local'] ?? -1),
+                'start_hour' => self::BUSINESS_HOUR_START,
+                'end_hour' => self::BUSINESS_HOUR_END,
+                'tz' => self::BUSINESS_HOURS_TZ,
+            ]);
+            return;
+        }
 
         if ($force_no_delay) {
             $sql = $wpdb->prepare(
@@ -917,6 +935,32 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     private static function force_no_delay_mode(): bool
     {
         return defined('FFLHUB_QUOTE_EMAIL_FORCE_NO_DELAY') && (bool) constant('FFLHUB_QUOTE_EMAIL_FORCE_NO_DELAY');
+    }
+
+    /**
+     * @return array{is_open:bool,now_local:string,hour_local:int}
+     */
+    private static function business_hours_context(): array
+    {
+        try {
+            $tz = new \DateTimeZone(self::BUSINESS_HOURS_TZ);
+        } catch (\Throwable $e) {
+            return [
+                'is_open' => true,
+                'now_local' => '',
+                'hour_local' => -1,
+            ];
+        }
+
+        $now_local = new \DateTimeImmutable('now', $tz);
+        $hour_local = (int) $now_local->format('G');
+        $is_open = ($hour_local >= self::BUSINESS_HOUR_START) && ($hour_local < self::BUSINESS_HOUR_END);
+
+        return [
+            'is_open' => $is_open,
+            'now_local' => $now_local->format('Y-m-d H:i:s T'),
+            'hour_local' => $hour_local,
+        ];
     }
 
     private static function debug(string $message): void
