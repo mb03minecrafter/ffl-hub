@@ -21,6 +21,8 @@ final class DavidsonsFailedJobsPage
     private const DAVIDSONS_DIST_ID = 'davidsons';
     private const QUERY_LIMIT = 200000;
     private const TARGET_WOO_ORDER_STATUS = 'processing';
+    private const CREDIT_LIMIT_OPTION = 'fflhub_davidsons_credit_limit';
+    private const DEFAULT_CREDIT_LIMIT = 2500.0;
 
     private OrderPlacementJobsTable $jobs_table;
 
@@ -122,7 +124,11 @@ final class DavidsonsFailedJobsPage
      *   line_count:int,
      *   distinct_upc_count:int,
      *   total_quantity:int,
-     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int}>,
+     *   distributor_total_cost:float,
+     *   credit_limit:float,
+     *   credit_remaining:float,
+     *   credit_usage_pct:float,
+     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int,total_estimated_cost:float}>,
      *   entries:array<int,array{
      *     job_id:int,
      *     order_id:int,
@@ -131,7 +137,9 @@ final class DavidsonsFailedJobsPage
      *     job_status:string,
      *     upc:string,
      *     qty:int,
-     *     product_name:string
+     *     product_name:string,
+     *     unit_cost:float,
+     *     line_cost:float
      *   }>
      * }
      */
@@ -139,7 +147,9 @@ final class DavidsonsFailedJobsPage
     {
         /** @var array<string,string> $product_name_by_upc */
         $product_name_by_upc = [];
-        /** @var array<string,array{upc:string,product_name:string,total_qty:int,line_count:int}> $totals_by_upc */
+        /** @var array<string,float> $unit_cost_by_upc */
+        $unit_cost_by_upc = [];
+        /** @var array<string,array{upc:string,product_name:string,total_qty:int,line_count:int,total_estimated_cost:float}> $totals_by_upc */
         $totals_by_upc = [];
         /** @var array<int,array{
         *   job_id:int,
@@ -149,7 +159,9 @@ final class DavidsonsFailedJobsPage
         *   job_status:string,
         *   upc:string,
         *   qty:int,
-        *   product_name:string
+        *   product_name:string,
+        *   unit_cost:float,
+        *   line_cost:float
         * }> $entries */
         $entries = [];
         /** @var array<int,bool> $processing_order_ids */
@@ -157,6 +169,7 @@ final class DavidsonsFailedJobsPage
 
         $total_quantity = 0;
         $line_count = 0;
+        $distributor_total_cost = 0.0;
 
         foreach ($jobs as $job) {
             if (!($job instanceof OrderPlacementJobRow)) {
@@ -176,6 +189,8 @@ final class DavidsonsFailedJobsPage
                 }
                 $qty = max(1, (int) $line->quantity);
                 $product_name = $this->resolve_product_name_for_upc($upc, $product_name_by_upc);
+                $unit_cost = $this->resolve_distributor_unit_cost_for_upc($upc, $unit_cost_by_upc);
+                $line_cost = $unit_cost * (float) $qty;
 
                 $entries[] = [
                     'job_id' => (int) $job->id,
@@ -186,6 +201,8 @@ final class DavidsonsFailedJobsPage
                     'upc' => $upc,
                     'qty' => $qty,
                     'product_name' => $product_name,
+                    'unit_cost' => $unit_cost,
+                    'line_cost' => $line_cost,
                 ];
 
                 if (!isset($totals_by_upc[$upc])) {
@@ -194,6 +211,7 @@ final class DavidsonsFailedJobsPage
                         'product_name' => $product_name,
                         'total_qty' => 0,
                         'line_count' => 0,
+                        'total_estimated_cost' => 0.0,
                     ];
                 }
 
@@ -203,8 +221,10 @@ final class DavidsonsFailedJobsPage
 
                 $totals_by_upc[$upc]['total_qty'] += $qty;
                 $totals_by_upc[$upc]['line_count']++;
+                $totals_by_upc[$upc]['total_estimated_cost'] += $line_cost;
                 $total_quantity += $qty;
                 $line_count++;
+                $distributor_total_cost += $line_cost;
             }
         }
 
@@ -221,12 +241,22 @@ final class DavidsonsFailedJobsPage
             }
         );
 
+        $credit_limit = $this->get_davidsons_credit_limit();
+        $credit_remaining = $credit_limit - $distributor_total_cost;
+        $credit_usage_pct = ($credit_limit > 0.0)
+            ? (($distributor_total_cost / $credit_limit) * 100.0)
+            : 0.0;
+
         return [
             'processing_order_count' => count($processing_order_ids),
             'job_count' => count($jobs),
             'line_count' => $line_count,
             'distinct_upc_count' => count($totals_rows),
             'total_quantity' => $total_quantity,
+            'distributor_total_cost' => $distributor_total_cost,
+            'credit_limit' => $credit_limit,
+            'credit_remaining' => $credit_remaining,
+            'credit_usage_pct' => $credit_usage_pct,
             'totals_by_upc' => $totals_rows,
             'entries' => $entries,
         ];
@@ -266,6 +296,46 @@ final class DavidsonsFailedJobsPage
 
         $product_name_by_upc[$upc] = $name;
         return $name;
+    }
+
+    /**
+     * @param string $upc
+     * @param array<string,float> $unit_cost_by_upc
+     */
+    private function resolve_distributor_unit_cost_for_upc(string $upc, array &$unit_cost_by_upc): float
+    {
+        $upc = trim($upc);
+        if ($upc === '') {
+            return 0.0;
+        }
+
+        if (array_key_exists($upc, $unit_cost_by_upc)) {
+            return (float) $unit_cost_by_upc[$upc];
+        }
+
+        $product_id = $this->find_product_id_by_upc($upc);
+        if ($product_id <= 0) {
+            $unit_cost_by_upc[$upc] = 0.0;
+            return 0.0;
+        }
+
+        $product = wc_get_product($product_id);
+        if (!$product) {
+            $unit_cost_by_upc[$upc] = 0.0;
+            return 0.0;
+        }
+
+        $dealer_price = $this->to_non_negative_float(
+            $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true)
+        );
+        $true_cost = $this->to_non_negative_float(
+            $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true)
+        );
+
+        $unit_cost = ($dealer_price > 0.0) ? $dealer_price : $true_cost;
+        $unit_cost_by_upc[$upc] = $unit_cost;
+
+        return $unit_cost;
     }
 
     private function find_product_id_by_upc(string $upc): int
@@ -308,13 +378,54 @@ final class DavidsonsFailedJobsPage
     }
 
     /**
+     * @param mixed $value
+     */
+    private function to_non_negative_float($value): float
+    {
+        $raw = trim((string) $value);
+        if ($raw === '' || !is_numeric($raw)) {
+            return 0.0;
+        }
+
+        $v = (float) $raw;
+        if (!is_finite($v) || $v < 0.0) {
+            return 0.0;
+        }
+
+        return $v;
+    }
+
+    private function get_davidsons_credit_limit(): float
+    {
+        $raw = get_option(self::CREDIT_LIMIT_OPTION, (string) self::DEFAULT_CREDIT_LIMIT);
+        $limit = $this->to_non_negative_float($raw);
+        if ($limit <= 0.0) {
+            $limit = self::DEFAULT_CREDIT_LIMIT;
+        }
+
+        /** @var float|int|string $filtered */
+        $filtered = apply_filters('fflhub_davidsons_manual_order_credit_limit', $limit);
+        $final = $this->to_non_negative_float($filtered);
+        return ($final > 0.0) ? $final : self::DEFAULT_CREDIT_LIMIT;
+    }
+
+    private function format_money(float $amount): string
+    {
+        return '$' . number_format($amount, 2);
+    }
+
+    /**
      * @param array{
      *   processing_order_count:int,
      *   job_count:int,
      *   line_count:int,
      *   distinct_upc_count:int,
      *   total_quantity:int,
-     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int}>,
+     *   distributor_total_cost:float,
+     *   credit_limit:float,
+     *   credit_remaining:float,
+     *   credit_usage_pct:float,
+     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int,total_estimated_cost:float}>,
      *   entries:array<int,array{
      *     job_id:int,
      *     order_id:int,
@@ -323,12 +434,20 @@ final class DavidsonsFailedJobsPage
      *     job_status:string,
      *     upc:string,
      *     qty:int,
-     *     product_name:string
+     *     product_name:string,
+     *     unit_cost:float,
+     *     line_cost:float
      *   }>
      * } $data
      */
     private function render_summary_cards(array $data): void
     {
+        $distributor_total_cost = (float) ($data['distributor_total_cost'] ?? 0.0);
+        $credit_limit = (float) ($data['credit_limit'] ?? self::DEFAULT_CREDIT_LIMIT);
+        $credit_remaining = (float) ($data['credit_remaining'] ?? 0.0);
+        $credit_usage_pct = (float) ($data['credit_usage_pct'] ?? 0.0);
+        $is_over_limit = $credit_remaining < 0.0;
+        $credit_card_class = $is_over_limit ? 'is-danger' : 'is-ok';
         ?>
         <div class="fflhub-davidsons-summary-grid">
             <section class="fflhub-davidsons-card">
@@ -358,6 +477,42 @@ final class DavidsonsFailedJobsPage
                     ?>
                 </p>
             </section>
+
+            <section class="fflhub-davidsons-card <?php echo esc_attr($credit_card_class); ?>">
+                <h2><?php esc_html_e('Credit Limit Usage', 'ffl-hub'); ?></h2>
+                <div class="fflhub-davidsons-metric">
+                    <?php
+                    echo esc_html(
+                        sprintf(
+                            '%s / %s',
+                            $this->format_money($distributor_total_cost),
+                            $this->format_money($credit_limit)
+                        )
+                    );
+                    ?>
+                </div>
+                <p>
+                    <?php
+                    if ($is_over_limit) {
+                        echo esc_html(
+                            sprintf(
+                                __('Over limit by %s (%.1f%% used).', 'ffl-hub'),
+                                $this->format_money(abs($credit_remaining)),
+                                $credit_usage_pct
+                            )
+                        );
+                    } else {
+                        echo esc_html(
+                            sprintf(
+                                __('Remaining credit: %s (%.1f%% used).', 'ffl-hub'),
+                                $this->format_money($credit_remaining),
+                                $credit_usage_pct
+                            )
+                        );
+                    }
+                    ?>
+                </p>
+            </section>
         </div>
         <?php
     }
@@ -369,7 +524,11 @@ final class DavidsonsFailedJobsPage
      *   line_count:int,
      *   distinct_upc_count:int,
      *   total_quantity:int,
-     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int}>,
+     *   distributor_total_cost:float,
+     *   credit_limit:float,
+     *   credit_remaining:float,
+     *   credit_usage_pct:float,
+     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int,total_estimated_cost:float}>,
      *   entries:array<int,array{
      *     job_id:int,
      *     order_id:int,
@@ -378,7 +537,9 @@ final class DavidsonsFailedJobsPage
      *     job_status:string,
      *     upc:string,
      *     qty:int,
-     *     product_name:string
+     *     product_name:string,
+     *     unit_cost:float,
+     *     line_cost:float
      *   }>
      * } $data
      */
@@ -400,6 +561,7 @@ final class DavidsonsFailedJobsPage
                     <th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Total Qty', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Line Entries', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Est. Distributor Cost', 'ffl-hub'); ?></th>
                 </tr>
             </thead>
             <tbody>
@@ -409,12 +571,14 @@ final class DavidsonsFailedJobsPage
                     $product_name = (string) ($row['product_name'] ?? 'Unknown product');
                     $total_qty = (int) ($row['total_qty'] ?? 0);
                     $line_count = (int) ($row['line_count'] ?? 0);
+                    $estimated_cost = (float) ($row['total_estimated_cost'] ?? 0.0);
                     ?>
                     <tr>
                         <td><code><?php echo esc_html($upc); ?></code></td>
                         <td><?php echo esc_html($product_name); ?></td>
                         <td><?php echo esc_html((string) $total_qty); ?></td>
                         <td><?php echo esc_html((string) $line_count); ?></td>
+                        <td><?php echo esc_html($this->format_money($estimated_cost)); ?></td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
@@ -429,7 +593,11 @@ final class DavidsonsFailedJobsPage
      *   line_count:int,
      *   distinct_upc_count:int,
      *   total_quantity:int,
-     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int}>,
+     *   distributor_total_cost:float,
+     *   credit_limit:float,
+     *   credit_remaining:float,
+     *   credit_usage_pct:float,
+     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int,total_estimated_cost:float}>,
      *   entries:array<int,array{
      *     job_id:int,
      *     order_id:int,
@@ -438,7 +606,9 @@ final class DavidsonsFailedJobsPage
      *     job_status:string,
      *     upc:string,
      *     qty:int,
-     *     product_name:string
+     *     product_name:string,
+     *     unit_cost:float,
+     *     line_cost:float
      *   }>
      * } $data
      */
