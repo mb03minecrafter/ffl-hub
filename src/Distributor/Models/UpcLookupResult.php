@@ -29,7 +29,6 @@ final class UpcLookupResult
 {
     private const DIST_ID_RSR = 'rsr';
     private const DIST_ID_ZANDERS = 'zanders';
-    private const RSR_ZANDERS_PREFERENCE_DELTA = 1.00;
     private const FLOAT_EPSILON = 0.000001;
 
     /**
@@ -188,15 +187,16 @@ final class UpcLookupResult
 
         if ($this->is_rsr_zanders_pair($candidate_offer, $current_offer)) {
             $delta = abs($candidate_cost - (float) $current_cost);
-            if ($delta <= (self::RSR_ZANDERS_PREFERENCE_DELTA + self::FLOAT_EPSILON)) {
+            // On true ties, prefer RSR over Zanders.
+            if ($delta <= self::FLOAT_EPSILON) {
                 $candidate_id = $this->offer_dist_id($candidate_offer);
                 $current_id = $this->offer_dist_id($current_offer);
 
-                if ($candidate_id === self::DIST_ID_ZANDERS && $current_id === self::DIST_ID_RSR) {
+                if ($candidate_id === self::DIST_ID_RSR && $current_id === self::DIST_ID_ZANDERS) {
                     return true;
                 }
 
-                if ($candidate_id === self::DIST_ID_RSR && $current_id === self::DIST_ID_ZANDERS) {
+                if ($candidate_id === self::DIST_ID_ZANDERS && $current_id === self::DIST_ID_RSR) {
                     return false;
                 }
             }
