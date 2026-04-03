@@ -440,9 +440,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $coupon->set_free_shipping($force_free_shipping);
         $coupon->set_description(
             sprintf(
-                'Quote coupon for %s (%s)',
-                $product_name,
-                gmdate('Y-m-d H:i:s')
+                'Quote coupon for %s',
+                $product_name
             )
         );
 
@@ -564,7 +563,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $coupon_amount = (float) ($coupon_payload['amount'] ?? 0.0);
         $expires_ts = (int) ($coupon_payload['expires_ts'] ?? 0);
         $expires_display = ($expires_ts > 0)
-            ? wp_date('F j, Y g:i A T', $expires_ts)
+            ? wp_date('F j, Y g:i A', $expires_ts)
             : __('48 hours from now', 'ffl-hub');
         $final_price_amount = $this->final_price_amount_for_product($product, $coupon_amount);
         $final_price_display = $this->final_price_display_for_amount($final_price_amount);
