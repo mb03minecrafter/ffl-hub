@@ -84,6 +84,7 @@ final class DavidsonsFailedJobsPage
 
             <?php $this->render_summary_cards($data); ?>
             <?php $this->render_running_totals_table($data); ?>
+            <?php $this->render_success_rows_dropdown($data); ?>
             <?php $this->render_entries_table($data); ?>
         </div>
 <?php
@@ -171,12 +172,11 @@ final class DavidsonsFailedJobsPage
 
         return [
             'type' => 'success',
-            'message' => sprintf(
-                /* translators: 1: job id, 2: PO number */
-                __("Updated job #%1$d to success with PO %2$s.", 'ffl-hub'),
-                (int) $job->id,
-                $merchant_po
-            ),
+            'message' => __('Updated job #', 'ffl-hub')
+                . (string) ((int) $job->id)
+                . __(' to success with PO ', 'ffl-hub')
+                . $merchant_po
+                . '.',
         ];
     }
 
@@ -298,6 +298,19 @@ final class DavidsonsFailedJobsPage
      *   credit_remaining:float,
      *   credit_usage_pct:float,
      *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int,total_estimated_cost:float}>,
+     *   success_entries:array<int,array{
+     *     job_id:int,
+     *     order_id:int,
+     *     job_key:string,
+     *     updated_at:string,
+     *     job_status:string,
+     *     merchant_po:string,
+     *     upc:string,
+     *     qty:int,
+     *     product_name:string,
+     *     unit_cost:float,
+     *     line_cost:float
+     *   }>,
      *   entries:array<int,array{
      *     job_id:int,
      *     order_id:int,
@@ -335,6 +348,20 @@ final class DavidsonsFailedJobsPage
         *   line_cost:float
         * }> $entries */
         $entries = [];
+        /** @var array<int,array{
+        *   job_id:int,
+        *   order_id:int,
+        *   job_key:string,
+        *   updated_at:string,
+        *   job_status:string,
+        *   merchant_po:string,
+        *   upc:string,
+        *   qty:int,
+        *   product_name:string,
+        *   unit_cost:float,
+        *   line_cost:float
+        * }> $success_entries */
+        $success_entries = [];
         /** @var array<int,bool> $processing_order_ids */
         $processing_order_ids = [];
 
@@ -348,6 +375,8 @@ final class DavidsonsFailedJobsPage
             }
 
             $processing_order_ids[(int) $job->order_id] = true;
+            $job_status = strtolower(trim((string) $job->status));
+            $include_in_running_totals = ($job_status !== OrderPlacementKeys::JOB_STATUS_SUCCESS);
             $lines = $job->payload_lines();
             foreach ($lines as $line) {
                 if (!($line instanceof DistributorOrderLine)) {
@@ -377,6 +406,17 @@ final class DavidsonsFailedJobsPage
                     'line_cost' => $line_cost,
                 ];
 
+                // Credit usage should include successful rows while the Woo order remains in Processing.
+                $distributor_total_cost += $line_cost;
+
+                if ($job_status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
+                    $success_entries[] = $entries[count($entries) - 1];
+                }
+
+                if (!$include_in_running_totals) {
+                    continue;
+                }
+
                 if (!isset($totals_by_upc[$upc])) {
                     $totals_by_upc[$upc] = [
                         'upc' => $upc,
@@ -396,7 +436,6 @@ final class DavidsonsFailedJobsPage
                 $totals_by_upc[$upc]['total_estimated_cost'] += $line_cost;
                 $total_quantity += $qty;
                 $line_count++;
-                $distributor_total_cost += $line_cost;
             }
         }
 
@@ -430,6 +469,7 @@ final class DavidsonsFailedJobsPage
             'credit_remaining' => $credit_remaining,
             'credit_usage_pct' => $credit_usage_pct,
             'totals_by_upc' => $totals_rows,
+            'success_entries' => $success_entries,
             'entries' => $entries,
         ];
     }
@@ -598,6 +638,19 @@ final class DavidsonsFailedJobsPage
      *   credit_remaining:float,
      *   credit_usage_pct:float,
      *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int,total_estimated_cost:float}>,
+     *   success_entries:array<int,array{
+     *     job_id:int,
+     *     order_id:int,
+     *     job_key:string,
+     *     updated_at:string,
+     *     job_status:string,
+     *     merchant_po:string,
+     *     upc:string,
+     *     qty:int,
+     *     product_name:string,
+     *     unit_cost:float,
+     *     line_cost:float
+     *   }>,
      *   entries:array<int,array{
      *     job_id:int,
      *     order_id:int,
@@ -702,6 +755,19 @@ final class DavidsonsFailedJobsPage
      *   credit_remaining:float,
      *   credit_usage_pct:float,
      *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int,total_estimated_cost:float}>,
+     *   success_entries:array<int,array{
+     *     job_id:int,
+     *     order_id:int,
+     *     job_key:string,
+     *     updated_at:string,
+     *     job_status:string,
+     *     merchant_po:string,
+     *     upc:string,
+     *     qty:int,
+     *     product_name:string,
+     *     unit_cost:float,
+     *     line_cost:float
+     *   }>,
      *   entries:array<int,array{
      *     job_id:int,
      *     order_id:int,
@@ -772,6 +838,103 @@ final class DavidsonsFailedJobsPage
      *   credit_remaining:float,
      *   credit_usage_pct:float,
      *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int,total_estimated_cost:float}>,
+     *   success_entries:array<int,array{
+     *     job_id:int,
+     *     order_id:int,
+     *     job_key:string,
+     *     updated_at:string,
+     *     job_status:string,
+     *     merchant_po:string,
+     *     upc:string,
+     *     qty:int,
+     *     product_name:string,
+     *     unit_cost:float,
+     *     line_cost:float
+     *   }>,
+     *   entries:array<int,array{
+     *     job_id:int,
+     *     order_id:int,
+     *     job_key:string,
+     *     updated_at:string,
+     *     job_status:string,
+     *     merchant_po:string,
+     *     upc:string,
+     *     qty:int,
+     *     product_name:string,
+     *     unit_cost:float,
+     *     line_cost:float
+     *   }>
+     * } $data
+     */
+    private function render_success_rows_dropdown(array $data): void
+    {
+        $success_entries = $data['success_entries'];
+        ?>
+        <section class="fflhub-davidsons-success-box">
+            <h2><?php esc_html_e('Success Rows', 'ffl-hub'); ?></h2>
+            <?php if (empty($success_entries)) : ?>
+                <p><?php esc_html_e('No success rows yet for current processing orders.', 'ffl-hub'); ?></p>
+            <?php else : ?>
+                <p class="description">
+                    <?php esc_html_e("Rows marked success appear here for quick reference.", 'ffl-hub'); ?>
+                </p>
+                <select class="fflhub-davidsons-success-select">
+                    <option value=""><?php esc_html_e('Select a success row', 'ffl-hub'); ?></option>
+                    <?php foreach ($success_entries as $entry) : ?>
+                        <?php
+                        $job_id = (int) ($entry['job_id'] ?? 0);
+                        $order_id = (int) ($entry['order_id'] ?? 0);
+                        $job_key = (string) ($entry['job_key'] ?? '');
+                        $merchant_po = trim((string) ($entry['merchant_po'] ?? ''));
+                        $upc = (string) ($entry['upc'] ?? '');
+                        $qty = (int) ($entry['qty'] ?? 0);
+                        $product_name = (string) ($entry['product_name'] ?? 'Unknown product');
+                        $value = implode('|', [(string) $job_id, (string) $order_id, $job_key, $upc, (string) $qty]);
+                        $label = sprintf(
+                            'Job #%d | Order #%d | PO: %s | UPC: %s | Qty: %d | %s',
+                            $job_id,
+                            $order_id,
+                            $merchant_po !== '' ? $merchant_po : '-',
+                            $upc,
+                            $qty,
+                            $product_name
+                        );
+                        ?>
+                        <option value="<?php echo esc_attr($value); ?>">
+                            <?php echo esc_html($label); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            <?php endif; ?>
+        </section>
+        <?php
+    }
+
+    /**
+     * @param array{
+     *   processing_order_count:int,
+     *   job_count:int,
+     *   line_count:int,
+     *   distinct_upc_count:int,
+     *   total_quantity:int,
+     *   distributor_total_cost:float,
+     *   credit_limit:float,
+     *   credit_remaining:float,
+     *   credit_usage_pct:float,
+     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int,total_estimated_cost:float}>,
+     *   success_entries:array<int,array{
+     *     job_id:int,
+     *     order_id:int,
+     *     job_key:string,
+     *     updated_at:string,
+     *     job_status:string,
+     *     merchant_po:string,
+     *     upc:string,
+     *     qty:int,
+     *     product_name:string,
+     *     unit_cost:float,
+     *     line_cost:float
+     *   }>,
      *   entries:array<int,array{
      *     job_id:int,
      *     order_id:int,
@@ -927,6 +1090,22 @@ final class DavidsonsFailedJobsPage
             .fflhub-davidsons-po-note {
                 font-size: 11px;
                 color: #166534;
+            }
+            .fflhub-davidsons-success-box {
+                margin: 18px 0 14px;
+                background: #fff;
+                border: 1px solid #dcdcde;
+                border-radius: 10px;
+                padding: 12px;
+                box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
+            }
+            .fflhub-davidsons-success-box h2 {
+                margin-top: 0;
+                margin-bottom: 6px;
+            }
+            .fflhub-davidsons-success-select {
+                width: 100%;
+                max-width: 100%;
             }
         </style>
         <?php
