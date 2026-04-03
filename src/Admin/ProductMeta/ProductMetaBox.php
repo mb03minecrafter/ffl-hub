@@ -395,7 +395,7 @@ class ProductMetaBox
             'name="fflhub_map_real_price_offset" value="' . esc_attr($map_real_offset_value) . '" ' .
             'style="width:100%;font-size:11px;" />';
         echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
-            esc_html__('Used only in Fixed Offset mode (subtract this amount from MAP/MSRP).', 'ffl-hub') .
+            esc_html__('Used only in Fixed Offset mode (adds this amount to true cost, with dealer price fallback).', 'ffl-hub') .
             '</span>';
         echo '</p>';
 

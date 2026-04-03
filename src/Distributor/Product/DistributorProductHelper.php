@@ -943,6 +943,20 @@ class DistributorProductHelper
             return $recommended;
         }
 
+        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET) {
+            $cost_base = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true));
+            if ($cost_base === null) {
+                $cost_base = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
+            }
+            if ($cost_base === null) {
+                return null;
+            }
+
+            $offset = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true)) ?? 0.0;
+            $real_price = round($cost_base + $offset, 2);
+            return ($real_price > 0.0) ? $real_price : null;
+        }
+
         $map_base = self::resolve_map_mode_sell_price(
             $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true),
             $product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true)
@@ -954,14 +968,8 @@ class DistributorProductHelper
             return null;
         }
 
-        $discount = 0.0;
-        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE) {
-            $pct = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, true)) ?? 0.0;
-            $discount = $map_base * ($pct / 100.0);
-        } else {
-            $discount = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true)) ?? 0.0;
-        }
-
+        $pct = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, true)) ?? 0.0;
+        $discount = $map_base * ($pct / 100.0);
         $real_price = round($map_base - $discount, 2);
         return ($real_price > 0.0) ? $real_price : null;
     }
