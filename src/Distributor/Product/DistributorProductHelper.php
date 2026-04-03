@@ -928,7 +928,7 @@ class DistributorProductHelper
         $real_mode = ($real_mode_raw === '' && (string) $real_mode_raw !== '0')
             ? ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED
             : (int) $real_mode_raw;
-        if (!in_array($real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE, ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED], true)) {
+        if (!in_array($real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE, ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED, ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT], true)) {
             $real_mode = ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED;
         }
 
@@ -954,6 +954,36 @@ class DistributorProductHelper
 
             $offset = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true)) ?? 0.0;
             $real_price = round($cost_base + $offset, 2);
+            return ($real_price > 0.0) ? $real_price : null;
+        }
+
+        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT) {
+            $cost_base = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true));
+            if ($cost_base === null) {
+                $cost_base = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
+            }
+            if ($cost_base === null) {
+                return null;
+            }
+
+            $shipping_cost = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true)) ?? 0.0;
+            $profit_target = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META, true)) ?? 0.0;
+
+            $fee_percent = (float) Options::get_payment_processor_fee_percent();
+            if (!is_finite($fee_percent) || $fee_percent < 0.0) {
+                $fee_percent = 0.0;
+            }
+            $fee_fraction = min(0.99, $fee_percent / 100.0);
+            $denominator = 1.0 - $fee_fraction;
+            if ($denominator <= 0.0) {
+                return null;
+            }
+
+            // Matches the operator script formula:
+            // offset = (target_profit + shipping + (true_cost * fee_fraction)) / (1 - fee_fraction)
+            $offset = ($profit_target + $shipping_cost + ($cost_base * $fee_fraction)) / $denominator;
+            $real_price = round($cost_base + $offset, 2);
+
             return ($real_price > 0.0) ? $real_price : null;
         }
 
