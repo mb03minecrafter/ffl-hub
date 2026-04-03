@@ -5,24 +5,22 @@ namespace FFLHub\Admin\Pages;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
-use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Product\ProductMeta;
-use WC_Product;
 
 if (! defined('ABSPATH')) {
     exit;
 }
 
 /**
- * Admin page for Davidson's failed job rows and failed-row cost exposure.
+ * Admin page for Davidson's manual order status worklist.
  */
 final class DavidsonsFailedJobsPage
 {
-    private const PAGE_SLUG = 'fflhub-davidsons-failed-jobs';
+    private const PAGE_SLUG = 'fflhub-davidsons-manual-order-status';
     private const DAVIDSONS_DIST_ID = 'davidsons';
-    private const CREDIT_LIMIT = 2500.00;
     private const QUERY_LIMIT = 200000;
+    private const TARGET_WOO_ORDER_STATUS = 'processing';
 
     private OrderPlacementJobsTable $jobs_table;
 
@@ -40,8 +38,8 @@ final class DavidsonsFailedJobsPage
     {
         add_submenu_page(
             AdminPage::get_page_slug(),
-            __("Davidson's Failed Jobs", 'ffl-hub'),
-            __("Davidson's Failed Jobs", 'ffl-hub'),
+            __("Davidson's Manual Order Status", 'ffl-hub'),
+            __("Davidson's Manual Order Status", 'ffl-hub'),
             'manage_options',
             self::PAGE_SLUG,
             [$this, 'render_page']
@@ -57,59 +55,116 @@ final class DavidsonsFailedJobsPage
         $jobs = OrderPlacementJobsRepository::find_jobs_by_distributor(
             $this->jobs_table,
             self::DAVIDSONS_DIST_ID,
-            self::QUERY_LIMIT,
-            OrderPlacementKeys::JOB_STATUS_FAILED
+            self::QUERY_LIMIT
         );
 
-        $summary = $this->build_summary($jobs);
+        $jobs = $this->filter_jobs_for_processing_orders($jobs);
+        $data = $this->build_manual_status_data($jobs);
 ?>
-        <div class="wrap fflhub-davidsons-failed-jobs">
+        <div class="wrap fflhub-davidsons-manual-status">
             <?php $this->render_styles(); ?>
-            <h1><?php esc_html_e("Davidson's Failed Job Rows", 'ffl-hub'); ?></h1>
+            <h1><?php esc_html_e("Davidson's Manual Order Status", 'ffl-hub'); ?></h1>
             <p>
-                <?php esc_html_e("This view shows failed Davidson's placement rows and the estimated distributor-cost exposure from those failed rows.", 'ffl-hub'); ?>
+                <?php esc_html_e("This page shows Davidson's job-line entries for WooCommerce orders currently in Processing status.", 'ffl-hub'); ?>
+            </p>
+            <p>
+                <?php esc_html_e("Completed orders are excluded here.", 'ffl-hub'); ?>
             </p>
 
-            <?php $this->render_summary_cards($summary); ?>
-            <?php $this->render_jobs_table($jobs, $summary); ?>
+            <?php $this->render_summary_cards($data); ?>
+            <?php $this->render_running_totals_table($data); ?>
+            <?php $this->render_entries_table($data); ?>
         </div>
 <?php
     }
 
     /**
      * @param OrderPlacementJobRow[] $jobs
-     * @return array{
-     *   rows:int,
-     *   total_cost:float,
-     *   credit_limit:float,
-     *   remaining_credit:float,
-     *   over_limit:float,
-     *   usage_pct:float,
-     *   unresolved_lines_total:int,
-     *   row_cost_by_id:array<int,float>,
-     *   row_unresolved_lines_by_id:array<int,int>
-     * }
      */
-    private function build_summary(array $jobs): array
+    private function filter_jobs_for_processing_orders(array $jobs): array
     {
-        $row_cost_by_id = [];
-        $row_unresolved_lines_by_id = [];
-
-        /** @var array<string,float|null> $unit_cost_cache */
-        $unit_cost_cache = [];
-
-        $total_cost = 0.0;
-        $unresolved_lines_total = 0;
+        /** @var array<int,string> $order_status_cache */
+        $order_status_cache = [];
+        $out = [];
 
         foreach ($jobs as $job) {
             if (!($job instanceof OrderPlacementJobRow)) {
                 continue;
             }
 
-            $row_cost = 0.0;
-            $row_unresolved = 0;
-            $lines = $job->payload_lines();
+            $order_id = (int) $job->order_id;
+            if ($order_id <= 0) {
+                continue;
+            }
 
+            if (!array_key_exists($order_id, $order_status_cache)) {
+                $order = wc_get_order($order_id);
+                $order_status_cache[$order_id] = ($order && method_exists($order, 'get_status'))
+                    ? strtolower(trim((string) $order->get_status()))
+                    : '';
+            }
+
+            if ($order_status_cache[$order_id] !== self::TARGET_WOO_ORDER_STATUS) {
+                continue;
+            }
+
+            $out[] = $job;
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param OrderPlacementJobRow[] $jobs
+     * @return array{
+     *   processing_order_count:int,
+     *   job_count:int,
+     *   line_count:int,
+     *   distinct_upc_count:int,
+     *   total_quantity:int,
+     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int}>,
+     *   entries:array<int,array{
+     *     job_id:int,
+     *     order_id:int,
+     *     job_key:string,
+     *     updated_at:string,
+     *     job_status:string,
+     *     upc:string,
+     *     qty:int,
+     *     product_name:string
+     *   }>
+     * }
+     */
+    private function build_manual_status_data(array $jobs): array
+    {
+        /** @var array<string,string> $product_name_by_upc */
+        $product_name_by_upc = [];
+        /** @var array<string,array{upc:string,product_name:string,total_qty:int,line_count:int}> $totals_by_upc */
+        $totals_by_upc = [];
+        /** @var array<int,array{
+        *   job_id:int,
+        *   order_id:int,
+        *   job_key:string,
+        *   updated_at:string,
+        *   job_status:string,
+        *   upc:string,
+        *   qty:int,
+        *   product_name:string
+        * }> $entries */
+        $entries = [];
+        /** @var array<int,bool> $processing_order_ids */
+        $processing_order_ids = [];
+
+        $total_quantity = 0;
+        $line_count = 0;
+
+        foreach ($jobs as $job) {
+            if (!($job instanceof OrderPlacementJobRow)) {
+                continue;
+            }
+
+            $processing_order_ids[(int) $job->order_id] = true;
+            $lines = $job->payload_lines();
             foreach ($lines as $line) {
                 if (!($line instanceof DistributorOrderLine)) {
                     continue;
@@ -117,82 +172,100 @@ final class DavidsonsFailedJobsPage
 
                 $upc = trim((string) $line->upc);
                 if ($upc === '') {
-                    $row_unresolved++;
                     continue;
                 }
-
-                $unit_cost = $this->resolve_unit_cost_for_upc($upc, $unit_cost_cache);
-                if ($unit_cost === null || $unit_cost <= 0.0) {
-                    $row_unresolved++;
-                    continue;
-                }
-
                 $qty = max(1, (int) $line->quantity);
-                $row_cost += ($unit_cost * $qty);
-            }
+                $product_name = $this->resolve_product_name_for_upc($upc, $product_name_by_upc);
 
-            $row_cost = round($row_cost, 2);
-            $row_cost_by_id[$job->id] = $row_cost;
-            $row_unresolved_lines_by_id[$job->id] = $row_unresolved;
-            $total_cost += $row_cost;
-            $unresolved_lines_total += $row_unresolved;
+                $entries[] = [
+                    'job_id' => (int) $job->id,
+                    'order_id' => (int) $job->order_id,
+                    'job_key' => (string) $job->job_key,
+                    'updated_at' => (string) ($job->updated_at ?? ''),
+                    'job_status' => (string) $job->status,
+                    'upc' => $upc,
+                    'qty' => $qty,
+                    'product_name' => $product_name,
+                ];
+
+                if (!isset($totals_by_upc[$upc])) {
+                    $totals_by_upc[$upc] = [
+                        'upc' => $upc,
+                        'product_name' => $product_name,
+                        'total_qty' => 0,
+                        'line_count' => 0,
+                    ];
+                }
+
+                if ($totals_by_upc[$upc]['product_name'] === 'Unknown product' && $product_name !== 'Unknown product') {
+                    $totals_by_upc[$upc]['product_name'] = $product_name;
+                }
+
+                $totals_by_upc[$upc]['total_qty'] += $qty;
+                $totals_by_upc[$upc]['line_count']++;
+                $total_quantity += $qty;
+                $line_count++;
+            }
         }
 
-        $total_cost = round($total_cost, 2);
-        $credit_limit = (float) self::CREDIT_LIMIT;
-        $remaining_credit = round($credit_limit - $total_cost, 2);
-        $over_limit = ($remaining_credit < 0.0) ? abs($remaining_credit) : 0.0;
-        $usage_pct = ($credit_limit > 0.0) ? min(999.0, round(($total_cost / $credit_limit) * 100.0, 1)) : 0.0;
+        $totals_rows = array_values($totals_by_upc);
+        usort(
+            $totals_rows,
+            static function (array $a, array $b): int {
+                $aq = (int) ($a['total_qty'] ?? 0);
+                $bq = (int) ($b['total_qty'] ?? 0);
+                if ($aq !== $bq) {
+                    return ($aq > $bq) ? -1 : 1;
+                }
+                return strcmp((string) ($a['upc'] ?? ''), (string) ($b['upc'] ?? ''));
+            }
+        );
 
         return [
-            'rows' => count($jobs),
-            'total_cost' => $total_cost,
-            'credit_limit' => $credit_limit,
-            'remaining_credit' => $remaining_credit,
-            'over_limit' => $over_limit,
-            'usage_pct' => $usage_pct,
-            'unresolved_lines_total' => $unresolved_lines_total,
-            'row_cost_by_id' => $row_cost_by_id,
-            'row_unresolved_lines_by_id' => $row_unresolved_lines_by_id,
+            'processing_order_count' => count($processing_order_ids),
+            'job_count' => count($jobs),
+            'line_count' => $line_count,
+            'distinct_upc_count' => count($totals_rows),
+            'total_quantity' => $total_quantity,
+            'totals_by_upc' => $totals_rows,
+            'entries' => $entries,
         ];
     }
 
     /**
      * @param string $upc
-     * @param array<string,float|null> $unit_cost_cache
+     * @param array<string,string> $product_name_by_upc
      */
-    private function resolve_unit_cost_for_upc(string $upc, array &$unit_cost_cache): ?float
+    private function resolve_product_name_for_upc(string $upc, array &$product_name_by_upc): string
     {
         $upc = trim($upc);
         if ($upc === '') {
-            return null;
+            return 'Unknown product';
         }
 
-        if (array_key_exists($upc, $unit_cost_cache)) {
-            return $unit_cost_cache[$upc];
+        if (array_key_exists($upc, $product_name_by_upc)) {
+            return $product_name_by_upc[$upc];
         }
 
         $product_id = $this->find_product_id_by_upc($upc);
         if ($product_id <= 0) {
-            $unit_cost_cache[$upc] = null;
-            return null;
+            $product_name_by_upc[$upc] = 'Unknown product';
+            return $product_name_by_upc[$upc];
         }
 
         $product = wc_get_product($product_id);
-        if (!($product instanceof WC_Product)) {
-            $unit_cost_cache[$upc] = null;
-            return null;
+        if (!$product || !method_exists($product, 'get_name')) {
+            $product_name_by_upc[$upc] = 'Unknown product';
+            return $product_name_by_upc[$upc];
         }
 
-        $true_cost = $this->to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true));
-        if ($true_cost !== null) {
-            $unit_cost_cache[$upc] = $true_cost;
-            return $true_cost;
+        $name = trim((string) $product->get_name());
+        if ($name === '') {
+            $name = 'Unknown product';
         }
 
-        $dealer_price = $this->to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
-        $unit_cost_cache[$upc] = $dealer_price;
-        return $dealer_price;
+        $product_name_by_upc[$upc] = $name;
+        return $name;
     }
 
     private function find_product_id_by_upc(string $upc): int
@@ -235,83 +308,51 @@ final class DavidsonsFailedJobsPage
     }
 
     /**
-     * @param mixed $value
-     */
-    private function to_positive_float($value): ?float
-    {
-        if ($value === null) {
-            return null;
-        }
-
-        $raw = trim((string) $value);
-        if ($raw === '') {
-            return null;
-        }
-
-        if (!is_numeric($raw)) {
-            $raw = trim((string) preg_replace('/[^0-9\.\-]/', '', $raw));
-        }
-
-        if ($raw === '' || !is_numeric($raw)) {
-            return null;
-        }
-
-        $num = (float) $raw;
-        if (!is_finite($num) || $num <= 0.0) {
-            return null;
-        }
-
-        return $num;
-    }
-
-    /**
      * @param array{
-     *   rows:int,
-     *   total_cost:float,
-     *   credit_limit:float,
-     *   remaining_credit:float,
-     *   over_limit:float,
-     *   usage_pct:float,
-     *   unresolved_lines_total:int,
-     *   row_cost_by_id:array<int,float>,
-     *   row_unresolved_lines_by_id:array<int,int>
-     * } $summary
+     *   processing_order_count:int,
+     *   job_count:int,
+     *   line_count:int,
+     *   distinct_upc_count:int,
+     *   total_quantity:int,
+     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int}>,
+     *   entries:array<int,array{
+     *     job_id:int,
+     *     order_id:int,
+     *     job_key:string,
+     *     updated_at:string,
+     *     job_status:string,
+     *     upc:string,
+     *     qty:int,
+     *     product_name:string
+     *   }>
+     * } $data
      */
-    private function render_summary_cards(array $summary): void
+    private function render_summary_cards(array $data): void
     {
-        $is_over_limit = ((float) $summary['over_limit']) > 0.0;
         ?>
         <div class="fflhub-davidsons-summary-grid">
             <section class="fflhub-davidsons-card">
-                <h2><?php esc_html_e('Failed Job Distributor Cost', 'ffl-hub'); ?></h2>
-                <div class="fflhub-davidsons-money"><?php echo esc_html($this->format_money((float) $summary['total_cost'])); ?></div>
-                <p><?php esc_html_e("Estimated from payload UPC + qty using each product's last true cost (dealer price fallback).", 'ffl-hub'); ?></p>
+                <h2><?php esc_html_e('Processing Orders', 'ffl-hub'); ?></h2>
+                <div class="fflhub-davidsons-metric"><?php echo esc_html((string) ((int) $data['processing_order_count'])); ?></div>
+                <p><?php esc_html_e('WooCommerce orders in Processing status.', 'ffl-hub'); ?></p>
             </section>
 
             <section class="fflhub-davidsons-card">
-                <h2><?php esc_html_e('Credit Limit', 'ffl-hub'); ?></h2>
-                <div class="fflhub-davidsons-money"><?php echo esc_html($this->format_money((float) $summary['credit_limit'])); ?></div>
-                <p><?php echo esc_html(sprintf(__('Usage: %s%%', 'ffl-hub'), number_format((float) $summary['usage_pct'], 1))); ?></p>
+                <h2><?php esc_html_e("Davidson's Jobs", 'ffl-hub'); ?></h2>
+                <div class="fflhub-davidsons-metric"><?php echo esc_html((string) ((int) $data['job_count'])); ?></div>
+                <p><?php esc_html_e('Job rows attached to those processing orders.', 'ffl-hub'); ?></p>
             </section>
 
-            <section class="fflhub-davidsons-card <?php echo $is_over_limit ? 'is-danger' : 'is-ok'; ?>">
-                <h2><?php echo esc_html($is_over_limit ? __('Over Limit', 'ffl-hub') : __('Remaining Credit', 'ffl-hub')); ?></h2>
-                <div class="fflhub-davidsons-money">
-                    <?php
-                    if ($is_over_limit) {
-                        echo esc_html($this->format_money((float) $summary['over_limit']));
-                    } else {
-                        echo esc_html($this->format_money((float) $summary['remaining_credit']));
-                    }
-                    ?>
-                </div>
+            <section class="fflhub-davidsons-card is-ok">
+                <h2><?php esc_html_e('Running Totals', 'ffl-hub'); ?></h2>
+                <div class="fflhub-davidsons-metric"><?php echo esc_html((string) ((int) $data['total_quantity'])); ?></div>
                 <p>
                     <?php
                     echo esc_html(
                         sprintf(
-                            __('Failed rows: %d | unresolved lines: %d', 'ffl-hub'),
-                            (int) $summary['rows'],
-                            (int) $summary['unresolved_lines_total']
+                            __('Distinct UPCs: %d | Line Entries: %d', 'ffl-hub'),
+                            (int) $data['distinct_upc_count'],
+                            (int) $data['line_count']
                         )
                     );
                     ?>
@@ -322,88 +363,58 @@ final class DavidsonsFailedJobsPage
     }
 
     /**
-     * @param OrderPlacementJobRow[] $jobs
      * @param array{
-     *   rows:int,
-     *   total_cost:float,
-     *   credit_limit:float,
-     *   remaining_credit:float,
-     *   over_limit:float,
-     *   usage_pct:float,
-     *   unresolved_lines_total:int,
-     *   row_cost_by_id:array<int,float>,
-     *   row_unresolved_lines_by_id:array<int,int>
-     * } $summary
+     *   processing_order_count:int,
+     *   job_count:int,
+     *   line_count:int,
+     *   distinct_upc_count:int,
+     *   total_quantity:int,
+     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int}>,
+     *   entries:array<int,array{
+     *     job_id:int,
+     *     order_id:int,
+     *     job_key:string,
+     *     updated_at:string,
+     *     job_status:string,
+     *     upc:string,
+     *     qty:int,
+     *     product_name:string
+     *   }>
+     * } $data
      */
-    private function render_jobs_table(array $jobs, array $summary): void
+    private function render_running_totals_table(array $data): void
     {
-        if (empty($jobs)) {
+        $rows = $data['totals_by_upc'];
+        if (empty($rows)) {
             ?>
-            <p><?php esc_html_e("No failed Davidson's job rows found.", 'ffl-hub'); ?></p>
+            <p><?php esc_html_e("No Davidson's line entries found for processing orders.", 'ffl-hub'); ?></p>
             <?php
             return;
         }
         ?>
-        <h2><?php esc_html_e("Failed Davidson's Rows", 'ffl-hub'); ?></h2>
+        <h2><?php esc_html_e('Running Totals by UPC', 'ffl-hub'); ?></h2>
         <table class="widefat fixed striped">
             <thead>
                 <tr>
-                    <th><?php esc_html_e('Job ID', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Order', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Job Key', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Updated (UTC)', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Attempts', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Line Count', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Distributor Cost', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Last Error', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Total Qty', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Line Entries', 'ffl-hub'); ?></th>
                 </tr>
             </thead>
             <tbody>
-                <?php foreach ($jobs as $job) : ?>
+                <?php foreach ($rows as $row) : ?>
                     <?php
-                    if (!($job instanceof OrderPlacementJobRow)) {
-                        continue;
-                    }
-
-                    $order_id = (int) $job->order_id;
-                    $order_edit_url = admin_url('post.php?post=' . $order_id . '&action=edit');
-                    $line_count = (int) $job->payload_lines_count();
-                    $row_cost = (float) ($summary['row_cost_by_id'][$job->id] ?? 0.0);
-                    $unresolved_lines = (int) ($summary['row_unresolved_lines_by_id'][$job->id] ?? 0);
-                    $last_error = trim((string) ($job->last_error ?? ''));
-                    if ($last_error !== '') {
-                        $last_error = wp_html_excerpt($last_error, 260, '...');
-                    } else {
-                        $last_error = '-';
-                    }
+                    $upc = (string) ($row['upc'] ?? '');
+                    $product_name = (string) ($row['product_name'] ?? 'Unknown product');
+                    $total_qty = (int) ($row['total_qty'] ?? 0);
+                    $line_count = (int) ($row['line_count'] ?? 0);
                     ?>
                     <tr>
-                        <td><?php echo esc_html((string) $job->id); ?></td>
-                        <td>
-                            <a href="<?php echo esc_url($order_edit_url); ?>">
-                                <?php echo esc_html('#' . (string) $order_id); ?>
-                            </a>
-                        </td>
-                        <td><code><?php echo esc_html((string) $job->job_key); ?></code></td>
-                        <td><?php echo esc_html((string) ($job->updated_at ?? '-')); ?></td>
-                        <td><?php echo esc_html((string) $job->attempts); ?></td>
+                        <td><code><?php echo esc_html($upc); ?></code></td>
+                        <td><?php echo esc_html($product_name); ?></td>
+                        <td><?php echo esc_html((string) $total_qty); ?></td>
                         <td><?php echo esc_html((string) $line_count); ?></td>
-                        <td>
-                            <?php echo esc_html($this->format_money($row_cost)); ?>
-                            <?php if ($unresolved_lines > 0) : ?>
-                                <div class="fflhub-davidsons-note">
-                                    <?php
-                                    echo esc_html(
-                                        sprintf(
-                                            __('%d line(s) missing cost meta', 'ffl-hub'),
-                                            $unresolved_lines
-                                        )
-                                    );
-                                    ?>
-                                </div>
-                            <?php endif; ?>
-                        </td>
-                        <td><?php echo esc_html($last_error); ?></td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
@@ -411,9 +422,75 @@ final class DavidsonsFailedJobsPage
         <?php
     }
 
-    private function format_money(float $value): string
+    /**
+     * @param array{
+     *   processing_order_count:int,
+     *   job_count:int,
+     *   line_count:int,
+     *   distinct_upc_count:int,
+     *   total_quantity:int,
+     *   totals_by_upc:array<int,array{upc:string,product_name:string,total_qty:int,line_count:int}>,
+     *   entries:array<int,array{
+     *     job_id:int,
+     *     order_id:int,
+     *     job_key:string,
+     *     updated_at:string,
+     *     job_status:string,
+     *     upc:string,
+     *     qty:int,
+     *     product_name:string
+     *   }>
+     * } $data
+     */
+    private function render_entries_table(array $data): void
     {
-        return '$' . number_format($value, 2, '.', ',');
+        $entries = $data['entries'];
+        if (empty($entries)) {
+            return;
+        }
+        ?>
+        <h2><?php esc_html_e("Processing Order Line Entries", 'ffl-hub'); ?></h2>
+        <table class="widefat fixed striped">
+            <thead>
+                <tr>
+                    <th><?php esc_html_e('Job ID', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Order', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Job Key', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Job Status', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Updated (UTC)', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Qty', 'ffl-hub'); ?></th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($entries as $entry) : ?>
+                    <?php
+                    $order_id = (int) ($entry['order_id'] ?? 0);
+                    $order_edit_url = admin_url('post.php?post=' . $order_id . '&action=edit');
+                    ?>
+                    <tr>
+                        <td><?php echo esc_html((string) ((int) ($entry['job_id'] ?? 0))); ?></td>
+                        <td>
+                            <?php if ($order_id > 0) : ?>
+                                <a href="<?php echo esc_url($order_edit_url); ?>">
+                                    <?php echo esc_html('#' . (string) $order_id); ?>
+                                </a>
+                            <?php else : ?>
+                                <?php echo esc_html('-'); ?>
+                            <?php endif; ?>
+                        </td>
+                        <td><code><?php echo esc_html((string) ($entry['job_key'] ?? '')); ?></code></td>
+                        <td><?php echo esc_html((string) ($entry['job_status'] ?? '')); ?></td>
+                        <td><?php echo esc_html((string) ($entry['updated_at'] ?? '')); ?></td>
+                        <td><code><?php echo esc_html((string) ($entry['upc'] ?? '')); ?></code></td>
+                        <td><?php echo esc_html((string) ($entry['product_name'] ?? 'Unknown product')); ?></td>
+                        <td><?php echo esc_html((string) ((int) ($entry['qty'] ?? 0))); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php
     }
 
     private function render_styles(): void
@@ -445,7 +522,7 @@ final class DavidsonsFailedJobsPage
                 margin: 0 0 8px;
                 font-size: 15px;
             }
-            .fflhub-davidsons-money {
+            .fflhub-davidsons-metric {
                 font-size: 24px;
                 font-weight: 700;
                 line-height: 1.2;
@@ -459,11 +536,10 @@ final class DavidsonsFailedJobsPage
                 font-size: 11px;
                 color: #646970;
             }
-            .fflhub-davidsons-failed-jobs table code {
+            .fflhub-davidsons-manual-status table code {
                 word-break: break-all;
             }
         </style>
         <?php
     }
 }
-
