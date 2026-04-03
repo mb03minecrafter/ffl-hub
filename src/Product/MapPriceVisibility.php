@@ -398,7 +398,9 @@ class MapPriceVisibility
             self::redirect_with_quote_status($redirect_url, 'invalid_request');
         }
 
-        $first_name = sanitize_text_field((string) wp_unslash($_POST['fflhub_first_name'] ?? ''));
+        $first_name = self::normalize_quote_first_name(
+            sanitize_text_field((string) wp_unslash($_POST['fflhub_first_name'] ?? ''))
+        );
         $last_name = sanitize_text_field((string) wp_unslash($_POST['fflhub_last_name'] ?? ''));
         $email = sanitize_email((string) wp_unslash($_POST['fflhub_email'] ?? ''));
 
@@ -832,6 +834,31 @@ class MapPriceVisibility
         }
 
         return substr($value, 0, $max_length);
+    }
+
+    private static function normalize_quote_first_name(string $first_name): string
+    {
+        $first_name = trim(sanitize_text_field($first_name));
+        if ($first_name === '') {
+            return '';
+        }
+
+        $lower = strtolower($first_name);
+        $normalized = preg_replace_callback(
+            "/(^|[\\s\\-'])([a-z])/i",
+            static function (array $matches): string {
+                $prefix = isset($matches[1]) ? (string) $matches[1] : '';
+                $letter = isset($matches[2]) ? (string) $matches[2] : '';
+                return $prefix . strtoupper($letter);
+            },
+            $lower
+        );
+
+        if (!is_string($normalized) || $normalized === '') {
+            return $first_name;
+        }
+
+        return $normalized;
     }
 
     private static function quote_submission_dedupe_ttl_seconds(): int

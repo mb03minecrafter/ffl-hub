@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Admin\Orders\OrderPlacementMetaBox;
 use FFLHub\Admin\Pages\AdminPage;
+use FFLHub\Admin\Pages\DavidsonsFailedJobsPage;
 use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
@@ -62,6 +63,7 @@ final class Plugin
     public FFLImporterPage $ffl_importer_page;
     public DistributorProductsPage $distributor_products_page;
     public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
+    public DavidsonsFailedJobsPage $davidsons_failed_jobs_page;
     public MapPolicyPage $map_policy_page;
     public OrderPlacementMetaBox $order_placement_metabox;
 
@@ -130,6 +132,9 @@ final class Plugin
 
             $this->dealer_fulfilled_jobs_page = new DealerFulfilledJobsPage($this->distributor_handler->ordering_jobs_table);
             $this->dealer_fulfilled_jobs_page->register();
+
+            $this->davidsons_failed_jobs_page = new DavidsonsFailedJobsPage($this->distributor_handler->ordering_jobs_table);
+            $this->davidsons_failed_jobs_page->register();
 
             $this->map_policy_page = new MapPolicyPage();
             $this->map_policy_page->register();

@@ -636,4 +636,103 @@ final class OrderPlacementJobsRepository
 
         return $out;
     }
+
+    /**
+     * Select jobs for a specific distributor, newest first.
+     *
+     * Useful for operational/admin views that need a distributor-scoped
+     * perspective (for example, failed Davidson's rows impacting credit).
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param string                  $dist_id    Canonical distributor id.
+     * @param int                     $limit      Max rows to return.
+     * @param string|null             $status     Optional status filter; pass null/'' for all.
+     * @return OrderPlacementJobRow[] List of DTOs.
+     */
+    public static function find_jobs_by_distributor(
+        OrderPlacementJobsTable $jobs_table,
+        string $dist_id,
+        int $limit,
+        ?string $status = null
+    ): array {
+        global $wpdb;
+
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return [];
+        }
+
+        $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) $dist_id);
+        if ($dist_id === '') {
+            return [];
+        }
+
+        $limit = max(1, (int) $limit);
+        $status = is_string($status) ? trim($status) : '';
+
+        if ($status !== '') {
+            $sql = $wpdb->prepare(
+                "
+                SELECT
+                    id, order_id, job_key, dist_id, lane, status,
+                    attempts, created_at, updated_at,
+                    action_id, next_run_at,
+                    last_step, last_error, last_codes_json,
+                    done_at,
+                    payload_json, validate_result_json, place_result_json,
+                    merchant_po, external_order_ids_json, external_order_id,
+                    shipped_at, tracking_numbers_json, invoice_numbers_json,
+                    last_shipping_poll_at, shipping_service, shipping_weight, shipment_raw_json
+                FROM {$table}
+                WHERE
+                    dist_id = %s
+                    AND status = %s
+                ORDER BY
+                    updated_at DESC,
+                    id DESC
+                LIMIT %d
+                ",
+                $dist_id,
+                (string) $status,
+                $limit
+            );
+        } else {
+            $sql = $wpdb->prepare(
+                "
+                SELECT
+                    id, order_id, job_key, dist_id, lane, status,
+                    attempts, created_at, updated_at,
+                    action_id, next_run_at,
+                    last_step, last_error, last_codes_json,
+                    done_at,
+                    payload_json, validate_result_json, place_result_json,
+                    merchant_po, external_order_ids_json, external_order_id,
+                    shipped_at, tracking_numbers_json, invoice_numbers_json,
+                    last_shipping_poll_at, shipping_service, shipping_weight, shipment_raw_json
+                FROM {$table}
+                WHERE dist_id = %s
+                ORDER BY
+                    updated_at DESC,
+                    id DESC
+                LIMIT %d
+                ",
+                $dist_id,
+                $limit
+            );
+        }
+
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $out[] = new OrderPlacementJobRow($row);
+            }
+        }
+
+        return $out;
+    }
 }
