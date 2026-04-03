@@ -3,7 +3,10 @@
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Product\ProductMeta;
@@ -23,6 +26,9 @@ final class DavidsonsFailedJobsPage
     private const TARGET_WOO_ORDER_STATUS = 'processing';
     private const CREDIT_LIMIT_OPTION = 'fflhub_davidsons_credit_limit';
     private const DEFAULT_CREDIT_LIMIT = 2500.0;
+    private const MANUAL_PO_FORM_ACTION = 'fflhub_davidsons_manual_mark_success';
+    private const MANUAL_PO_NONCE_ACTION = 'fflhub_davidsons_manual_mark_success_nonce_action';
+    private const MANUAL_PO_NONCE_FIELD = 'fflhub_davidsons_manual_mark_success_nonce';
 
     private OrderPlacementJobsTable $jobs_table;
 
@@ -54,6 +60,8 @@ final class DavidsonsFailedJobsPage
             wp_die(esc_html__('You do not have permission to access this page.', 'ffl-hub'));
         }
 
+        $notice = $this->maybe_handle_manual_po_form_submission();
+
         $jobs = OrderPlacementJobsRepository::find_jobs_by_distributor(
             $this->jobs_table,
             self::DAVIDSONS_DIST_ID,
@@ -72,12 +80,173 @@ final class DavidsonsFailedJobsPage
             <p>
                 <?php esc_html_e("Completed orders are excluded here.", 'ffl-hub'); ?>
             </p>
+            <?php $this->render_notice($notice); ?>
 
             <?php $this->render_summary_cards($data); ?>
             <?php $this->render_running_totals_table($data); ?>
             <?php $this->render_entries_table($data); ?>
         </div>
 <?php
+    }
+
+    /**
+     * Handle manual PO submission from the line-entry table.
+     *
+     * @return array{type:string,message:string}|null
+     */
+    private function maybe_handle_manual_po_form_submission(): ?array
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            return $this->read_notice_from_query();
+        }
+
+        $action = isset($_POST['fflhub_davidsons_manual_action'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_davidsons_manual_action']))
+            : '';
+        if ($action !== self::MANUAL_PO_FORM_ACTION) {
+            return $this->read_notice_from_query();
+        }
+
+        if (
+            !isset($_POST[self::MANUAL_PO_NONCE_FIELD]) ||
+            !wp_verify_nonce(
+                sanitize_text_field(wp_unslash((string) $_POST[self::MANUAL_PO_NONCE_FIELD])),
+                self::MANUAL_PO_NONCE_ACTION
+            )
+        ) {
+            return ['type' => 'error', 'message' => __('Security check failed. Please refresh and try again.', 'ffl-hub')];
+        }
+
+        $order_id = isset($_POST['fflhub_davidsons_order_id']) ? (int) $_POST['fflhub_davidsons_order_id'] : 0;
+        $job_key = isset($_POST['fflhub_davidsons_job_key'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_davidsons_job_key']))
+            : '';
+        $merchant_po_raw = isset($_POST['fflhub_davidsons_merchant_po'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_davidsons_merchant_po']))
+            : '';
+        $merchant_po = $this->sanitize_manual_po($merchant_po_raw);
+
+        if ($order_id <= 0 || trim($job_key) === '') {
+            return ['type' => 'error', 'message' => __('Missing order or job key. Please try again.', 'ffl-hub')];
+        }
+        if ($merchant_po === '') {
+            return ['type' => 'error', 'message' => __('Please enter a valid PO number.', 'ffl-hub')];
+        }
+
+        $order = wc_get_order($order_id);
+        if (!$order || !method_exists($order, 'get_status')) {
+            return ['type' => 'error', 'message' => __('Order not found for this row.', 'ffl-hub')];
+        }
+
+        $order_status = strtolower(trim((string) $order->get_status()));
+        if ($order_status !== self::TARGET_WOO_ORDER_STATUS) {
+            return ['type' => 'error', 'message' => __('This order is no longer in Processing status.', 'ffl-hub')];
+        }
+
+        $job = OrderPlacementJobsRepository::get_job_for_order($this->jobs_table, $order, $job_key);
+        if (!($job instanceof OrderPlacementJobRow)) {
+            return ['type' => 'error', 'message' => __('Job row not found for this order/job key.', 'ffl-hub')];
+        }
+
+        $dist_id = strtolower(trim((string) $job->dist_id));
+        if ($dist_id !== self::DAVIDSONS_DIST_ID) {
+            return ['type' => 'error', 'message' => __("That row is not a Davidson's job.", 'ffl-hub')];
+        }
+
+        $done_at = gmdate('Y-m-d H:i:s');
+        $patch = OrderPlacementJobPatch::empty()
+            ->with_status(OrderPlacementKeys::JOB_STATUS_SUCCESS)
+            ->with_field('done_at', $done_at)
+            ->with_field('merchant_po', $merchant_po)
+            ->with_field('last_error', '')
+            ->with_last_codes([])
+            ->clear_action_and_schedule();
+
+        OrderPlacementJobWriter::apply_patch(
+            $this->jobs_table,
+            (int) $order->get_id(),
+            (string) $job->job_key,
+            $patch
+        );
+
+        return [
+            'type' => 'success',
+            'message' => sprintf(
+                /* translators: 1: job id, 2: PO number */
+                __("Updated job #%1$d to success with PO %2$s.", 'ffl-hub'),
+                (int) $job->id,
+                $merchant_po
+            ),
+        ];
+    }
+
+    /**
+     * @return array{type:string,message:string}|null
+     */
+    private function read_notice_from_query(): ?array
+    {
+        $type = isset($_GET['fflhub_notice_type'])
+            ? sanitize_text_field(wp_unslash((string) $_GET['fflhub_notice_type']))
+            : '';
+        $message = isset($_GET['fflhub_notice_message'])
+            ? sanitize_text_field(wp_unslash((string) $_GET['fflhub_notice_message']))
+            : '';
+
+        $type = strtolower(trim($type));
+        if ($message === '' || !in_array($type, ['success', 'error', 'warning', 'info'], true)) {
+            return null;
+        }
+
+        return ['type' => $type, 'message' => $message];
+    }
+
+    /**
+     * @param array{type:string,message:string}|null $notice
+     */
+    private function render_notice(?array $notice): void
+    {
+        if (!is_array($notice) || !isset($notice['message'])) {
+            return;
+        }
+
+        $type = strtolower(trim((string) ($notice['type'] ?? 'info')));
+        $class = 'notice-info';
+        if ($type === 'success') {
+            $class = 'notice-success';
+        } elseif ($type === 'error') {
+            $class = 'notice-error';
+        } elseif ($type === 'warning') {
+            $class = 'notice-warning';
+        }
+        ?>
+        <div class="notice <?php echo esc_attr($class); ?> is-dismissible">
+            <p><?php echo esc_html((string) $notice['message']); ?></p>
+        </div>
+        <?php
+    }
+
+    private function sanitize_manual_po(string $value): string
+    {
+        $value = strtoupper(trim($value));
+        if ($value === '') {
+            return '';
+        }
+
+        $value = preg_replace('/[^A-Z0-9._-]/', '', $value);
+        if (!is_string($value)) {
+            return '';
+        }
+
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        if (strlen($value) > 32) {
+            $value = substr($value, 0, 32);
+        }
+
+        return $value;
     }
 
     /**
@@ -135,6 +304,7 @@ final class DavidsonsFailedJobsPage
      *     job_key:string,
      *     updated_at:string,
      *     job_status:string,
+     *     merchant_po:string,
      *     upc:string,
      *     qty:int,
      *     product_name:string,
@@ -157,6 +327,7 @@ final class DavidsonsFailedJobsPage
         *   job_key:string,
         *   updated_at:string,
         *   job_status:string,
+        *   merchant_po:string,
         *   upc:string,
         *   qty:int,
         *   product_name:string,
@@ -198,6 +369,7 @@ final class DavidsonsFailedJobsPage
                     'job_key' => (string) $job->job_key,
                     'updated_at' => (string) ($job->updated_at ?? ''),
                     'job_status' => (string) $job->status,
+                    'merchant_po' => (string) ($job->merchant_po ?? ''),
                     'upc' => $upc,
                     'qty' => $qty,
                     'product_name' => $product_name,
@@ -432,6 +604,7 @@ final class DavidsonsFailedJobsPage
      *     job_key:string,
      *     updated_at:string,
      *     job_status:string,
+     *     merchant_po:string,
      *     upc:string,
      *     qty:int,
      *     product_name:string,
@@ -535,6 +708,7 @@ final class DavidsonsFailedJobsPage
      *     job_key:string,
      *     updated_at:string,
      *     job_status:string,
+     *     merchant_po:string,
      *     upc:string,
      *     qty:int,
      *     product_name:string,
@@ -604,6 +778,7 @@ final class DavidsonsFailedJobsPage
      *     job_key:string,
      *     updated_at:string,
      *     job_status:string,
+     *     merchant_po:string,
      *     upc:string,
      *     qty:int,
      *     product_name:string,
@@ -627,20 +802,26 @@ final class DavidsonsFailedJobsPage
                     <th><?php esc_html_e('Order', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Job Key', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Job Status', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Merchant PO', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Updated (UTC)', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Qty', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Manual PO / Mark Success', 'ffl-hub'); ?></th>
                 </tr>
             </thead>
             <tbody>
                 <?php foreach ($entries as $entry) : ?>
                     <?php
                     $order_id = (int) ($entry['order_id'] ?? 0);
+                    $job_id = (int) ($entry['job_id'] ?? 0);
+                    $job_key = (string) ($entry['job_key'] ?? '');
+                    $job_status = strtolower(trim((string) ($entry['job_status'] ?? '')));
+                    $merchant_po = trim((string) ($entry['merchant_po'] ?? ''));
                     $order_edit_url = admin_url('post.php?post=' . $order_id . '&action=edit');
                     ?>
                     <tr>
-                        <td><?php echo esc_html((string) ((int) ($entry['job_id'] ?? 0))); ?></td>
+                        <td><?php echo esc_html((string) $job_id); ?></td>
                         <td>
                             <?php if ($order_id > 0) : ?>
                                 <a href="<?php echo esc_url($order_edit_url); ?>">
@@ -650,12 +831,36 @@ final class DavidsonsFailedJobsPage
                                 <?php echo esc_html('-'); ?>
                             <?php endif; ?>
                         </td>
-                        <td><code><?php echo esc_html((string) ($entry['job_key'] ?? '')); ?></code></td>
+                        <td><code><?php echo esc_html($job_key); ?></code></td>
                         <td><?php echo esc_html((string) ($entry['job_status'] ?? '')); ?></td>
+                        <td><code><?php echo esc_html($merchant_po !== '' ? $merchant_po : '-'); ?></code></td>
                         <td><?php echo esc_html((string) ($entry['updated_at'] ?? '')); ?></td>
                         <td><code><?php echo esc_html((string) ($entry['upc'] ?? '')); ?></code></td>
                         <td><?php echo esc_html((string) ($entry['product_name'] ?? 'Unknown product')); ?></td>
                         <td><?php echo esc_html((string) ((int) ($entry['qty'] ?? 0))); ?></td>
+                        <td>
+                            <form method="post" action="" class="fflhub-davidsons-po-form">
+                                <?php wp_nonce_field(self::MANUAL_PO_NONCE_ACTION, self::MANUAL_PO_NONCE_FIELD); ?>
+                                <input type="hidden" name="fflhub_davidsons_manual_action" value="<?php echo esc_attr(self::MANUAL_PO_FORM_ACTION); ?>" />
+                                <input type="hidden" name="fflhub_davidsons_order_id" value="<?php echo esc_attr((string) $order_id); ?>" />
+                                <input type="hidden" name="fflhub_davidsons_job_key" value="<?php echo esc_attr($job_key); ?>" />
+                                <input
+                                    type="text"
+                                    name="fflhub_davidsons_merchant_po"
+                                    value="<?php echo esc_attr($merchant_po); ?>"
+                                    maxlength="32"
+                                    placeholder="<?php esc_attr_e('Enter PO', 'ffl-hub'); ?>"
+                                    class="regular-text fflhub-davidsons-po-input" />
+                                <button type="submit" class="button button-secondary button-small">
+                                    <?php esc_html_e('Save + Mark Success', 'ffl-hub'); ?>
+                                </button>
+                                <?php if ($job_status === OrderPlacementKeys::JOB_STATUS_SUCCESS) : ?>
+                                    <div class="fflhub-davidsons-po-note">
+                                        <?php esc_html_e('Already marked success.', 'ffl-hub'); ?>
+                                    </div>
+                                <?php endif; ?>
+                            </form>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
@@ -708,6 +913,20 @@ final class DavidsonsFailedJobsPage
             }
             .fflhub-davidsons-manual-status table code {
                 word-break: break-all;
+            }
+            .fflhub-davidsons-po-form {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                min-width: 170px;
+            }
+            .fflhub-davidsons-po-input {
+                width: 100%;
+                min-width: 140px;
+            }
+            .fflhub-davidsons-po-note {
+                font-size: 11px;
+                color: #166534;
             }
         </style>
         <?php
