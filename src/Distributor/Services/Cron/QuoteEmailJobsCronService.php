@@ -402,13 +402,17 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return null;
         }
 
-        $coupon_code = $this->build_coupon_code($first_name, $last_name, $email);
+        $base_coupon_code = $this->build_coupon_code($first_name, $last_name, $email);
+        if ($base_coupon_code === '') {
+            return null;
+        }
+
+        $coupon_code = $this->next_available_coupon_code($base_coupon_code);
         if ($coupon_code === '') {
             return null;
         }
 
-        $existing_id = function_exists('wc_get_coupon_id_by_code') ? (int) wc_get_coupon_id_by_code($coupon_code) : 0;
-        $coupon = ($existing_id > 0) ? new \WC_Coupon($existing_id) : new \WC_Coupon();
+        $coupon = new \WC_Coupon();
         $force_free_shipping = $this->map_real_price_free_shipping_override_enabled($product);
 
         $expires_ts = (int) current_time('timestamp', true) + (48 * HOUR_IN_SECONDS);
@@ -418,7 +422,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'product_id' => (int) $product->get_id(),
             'product_name' => $product_name,
             'coupon_code' => $coupon_code,
-            'existing_id' => $existing_id,
+            'base_coupon_code' => $base_coupon_code,
             'coupon_amount' => $coupon_amount,
             'recipient_email' => $email,
             'expires_ts' => $expires_ts,
@@ -449,8 +453,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
         if (method_exists($coupon, 'set_usage_count')) {
             $coupon->set_usage_count(0);
-        } elseif ($existing_id > 0) {
-            update_post_meta($existing_id, 'usage_count', 0);
         }
 
         try {
@@ -497,6 +499,39 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         return $seed;
+    }
+
+    private function next_available_coupon_code(string $base_code): string
+    {
+        $base_code = strtolower(trim($base_code));
+        if ($base_code === '') {
+            return '';
+        }
+
+        $candidate = $base_code;
+        $suffix = 2;
+        $max_attempts = 1000;
+        $attempt = 0;
+
+        while ($attempt < $max_attempts) {
+            $attempt++;
+            $existing_id = function_exists('wc_get_coupon_id_by_code')
+                ? (int) wc_get_coupon_id_by_code($candidate)
+                : 0;
+            if ($existing_id <= 0) {
+                return $candidate;
+            }
+
+            $candidate = $base_code . (string) $suffix;
+            $suffix++;
+        }
+
+        self::debug_ctx('coupon code allocation failed after max attempts', [
+            'base_coupon_code' => $base_code,
+            'max_attempts' => $max_attempts,
+        ]);
+
+        return '';
     }
 
     /**
