@@ -409,6 +409,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
         $existing_id = function_exists('wc_get_coupon_id_by_code') ? (int) wc_get_coupon_id_by_code($coupon_code) : 0;
         $coupon = ($existing_id > 0) ? new \WC_Coupon($existing_id) : new \WC_Coupon();
+        $force_free_shipping = $this->map_real_price_free_shipping_override_enabled($product);
 
         $expires_ts = (int) current_time('timestamp', true) + (48 * HOUR_IN_SECONDS);
         $product_name = (string) $product->get_name();
@@ -421,6 +422,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'coupon_amount' => $coupon_amount,
             'recipient_email' => $email,
             'expires_ts' => $expires_ts,
+            'force_free_shipping' => $force_free_shipping ? 1 : 0,
         ]);
 
         $coupon->set_code($coupon_code);
@@ -431,6 +433,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $coupon->set_usage_limit_per_user(1);
         $coupon->set_email_restrictions([$email]);
         $coupon->set_date_expires($expires_ts);
+        $coupon->set_free_shipping($force_free_shipping);
         $coupon->set_description(
             sprintf(
                 'Quote coupon for %s (%s)',
@@ -658,6 +661,10 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
     private function is_free_shipping_for_quote_product(WC_Product $product, float $line_revenue): bool
     {
+        if ($this->map_real_price_free_shipping_override_enabled($product)) {
+            return true;
+        }
+
         $shipping_cost_total = $this->estimate_shipping_cost_total_for_quote_product($product);
         if ($shipping_cost_total <= 0.0) {
             return true;
@@ -698,6 +705,22 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         return $customer_charge <= 0.0001;
+    }
+
+    private function map_real_price_free_shipping_override_enabled(WC_Product $product): bool
+    {
+        $mode_raw = $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
+        $mode = ($mode_raw === '' && (string) $mode_raw !== '0')
+            ? ProductMeta::MARKUP_MODE_GLOBAL
+            : (int) $mode_raw;
+        if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            return false;
+        }
+
+        return $this->to_boolish(
+            $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true),
+            false
+        );
     }
 
     private function estimate_shipping_cost_total_for_quote_product(WC_Product $product): float

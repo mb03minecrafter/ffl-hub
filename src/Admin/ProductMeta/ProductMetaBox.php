@@ -298,6 +298,9 @@ class ProductMetaBox
         $map_real_percent_value = (is_numeric($map_real_percent_raw) && (float) $map_real_percent_raw >= 0)
             ? (string) $map_real_percent_raw
             : '';
+        $map_real_free_shipping_override = self::is_truthy_meta(
+            $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true)
+        );
 
         echo '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;">';
         echo '<div style="font-size:11px;font-weight:700;margin-bottom:6px;">' .
@@ -408,6 +411,17 @@ class ProductMetaBox
             '</span>';
         echo '</p>';
 
+        echo '<p style="margin:8px 0 0;">';
+        echo '<label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;">';
+        echo '<input id="fflhub_map_real_price_free_shipping_override" type="checkbox" name="fflhub_map_real_price_free_shipping_override" value="1" ' .
+            checked($map_real_free_shipping_override, true, false) . ' />';
+        echo esc_html__('MAP Price Real Price Free Shipping Override', 'ffl-hub');
+        echo '</label>';
+        echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+            esc_html__('When enabled, quote coupons for this MAP product will force free shipping.', 'ffl-hub') .
+            '</span>';
+        echo '</p>';
+
         echo '</div>';
 
         // 🆕 Inline JS: enable/disable fields immediately when mode changes
@@ -421,7 +435,8 @@ class ProductMetaBox
                     var mapRealModeEl = document.getElementById('fflhub_map_real_price_mode');
                     var mapOffsetEl = document.getElementById('fflhub_map_real_price_offset');
                     var mapPercentEl = document.getElementById('fflhub_map_real_price_percent');
-                    if (!modeEl || !pctEl || !fixedEl || !mapRealModeEl || !mapOffsetEl || !mapPercentEl) return;
+                    var mapFreeShipOverrideEl = document.getElementById('fflhub_map_real_price_free_shipping_override');
+                    if (!modeEl || !pctEl || !fixedEl || !mapRealModeEl || !mapOffsetEl || !mapPercentEl || !mapFreeShipOverrideEl) return;
 
                     var mode = parseInt(modeEl.value, 10);
                     var MODE_FIXED_PCT = <?php echo (int) ProductMeta::MARKUP_MODE_FIXED_PCT; ?>;
@@ -438,6 +453,7 @@ class ProductMetaBox
                     mapRealModeEl.disabled = !mapModeActive;
                     mapOffsetEl.disabled = !mapModeActive || mapRealMode !== MAP_REAL_MODE_FIXED_OFFSET;
                     mapPercentEl.disabled = !mapModeActive || mapRealMode !== MAP_REAL_MODE_PERCENTAGE;
+                    mapFreeShipOverrideEl.disabled = !mapModeActive;
                 }
 
                 function applyManualShippingOverride() {
@@ -654,6 +670,12 @@ class ProductMetaBox
             $product->update_meta_data(
                 ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META,
                 (float) wc_format_decimal($map_real_percent, 2)
+            );
+
+            $map_real_free_shipping_override = isset($_POST['fflhub_map_real_price_free_shipping_override']) ? 1 : 0;
+            $product->update_meta_data(
+                ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META,
+                $map_real_free_shipping_override
             );
         }
 
