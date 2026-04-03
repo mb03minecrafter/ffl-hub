@@ -390,7 +390,6 @@ class MapPriceVisibility
         echo '<p>' . esc_html__('Please enter your name and email address and we will send you a promo code.', 'ffl-hub') . '</p>';
         echo '<p><strong>' . esc_html__('We do not store or sell customer email information. We sell firearms and accessories, not email lists.', 'ffl-hub') . '</strong></p>';
         echo '<p>' . esc_html__('This form will be sent to and reviewed by a store associate who will evaluate each request individually and then contact you concerning product info and pricing. Any discount or promo code you may receive is specific to your email address. It cannot be shared or used by anyone else. It will be a one time use only code for YOU only.', 'ffl-hub') . '</p>';
-        echo '<p><strong>' . esc_html__('PLEASE DO NOT SHARE EMAIL QUOTE PRICES. THEY ARE PRIVATE. I do not want to be shut down by Holosun.', 'ffl-hub') . '</strong></p>';
         echo '<p>' . esc_html__('Requests are only reviewed during business hours.', 'ffl-hub') . '</p>';
         echo '<p><strong>' . esc_html__('Business Hours:', 'ffl-hub') . '</strong> ' . esc_html__('7am-6pm CST every day', 'ffl-hub') . '</p>';
         $sales_phone = self::store_phone_for_quote();
@@ -407,6 +406,7 @@ class MapPriceVisibility
         echo '<input type="hidden" name="fflhub_product_id" value="' . esc_attr((string) $product->get_id()) . '">';
         echo '<input type="hidden" name="fflhub_redirect_url" value="' . esc_url($redirect_url) . '">';
         wp_nonce_field('fflhub_email_for_quote_submit_' . $product->get_id(), 'fflhub_email_for_quote_nonce');
+        echo '<p><strong>' . esc_html__('PLEASE DO NOT SHARE EMAIL QUOTE PRICES. THEY ARE PRIVATE. We want to remain MAP compliant.', 'ffl-hub') . '</strong></p>';
 
         echo '<label for="fflhub-quote-first-name">' . esc_html__('First Name', 'ffl-hub') . '</label>';
         echo '<input id="fflhub-quote-first-name" name="fflhub_first_name" type="text" required maxlength="100">';
