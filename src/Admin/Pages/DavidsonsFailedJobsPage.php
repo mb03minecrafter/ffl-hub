@@ -29,6 +29,7 @@ final class DavidsonsFailedJobsPage
     private const MANUAL_PO_FORM_ACTION = 'fflhub_davidsons_manual_mark_success';
     private const MANUAL_PO_NONCE_ACTION = 'fflhub_davidsons_manual_mark_success_nonce_action';
     private const MANUAL_PO_NONCE_FIELD = 'fflhub_davidsons_manual_mark_success_nonce';
+    private const SUCCESS_ROWS_TOGGLE_ARG = 'fflhub_show_success_rows';
 
     private OrderPlacementJobsTable $jobs_table;
 
@@ -70,6 +71,7 @@ final class DavidsonsFailedJobsPage
 
         $jobs = $this->filter_jobs_for_processing_orders($jobs);
         $data = $this->build_manual_status_data($jobs);
+        $show_success_rows = $this->is_success_rows_view_enabled();
 ?>
         <div class="wrap fflhub-davidsons-manual-status">
             <?php $this->render_styles(); ?>
@@ -84,10 +86,50 @@ final class DavidsonsFailedJobsPage
 
             <?php $this->render_summary_cards($data); ?>
             <?php $this->render_running_totals_table($data); ?>
-            <?php $this->render_success_rows_dropdown($data); ?>
+            <?php $this->render_success_rows_toggle($show_success_rows); ?>
+            <?php if ($show_success_rows) : ?>
+                <?php $this->render_success_rows_table($data); ?>
+            <?php endif; ?>
             <?php $this->render_entries_table($data); ?>
         </div>
 <?php
+    }
+
+    private function is_success_rows_view_enabled(): bool
+    {
+        $raw = isset($_GET[self::SUCCESS_ROWS_TOGGLE_ARG])
+            ? strtolower(trim((string) sanitize_text_field(wp_unslash((string) $_GET[self::SUCCESS_ROWS_TOGGLE_ARG]))))
+            : '';
+
+        return in_array($raw, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private function render_success_rows_toggle(bool $show_success_rows): void
+    {
+        $toggle_to = $show_success_rows ? '0' : '1';
+        $url = add_query_arg(
+            [
+                'page' => self::PAGE_SLUG,
+                self::SUCCESS_ROWS_TOGGLE_ARG => $toggle_to,
+            ],
+            admin_url('admin.php')
+        );
+        ?>
+        <div class="fflhub-davidsons-success-toggle">
+            <a class="button button-secondary" href="<?php echo esc_url($url); ?>">
+                <?php
+                echo esc_html(
+                    $show_success_rows
+                        ? __('Hide Success Rows', 'ffl-hub')
+                        : __('View Success Rows', 'ffl-hub')
+                );
+                ?>
+            </a>
+            <span class="description">
+                <?php esc_html_e("Success rows stay out of the main table unless you enable this view.", 'ffl-hub'); ?>
+            </span>
+        </div>
+        <?php
     }
 
     /**
@@ -866,7 +908,7 @@ final class DavidsonsFailedJobsPage
      *   }>
      * } $data
      */
-    private function render_success_rows_dropdown(array $data): void
+    private function render_success_rows_table(array $data): void
     {
         $success_entries = $data['success_entries'];
         ?>
@@ -878,33 +920,49 @@ final class DavidsonsFailedJobsPage
                 <p class="description">
                     <?php esc_html_e("Rows marked success appear here for quick reference.", 'ffl-hub'); ?>
                 </p>
-                <select class="fflhub-davidsons-success-select">
-                    <option value=""><?php esc_html_e('Select a success row', 'ffl-hub'); ?></option>
-                    <?php foreach ($success_entries as $entry) : ?>
-                        <?php
-                        $job_id = (int) ($entry['job_id'] ?? 0);
-                        $order_id = (int) ($entry['order_id'] ?? 0);
-                        $job_key = (string) ($entry['job_key'] ?? '');
-                        $merchant_po = trim((string) ($entry['merchant_po'] ?? ''));
-                        $upc = (string) ($entry['upc'] ?? '');
-                        $qty = (int) ($entry['qty'] ?? 0);
-                        $product_name = (string) ($entry['product_name'] ?? 'Unknown product');
-                        $value = implode('|', [(string) $job_id, (string) $order_id, $job_key, $upc, (string) $qty]);
-                        $label = sprintf(
-                            'Job #%d | Order #%d | PO: %s | UPC: %s | Qty: %d | %s',
-                            $job_id,
-                            $order_id,
-                            $merchant_po !== '' ? $merchant_po : '-',
-                            $upc,
-                            $qty,
-                            $product_name
-                        );
-                        ?>
-                        <option value="<?php echo esc_attr($value); ?>">
-                            <?php echo esc_html($label); ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
+                <table class="widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th><?php esc_html_e('Job ID', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Order', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Job Key', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Merchant PO', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Updated (UTC)', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Qty', 'ffl-hub'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($success_entries as $entry) : ?>
+                            <?php
+                            $order_id = (int) ($entry['order_id'] ?? 0);
+                            $job_id = (int) ($entry['job_id'] ?? 0);
+                            $job_key = (string) ($entry['job_key'] ?? '');
+                            $merchant_po = trim((string) ($entry['merchant_po'] ?? ''));
+                            $order_edit_url = admin_url('post.php?post=' . $order_id . '&action=edit');
+                            ?>
+                            <tr>
+                                <td><?php echo esc_html((string) $job_id); ?></td>
+                                <td>
+                                    <?php if ($order_id > 0) : ?>
+                                        <a href="<?php echo esc_url($order_edit_url); ?>">
+                                            <?php echo esc_html('#' . (string) $order_id); ?>
+                                        </a>
+                                    <?php else : ?>
+                                        <?php echo esc_html('-'); ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td><code><?php echo esc_html($job_key); ?></code></td>
+                                <td><code><?php echo esc_html($merchant_po !== '' ? $merchant_po : '-'); ?></code></td>
+                                <td><?php echo esc_html((string) ($entry['updated_at'] ?? '')); ?></td>
+                                <td><code><?php echo esc_html((string) ($entry['upc'] ?? '')); ?></code></td>
+                                <td><?php echo esc_html((string) ($entry['product_name'] ?? 'Unknown product')); ?></td>
+                                <td><?php echo esc_html((string) ((int) ($entry['qty'] ?? 0))); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
             <?php endif; ?>
         </section>
         <?php
@@ -952,7 +1010,15 @@ final class DavidsonsFailedJobsPage
      */
     private function render_entries_table(array $data): void
     {
-        $entries = $data['entries'];
+        $entries = array_values(
+            array_filter(
+                $data['entries'],
+                static function (array $entry): bool {
+                    $status = strtolower(trim((string) ($entry['job_status'] ?? '')));
+                    return $status !== OrderPlacementKeys::JOB_STATUS_SUCCESS;
+                }
+            )
+        );
         if (empty($entries)) {
             return;
         }
@@ -1091,6 +1157,13 @@ final class DavidsonsFailedJobsPage
                 font-size: 11px;
                 color: #166534;
             }
+            .fflhub-davidsons-success-toggle {
+                margin: 14px 0;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
             .fflhub-davidsons-success-box {
                 margin: 18px 0 14px;
                 background: #fff;
@@ -1102,10 +1175,6 @@ final class DavidsonsFailedJobsPage
             .fflhub-davidsons-success-box h2 {
                 margin-top: 0;
                 margin-bottom: 6px;
-            }
-            .fflhub-davidsons-success-select {
-                width: 100%;
-                max-width: 100%;
             }
         </style>
         <?php
