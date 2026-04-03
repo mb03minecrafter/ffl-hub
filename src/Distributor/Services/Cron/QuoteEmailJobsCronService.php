@@ -195,6 +195,26 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return 'skip_invalid_recipient_or_job_id';
         }
 
+        if ($this->is_holosun_domain_recipient($recipient)) {
+            $warning_sent = $this->send_holosun_domain_block_warning_email($job_row, $recipient);
+            $marked = $this->mark_job_email_sent($job_id);
+
+            self::debug_ctx('blocked job: recipient domain disallowed', [
+                'job_id' => $job_id,
+                'recipient' => $recipient,
+                'warning_sent' => $warning_sent ? 1 : 0,
+                'marked_sent' => $marked ? 1 : 0,
+            ]);
+
+            if (!$marked) {
+                return 'blocked_holosun_domain_mark_failed';
+            }
+
+            return $warning_sent
+                ? 'blocked_holosun_domain'
+                : 'blocked_holosun_domain_warning_failed';
+        }
+
         $product = $this->resolve_product_from_job_row($job_row);
         if (!($product instanceof WC_Product)) {
             self::debug_ctx('skip job: product not resolved', [
@@ -988,6 +1008,82 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         return true;
+    }
+
+    private function is_holosun_domain_recipient(string $recipient): bool
+    {
+        $recipient = strtolower(trim($recipient));
+        if ($recipient === '') {
+            return false;
+        }
+
+        return strpos($recipient, '@holosun.com') !== false;
+    }
+
+    /**
+     * @param array<string,mixed> $job_row
+     */
+    private function send_holosun_domain_block_warning_email(array $job_row, string $blocked_recipient): bool
+    {
+        $warning_recipient = sanitize_email((string) apply_filters(
+            'fflhub_quote_email_block_warning_recipient',
+            (string) get_option('admin_email'),
+            $job_row,
+            $blocked_recipient
+        ));
+
+        if ($warning_recipient === '' || !is_email($warning_recipient)) {
+            self::debug_ctx('blocked warning skipped: invalid warning recipient', [
+                'job_id' => isset($job_row['id']) ? (int) $job_row['id'] : 0,
+                'blocked_recipient' => $blocked_recipient,
+                'warning_recipient' => $warning_recipient,
+            ]);
+            return false;
+        }
+
+        $job_id = isset($job_row['id']) ? (int) $job_row['id'] : 0;
+        $quote_upc = trim((string) ($job_row['quote_upc'] ?? ''));
+        $quote_product_name = trim((string) ($job_row['quote_product_name'] ?? ''));
+        $submitted_at = trim((string) ($job_row['submitted_at'] ?? ''));
+        $request_first_name = trim((string) ($job_row['request_first_name'] ?? ''));
+        $request_last_name = trim((string) ($job_row['request_last_name'] ?? ''));
+        $request_email = trim((string) ($job_row['request_email'] ?? ''));
+
+        $subject = (string) apply_filters(
+            'fflhub_quote_email_block_warning_subject',
+            sprintf('[FFLHub] Quote email blocked for %s', $blocked_recipient),
+            $job_row,
+            $blocked_recipient
+        );
+
+        $message = (string) apply_filters(
+            'fflhub_quote_email_block_warning_body',
+            implode("\n", [
+                'A quote email job was blocked because the recipient matched @holosun.com.',
+                '',
+                'Blocked Recipient: ' . $blocked_recipient,
+                'Job ID: ' . (string) $job_id,
+                'Request Name: ' . trim($request_first_name . ' ' . $request_last_name),
+                'Request Email: ' . $request_email,
+                'Quote Product: ' . $quote_product_name,
+                'Quote UPC: ' . $quote_upc,
+                'Submitted (UTC): ' . $submitted_at,
+            ]),
+            $job_row,
+            $blocked_recipient
+        );
+
+        $headers = ['Content-Type: text/plain; charset=UTF-8'];
+        $sent = wp_mail($warning_recipient, $subject, $message, $headers);
+
+        self::debug_ctx('blocked warning email attempted', [
+            'job_id' => $job_id,
+            'blocked_recipient' => $blocked_recipient,
+            'warning_recipient' => $warning_recipient,
+            'sent' => $sent ? 1 : 0,
+        ]);
+
+        return (bool) $sent;
     }
 
     private static function force_no_delay_mode(): bool
