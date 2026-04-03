@@ -4,6 +4,7 @@ namespace FFLHub\Admin\ProductMeta;
 
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Product\ProductMeta;
+use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 use WC_Product;
 use WP_Post;
@@ -305,6 +306,50 @@ class ProductMetaBox
         $map_real_free_shipping_override = self::is_truthy_meta(
             $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true)
         );
+        $map_real_preview_price = ($mode === ProductMeta::MARKUP_MODE_MAP_PRICE)
+            ? DistributorProductHelper::get_map_real_price_for_product($product)
+            : null;
+        $map_real_preview_value = is_numeric($map_real_preview_price) && (float) $map_real_preview_price > 0
+            ? '$' . number_format((float) $map_real_preview_price, 2, '.', '')
+            : __('N/A', 'ffl-hub');
+
+        $preview_true_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
+        $preview_dealer_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
+        $preview_shipping_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
+        $preview_map_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
+        $preview_msrp_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true);
+        $preview_recommended_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true);
+
+        $preview_true_cost = (is_numeric($preview_true_cost_raw) && (float) $preview_true_cost_raw > 0.0)
+            ? (float) $preview_true_cost_raw
+            : 0.0;
+        $preview_dealer_cost = (is_numeric($preview_dealer_cost_raw) && (float) $preview_dealer_cost_raw > 0.0)
+            ? (float) $preview_dealer_cost_raw
+            : 0.0;
+        $preview_cost_base = ($preview_true_cost > 0.0) ? $preview_true_cost : $preview_dealer_cost;
+        $preview_shipping = (is_numeric($preview_shipping_raw) && (float) $preview_shipping_raw >= 0.0)
+            ? (float) $preview_shipping_raw
+            : 0.0;
+        $preview_map = (is_numeric($preview_map_raw) && (float) $preview_map_raw > 0.0)
+            ? (float) $preview_map_raw
+            : 0.0;
+        $preview_msrp = (is_numeric($preview_msrp_raw) && (float) $preview_msrp_raw > 0.0)
+            ? (float) $preview_msrp_raw
+            : 0.0;
+        $preview_map_base = ($preview_map > 0.0) ? $preview_map : $preview_msrp;
+        $preview_recommended = (is_numeric($preview_recommended_raw) && (float) $preview_recommended_raw > 0.0)
+            ? (float) $preview_recommended_raw
+            : 0.0;
+        if ($preview_recommended <= 0.0 && is_numeric($product->get_regular_price()) && (float) $product->get_regular_price() > 0.0) {
+            $preview_recommended = (float) $product->get_regular_price();
+        }
+        if ($preview_recommended <= 0.0 && is_numeric($product->get_price()) && (float) $product->get_price() > 0.0) {
+            $preview_recommended = (float) $product->get_price();
+        }
+        $preview_fee_percent = (float) Options::get_payment_processor_fee_percent();
+        if (!is_finite($preview_fee_percent) || $preview_fee_percent < 0.0) {
+            $preview_fee_percent = 0.0;
+        }
 
         echo '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;">';
         echo '<div style="font-size:11px;font-weight:700;margin-bottom:6px;">' .
@@ -431,6 +476,18 @@ class ProductMetaBox
             '</span>';
         echo '</p>';
 
+        echo '<p id="fflhub_map_real_price_preview_wrap" style="margin:8px 0 0;padding:8px;border:1px solid #e5e7eb;border-radius:6px;background:#f9fafb;">';
+        echo '<span style="display:block;font-size:11px;font-weight:700;margin-bottom:3px;">' .
+            esc_html__('Resulting MAP Real Price', 'ffl-hub') .
+            '</span>';
+        echo '<span id="fflhub_map_real_price_preview_value" style="display:block;font-size:14px;font-weight:700;">' .
+            esc_html($map_real_preview_value) .
+            '</span>';
+        echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+            esc_html__('Applies to MAP Price Quote Required mode and updates as you edit these MAP real-price fields.', 'ffl-hub') .
+            '</span>';
+        echo '</p>';
+
         echo '<p style="margin:8px 0 0;">';
         echo '<label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;">';
         echo '<input id="fflhub_map_real_price_free_shipping_override" type="checkbox" name="fflhub_map_real_price_free_shipping_override" value="1" ' .
@@ -457,16 +514,82 @@ class ProductMetaBox
                     var mapPercentEl = document.getElementById('fflhub_map_real_price_percent');
                     var mapProfitEl = document.getElementById('fflhub_map_real_price_fixed_profit');
                     var mapFreeShipOverrideEl = document.getElementById('fflhub_map_real_price_free_shipping_override');
-                    if (!modeEl || !pctEl || !fixedEl || !mapRealModeEl || !mapOffsetEl || !mapPercentEl || !mapProfitEl || !mapFreeShipOverrideEl) return;
+                    var mapPreviewWrapEl = document.getElementById('fflhub_map_real_price_preview_wrap');
+                    var mapPreviewValueEl = document.getElementById('fflhub_map_real_price_preview_value');
+                    if (!modeEl || !pctEl || !fixedEl || !mapRealModeEl || !mapOffsetEl || !mapPercentEl || !mapProfitEl || !mapFreeShipOverrideEl || !mapPreviewWrapEl || !mapPreviewValueEl) return;
 
                     var mode = parseInt(modeEl.value, 10);
                     var MODE_FIXED_PCT = <?php echo (int) ProductMeta::MARKUP_MODE_FIXED_PCT; ?>;
                     var MODE_FIXED_PRICE = <?php echo (int) ProductMeta::MARKUP_MODE_FIXED_PRICE; ?>;
                     var MODE_MAP_PRICE = <?php echo (int) ProductMeta::MARKUP_MODE_MAP_PRICE; ?>;
+                    var MAP_REAL_MODE_RECOMMENDED = <?php echo (int) ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED; ?>;
                     var MAP_REAL_MODE_FIXED_OFFSET = <?php echo (int) ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET; ?>;
                     var MAP_REAL_MODE_PERCENTAGE = <?php echo (int) ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE; ?>;
                     var MAP_REAL_MODE_FIXED_PROFIT = <?php echo (int) ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT; ?>;
                     var mapRealMode = parseInt(mapRealModeEl.value, 10);
+                    var previewCostBase = <?php echo json_encode((float) $preview_cost_base); ?>;
+                    var previewShipping = <?php echo json_encode((float) $preview_shipping); ?>;
+                    var previewMapBase = <?php echo json_encode((float) $preview_map_base); ?>;
+                    var previewRecommended = <?php echo json_encode((float) $preview_recommended); ?>;
+                    var previewFeePercent = <?php echo json_encode((float) $preview_fee_percent); ?>;
+
+                    function asNonNegFloat(v) {
+                        var n = parseFloat(v);
+                        if (!isFinite(n) || n < 0) return 0;
+                        return n;
+                    }
+
+                    function formatMoney(v) {
+                        return "$" + v.toFixed(2);
+                    }
+
+                    function computePreviewPrice() {
+                        var mapModeActive = (mode === MODE_MAP_PRICE);
+                        if (!mapModeActive) return null;
+
+                        if (mapRealMode === MAP_REAL_MODE_RECOMMENDED) {
+                            return (previewRecommended > 0) ? previewRecommended : null;
+                        }
+
+                        if (mapRealMode === MAP_REAL_MODE_FIXED_OFFSET) {
+                            var offset = asNonNegFloat(mapOffsetEl.value);
+                            if (previewCostBase <= 0) return null;
+                            var p1 = previewCostBase + offset;
+                            return (p1 > 0) ? p1 : null;
+                        }
+
+                        if (mapRealMode === MAP_REAL_MODE_PERCENTAGE) {
+                            if (previewMapBase <= 0) return null;
+                            var pct = asNonNegFloat(mapPercentEl.value);
+                            var discount = previewMapBase * (pct / 100.0);
+                            var p2 = previewMapBase - discount;
+                            return (p2 > 0) ? p2 : null;
+                        }
+
+                        if (mapRealMode === MAP_REAL_MODE_FIXED_PROFIT) {
+                            if (previewCostBase <= 0) return null;
+                            var profitTarget = asNonNegFloat(mapProfitEl.value);
+                            var feeFraction = Math.min(0.99, asNonNegFloat(previewFeePercent) / 100.0);
+                            var den = 1.0 - feeFraction;
+                            if (den <= 0) return null;
+                            var offset2 = (profitTarget + asNonNegFloat(previewShipping) + (previewCostBase * feeFraction)) / den;
+                            var p3 = previewCostBase + offset2;
+                            return (p3 > 0) ? p3 : null;
+                        }
+
+                        return null;
+                    }
+
+                    function updateMapRealPreview() {
+                        var mapModeActive = (mode === MODE_MAP_PRICE);
+                        mapPreviewWrapEl.style.opacity = mapModeActive ? "1" : "0.65";
+                        var computed = computePreviewPrice();
+                        if (computed === null) {
+                            mapPreviewValueEl.textContent = "<?php echo esc_js(__('N/A', 'ffl-hub')); ?>";
+                            return;
+                        }
+                        mapPreviewValueEl.textContent = formatMoney(Math.round(computed * 100) / 100);
+                    }
 
                     pctEl.disabled = (mode !== MODE_FIXED_PCT);
                     fixedEl.disabled = (mode !== MODE_FIXED_PRICE);
@@ -477,6 +600,7 @@ class ProductMetaBox
                     mapPercentEl.disabled = !mapModeActive || mapRealMode !== MAP_REAL_MODE_PERCENTAGE;
                     mapProfitEl.disabled = !mapModeActive || mapRealMode !== MAP_REAL_MODE_FIXED_PROFIT;
                     mapFreeShipOverrideEl.disabled = !mapModeActive;
+                    updateMapRealPreview();
                 }
 
                 function applyManualShippingOverride() {
@@ -512,6 +636,9 @@ class ProductMetaBox
                     applyLocalStockOverride();
                     var modeEl = document.getElementById('fflhub_markup_mode');
                     var mapRealModeEl = document.getElementById('fflhub_map_real_price_mode');
+                    var mapOffsetEl = document.getElementById('fflhub_map_real_price_offset');
+                    var mapPercentEl = document.getElementById('fflhub_map_real_price_percent');
+                    var mapProfitEl = document.getElementById('fflhub_map_real_price_fixed_profit');
                     var overrideEl = document.getElementById('fflhub_manual_shipping_override');
                     var localOverrideEl = document.getElementById('fflhub_local_stock_override_enabled');
                     if (modeEl) {
@@ -519,6 +646,15 @@ class ProductMetaBox
                     }
                     if (mapRealModeEl) {
                         mapRealModeEl.addEventListener('change', applyMode);
+                    }
+                    if (mapOffsetEl) {
+                        mapOffsetEl.addEventListener('input', applyMode);
+                    }
+                    if (mapPercentEl) {
+                        mapPercentEl.addEventListener('input', applyMode);
+                    }
+                    if (mapProfitEl) {
+                        mapProfitEl.addEventListener('input', applyMode);
                     }
                     if (overrideEl) {
                         overrideEl.addEventListener('change', applyManualShippingOverride);
