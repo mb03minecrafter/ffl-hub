@@ -49,6 +49,8 @@ final class OrderingOrchestratorService
 {
     private const LOG_PREFIX  = '[FFLHUB][OrderPlacementOrchestrator]';
     private const DEBUG_CONST = 'FFLHUB_PLACE_ORCH_DEBUG';
+    private const LOCAL_STOCK_DIST_ID = 'local_stock';
+    private const LOCAL_STOCK_RESULT_MESSAGE = 'Pulled from local stock. Distributor placement skipped.';
 
     private OrderPlacementJobsTable $jobs_table;
 
@@ -167,6 +169,7 @@ final class OrderingOrchestratorService
         OrderPlacementPipelineMetaStore::set_pipeline_started($order, true, $started_at, $trigger);
 
         $this->persist_lane_jobs_table($order, $lane_jobs);
+        $this->finalize_local_stock_jobs($order, $lane_jobs);
         $this->mark_jobs_eligible_for_processing($order, $lane_jobs);
 
         try {
@@ -207,6 +210,15 @@ final class OrderingOrchestratorService
         /** @var array<int,array<string,mixed>> $routing_lines */
         $routing_lines = [];
 
+        /** @var array<string,array{upc:string,qty:int,ffl_required:int,dropship_enabled:int,product_id:int,product_name:string}> $local_stock_lines */
+        $local_stock_lines = [];
+
+        /** @var array<int,int> $local_available_by_product */
+        $local_available_by_product = [];
+
+        /** @var array<int,array{product_id:int,qty:int,product_name:string,upc:string}> $local_stock_decrements */
+        $local_stock_decrements = [];
+
         $seen = [
             'items_iterated'     => 0,
             'items_not_product'  => 0,
@@ -215,6 +227,8 @@ final class OrderingOrchestratorService
             'missing_dist'       => 0,
             'missing_upc'        => 0,
             'accepted'           => 0,
+            'local_fulfilled'    => 0,
+            'local_partial'      => 0,
         ];
 
         foreach ($order->get_items('line_item') as $item) {
@@ -244,29 +258,6 @@ final class OrderingOrchestratorService
                 continue;
             }
 
-            $dist_raw = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
-            $dist_id  = OrderPlacementKeysUtil::normalize_dist_id($dist_raw);
-            if ($dist_id === '') {
-                $seen['missing_dist']++;
-                $this->log_ctx('skip_line_missing_dist', [
-                    'order_id'   => $oid,
-                    'product_id' => (int) $product->get_id(),
-                    'dist_raw'   => $dist_raw,
-                ]);
-                continue;
-            }
-
-            $upc = OrderPlacementProductUtil::extract_upc_from_product($product);
-            if ($upc === '') {
-                $seen['missing_upc']++;
-                $this->log_ctx('skip_line_missing_upc', [
-                    'order_id'   => $oid,
-                    'product_id' => (int) $product->get_id(),
-                    'dist_id'    => $dist_id,
-                ]);
-                continue;
-            }
-
             $ffl_required = ((int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true) === 1);
             $dropship_enabled = $this->to_boolish(
                 $product->get_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true),
@@ -283,13 +274,86 @@ final class OrderingOrchestratorService
 
             $item_id = (int) $item->get_id();
             $line_id = ($item_id > 0) ? ('oi_' . (string) $item_id) : ('oi_idx_' . (string) $seen['items_iterated']);
+            $product_id = (int) $product->get_id();
+            $upc = OrderPlacementProductUtil::extract_upc_from_product($product);
+            $line_upc = $upc !== '' ? $upc : $this->fallback_local_identifier($product);
+            $line_name = trim((string) $product->get_name());
+
+            $line_qty_for_routing = $qty;
+            $local_enabled = $this->is_local_stock_override_enabled($product);
+            if ($local_enabled) {
+                if (!isset($local_available_by_product[$product_id])) {
+                    $local_available_by_product[$product_id] = $this->get_local_stock_override_qty($product);
+                }
+
+                $available_local_qty = max(0, (int) ($local_available_by_product[$product_id] ?? 0));
+                $local_take_qty = min($line_qty_for_routing, $available_local_qty);
+                if ($local_take_qty > 0) {
+                    $local_line_key = (string) $product_id . '|' . (string) (!empty($ffl_required) ? 1 : 0);
+                    if (!isset($local_stock_lines[$local_line_key])) {
+                        $local_stock_lines[$local_line_key] = [
+                            'upc'              => $line_upc,
+                            'qty'              => 0,
+                            'ffl_required'     => !empty($ffl_required) ? 1 : 0,
+                            'dropship_enabled' => !empty($dropship_enabled) ? 1 : 0,
+                            'product_id'       => $product_id,
+                            'product_name'     => $line_name,
+                        ];
+                    }
+                    $local_stock_lines[$local_line_key]['qty'] += $local_take_qty;
+
+                    if (!isset($local_stock_decrements[$product_id])) {
+                        $local_stock_decrements[$product_id] = [
+                            'product_id'   => $product_id,
+                            'qty'          => 0,
+                            'product_name' => $line_name,
+                            'upc'          => $line_upc,
+                        ];
+                    }
+                    $local_stock_decrements[$product_id]['qty'] += $local_take_qty;
+
+                    $local_available_by_product[$product_id] = $available_local_qty - $local_take_qty;
+                    $line_qty_for_routing -= $local_take_qty;
+                    $seen['local_fulfilled']++;
+
+                    if ($line_qty_for_routing > 0) {
+                        $seen['local_partial']++;
+                    }
+                }
+            }
+
+            if ($line_qty_for_routing <= 0) {
+                continue;
+            }
+
+            $dist_raw = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
+            $dist_id  = OrderPlacementKeysUtil::normalize_dist_id($dist_raw);
+            if ($dist_id === '') {
+                $seen['missing_dist']++;
+                $this->log_ctx('skip_line_missing_dist', [
+                    'order_id'   => $oid,
+                    'product_id' => $product_id,
+                    'dist_raw'   => $dist_raw,
+                ]);
+                continue;
+            }
+
+            if ($upc === '') {
+                $seen['missing_upc']++;
+                $this->log_ctx('skip_line_missing_upc', [
+                    'order_id'   => $oid,
+                    'product_id' => $product_id,
+                    'dist_id'    => $dist_id,
+                ]);
+                continue;
+            }
 
             $accepted_by_line_id[$line_id] = [
                 'line_id'          => $line_id,
-                'product_id'       => (int) $product->get_id(),
+                'product_id'       => $product_id,
                 'dist_id'          => (string) $dist_id,
                 'upc'              => (string) $upc,
-                'qty'              => $qty,
+                'qty'              => $line_qty_for_routing,
                 'ffl_required'     => $ffl_required,
                 'dropship_enabled' => $dropship_enabled,
             ];
@@ -297,7 +361,7 @@ final class OrderingOrchestratorService
             $routing_lines[] = [
                 'line_id'          => $line_id,
                 'dist_id'          => (string) $dist_id,
-                'qty'              => $qty,
+                'qty'              => $line_qty_for_routing,
                 'weight_oz'        => $weight_oz,
                 'ffl_required'     => $ffl_required,
                 'dropship_enabled' => $dropship_enabled,
@@ -307,67 +371,66 @@ final class OrderingOrchestratorService
             $seen['accepted']++;
         }
 
-        if (empty($accepted_by_line_id) || empty($routing_lines)) {
-            return [];
-        }
-
-        $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan($routing_lines);
-        $assignments = (isset($plan['assignments']) && is_array($plan['assignments'])) ? $plan['assignments'] : [];
-
-        $this->log_ctx('lane_plan_computed', [
-            'order_id'            => $oid,
-            'accepted_lines'      => count($accepted_by_line_id),
-            'total_cost'          => (float) ($plan['total_cost'] ?? 0.0),
-            'decision_lines'      => (int) ($plan['meta']['decision_lines'] ?? 0),
-            'combinations'        => (int) ($plan['meta']['combinations_evaluated'] ?? 0),
-            'assignment_count'    => count($assignments),
-        ]);
-
         /** @var array<string,array<string,array<string,array<string,mixed>>>> $agg */
         $agg = [];
+        if (!empty($accepted_by_line_id) && !empty($routing_lines)) {
+            $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan($routing_lines);
+            $assignments = (isset($plan['assignments']) && is_array($plan['assignments'])) ? $plan['assignments'] : [];
 
-        foreach ($accepted_by_line_id as $line_id => $row) {
-            $route = isset($assignments[$line_id])
-                ? strtolower(trim((string) $assignments[$line_id]))
-                : (!empty($row['dropship_enabled']) ? 'direct_ship' : 'dealer_fulfilled');
+            $this->log_ctx('lane_plan_computed', [
+                'order_id'            => $oid,
+                'accepted_lines'      => count($accepted_by_line_id),
+                'total_cost'          => (float) ($plan['total_cost'] ?? 0.0),
+                'decision_lines'      => (int) ($plan['meta']['decision_lines'] ?? 0),
+                'combinations'        => (int) ($plan['meta']['combinations_evaluated'] ?? 0),
+                'assignment_count'    => count($assignments),
+                'local_fulfilled'     => $seen['local_fulfilled'],
+                'local_partial'       => $seen['local_partial'],
+            ]);
 
-            $lane = $this->lane_for_route($route, !empty($row['ffl_required']));
-            if (!OrderPlacementKeysUtil::is_valid_lane($lane)) {
-                $this->log_ctx('skip_line_invalid_lane', [
-                    'order_id' => $oid,
-                    'line_id'  => $line_id,
-                    'dist_id'  => (string) ($row['dist_id'] ?? ''),
-                    'route'    => $route,
-                    'lane'     => $lane,
-                ]);
-                continue;
+            foreach ($accepted_by_line_id as $line_id => $row) {
+                $route = isset($assignments[$line_id])
+                    ? strtolower(trim((string) $assignments[$line_id]))
+                    : (!empty($row['dropship_enabled']) ? 'direct_ship' : 'dealer_fulfilled');
+
+                $lane = $this->lane_for_route($route, !empty($row['ffl_required']));
+                if (!OrderPlacementKeysUtil::is_valid_lane($lane)) {
+                    $this->log_ctx('skip_line_invalid_lane', [
+                        'order_id' => $oid,
+                        'line_id'  => $line_id,
+                        'dist_id'  => (string) ($row['dist_id'] ?? ''),
+                        'route'    => $route,
+                        'lane'     => $lane,
+                    ]);
+                    continue;
+                }
+
+                $dist_id = (string) ($row['dist_id'] ?? '');
+                if ($dist_id === '') {
+                    continue;
+                }
+
+                if (!isset($agg[$dist_id])) {
+                    $agg[$dist_id] = [];
+                }
+                if (!isset($agg[$dist_id][$lane])) {
+                    $agg[$dist_id][$lane] = [];
+                }
+
+                $ffl_int = !empty($row['ffl_required']) ? 1 : 0;
+                $line_key = (string) ($row['upc'] ?? '') . '|' . (string) $ffl_int;
+
+                if (!isset($agg[$dist_id][$lane][$line_key])) {
+                    $agg[$dist_id][$lane][$line_key] = [
+                        'upc'              => (string) ($row['upc'] ?? ''),
+                        'qty'              => 0,
+                        'ffl_required'     => $ffl_int,
+                        'dropship_enabled' => !empty($row['dropship_enabled']) ? 1 : 0,
+                    ];
+                }
+
+                $agg[$dist_id][$lane][$line_key]['qty'] += max(1, (int) ($row['qty'] ?? 1));
             }
-
-            $dist_id = (string) ($row['dist_id'] ?? '');
-            if ($dist_id === '') {
-                continue;
-            }
-
-            if (!isset($agg[$dist_id])) {
-                $agg[$dist_id] = [];
-            }
-            if (!isset($agg[$dist_id][$lane])) {
-                $agg[$dist_id][$lane] = [];
-            }
-
-            $ffl_int = !empty($row['ffl_required']) ? 1 : 0;
-            $line_key = (string) ($row['upc'] ?? '') . '|' . (string) $ffl_int;
-
-            if (!isset($agg[$dist_id][$lane][$line_key])) {
-                $agg[$dist_id][$lane][$line_key] = [
-                    'upc'              => (string) ($row['upc'] ?? ''),
-                    'qty'              => 0,
-                    'ffl_required'     => $ffl_int,
-                    'dropship_enabled' => !empty($row['dropship_enabled']) ? 1 : 0,
-                ];
-            }
-
-            $agg[$dist_id][$lane][$line_key]['qty'] += max(1, (int) ($row['qty'] ?? 1));
         }
 
         $jobs = [];
@@ -422,6 +485,23 @@ final class OrderingOrchestratorService
                     'dist_id'  => (string) $dist_id,
                     'lane'     => (string) $lane,
                     'lines'    => $lines,
+                ];
+            }
+        }
+
+        if (!empty($local_stock_lines)) {
+            $local_lines = array_values($local_stock_lines);
+            $local_job_key = OrderPlacementKeysUtil::build_job_key(self::LOCAL_STOCK_DIST_ID, OrderPlacementKeysUtil::LANE_DEALER_FULFILLED);
+            if ($local_job_key !== '') {
+                $jobs[$local_job_key] = [
+                    'order_id' => $oid,
+                    'dist_id'  => self::LOCAL_STOCK_DIST_ID,
+                    'lane'     => OrderPlacementKeysUtil::LANE_DEALER_FULFILLED,
+                    'lines'    => $local_lines,
+                    'local_stock' => [
+                        'message'    => self::LOCAL_STOCK_RESULT_MESSAGE,
+                        'decrements' => array_values($local_stock_decrements),
+                    ],
                 ];
             }
         }
@@ -497,6 +577,13 @@ final class OrderingOrchestratorService
         $oid = (int) $order->get_id();
 
         foreach ($lane_jobs as $job_key => $_job) {
+            if (
+                is_array($_job)
+                && OrderPlacementKeysUtil::normalize_dist_id((string) ($_job['dist_id'] ?? '')) === self::LOCAL_STOCK_DIST_ID
+            ) {
+                continue;
+            }
+
             $job_key_norm = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
             if ($job_key_norm === '') {
                 $this->log_ctx('mark_eligible_skip_invalid_job_key', [
@@ -521,6 +608,165 @@ final class OrderingOrchestratorService
 
             OrderPlacementJobWriter::apply_patch_for_order($this->jobs_table, $order, $job_key_norm, $patch);
         }
+    }
+
+    /**
+     * Mark local-stock jobs complete and decrement local/woo stock quantities.
+     *
+     * @param WC_Order $order
+     * @param array<string, array<string,mixed>> $lane_jobs
+     */
+    private function finalize_local_stock_jobs(WC_Order $order, array $lane_jobs): void
+    {
+        $oid = (int) $order->get_id();
+
+        foreach ($lane_jobs as $job_key => $job) {
+            if (!is_array($job)) {
+                continue;
+            }
+
+            $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) ($job['dist_id'] ?? ''));
+            if ($dist_id !== self::LOCAL_STOCK_DIST_ID) {
+                continue;
+            }
+
+            $job_key_norm = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
+            if ($job_key_norm === '') {
+                continue;
+            }
+
+            try {
+                $decrements = [];
+                if (isset($job['local_stock']['decrements']) && is_array($job['local_stock']['decrements'])) {
+                    $decrements = $job['local_stock']['decrements'];
+                }
+
+                $result_lines = [];
+                foreach ($decrements as $row) {
+                    if (!is_array($row)) {
+                        continue;
+                    }
+
+                    $product_id = isset($row['product_id']) ? (int) $row['product_id'] : 0;
+                    $qty = isset($row['qty']) ? (int) $row['qty'] : 0;
+                    $result_lines[] = $this->decrement_local_stock_for_product($product_id, $qty);
+                }
+
+                $result = [
+                    'type'    => 'local_stock_override',
+                    'message' => self::LOCAL_STOCK_RESULT_MESSAGE,
+                    'lines'   => $result_lines,
+                ];
+
+                $result_json = wp_json_encode($result);
+                if (!is_string($result_json) || $result_json === '') {
+                    $result_json = '{}';
+                }
+
+                $patch = OrderPlacementJobPatch::empty()
+                    ->with_last_step('place')
+                    ->with_field('place_result_json', $result_json);
+
+                OrderPlacementJobWriter::apply_patch_for_order($this->jobs_table, $order, $job_key_norm, $patch);
+                OrderPlacementJobLifeCycle::mark_job_success($this->jobs_table, $order, $job_key_norm);
+
+                $this->log_ctx('local_stock_job_completed', [
+                    'order_id'    => $oid,
+                    'job_key'     => $job_key_norm,
+                    'line_count'  => count($result_lines),
+                ]);
+            } catch (\Throwable $e) {
+                $this->log_ctx('local_stock_job_complete_exception', [
+                    'order_id' => $oid,
+                    'job_key'  => $job_key_norm,
+                    'err'      => $e->getMessage(),
+                    'file'     => $e->getFile(),
+                    'line'     => $e->getLine(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Apply local stock decrements for a specific product.
+     *
+     * @return array<string,mixed>
+     */
+    private function decrement_local_stock_for_product(int $product_id, int $qty): array
+    {
+        $out = [
+            'product_id'            => $product_id,
+            'qty'                   => max(0, $qty),
+            'local_override_before' => null,
+            'local_override_after'  => null,
+            'woo_stock_before'      => null,
+            'woo_stock_after'       => null,
+            'woo_manage_stock'      => null,
+            'status'                => 'skipped',
+        ];
+
+        if ($product_id <= 0 || $qty <= 0) {
+            return $out;
+        }
+
+        $product = wc_get_product($product_id);
+        if (!($product instanceof WC_Product)) {
+            $out['status'] = 'product_missing';
+            return $out;
+        }
+
+        $local_before = $this->get_local_stock_override_qty($product);
+        $local_after = max(0, $local_before - $qty);
+        $out['local_override_before'] = $local_before;
+        $out['local_override_after'] = $local_after;
+
+        $product->update_meta_data(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, $local_after);
+
+        $managing_stock = $product->managing_stock();
+        $out['woo_manage_stock'] = $managing_stock ? 1 : 0;
+
+        $raw_stock_qty = $product->get_stock_quantity();
+        if ($managing_stock || is_numeric((string) $raw_stock_qty)) {
+            $woo_before = is_numeric((string) $raw_stock_qty) ? (int) $raw_stock_qty : 0;
+            $woo_after = max(0, $woo_before - $qty);
+            $product->set_stock_quantity($woo_after);
+            if ($managing_stock) {
+                $product->set_stock_status($woo_after > 0 ? 'instock' : 'outofstock');
+            }
+            $out['woo_stock_before'] = $woo_before;
+            $out['woo_stock_after'] = $woo_after;
+        }
+
+        try {
+            $product->save();
+            $out['status'] = 'ok';
+        } catch (\Throwable $e) {
+            $out['status'] = 'save_failed';
+            $out['error'] = $e->getMessage();
+        }
+
+        return $out;
+    }
+
+    private function is_local_stock_override_enabled(WC_Product $product): bool
+    {
+        return $this->to_boolish($product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true), false);
+    }
+
+    private function get_local_stock_override_qty(WC_Product $product): int
+    {
+        $raw = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
+        return is_numeric((string) $raw) ? max(0, (int) $raw) : 0;
+    }
+
+    private function fallback_local_identifier(WC_Product $product): string
+    {
+        $sku = trim((string) $product->get_sku());
+        if ($sku !== '') {
+            return $sku;
+        }
+
+        return 'product-' . (string) $product->get_id();
     }
 
     /**

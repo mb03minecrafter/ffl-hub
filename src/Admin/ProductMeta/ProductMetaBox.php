@@ -147,6 +147,12 @@ class ProductMetaBox
         $sot_required = (string) $raw_sot_required === '1' || $raw_sot_required === 1 || $raw_sot_required === true;
         $raw_stock_oos_override = $product->get_meta(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true);
         $stock_oos_override = self::is_truthy_meta($raw_stock_oos_override);
+        $raw_local_stock_override_enabled = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true);
+        $local_stock_override_enabled = self::is_truthy_meta($raw_local_stock_override_enabled);
+        $raw_local_stock_override_qty = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
+        $local_stock_override_qty = is_numeric((string) $raw_local_stock_override_qty)
+            ? max(0, (int) $raw_local_stock_override_qty)
+            : 0;
         $raw_manual_shipping_override = $product->get_meta(ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, true);
         $manual_shipping_override = self::is_truthy_meta($raw_manual_shipping_override);
         $shipping_weight_input = self::normalize_decimal_for_input(
@@ -190,6 +196,27 @@ class ProductMetaBox
         echo '<span style="display:block;margin-top:4px;font-size:11px;color:#6b7280;">' .
             esc_html__('When enabled, sync jobs will not overwrite stock quantity or stock status.', 'ffl-hub') .
             '</span>';
+
+        echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;margin-top:6px;">';
+        echo '<input id="fflhub_local_stock_override_enabled" type="checkbox" name="fflhub_local_stock_override_enabled" value="1" ' .
+            checked(true, $local_stock_override_enabled, false) .
+            ' />';
+        echo '<span style="font-weight:600;">' .
+            esc_html__('Local Stock Override', 'ffl-hub') .
+            '</span>';
+        echo '</label>';
+
+        echo '<p style="margin:6px 0 0;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('Local Stock Quantity', 'ffl-hub') .
+            '</label>';
+        echo '<input id="fflhub_local_stock_override_qty" type="number" step="1" min="0" ' .
+            'name="fflhub_local_stock_override_qty" value="' . esc_attr((string) $local_stock_override_qty) . '" ' .
+            'style="width:100%;font-size:11px;" />';
+        echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+            esc_html__('When enabled and quantity is above 0, order placement uses local stock and skips distributor placement for that quantity.', 'ffl-hub') .
+            '</span>';
+        echo '</p>';
         echo '</div>';
 
         // 🆕 Editable pricing controls
@@ -432,12 +459,22 @@ class ProductMetaBox
                     });
                 }
 
+                function applyLocalStockOverride() {
+                    var overrideEl = document.getElementById('fflhub_local_stock_override_enabled');
+                    var qtyEl = document.getElementById('fflhub_local_stock_override_qty');
+                    if (!overrideEl || !qtyEl) return;
+
+                    qtyEl.disabled = !overrideEl.checked;
+                }
+
                 document.addEventListener('DOMContentLoaded', function() {
                     applyMode();
                     applyManualShippingOverride();
+                    applyLocalStockOverride();
                     var modeEl = document.getElementById('fflhub_markup_mode');
                     var mapRealModeEl = document.getElementById('fflhub_map_real_price_mode');
                     var overrideEl = document.getElementById('fflhub_manual_shipping_override');
+                    var localOverrideEl = document.getElementById('fflhub_local_stock_override_enabled');
                     if (modeEl) {
                         modeEl.addEventListener('change', applyMode);
                     }
@@ -446,6 +483,9 @@ class ProductMetaBox
                     }
                     if (overrideEl) {
                         overrideEl.addEventListener('change', applyManualShippingOverride);
+                    }
+                    if (localOverrideEl) {
+                        localOverrideEl.addEventListener('change', applyLocalStockOverride);
                     }
                 });
             })();
@@ -504,6 +544,14 @@ class ProductMetaBox
             $product->set_stock_quantity(0);
             $product->set_stock_status('outofstock');
         }
+
+        $local_stock_override_enabled = isset($_POST['fflhub_local_stock_override_enabled']) ? 1 : 0;
+        $product->update_meta_data(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, $local_stock_override_enabled);
+
+        $local_stock_override_qty = isset($_POST['fflhub_local_stock_override_qty'])
+            ? absint(sanitize_text_field(wp_unslash($_POST['fflhub_local_stock_override_qty'])))
+            : 0;
+        $product->update_meta_data(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, $local_stock_override_qty);
 
         // Manual shipping override + values
         $manual_shipping_override = isset($_POST['fflhub_manual_shipping_override']) ? 1 : 0;
