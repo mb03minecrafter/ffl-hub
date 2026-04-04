@@ -203,3 +203,67 @@
         max-height: 360px;
     }
 }
+
+/* ------------------------------------------------------------
+   Woo Order Admin: Make billing/shipping addresses clearer
+   ------------------------------------------------------------ */
+#order_data .order_data_column .address,
+#woocommerce-order-data .order_data_column .address {
+    font-size: 15px;
+    line-height: 1.65;
+    font-weight: 600;
+    background: #f8fafc;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+
+#order_data .order_data_column .address p,
+#woocommerce-order-data .order_data_column .address p {
+    margin: 0 0 6px;
+}
+
+#order_data .order_data_column .address p:last-child,
+#woocommerce-order-data .order_data_column .address p:last-child {
+    margin-bottom: 0;
+}
+
+/* Billing column */
+#order_data .order_data_column.fflhub-billing-column,
+#woocommerce-order-data .order_data_column.fflhub-billing-column {
+    background: #eff6ff;
+    border: 2px solid #93c5fd;
+    border-radius: 10px;
+    padding: 10px;
+}
+
+#order_data .order_data_column.fflhub-billing-column > h3,
+#woocommerce-order-data .order_data_column.fflhub-billing-column > h3 {
+    font-size: 16px;
+    font-weight: 800;
+    color: #1d4ed8;
+}
+
+/* Shipping column */
+#order_data .order_data_column.fflhub-shipping-column,
+#woocommerce-order-data .order_data_column.fflhub-shipping-column {
+    background: #ecfdf5;
+    border: 2px solid #86efac;
+    border-radius: 10px;
+    padding: 10px;
+}
+
+#order_data .order_data_column.fflhub-shipping-column > h3,
+#woocommerce-order-data .order_data_column.fflhub-shipping-column > h3 {
+    font-size: 16px;
+    font-weight: 800;
+    color: #15803d;
+}
+
+@media (max-width: 782px) {
+    #order_data .order_data_column .address,
+    #woocommerce-order-data .order_data_column .address {
+        font-size: 14px;
+        line-height: 1.55;
+    }
+}

@@ -118,12 +118,23 @@ final class OrderPlacementMetaBox
         $css_rel_path = 'assets/css/admin-order-placement-metabox.css';
         $css_abs_path = FFLHUB_PLUGIN_PATH . $css_rel_path;
         $css_version  = file_exists($css_abs_path) ? (string) filemtime($css_abs_path) : FFLHUB_PLUGIN_VERSION;
+        $js_rel_path  = 'assets/js/admin-order-address-focus.js';
+        $js_abs_path  = FFLHUB_PLUGIN_PATH . $js_rel_path;
+        $js_version   = file_exists($js_abs_path) ? (string) filemtime($js_abs_path) : FFLHUB_PLUGIN_VERSION;
 
         wp_enqueue_style(
             'fflhub-order-placement-metabox',
             plugins_url($css_rel_path, FFLHUB_PLUGIN_FILE),
             [],
             $css_version
+        );
+
+        wp_enqueue_script(
+            'fflhub-order-address-focus',
+            plugins_url($js_rel_path, FFLHUB_PLUGIN_FILE),
+            [],
+            $js_version,
+            true
         );
     }
 
