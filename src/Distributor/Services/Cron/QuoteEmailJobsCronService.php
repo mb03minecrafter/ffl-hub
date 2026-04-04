@@ -23,7 +23,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 {
     public const CRON_HOOK = 'fflhub_quote_email_jobs_poll';
 
-    private const BATCH_LIMIT = 5;
+    private const BATCH_LIMIT = 100;
     private const DEBUG_CONST = 'FFLHUB_DEBUG_QUOTE_EMAIL_CRON';
     private const LOG_PREFIX = '[FFLHub][QuoteEmailCron]';
     private const BUSINESS_HOURS_TZ = 'America/Chicago';
