@@ -12,6 +12,10 @@
                 return;
             }
 
+            cols.forEach((col) => {
+                col.classList.remove('fflhub-billing-column', 'fflhub-shipping-column');
+            });
+
             let billingCol = null;
             let shippingCol = null;
 
@@ -22,10 +26,18 @@
                     return;
                 }
 
-                if (text.includes('billing')) {
-                    billingCol = col;
-                } else if (text.includes('shipping')) {
+                const hasBilling = /\bbilling\b/.test(text);
+                const hasShipping = /\bshipping\b/.test(text);
+
+                if (hasShipping && !hasBilling) {
                     shippingCol = col;
+                } else if (hasBilling && !hasShipping) {
+                    billingCol = col;
+                } else if (hasShipping) {
+                    // If both words appear in a heading, bias to shipping.
+                    shippingCol = col;
+                } else if (hasBilling) {
+                    billingCol = col;
                 }
             });
 
