@@ -210,12 +210,12 @@
 #order_data .order_data_column .address,
 #woocommerce-order-data .order_data_column .address {
     font-size: 15px;
-    line-height: 1.65;
-    font-weight: 600;
-    background: #f8fafc;
-    border: 1px solid #d1d5db;
+    line-height: 1.6;
+    font-weight: 500;
+    background: #ffffff;
+    border: 1px solid #dcdfe4;
     border-radius: 8px;
-    padding: 10px 12px;
+    padding: 12px 14px;
 }
 
 #order_data .order_data_column .address p,
@@ -231,39 +231,77 @@
 /* Billing column */
 #order_data .order_data_column.fflhub-billing-column,
 #woocommerce-order-data .order_data_column.fflhub-billing-column {
-    background: #eff6ff;
-    border: 2px solid #93c5fd;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-left: 4px solid #60a5fa;
     border-radius: 10px;
-    padding: 10px;
+    padding: 12px;
 }
 
 #order_data .order_data_column.fflhub-billing-column > h3,
 #woocommerce-order-data .order_data_column.fflhub-billing-column > h3 {
     font-size: 16px;
-    font-weight: 800;
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#order_data .order_data_column.fflhub-billing-column > h3::after,
+#woocommerce-order-data .order_data_column.fflhub-billing-column > h3::after {
+    content: "Billing";
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #eff6ff;
     color: #1d4ed8;
+    border: 1px solid #bfdbfe;
 }
 
 /* Shipping column */
 #order_data .order_data_column.fflhub-shipping-column,
 #woocommerce-order-data .order_data_column.fflhub-shipping-column {
-    background: #ecfdf5;
-    border: 2px solid #86efac;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-left: 4px solid #34d399;
     border-radius: 10px;
-    padding: 10px;
+    padding: 12px;
 }
 
 #order_data .order_data_column.fflhub-shipping-column > h3,
 #woocommerce-order-data .order_data_column.fflhub-shipping-column > h3 {
     font-size: 16px;
-    font-weight: 800;
-    color: #15803d;
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#order_data .order_data_column.fflhub-shipping-column > h3::after,
+#woocommerce-order-data .order_data_column.fflhub-shipping-column > h3::after {
+    content: "Shipping";
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #ecfdf5;
+    color: #047857;
+    border: 1px solid #a7f3d0;
 }
 
 @media (max-width: 782px) {
     #order_data .order_data_column .address,
     #woocommerce-order-data .order_data_column .address {
         font-size: 14px;
-        line-height: 1.55;
+        line-height: 1.5;
     }
 }
