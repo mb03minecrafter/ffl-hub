@@ -171,6 +171,7 @@ class AdminPage
             'payment_fee_percent'   => (string) Options::get_payment_processor_fee_percent(),
             'global_markup_percent' => (string) Options::get_global_markup(),
             'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
+            'distributor_priority_list' => (string) Options::get_distributor_priority_csv(),
 
             'usps_estimate_enabled' => Options::get_usps_estimate_enabled() ? '1' : '0',
             'usps_use_test_env'     => Options::get_usps_use_test_env() ? '1' : '0',
@@ -226,6 +227,16 @@ class AdminPage
         $payment_fee_percent   = (string) ($settings['payment_fee_percent'] ?? '');
         $global_markup_percent = (string) ($settings['global_markup_percent'] ?? '');
         $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
+        $distributor_priority_list = (string) ($settings['distributor_priority_list'] ?? '');
+        $priority_choices = [];
+        foreach (DistributorRegistry::get_modules() as $module) {
+            if (!($module instanceof DistributorModuleInterface)) {
+                continue;
+            }
+            $priority_choices[] = $module->name() . ' (' . $module->id() . ')';
+        }
+        $priority_choices_text = implode(', ', $priority_choices);
+        $priority_default_text = Options::default_distributor_priority_csv();
 
     ?>
         <form method="post" action="options.php" class="fflhub-global-settings-form">
@@ -300,6 +311,31 @@ class AdminPage
                             'When enabled, order jobs build distributor payloads but stop before outbound API calls. Place result stores the exact outbound message (JSON for Lipsey\'s/RSR, SOAP XML for Zanders).',
                             'ffl-hub'
                         ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_distributor_priority_list"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Distributor tie-break priority', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_distributor_priority_list"
+                        name="fflhub_distributor_priority_list"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($distributor_priority_list); ?>"
+                        placeholder="<?php echo esc_attr($priority_default_text); ?>" />
+                    <p class="description">
+                        <?php
+                        echo esc_html(
+                            sprintf(
+                                __('Used only when true-costs tie. Enter distributor ids in priority order, separated by commas. Available: %s', 'ffl-hub'),
+                                $priority_choices_text
+                            )
+                        );
+                        ?>
                     </p>
                 </div>
 

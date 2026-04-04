@@ -44,6 +44,7 @@ final class Options
     public const OPTION_PAYMENT_PROCESSOR_FEE_PERCENT = 'fflhub_payment_processor_fee_percent';
     public const OPTION_GLOBAL_MARKUP                 = 'fflhub_global_markup';
     public const OPTION_TEST_ORDER_DEBUG_ENABLED      = 'fflhub_test_order_debug_enabled';
+    public const OPTION_DISTRIBUTOR_PRIORITY_LIST     = 'fflhub_distributor_priority_list';
     public const OPTION_MAP_BRAND_POLICIES            = 'fflhub_map_brand_policies';
     public const OPTION_USPS_ESTIMATE_ENABLED         = 'fflhub_usps_estimate_enabled';
     public const OPTION_USPS_USE_TEST_ENV             = 'fflhub_usps_use_test_env';
@@ -271,6 +272,10 @@ final class Options
             add_option(self::OPTION_TEST_ORDER_DEBUG_ENABLED, self::DEFAULT_TEST_ORDER_DEBUG_ENABLED ? '1' : '0');
         }
 
+        if (get_option(self::OPTION_DISTRIBUTOR_PRIORITY_LIST, null) === null) {
+            add_option(self::OPTION_DISTRIBUTOR_PRIORITY_LIST, self::default_distributor_priority_csv());
+        }
+
         if (get_option(self::OPTION_MAP_BRAND_POLICIES, null) === null) {
             add_option(self::OPTION_MAP_BRAND_POLICIES, self::DEFAULT_MAP_BRAND_POLICIES);
         }
@@ -456,6 +461,160 @@ final class Options
     public static function set_global_markup(float $percent): void
     {
         update_option(self::OPTION_GLOBAL_MARKUP, (string) $percent);
+    }
+
+    /**
+     * Default distributor priority CSV in registry order.
+     */
+    public static function default_distributor_priority_csv(): string
+    {
+        $ids = DistributorRegistry::get_distributor_ids();
+        return implode(',', array_values(array_filter(array_map('strval', $ids))));
+    }
+
+    /**
+     * Normalize a raw distributor-priority string into a canonical CSV of ids.
+     *
+     * Rules:
+     * - Accepts comma/semicolon/newline/pipe separated tokens.
+     * - Tokens may be distributor id, name, or label (best effort).
+     * - Unknown tokens are ignored.
+     * - Missing known distributors are appended in registry order.
+     */
+    public static function normalize_distributor_priority_csv(string $raw): string
+    {
+        $known_ids = DistributorRegistry::get_distributor_ids();
+        $known_ids = array_values(array_filter(array_map('strval', $known_ids)));
+        if (empty($known_ids)) {
+            return '';
+        }
+
+        $alias_map = self::distributor_alias_to_id_map();
+        $tokens = preg_split('/[\s,;|]+/', strtolower((string) $raw));
+        if (!is_array($tokens)) {
+            $tokens = [];
+        }
+
+        $ordered = [];
+        foreach ($tokens as $token) {
+            $token = trim((string) $token);
+            if ($token === '') {
+                continue;
+            }
+
+            $canonical = '';
+            if (isset($alias_map[$token])) {
+                $canonical = (string) $alias_map[$token];
+            } else {
+                $slug = (string) preg_replace('/[^a-z0-9]+/', '', $token);
+                if ($slug !== '' && isset($alias_map[$slug])) {
+                    $canonical = (string) $alias_map[$slug];
+                }
+            }
+
+            if ($canonical === '') {
+                continue;
+            }
+
+            $ordered[$canonical] = $canonical;
+        }
+
+        // Always include all known distributors so ranking is complete.
+        foreach ($known_ids as $id) {
+            if (!isset($ordered[$id])) {
+                $ordered[$id] = $id;
+            }
+        }
+
+        return implode(',', array_values($ordered));
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    public static function get_distributor_priority_list(): array
+    {
+        $stored = (string) get_option(
+            self::OPTION_DISTRIBUTOR_PRIORITY_LIST,
+            self::default_distributor_priority_csv()
+        );
+
+        $normalized = self::normalize_distributor_priority_csv($stored);
+        if ($normalized === '') {
+            $normalized = self::default_distributor_priority_csv();
+        }
+
+        $parts = array_filter(array_map('trim', explode(',', $normalized)));
+        return array_values(array_map('strval', $parts));
+    }
+
+    /**
+     * Canonical CSV form used by the settings UI.
+     */
+    public static function get_distributor_priority_csv(): string
+    {
+        return implode(',', self::get_distributor_priority_list());
+    }
+
+    /**
+     * Rank for tie-break decisions (lower number = higher priority).
+     */
+    public static function get_distributor_priority_rank(string $dist_id): int
+    {
+        $dist_id = strtolower(trim($dist_id));
+        if ($dist_id === '') {
+            return PHP_INT_MAX;
+        }
+
+        $list = self::get_distributor_priority_list();
+        $idx = array_search($dist_id, $list, true);
+        if ($idx === false) {
+            return PHP_INT_MAX;
+        }
+
+        return (int) $idx;
+    }
+
+    /**
+     * Build a token map for id/name/label -> canonical id.
+     *
+     * @return array<string,string>
+     */
+    private static function distributor_alias_to_id_map(): array
+    {
+        $map = [];
+
+        foreach (DistributorRegistry::get_modules() as $module) {
+            if (!is_object($module) || !method_exists($module, 'id')) {
+                continue;
+            }
+
+            $id = strtolower(trim((string) $module->id()));
+            if ($id === '') {
+                continue;
+            }
+
+            $map[$id] = $id;
+            $map[(string) preg_replace('/[^a-z0-9]+/', '', $id)] = $id;
+
+            if (method_exists($module, 'name')) {
+                $name = strtolower(trim((string) $module->name()));
+                if ($name !== '') {
+                    $map[$name] = $id;
+                    $map[(string) preg_replace('/[^a-z0-9]+/', '', $name)] = $id;
+                }
+            }
+
+            if (method_exists($module, 'label')) {
+                $label = strtolower(trim((string) $module->label()));
+                if ($label !== '') {
+                    $map[$label] = $id;
+                    $map[(string) preg_replace('/[^a-z0-9]+/', '', $label)] = $id;
+                }
+            }
+        }
+
+        return $map;
     }
 
     /**

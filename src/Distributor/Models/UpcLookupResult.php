@@ -6,6 +6,8 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+use FFLHub\Settings\Options;
+
 /**
  * UpcLookupResult
  *
@@ -27,8 +29,6 @@ if (!defined('ABSPATH')) {
  */
 final class UpcLookupResult
 {
-    private const DIST_ID_RSR = 'rsr';
-    private const DIST_ID_ZANDERS = 'zanders';
     private const FLOAT_EPSILON = 0.000001;
 
     /**
@@ -185,33 +185,26 @@ final class UpcLookupResult
             return $candidate_dropship;
         }
 
-        if ($this->is_rsr_zanders_pair($candidate_offer, $current_offer)) {
-            $delta = abs($candidate_cost - (float) $current_cost);
-            // On true ties, prefer RSR over Zanders.
-            if ($delta <= self::FLOAT_EPSILON) {
-                $candidate_id = $this->offer_dist_id($candidate_offer);
-                $current_id = $this->offer_dist_id($current_offer);
+        $delta = abs($candidate_cost - (float) $current_cost);
+        if ($delta <= self::FLOAT_EPSILON) {
+            $candidate_id = $this->offer_dist_id($candidate_offer);
+            $current_id = $this->offer_dist_id($current_offer);
 
-                if ($candidate_id === self::DIST_ID_RSR && $current_id === self::DIST_ID_ZANDERS) {
-                    return true;
-                }
+            $candidate_rank = Options::get_distributor_priority_rank($candidate_id);
+            $current_rank = Options::get_distributor_priority_rank($current_id);
 
-                if ($candidate_id === self::DIST_ID_ZANDERS && $current_id === self::DIST_ID_RSR) {
-                    return false;
-                }
+            if ($candidate_rank !== $current_rank) {
+                return $candidate_rank < $current_rank;
+            }
+
+            // Stable fallback if both are same rank/missing from priority list.
+            $cmp = strcmp($candidate_id, $current_id);
+            if ($cmp !== 0) {
+                return $cmp < 0;
             }
         }
 
         return $candidate_cost < ((float) $current_cost - self::FLOAT_EPSILON);
-    }
-
-    private function is_rsr_zanders_pair(DistributorOffer $a, DistributorOffer $b): bool
-    {
-        $a_id = $this->offer_dist_id($a);
-        $b_id = $this->offer_dist_id($b);
-
-        return ($a_id === self::DIST_ID_RSR && $b_id === self::DIST_ID_ZANDERS)
-            || ($a_id === self::DIST_ID_ZANDERS && $b_id === self::DIST_ID_RSR);
     }
 
     private function offer_dist_id(DistributorOffer $offer): string

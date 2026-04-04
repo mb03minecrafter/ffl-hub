@@ -89,6 +89,16 @@ final class SettingsRegistrar
                 'default'           => Options::default_test_order_debug_enabled() ? '1' : '0',
             ]
         );
+
+        register_setting(
+            $group,
+            Options::OPTION_DISTRIBUTOR_PRIORITY_LIST,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_distributor_priority_list'],
+                'default'           => Options::default_distributor_priority_csv(),
+            ]
+        );
     }
 
     /**
@@ -471,6 +481,16 @@ final class SettingsRegistrar
     public static function sanitize_checkbox($value): string
     {
         return ((string) $value === '1') ? '1' : '0';
+    }
+
+    /**
+     * Sanitize distributor priority list string into canonical CSV.
+     *
+     * @param mixed $value
+     */
+    public static function sanitize_distributor_priority_list($value): string
+    {
+        return Options::normalize_distributor_priority_csv((string) $value);
     }
 
     /**
