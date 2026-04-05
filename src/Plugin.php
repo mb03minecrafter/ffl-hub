@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Admin\Orders\OrderPlacementMetaBox;
+use FFLHub\Admin\Orders\OrderFulfillmentModeBadge;
 use FFLHub\Admin\Pages\AdminPage;
 use FFLHub\Admin\Pages\DavidsonsFailedJobsPage;
 use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
@@ -68,6 +69,7 @@ final class Plugin
     public ZandersCreditLimitPage $zanders_credit_limit_page;
     public MapPolicyPage $map_policy_page;
     public OrderPlacementMetaBox $order_placement_metabox;
+    public OrderFulfillmentModeBadge $order_fulfillment_mode_badge;
 
     // Frontend-only
     public CheckoutFields $checkout_fields;
@@ -146,6 +148,9 @@ final class Plugin
 
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();
+
+            $this->order_fulfillment_mode_badge = new OrderFulfillmentModeBadge($this->distributor_handler->ordering_jobs_table);
+            $this->order_fulfillment_mode_badge->register();
 
             $this->ffl_importer_page = new FFLImporterPage($this->ffl_table);
             $this->ffl_importer_page->register();
