@@ -8,6 +8,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Product\ProductMeta;
+use FFLHub\Settings\Options;
 
 if (! defined('ABSPATH')) {
     exit;
@@ -22,7 +23,6 @@ final class ZandersCreditLimitPage
     private const ZANDERS_DIST_ID = 'zanders';
     private const QUERY_LIMIT = 200000;
     private const TARGET_WOO_ORDER_STATUS = 'processing';
-    private const CREDIT_LIMIT_OPTION = 'fflhub_zanders_credit_limit';
     private const DEFAULT_CREDIT_LIMIT = 5000.0;
 
     private OrderPlacementJobsTable $jobs_table;
@@ -413,11 +413,7 @@ final class ZandersCreditLimitPage
 
     private function get_zanders_credit_limit(): float
     {
-        $raw = get_option(self::CREDIT_LIMIT_OPTION, (string) self::DEFAULT_CREDIT_LIMIT);
-        $limit = $this->to_non_negative_float($raw);
-        if ($limit <= 0.0) {
-            $limit = self::DEFAULT_CREDIT_LIMIT;
-        }
+        $limit = Options::get_distributor_credit_limit(self::ZANDERS_DIST_ID, self::DEFAULT_CREDIT_LIMIT);
 
         /** @var float|int|string $filtered */
         $filtered = apply_filters('fflhub_zanders_credit_limit', $limit);
@@ -756,4 +752,3 @@ final class ZandersCreditLimitPage
         <?php
     }
 }
-

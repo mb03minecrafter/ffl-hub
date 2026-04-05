@@ -144,6 +144,14 @@ final class Options
         return 'fflhub_' . $distributor_id . '_' . $key;
     }
 
+    /**
+     * Canonical option name for distributor credit limit.
+     */
+    public static function distributor_credit_limit_option_name(string $distributor_id): string
+    {
+        return self::distributor_option_name($distributor_id, 'credit_limit');
+    }
+
     /* -------------------------------------------------------------------------
      * Defaults (exposed for registrars / installers)
      * ---------------------------------------------------------------------- */
@@ -908,6 +916,75 @@ final class Options
     }
 
     /**
+     * Default credit limits by distributor.
+     */
+    public static function default_distributor_credit_limit(string $distributor_id): float
+    {
+        $id = strtolower(trim($distributor_id));
+        if ($id === 'davidsons') {
+            return 2500.0;
+        }
+        if ($id === 'zanders') {
+            return 5000.0;
+        }
+        if ($id === 'lipseys') {
+            return 5000.0;
+        }
+        if ($id === 'rsr') {
+            return 5000.0;
+        }
+
+        return 0.0;
+    }
+
+    /**
+     * Resolve distributor credit limit from distributor settings with legacy fallback.
+     */
+    public static function get_distributor_credit_limit(string $distributor_id, float $fallback = 0.0): float
+    {
+        $id = strtolower(trim($distributor_id));
+        if ($id === '') {
+            return self::to_non_negative_float($fallback);
+        }
+
+        $default = self::to_non_negative_float($fallback);
+        if ($default <= 0.0) {
+            $default = self::default_distributor_credit_limit($id);
+        }
+
+        $option_name = self::distributor_credit_limit_option_name($id);
+        $raw = get_option($option_name, null);
+        if ($raw !== null && trim((string) $raw) !== '') {
+            $direct = self::to_non_negative_float($raw);
+            if ($direct > 0.0) {
+                return $direct;
+            }
+        }
+
+        // Backward-compatibility: existing dedicated credit-limit options.
+        $legacy_option = '';
+        if ($id === 'davidsons') {
+            $legacy_option = 'fflhub_davidsons_credit_limit';
+        } elseif ($id === 'zanders') {
+            $legacy_option = 'fflhub_zanders_credit_limit';
+        } elseif ($id === 'lipseys') {
+            $legacy_option = 'fflhub_lipseys_credit_limit';
+        }
+
+        if ($legacy_option !== '') {
+            $legacy = get_option($legacy_option, null);
+            if ($legacy !== null && trim((string) $legacy) !== '') {
+                $legacy_v = self::to_non_negative_float($legacy);
+                if ($legacy_v > 0.0) {
+                    return $legacy_v;
+                }
+            }
+        }
+
+        return $default;
+    }
+
+    /**
      * Write a distributor-scoped option.
      */
     public static function set_distributor_option(
@@ -917,5 +994,31 @@ final class Options
     ): void {
         $name = self::distributor_option_name($distributor_id, $key);
         update_option($name, $value);
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function to_non_negative_float($value): float
+    {
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return 0.0;
+        }
+
+        if (!is_numeric($raw)) {
+            $raw = trim((string) preg_replace('/[^0-9.\-]/', '', $raw));
+        }
+
+        if ($raw === '' || !is_numeric($raw)) {
+            return 0.0;
+        }
+
+        $v = (float) $raw;
+        if (!is_finite($v) || $v < 0.0) {
+            return 0.0;
+        }
+
+        return $v;
     }
 }

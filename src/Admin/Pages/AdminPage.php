@@ -790,9 +790,15 @@ class AdminPage
         $id      = $module->id();
         $name    = $module->name();
         $fields  = $module->settings_schema();
+        if (!is_array($fields)) {
+            $fields = [];
+        }
         $enabled = Options::is_distributor_enabled($id);
 
         $group = Options::distributor_settings_group($id);
+        $credit_limit_option_name = Options::distributor_credit_limit_option_name($id);
+        $credit_limit_default = (string) Options::default_distributor_credit_limit($id);
+        $credit_limit_value = (string) Options::get_distributor_credit_limit($id, (float) $credit_limit_default);
 
     ?>
         <div class="fflhub-distributor-settings-wrapper">
@@ -834,17 +840,39 @@ class AdminPage
                 </form>
             </div>
 
-            <?php if (empty($fields) || ! is_array($fields)) : ?>
-                <p><?php esc_html_e('No settings available for this distributor.', 'ffl-hub'); ?></p>
-                <?php return; ?>
-            <?php endif; ?>
-
             <!-- Distributor settings form -->
             <form method="post" action="options.php" class="fflhub-distributor-settings-form">
                 <?php settings_fields($group); ?>
 
                 <table class="form-table">
                     <tbody>
+                        <tr>
+                            <th scope="row">
+                                <label for="<?php echo esc_attr($credit_limit_option_name); ?>">
+                                    <?php esc_html_e('Credit Limit ($)', 'ffl-hub'); ?>
+                                </label>
+                            </th>
+                            <td>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    id="<?php echo esc_attr($credit_limit_option_name); ?>"
+                                    name="<?php echo esc_attr($credit_limit_option_name); ?>"
+                                    value="<?php echo esc_attr((string) $credit_limit_value); ?>"
+                                    class="regular-text" />
+                                <p class="description">
+                                    <?php
+                                    echo esc_html(
+                                        sprintf(
+                                            __('Used as the credit limit on the %s credit/status page.', 'ffl-hub'),
+                                            $name
+                                        )
+                                    );
+                                    ?>
+                                </p>
+                            </td>
+                        </tr>
                         <?php foreach ($fields as $key => $field) :
                             $option_name = Options::distributor_option_name($id, $key);
                             $type        = isset($field['type']) ? strtolower((string) $field['type']) : 'text';

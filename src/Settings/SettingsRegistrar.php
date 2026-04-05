@@ -310,12 +310,22 @@ final class SettingsRegistrar
 
             $dist_id = $module->id();
             $fields  = $module->settings_schema();
-
-            if (empty($fields) || !is_array($fields)) {
-                continue;
+            if (!is_array($fields)) {
+                $fields = [];
             }
 
             $group = Options::distributor_settings_group($dist_id);
+
+            // Shared per-distributor credit limit shown in each distributor modal.
+            register_setting(
+                $group,
+                Options::distributor_credit_limit_option_name($dist_id),
+                [
+                    'type'              => 'string',
+                    'sanitize_callback' => [__CLASS__, 'sanitize_non_negative_decimal_string'],
+                    'default'           => (string) Options::default_distributor_credit_limit($dist_id),
+                ]
+            );
 
             foreach ($fields as $key => $def) {
                 $key = (string) $key;

@@ -10,6 +10,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Product\ProductMeta;
+use FFLHub\Settings\Options;
 
 if (! defined('ABSPATH')) {
     exit;
@@ -24,7 +25,6 @@ final class DavidsonsFailedJobsPage
     private const DAVIDSONS_DIST_ID = 'davidsons';
     private const QUERY_LIMIT = 200000;
     private const TARGET_WOO_ORDER_STATUS = 'processing';
-    private const CREDIT_LIMIT_OPTION = 'fflhub_davidsons_credit_limit';
     private const DEFAULT_CREDIT_LIMIT = 2500.0;
     private const MANUAL_PO_FORM_ACTION = 'fflhub_davidsons_manual_mark_success';
     private const MANUAL_PO_NONCE_ACTION = 'fflhub_davidsons_manual_mark_success_nonce_action';
@@ -651,11 +651,7 @@ final class DavidsonsFailedJobsPage
 
     private function get_davidsons_credit_limit(): float
     {
-        $raw = get_option(self::CREDIT_LIMIT_OPTION, (string) self::DEFAULT_CREDIT_LIMIT);
-        $limit = $this->to_non_negative_float($raw);
-        if ($limit <= 0.0) {
-            $limit = self::DEFAULT_CREDIT_LIMIT;
-        }
+        $limit = Options::get_distributor_credit_limit(self::DAVIDSONS_DIST_ID, self::DEFAULT_CREDIT_LIMIT);
 
         /** @var float|int|string $filtered */
         $filtered = apply_filters('fflhub_davidsons_manual_order_credit_limit', $limit);
