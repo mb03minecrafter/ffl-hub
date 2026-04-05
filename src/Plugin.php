@@ -13,6 +13,7 @@ use FFLHub\Admin\Pages\DavidsonsFailedJobsPage;
 use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
+use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
 use FFLHub\Admin\Pages\ZandersCreditLimitPage;
 use FFLHub\Admin\ProductMeta\BOMMetaBox;
@@ -67,6 +68,7 @@ final class Plugin
     public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
     public DavidsonsFailedJobsPage $davidsons_failed_jobs_page;
     public ZandersCreditLimitPage $zanders_credit_limit_page;
+    public LipseysCreditLimitPage $lipseys_credit_limit_page;
     public MapPolicyPage $map_policy_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public OrderFulfillmentModeBadge $order_fulfillment_mode_badge;
@@ -142,6 +144,9 @@ final class Plugin
 
             $this->zanders_credit_limit_page = new ZandersCreditLimitPage($this->distributor_handler->ordering_jobs_table);
             $this->zanders_credit_limit_page->register();
+
+            $this->lipseys_credit_limit_page = new LipseysCreditLimitPage($this->distributor_handler->ordering_jobs_table);
+            $this->lipseys_credit_limit_page->register();
 
             $this->map_policy_page = new MapPolicyPage();
             $this->map_policy_page->register();
