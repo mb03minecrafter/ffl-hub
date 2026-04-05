@@ -210,7 +210,9 @@ final class OrderFulfillmentModeBadge
         }
 
         $ids = $this->find_order_ids_for_mode($mode);
-        $query_args['include'] = $this->merge_includes($query_args['include'] ?? [], $ids);
+        // HPOS query path reliably maps "id" to an IN() clause.
+        // Using "include" here is not consistently honored by the orders list table query builder.
+        $query_args['id'] = $this->merge_includes($query_args['id'] ?? [], $ids);
 
         return $query_args;
     }
