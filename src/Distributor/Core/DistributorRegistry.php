@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
+use FFLHub\Distributor\Integrations\CSSI\CSSIModule;
 use FFLHub\Distributor\Integrations\Davidsons\DavidsonsModule;
 use FFLHub\Distributor\Integrations\Lipseys\LipseysModule;
 use FFLHub\Distributor\Integrations\RSR\RSRModule;
@@ -37,6 +38,7 @@ final class DistributorRegistry
             new RSRModule(),
             new LipseysModule(),
             new ZandersModule(),
+            new CSSIModule(),
             new DavidsonsModule()
         ];
     }
