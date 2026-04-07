@@ -111,14 +111,13 @@ class CSSIProductParser
             'dropship_block_reason' => ($dropShipFlag === '1') ? '' : 'drop_ship_flag=0',
             'drop_ship_delivery_options' => $this->get_csv($csv, $headerMap, ['available drop ship delivery options', 'available_drop_ship_delivery_options', 'drop_ship_delivery_options']),
 
-            'shipping_weight' => $this->clean_decimal($this->get_csv($csv, $headerMap, ['ship weight', 'shipping_weight', 'weight'])),
+            // CSSI "Ship Weight" is pounds in feed exports; store normalized ounces.
+            'shipping_weight' => $this->pounds_to_ounces_or_empty($this->get_csv($csv, $headerMap, ['ship weight', 'shipping_weight', 'weight'])),
             'shipping_length_in' => $this->get_csv($csv, $headerMap, ['length', 'shipping_length_in']),
             'shipping_width_in' => $this->get_csv($csv, $headerMap, ['width', 'shipping_width_in']),
             'shipping_height_in' => $this->get_csv($csv, $headerMap, ['height', 'shipping_height_in']),
-            'last_seen_utc' => $this->get_csv($csv, $headerMap, ['qas_last_updated', 'qas_last_updated_after', 'last_updated_utc']),
-
-            // Present in CSSI CSV, currently not persisted in schema:
             'image_location' => $this->get_csv($csv, $headerMap, ['image location', 'image_url']),
+            'last_seen_utc' => $this->get_csv($csv, $headerMap, ['qas_last_updated', 'qas_last_updated_after', 'last_updated_utc']),
             'specifications' => $this->get_csv($csv, $headerMap, ['specifications']),
         ];
     }
@@ -167,10 +166,11 @@ class CSSIProductParser
             'dropship_block_reason' => ($dropShipFlag === '1') ? '' : 'drop_ship_flag=0',
             'drop_ship_delivery_options' => $this->get_array($item, ['available_drop_ship_delivery_options', 'drop_ship_delivery_options']),
 
-            'shipping_weight' => $this->clean_decimal($this->get_array($item, ['shipping_weight', 'weight'])),
+            'shipping_weight' => $this->pounds_to_ounces_or_empty($this->get_array($item, ['shipping_weight', 'weight'])),
             'shipping_length_in' => $this->get_array($item, ['shipping_length_in', 'length']),
             'shipping_width_in' => $this->get_array($item, ['shipping_width_in', 'width']),
             'shipping_height_in' => $this->get_array($item, ['shipping_height_in', 'height']),
+            'image_location' => $this->get_array($item, ['image_location', 'image_url', 'image']),
             'last_seen_utc' => $this->get_array($item, ['qas_last_updated_at', 'qas_last_updated_after', 'qas_last_updated', 'last_updated_utc']),
         ];
     }
@@ -294,6 +294,26 @@ class CSSIProductParser
         }
 
         return $value;
+    }
+
+    /**
+     * Convert a pounds value to ounces as a decimal string.
+     * Returns empty string when value is blank/invalid.
+     */
+    private function pounds_to_ounces_or_empty(string $value): string
+    {
+        $normalized = $this->clean_decimal($value);
+        if ($normalized === '') {
+            return '';
+        }
+
+        $pounds = (float) $normalized;
+        if (!is_finite($pounds) || $pounds < 0) {
+            return '';
+        }
+
+        $ounces = $pounds * 16.0;
+        return number_format($ounces, 2, '.', '');
     }
 
     private function to_int_string(string $value): string

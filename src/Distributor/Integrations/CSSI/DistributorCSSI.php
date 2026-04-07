@@ -105,6 +105,7 @@ final class DistributorCSSI extends DistributorBase
                 'msrp'             => ['retail_msrp'],
                 'quantity'         => ['inventory_quantity'],
                 'category'         => ['item_type'],
+                'image'            => ['image_location'],
                 'shipping_weight'  => ['shipping_weight'],
                 'shipping_length_in' => ['shipping_length_in'],
                 'shipping_width_in'  => ['shipping_width_in'],
@@ -119,6 +120,32 @@ final class DistributorCSSI extends DistributorBase
         );
 
         return $payload;
+    }
+
+    /**
+     * CSSI feed already provides absolute image URLs.
+     *
+     * @param array<string,mixed> $row
+     * @param mixed $field
+     */
+    protected function get_image_url_from_row(array $row, $field): string
+    {
+        $keys = is_array($field) ? $field : [$field];
+        $url = $this->get_string_field($row, $keys);
+        $url = is_string($url) ? trim($url) : '';
+        if ($url === '') {
+            return '';
+        }
+
+        if (stripos($url, 'http://') === 0) {
+            $url = 'https://' . substr($url, 7);
+        }
+
+        if (filter_var($url, FILTER_VALIDATE_URL) === false) {
+            return '';
+        }
+
+        return $url;
     }
 
     /**

@@ -52,6 +52,20 @@ class CSSIProductImporterService
             @set_time_limit(0);
         }
 
+        $tSchema = microtime(true);
+        $schemaOk = true;
+        try {
+            $this->table->createTables();
+        } catch (\Throwable $e) {
+            $schemaOk = false;
+            $this->log('Schema ensure failed before CSSI import; proceeding with existing tables.', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+        $this->profile('ensure CSSI table schema', $tSchema, [
+            'ok' => $schemaOk ? 1 : 0,
+        ]);
+
         if ($this->can_use_load_data_local_infile()) {
             $tLoadPath = microtime(true);
             $rows = $this->import_from_csv_file_via_load_data($filePath);

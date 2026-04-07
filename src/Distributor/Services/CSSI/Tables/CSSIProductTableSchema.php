@@ -64,6 +64,7 @@ class CSSIProductTableSchema implements ProductSchemaInterface
             'shipping_length_in' => 'VARCHAR(32) NULL',
             'shipping_width_in' => 'VARCHAR(32) NULL',
             'shipping_height_in' => 'VARCHAR(32) NULL',
+            'image_location' => 'VARCHAR(1024) NULL',
 
             // Feed metadata
             'last_seen_utc' => 'VARCHAR(64) NULL',
