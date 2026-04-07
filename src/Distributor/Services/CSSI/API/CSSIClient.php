@@ -127,7 +127,6 @@ final class CSSIClient
             $this->profile('Product-feed URL parse failed', $t0, [
                 'status' => (int) ($out['status'] ?? 0),
                 'error' => (string) ($out['error'] ?? ''),
-                'data_head' => $this->truncate((string) wp_json_encode($data), 1200),
             ]);
 
             return $out;
@@ -244,7 +243,6 @@ final class CSSIClient
                 'status' => $status,
                 'error' => 'Unexpected HTTP status while downloading CSSI file.',
                 'content_type' => $contentType,
-                'headers' => (array) ($exec['headers'] ?? []),
                 'curl_info' => $curlInfo,
             ];
             $this->profile('File download failed (status)', $t0, $out);
@@ -285,7 +283,6 @@ final class CSSIClient
                     'status' => $status,
                     'error' => 'Unexpected HTTP status while downloading CSSI file (buffered).',
                     'content_type' => $contentType,
-                    'headers' => (array) ($bufferExec['headers'] ?? []),
                     'curl_info' => $curlInfo,
                 ];
                 $this->profile('File download failed (buffered status)', $t0, $out);
@@ -301,7 +298,6 @@ final class CSSIClient
                     'status' => $status,
                     'error' => 'Buffered download returned empty body.',
                     'content_type' => $contentType,
-                    'headers' => (array) ($bufferExec['headers'] ?? []),
                     'curl_info' => $curlInfo,
                 ];
                 $this->profile('File download failed (buffered empty)', $t0, $out);
@@ -443,8 +439,6 @@ final class CSSIClient
                 'curl_errno' => (int) ($exec['errno'] ?? 0),
                 'curl_error' => (string) ($exec['error'] ?? ''),
                 'curl_info' => (array) ($exec['info'] ?? []),
-                'headers' => (array) ($exec['headers'] ?? []),
-                'raw_excerpt' => $this->truncate((string) ($exec['body'] ?? ''), 1200),
             ];
 
             $this->profile('HTTP response transport failure', $t0, [
@@ -453,8 +447,7 @@ final class CSSIClient
                 'status' => (int) ($out['status'] ?? 0),
                 'error' => (string) ($out['error'] ?? ''),
                 'curl_errno' => (int) ($out['curl_errno'] ?? 0),
-                'headers' => (array) ($out['headers'] ?? []),
-                'raw_excerpt' => (string) ($out['raw_excerpt'] ?? ''),
+                'curl_info' => (array) ($out['curl_info'] ?? []),
             ]);
 
             return $out;
@@ -492,8 +485,6 @@ final class CSSIClient
                 'error' => $error,
                 'data' => is_array($decoded) ? $decoded : [],
                 'content_type' => $contentType,
-                'headers' => $headersOut,
-                'raw_excerpt' => $this->truncate($rawBody, 1200),
             ];
 
             $this->profile('HTTP response non-success', $t0, [
@@ -501,10 +492,8 @@ final class CSSIClient
                 'path' => $path,
                 'status' => $status,
                 'content_type' => $contentType,
-                'headers' => $headersOut,
                 'body_bytes' => $bodyBytes,
                 'error' => $error,
-                'raw_excerpt' => $this->truncate($rawBody, 400),
             ]);
 
             return $out;
@@ -516,9 +505,7 @@ final class CSSIClient
                 'status' => $status,
                 'error' => 'Invalid JSON response from CSSI API.',
                 'content_type' => $contentType,
-                'headers' => $headersOut,
                 'json_error' => $jsonError,
-                'raw_excerpt' => $this->truncate($rawBody, 1200),
             ];
 
             $this->profile('HTTP response invalid JSON', $t0, [
@@ -526,10 +513,8 @@ final class CSSIClient
                 'path' => $path,
                 'status' => $status,
                 'content_type' => $contentType,
-                'headers' => $headersOut,
                 'body_bytes' => $bodyBytes,
                 'json_error' => $jsonError,
-                'raw_excerpt' => $this->truncate($rawBody, 400),
             ]);
 
             return $out;
@@ -540,10 +525,8 @@ final class CSSIClient
             'path' => $path,
             'status' => $status,
             'content_type' => $contentType,
-            'headers' => $headersOut,
             'body_bytes' => $bodyBytes,
             'top_keys' => array_values(array_map('strval', array_slice(array_keys($decoded), 0, 12))),
-            'decoded_head' => $this->truncate((string) wp_json_encode($decoded), 1200),
         ]);
 
         return [
