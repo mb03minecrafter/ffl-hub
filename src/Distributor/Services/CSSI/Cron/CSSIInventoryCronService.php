@@ -52,28 +52,64 @@ final class CSSIInventoryCronService extends AbstractTableCronService
 
     public function run(): void
     {
+        $tStart = microtime(true);
+        $memStart = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $runId = substr(sha1((string) microtime(true) . '|' . mt_rand()), 0, 10);
+
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
         update_option('fflhub_cssi_inventory_last_run', current_time('mysql'));
 
+        $this->log('---- RUN START ----', [
+            'run_id' => $runId,
+            'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
+            'memory_kb' => $memStart > 0 ? (int) round($memStart / 1024) : 0,
+            'hook' => self::CRON_HOOK,
+            'interval_seconds' => (int) $this->get_interval_seconds(),
+            'group' => $this->get_action_group(),
+            'per_page' => self::PER_PAGE,
+        ]);
+
+        $tCreds = microtime(true);
         $creds = $this->get_api_credentials();
+        $this->profile('resolve API credentials', $tCreds, [
+            'ok' => is_array($creds) ? 1 : 0,
+            'sid_prefix' => is_array($creds) ? $this->mask_sid((string) ($creds['sid'] ?? '')) : '[missing]',
+        ]);
         if (!is_array($creds)) {
             update_option('fflhub_cssi_inventory_last_download_error', current_time('mysql'));
+            $this->finalize_run($tStart, $memStart, 'ERROR (missing credentials)', ['run_id' => $runId]);
             return;
         }
 
         $client = new CSSIClient((string) $creds['sid'], (string) $creds['token']);
 
-        $fetch = $this->fetch_inventory_rows($client);
+        $tFetch = microtime(true);
+        $fetch = $this->fetch_inventory_rows($client, $runId);
+        $this->profile('fetch inventory rows', $tFetch, [
+            'ok' => (bool) ($fetch['ok'] ?? false) ? 1 : 0,
+            'status' => (int) ($fetch['status'] ?? 0),
+            'error' => (string) ($fetch['error'] ?? ''),
+            'pages' => (int) ($fetch['pages'] ?? 0),
+            'row_count' => (int) ($fetch['row_count'] ?? 0),
+            'items_seen' => (int) ($fetch['items_seen'] ?? 0),
+            'rows_parsed' => (int) ($fetch['rows_parsed'] ?? 0),
+            'rows_no_key' => (int) ($fetch['rows_no_key'] ?? 0),
+            'parse_skipped' => (int) ($fetch['parse_skipped'] ?? 0),
+            'dedupe_replaced' => (int) ($fetch['dedupe_replaced'] ?? 0),
+        ]);
+
         if (!(bool) ($fetch['ok'] ?? false)) {
             update_option('fflhub_cssi_inventory_last_download_error', current_time('mysql'));
             $this->log('ERROR: CSSI inventory fetch failed.', [
                 'status' => (int) ($fetch['status'] ?? 0),
                 'error' => (string) ($fetch['error'] ?? 'Unknown error'),
                 'page' => (int) ($fetch['page'] ?? 0),
+                'pages' => (int) ($fetch['pages'] ?? 0),
             ]);
+            $this->finalize_run($tStart, $memStart, 'ERROR (fetch)', ['run_id' => $runId]);
             return;
         }
 
@@ -89,37 +125,74 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         if (empty($rows)) {
             update_option('fflhub_cssi_inventory_last_update', current_time('mysql'));
             update_option('fflhub_cssi_inventory_last_update_count', 0);
-            $this->log('CSSI inventory refresh completed with 0 rows.');
+            $this->log('CSSI inventory refresh completed with 0 rows.', [
+                'run_id' => $runId,
+                'items_seen' => (int) ($fetch['items_seen'] ?? 0),
+                'pages' => (int) ($fetch['pages'] ?? 0),
+            ]);
+            $this->finalize_run($tStart, $memStart, 'SUCCESS (0 rows)', ['run_id' => $runId]);
             return;
         }
 
+        $tApply = microtime(true);
         try {
             $stats = $this->apply_inventory_rows($rows);
         } catch (\Throwable $e) {
             update_option('fflhub_cssi_inventory_last_update_error', current_time('mysql'));
+            $this->profile('apply inventory rows (exception)', $tApply, [
+                'error' => $e->getMessage(),
+                'row_count' => count($rows),
+            ]);
             $this->log('ERROR: CSSI inventory apply failed.', [
                 'error' => $e->getMessage(),
             ]);
+            $this->finalize_run($tStart, $memStart, 'ERROR (apply)', ['run_id' => $runId]);
             return;
         }
+
+        $this->profile('apply inventory rows', $tApply, [
+            'processed_rows' => (int) ($stats['processed_rows'] ?? 0),
+            'rows_loaded' => (int) ($stats['rows_loaded'] ?? 0),
+            'join_updated_upc' => (int) ($stats['join_updated_upc'] ?? 0),
+            'join_updated_item' => (int) ($stats['join_updated_item'] ?? 0),
+            'inserted_new' => (int) ($stats['inserted_new'] ?? 0),
+            'stage_table' => (string) ($stats['stage_table'] ?? ''),
+            'create_ms' => (string) ($stats['create_ms'] ?? ''),
+            'truncate_ms' => (string) ($stats['truncate_ms'] ?? ''),
+            'stage_insert_ms' => (string) ($stats['stage_insert_ms'] ?? ''),
+            'join_upc_ms' => (string) ($stats['join_upc_ms'] ?? ''),
+            'join_item_ms' => (string) ($stats['join_item_ms'] ?? ''),
+            'insert_new_ms' => (string) ($stats['insert_new_ms'] ?? ''),
+            'total_sql_ms' => (string) ($stats['total_sql_ms'] ?? ''),
+        ]);
 
         update_option('fflhub_cssi_inventory_last_update', current_time('mysql'));
         update_option('fflhub_cssi_inventory_last_update_count', (int) ($stats['processed_rows'] ?? 0));
         delete_option('fflhub_cssi_inventory_last_update_error');
 
         $this->log('CSSI inventory refresh complete.', [
+            'run_id' => $runId,
             'processed_rows' => (int) ($stats['processed_rows'] ?? 0),
             'rows_loaded' => (int) ($stats['rows_loaded'] ?? 0),
             'join_updated_upc' => (int) ($stats['join_updated_upc'] ?? 0),
             'join_updated_item' => (int) ($stats['join_updated_item'] ?? 0),
             'inserted_new' => (int) ($stats['inserted_new'] ?? 0),
+            'stage_table' => (string) ($stats['stage_table'] ?? ''),
+            'insert_batches' => (int) ($stats['insert_batches'] ?? 0),
+            'insert_batch_failures' => (int) ($stats['insert_batch_failures'] ?? 0),
+            'insert_rows_skipped' => (int) ($stats['insert_rows_skipped'] ?? 0),
+        ]);
+
+        $this->finalize_run($tStart, $memStart, 'SUCCESS', [
+            'run_id' => $runId,
+            'processed_rows' => (int) ($stats['processed_rows'] ?? 0),
         ]);
     }
 
     /**
      * @return array<string,mixed>
      */
-    private function fetch_inventory_rows(CSSIClient $client): array
+    private function fetch_inventory_rows(CSSIClient $client, string $runId): array
     {
         $parser = new CSSIProductParser();
 
@@ -127,14 +200,35 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $page = 1;
         $pagesSeen = 0;
 
+        $itemsSeen = 0;
+        $rowsParsed = 0;
+        $parseSkipped = 0;
+        $rowsNoKey = 0;
+        $dedupeReplaced = 0;
+
         while (true) {
+            $tPage = microtime(true);
             $res = $client->get_items_page($page, self::PER_PAGE);
+
             if (!(bool) ($res['ok'] ?? false)) {
+                $this->profile('fetch page failed', $tPage, [
+                    'run_id' => $runId,
+                    'page' => $page,
+                    'status' => (int) ($res['status'] ?? 0),
+                    'error' => (string) ($res['error'] ?? 'Failed to fetch CSSI items page.'),
+                ]);
+
                 return [
                     'ok' => false,
                     'status' => (int) ($res['status'] ?? 0),
                     'error' => (string) ($res['error'] ?? 'Failed to fetch CSSI items page.'),
                     'page' => $page,
+                    'pages' => $pagesSeen,
+                    'items_seen' => $itemsSeen,
+                    'rows_parsed' => $rowsParsed,
+                    'rows_no_key' => $rowsNoKey,
+                    'parse_skipped' => $parseSkipped,
+                    'dedupe_replaced' => $dedupeReplaced,
                 ];
             }
 
@@ -142,25 +236,57 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             $pagination = isset($res['pagination']) && is_array($res['pagination']) ? (array) $res['pagination'] : [];
             $pageCount = max(1, (int) ($pagination['page_count'] ?? $page));
 
+            $pageParsed = 0;
+            $pageSkipped = 0;
+            $pageNoKey = 0;
+            $pageDedupe = 0;
+
             foreach ($items as $item) {
                 if (!is_array($item)) {
+                    $pageSkipped++;
+                    $parseSkipped++;
                     continue;
                 }
 
                 $row = $parser->parse_api_item($item);
                 if (!is_array($row)) {
+                    $pageSkipped++;
+                    $parseSkipped++;
                     continue;
                 }
 
+                $rowsParsed++;
+                $pageParsed++;
+
                 $key = $this->stage_row_key($row);
                 if ($key === '') {
+                    $pageNoKey++;
+                    $rowsNoKey++;
                     continue;
+                }
+
+                if (isset($rowsByKey[$key])) {
+                    $pageDedupe++;
+                    $dedupeReplaced++;
                 }
 
                 $rowsByKey[$key] = $row;
             }
 
+            $itemsSeen += count($items);
             $pagesSeen = max($pagesSeen, $page);
+
+            $this->profile('fetch page', $tPage, [
+                'run_id' => $runId,
+                'page' => $page,
+                'page_count' => $pageCount,
+                'raw_items' => count($items),
+                'parsed_rows' => $pageParsed,
+                'parse_skipped' => $pageSkipped,
+                'rows_no_key' => $pageNoKey,
+                'dedupe_replaced' => $pageDedupe,
+                'accumulated_unique_rows' => count($rowsByKey),
+            ]);
 
             if (empty($items) || $page >= $pageCount) {
                 break;
@@ -168,11 +294,24 @@ final class CSSIInventoryCronService extends AbstractTableCronService
 
             $page++;
             if ($page > 2000) {
+                $this->log('ERROR: Exceeded CSSI pagination safety limit.', [
+                    'run_id' => $runId,
+                    'page' => $page,
+                    'pages_seen' => $pagesSeen,
+                    'row_count' => count($rowsByKey),
+                ]);
+
                 return [
                     'ok' => false,
                     'status' => 0,
                     'error' => 'Exceeded CSSI pagination safety limit.',
                     'page' => $page,
+                    'pages' => $pagesSeen,
+                    'items_seen' => $itemsSeen,
+                    'rows_parsed' => $rowsParsed,
+                    'rows_no_key' => $rowsNoKey,
+                    'parse_skipped' => $parseSkipped,
+                    'dedupe_replaced' => $dedupeReplaced,
                 ];
             }
         }
@@ -182,6 +321,11 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             'rows' => array_values($rowsByKey),
             'row_count' => count($rowsByKey),
             'pages' => $pagesSeen,
+            'items_seen' => $itemsSeen,
+            'rows_parsed' => $rowsParsed,
+            'rows_no_key' => $rowsNoKey,
+            'parse_skipped' => $parseSkipped,
+            'dedupe_replaced' => $dedupeReplaced,
         ];
     }
 
@@ -192,6 +336,8 @@ final class CSSIInventoryCronService extends AbstractTableCronService
     private function apply_inventory_rows(array $rows): array
     {
         global $wpdb;
+
+        $tSqlStart = microtime(true);
 
         $liveTable = (string) $this->table->get_live_table_name();
         if ($liveTable === '') {
@@ -237,17 +383,23 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             ) {$charset};
         ";
 
+        $tCreate = microtime(true);
         $created = $wpdb->query($createSql);
         if ($created === false) {
             throw new \RuntimeException('Failed to ensure CSSI stage table: ' . (string) $wpdb->last_error);
         }
+        $createMs = (microtime(true) - $tCreate) * 1000.0;
 
+        $tTruncate = microtime(true);
         $truncated = $wpdb->query("TRUNCATE TABLE {$stageTable}");
         if ($truncated === false) {
             throw new \RuntimeException('Failed to truncate CSSI stage table: ' . (string) $wpdb->last_error);
         }
+        $truncateMs = (microtime(true) - $tTruncate) * 1000.0;
 
-        $this->insert_rows_into_stage($stageTable, $rows);
+        $tInsert = microtime(true);
+        $insertStats = $this->insert_rows_into_stage($stageTable, $rows);
+        $stageInsertMs = (microtime(true) - $tInsert) * 1000.0;
 
         $rowsLoaded = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable}");
 
@@ -296,10 +448,12 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 OR COALESCE(L.last_seen_utc, '') <> COALESCE(S.last_seen_utc, '')
         ";
 
+        $tJoinUpc = microtime(true);
         $joinUpdatedUpc = $wpdb->query($joinUpcSql);
         if ($joinUpdatedUpc === false) {
             throw new \RuntimeException('CSSI join update (UPC) failed: ' . (string) $wpdb->last_error);
         }
+        $joinUpcMs = (microtime(true) - $tJoinUpc) * 1000.0;
 
         $joinItemSql = "
             UPDATE {$liveTable} L
@@ -350,10 +504,12 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 )
         ";
 
+        $tJoinItem = microtime(true);
         $joinUpdatedItem = $wpdb->query($joinItemSql);
         if ($joinUpdatedItem === false) {
             throw new \RuntimeException('CSSI join update (item fallback) failed: ' . (string) $wpdb->last_error);
         }
+        $joinItemMs = (microtime(true) - $tJoinItem) * 1000.0;
 
         $insertSql = "
             INSERT INTO {$liveTable}
@@ -426,24 +582,45 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 AND LI.cssi_item_number IS NULL
         ";
 
+        $tInsertNew = microtime(true);
         $insertedNew = $wpdb->query($insertSql);
         if ($insertedNew === false) {
             throw new \RuntimeException('CSSI insert-new rows failed: ' . (string) $wpdb->last_error);
         }
+        $insertNewMs = (microtime(true) - $tInsertNew) * 1000.0;
 
-        return [
+        $totalSqlMs = (microtime(true) - $tSqlStart) * 1000.0;
+
+        $stats = [
             'processed_rows' => count($rows),
             'rows_loaded' => (int) $rowsLoaded,
             'join_updated_upc' => (int) $joinUpdatedUpc,
             'join_updated_item' => (int) $joinUpdatedItem,
             'inserted_new' => (int) $insertedNew,
+            'stage_table' => $stageTable,
+            'insert_batches' => (int) ($insertStats['batches'] ?? 0),
+            'insert_batch_failures' => (int) ($insertStats['batch_failures'] ?? 0),
+            'insert_rows_inserted' => (int) ($insertStats['rows_inserted'] ?? 0),
+            'insert_rows_skipped' => (int) ($insertStats['rows_skipped'] ?? 0),
+            'create_ms' => number_format($createMs, 2, '.', ''),
+            'truncate_ms' => number_format($truncateMs, 2, '.', ''),
+            'stage_insert_ms' => number_format($stageInsertMs, 2, '.', ''),
+            'join_upc_ms' => number_format($joinUpcMs, 2, '.', ''),
+            'join_item_ms' => number_format($joinItemMs, 2, '.', ''),
+            'insert_new_ms' => number_format($insertNewMs, 2, '.', ''),
+            'total_sql_ms' => number_format($totalSqlMs, 2, '.', ''),
         ];
+
+        $this->log('PROFILE: apply_inventory_rows SQL breakdown', $stats);
+
+        return $stats;
     }
 
     /**
      * @param array<int,array<string,mixed>> $rows
+     * @return array<string,int>
      */
-    private function insert_rows_into_stage(string $stageTable, array $rows): void
+    private function insert_rows_into_stage(string $stageTable, array $rows): array
     {
         global $wpdb;
 
@@ -483,18 +660,43 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $placeholders = [];
         $values = [];
 
-        $flush = function () use (&$placeholders, &$values, $wpdb, $stageTable, $columns): void {
+        $stats = [
+            'batches' => 0,
+            'batch_failures' => 0,
+            'rows_inserted' => 0,
+            'rows_skipped' => 0,
+        ];
+
+        $flush = function () use (&$placeholders, &$values, &$stats, $wpdb, $stageTable, $columns): void {
             if (empty($placeholders)) {
                 return;
             }
+
+            $batchRows = count($placeholders);
+            $stats['batches']++;
+            $tBatch = microtime(true);
 
             $sql = 'INSERT INTO ' . $stageTable . ' (' . implode(', ', $columns) . ') VALUES ' . implode(', ', $placeholders);
             $prepared = $wpdb->prepare($sql, $values);
             $result = $wpdb->query($prepared);
 
             if ($result === false) {
+                $stats['batch_failures']++;
+                $this->profile('stage insert batch failed', $tBatch, [
+                    'batch_no' => (int) $stats['batches'],
+                    'batch_rows' => $batchRows,
+                    'error' => (string) $wpdb->last_error,
+                ]);
                 throw new \RuntimeException('Failed inserting CSSI stage rows: ' . (string) $wpdb->last_error);
             }
+
+            $stats['rows_inserted'] += (int) $result;
+
+            $this->profile('stage insert batch', $tBatch, [
+                'batch_no' => (int) $stats['batches'],
+                'batch_rows' => $batchRows,
+                'rows_inserted' => (int) $result,
+            ]);
 
             $placeholders = [];
             $values = [];
@@ -502,11 +704,13 @@ final class CSSIInventoryCronService extends AbstractTableCronService
 
         foreach ($rows as $row) {
             if (!is_array($row)) {
+                $stats['rows_skipped']++;
                 continue;
             }
 
             $normalized = $this->normalize_stage_row($row);
             if ($normalized['row_key'] === '') {
+                $stats['rows_skipped']++;
                 continue;
             }
 
@@ -521,6 +725,8 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         }
 
         $flush();
+
+        return $stats;
     }
 
     /**
@@ -628,6 +834,20 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         ];
     }
 
+    private function mask_sid(string $sid): string
+    {
+        $sid = trim($sid);
+        if ($sid === '') {
+            return '[empty]';
+        }
+
+        if (strlen($sid) <= 4) {
+            return str_repeat('*', strlen($sid));
+        }
+
+        return substr($sid, 0, 2) . str_repeat('*', strlen($sid) - 4) . substr($sid, -2);
+    }
+
     /**
      * @param array<string,mixed> $ctx
      */
@@ -639,5 +859,34 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         }
 
         DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $message, $ctx);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function profile(string $label, float $t0, array $ctx = []): void
+    {
+        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000, 2);
+        $this->log('PROFILE: ' . $label, $ctx);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function finalize_run(float $tStart, int $memStart, string $status, array $ctx = []): void
+    {
+        $ctx['status'] = $status;
+        $this->profile('Total cron run', $tStart, $ctx);
+
+        $memEnd = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        if ($memStart > 0 && $memEnd > 0) {
+            $this->log('Memory usage summary', [
+                'start_kb' => (int) round($memStart / 1024),
+                'end_kb' => (int) round($memEnd / 1024),
+                'delta_kb' => (int) round(($memEnd - $memStart) / 1024),
+            ]);
+        }
+
+        $this->log('---- RUN END (' . $status . ') ----');
     }
 }

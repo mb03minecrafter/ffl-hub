@@ -40,6 +40,8 @@ final class CSSIClient
      */
     public function get_items_page(int $page = 1, int $perPage = 50, array $query = []): array
     {
+        $t0 = microtime(true);
+
         $page = max(1, (int) $page);
         $perPage = max(1, min(50, (int) $perPage));
 
@@ -48,8 +50,19 @@ final class CSSIClient
             'per_page' => $perPage,
         ]);
 
+        $this->log('Items page request start', [
+            'page' => $page,
+            'per_page' => $perPage,
+            'query_keys' => array_values(array_map('strval', array_keys($query))),
+        ]);
+
         $res = $this->request_json('GET', 'items', $query);
         if (!(bool) ($res['ok'] ?? false)) {
+            $this->profile('Items page request failed', $t0, [
+                'page' => $page,
+                'status' => (int) ($res['status'] ?? 0),
+                'error' => (string) ($res['error'] ?? 'Unknown error'),
+            ]);
             return $res;
         }
 
@@ -64,6 +77,13 @@ final class CSSIClient
             'page_count' => (int) ($pagination['page_count'] ?? 1),
         ];
 
+        $this->profile('Items page request complete', $t0, [
+            'page' => (int) ($res['pagination']['page'] ?? $page),
+            'page_count' => (int) ($res['pagination']['page_count'] ?? 1),
+            'item_count' => count($items),
+            'status' => (int) ($res['status'] ?? 0),
+        ]);
+
         return $res;
     }
 
@@ -74,8 +94,18 @@ final class CSSIClient
      */
     public function get_product_feed_url(array $query = []): array
     {
+        $t0 = microtime(true);
+
+        $this->log('Product-feed URL request start', [
+            'query_keys' => array_values(array_map('strval', array_keys($query))),
+        ]);
+
         $res = $this->request_json('GET', 'items/product-feed', $query);
         if (!(bool) ($res['ok'] ?? false)) {
+            $this->profile('Product-feed URL request failed', $t0, [
+                'status' => (int) ($res['status'] ?? 0),
+                'error' => (string) ($res['error'] ?? 'Unknown error'),
+            ]);
             return $res;
         }
 
@@ -86,20 +116,34 @@ final class CSSIClient
         }
 
         if ($url === '') {
-            return [
+            $out = [
                 'ok' => false,
                 'status' => (int) ($res['status'] ?? 0),
                 'error' => 'CSSI product-feed response did not contain product_feed.url.',
                 'data' => $data,
             ];
+
+            $this->profile('Product-feed URL parse failed', $t0, [
+                'status' => (int) ($out['status'] ?? 0),
+                'error' => (string) ($out['error'] ?? ''),
+            ]);
+
+            return $out;
         }
 
-        return [
+        $out = [
             'ok' => true,
             'status' => (int) ($res['status'] ?? 200),
             'url' => $url,
             'data' => $data,
         ];
+
+        $this->profile('Product-feed URL request complete', $t0, [
+            'status' => (int) ($out['status'] ?? 0),
+            'url_head' => $this->truncate($url, 220),
+        ]);
+
+        return $out;
     }
 
     /**
@@ -109,15 +153,28 @@ final class CSSIClient
      */
     public function download_file(string $url, string $outputPath): array
     {
+        $t0 = microtime(true);
+
         $url = trim($url);
         $outputPath = trim($outputPath);
 
+        $this->log('File download start', [
+            'url_head' => $this->truncate($url, 220),
+            'output_path' => $outputPath,
+        ]);
+
         if ($url === '' || $outputPath === '') {
-            return [
+            $out = [
                 'ok' => false,
                 'status' => 0,
                 'error' => 'download_file requires a URL and output path.',
             ];
+
+            $this->profile('File download failed (invalid args)', $t0, [
+                'error' => (string) ($out['error'] ?? ''),
+            ]);
+
+            return $out;
         }
 
         $outputDir = dirname($outputPath);
@@ -126,12 +183,19 @@ final class CSSIClient
                 ? (bool) wp_mkdir_p($outputDir)
                 : @mkdir($outputDir, 0775, true);
             if (!$made) {
-                return [
+                $out = [
                     'ok' => false,
                     'status' => 0,
                     'error' => 'Unable to create CSSI output directory.',
                     'output_dir' => $outputDir,
                 ];
+
+                $this->profile('File download failed (mkdir)', $t0, [
+                    'output_dir' => $outputDir,
+                    'error' => (string) ($out['error'] ?? ''),
+                ]);
+
+                return $out;
             }
         }
 
@@ -145,37 +209,71 @@ final class CSSIClient
 
         $resp = wp_remote_get($url, $args);
         if (is_wp_error($resp)) {
-            return [
+            $out = [
                 'ok' => false,
                 'status' => 0,
                 'error' => $resp->get_error_message(),
             ];
+
+            $this->profile('File download failed (wp_error)', $t0, [
+                'error' => (string) ($out['error'] ?? ''),
+            ]);
+
+            return $out;
         }
 
         $status = (int) wp_remote_retrieve_response_code($resp);
+        $contentType = (string) wp_remote_retrieve_header($resp, 'content-type');
+
         if ($status < 200 || $status >= 300) {
-            return [
+            $out = [
                 'ok' => false,
                 'status' => $status,
                 'error' => 'Unexpected HTTP status while downloading CSSI file.',
+                'content_type' => $contentType,
             ];
+
+            $this->profile('File download failed (status)', $t0, [
+                'status' => $status,
+                'content_type' => $contentType,
+            ]);
+
+            return $out;
         }
 
         $bytes = (is_file($outputPath)) ? (int) filesize($outputPath) : 0;
         if ($bytes <= 0) {
-            return [
+            $out = [
                 'ok' => false,
                 'status' => $status,
                 'error' => 'Downloaded CSSI file was empty or missing.',
+                'content_type' => $contentType,
             ];
+
+            $this->profile('File download failed (empty)', $t0, [
+                'status' => $status,
+                'content_type' => $contentType,
+                'bytes' => $bytes,
+            ]);
+
+            return $out;
         }
 
-        return [
+        $out = [
             'ok' => true,
             'status' => $status,
             'bytes' => $bytes,
             'path' => $outputPath,
+            'content_type' => $contentType,
         ];
+
+        $this->profile('File download complete', $t0, [
+            'status' => $status,
+            'bytes' => $bytes,
+            'content_type' => $contentType,
+        ]);
+
+        return $out;
     }
 
     /**
@@ -185,12 +283,20 @@ final class CSSIClient
      */
     private function request_json(string $method, string $path, array $query = [], ?array $body = null): array
     {
+        $t0 = microtime(true);
+
         if (!$this->has_credentials()) {
-            return [
+            $out = [
                 'ok' => false,
                 'status' => 0,
                 'error' => 'Missing CSSI SID/token credentials.',
             ];
+
+            $this->profile('JSON request blocked (missing creds)', $t0, [
+                'path' => $path,
+            ]);
+
+            return $out;
         }
 
         $method = strtoupper(trim($method));
@@ -210,50 +316,110 @@ final class CSSIClient
 
         if ($body !== null) {
             $args['headers']['Content-Type'] = 'application/json';
-            $args['body'] = wp_json_encode($body);
+            $encodedBody = wp_json_encode($body);
+            $args['body'] = is_string($encodedBody) ? $encodedBody : '{}';
         }
 
+        $callId = substr(sha1($method . '|' . $path . '|' . microtime(true) . '|' . mt_rand()), 0, 10);
+
         $this->log('HTTP request', [
+            'call_id' => $callId,
             'method' => $method,
             'path' => $path,
+            'url' => $url,
+            'query_keys' => array_values(array_map('strval', array_keys($query))),
+            'body_keys' => is_array($body) ? array_values(array_map('strval', array_keys($body))) : [],
             'sid_prefix' => $this->mask_sid($this->sid),
         ]);
 
         $resp = wp_remote_request($url, $args);
         if (is_wp_error($resp)) {
-            return [
+            $out = [
                 'ok' => false,
                 'status' => 0,
                 'error' => $resp->get_error_message(),
             ];
+
+            $this->profile('HTTP response wp_error', $t0, [
+                'call_id' => $callId,
+                'path' => $path,
+                'error' => (string) ($out['error'] ?? ''),
+            ]);
+
+            return $out;
         }
 
         $status = (int) wp_remote_retrieve_response_code($resp);
         $rawBody = (string) wp_remote_retrieve_body($resp);
+        $contentType = (string) wp_remote_retrieve_header($resp, 'content-type');
+        $bodyBytes = strlen($rawBody);
+
         $decoded = json_decode($rawBody, true);
+        $jsonError = json_last_error() === JSON_ERROR_NONE ? '' : json_last_error_msg();
 
         if (!is_array($decoded)) {
-            return [
+            $out = [
                 'ok' => false,
                 'status' => $status,
                 'error' => 'Invalid JSON response from CSSI API.',
                 'raw_excerpt' => $this->truncate($rawBody, 700),
+                'content_type' => $contentType,
+                'json_error' => $jsonError,
             ];
+
+            $this->profile('HTTP response invalid JSON', $t0, [
+                'call_id' => $callId,
+                'path' => $path,
+                'status' => $status,
+                'content_type' => $contentType,
+                'body_bytes' => $bodyBytes,
+                'json_error' => $jsonError,
+                'body_head' => $this->truncate($rawBody, 300),
+            ]);
+
+            return $out;
         }
 
         if ($status < 200 || $status >= 300) {
-            return [
+            $topKeys = array_slice(array_keys($decoded), 0, 12);
+
+            $out = [
                 'ok' => false,
                 'status' => $status,
                 'error' => 'CSSI API returned a non-success status.',
                 'data' => $decoded,
+                'content_type' => $contentType,
             ];
+
+            $this->profile('HTTP response non-success', $t0, [
+                'call_id' => $callId,
+                'path' => $path,
+                'status' => $status,
+                'content_type' => $contentType,
+                'body_bytes' => $bodyBytes,
+                'top_keys' => array_values(array_map('strval', $topKeys)),
+                'body_head' => $this->truncate($rawBody, 300),
+            ]);
+
+            return $out;
         }
+
+        $topKeys = array_slice(array_keys($decoded), 0, 12);
+
+        $this->profile('HTTP response success', $t0, [
+            'call_id' => $callId,
+            'path' => $path,
+            'status' => $status,
+            'content_type' => $contentType,
+            'body_bytes' => $bodyBytes,
+            'top_keys' => array_values(array_map('strval', $topKeys)),
+        ]);
 
         return [
             'ok' => true,
             'status' => $status,
             'data' => $decoded,
+            'content_type' => $contentType,
         ];
     }
 
@@ -309,5 +475,14 @@ final class CSSIClient
         }
 
         DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $message, $ctx);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function profile(string $label, float $t0, array $ctx = []): void
+    {
+        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000, 2);
+        $this->log('PROFILE: ' . $label, $ctx);
     }
 }

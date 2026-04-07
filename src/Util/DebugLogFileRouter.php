@@ -101,6 +101,8 @@ final class DebugLogFileRouter
             $distributor = 'zanders';
         } elseif (strpos($haystack, 'lipseys') !== false || strpos($haystack, "lipsey") !== false) {
             $distributor = 'lipseys';
+        } elseif (strpos($haystack, 'cssi') !== false || strpos($haystack, 'chattanooga') !== false) {
+            $distributor = 'cssi';
         } elseif (strpos($haystack, 'davidsons') !== false || strpos($haystack, "davidson's") !== false) {
             $distributor = 'davidsons';
         } elseif (strpos($haystack, 'rsr') !== false) {
