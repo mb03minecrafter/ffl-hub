@@ -114,6 +114,7 @@ final class CSSIClient
         if (isset($data['product_feed']) && is_array($data['product_feed'])) {
             $url = trim((string) ($data['product_feed']['url'] ?? ''));
         }
+        $normalizedUrl = $this->normalize_feed_file_url($url);
 
         if ($url === '') {
             $out = [
@@ -135,13 +136,14 @@ final class CSSIClient
         $out = [
             'ok' => true,
             'status' => (int) ($res['status'] ?? 200),
-            'url' => $url,
+            'url' => $normalizedUrl,
             'data' => $data,
         ];
 
         $this->profile('Product-feed URL request complete', $t0, [
             'status' => (int) ($out['status'] ?? 0),
-            'url_head' => $this->truncate($url, 220),
+            'url_head' => $this->truncate($normalizedUrl, 220),
+            'raw_url_head' => $this->truncate($url, 220),
         ]);
 
         return $out;
@@ -155,6 +157,7 @@ final class CSSIClient
         $t0 = microtime(true);
 
         $url = trim($url);
+        $url = $this->normalize_feed_file_url($url);
         $outputPath = trim($outputPath);
 
         $this->log('File download start', [
@@ -232,6 +235,7 @@ final class CSSIClient
 
         $status = (int) ($exec['http_code'] ?? 0);
         $contentType = (string) ($exec['content_type'] ?? '');
+        $curlInfo = (array) ($exec['info'] ?? []);
 
         if ($status < 200 || $status >= 300) {
             @unlink($tmpPath);
@@ -241,9 +245,90 @@ final class CSSIClient
                 'error' => 'Unexpected HTTP status while downloading CSSI file.',
                 'content_type' => $contentType,
                 'headers' => (array) ($exec['headers'] ?? []),
+                'curl_info' => $curlInfo,
             ];
             $this->profile('File download failed (status)', $t0, $out);
             return $out;
+        }
+
+        $tmpBytes = (is_file($tmpPath)) ? (int) filesize($tmpPath) : 0;
+        if ($tmpBytes <= 0) {
+            $this->log('File download stream returned empty payload; retrying buffered mode.', [
+                'status' => $status,
+                'content_type' => $contentType,
+                'tmp_path' => $tmpPath,
+                'curl_info' => $curlInfo,
+            ]);
+
+            $bufferExec = $this->execute_curl('GET', $url, $headers, null, null, 180);
+            if (!(bool) ($bufferExec['transport_ok'] ?? false)) {
+                @unlink($tmpPath);
+                $out = [
+                    'ok' => false,
+                    'status' => (int) ($bufferExec['http_code'] ?? 0),
+                    'error' => (string) ($bufferExec['error'] ?? 'Buffered cURL transport failure.'),
+                    'curl_errno' => (int) ($bufferExec['errno'] ?? 0),
+                    'curl_error' => (string) ($bufferExec['error'] ?? ''),
+                    'curl_info' => (array) ($bufferExec['info'] ?? []),
+                ];
+                $this->profile('File download failed (buffered transport)', $t0, $out);
+                return $out;
+            }
+
+            $status = (int) ($bufferExec['http_code'] ?? 0);
+            $contentType = (string) ($bufferExec['content_type'] ?? '');
+            $curlInfo = (array) ($bufferExec['info'] ?? []);
+            if ($status < 200 || $status >= 300) {
+                @unlink($tmpPath);
+                $out = [
+                    'ok' => false,
+                    'status' => $status,
+                    'error' => 'Unexpected HTTP status while downloading CSSI file (buffered).',
+                    'content_type' => $contentType,
+                    'headers' => (array) ($bufferExec['headers'] ?? []),
+                    'curl_info' => $curlInfo,
+                ];
+                $this->profile('File download failed (buffered status)', $t0, $out);
+                return $out;
+            }
+
+            $body = (string) ($bufferExec['body'] ?? '');
+            $bodyBytes = strlen($body);
+            if ($bodyBytes <= 0) {
+                @unlink($tmpPath);
+                $out = [
+                    'ok' => false,
+                    'status' => $status,
+                    'error' => 'Buffered download returned empty body.',
+                    'content_type' => $contentType,
+                    'headers' => (array) ($bufferExec['headers'] ?? []),
+                    'curl_info' => $curlInfo,
+                ];
+                $this->profile('File download failed (buffered empty)', $t0, $out);
+                return $out;
+            }
+
+            $written = @file_put_contents($tmpPath, $body);
+            if (!is_int($written) || $written <= 0) {
+                @unlink($tmpPath);
+                $out = [
+                    'ok' => false,
+                    'status' => $status,
+                    'error' => 'Unable to write buffered download output.',
+                    'content_type' => $contentType,
+                    'bytes' => $bodyBytes,
+                ];
+                $this->profile('File download failed (buffered write)', $t0, $out);
+                return $out;
+            }
+
+            $tmpBytes = (is_file($tmpPath)) ? (int) filesize($tmpPath) : 0;
+            $this->log('File download buffered fallback succeeded.', [
+                'status' => $status,
+                'content_type' => $contentType,
+                'bytes' => $tmpBytes,
+                'curl_info' => $curlInfo,
+            ]);
         }
 
         if (!@rename($tmpPath, $outputPath)) {
@@ -254,6 +339,7 @@ final class CSSIClient
                 'error' => 'Failed to finalize CSSI download file.',
                 'tmp_path' => $tmpPath,
                 'output_path' => $outputPath,
+                'curl_info' => $curlInfo,
             ];
             $this->profile('File download failed (rename)', $t0, $out);
             return $out;
@@ -266,11 +352,13 @@ final class CSSIClient
                 'status' => $status,
                 'error' => 'Downloaded CSSI file was empty or missing.',
                 'content_type' => $contentType,
+                'curl_info' => $curlInfo,
             ];
             $this->profile('File download failed (empty)', $t0, [
                 'status' => $status,
                 'content_type' => $contentType,
                 'bytes' => $bytes,
+                'curl_info' => $curlInfo,
             ]);
             return $out;
         }
@@ -281,6 +369,7 @@ final class CSSIClient
             'bytes' => $bytes,
             'path' => $outputPath,
             'content_type' => $contentType,
+            'curl_info' => $curlInfo,
         ];
 
         $this->profile('File download complete', $t0, [
@@ -540,8 +629,12 @@ final class CSSIClient
             'total_time_ms' => number_format(((float) curl_getinfo($ch, CURLINFO_TOTAL_TIME)) * 1000, 2, '.', ''),
             'primary_ip' => (string) curl_getinfo($ch, CURLINFO_PRIMARY_IP),
             'local_ip' => (string) curl_getinfo($ch, CURLINFO_LOCAL_IP),
+            'effective_url' => (string) curl_getinfo($ch, CURLINFO_EFFECTIVE_URL),
             'redirect_count' => (int) curl_getinfo($ch, CURLINFO_REDIRECT_COUNT),
             'ssl_verify_result' => (int) curl_getinfo($ch, CURLINFO_SSL_VERIFYRESULT),
+            'size_download' => (float) $this->curl_get_download_size($ch),
+            'content_length_download' => (float) curl_getinfo($ch, CURLINFO_CONTENT_LENGTH_DOWNLOAD),
+            'speed_download' => (float) curl_getinfo($ch, CURLINFO_SPEED_DOWNLOAD),
         ];
 
         curl_close($ch);
@@ -601,6 +694,30 @@ final class CSSIClient
             'Accept' => $accept,
             'User-Agent' => 'FFLHub-CSSI/1.0',
         ];
+    }
+
+    private function curl_get_download_size($ch): float
+    {
+        if (defined('CURLINFO_SIZE_DOWNLOAD_T')) {
+            return (float) curl_getinfo($ch, CURLINFO_SIZE_DOWNLOAD_T);
+        }
+
+        return (float) curl_getinfo($ch, CURLINFO_SIZE_DOWNLOAD);
+    }
+
+    private function normalize_feed_file_url(string $url): string
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return '';
+        }
+
+        $normalized = preg_replace('#^http://api\.chattanoogashooting\.com/#i', 'https://api.chattanoogashooting.com/', $url);
+        if (!is_string($normalized) || trim($normalized) === '') {
+            return $url;
+        }
+
+        return trim($normalized);
     }
 
     /**
