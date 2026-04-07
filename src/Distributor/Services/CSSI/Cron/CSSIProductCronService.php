@@ -22,6 +22,7 @@ final class CSSIProductCronService extends AbstractTableCronService
 
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][CSSIProductCron]';
+    private const AUTH_ONLY_MODE = true;
     private const DOWNLOAD_DIR = 'fflhub-cssi';
     private const DOWNLOAD_FILE = 'cssi_product_feed.csv';
 
@@ -83,19 +84,23 @@ final class CSSIProductCronService extends AbstractTableCronService
             return;
         }
 
-        $tPath = microtime(true);
-        $path = $this->resolve_output_path();
-        $this->profile('resolve output path', $tPath, [
-            'ok' => (is_string($path) && $path !== '') ? 1 : 0,
-            'path' => is_string($path) ? $path : '',
-        ]);
-        if (!is_string($path) || $path === '') {
-            update_option('fflhub_cssi_fulfillment_last_download_error', current_time('mysql'));
-            $this->finalize_run($tStart, $memStart, 'ERROR (output path)', ['run_id' => $runId]);
-            return;
-        }
-
         $client = new CSSIClient((string) $creds['sid'], (string) $creds['token']);
+
+        $this->log('AUTH ONLY MODE enabled - skipping CSV import/swap and probing auth endpoints only.', [
+            'run_id' => $runId,
+            'auth_only_mode' => self::AUTH_ONLY_MODE ? 1 : 0,
+        ]);
+
+        $tItems = microtime(true);
+        $itemsRes = $client->get_items_page(1, 1);
+        $itemsOk = (bool) ($itemsRes['ok'] ?? false);
+        $items = is_array($itemsRes['items'] ?? null) ? (array) $itemsRes['items'] : [];
+        $this->profile('auth probe: GET /items', $tItems, [
+            'ok' => $itemsOk ? 1 : 0,
+            'status' => (int) ($itemsRes['status'] ?? 0),
+            'error' => $itemsOk ? '' : (string) ($itemsRes['error'] ?? 'Unknown error'),
+            'items_count' => count($items),
+        ]);
 
         $tFeed = microtime(true);
         $feedRes = $client->get_product_feed_url([
@@ -110,128 +115,42 @@ final class CSSIProductCronService extends AbstractTableCronService
             'error' => $feedOk ? '' : (string) ($feedRes['error'] ?? 'Unknown error'),
         ]);
 
-        if (!$feedOk) {
+        if (!$itemsOk) {
             update_option('fflhub_cssi_fulfillment_last_download_error', current_time('mysql'));
-            $this->log('ERROR: CSSI product-feed URL lookup failed.', [
-                'status' => (int) ($feedRes['status'] ?? 0),
-                'error' => (string) ($feedRes['error'] ?? 'Unknown error'),
+            $this->log('ERROR: CSSI auth probe failed on GET /items.', [
+                'status' => (int) ($itemsRes['status'] ?? 0),
+                'error' => (string) ($itemsRes['error'] ?? 'Unknown error'),
+                'run_id' => $runId,
             ]);
-            $this->finalize_run($tStart, $memStart, 'ERROR (feed URL)', ['run_id' => $runId]);
-            return;
-        }
-
-        if ($feedUrl === '') {
-            update_option('fflhub_cssi_fulfillment_last_download_error', current_time('mysql'));
-            $this->log('ERROR: CSSI product-feed URL was empty.');
-            $this->finalize_run($tStart, $memStart, 'ERROR (empty feed URL)', ['run_id' => $runId]);
-            return;
-        }
-
-        $tDownload = microtime(true);
-        $downloadRes = $client->download_file($feedUrl, $path);
-        $downloadOk = (bool) ($downloadRes['ok'] ?? false);
-        $bytes = (int) ($downloadRes['bytes'] ?? 0);
-        $this->profile('download product-feed CSV', $tDownload, [
-            'ok' => $downloadOk ? 1 : 0,
-            'status' => (int) ($downloadRes['status'] ?? 0),
-            'bytes' => $bytes,
-            'content_type' => (string) ($downloadRes['content_type'] ?? ''),
-            'error' => $downloadOk ? '' : (string) ($downloadRes['error'] ?? 'Unknown error'),
-        ]);
-
-        if (!$downloadOk) {
-            update_option('fflhub_cssi_fulfillment_last_download_error', current_time('mysql'));
-            $this->log('ERROR: CSSI product-feed download failed.', [
-                'status' => (int) ($downloadRes['status'] ?? 0),
-                'error' => (string) ($downloadRes['error'] ?? 'Unknown error'),
-                'url' => $this->truncate($feedUrl, 220),
-                'path' => $path,
-            ]);
-            $this->finalize_run($tStart, $memStart, 'ERROR (download)', ['run_id' => $runId]);
+            $this->finalize_run($tStart, $memStart, 'ERROR (auth probe)', ['run_id' => $runId]);
             return;
         }
 
         update_option('fflhub_cssi_fulfillment_last_download', current_time('mysql'));
         update_option('fflhub_cssi_fulfillment_last_download_ts', (string) time());
-        update_option('fflhub_cssi_fulfillment_last_download_size', (string) $bytes);
-        update_option('fflhub_cssi_fulfillment_last_download_path', $path);
-        update_option('fflhub_cssi_fulfillment_last_download_url', $feedUrl);
-        delete_option('fflhub_cssi_fulfillment_last_download_error');
-
-        $importer = new CSSIProductImporterService($this->table);
-
-        $tImport = microtime(true);
-        try {
-            $count = (int) $importer->import_from_csv_file($path);
-        } catch (\Throwable $e) {
-            update_option('fflhub_cssi_fulfillment_last_import_error', current_time('mysql'));
-            $this->profile('import CSV into staging (exception)', $tImport, [
-                'error' => $e->getMessage(),
-            ]);
-            $this->log('ERROR: CSSI product-feed import exception.', [
-                'error' => $e->getMessage(),
-            ]);
-            $this->finalize_run($tStart, $memStart, 'ERROR (import exception)', ['run_id' => $runId]);
-            return;
-        }
-
-        $this->profile('import CSV into staging', $tImport, [
-            'imported_rows' => (int) $count,
-        ]);
-
-        if ($count <= 0) {
-            update_option('fflhub_cssi_fulfillment_last_import_error', current_time('mysql'));
-            $this->log('ERROR: CSSI product-feed import completed with 0 rows; swap skipped.', [
-                'path' => $path,
-                'url' => $this->truncate($feedUrl, 220),
-            ]);
-            $this->finalize_run($tStart, $memStart, 'NO SWAP (0 rows)', [
-                'run_id' => $runId,
-                'path' => $path,
-            ]);
-            return;
-        }
-
-        $tSwap = microtime(true);
-        try {
-            $newLive = (string) $this->table->swap_live_and_staging();
-        } catch (\Throwable $e) {
-            update_option('fflhub_cssi_fulfillment_last_swap_error', current_time('mysql'));
-            $this->profile('swap staging/live (exception)', $tSwap, [
-                'error' => $e->getMessage(),
-                'imported_rows' => (int) $count,
-            ]);
-            $this->log('ERROR: CSSI product-feed swap exception.', [
-                'error' => $e->getMessage(),
-            ]);
-            $this->finalize_run($tStart, $memStart, 'ERROR (swap exception)', ['run_id' => $runId]);
-            return;
-        }
-
-        $this->profile('swap staging/live', $tSwap, [
-            'new_live' => $newLive,
-            'imported_rows' => (int) $count,
-        ]);
-
+        update_option('fflhub_cssi_fulfillment_last_download_size', '0');
+        update_option('fflhub_cssi_fulfillment_last_download_path', '[auth-only]');
+        update_option('fflhub_cssi_fulfillment_last_download_url', '[auth-only]');
         update_option('fflhub_cssi_fulfillment_last_import', current_time('mysql'));
-        update_option('fflhub_cssi_fulfillment_last_import_count', (int) $count);
-        update_option('fflhub_cssi_fulfillment_last_swap', current_time('mysql'));
+        update_option('fflhub_cssi_fulfillment_last_import_count', 0);
+        delete_option('fflhub_cssi_fulfillment_last_download_error');
         delete_option('fflhub_cssi_fulfillment_last_import_error');
         delete_option('fflhub_cssi_fulfillment_last_swap_error');
 
-        $this->log('CSSI full catalog refresh complete.', [
+        $this->log('CSSI auth probe complete (auth-only mode).', [
             'run_id' => $runId,
-            'bytes' => $bytes,
-            'path' => $path,
-            'feed_url' => $this->truncate($feedUrl, 220),
-            'imported_rows' => (int) $count,
-            'new_live' => $newLive,
+            'items_ok' => $itemsOk ? 1 : 0,
+            'items_status' => (int) ($itemsRes['status'] ?? 0),
+            'product_feed_ok' => $feedOk ? 1 : 0,
+            'product_feed_status' => (int) ($feedRes['status'] ?? 0),
+            'product_feed_url_head' => $this->truncate($feedUrl, 220),
         ]);
 
         $this->finalize_run($tStart, $memStart, 'SUCCESS', [
             'run_id' => $runId,
-            'imported_rows' => (int) $count,
-            'bytes' => $bytes,
+            'auth_only_mode' => self::AUTH_ONLY_MODE ? 1 : 0,
+            'items_ok' => $itemsOk ? 1 : 0,
+            'feed_ok' => $feedOk ? 1 : 0,
         ]);
     }
 

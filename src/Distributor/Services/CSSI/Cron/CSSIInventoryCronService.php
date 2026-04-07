@@ -22,6 +22,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
 
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][CSSIInventoryCron]';
+    private const AUTH_ONLY_MODE = true;
     private const STAGE_TABLE_SUFFIX = 'fflhub_cssi_pq_stage';
     private const PER_PAGE = 50;
 
@@ -84,108 +85,58 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             return;
         }
 
+        $this->log('AUTH ONLY MODE enabled - skipping inventory apply and probing auth endpoint only.', [
+            'run_id' => $runId,
+            'auth_only_mode' => self::AUTH_ONLY_MODE ? 1 : 0,
+        ]);
+
         $client = new CSSIClient((string) $creds['sid'], (string) $creds['token']);
 
         $tFetch = microtime(true);
-        $fetch = $this->fetch_inventory_rows($client, $runId);
-        $this->profile('fetch inventory rows', $tFetch, [
-            'ok' => (bool) ($fetch['ok'] ?? false) ? 1 : 0,
-            'status' => (int) ($fetch['status'] ?? 0),
-            'error' => (string) ($fetch['error'] ?? ''),
-            'pages' => (int) ($fetch['pages'] ?? 0),
-            'row_count' => (int) ($fetch['row_count'] ?? 0),
-            'items_seen' => (int) ($fetch['items_seen'] ?? 0),
-            'rows_parsed' => (int) ($fetch['rows_parsed'] ?? 0),
-            'rows_no_key' => (int) ($fetch['rows_no_key'] ?? 0),
-            'parse_skipped' => (int) ($fetch['parse_skipped'] ?? 0),
-            'dedupe_replaced' => (int) ($fetch['dedupe_replaced'] ?? 0),
+        $probe = $client->get_items_page(1, 1);
+        $probeOk = (bool) ($probe['ok'] ?? false);
+        $items = is_array($probe['items'] ?? null) ? (array) $probe['items'] : [];
+        $pagination = is_array($probe['pagination'] ?? null) ? (array) $probe['pagination'] : [];
+        $this->profile('auth probe: GET /items', $tFetch, [
+            'ok' => $probeOk ? 1 : 0,
+            'status' => (int) ($probe['status'] ?? 0),
+            'error' => $probeOk ? '' : (string) ($probe['error'] ?? 'Unknown error'),
+            'items_count' => count($items),
+            'page' => (int) ($pagination['page'] ?? 0),
+            'page_count' => (int) ($pagination['page_count'] ?? 0),
         ]);
 
-        if (!(bool) ($fetch['ok'] ?? false)) {
+        if (!$probeOk) {
             update_option('fflhub_cssi_inventory_last_download_error', current_time('mysql'));
-            $this->log('ERROR: CSSI inventory fetch failed.', [
-                'status' => (int) ($fetch['status'] ?? 0),
-                'error' => (string) ($fetch['error'] ?? 'Unknown error'),
-                'page' => (int) ($fetch['page'] ?? 0),
-                'pages' => (int) ($fetch['pages'] ?? 0),
+            $this->log('ERROR: CSSI auth probe failed on GET /items.', [
+                'status' => (int) ($probe['status'] ?? 0),
+                'error' => (string) ($probe['error'] ?? 'Unknown error'),
+                'run_id' => $runId,
             ]);
-            $this->finalize_run($tStart, $memStart, 'ERROR (fetch)', ['run_id' => $runId]);
+            $this->finalize_run($tStart, $memStart, 'ERROR (auth probe)', ['run_id' => $runId]);
             return;
         }
-
-        $rows = is_array($fetch['rows'] ?? null) ? (array) $fetch['rows'] : [];
-        $downloadedCount = (int) ($fetch['row_count'] ?? count($rows));
 
         update_option('fflhub_cssi_inventory_last_download', current_time('mysql'));
         update_option('fflhub_cssi_inventory_last_download_ts', (string) time());
-        update_option('fflhub_cssi_inventory_last_download_count', $downloadedCount);
-        update_option('fflhub_cssi_inventory_last_download_pages', (int) ($fetch['pages'] ?? 0));
-        delete_option('fflhub_cssi_inventory_last_download_error');
-
-        if (empty($rows)) {
-            update_option('fflhub_cssi_inventory_last_update', current_time('mysql'));
-            update_option('fflhub_cssi_inventory_last_update_count', 0);
-            $this->log('CSSI inventory refresh completed with 0 rows.', [
-                'run_id' => $runId,
-                'items_seen' => (int) ($fetch['items_seen'] ?? 0),
-                'pages' => (int) ($fetch['pages'] ?? 0),
-            ]);
-            $this->finalize_run($tStart, $memStart, 'SUCCESS (0 rows)', ['run_id' => $runId]);
-            return;
-        }
-
-        $tApply = microtime(true);
-        try {
-            $stats = $this->apply_inventory_rows($rows);
-        } catch (\Throwable $e) {
-            update_option('fflhub_cssi_inventory_last_update_error', current_time('mysql'));
-            $this->profile('apply inventory rows (exception)', $tApply, [
-                'error' => $e->getMessage(),
-                'row_count' => count($rows),
-            ]);
-            $this->log('ERROR: CSSI inventory apply failed.', [
-                'error' => $e->getMessage(),
-            ]);
-            $this->finalize_run($tStart, $memStart, 'ERROR (apply)', ['run_id' => $runId]);
-            return;
-        }
-
-        $this->profile('apply inventory rows', $tApply, [
-            'processed_rows' => (int) ($stats['processed_rows'] ?? 0),
-            'rows_loaded' => (int) ($stats['rows_loaded'] ?? 0),
-            'join_updated_upc' => (int) ($stats['join_updated_upc'] ?? 0),
-            'join_updated_item' => (int) ($stats['join_updated_item'] ?? 0),
-            'inserted_new' => (int) ($stats['inserted_new'] ?? 0),
-            'stage_table' => (string) ($stats['stage_table'] ?? ''),
-            'create_ms' => (string) ($stats['create_ms'] ?? ''),
-            'truncate_ms' => (string) ($stats['truncate_ms'] ?? ''),
-            'stage_insert_ms' => (string) ($stats['stage_insert_ms'] ?? ''),
-            'join_upc_ms' => (string) ($stats['join_upc_ms'] ?? ''),
-            'join_item_ms' => (string) ($stats['join_item_ms'] ?? ''),
-            'insert_new_ms' => (string) ($stats['insert_new_ms'] ?? ''),
-            'total_sql_ms' => (string) ($stats['total_sql_ms'] ?? ''),
-        ]);
-
+        update_option('fflhub_cssi_inventory_last_download_count', count($items));
+        update_option('fflhub_cssi_inventory_last_download_pages', (int) ($pagination['page_count'] ?? 1));
         update_option('fflhub_cssi_inventory_last_update', current_time('mysql'));
-        update_option('fflhub_cssi_inventory_last_update_count', (int) ($stats['processed_rows'] ?? 0));
+        update_option('fflhub_cssi_inventory_last_update_count', 0);
+        delete_option('fflhub_cssi_inventory_last_download_error');
         delete_option('fflhub_cssi_inventory_last_update_error');
 
-        $this->log('CSSI inventory refresh complete.', [
+        $this->log('CSSI inventory auth probe complete (auth-only mode).', [
             'run_id' => $runId,
-            'processed_rows' => (int) ($stats['processed_rows'] ?? 0),
-            'rows_loaded' => (int) ($stats['rows_loaded'] ?? 0),
-            'join_updated_upc' => (int) ($stats['join_updated_upc'] ?? 0),
-            'join_updated_item' => (int) ($stats['join_updated_item'] ?? 0),
-            'inserted_new' => (int) ($stats['inserted_new'] ?? 0),
-            'stage_table' => (string) ($stats['stage_table'] ?? ''),
-            'insert_batches' => (int) ($stats['insert_batches'] ?? 0),
-            'insert_batch_failures' => (int) ($stats['insert_batch_failures'] ?? 0),
-            'insert_rows_skipped' => (int) ($stats['insert_rows_skipped'] ?? 0),
+            'items_ok' => $probeOk ? 1 : 0,
+            'status' => (int) ($probe['status'] ?? 0),
+            'items_count' => count($items),
         ]);
 
         $this->finalize_run($tStart, $memStart, 'SUCCESS', [
             'run_id' => $runId,
-            'processed_rows' => (int) ($stats['processed_rows'] ?? 0),
+            'auth_only_mode' => self::AUTH_ONLY_MODE ? 1 : 0,
+            'items_ok' => $probeOk ? 1 : 0,
         ]);
     }
 
