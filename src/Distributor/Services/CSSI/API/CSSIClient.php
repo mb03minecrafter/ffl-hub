@@ -16,6 +16,9 @@ final class CSSIClient
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][CSSIClient]';
     private const DEFAULT_BASE_URL = 'https://api.chattanoogashooting.com/rest/v5/';
+    private const TRANSPORT_MAX_ATTEMPTS = 3;
+    private const TRANSPORT_RETRY_BASE_MS = 400;
+    private const TRANSPORT_RETRY_MAX_MS = 2500;
 
     private string $sid;
     private string $token;
@@ -202,24 +205,58 @@ final class CSSIClient
         $args = [
             'timeout' => 180,
             'redirection' => 5,
+            'httpversion' => '1.1',
             'headers' => $this->build_headers('*/*'),
             'stream' => true,
             'filename' => $outputPath,
         ];
 
-        $resp = wp_remote_get($url, $args);
-        if (is_wp_error($resp)) {
-            $out = [
-                'ok' => false,
-                'status' => 0,
-                'error' => $resp->get_error_message(),
-            ];
+        $maxAttempts = self::TRANSPORT_MAX_ATTEMPTS;
+        $resp = null;
 
-            $this->profile('File download failed (wp_error)', $t0, [
-                'error' => (string) ($out['error'] ?? ''),
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $this->log('File download HTTP attempt', [
+                'attempt' => $attempt,
+                'max_attempts' => $maxAttempts,
+                'url_head' => $this->truncate($url, 220),
             ]);
 
-            return $out;
+            $resp = wp_remote_get($url, $args);
+            if (!is_wp_error($resp)) {
+                break;
+            }
+
+            $errorMessage = (string) $resp->get_error_message();
+            $retryable = $this->is_retryable_wp_error($resp);
+            $willRetry = $retryable && $attempt < $maxAttempts;
+
+            $this->profile('File download failed (wp_error)', $t0, [
+                'attempt' => $attempt,
+                'max_attempts' => $maxAttempts,
+                'retryable' => $retryable ? 1 : 0,
+                'will_retry' => $willRetry ? 1 : 0,
+                'error' => $errorMessage,
+            ]);
+
+            if (!$willRetry) {
+                return [
+                    'ok' => false,
+                    'status' => 0,
+                    'error' => $errorMessage,
+                ];
+            }
+
+            $this->sleep_before_retry($attempt, 'download_file', [
+                'url_head' => $this->truncate($url, 220),
+            ]);
+        }
+
+        if (!is_array($resp)) {
+            return [
+                'ok' => false,
+                'status' => 0,
+                'error' => 'Download failed without a valid HTTP response.',
+            ];
         }
 
         $status = (int) wp_remote_retrieve_response_code($resp);
@@ -311,6 +348,7 @@ final class CSSIClient
             'method' => $method,
             'timeout' => 90,
             'redirection' => 5,
+            'httpversion' => '1.1',
             'headers' => $this->build_headers(),
         ];
 
@@ -322,31 +360,64 @@ final class CSSIClient
 
         $callId = substr(sha1($method . '|' . $path . '|' . microtime(true) . '|' . mt_rand()), 0, 10);
 
-        $this->log('HTTP request', [
-            'call_id' => $callId,
-            'method' => $method,
-            'path' => $path,
-            'url' => $url,
-            'query_keys' => array_values(array_map('strval', array_keys($query))),
-            'body_keys' => is_array($body) ? array_values(array_map('strval', array_keys($body))) : [],
-            'sid_prefix' => $this->mask_sid($this->sid),
-        ]);
+        $maxAttempts = self::TRANSPORT_MAX_ATTEMPTS;
+        $resp = null;
 
-        $resp = wp_remote_request($url, $args);
-        if (is_wp_error($resp)) {
-            $out = [
-                'ok' => false,
-                'status' => 0,
-                'error' => $resp->get_error_message(),
-            ];
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $this->log('HTTP request', [
+                'call_id' => $callId,
+                'attempt' => $attempt,
+                'max_attempts' => $maxAttempts,
+                'method' => $method,
+                'path' => $path,
+                'url' => $url,
+                'query_keys' => array_values(array_map('strval', array_keys($query))),
+                'body_keys' => is_array($body) ? array_values(array_map('strval', array_keys($body))) : [],
+                'sid_prefix' => $this->mask_sid($this->sid),
+            ]);
+
+            $resp = wp_remote_request($url, $args);
+            if (!is_wp_error($resp)) {
+                break;
+            }
+
+            $errorMessage = (string) $resp->get_error_message();
+            $retryable = $this->is_retryable_wp_error($resp);
+            $willRetry = $retryable
+                && $attempt < $maxAttempts
+                && $this->method_allows_transport_retry($method);
 
             $this->profile('HTTP response wp_error', $t0, [
                 'call_id' => $callId,
                 'path' => $path,
-                'error' => (string) ($out['error'] ?? ''),
+                'attempt' => $attempt,
+                'max_attempts' => $maxAttempts,
+                'retryable' => $retryable ? 1 : 0,
+                'will_retry' => $willRetry ? 1 : 0,
+                'error' => $errorMessage,
             ]);
 
-            return $out;
+            if (!$willRetry) {
+                return [
+                    'ok' => false,
+                    'status' => 0,
+                    'error' => $errorMessage,
+                ];
+            }
+
+            $this->sleep_before_retry($attempt, 'request_json', [
+                'call_id' => $callId,
+                'path' => $path,
+                'method' => $method,
+            ]);
+        }
+
+        if (!is_array($resp)) {
+            return [
+                'ok' => false,
+                'status' => 0,
+                'error' => 'HTTP request failed without a valid response payload.',
+            ];
         }
 
         $status = (int) wp_remote_retrieve_response_code($resp);
@@ -464,6 +535,83 @@ final class CSSIClient
         return substr($value, 0, $max) . '...';
     }
 
+    private function method_allows_transport_retry(string $method): bool
+    {
+        return in_array(strtoupper(trim($method)), ['GET', 'HEAD', 'OPTIONS'], true);
+    }
+
+    /**
+     * @param mixed $error
+     */
+    private function is_retryable_wp_error($error): bool
+    {
+        if (!is_wp_error($error)) {
+            return false;
+        }
+
+        $code = strtolower(trim((string) $error->get_error_code()));
+        $message = strtolower(trim((string) $error->get_error_message()));
+
+        if (in_array($code, ['http_request_failed', 'http_request_timeout', 'requests_transport_internalerror'], true)) {
+            return true;
+        }
+
+        $needles = [
+            'timeout',
+            'timed out',
+            'operation timed out',
+            'could not resolve host',
+            'could not connect',
+            'failed to connect',
+            'connection refused',
+            'connection reset',
+            'network is unreachable',
+            'temporary failure',
+            'empty reply from server',
+            'recv failure',
+            'ssl_read',
+            'unexpected eof',
+            'http2 stream',
+            'errno 104',
+            'errno 110',
+            'errno 111',
+        ];
+
+        foreach ($needles as $needle) {
+            if (strpos($message, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function sleep_before_retry(int $attempt, string $operation, array $ctx = []): void
+    {
+        $exp = (int) (self::TRANSPORT_RETRY_BASE_MS * (2 ** max(0, $attempt - 1)));
+        $baseDelayMs = min(self::TRANSPORT_RETRY_MAX_MS, $exp);
+
+        $jitterMs = 0;
+        try {
+            $jitterMs = random_int(0, 150);
+        } catch (\Throwable $e) {
+            $jitterMs = 0;
+        }
+
+        $delayMs = $baseDelayMs + $jitterMs;
+        $ctx['attempt'] = $attempt;
+        $ctx['delay_ms'] = $delayMs;
+
+        $this->log('Retry backoff: ' . $operation, $ctx);
+
+        if ($delayMs > 0) {
+            usleep($delayMs * 1000);
+        }
+    }
+
     /**
      * @param array<string,mixed> $ctx
      */
@@ -482,7 +630,7 @@ final class CSSIClient
      */
     private function profile(string $label, float $t0, array $ctx = []): void
     {
-        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000, 2);
+        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000, 2, '.', '');
         $this->log('PROFILE: ' . $label, $ctx);
     }
 }
