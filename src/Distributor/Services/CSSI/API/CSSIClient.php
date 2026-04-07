@@ -16,11 +16,7 @@ final class CSSIClient
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][CSSIClient]';
     private const DEFAULT_BASE_URL = 'https://api.chattanoogashooting.com/rest/v5/';
-    private const AUTH_MODE_RFC_BASIC = 'rfc_basic';
     private const AUTH_MODE_LEGACY_RAW = 'legacy_raw';
-    private const TRANSPORT_MAX_ATTEMPTS = 3;
-    private const TRANSPORT_RETRY_BASE_MS = 400;
-    private const TRANSPORT_RETRY_MAX_MS = 2500;
 
     private string $sid;
     private string $token;
@@ -212,53 +208,36 @@ final class CSSIClient
             'stream' => true,
             'filename' => $outputPath,
         ];
+        $this->log('File download HTTP attempt', [
+            'attempt' => 1,
+            'max_attempts' => 1,
+            'auth_mode' => self::AUTH_MODE_LEGACY_RAW,
+            'url_head' => $this->truncate($url, 220),
+        ]);
 
-        $maxAttempts = self::TRANSPORT_MAX_ATTEMPTS;
-        $resp = null;
-
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $this->log('File download HTTP attempt', [
-                'attempt' => $attempt,
-                'max_attempts' => $maxAttempts,
-                'auth_mode' => self::AUTH_MODE_LEGACY_RAW,
-                'url_head' => $this->truncate($url, 220),
-            ]);
-
-            $resp = wp_remote_get($url, $args);
-            if (!is_wp_error($resp)) {
-                break;
-            }
-
+        $resp = wp_remote_get($url, $args);
+        if (is_wp_error($resp)) {
             $errorMessage = (string) $resp->get_error_message();
-            $retryable = $this->is_retryable_wp_error($resp);
-            $willRetry = $retryable && $attempt < $maxAttempts;
+            $errorCtx = $this->collect_wp_error_context($resp);
+            $probe = $this->curl_probe('GET', $url, $args['headers'], null);
 
             $this->profile('File download failed (wp_error)', $t0, [
-                'attempt' => $attempt,
-                'max_attempts' => $maxAttempts,
-                'retryable' => $retryable ? 1 : 0,
-                'will_retry' => $willRetry ? 1 : 0,
+                'attempt' => 1,
+                'max_attempts' => 1,
                 'error' => $errorMessage,
+                'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
+                'wp_error_data' => $errorCtx['data'] ?? null,
+                'env' => $this->request_environment($url),
+                'probe' => $probe,
             ]);
 
-            if (!$willRetry) {
-                return [
-                    'ok' => false,
-                    'status' => 0,
-                    'error' => $errorMessage,
-                ];
-            }
-
-            $this->sleep_before_retry($attempt, 'download_file', [
-                'url_head' => $this->truncate($url, 220),
-            ]);
-        }
-
-        if (!is_array($resp)) {
             return [
                 'ok' => false,
                 'status' => 0,
-                'error' => 'Download failed without a valid HTTP response.',
+                'error' => $errorMessage,
+                'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
+                'wp_error_data' => $errorCtx['data'] ?? null,
+                'probe' => $probe,
             ];
         }
 
@@ -360,80 +339,65 @@ final class CSSIClient
 
         $callId = substr(sha1($method . '|' . $path . '|' . microtime(true) . '|' . mt_rand()), 0, 10);
 
-        $maxAttempts = self::TRANSPORT_MAX_ATTEMPTS;
-        $resp = null;
+        $authMode = self::AUTH_MODE_LEGACY_RAW;
+        $attemptArgs = $args;
+        $attemptArgs['headers'] = $this->build_headers('application/json', $authMode);
+        if ($body !== null) {
+            $attemptArgs['headers']['Content-Type'] = 'application/json';
+            $attemptArgs['body'] = is_string($encodedBody) ? $encodedBody : '{}';
+        }
 
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $authMode = $this->auth_mode_for_attempt($attempt);
-            $attemptArgs = $args;
-            $attemptArgs['headers'] = $this->build_headers('application/json', $authMode);
-            if ($body !== null) {
-                $attemptArgs['headers']['Content-Type'] = 'application/json';
-                $attemptArgs['body'] = is_string($encodedBody) ? $encodedBody : '{}';
-            }
+        $this->log('HTTP request', [
+            'call_id' => $callId,
+            'attempt' => 1,
+            'max_attempts' => 1,
+            'auth_mode' => $authMode,
+            'method' => $method,
+            'path' => $path,
+            'url' => $url,
+            'query_keys' => array_values(array_map('strval', array_keys($query))),
+            'body_keys' => is_array($body) ? array_values(array_map('strval', array_keys($body))) : [],
+            'sid_prefix' => $this->mask_sid($this->sid),
+        ]);
 
-            $this->log('HTTP request', [
-                'call_id' => $callId,
-                'attempt' => $attempt,
-                'max_attempts' => $maxAttempts,
-                'auth_mode' => $authMode,
-                'method' => $method,
-                'path' => $path,
-                'url' => $url,
-                'query_keys' => array_values(array_map('strval', array_keys($query))),
-                'body_keys' => is_array($body) ? array_values(array_map('strval', array_keys($body))) : [],
-                'sid_prefix' => $this->mask_sid($this->sid),
-            ]);
-
-            $resp = wp_remote_request($url, $attemptArgs);
-            if (!is_wp_error($resp)) {
-                break;
-            }
-
+        $resp = wp_remote_request($url, $attemptArgs);
+        if (is_wp_error($resp)) {
             $errorMessage = (string) $resp->get_error_message();
-            $retryable = $this->is_retryable_wp_error($resp);
-            $willRetry = $retryable
-                && $attempt < $maxAttempts
-                && $this->method_allows_transport_retry($method);
+            $errorCtx = $this->collect_wp_error_context($resp);
+            $probe = $this->curl_probe(
+                $method,
+                $url,
+                is_array($attemptArgs['headers'] ?? null) ? (array) $attemptArgs['headers'] : [],
+                is_string($attemptArgs['body'] ?? null) ? (string) $attemptArgs['body'] : null
+            );
 
             $this->profile('HTTP response wp_error', $t0, [
                 'call_id' => $callId,
                 'path' => $path,
-                'attempt' => $attempt,
-                'max_attempts' => $maxAttempts,
+                'attempt' => 1,
+                'max_attempts' => 1,
                 'auth_mode' => $authMode,
-                'retryable' => $retryable ? 1 : 0,
-                'will_retry' => $willRetry ? 1 : 0,
                 'error' => $errorMessage,
+                'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
+                'wp_error_data' => $errorCtx['data'] ?? null,
+                'env' => $this->request_environment($url),
+                'probe' => $probe,
             ]);
 
-            if (!$willRetry) {
-                return [
-                    'ok' => false,
-                    'status' => 0,
-                    'error' => $errorMessage,
-                ];
-            }
-
-            $this->sleep_before_retry($attempt, 'request_json', [
-                'call_id' => $callId,
-                'path' => $path,
-                'method' => $method,
-                'auth_mode' => $authMode,
-            ]);
-        }
-
-        if (!is_array($resp)) {
             return [
                 'ok' => false,
                 'status' => 0,
-                'error' => 'HTTP request failed without a valid response payload.',
+                'error' => $errorMessage,
+                'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
+                'wp_error_data' => $errorCtx['data'] ?? null,
+                'probe' => $probe,
             ];
         }
 
         $status = (int) wp_remote_retrieve_response_code($resp);
         $rawBody = (string) wp_remote_retrieve_body($resp);
         $contentType = (string) wp_remote_retrieve_header($resp, 'content-type');
+        $headersArray = $this->response_headers_to_array(wp_remote_retrieve_headers($resp));
         $bodyBytes = strlen($rawBody);
 
         $decoded = json_decode($rawBody, true);
@@ -454,6 +418,7 @@ final class CSSIClient
                 'path' => $path,
                 'status' => $status,
                 'content_type' => $contentType,
+                'headers' => $headersArray,
                 'body_bytes' => $bodyBytes,
                 'json_error' => $jsonError,
                 'body_head' => $this->truncate($rawBody, 300),
@@ -478,9 +443,11 @@ final class CSSIClient
                 'path' => $path,
                 'status' => $status,
                 'content_type' => $contentType,
+                'headers' => $headersArray,
                 'body_bytes' => $bodyBytes,
                 'top_keys' => array_values(array_map('strval', $topKeys)),
                 'body_head' => $this->truncate($rawBody, 300),
+                'decoded_head' => $this->truncate((string) wp_json_encode($decoded), 1600),
             ]);
 
             return $out;
@@ -493,8 +460,10 @@ final class CSSIClient
             'path' => $path,
             'status' => $status,
             'content_type' => $contentType,
+            'headers' => $headersArray,
             'body_bytes' => $bodyBytes,
             'top_keys' => array_values(array_map('strval', $topKeys)),
+            'decoded_head' => $this->truncate((string) wp_json_encode($decoded), 1600),
         ]);
 
         return [
@@ -508,26 +477,17 @@ final class CSSIClient
     /**
      * @return array<string,string>
      */
-    private function build_headers(string $accept = 'application/json', string $authMode = self::AUTH_MODE_RFC_BASIC): array
+    private function build_headers(string $accept = 'application/json', string $authMode = self::AUTH_MODE_LEGACY_RAW): array
     {
         $sidToken = $this->sid . ':' . md5($this->token);
-        $authorization = 'Basic ' . base64_encode($sidToken);
-        if ($authMode === self::AUTH_MODE_LEGACY_RAW) {
-            $authorization = 'Basic ' . $sidToken;
-        }
+        $authorization = 'Basic ' . $sidToken;
 
         return [
-            // Docs show "Basic SID:md5(token)"; RFC Basic uses base64(sid:md5(token)).
-            // We prefer RFC mode and can retry once with legacy raw mode.
+            // CSSI docs specify this exact format: "Basic SID:md5(token)"
             'Authorization' => $authorization,
             'Accept' => $accept,
             'User-Agent' => 'FFLHub-CSSI/1.0',
         ];
-    }
-
-    private function auth_mode_for_attempt(int $attempt): string
-    {
-        return self::AUTH_MODE_LEGACY_RAW;
     }
 
     private function mask_sid(string $sid): string
@@ -558,81 +518,155 @@ final class CSSIClient
         return substr($value, 0, $max) . '...';
     }
 
-    private function method_allows_transport_retry(string $method): bool
+    /**
+     * @param mixed $headers
+     * @return array<string,mixed>
+     */
+    private function response_headers_to_array($headers): array
     {
-        return in_array(strtoupper(trim($method)), ['GET', 'HEAD', 'OPTIONS'], true);
+        if (is_array($headers)) {
+            return $headers;
+        }
+
+        if (is_object($headers) && method_exists($headers, 'getAll')) {
+            $all = $headers->getAll();
+            return is_array($all) ? $all : [];
+        }
+
+        return [];
     }
 
     /**
      * @param mixed $error
+     * @return array{code:string,message:string,data:mixed}
      */
-    private function is_retryable_wp_error($error): bool
+    private function collect_wp_error_context($error): array
     {
         if (!is_wp_error($error)) {
-            return false;
+            return [
+                'code' => '',
+                'message' => '',
+                'data' => null,
+            ];
         }
 
-        $code = strtolower(trim((string) $error->get_error_code()));
-        $message = strtolower(trim((string) $error->get_error_message()));
-
-        if (in_array($code, ['http_request_failed', 'http_request_timeout', 'requests_transport_internalerror'], true)) {
-            return true;
-        }
-
-        $needles = [
-            'timeout',
-            'timed out',
-            'operation timed out',
-            'could not resolve host',
-            'could not connect',
-            'failed to connect',
-            'connection refused',
-            'connection reset',
-            'network is unreachable',
-            'temporary failure',
-            'empty reply from server',
-            'recv failure',
-            'ssl_read',
-            'unexpected eof',
-            'http2 stream',
-            'errno 104',
-            'errno 110',
-            'errno 111',
+        return [
+            'code' => (string) $error->get_error_code(),
+            'message' => (string) $error->get_error_message(),
+            'data' => $error->get_error_data(),
         ];
-
-        foreach ($needles as $needle) {
-            if (strpos($message, $needle) !== false) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
-     * @param array<string,mixed> $ctx
+     * @return array<string,mixed>
      */
-    private function sleep_before_retry(int $attempt, string $operation, array $ctx = []): void
+    private function request_environment(string $url): array
     {
-        $exp = (int) (self::TRANSPORT_RETRY_BASE_MS * (2 ** max(0, $attempt - 1)));
-        $baseDelayMs = min(self::TRANSPORT_RETRY_MAX_MS, $exp);
-
-        $jitterMs = 0;
-        try {
-            $jitterMs = random_int(0, 150);
-        } catch (\Throwable $e) {
-            $jitterMs = 0;
+        $parts = wp_parse_url($url);
+        $host = is_array($parts) ? (string) ($parts['host'] ?? '') : '';
+        $resolved = '';
+        if ($host !== '' && function_exists('gethostbyname')) {
+            $resolved = (string) gethostbyname($host);
         }
 
-        $delayMs = $baseDelayMs + $jitterMs;
-        $ctx['attempt'] = $attempt;
-        $ctx['delay_ms'] = $delayMs;
-
-        $this->log('Retry backoff: ' . $operation, $ctx);
-
-        if ($delayMs > 0) {
-            usleep($delayMs * 1000);
+        $curlVersion = [];
+        if (function_exists('curl_version')) {
+            $cv = curl_version();
+            if (is_array($cv)) {
+                $curlVersion = [
+                    'version' => (string) ($cv['version'] ?? ''),
+                    'ssl_version' => (string) ($cv['ssl_version'] ?? ''),
+                    'libz_version' => (string) ($cv['libz_version'] ?? ''),
+                ];
+            }
         }
+
+        return [
+            'host' => $host,
+            'resolved_host' => $resolved,
+            'php_version' => PHP_VERSION,
+            'openssl' => defined('OPENSSL_VERSION_TEXT') ? (string) OPENSSL_VERSION_TEXT : '',
+            'curl' => $curlVersion,
+        ];
+    }
+
+    /**
+     * @param array<string,string> $headers
+     * @return array<string,mixed>
+     */
+    private function curl_probe(string $method, string $url, array $headers, ?string $body = null): array
+    {
+        if (!function_exists('curl_init')) {
+            return ['supported' => 0, 'reason' => 'curl_init unavailable'];
+        }
+
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return ['supported' => 0, 'reason' => 'curl_init failed'];
+        }
+
+        $stderr = fopen('php://temp', 'w+');
+        $headerLines = [];
+        foreach ($headers as $k => $v) {
+            if (strtolower((string) $k) === 'authorization') {
+                $headerLines[] = (string) $k . ': [redacted]';
+                continue;
+            }
+            $headerLines[] = (string) $k . ': ' . (string) $v;
+        }
+
+        $method = strtoupper(trim($method));
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HEADER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headerLines);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
+        curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
+        if (is_resource($stderr)) {
+            curl_setopt($ch, CURLOPT_VERBOSE, true);
+            curl_setopt($ch, CURLOPT_STDERR, $stderr);
+        }
+        if ($body !== null && $body !== '') {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+        }
+
+        $raw = curl_exec($ch);
+        $errno = (int) curl_errno($ch);
+        $error = (string) curl_error($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+        $primaryIp = (string) curl_getinfo($ch, CURLINFO_PRIMARY_IP);
+        $localIp = (string) curl_getinfo($ch, CURLINFO_LOCAL_IP);
+        $totalTime = (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME);
+        curl_close($ch);
+
+        $verbose = '';
+        if (is_resource($stderr)) {
+            rewind($stderr);
+            $verbose = (string) stream_get_contents($stderr);
+            fclose($stderr);
+        }
+
+        $rawString = is_string($raw) ? $raw : '';
+        $rawHeaders = $headerSize > 0 ? substr($rawString, 0, $headerSize) : '';
+        $rawBody = $headerSize > 0 ? substr($rawString, $headerSize) : $rawString;
+
+        return [
+            'supported' => 1,
+            'method' => $method,
+            'http_code' => $httpCode,
+            'errno' => $errno,
+            'error' => $error,
+            'primary_ip' => $primaryIp,
+            'local_ip' => $localIp,
+            'total_time_ms' => number_format($totalTime * 1000, 2, '.', ''),
+            'response_headers_head' => $this->truncate($rawHeaders, 1800),
+            'response_body_head' => $this->truncate($rawBody, 1800),
+            'verbose_head' => $this->truncate($verbose, 2200),
+        ];
     }
 
     /**
