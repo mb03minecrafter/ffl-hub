@@ -14,7 +14,13 @@ use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
 /**
- * Hourly CSSI full-catalog refresh using /items/product-feed.
+ * Minute worker for CSSI full catalog refresh.
+ *
+ * Flow:
+ * - After a successful import/swap, enforce a 24h cooldown.
+ * - When cooldown expires, request product-feed URL once and cache it.
+ * - On the next run(s), try downloading/importing from cached URL each minute
+ *   until success, then restart cooldown.
  */
 final class CSSIProductCronService extends AbstractTableCronService
 {
@@ -24,6 +30,11 @@ final class CSSIProductCronService extends AbstractTableCronService
     private const LOG_PREFIX = '[FFLHub][CSSIProductCron]';
     private const DOWNLOAD_DIR = 'fflhub-cssi';
     private const DOWNLOAD_FILE = 'cssi_product_feed.csv';
+    private const FEED_REFRESH_INTERVAL_SECONDS = DAY_IN_SECONDS;
+    private const OPT_LAST_SUCCESS_TS = 'fflhub_cssi_fulfillment_last_success_ts';
+    private const OPT_PENDING_FEED_URL = 'fflhub_cssi_fulfillment_pending_feed_url';
+    private const OPT_PENDING_FEED_URL_TS = 'fflhub_cssi_fulfillment_pending_feed_url_ts';
+    private const OPT_FEED_URL_RETRY_NOT_BEFORE_TS = 'fflhub_cssi_fulfillment_feed_url_retry_not_before_ts';
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -37,7 +48,7 @@ final class CSSIProductCronService extends AbstractTableCronService
 
     protected function get_interval_seconds(): int
     {
-        return HOUR_IN_SECONDS;
+        return MINUTE_IN_SECONDS;
     }
 
     public function get_action_group(): string
@@ -47,7 +58,7 @@ final class CSSIProductCronService extends AbstractTableCronService
 
     protected function get_initial_delay_seconds(): int
     {
-        return 5 * MINUTE_IN_SECONDS;
+        return MINUTE_IN_SECONDS;
     }
 
     public function run(): void
@@ -96,31 +107,120 @@ final class CSSIProductCronService extends AbstractTableCronService
         }
 
         $client = new CSSIClient((string) $creds['sid'], (string) $creds['token']);
+        $now = time();
 
-        $tFeed = microtime(true);
-        $feedRes = $client->get_product_feed_url([
-            'optional_columns' => 'specifications,retail_map',
-        ]);
-        $feedOk = (bool) ($feedRes['ok'] ?? false);
-        $feedUrl = trim((string) ($feedRes['url'] ?? ''));
-        $this->profile('fetch product-feed URL', $tFeed, [
-            'ok' => $feedOk ? 1 : 0,
-            'status' => (int) ($feedRes['status'] ?? 0),
-            'url_head' => $this->truncate($feedUrl, 220),
-            'error' => $feedOk ? '' : (string) ($feedRes['error'] ?? 'Unknown error'),
+        $lastSuccessTs = (int) get_option(self::OPT_LAST_SUCCESS_TS, 0);
+        $pendingFeedUrl = trim((string) get_option(self::OPT_PENDING_FEED_URL, ''));
+        $pendingFeedUrlTs = (int) get_option(self::OPT_PENDING_FEED_URL_TS, 0);
+
+        $this->profile('read feed state', microtime(true), [
+            'last_success_ts' => $lastSuccessTs > 0 ? $lastSuccessTs : null,
+            'pending_url_present' => $pendingFeedUrl !== '' ? 1 : 0,
+            'pending_url_age_sec' => ($pendingFeedUrlTs > 0) ? max(0, $now - $pendingFeedUrlTs) : null,
+            'refresh_interval_sec' => self::FEED_REFRESH_INTERVAL_SECONDS,
         ]);
 
-        if (!$feedOk || $feedUrl === '') {
-            update_option('fflhub_cssi_fulfillment_last_download_error', current_time('mysql'));
-            $this->log('ERROR: CSSI product-feed URL lookup failed.', [
+        if ($pendingFeedUrl !== '' && $pendingFeedUrlTs > 0 && ($now - $pendingFeedUrlTs) >= self::FEED_REFRESH_INTERVAL_SECONDS) {
+            $this->log('Pending product-feed URL exceeded 24h age; clearing and requesting a fresh URL.', [
+                'pending_url_age_sec' => (int) ($now - $pendingFeedUrlTs),
+                'pending_url_head' => $this->truncate($pendingFeedUrl, 220),
+            ]);
+            delete_option(self::OPT_PENDING_FEED_URL);
+            delete_option(self::OPT_PENDING_FEED_URL_TS);
+            $pendingFeedUrl = '';
+            $pendingFeedUrlTs = 0;
+        }
+
+        if ($lastSuccessTs > 0) {
+            $nextEligibleTs = $lastSuccessTs + self::FEED_REFRESH_INTERVAL_SECONDS;
+            if ($now < $nextEligibleTs) {
+                $remaining = (int) max(0, $nextEligibleTs - $now);
+                $this->log('Cooldown active after successful CSSI import; skipping URL request/download/import.', [
+                    'last_success_ts' => $lastSuccessTs,
+                    'next_eligible_ts' => $nextEligibleTs,
+                    'remaining_sec' => $remaining,
+                    'remaining_min' => (int) ceil($remaining / 60),
+                    'run_id' => $runId,
+                ]);
+                $this->finalize_run($tStart, $memStart, 'SUCCESS (cooldown)', [
+                    'run_id' => $runId,
+                    'remaining_sec' => $remaining,
+                ]);
+                return;
+            }
+        }
+
+        if ($pendingFeedUrl === '') {
+            $feedRetryNotBeforeTs = (int) get_option(self::OPT_FEED_URL_RETRY_NOT_BEFORE_TS, 0);
+            if ($feedRetryNotBeforeTs > 0 && $now < $feedRetryNotBeforeTs) {
+                $remaining = (int) max(0, $feedRetryNotBeforeTs - $now);
+                $this->log('CSSI product-feed URL request backoff active after prior rate-limit response; skipping request.', [
+                    'retry_not_before_ts' => $feedRetryNotBeforeTs,
+                    'remaining_sec' => $remaining,
+                    'remaining_min' => (int) ceil($remaining / 60),
+                    'run_id' => $runId,
+                ]);
+                $this->finalize_run($tStart, $memStart, 'SUCCESS (feed URL backoff)', [
+                    'run_id' => $runId,
+                    'remaining_sec' => $remaining,
+                ]);
+                return;
+            }
+
+            $tFeed = microtime(true);
+            $feedRes = $client->get_product_feed_url([
+                'optional_columns' => 'specifications,retail_map',
+            ]);
+            $feedOk = (bool) ($feedRes['ok'] ?? false);
+            $feedUrl = trim((string) ($feedRes['url'] ?? ''));
+            $this->profile('fetch product-feed URL', $tFeed, [
+                'ok' => $feedOk ? 1 : 0,
                 'status' => (int) ($feedRes['status'] ?? 0),
-                'error' => (string) ($feedRes['error'] ?? 'Unknown error'),
+                'url_head' => $this->truncate($feedUrl, 220),
+                'error' => $feedOk ? '' : (string) ($feedRes['error'] ?? 'Unknown error'),
+            ]);
+
+            if (!$feedOk || $feedUrl === '') {
+                update_option('fflhub_cssi_fulfillment_last_download_error', current_time('mysql'));
+                $feedStatus = (int) ($feedRes['status'] ?? 0);
+                $feedError = (string) ($feedRes['error'] ?? 'Unknown error');
+                if ($feedStatus === 429) {
+                    $waitSeconds = $this->extract_cssi_wait_seconds($feedError);
+                    $retryNotBeforeTs = $now + $waitSeconds;
+                    update_option(self::OPT_FEED_URL_RETRY_NOT_BEFORE_TS, $retryNotBeforeTs, false);
+                    $this->log('CSSI product-feed endpoint rate-limited; next URL request deferred.', [
+                        'wait_seconds' => $waitSeconds,
+                        'retry_not_before_ts' => $retryNotBeforeTs,
+                        'run_id' => $runId,
+                    ]);
+                }
+                $this->log('ERROR: CSSI product-feed URL lookup failed.', [
+                    'status' => $feedStatus,
+                    'error' => $feedError,
+                    'run_id' => $runId,
+                ]);
+                $this->finalize_run($tStart, $memStart, 'ERROR (feed URL)', ['run_id' => $runId]);
+                return;
+            }
+
+            delete_option(self::OPT_FEED_URL_RETRY_NOT_BEFORE_TS);
+            update_option(self::OPT_PENDING_FEED_URL, $feedUrl, false);
+            update_option(self::OPT_PENDING_FEED_URL_TS, $now, false);
+            update_option('fflhub_cssi_fulfillment_last_download_url', $feedUrl);
+            delete_option('fflhub_cssi_fulfillment_last_download_error');
+
+            $this->log('CSSI product-feed URL cached; download/import will begin on next cron run.', [
+                'run_id' => $runId,
+                'feed_url_head' => $this->truncate($feedUrl, 220),
+                'feed_url_cached_ts' => $now,
+            ]);
+            $this->finalize_run($tStart, $memStart, 'SUCCESS (URL cached)', [
                 'run_id' => $runId,
             ]);
-            $this->finalize_run($tStart, $memStart, 'ERROR (feed URL)', ['run_id' => $runId]);
             return;
         }
 
+        $feedUrl = $pendingFeedUrl;
         $tDownload = microtime(true);
         $downloadRes = $client->download_file($feedUrl, $outputPath);
         $downloadOk = (bool) ($downloadRes['ok'] ?? false);
@@ -130,6 +230,7 @@ final class CSSIProductCronService extends AbstractTableCronService
             'status' => (int) ($downloadRes['status'] ?? 0),
             'bytes' => $downloadBytes,
             'path' => $outputPath,
+            'feed_url_age_sec' => ($pendingFeedUrlTs > 0) ? max(0, $now - $pendingFeedUrlTs) : null,
             'error' => $downloadOk ? '' : (string) ($downloadRes['error'] ?? 'Unknown error'),
         ]);
 
@@ -139,6 +240,8 @@ final class CSSIProductCronService extends AbstractTableCronService
                 'status' => (int) ($downloadRes['status'] ?? 0),
                 'bytes' => $downloadBytes,
                 'path' => $outputPath,
+                'feed_url_head' => $this->truncate($feedUrl, 220),
+                'feed_url_age_sec' => ($pendingFeedUrlTs > 0) ? max(0, $now - $pendingFeedUrlTs) : null,
                 'error' => (string) ($downloadRes['error'] ?? 'Unknown error'),
                 'run_id' => $runId,
             ]);
@@ -201,24 +304,52 @@ final class CSSIProductCronService extends AbstractTableCronService
         update_option('fflhub_cssi_fulfillment_last_import', current_time('mysql'));
         update_option('fflhub_cssi_fulfillment_last_import_count', (int) $imported);
         update_option('fflhub_cssi_fulfillment_last_swap', current_time('mysql'));
+        update_option(self::OPT_LAST_SUCCESS_TS, $now, false);
+        delete_option(self::OPT_PENDING_FEED_URL);
+        delete_option(self::OPT_PENDING_FEED_URL_TS);
         delete_option('fflhub_cssi_fulfillment_last_import_error');
         delete_option('fflhub_cssi_fulfillment_last_swap_error');
 
         $this->log('CSSI full catalog refresh complete.', [
             'run_id' => $runId,
-            'product_feed_status' => (int) ($feedRes['status'] ?? 0),
             'product_feed_url_head' => $this->truncate($feedUrl, 220),
+            'pending_url_age_sec' => ($pendingFeedUrlTs > 0) ? max(0, $now - $pendingFeedUrlTs) : null,
             'download_bytes' => $downloadBytes,
             'imported_rows' => $imported,
+            'last_success_ts' => $now,
             'new_live' => $newLive,
         ]);
 
         $this->finalize_run($tStart, $memStart, 'SUCCESS', [
             'run_id' => $runId,
-            'feed_ok' => $feedOk ? 1 : 0,
             'download_bytes' => $downloadBytes,
             'imported_rows' => $imported,
+            'last_success_ts' => $now,
         ]);
+    }
+
+    private function extract_cssi_wait_seconds(string $error): int
+    {
+        $error = trim($error);
+        if ($error === '') {
+            return 15 * MINUTE_IN_SECONDS;
+        }
+
+        if (preg_match('/wait\s+(\d+)\s+minutes?/i', $error, $m) === 1) {
+            $minutes = (int) ($m[1] ?? 0);
+            if ($minutes > 0) {
+                return $minutes * MINUTE_IN_SECONDS;
+            }
+        }
+
+        if (preg_match('/wait\s+(\d+)\s+seconds?/i', $error, $m) === 1) {
+            $seconds = (int) ($m[1] ?? 0);
+            if ($seconds > 0) {
+                return $seconds;
+            }
+        }
+
+        return 15 * MINUTE_IN_SECONDS;
     }
 
     /**

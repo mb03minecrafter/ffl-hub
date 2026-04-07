@@ -35,7 +35,7 @@ class CSSIProductParser
      */
     public function has_required_columns(array $headerMap): bool
     {
-        $hasId = $this->first_index($headerMap, ['cssi_id', 'item_id', 'item number', 'item_number']) !== null;
+        $hasId = $this->first_index($headerMap, ['sku', 'cssi_id', 'item_id', 'item number', 'item_number']) !== null;
         $hasUpc = $this->first_index($headerMap, ['upc', 'upc_code', 'upc code']) !== null;
 
         return $hasId || $hasUpc;
@@ -52,16 +52,37 @@ class CSSIProductParser
             return null;
         }
 
-        $itemId = $this->get_csv($csv, $headerMap, ['cssi_id', 'item_id', 'item number', 'item_number', 'item_no']);
+        $itemId = $this->get_csv($csv, $headerMap, [
+            'sku',
+            'cssi_id',
+            'item_id',
+            'item number',
+            'item_number',
+            'item_no',
+        ]);
         $upc = $this->clean_upc($this->get_csv($csv, $headerMap, ['upc', 'upc_code', 'upc code']));
 
         if ($itemId === '' && $upc === '') {
             return null;
         }
 
-        $inventory = $this->to_int_string($this->get_csv($csv, $headerMap, ['inventory', 'quantity', 'qty', 'qty_available']));
+        $inventory = $this->to_int_string($this->get_csv($csv, $headerMap, [
+            'quantity in stock',
+            'inventory',
+            'quantity',
+            'qty',
+            'qty_available',
+        ]));
         $inStockFlag = $this->to_flag($this->get_csv($csv, $headerMap, ['in_stock_flag', 'in stock flag']));
-        $dropShipFlag = $this->to_flag($this->get_csv($csv, $headerMap, ['drop_ship_flag', 'drop ship flag']));
+        $dropShipFlag = $this->to_flag($this->get_csv($csv, $headerMap, [
+            'drop ship flag',
+            'drop_ship_flag',
+            'dropship flag',
+        ]));
+        $allocatedFlag = $this->to_flag($this->get_csv($csv, $headerMap, ['allocated item?', 'allocated_flag', 'allocated item']));
+        $allocationStatus = $allocatedFlag === '1'
+            ? 'allocated'
+            : $this->allocation_status($inventory, $inStockFlag);
 
         return [
             'upc' => $upc,
@@ -69,32 +90,36 @@ class CSSIProductParser
 
             'inventory_quantity' => $inventory,
             'in_stock_flag' => $inStockFlag,
-            'allocation_status' => $this->allocation_status($inventory, $inStockFlag),
-            'distributor_price' => $this->clean_money($this->get_csv($csv, $headerMap, ['custom_price', 'dealer_price', 'price'])),
-            'retail_map' => $this->clean_money($this->get_csv($csv, $headerMap, ['map_price', 'retail_map'])),
-            'retail_msrp' => $this->clean_money($this->get_csv($csv, $headerMap, ['retail_price', 'msrp', 'retail_msrp'])),
-            'drop_ship_price' => $this->clean_money($this->get_csv($csv, $headerMap, ['drop_ship_price', 'dropship_price'])),
+            'allocation_status' => $allocationStatus,
+            'distributor_price' => $this->clean_money($this->get_csv($csv, $headerMap, ['price', 'custom_price', 'dealer_price'])),
+            'retail_map' => $this->clean_money($this->get_csv($csv, $headerMap, ['retail map', 'map', 'map_price', 'retail_map'])),
+            'retail_msrp' => $this->clean_money($this->get_csv($csv, $headerMap, ['msrp', 'retail_price', 'retail_msrp'])),
+            'drop_ship_price' => $this->clean_money($this->get_csv($csv, $headerMap, ['drop ship price', 'drop_ship_price', 'dropship_price'])),
 
-            'product_name' => $this->get_csv($csv, $headerMap, ['name', 'product_name']),
-            'product_description' => $this->get_csv($csv, $headerMap, ['description', 'product_description']),
+            'product_name' => $this->get_csv($csv, $headerMap, ['web item name', 'item name', 'name', 'product_name']),
+            'product_description' => $this->get_csv($csv, $headerMap, ['web item description', 'description', 'product_description']),
             'manufacturer' => $this->get_csv($csv, $headerMap, ['manufacturer', 'brand']),
             'model' => $this->get_csv($csv, $headerMap, ['model', 'model_series']),
-            'mfg_model_number' => $this->get_csv($csv, $headerMap, ['manufacturer_model_no', 'mfg_model_number']),
+            'mfg_model_number' => $this->get_csv($csv, $headerMap, ['manufacturer item number', 'manufacturer_model_no', 'mfg_model_number']),
             'caliber_gauge' => $this->get_csv($csv, $headerMap, ['caliber', 'caliber_gauge']),
-            'item_type' => $this->get_csv($csv, $headerMap, ['item_type', 'type', 'category']),
+            'item_type' => $this->get_csv($csv, $headerMap, ['category', 'item_type', 'type']),
             'serialized_flag' => $this->to_flag($this->get_csv($csv, $headerMap, ['serialized_flag', 'serialized flag'])),
 
             'ffl_required' => $this->to_flag($this->get_csv($csv, $headerMap, ['ffl_flag', 'ffl_required', 'ffl flag'])),
             'sot_required' => $this->to_flag($this->get_csv($csv, $headerMap, ['sot_required', 'nfa_required'])),
             'dropship_enabled' => $dropShipFlag,
             'dropship_block_reason' => ($dropShipFlag === '1') ? '' : 'drop_ship_flag=0',
-            'drop_ship_delivery_options' => $this->get_csv($csv, $headerMap, ['available_drop_ship_delivery_options', 'drop_ship_delivery_options']),
+            'drop_ship_delivery_options' => $this->get_csv($csv, $headerMap, ['available drop ship delivery options', 'available_drop_ship_delivery_options', 'drop_ship_delivery_options']),
 
-            'shipping_weight' => $this->clean_decimal($this->get_csv($csv, $headerMap, ['shipping_weight', 'weight'])),
-            'shipping_length_in' => $this->get_csv($csv, $headerMap, ['shipping_length_in', 'length']),
-            'shipping_width_in' => $this->get_csv($csv, $headerMap, ['shipping_width_in', 'width']),
-            'shipping_height_in' => $this->get_csv($csv, $headerMap, ['shipping_height_in', 'height']),
+            'shipping_weight' => $this->clean_decimal($this->get_csv($csv, $headerMap, ['ship weight', 'shipping_weight', 'weight'])),
+            'shipping_length_in' => $this->get_csv($csv, $headerMap, ['length', 'shipping_length_in']),
+            'shipping_width_in' => $this->get_csv($csv, $headerMap, ['width', 'shipping_width_in']),
+            'shipping_height_in' => $this->get_csv($csv, $headerMap, ['height', 'shipping_height_in']),
             'last_seen_utc' => $this->get_csv($csv, $headerMap, ['qas_last_updated', 'qas_last_updated_after', 'last_updated_utc']),
+
+            // Present in CSSI CSV, currently not persisted in schema:
+            'image_location' => $this->get_csv($csv, $headerMap, ['image location', 'image_url']),
+            'specifications' => $this->get_csv($csv, $headerMap, ['specifications']),
         ];
     }
 
