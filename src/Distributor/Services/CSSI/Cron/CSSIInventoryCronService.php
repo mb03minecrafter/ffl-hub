@@ -24,6 +24,9 @@ final class CSSIInventoryCronService extends AbstractTableCronService
     private const LOG_PREFIX = '[FFLHub][CSSIInventoryCron]';
     private const STAGE_TABLE_SUFFIX = 'fflhub_cssi_pq_stage';
     private const PER_PAGE = 50;
+    private const MAX_PAGE_SAFETY = 2000;
+    private const CURSOR_OVERLAP_SECONDS = 120;
+    private const OPT_CURSOR_UTC = 'fflhub_cssi_inventory_cursor_utc';
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -55,6 +58,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $tStart = microtime(true);
         $memStart = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
         $runId = substr(sha1((string) microtime(true) . '|' . mt_rand()), 0, 10);
+        $forceUpdate = $this->should_force_update();
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
@@ -70,6 +74,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             'interval_seconds' => (int) $this->get_interval_seconds(),
             'group' => $this->get_action_group(),
             'per_page' => self::PER_PAGE,
+            'force_update' => $forceUpdate ? 1 : 0,
         ]);
 
         $tCreds = microtime(true);
@@ -85,18 +90,31 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         }
 
         $client = new CSSIClient((string) $creds['sid'], (string) $creds['token']);
+        $savedCursorUtc = trim((string) get_option(self::OPT_CURSOR_UTC, ''));
+        $activeCursorUtc = $forceUpdate ? '' : $savedCursorUtc;
+
+        $tCursor = microtime(true);
+        $this->profile('resolve inventory cursor', $tCursor, [
+            'saved_cursor_utc' => $savedCursorUtc !== '' ? $savedCursorUtc : null,
+            'active_cursor_utc' => $activeCursorUtc !== '' ? $activeCursorUtc : null,
+            'cursor_overlap_seconds' => self::CURSOR_OVERLAP_SECONDS,
+            'force_update' => $forceUpdate ? 1 : 0,
+        ]);
 
         $tFetch = microtime(true);
-        $fetchResult = $this->fetch_inventory_rows($client, $runId);
+        $fetchResult = $this->fetch_inventory_rows($client, $runId, $activeCursorUtc);
         $fetchOk = (bool) ($fetchResult['ok'] ?? false);
         $rows = is_array($fetchResult['rows'] ?? null) ? (array) $fetchResult['rows'] : [];
         $rowCount = (int) ($fetchResult['row_count'] ?? count($rows));
         $pages = (int) ($fetchResult['pages'] ?? 0);
         $itemsSeen = (int) ($fetchResult['items_seen'] ?? 0);
+        $maxUpdatedEpoch = (int) ($fetchResult['max_updated_epoch'] ?? 0);
+        $maxUpdatedUtc = $this->format_cursor_utc($maxUpdatedEpoch);
         $this->profile('fetch inventory pages', $tFetch, [
             'ok' => $fetchOk ? 1 : 0,
             'status' => (int) ($fetchResult['status'] ?? 200),
             'error' => $fetchOk ? '' : (string) ($fetchResult['error'] ?? 'Unknown error'),
+            'cursor_utc' => $activeCursorUtc !== '' ? $activeCursorUtc : null,
             'row_count' => $rowCount,
             'pages' => $pages,
             'items_seen' => $itemsSeen,
@@ -104,6 +122,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             'rows_no_key' => (int) ($fetchResult['rows_no_key'] ?? 0),
             'parse_skipped' => (int) ($fetchResult['parse_skipped'] ?? 0),
             'dedupe_replaced' => (int) ($fetchResult['dedupe_replaced'] ?? 0),
+            'max_updated_utc' => $maxUpdatedUtc !== '' ? $maxUpdatedUtc : null,
         ]);
 
         if (!$fetchOk) {
@@ -123,6 +142,30 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         update_option('fflhub_cssi_inventory_last_download_count', $rowCount);
         update_option('fflhub_cssi_inventory_last_download_pages', $pages);
         delete_option('fflhub_cssi_inventory_last_download_error');
+
+        if ($rowCount <= 0) {
+            update_option('fflhub_cssi_inventory_last_update', current_time('mysql'));
+            update_option('fflhub_cssi_inventory_last_update_count', 0);
+            delete_option('fflhub_cssi_inventory_last_update_error');
+
+            $this->log('CSSI inventory refresh complete (no changed rows).', [
+                'run_id' => $runId,
+                'cursor_utc' => $activeCursorUtc !== '' ? $activeCursorUtc : null,
+                'pages' => $pages,
+                'items_seen' => $itemsSeen,
+                'row_count' => $rowCount,
+                'max_updated_utc' => $maxUpdatedUtc !== '' ? $maxUpdatedUtc : null,
+            ]);
+
+            $this->finalize_run($tStart, $memStart, 'SUCCESS (no changes)', [
+                'run_id' => $runId,
+                'cursor_utc' => $activeCursorUtc !== '' ? $activeCursorUtc : null,
+                'pages' => $pages,
+                'items_seen' => $itemsSeen,
+                'row_count' => $rowCount,
+            ]);
+            return;
+        }
 
         $tApply = microtime(true);
         try {
@@ -146,12 +189,29 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         update_option('fflhub_cssi_inventory_last_update_count', $processedRows);
         delete_option('fflhub_cssi_inventory_last_update_error');
 
+        if ($maxUpdatedEpoch > 0) {
+            $cursorEpoch = max(0, $maxUpdatedEpoch - self::CURSOR_OVERLAP_SECONDS);
+            $nextCursorUtc = $this->format_cursor_utc($cursorEpoch);
+            if ($nextCursorUtc !== '') {
+                update_option(self::OPT_CURSOR_UTC, $nextCursorUtc, false);
+                $this->log('CSSI inventory cursor advanced.', [
+                    'run_id' => $runId,
+                    'previous_cursor_utc' => $savedCursorUtc !== '' ? $savedCursorUtc : null,
+                    'max_updated_utc' => $maxUpdatedUtc !== '' ? $maxUpdatedUtc : null,
+                    'cursor_overlap_seconds' => self::CURSOR_OVERLAP_SECONDS,
+                    'next_cursor_utc' => $nextCursorUtc,
+                ]);
+            }
+        }
+
         $this->log('CSSI inventory refresh complete.', [
             'run_id' => $runId,
+            'cursor_utc' => $activeCursorUtc !== '' ? $activeCursorUtc : null,
             'pages' => $pages,
             'items_seen' => $itemsSeen,
             'row_count' => $rowCount,
             'processed_rows' => $processedRows,
+            'max_updated_utc' => $maxUpdatedUtc !== '' ? $maxUpdatedUtc : null,
             'join_updated_upc' => (int) ($applyStats['join_updated_upc'] ?? 0),
             'join_updated_item' => (int) ($applyStats['join_updated_item'] ?? 0),
             'inserted_new' => (int) ($applyStats['inserted_new'] ?? 0),
@@ -159,38 +219,47 @@ final class CSSIInventoryCronService extends AbstractTableCronService
 
         $this->finalize_run($tStart, $memStart, 'SUCCESS', [
             'run_id' => $runId,
+            'cursor_utc' => $activeCursorUtc !== '' ? $activeCursorUtc : null,
             'pages' => $pages,
             'items_seen' => $itemsSeen,
             'row_count' => $rowCount,
             'processed_rows' => $processedRows,
+            'max_updated_utc' => $maxUpdatedUtc !== '' ? $maxUpdatedUtc : null,
         ]);
     }
 
     /**
      * @return array<string,mixed>
      */
-    private function fetch_inventory_rows(CSSIClient $client, string $runId): array
+    private function fetch_inventory_rows(CSSIClient $client, string $runId, string $cursorUtc = ''): array
     {
         $parser = new CSSIProductParser();
 
         $rowsByKey = [];
         $page = 1;
         $pagesSeen = 0;
+        $maxUpdatedEpoch = 0;
 
         $itemsSeen = 0;
         $rowsParsed = 0;
         $parseSkipped = 0;
         $rowsNoKey = 0;
         $dedupeReplaced = 0;
+        $query = [];
+        $cursorUtc = trim($cursorUtc);
+        if ($cursorUtc !== '') {
+            $query['qas_last_updated_after'] = $cursorUtc;
+        }
 
         while (true) {
             $tPage = microtime(true);
-            $res = $client->get_items_page($page, self::PER_PAGE);
+            $res = $client->get_items_page($page, self::PER_PAGE, $query);
 
             if (!(bool) ($res['ok'] ?? false)) {
                 $this->profile('fetch page failed', $tPage, [
                     'run_id' => $runId,
                     'page' => $page,
+                    'cursor_utc' => $cursorUtc !== '' ? $cursorUtc : null,
                     'status' => (int) ($res['status'] ?? 0),
                     'error' => (string) ($res['error'] ?? 'Failed to fetch CSSI items page.'),
                 ]);
@@ -206,6 +275,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                     'rows_no_key' => $rowsNoKey,
                     'parse_skipped' => $parseSkipped,
                     'dedupe_replaced' => $dedupeReplaced,
+                    'max_updated_epoch' => $maxUpdatedEpoch,
                 ];
             }
 
@@ -223,6 +293,11 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                     $pageSkipped++;
                     $parseSkipped++;
                     continue;
+                }
+
+                $updatedEpoch = $this->extract_item_updated_epoch($item);
+                if ($updatedEpoch > $maxUpdatedEpoch) {
+                    $maxUpdatedEpoch = $updatedEpoch;
                 }
 
                 $row = $parser->parse_api_item($item);
@@ -257,12 +332,14 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 'run_id' => $runId,
                 'page' => $page,
                 'page_count' => $pageCount,
+                'cursor_utc' => $cursorUtc !== '' ? $cursorUtc : null,
                 'raw_items' => count($items),
                 'parsed_rows' => $pageParsed,
                 'parse_skipped' => $pageSkipped,
                 'rows_no_key' => $pageNoKey,
                 'dedupe_replaced' => $pageDedupe,
                 'accumulated_unique_rows' => count($rowsByKey),
+                'max_updated_utc' => $this->format_cursor_utc($maxUpdatedEpoch),
             ]);
 
             if (empty($items) || $page >= $pageCount) {
@@ -270,12 +347,13 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             }
 
             $page++;
-            if ($page > 2000) {
+            if ($page > self::MAX_PAGE_SAFETY) {
                 $this->log('ERROR: Exceeded CSSI pagination safety limit.', [
                     'run_id' => $runId,
                     'page' => $page,
                     'pages_seen' => $pagesSeen,
                     'row_count' => count($rowsByKey),
+                    'cursor_utc' => $cursorUtc !== '' ? $cursorUtc : null,
                 ]);
 
                 return [
@@ -289,6 +367,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                     'rows_no_key' => $rowsNoKey,
                     'parse_skipped' => $parseSkipped,
                     'dedupe_replaced' => $dedupeReplaced,
+                    'max_updated_epoch' => $maxUpdatedEpoch,
                 ];
             }
         }
@@ -303,6 +382,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             'rows_no_key' => $rowsNoKey,
             'parse_skipped' => $parseSkipped,
             'dedupe_replaced' => $dedupeReplaced,
+            'max_updated_epoch' => $maxUpdatedEpoch,
         ];
     }
 
@@ -787,6 +867,62 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         }
 
         return '0';
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     */
+    private function extract_item_updated_epoch(array $item): int
+    {
+        foreach (['qas_last_updated_at', 'qas_last_updated_after', 'qas_last_updated', 'last_updated_utc'] as $key) {
+            if (!array_key_exists($key, $item)) {
+                continue;
+            }
+
+            $epoch = $this->parse_cssi_timestamp_to_epoch((string) $item[$key]);
+            if ($epoch > 0) {
+                return $epoch;
+            }
+        }
+
+        return 0;
+    }
+
+    private function parse_cssi_timestamp_to_epoch(string $value): int
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return 0;
+        }
+
+        $utc = new \DateTimeZone('UTC');
+        $formats = [
+            '!Y-m-d H:i:s.u',
+            '!Y-m-d H:i:s',
+            '!Y-m-d\TH:i:s.u\Z',
+            '!Y-m-d\TH:i:s\Z',
+            '!Y-m-d\TH:i:s.uP',
+            '!Y-m-d\TH:i:sP',
+        ];
+
+        foreach ($formats as $format) {
+            $dt = \DateTimeImmutable::createFromFormat($format, $value, $utc);
+            if ($dt instanceof \DateTimeImmutable) {
+                return (int) $dt->getTimestamp();
+            }
+        }
+
+        $epoch = strtotime($value);
+        return ($epoch === false) ? 0 : (int) $epoch;
+    }
+
+    private function format_cursor_utc(int $epoch): string
+    {
+        if ($epoch <= 0) {
+            return '';
+        }
+
+        return gmdate('Y-m-d\TH:i:s.000\Z', $epoch);
     }
 
     /**

@@ -171,7 +171,7 @@ class CSSIProductParser
             'shipping_length_in' => $this->get_array($item, ['shipping_length_in', 'length']),
             'shipping_width_in' => $this->get_array($item, ['shipping_width_in', 'width']),
             'shipping_height_in' => $this->get_array($item, ['shipping_height_in', 'height']),
-            'last_seen_utc' => $this->get_array($item, ['qas_last_updated_after', 'qas_last_updated', 'last_updated_utc']),
+            'last_seen_utc' => $this->get_array($item, ['qas_last_updated_at', 'qas_last_updated_after', 'qas_last_updated', 'last_updated_utc']),
         ];
     }
 
