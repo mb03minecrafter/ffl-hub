@@ -220,21 +220,25 @@ final class CSSIClient
             $errorMessage = (string) $resp->get_error_message();
             $errorCtx = $this->collect_wp_error_context($resp);
             $probe = $this->curl_probe('GET', $url, $args['headers'], null);
+            $probeStatus = (int) ($probe['http_code'] ?? 0);
+            $probeApiErr = $this->probe_api_error($probe);
+            $effectiveError = $probeApiErr !== '' ? $probeApiErr : $errorMessage;
 
             $this->profile('File download failed (wp_error)', $t0, [
                 'attempt' => 1,
                 'max_attempts' => 1,
-                'error' => $errorMessage,
+                'error' => $effectiveError,
                 'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
                 'wp_error_data' => $errorCtx['data'] ?? null,
+                'probe_http_code' => $probeStatus,
                 'env' => $this->request_environment($url),
                 'probe' => $probe,
             ]);
 
             return [
                 'ok' => false,
-                'status' => 0,
-                'error' => $errorMessage,
+                'status' => $probeStatus > 0 ? $probeStatus : 0,
+                'error' => $effectiveError,
                 'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
                 'wp_error_data' => $errorCtx['data'] ?? null,
                 'probe' => $probe,
@@ -370,6 +374,9 @@ final class CSSIClient
                 is_array($attemptArgs['headers'] ?? null) ? (array) $attemptArgs['headers'] : [],
                 is_string($attemptArgs['body'] ?? null) ? (string) $attemptArgs['body'] : null
             );
+            $probeStatus = (int) ($probe['http_code'] ?? 0);
+            $probeApiErr = $this->probe_api_error($probe);
+            $effectiveError = $probeApiErr !== '' ? $probeApiErr : $errorMessage;
 
             $this->profile('HTTP response wp_error', $t0, [
                 'call_id' => $callId,
@@ -377,17 +384,18 @@ final class CSSIClient
                 'attempt' => 1,
                 'max_attempts' => 1,
                 'auth_mode' => $authMode,
-                'error' => $errorMessage,
+                'error' => $effectiveError,
                 'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
                 'wp_error_data' => $errorCtx['data'] ?? null,
+                'probe_http_code' => $probeStatus,
                 'env' => $this->request_environment($url),
                 'probe' => $probe,
             ]);
 
             return [
                 'ok' => false,
-                'status' => 0,
-                'error' => $errorMessage,
+                'status' => $probeStatus > 0 ? $probeStatus : 0,
+                'error' => $effectiveError,
                 'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
                 'wp_error_data' => $errorCtx['data'] ?? null,
                 'probe' => $probe,
@@ -588,6 +596,39 @@ final class CSSIClient
             'openssl' => defined('OPENSSL_VERSION_TEXT') ? (string) OPENSSL_VERSION_TEXT : '',
             'curl' => $curlVersion,
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $probe
+     */
+    private function probe_api_error(array $probe): string
+    {
+        $status = (int) ($probe['http_code'] ?? 0);
+        $bodyHead = trim((string) ($probe['response_body_head'] ?? ''));
+        if ($bodyHead === '') {
+            return '';
+        }
+
+        $decoded = json_decode($bodyHead, true);
+        if (!is_array($decoded)) {
+            return '';
+        }
+
+        $message = trim((string) ($decoded['message'] ?? ''));
+        $errorCode = trim((string) ($decoded['error_code'] ?? ''));
+        if ($message === '' && $errorCode === '') {
+            return '';
+        }
+
+        if ($message !== '' && $errorCode !== '') {
+            return 'CSSI API ' . $status . ': ' . $message . ' (error_code=' . $errorCode . ')';
+        }
+
+        if ($message !== '') {
+            return 'CSSI API ' . $status . ': ' . $message;
+        }
+
+        return 'CSSI API ' . $status . ': error_code=' . $errorCode;
     }
 
     /**
