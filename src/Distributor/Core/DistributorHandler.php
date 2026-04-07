@@ -348,6 +348,25 @@ class DistributorHandler
             }
 
             if ($offer instanceof DistributorOffer) {
+                $non_dropship_blocked = Options::is_distributor_non_dropship_blocked((string) $id);
+                $offer_dropship_enabled = !empty($offer->product->dropship_enabled);
+
+                if ($non_dropship_blocked && !$offer_dropship_enabled) {
+                    DebugLogUtil::log_ctx(
+                        'FFLHUB_ADMIN_DEBUG',
+                        '[FFLHub][DistributorHandler]',
+                        'UPC lookup offer skipped by non-dropship policy',
+                        [
+                            'upc' => $upc,
+                            'dist_id' => (string) $id,
+                            'include_images' => $include_images ? 1 : 0,
+                            'non_dropship_blocked' => 1,
+                            'offer_dropship_enabled' => 0,
+                        ]
+                    );
+                    continue;
+                }
+
                 $offers[(string) $id] = $offer;
             }
         }

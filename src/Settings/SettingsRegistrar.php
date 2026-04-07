@@ -327,6 +327,18 @@ final class SettingsRegistrar
                 ]
             );
 
+            // Shared per-distributor toggle:
+            // if enabled, this distributor is treated as drop-ship only.
+            register_setting(
+                $group,
+                Options::distributor_non_dropship_blocked_option_name($dist_id),
+                [
+                    'type'              => 'string',
+                    'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                    'default'           => '0',
+                ]
+            );
+
             foreach ($fields as $key => $def) {
                 $key = (string) $key;
 

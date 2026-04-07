@@ -799,6 +799,8 @@ class AdminPage
         $credit_limit_option_name = Options::distributor_credit_limit_option_name($id);
         $credit_limit_default = (string) Options::default_distributor_credit_limit($id);
         $credit_limit_value = (string) Options::get_distributor_credit_limit($id, (float) $credit_limit_default);
+        $non_dropship_blocked_option_name = Options::distributor_non_dropship_blocked_option_name($id);
+        $non_dropship_blocked_enabled = Options::is_distributor_non_dropship_blocked($id);
 
     ?>
         <div class="fflhub-distributor-settings-wrapper">
@@ -870,6 +872,25 @@ class AdminPage
                                         )
                                     );
                                     ?>
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">
+                                <label for="<?php echo esc_attr($non_dropship_blocked_option_name); ?>">
+                                    <?php esc_html_e('Block Non-Drop-Ship Items', 'ffl-hub'); ?>
+                                </label>
+                            </th>
+                            <td>
+                                <input type="hidden" name="<?php echo esc_attr($non_dropship_blocked_option_name); ?>" value="0" />
+                                <input
+                                    type="checkbox"
+                                    id="<?php echo esc_attr($non_dropship_blocked_option_name); ?>"
+                                    name="<?php echo esc_attr($non_dropship_blocked_option_name); ?>"
+                                    value="1"
+                                    <?php checked($non_dropship_blocked_enabled); ?> />
+                                <p class="description">
+                                    <?php esc_html_e('When enabled, this distributor is treated as drop-ship only. Non-drop-ship offers are ignored for product creation and product sync source selection.', 'ffl-hub'); ?>
                                 </p>
                             </td>
                         </tr>

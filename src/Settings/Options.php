@@ -152,6 +152,17 @@ final class Options
         return self::distributor_option_name($distributor_id, 'credit_limit');
     }
 
+    /**
+     * Canonical option name for per-distributor non-drop-ship blocking.
+     *
+     * When enabled, this distributor is treated as drop-ship only in offer
+     * selection flows (non-dropship rows are ignored as viable offers).
+     */
+    public static function distributor_non_dropship_blocked_option_name(string $distributor_id): string
+    {
+        return self::distributor_option_name($distributor_id, 'non_dropship_blocked');
+    }
+
     /* -------------------------------------------------------------------------
      * Defaults (exposed for registrars / installers)
      * ---------------------------------------------------------------------- */
@@ -982,6 +993,24 @@ final class Options
         }
 
         return $default;
+    }
+
+    /**
+     * Whether a distributor is configured as drop-ship only.
+     *
+     * If true, non-drop-ship offers from that distributor should be ignored
+     * in product-creation/sync viability selection.
+     */
+    public static function is_distributor_non_dropship_blocked(string $distributor_id): bool
+    {
+        $id = strtolower(trim($distributor_id));
+        if ($id === '') {
+            return false;
+        }
+
+        $option_name = self::distributor_non_dropship_blocked_option_name($id);
+        $raw = (string) get_option($option_name, '0');
+        return $raw === '1';
     }
 
     /**
