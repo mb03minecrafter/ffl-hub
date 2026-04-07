@@ -149,6 +149,265 @@ final class CSSIClient
     }
 
     /**
+     * @param array<string,mixed> $query
+     * @return array<string,mixed>
+     */
+    public function get_orders(array $query = []): array
+    {
+        $t0 = microtime(true);
+
+        if (isset($query['page'])) {
+            $query['page'] = max(1, (int) $query['page']);
+        }
+        if (isset($query['per_page'])) {
+            $query['per_page'] = max(1, min(20, (int) $query['per_page']));
+        }
+
+        $this->log('Orders request start', [
+            'query_keys' => array_values(array_map('strval', array_keys($query))),
+        ]);
+
+        $res = $this->request_json('GET', 'orders', $query);
+        if (!(bool) ($res['ok'] ?? false)) {
+            $this->profile('Orders request failed', $t0, [
+                'status' => (int) ($res['status'] ?? 0),
+                'error' => (string) ($res['error'] ?? 'Unknown error'),
+            ]);
+            return $res;
+        }
+
+        $data = is_array($res['data'] ?? null) ? (array) $res['data'] : [];
+        $orders = isset($data['orders']) && is_array($data['orders']) ? (array) $data['orders'] : [];
+        $pagination = isset($data['pagination']) && is_array($data['pagination']) ? (array) $data['pagination'] : [];
+
+        $res['orders'] = $orders;
+        $res['pagination'] = [
+            'page' => (int) ($pagination['page'] ?? (int) ($query['page'] ?? 1)),
+            'per_page' => (int) ($pagination['per_page'] ?? (int) ($query['per_page'] ?? 10)),
+            'page_count' => (int) ($pagination['page_count'] ?? 1),
+        ];
+
+        $this->profile('Orders request complete', $t0, [
+            'status' => (int) ($res['status'] ?? 0),
+            'page' => (int) ($res['pagination']['page'] ?? 1),
+            'page_count' => (int) ($res['pagination']['page_count'] ?? 1),
+            'order_count' => count($orders),
+        ]);
+
+        return $res;
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>
+     */
+    public function create_order(array $payload): array
+    {
+        $t0 = microtime(true);
+
+        $this->log('Create order request start', [
+            'body_keys' => array_values(array_map('strval', array_keys($payload))),
+            'item_count' => isset($payload['order_items']) && is_array($payload['order_items']) ? count($payload['order_items']) : 0,
+            'drop_ship_flag' => (int) ((bool) ($payload['drop_ship_flag'] ?? false)),
+            'has_po' => trim((string) ($payload['purchase_order_number'] ?? '')) !== '' ? 1 : 0,
+        ]);
+
+        $res = $this->request_json('POST', 'orders', [], $payload);
+        if (!(bool) ($res['ok'] ?? false)) {
+            $this->profile('Create order request failed', $t0, [
+                'status' => (int) ($res['status'] ?? 0),
+                'error' => (string) ($res['error'] ?? 'Unknown error'),
+            ]);
+            return $res;
+        }
+
+        $data = is_array($res['data'] ?? null) ? (array) $res['data'] : [];
+        $orders = isset($data['orders']) && is_array($data['orders']) ? (array) $data['orders'] : [];
+        $res['orders'] = $orders;
+
+        $this->profile('Create order request complete', $t0, [
+            'status' => (int) ($res['status'] ?? 0),
+            'order_count' => count($orders),
+        ]);
+
+        return $res;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    public function get_order_shipments(int $orderNumber): array
+    {
+        $t0 = microtime(true);
+        $orderNumber = max(1, (int) $orderNumber);
+
+        $this->log('Order shipments request start', [
+            'order_number' => $orderNumber,
+        ]);
+
+        $res = $this->request_json('GET', 'orders/' . $orderNumber . '/shipments');
+        if (!(bool) ($res['ok'] ?? false)) {
+            $this->profile('Order shipments request failed', $t0, [
+                'order_number' => $orderNumber,
+                'status' => (int) ($res['status'] ?? 0),
+                'error' => (string) ($res['error'] ?? 'Unknown error'),
+            ]);
+            return $res;
+        }
+
+        $data = is_array($res['data'] ?? null) ? (array) $res['data'] : [];
+        $orderShipments = isset($data['order_shipments']) && is_array($data['order_shipments']) ? (array) $data['order_shipments'] : [];
+        $res['order_shipments'] = $orderShipments;
+
+        $shipmentCount = 0;
+        foreach ($orderShipments as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+            if (!isset($entry['shipments']) || !is_array($entry['shipments'])) {
+                continue;
+            }
+            $shipmentCount += count($entry['shipments']);
+        }
+
+        $this->profile('Order shipments request complete', $t0, [
+            'order_number' => $orderNumber,
+            'status' => (int) ($res['status'] ?? 0),
+            'order_groups' => count($orderShipments),
+            'shipment_count' => $shipmentCount,
+        ]);
+
+        return $res;
+    }
+
+    /**
+     * @param array<string,mixed> $query
+     * @return array<string,mixed>
+     */
+    public function get_shipments_by_purchase_order(array $query = []): array
+    {
+        $t0 = microtime(true);
+
+        if (isset($query['page'])) {
+            $query['page'] = max(1, (int) $query['page']);
+        }
+        if (isset($query['per_page'])) {
+            $query['per_page'] = max(1, min(25, (int) $query['per_page']));
+        }
+        if (isset($query['drop_ship_flag'])) {
+            $query['drop_ship_flag'] = ((int) ((bool) $query['drop_ship_flag'])) ? 1 : 0;
+        }
+        if (isset($query['only_return_unreceived_shipments'])) {
+            $query['only_return_unreceived_shipments'] = ((int) ((bool) $query['only_return_unreceived_shipments'])) ? 1 : 0;
+        }
+
+        $this->log('Shipments by PO request start', [
+            'query_keys' => array_values(array_map('strval', array_keys($query))),
+            'has_po_numbers' => trim((string) ($query['purchase_order_numbers'] ?? '')) !== '' ? 1 : 0,
+        ]);
+
+        $res = $this->request_json('GET', 'shipments/by-purchase-order', $query);
+        if (!(bool) ($res['ok'] ?? false)) {
+            $this->profile('Shipments by PO request failed', $t0, [
+                'status' => (int) ($res['status'] ?? 0),
+                'error' => (string) ($res['error'] ?? 'Unknown error'),
+            ]);
+            return $res;
+        }
+
+        $data = is_array($res['data'] ?? null) ? (array) $res['data'] : [];
+        $shipments = isset($data['shipments']) && is_array($data['shipments']) ? (array) $data['shipments'] : [];
+        $pagination = isset($data['pagination']) && is_array($data['pagination']) ? (array) $data['pagination'] : [];
+
+        $res['shipments'] = $shipments;
+        $res['pagination'] = [
+            'page' => (int) ($pagination['page'] ?? (int) ($query['page'] ?? 1)),
+            'per_page' => (int) ($pagination['per_page'] ?? (int) ($query['per_page'] ?? 10)),
+            'page_count' => (int) ($pagination['page_count'] ?? 1),
+        ];
+
+        $orderCount = 0;
+        $packageCount = 0;
+        foreach ($shipments as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $orders = isset($entry['orders']) && is_array($entry['orders']) ? (array) $entry['orders'] : [];
+            $orderCount += count($orders);
+
+            foreach ($orders as $order) {
+                if (!is_array($order)) {
+                    continue;
+                }
+
+                $packages = isset($order['packages']) && is_array($order['packages']) ? (array) $order['packages'] : [];
+                $packageCount += count($packages);
+            }
+        }
+
+        $this->profile('Shipments by PO request complete', $t0, [
+            'status' => (int) ($res['status'] ?? 0),
+            'page' => (int) ($res['pagination']['page'] ?? 1),
+            'page_count' => (int) ($res['pagination']['page_count'] ?? 1),
+            'shipment_groups' => count($shipments),
+            'order_count' => $orderCount,
+            'package_count' => $packageCount,
+        ]);
+
+        return $res;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    public function get_federal_firearms_license(string $fflNumber): array
+    {
+        $t0 = microtime(true);
+
+        $fflNumber = strtoupper(trim($fflNumber));
+        $fflNumber = preg_replace('/[^A-Z0-9]/', '', $fflNumber);
+        if (!is_string($fflNumber) || $fflNumber === '') {
+            $out = [
+                'ok' => false,
+                'status' => 0,
+                'error' => 'Missing FFL number for CSSI federal-firearms-licenses lookup.',
+            ];
+            $this->profile('FFL lookup blocked (missing ffl_number)', $t0, $out);
+            return $out;
+        }
+
+        $this->log('FFL lookup request start', [
+            'ffl_tail4' => (strlen($fflNumber) >= 4) ? substr($fflNumber, -4) : $fflNumber,
+        ]);
+
+        $path = 'federal-firearms-licenses/' . rawurlencode($fflNumber);
+        $res = $this->request_json('GET', $path);
+        if (!(bool) ($res['ok'] ?? false)) {
+            $this->profile('FFL lookup request failed', $t0, [
+                'status' => (int) ($res['status'] ?? 0),
+                'error' => (string) ($res['error'] ?? 'Unknown error'),
+            ]);
+            return $res;
+        }
+
+        $data = is_array($res['data'] ?? null) ? (array) $res['data'] : [];
+        $records = isset($data['federal_firearms_licenses']) && is_array($data['federal_firearms_licenses'])
+            ? (array) $data['federal_firearms_licenses']
+            : [];
+
+        $res['federal_firearms_licenses'] = $records;
+
+        $this->profile('FFL lookup request complete', $t0, [
+            'status' => (int) ($res['status'] ?? 0),
+            'record_count' => count($records),
+            'ffl_tail4' => (strlen($fflNumber) >= 4) ? substr($fflNumber, -4) : $fflNumber,
+        ]);
+
+        return $res;
+    }
+
+    /**
      * @return array<string,mixed>
      */
     public function download_file(string $url, string $outputPath): array
