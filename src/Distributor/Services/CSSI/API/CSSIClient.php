@@ -208,7 +208,7 @@ final class CSSIClient
             'timeout' => 180,
             'redirection' => 5,
             'httpversion' => '1.1',
-            'headers' => $this->build_headers('*/*', self::AUTH_MODE_RFC_BASIC),
+            'headers' => $this->build_headers('*/*', self::AUTH_MODE_LEGACY_RAW),
             'stream' => true,
             'filename' => $outputPath,
         ];
@@ -220,7 +220,7 @@ final class CSSIClient
             $this->log('File download HTTP attempt', [
                 'attempt' => $attempt,
                 'max_attempts' => $maxAttempts,
-                'auth_mode' => self::AUTH_MODE_RFC_BASIC,
+                'auth_mode' => self::AUTH_MODE_LEGACY_RAW,
                 'url_head' => $this->truncate($url, 220),
             ]);
 
@@ -527,11 +527,7 @@ final class CSSIClient
 
     private function auth_mode_for_attempt(int $attempt): string
     {
-        if ($attempt === 2) {
-            return self::AUTH_MODE_LEGACY_RAW;
-        }
-
-        return self::AUTH_MODE_RFC_BASIC;
+        return self::AUTH_MODE_LEGACY_RAW;
     }
 
     private function mask_sid(string $sid): string
