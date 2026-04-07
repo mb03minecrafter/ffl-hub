@@ -294,10 +294,7 @@ class DistributorProductHelper
         $product->set_name($name !== '' ? $name : ($sku !== '' ? $sku : $upc));
         $product->set_description($description);
 
-        $sku_to_use = ($sku !== '') ? $sku : $upc;
-        if ($sku_to_use !== '') {
-            $product->set_sku($sku_to_use);
-        }
+        self::assign_unique_sku_for_new_product($product, $sku, $upc);
 
         $prices = self::resolve_regular_and_sale_prices($recommended_price, $selected_product->msrp ?? null);
         $product->set_regular_price($prices['regular']);
@@ -311,6 +308,61 @@ class DistributorProductHelper
         $product->set_catalog_visibility('visible');
 
         return $product;
+    }
+
+    /**
+     * Assign a unique SKU for newly created products.
+     *
+     * Strategy:
+     * - Try distributor SKU first.
+     * - If already in use or rejected, fall back to UPC.
+     * - If both fail, leave Woo SKU empty (creation can still continue).
+     */
+    private static function assign_unique_sku_for_new_product(
+        WC_Product_Simple $product,
+        string $preferred_sku,
+        string $upc
+    ): void {
+        $preferred_sku = trim($preferred_sku);
+        $upc = trim($upc);
+
+        $candidates = [];
+        if ($preferred_sku !== '') {
+            $candidates[] = $preferred_sku;
+        }
+        if ($upc !== '' && !in_array($upc, $candidates, true)) {
+            $candidates[] = $upc;
+        }
+
+        foreach ($candidates as $candidate) {
+            $existing_id = (int) wc_get_product_id_by_sku($candidate);
+            if ($existing_id > 0) {
+                self::log_debug(sprintf(
+                    '[FFLHub][DistributorProductHelper] SKU candidate "%s" already in use by product #%d; trying next candidate.',
+                    $candidate,
+                    $existing_id
+                ));
+                continue;
+            }
+
+            try {
+                $product->set_sku($candidate);
+                return;
+            } catch (\WC_Data_Exception $e) {
+                self::log_debug(sprintf(
+                    '[FFLHub][DistributorProductHelper] SKU candidate "%s" rejected by Woo: %s',
+                    $candidate,
+                    $e->getMessage()
+                ));
+            }
+        }
+
+        if (!empty($candidates)) {
+            self::log_debug(sprintf(
+                '[FFLHub][DistributorProductHelper] No unique SKU candidate could be assigned (candidates=%s). Product will be created without Woo SKU.',
+                implode(', ', $candidates)
+            ));
+        }
     }
 
     /**
