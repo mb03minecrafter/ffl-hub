@@ -9,14 +9,16 @@ if (!defined('ABSPATH')) {
 use FFLHub\Util\DebugLogUtil;
 
 /**
- * Thin REST client for Chattanooga Shooting Supplies (CSSI) API.
+ * Chattanooga Shooting Supplies (CSSI) REST client.
+ *
+ * This intentionally uses the same auth/header shape as the known-good curl probe:
+ *   Authorization: Basic <SID>:<md5(token)>
  */
 final class CSSIClient
 {
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][CSSIClient]';
     private const DEFAULT_BASE_URL = 'https://api.chattanoogashooting.com/rest/v5/';
-    private const AUTH_MODE_LEGACY_RAW = 'legacy_raw';
 
     private string $sid;
     private string $token;
@@ -35,8 +37,7 @@ final class CSSIClient
     }
 
     /**
-     * Fetch one page from GET /items.
-     *
+     * @param array<string,mixed> $query
      * @return array<string,mixed>
      */
     public function get_items_page(int $page = 1, int $perPage = 50, array $query = []): array
@@ -45,7 +46,6 @@ final class CSSIClient
 
         $page = max(1, (int) $page);
         $perPage = max(1, min(50, (int) $perPage));
-
         $query = array_merge($query, [
             'page' => $page,
             'per_page' => $perPage,
@@ -79,18 +79,17 @@ final class CSSIClient
         ];
 
         $this->profile('Items page request complete', $t0, [
+            'status' => (int) ($res['status'] ?? 0),
             'page' => (int) ($res['pagination']['page'] ?? $page),
             'page_count' => (int) ($res['pagination']['page_count'] ?? 1),
             'item_count' => count($items),
-            'status' => (int) ($res['status'] ?? 0),
         ]);
 
         return $res;
     }
 
     /**
-     * Resolve product feed CSV URL from GET /items/product-feed.
-     *
+     * @param array<string,mixed> $query
      * @return array<string,mixed>
      */
     public function get_product_feed_url(array $query = []): array
@@ -127,6 +126,7 @@ final class CSSIClient
             $this->profile('Product-feed URL parse failed', $t0, [
                 'status' => (int) ($out['status'] ?? 0),
                 'error' => (string) ($out['error'] ?? ''),
+                'data_head' => $this->truncate((string) wp_json_encode($data), 1200),
             ]);
 
             return $out;
@@ -148,8 +148,6 @@ final class CSSIClient
     }
 
     /**
-     * Download a CSV file URL to local disk.
-     *
      * @return array<string,mixed>
      */
     public function download_file(string $url, string $outputPath): array
@@ -170,19 +168,13 @@ final class CSSIClient
                 'status' => 0,
                 'error' => 'download_file requires a URL and output path.',
             ];
-
-            $this->profile('File download failed (invalid args)', $t0, [
-                'error' => (string) ($out['error'] ?? ''),
-            ]);
-
+            $this->profile('File download failed (invalid args)', $t0, ['error' => (string) ($out['error'] ?? '')]);
             return $out;
         }
 
         $outputDir = dirname($outputPath);
         if (!is_dir($outputDir)) {
-            $made = function_exists('wp_mkdir_p')
-                ? (bool) wp_mkdir_p($outputDir)
-                : @mkdir($outputDir, 0775, true);
+            $made = function_exists('wp_mkdir_p') ? (bool) wp_mkdir_p($outputDir) : @mkdir($outputDir, 0775, true);
             if (!$made) {
                 $out = [
                     'ok' => false,
@@ -190,77 +182,80 @@ final class CSSIClient
                     'error' => 'Unable to create CSSI output directory.',
                     'output_dir' => $outputDir,
                 ];
-
                 $this->profile('File download failed (mkdir)', $t0, [
                     'output_dir' => $outputDir,
                     'error' => (string) ($out['error'] ?? ''),
                 ]);
-
                 return $out;
             }
         }
 
-        $args = [
-            'timeout' => 180,
-            'redirection' => 5,
-            'httpversion' => '1.1',
-            'headers' => $this->build_headers('*/*', self::AUTH_MODE_LEGACY_RAW),
-            'stream' => true,
-            'filename' => $outputPath,
-        ];
+        $tmpPath = $outputPath . '.part';
+        $fh = @fopen($tmpPath, 'wb');
+        if (!is_resource($fh)) {
+            $out = [
+                'ok' => false,
+                'status' => 0,
+                'error' => 'Unable to open temp output file for CSSI download.',
+                'tmp_path' => $tmpPath,
+            ];
+            $this->profile('File download failed (open temp)', $t0, $out);
+            return $out;
+        }
+
+        $headers = $this->build_headers('*/*');
+
         $this->log('File download HTTP attempt', [
             'attempt' => 1,
             'max_attempts' => 1,
-            'auth_mode' => self::AUTH_MODE_LEGACY_RAW,
+            'auth_mode' => 'legacy_raw',
             'url_head' => $this->truncate($url, 220),
+            'sid_prefix' => $this->mask_sid($this->sid),
         ]);
 
-        $resp = wp_remote_get($url, $args);
-        if (is_wp_error($resp)) {
-            $errorMessage = (string) $resp->get_error_message();
-            $errorCtx = $this->collect_wp_error_context($resp);
-            $probe = $this->curl_probe('GET', $url, $args['headers'], null);
-            $probeStatus = (int) ($probe['http_code'] ?? 0);
-            $probeApiErr = $this->probe_api_error($probe);
-            $effectiveError = $probeApiErr !== '' ? $probeApiErr : $errorMessage;
+        $exec = $this->execute_curl('GET', $url, $headers, null, $fh, 180);
+        fclose($fh);
 
-            $this->profile('File download failed (wp_error)', $t0, [
-                'attempt' => 1,
-                'max_attempts' => 1,
-                'error' => $effectiveError,
-                'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
-                'wp_error_data' => $errorCtx['data'] ?? null,
-                'probe_http_code' => $probeStatus,
-                'env' => $this->request_environment($url),
-                'probe' => $probe,
-            ]);
-
-            return [
+        if (!(bool) ($exec['transport_ok'] ?? false)) {
+            @unlink($tmpPath);
+            $out = [
                 'ok' => false,
-                'status' => $probeStatus > 0 ? $probeStatus : 0,
-                'error' => $effectiveError,
-                'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
-                'wp_error_data' => $errorCtx['data'] ?? null,
-                'probe' => $probe,
+                'status' => (int) ($exec['http_code'] ?? 0),
+                'error' => (string) ($exec['error'] ?? 'cURL transport failure.'),
+                'curl_errno' => (int) ($exec['errno'] ?? 0),
+                'curl_error' => (string) ($exec['error'] ?? ''),
+                'curl_info' => (array) ($exec['info'] ?? []),
             ];
+            $this->profile('File download failed (transport)', $t0, $out);
+            return $out;
         }
 
-        $status = (int) wp_remote_retrieve_response_code($resp);
-        $contentType = (string) wp_remote_retrieve_header($resp, 'content-type');
+        $status = (int) ($exec['http_code'] ?? 0);
+        $contentType = (string) ($exec['content_type'] ?? '');
 
         if ($status < 200 || $status >= 300) {
+            @unlink($tmpPath);
             $out = [
                 'ok' => false,
                 'status' => $status,
                 'error' => 'Unexpected HTTP status while downloading CSSI file.',
                 'content_type' => $contentType,
+                'headers' => (array) ($exec['headers'] ?? []),
             ];
+            $this->profile('File download failed (status)', $t0, $out);
+            return $out;
+        }
 
-            $this->profile('File download failed (status)', $t0, [
+        if (!@rename($tmpPath, $outputPath)) {
+            @unlink($tmpPath);
+            $out = [
+                'ok' => false,
                 'status' => $status,
-                'content_type' => $contentType,
-            ]);
-
+                'error' => 'Failed to finalize CSSI download file.',
+                'tmp_path' => $tmpPath,
+                'output_path' => $outputPath,
+            ];
+            $this->profile('File download failed (rename)', $t0, $out);
             return $out;
         }
 
@@ -272,13 +267,11 @@ final class CSSIClient
                 'error' => 'Downloaded CSSI file was empty or missing.',
                 'content_type' => $contentType,
             ];
-
             $this->profile('File download failed (empty)', $t0, [
                 'status' => $status,
                 'content_type' => $contentType,
                 'bytes' => $bytes,
             ]);
-
             return $out;
         }
 
@@ -314,11 +307,7 @@ final class CSSIClient
                 'status' => 0,
                 'error' => 'Missing CSSI SID/token credentials.',
             ];
-
-            $this->profile('JSON request blocked (missing creds)', $t0, [
-                'path' => $path,
-            ]);
-
+            $this->profile('JSON request blocked (missing creds)', $t0, ['path' => $path]);
             return $out;
         }
 
@@ -330,32 +319,23 @@ final class CSSIClient
             $url = add_query_arg($query, $url);
         }
 
-        $args = [
-            'method' => $method,
-            'timeout' => 90,
-            'redirection' => 5,
-            'httpversion' => '1.1',
-        ];
+        $headers = $this->build_headers('application/json');
         $encodedBody = null;
         if ($body !== null) {
+            $headers['Content-Type'] = 'application/json';
             $encodedBody = wp_json_encode($body);
+            if (!is_string($encodedBody)) {
+                $encodedBody = '{}';
+            }
         }
 
         $callId = substr(sha1($method . '|' . $path . '|' . microtime(true) . '|' . mt_rand()), 0, 10);
-
-        $authMode = self::AUTH_MODE_LEGACY_RAW;
-        $attemptArgs = $args;
-        $attemptArgs['headers'] = $this->build_headers('application/json', $authMode);
-        if ($body !== null) {
-            $attemptArgs['headers']['Content-Type'] = 'application/json';
-            $attemptArgs['body'] = is_string($encodedBody) ? $encodedBody : '{}';
-        }
 
         $this->log('HTTP request', [
             'call_id' => $callId,
             'attempt' => 1,
             'max_attempts' => 1,
-            'auth_mode' => $authMode,
+            'auth_mode' => 'legacy_raw',
             'method' => $method,
             'path' => $path,
             'url' => $url,
@@ -364,86 +344,67 @@ final class CSSIClient
             'sid_prefix' => $this->mask_sid($this->sid),
         ]);
 
-        $resp = wp_remote_request($url, $attemptArgs);
-        if (is_wp_error($resp)) {
-            $errorMessage = (string) $resp->get_error_message();
-            $errorCtx = $this->collect_wp_error_context($resp);
-            $probe = $this->curl_probe(
-                $method,
-                $url,
-                is_array($attemptArgs['headers'] ?? null) ? (array) $attemptArgs['headers'] : [],
-                is_string($attemptArgs['body'] ?? null) ? (string) $attemptArgs['body'] : null
-            );
-            $probeStatus = (int) ($probe['http_code'] ?? 0);
-            $probeApiErr = $this->probe_api_error($probe);
-            $effectiveError = $probeApiErr !== '' ? $probeApiErr : $errorMessage;
+        $exec = $this->execute_curl($method, $url, $headers, $encodedBody, null, 90);
 
-            $this->profile('HTTP response wp_error', $t0, [
-                'call_id' => $callId,
-                'path' => $path,
-                'attempt' => 1,
-                'max_attempts' => 1,
-                'auth_mode' => $authMode,
-                'error' => $effectiveError,
-                'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
-                'wp_error_data' => $errorCtx['data'] ?? null,
-                'probe_http_code' => $probeStatus,
-                'env' => $this->request_environment($url),
-                'probe' => $probe,
-            ]);
-
-            return [
-                'ok' => false,
-                'status' => $probeStatus > 0 ? $probeStatus : 0,
-                'error' => $effectiveError,
-                'wp_error_code' => (string) ($errorCtx['code'] ?? ''),
-                'wp_error_data' => $errorCtx['data'] ?? null,
-                'probe' => $probe,
-            ];
-        }
-
-        $status = (int) wp_remote_retrieve_response_code($resp);
-        $rawBody = (string) wp_remote_retrieve_body($resp);
-        $contentType = (string) wp_remote_retrieve_header($resp, 'content-type');
-        $headersArray = $this->response_headers_to_array(wp_remote_retrieve_headers($resp));
-        $bodyBytes = strlen($rawBody);
-
-        $decoded = json_decode($rawBody, true);
-        $jsonError = json_last_error() === JSON_ERROR_NONE ? '' : json_last_error_msg();
-
-        if (!is_array($decoded)) {
+        if (!(bool) ($exec['transport_ok'] ?? false)) {
             $out = [
                 'ok' => false,
-                'status' => $status,
-                'error' => 'Invalid JSON response from CSSI API.',
-                'raw_excerpt' => $this->truncate($rawBody, 700),
-                'content_type' => $contentType,
-                'json_error' => $jsonError,
+                'status' => (int) ($exec['http_code'] ?? 0),
+                'error' => 'cURL transport error: ' . (string) ($exec['error'] ?? 'unknown'),
+                'curl_errno' => (int) ($exec['errno'] ?? 0),
+                'curl_error' => (string) ($exec['error'] ?? ''),
+                'curl_info' => (array) ($exec['info'] ?? []),
+                'headers' => (array) ($exec['headers'] ?? []),
+                'raw_excerpt' => $this->truncate((string) ($exec['body'] ?? ''), 1200),
             ];
 
-            $this->profile('HTTP response invalid JSON', $t0, [
+            $this->profile('HTTP response transport failure', $t0, [
                 'call_id' => $callId,
                 'path' => $path,
-                'status' => $status,
-                'content_type' => $contentType,
-                'headers' => $headersArray,
-                'body_bytes' => $bodyBytes,
-                'json_error' => $jsonError,
-                'body_head' => $this->truncate($rawBody, 300),
+                'status' => (int) ($out['status'] ?? 0),
+                'error' => (string) ($out['error'] ?? ''),
+                'curl_errno' => (int) ($out['curl_errno'] ?? 0),
+                'headers' => (array) ($out['headers'] ?? []),
+                'raw_excerpt' => (string) ($out['raw_excerpt'] ?? ''),
             ]);
 
             return $out;
         }
 
+        $status = (int) ($exec['http_code'] ?? 0);
+        $contentType = (string) ($exec['content_type'] ?? '');
+        $rawBody = (string) ($exec['body'] ?? '');
+        $bodyBytes = strlen($rawBody);
+        $headersOut = (array) ($exec['headers'] ?? []);
+
+        $decoded = json_decode($rawBody, true);
+        $jsonError = json_last_error() === JSON_ERROR_NONE ? '' : json_last_error_msg();
+
         if ($status < 200 || $status >= 300) {
-            $topKeys = array_slice(array_keys($decoded), 0, 12);
+            $apiMessage = '';
+            $apiCode = '';
+            if (is_array($decoded)) {
+                $apiMessage = trim((string) ($decoded['message'] ?? ''));
+                $apiCode = trim((string) ($decoded['error_code'] ?? ''));
+            }
+
+            $error = 'CSSI API returned a non-success status.';
+            if ($apiMessage !== '' && $apiCode !== '') {
+                $error = 'CSSI API ' . $status . ': ' . $apiMessage . ' (error_code=' . $apiCode . ')';
+            } elseif ($apiMessage !== '') {
+                $error = 'CSSI API ' . $status . ': ' . $apiMessage;
+            } elseif ($apiCode !== '') {
+                $error = 'CSSI API ' . $status . ': error_code=' . $apiCode;
+            }
 
             $out = [
                 'ok' => false,
                 'status' => $status,
-                'error' => 'CSSI API returned a non-success status.',
-                'data' => $decoded,
+                'error' => $error,
+                'data' => is_array($decoded) ? $decoded : [],
                 'content_type' => $contentType,
+                'headers' => $headersOut,
+                'raw_excerpt' => $this->truncate($rawBody, 1200),
             ];
 
             $this->profile('HTTP response non-success', $t0, [
@@ -451,27 +412,49 @@ final class CSSIClient
                 'path' => $path,
                 'status' => $status,
                 'content_type' => $contentType,
-                'headers' => $headersArray,
+                'headers' => $headersOut,
                 'body_bytes' => $bodyBytes,
-                'top_keys' => array_values(array_map('strval', $topKeys)),
-                'body_head' => $this->truncate($rawBody, 300),
-                'decoded_head' => $this->truncate((string) wp_json_encode($decoded), 1600),
+                'error' => $error,
+                'raw_excerpt' => $this->truncate($rawBody, 400),
             ]);
 
             return $out;
         }
 
-        $topKeys = array_slice(array_keys($decoded), 0, 12);
+        if (!is_array($decoded)) {
+            $out = [
+                'ok' => false,
+                'status' => $status,
+                'error' => 'Invalid JSON response from CSSI API.',
+                'content_type' => $contentType,
+                'headers' => $headersOut,
+                'json_error' => $jsonError,
+                'raw_excerpt' => $this->truncate($rawBody, 1200),
+            ];
+
+            $this->profile('HTTP response invalid JSON', $t0, [
+                'call_id' => $callId,
+                'path' => $path,
+                'status' => $status,
+                'content_type' => $contentType,
+                'headers' => $headersOut,
+                'body_bytes' => $bodyBytes,
+                'json_error' => $jsonError,
+                'raw_excerpt' => $this->truncate($rawBody, 400),
+            ]);
+
+            return $out;
+        }
 
         $this->profile('HTTP response success', $t0, [
             'call_id' => $callId,
             'path' => $path,
             'status' => $status,
             'content_type' => $contentType,
-            'headers' => $headersArray,
+            'headers' => $headersOut,
             'body_bytes' => $bodyBytes,
-            'top_keys' => array_values(array_map('strval', $topKeys)),
-            'decoded_head' => $this->truncate((string) wp_json_encode($decoded), 1600),
+            'top_keys' => array_values(array_map('strval', array_slice(array_keys($decoded), 0, 12))),
+            'decoded_head' => $this->truncate((string) wp_json_encode($decoded), 1200),
         ]);
 
         return [
@@ -479,23 +462,182 @@ final class CSSIClient
             'status' => $status,
             'data' => $decoded,
             'content_type' => $contentType,
+            'headers' => $headersOut,
+        ];
+    }
+
+    /**
+     * @param array<string,string> $headers
+     * @return array<string,mixed>
+     */
+    private function execute_curl(string $method, string $url, array $headers, ?string $body = null, $streamHandle = null, int $timeout = 90): array
+    {
+        if (!function_exists('curl_init')) {
+            return [
+                'transport_ok' => false,
+                'errno' => -1,
+                'error' => 'cURL extension is not available.',
+                'http_code' => 0,
+                'content_type' => '',
+                'headers' => [],
+                'body' => '',
+                'info' => [],
+            ];
+        }
+
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return [
+                'transport_ok' => false,
+                'errno' => -2,
+                'error' => 'curl_init failed.',
+                'http_code' => 0,
+                'content_type' => '',
+                'headers' => [],
+                'body' => '',
+                'info' => [],
+            ];
+        }
+
+        $method = strtoupper(trim($method));
+        $isStream = is_resource($streamHandle);
+
+        $options = [
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_TIMEOUT => max(1, $timeout),
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 5,
+            CURLOPT_HTTPHEADER => $this->header_lines($headers),
+            CURLOPT_USERAGENT => 'FFLHub-CSSI/1.0',
+            CURLOPT_ENCODING => '',
+        ];
+
+        if ($isStream) {
+            $options[CURLOPT_FILE] = $streamHandle;
+            $options[CURLOPT_HEADER] = false;
+            $options[CURLOPT_RETURNTRANSFER] = false;
+        } else {
+            $options[CURLOPT_HEADER] = true;
+            $options[CURLOPT_RETURNTRANSFER] = true;
+        }
+
+        if ($body !== null) {
+            $options[CURLOPT_POSTFIELDS] = $body;
+        }
+
+        curl_setopt_array($ch, $options);
+
+        $raw = curl_exec($ch);
+        $errno = (int) curl_errno($ch);
+        $error = (string) curl_error($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+        $contentType = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+        $info = [
+            'http_code' => $httpCode,
+            'total_time_ms' => number_format(((float) curl_getinfo($ch, CURLINFO_TOTAL_TIME)) * 1000, 2, '.', ''),
+            'primary_ip' => (string) curl_getinfo($ch, CURLINFO_PRIMARY_IP),
+            'local_ip' => (string) curl_getinfo($ch, CURLINFO_LOCAL_IP),
+            'redirect_count' => (int) curl_getinfo($ch, CURLINFO_REDIRECT_COUNT),
+            'ssl_verify_result' => (int) curl_getinfo($ch, CURLINFO_SSL_VERIFYRESULT),
+        ];
+
+        curl_close($ch);
+
+        $headersRaw = '';
+        $bodyRaw = '';
+        if (!$isStream) {
+            $rawString = is_string($raw) ? $raw : '';
+            if ($headerSize > 0) {
+                $headersRaw = (string) substr($rawString, 0, $headerSize);
+                $bodyRaw = (string) substr($rawString, $headerSize);
+            } else {
+                $bodyRaw = $rawString;
+            }
+        }
+
+        $transportOk = ($raw !== false);
+        if ($isStream && $errno === 0) {
+            $transportOk = true;
+        }
+
+        return [
+            'transport_ok' => $transportOk,
+            'errno' => $errno,
+            'error' => $error,
+            'http_code' => $httpCode,
+            'content_type' => $contentType,
+            'headers' => $this->parse_headers($headersRaw),
+            'body' => $bodyRaw,
+            'info' => $info,
+        ];
+    }
+
+    /**
+     * @param array<string,string> $headers
+     * @return array<int,string>
+     */
+    private function header_lines(array $headers): array
+    {
+        $lines = [];
+        foreach ($headers as $k => $v) {
+            $lines[] = (string) $k . ': ' . (string) $v;
+        }
+
+        return $lines;
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function build_headers(string $accept = 'application/json'): array
+    {
+        $auth = 'Basic ' . $this->sid . ':' . md5($this->token);
+
+        return [
+            'Authorization' => $auth,
+            'Accept' => $accept,
+            'User-Agent' => 'FFLHub-CSSI/1.0',
         ];
     }
 
     /**
      * @return array<string,string>
      */
-    private function build_headers(string $accept = 'application/json', string $authMode = self::AUTH_MODE_LEGACY_RAW): array
+    private function parse_headers(string $headersRaw): array
     {
-        $sidToken = $this->sid . ':' . md5($this->token);
-        $authorization = 'Basic ' . $sidToken;
+        $headersRaw = trim($headersRaw);
+        if ($headersRaw === '') {
+            return [];
+        }
 
-        return [
-            // CSSI docs specify this exact format: "Basic SID:md5(token)"
-            'Authorization' => $authorization,
-            'Accept' => $accept,
-            'User-Agent' => 'FFLHub-CSSI/1.0',
-        ];
+        $parts = preg_split('/\r\n\r\n|\n\n|\r\r/', $headersRaw);
+        $last = (is_array($parts) && !empty($parts)) ? (string) end($parts) : $headersRaw;
+
+        $out = [];
+        $lines = preg_split('/\r\n|\n|\r/', $last);
+        if (!is_array($lines)) {
+            return $out;
+        }
+
+        foreach ($lines as $line) {
+            if (!is_string($line) || strpos($line, ':') === false) {
+                continue;
+            }
+
+            [$name, $value] = array_pad(explode(':', $line, 2), 2, '');
+            $name = strtolower(trim($name));
+            $value = trim($value);
+            if ($name === '') {
+                continue;
+            }
+
+            $out[$name] = $value;
+        }
+
+        return $out;
     }
 
     private function mask_sid(string $sid): string
@@ -524,190 +666,6 @@ final class CSSIClient
         }
 
         return substr($value, 0, $max) . '...';
-    }
-
-    /**
-     * @param mixed $headers
-     * @return array<string,mixed>
-     */
-    private function response_headers_to_array($headers): array
-    {
-        if (is_array($headers)) {
-            return $headers;
-        }
-
-        if (is_object($headers) && method_exists($headers, 'getAll')) {
-            $all = $headers->getAll();
-            return is_array($all) ? $all : [];
-        }
-
-        return [];
-    }
-
-    /**
-     * @param mixed $error
-     * @return array{code:string,message:string,data:mixed}
-     */
-    private function collect_wp_error_context($error): array
-    {
-        if (!is_wp_error($error)) {
-            return [
-                'code' => '',
-                'message' => '',
-                'data' => null,
-            ];
-        }
-
-        return [
-            'code' => (string) $error->get_error_code(),
-            'message' => (string) $error->get_error_message(),
-            'data' => $error->get_error_data(),
-        ];
-    }
-
-    /**
-     * @return array<string,mixed>
-     */
-    private function request_environment(string $url): array
-    {
-        $parts = wp_parse_url($url);
-        $host = is_array($parts) ? (string) ($parts['host'] ?? '') : '';
-        $resolved = '';
-        if ($host !== '' && function_exists('gethostbyname')) {
-            $resolved = (string) gethostbyname($host);
-        }
-
-        $curlVersion = [];
-        if (function_exists('curl_version')) {
-            $cv = curl_version();
-            if (is_array($cv)) {
-                $curlVersion = [
-                    'version' => (string) ($cv['version'] ?? ''),
-                    'ssl_version' => (string) ($cv['ssl_version'] ?? ''),
-                    'libz_version' => (string) ($cv['libz_version'] ?? ''),
-                ];
-            }
-        }
-
-        return [
-            'host' => $host,
-            'resolved_host' => $resolved,
-            'php_version' => PHP_VERSION,
-            'openssl' => defined('OPENSSL_VERSION_TEXT') ? (string) OPENSSL_VERSION_TEXT : '',
-            'curl' => $curlVersion,
-        ];
-    }
-
-    /**
-     * @param array<string,mixed> $probe
-     */
-    private function probe_api_error(array $probe): string
-    {
-        $status = (int) ($probe['http_code'] ?? 0);
-        $bodyHead = trim((string) ($probe['response_body_head'] ?? ''));
-        if ($bodyHead === '') {
-            return '';
-        }
-
-        $decoded = json_decode($bodyHead, true);
-        if (!is_array($decoded)) {
-            return '';
-        }
-
-        $message = trim((string) ($decoded['message'] ?? ''));
-        $errorCode = trim((string) ($decoded['error_code'] ?? ''));
-        if ($message === '' && $errorCode === '') {
-            return '';
-        }
-
-        if ($message !== '' && $errorCode !== '') {
-            return 'CSSI API ' . $status . ': ' . $message . ' (error_code=' . $errorCode . ')';
-        }
-
-        if ($message !== '') {
-            return 'CSSI API ' . $status . ': ' . $message;
-        }
-
-        return 'CSSI API ' . $status . ': error_code=' . $errorCode;
-    }
-
-    /**
-     * @param array<string,string> $headers
-     * @return array<string,mixed>
-     */
-    private function curl_probe(string $method, string $url, array $headers, ?string $body = null): array
-    {
-        if (!function_exists('curl_init')) {
-            return ['supported' => 0, 'reason' => 'curl_init unavailable'];
-        }
-
-        $ch = curl_init($url);
-        if ($ch === false) {
-            return ['supported' => 0, 'reason' => 'curl_init failed'];
-        }
-
-        $stderr = fopen('php://temp', 'w+');
-        $headerLines = [];
-        foreach ($headers as $k => $v) {
-            if (strtolower((string) $k) === 'authorization') {
-                $headerLines[] = (string) $k . ': [redacted]';
-                continue;
-            }
-            $headerLines[] = (string) $k . ': ' . (string) $v;
-        }
-
-        $method = strtoupper(trim($method));
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HEADER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headerLines);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
-        curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
-        if (is_resource($stderr)) {
-            curl_setopt($ch, CURLOPT_VERBOSE, true);
-            curl_setopt($ch, CURLOPT_STDERR, $stderr);
-        }
-        if ($body !== null && $body !== '') {
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-        }
-
-        $raw = curl_exec($ch);
-        $errno = (int) curl_errno($ch);
-        $error = (string) curl_error($ch);
-        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-        $primaryIp = (string) curl_getinfo($ch, CURLINFO_PRIMARY_IP);
-        $localIp = (string) curl_getinfo($ch, CURLINFO_LOCAL_IP);
-        $totalTime = (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME);
-        curl_close($ch);
-
-        $verbose = '';
-        if (is_resource($stderr)) {
-            rewind($stderr);
-            $verbose = (string) stream_get_contents($stderr);
-            fclose($stderr);
-        }
-
-        $rawString = is_string($raw) ? $raw : '';
-        $rawHeaders = $headerSize > 0 ? substr($rawString, 0, $headerSize) : '';
-        $rawBody = $headerSize > 0 ? substr($rawString, $headerSize) : $rawString;
-
-        return [
-            'supported' => 1,
-            'method' => $method,
-            'http_code' => $httpCode,
-            'errno' => $errno,
-            'error' => $error,
-            'primary_ip' => $primaryIp,
-            'local_ip' => $localIp,
-            'total_time_ms' => number_format($totalTime * 1000, 2, '.', ''),
-            'response_headers_head' => $this->truncate($rawHeaders, 1800),
-            'response_body_head' => $this->truncate($rawBody, 1800),
-            'verbose_head' => $this->truncate($verbose, 2200),
-        ];
     }
 
     /**

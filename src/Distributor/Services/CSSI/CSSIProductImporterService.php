@@ -11,6 +11,12 @@ if (!defined('ABSPATH')) {
 
 /**
  * Imports CSSI product-feed CSV rows into the staging table.
+ *
+ * Fast path:
+ * - CSV -> normalized TSV (schema column order) -> LOAD DATA LOCAL INFILE
+ *
+ * Fallback:
+ * - CSV parser + batched insert_rows_into_staging()
  */
 class CSSIProductImporterService
 {
@@ -46,9 +52,305 @@ class CSSIProductImporterService
             @set_time_limit(0);
         }
 
+        if ($this->can_use_load_data_local_infile()) {
+            $tLoadPath = microtime(true);
+            $rows = $this->import_from_csv_file_via_load_data($filePath);
+            $this->profile('load-data pipeline', $tLoadPath, [
+                'ok' => ($rows >= 0) ? 1 : 0,
+                'inserted_rows' => max(0, $rows),
+            ]);
+
+            if ($rows >= 0) {
+                $status = $rows > 0 ? 'SUCCESS (LOAD DATA)' : 'NO ROWS (LOAD DATA)';
+                $this->finalize($tStart, $memStart, $status, [
+                    'inserted_rows' => $rows,
+                ]);
+                return $rows;
+            }
+
+            $this->log('LOAD DATA path failed, falling back to PHP importer.', [
+                'file_path' => $filePath,
+            ]);
+        } else {
+            $this->log('LOAD DATA not available; using PHP importer.', []);
+        }
+
+        $tPhp = microtime(true);
+        $rows = $this->import_from_csv_file_via_php($filePath);
+        $this->profile('php importer pipeline', $tPhp, [
+            'inserted_rows' => $rows,
+        ]);
+
+        $status = $rows > 0 ? 'SUCCESS (PHP)' : 'NO ROWS (PHP)';
+        $this->finalize($tStart, $memStart, $status, [
+            'inserted_rows' => $rows,
+        ]);
+
+        return $rows;
+    }
+
+    private function can_use_load_data_local_infile(): bool
+    {
+        global $wpdb;
+
+        $row = $wpdb->get_row("SHOW VARIABLES LIKE 'local_infile'");
+        $mysqlOk = $row && isset($row->Value) && in_array(strtolower((string) $row->Value), ['on', '1', 'true'], true);
+
+        $mysqli = ini_get('mysqli.allow_local_infile');
+        $pdo = ini_get('pdo_mysql.allow_local_infile');
+
+        $phpOk = false;
+        if ($mysqli !== false && $this->ini_truthy((string) $mysqli)) {
+            $phpOk = true;
+        }
+        if ($pdo !== false && $this->ini_truthy((string) $pdo)) {
+            $phpOk = true;
+        }
+
+        $result = ($mysqlOk && $phpOk);
+
+        $this->log('PROFILE: LOAD DATA capability check', [
+            'mysql_ok' => $mysqlOk ? 'true' : 'false',
+            'php_ok' => $phpOk ? 'true' : 'false',
+            'result' => $result ? 'true' : 'false',
+        ]);
+
+        return $result;
+    }
+
+    /**
+     * @return int >= 0 inserted rows, -1 on failure
+     */
+    private function import_from_csv_file_via_load_data(string $filePath): int
+    {
+        $columns = $this->table->get_schema()->get_insert_columns();
+        if (empty($columns)) {
+            $this->log('LOAD DATA transform failed: schema insert columns empty.', []);
+            return -1;
+        }
+
+        $tTransform = microtime(true);
+        $transform = $this->transform_csv_to_normalized_tsv($filePath, $columns);
+        $this->profile('transform CSV -> normalized TSV', $tTransform, [
+            'ok' => (bool) ($transform['ok'] ?? false) ? 1 : 0,
+            'rows_seen' => (int) ($transform['rows_seen'] ?? 0),
+            'rows_written' => (int) ($transform['rows_written'] ?? 0),
+            'rows_skipped' => (int) ($transform['rows_skipped'] ?? 0),
+            'rows_missing_upc' => (int) ($transform['rows_missing_upc'] ?? 0),
+            'rows_dupe_upc' => (int) ($transform['rows_dupe_upc'] ?? 0),
+            'tsv_path' => (string) ($transform['tsv_path'] ?? ''),
+            'error' => (string) ($transform['error'] ?? ''),
+        ]);
+
+        if (!(bool) ($transform['ok'] ?? false)) {
+            return -1;
+        }
+
+        $tsvPath = (string) ($transform['tsv_path'] ?? '');
+        if ($tsvPath === '') {
+            $this->log('LOAD DATA transform failed: missing tsv_path.', []);
+            return -1;
+        }
+
+        $tLoad = microtime(true);
+        $rows = $this->import_normalized_tsv_via_load_data($tsvPath, $columns);
+        $this->profile('LOAD DATA normalized TSV', $tLoad, [
+            'ok' => ($rows >= 0) ? 1 : 0,
+            'rows_loaded' => max(0, $rows),
+            'tsv_path' => $tsvPath,
+        ]);
+
+        return $rows;
+    }
+
+    /**
+     * @param array<int,string> $columns
+     * @return array<string,mixed>
+     */
+    private function transform_csv_to_normalized_tsv(string $csvPath, array $columns): array
+    {
+        $csvHandle = fopen($csvPath, 'r');
+        if (!is_resource($csvHandle)) {
+            return [
+                'ok' => false,
+                'error' => 'Could not open CSV file.',
+            ];
+        }
+
+        $header = fgetcsv($csvHandle, 0, ',', '"', '\\');
+        if (!is_array($header) || empty($header)) {
+            fclose($csvHandle);
+            return [
+                'ok' => false,
+                'error' => 'Missing CSV header row.',
+            ];
+        }
+
+        $parser = new CSSIProductParser();
+        $headerMap = $parser->build_header_map($header);
+
+        if (!$parser->has_required_columns($headerMap)) {
+            fclose($csvHandle);
+            return [
+                'ok' => false,
+                'error' => 'CSV header missing required columns.',
+            ];
+        }
+
+        $tsvPath = $csvPath . '.normalized.tsv';
+        $tsvHandle = fopen($tsvPath, 'wb');
+        if (!is_resource($tsvHandle)) {
+            fclose($csvHandle);
+            return [
+                'ok' => false,
+                'error' => 'Could not open normalized TSV output file.',
+                'tsv_path' => $tsvPath,
+            ];
+        }
+
+        $rowsSeen = 0;
+        $rowsWritten = 0;
+        $rowsSkipped = 0;
+        $rowsMissingUpc = 0;
+        $rowsDupeUpc = 0;
+        $seenUpcs = [];
+
+        while (($csv = fgetcsv($csvHandle, 0, ',', '"', '\\')) !== false) {
+            $rowsSeen++;
+
+            $row = $parser->parse_csv_row($csv, $headerMap);
+            if (!is_array($row)) {
+                $rowsSkipped++;
+                continue;
+            }
+
+            $upc = trim((string) ($row['upc'] ?? ''));
+            if ($upc === '' || strtolower($upc) === 'null') {
+                $rowsMissingUpc++;
+                continue;
+            }
+
+            if (isset($seenUpcs[$upc])) {
+                $rowsDupeUpc++;
+                continue;
+            }
+            $seenUpcs[$upc] = true;
+
+            $ordered = [];
+            foreach ($columns as $column) {
+                $ordered[] = array_key_exists($column, $row) ? (string) $row[$column] : '';
+            }
+
+            $written = fputcsv($tsvHandle, $ordered, "\t", '"', '\\');
+            if ($written === false) {
+                fclose($csvHandle);
+                fclose($tsvHandle);
+                @unlink($tsvPath);
+                return [
+                    'ok' => false,
+                    'error' => 'Failed writing normalized TSV row.',
+                    'tsv_path' => $tsvPath,
+                    'rows_seen' => $rowsSeen,
+                    'rows_written' => $rowsWritten,
+                ];
+            }
+
+            $rowsWritten++;
+        }
+
+        fclose($csvHandle);
+        fclose($tsvHandle);
+
+        return [
+            'ok' => true,
+            'tsv_path' => $tsvPath,
+            'rows_seen' => $rowsSeen,
+            'rows_written' => $rowsWritten,
+            'rows_skipped' => $rowsSkipped,
+            'rows_missing_upc' => $rowsMissingUpc,
+            'rows_dupe_upc' => $rowsDupeUpc,
+        ];
+    }
+
+    /**
+     * @param array<int,string> $columns
+     * @return int >= 0 inserted rows, -1 on failure
+     */
+    private function import_normalized_tsv_via_load_data(string $tsvPath, array $columns): int
+    {
+        global $wpdb;
+
+        if (!file_exists($tsvPath) || !is_readable($tsvPath)) {
+            $this->log('LOAD DATA input TSV missing or unreadable.', [
+                'tsv_path' => $tsvPath,
+            ]);
+            return -1;
+        }
+
+        $tableName = $this->table->get_staging_table_name();
+        if ($tableName === '') {
+            $this->log('LOAD DATA failed: staging table name missing.', []);
+            return -1;
+        }
+
+        try {
+            $this->table->truncate_staging();
+        } catch (\Throwable $e) {
+            $this->log('LOAD DATA failed: truncate_staging exception.', [
+                'error' => $e->getMessage(),
+            ]);
+            return -1;
+        }
+
+        $columnList = implode(', ', array_map(static function (string $c): string {
+            return '`' . str_replace('`', '``', $c) . '`';
+        }, $columns));
+
+        $sql = "
+            LOAD DATA LOCAL INFILE %s
+            INTO TABLE {$tableName}
+            CHARACTER SET utf8mb4
+            FIELDS TERMINATED BY '\t'
+            OPTIONALLY ENCLOSED BY '\"'
+            ESCAPED BY '\\\\'
+            LINES TERMINATED BY '\n'
+            ({$columnList})
+        ";
+
+        try {
+            $prepared = $wpdb->prepare($sql, $tsvPath);
+            $result = $wpdb->query($prepared);
+            if ($result === false) {
+                $this->log('LOAD DATA query failed.', [
+                    'error' => (string) $wpdb->last_error,
+                ]);
+                return -1;
+            }
+
+            $wpdb->query(
+                "
+                DELETE FROM {$tableName}
+                WHERE
+                    upc IS NULL
+                    OR TRIM(upc) = ''
+                    OR LOWER(TRIM(upc)) = 'null'
+                "
+            ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        } catch (\Throwable $e) {
+            $this->log('LOAD DATA exception.', [
+                'error' => $e->getMessage(),
+            ]);
+            return -1;
+        }
+
+        return (int) $wpdb->get_var("SELECT COUNT(*) FROM {$tableName}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+    }
+
+    private function import_from_csv_file_via_php(string $filePath): int
+    {
         $handle = fopen($filePath, 'r');
-        if (!$handle) {
-            $this->finalize($tStart, $memStart, 'ERROR (fopen failed)', [
+        if (!is_resource($handle)) {
+            $this->log('PHP importer: fopen failed.', [
                 'file_path' => $filePath,
             ]);
             return 0;
@@ -57,43 +359,33 @@ class CSSIProductImporterService
         $header = fgetcsv($handle, 0, ',', '"', '\\');
         if (!is_array($header) || empty($header)) {
             fclose($handle);
-            $this->finalize($tStart, $memStart, 'ERROR (missing header)', []);
+            $this->log('PHP importer: missing header.', [
+                'file_path' => $filePath,
+            ]);
             return 0;
         }
 
         $parser = new CSSIProductParser();
         $headerMap = $parser->build_header_map($header);
 
-        $this->log('Header parsed', [
-            'header_column_count' => count($header),
-            'normalized_key_count' => count($headerMap),
-            'header_sample' => array_slice(array_values(array_map('strval', $header)), 0, 12),
-        ]);
-
         if (!$parser->has_required_columns($headerMap)) {
             fclose($handle);
-            $this->finalize($tStart, $memStart, 'ERROR (required columns missing)', [
-                'required_hint' => 'Expected at least cssi_id/item_id or upc/upc_code style headers',
-            ]);
+            $this->log('PHP importer: required columns missing.', []);
             return 0;
         }
 
-        $tTruncate = microtime(true);
         try {
             $this->table->truncate_staging();
         } catch (\Throwable $e) {
             fclose($handle);
-            $this->profile('truncate_staging failed', $tTruncate, ['error' => $e->getMessage()]);
-            $this->finalize($tStart, $memStart, 'ERROR (truncate failed)', [
+            $this->log('PHP importer: truncate_staging failed.', [
                 'error' => $e->getMessage(),
             ]);
             return 0;
         }
-        $this->profile('truncate_staging', $tTruncate);
 
         $batchSize = 1000;
         $batchRows = [];
-
         $totalInserted = 0;
         $rowsSeen = 0;
         $rowsSkipped = 0;
@@ -102,7 +394,6 @@ class CSSIProductImporterService
         $batchFlushes = 0;
         $batchFailures = 0;
         $seenUpcs = [];
-
         $tParseTotal = 0.0;
         $tInsertTotal = 0.0;
 
@@ -119,7 +410,7 @@ class CSSIProductImporterService
                 $totalInserted += $inserted;
             } catch (\Throwable $e) {
                 $batchFailures++;
-                $this->log('Batch insert failed', [
+                $this->log('Batch insert failed.', [
                     'batch_size' => count($batchRows),
                     'error' => $e->getMessage(),
                 ]);
@@ -136,13 +427,13 @@ class CSSIProductImporterService
             $row = $parser->parse_csv_row($csv, $headerMap);
             $tParseTotal += (microtime(true) - $tParse);
 
-            if ($row === null) {
+            if (!is_array($row)) {
                 $rowsSkipped++;
                 continue;
             }
 
             $upc = trim((string) ($row['upc'] ?? ''));
-            if ($upc === '') {
+            if ($upc === '' || strtolower($upc) === 'null') {
                 $rowsMissingUpc++;
                 continue;
             }
@@ -154,7 +445,6 @@ class CSSIProductImporterService
             $seenUpcs[$upc] = true;
 
             $batchRows[] = $row;
-
             if (count($batchRows) >= $batchSize) {
                 $flushBatch();
             }
@@ -166,7 +456,7 @@ class CSSIProductImporterService
             $flushBatch();
         }
 
-        $this->log('Import stats', [
+        $this->log('PHP importer stats', [
             'rows_seen' => $rowsSeen,
             'inserted_rows' => $totalInserted,
             'rows_skipped' => $rowsSkipped,
@@ -178,13 +468,13 @@ class CSSIProductImporterService
             'insert_total_ms' => number_format($tInsertTotal * 1000, 2, '.', ''),
         ]);
 
-        $status = $totalInserted > 0 ? 'SUCCESS' : 'NO ROWS';
-        $this->finalize($tStart, $memStart, $status, [
-            'inserted_rows' => $totalInserted,
-            'rows_seen' => $rowsSeen,
-        ]);
-
         return (int) $totalInserted;
+    }
+
+    private function ini_truthy(string $value): bool
+    {
+        $value = strtolower(trim($value));
+        return in_array($value, ['1', 'on', 'true', 'yes'], true);
     }
 
     /**

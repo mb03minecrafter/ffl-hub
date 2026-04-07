@@ -22,7 +22,6 @@ final class CSSIInventoryCronService extends AbstractTableCronService
 
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][CSSIInventoryCron]';
-    private const AUTH_ONLY_MODE = true;
     private const STAGE_TABLE_SUFFIX = 'fflhub_cssi_pq_stage';
     private const PER_PAGE = 50;
 
@@ -85,58 +84,85 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             return;
         }
 
-        $this->log('AUTH ONLY MODE enabled - skipping inventory apply and probing auth endpoint only.', [
-            'run_id' => $runId,
-            'auth_only_mode' => self::AUTH_ONLY_MODE ? 1 : 0,
-        ]);
-
         $client = new CSSIClient((string) $creds['sid'], (string) $creds['token']);
 
         $tFetch = microtime(true);
-        $probe = $client->get_items_page(1, 1);
-        $probeOk = (bool) ($probe['ok'] ?? false);
-        $items = is_array($probe['items'] ?? null) ? (array) $probe['items'] : [];
-        $pagination = is_array($probe['pagination'] ?? null) ? (array) $probe['pagination'] : [];
-        $this->profile('auth probe: GET /items', $tFetch, [
-            'ok' => $probeOk ? 1 : 0,
-            'status' => (int) ($probe['status'] ?? 0),
-            'error' => $probeOk ? '' : (string) ($probe['error'] ?? 'Unknown error'),
-            'items_count' => count($items),
-            'page' => (int) ($pagination['page'] ?? 0),
-            'page_count' => (int) ($pagination['page_count'] ?? 0),
+        $fetchResult = $this->fetch_inventory_rows($client, $runId);
+        $fetchOk = (bool) ($fetchResult['ok'] ?? false);
+        $rows = is_array($fetchResult['rows'] ?? null) ? (array) $fetchResult['rows'] : [];
+        $rowCount = (int) ($fetchResult['row_count'] ?? count($rows));
+        $pages = (int) ($fetchResult['pages'] ?? 0);
+        $itemsSeen = (int) ($fetchResult['items_seen'] ?? 0);
+        $this->profile('fetch inventory pages', $tFetch, [
+            'ok' => $fetchOk ? 1 : 0,
+            'status' => (int) ($fetchResult['status'] ?? 200),
+            'error' => $fetchOk ? '' : (string) ($fetchResult['error'] ?? 'Unknown error'),
+            'row_count' => $rowCount,
+            'pages' => $pages,
+            'items_seen' => $itemsSeen,
+            'rows_parsed' => (int) ($fetchResult['rows_parsed'] ?? 0),
+            'rows_no_key' => (int) ($fetchResult['rows_no_key'] ?? 0),
+            'parse_skipped' => (int) ($fetchResult['parse_skipped'] ?? 0),
+            'dedupe_replaced' => (int) ($fetchResult['dedupe_replaced'] ?? 0),
         ]);
 
-        if (!$probeOk) {
+        if (!$fetchOk) {
             update_option('fflhub_cssi_inventory_last_download_error', current_time('mysql'));
-            $this->log('ERROR: CSSI auth probe failed on GET /items.', [
-                'status' => (int) ($probe['status'] ?? 0),
-                'error' => (string) ($probe['error'] ?? 'Unknown error'),
+            $this->log('ERROR: CSSI inventory fetch failed.', [
+                'status' => (int) ($fetchResult['status'] ?? 0),
+                'error' => (string) ($fetchResult['error'] ?? 'Unknown error'),
+                'page' => (int) ($fetchResult['page'] ?? 0),
                 'run_id' => $runId,
             ]);
-            $this->finalize_run($tStart, $memStart, 'ERROR (auth probe)', ['run_id' => $runId]);
+            $this->finalize_run($tStart, $memStart, 'ERROR (fetch)', ['run_id' => $runId]);
             return;
         }
 
         update_option('fflhub_cssi_inventory_last_download', current_time('mysql'));
         update_option('fflhub_cssi_inventory_last_download_ts', (string) time());
-        update_option('fflhub_cssi_inventory_last_download_count', count($items));
-        update_option('fflhub_cssi_inventory_last_download_pages', (int) ($pagination['page_count'] ?? 1));
-        update_option('fflhub_cssi_inventory_last_update', current_time('mysql'));
-        update_option('fflhub_cssi_inventory_last_update_count', 0);
+        update_option('fflhub_cssi_inventory_last_download_count', $rowCount);
+        update_option('fflhub_cssi_inventory_last_download_pages', $pages);
         delete_option('fflhub_cssi_inventory_last_download_error');
+
+        $tApply = microtime(true);
+        try {
+            $applyStats = $this->apply_inventory_rows($rows);
+        } catch (\Throwable $e) {
+            update_option('fflhub_cssi_inventory_last_update_error', current_time('mysql'));
+            $this->log('ERROR: CSSI inventory apply failed.', [
+                'error' => $e->getMessage(),
+                'run_id' => $runId,
+            ]);
+            $this->profile('apply inventory rows (failed)', $tApply, [
+                'row_count' => $rowCount,
+            ]);
+            $this->finalize_run($tStart, $memStart, 'ERROR (apply)', ['run_id' => $runId]);
+            return;
+        }
+        $this->profile('apply inventory rows', $tApply, $applyStats);
+
+        $processedRows = (int) ($applyStats['processed_rows'] ?? $rowCount);
+        update_option('fflhub_cssi_inventory_last_update', current_time('mysql'));
+        update_option('fflhub_cssi_inventory_last_update_count', $processedRows);
         delete_option('fflhub_cssi_inventory_last_update_error');
 
-        $this->log('CSSI inventory auth probe complete (auth-only mode).', [
+        $this->log('CSSI inventory refresh complete.', [
             'run_id' => $runId,
-            'items_ok' => $probeOk ? 1 : 0,
-            'status' => (int) ($probe['status'] ?? 0),
-            'items_count' => count($items),
+            'pages' => $pages,
+            'items_seen' => $itemsSeen,
+            'row_count' => $rowCount,
+            'processed_rows' => $processedRows,
+            'join_updated_upc' => (int) ($applyStats['join_updated_upc'] ?? 0),
+            'join_updated_item' => (int) ($applyStats['join_updated_item'] ?? 0),
+            'inserted_new' => (int) ($applyStats['inserted_new'] ?? 0),
         ]);
 
         $this->finalize_run($tStart, $memStart, 'SUCCESS', [
             'run_id' => $runId,
-            'auth_only_mode' => self::AUTH_ONLY_MODE ? 1 : 0,
-            'items_ok' => $probeOk ? 1 : 0,
+            'pages' => $pages,
+            'items_seen' => $itemsSeen,
+            'row_count' => $rowCount,
+            'processed_rows' => $processedRows,
         ]);
     }
 
