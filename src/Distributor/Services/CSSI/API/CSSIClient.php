@@ -16,6 +16,8 @@ final class CSSIClient
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][CSSIClient]';
     private const DEFAULT_BASE_URL = 'https://api.chattanoogashooting.com/rest/v5/';
+    private const AUTH_MODE_RFC_BASIC = 'rfc_basic';
+    private const AUTH_MODE_LEGACY_RAW = 'legacy_raw';
     private const TRANSPORT_MAX_ATTEMPTS = 3;
     private const TRANSPORT_RETRY_BASE_MS = 400;
     private const TRANSPORT_RETRY_MAX_MS = 2500;
@@ -206,7 +208,7 @@ final class CSSIClient
             'timeout' => 180,
             'redirection' => 5,
             'httpversion' => '1.1',
-            'headers' => $this->build_headers('*/*'),
+            'headers' => $this->build_headers('*/*', self::AUTH_MODE_RFC_BASIC),
             'stream' => true,
             'filename' => $outputPath,
         ];
@@ -218,6 +220,7 @@ final class CSSIClient
             $this->log('File download HTTP attempt', [
                 'attempt' => $attempt,
                 'max_attempts' => $maxAttempts,
+                'auth_mode' => self::AUTH_MODE_RFC_BASIC,
                 'url_head' => $this->truncate($url, 220),
             ]);
 
@@ -349,13 +352,10 @@ final class CSSIClient
             'timeout' => 90,
             'redirection' => 5,
             'httpversion' => '1.1',
-            'headers' => $this->build_headers(),
         ];
-
+        $encodedBody = null;
         if ($body !== null) {
-            $args['headers']['Content-Type'] = 'application/json';
             $encodedBody = wp_json_encode($body);
-            $args['body'] = is_string($encodedBody) ? $encodedBody : '{}';
         }
 
         $callId = substr(sha1($method . '|' . $path . '|' . microtime(true) . '|' . mt_rand()), 0, 10);
@@ -364,10 +364,19 @@ final class CSSIClient
         $resp = null;
 
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $authMode = $this->auth_mode_for_attempt($attempt);
+            $attemptArgs = $args;
+            $attemptArgs['headers'] = $this->build_headers('application/json', $authMode);
+            if ($body !== null) {
+                $attemptArgs['headers']['Content-Type'] = 'application/json';
+                $attemptArgs['body'] = is_string($encodedBody) ? $encodedBody : '{}';
+            }
+
             $this->log('HTTP request', [
                 'call_id' => $callId,
                 'attempt' => $attempt,
                 'max_attempts' => $maxAttempts,
+                'auth_mode' => $authMode,
                 'method' => $method,
                 'path' => $path,
                 'url' => $url,
@@ -376,7 +385,7 @@ final class CSSIClient
                 'sid_prefix' => $this->mask_sid($this->sid),
             ]);
 
-            $resp = wp_remote_request($url, $args);
+            $resp = wp_remote_request($url, $attemptArgs);
             if (!is_wp_error($resp)) {
                 break;
             }
@@ -392,6 +401,7 @@ final class CSSIClient
                 'path' => $path,
                 'attempt' => $attempt,
                 'max_attempts' => $maxAttempts,
+                'auth_mode' => $authMode,
                 'retryable' => $retryable ? 1 : 0,
                 'will_retry' => $willRetry ? 1 : 0,
                 'error' => $errorMessage,
@@ -409,6 +419,7 @@ final class CSSIClient
                 'call_id' => $callId,
                 'path' => $path,
                 'method' => $method,
+                'auth_mode' => $authMode,
             ]);
         }
 
@@ -497,14 +508,30 @@ final class CSSIClient
     /**
      * @return array<string,string>
      */
-    private function build_headers(string $accept = 'application/json'): array
+    private function build_headers(string $accept = 'application/json', string $authMode = self::AUTH_MODE_RFC_BASIC): array
     {
+        $sidToken = $this->sid . ':' . md5($this->token);
+        $authorization = 'Basic ' . base64_encode($sidToken);
+        if ($authMode === self::AUTH_MODE_LEGACY_RAW) {
+            $authorization = 'Basic ' . $sidToken;
+        }
+
         return [
-            // CSSI requires this exact auth shape: "Basic SID:md5(token)"
-            'Authorization' => 'Basic ' . $this->sid . ':' . md5($this->token),
+            // Docs show "Basic SID:md5(token)"; RFC Basic uses base64(sid:md5(token)).
+            // We prefer RFC mode and can retry once with legacy raw mode.
+            'Authorization' => $authorization,
             'Accept' => $accept,
             'User-Agent' => 'FFLHub-CSSI/1.0',
         ];
+    }
+
+    private function auth_mode_for_attempt(int $attempt): string
+    {
+        if ($attempt === 2) {
+            return self::AUTH_MODE_LEGACY_RAW;
+        }
+
+        return self::AUTH_MODE_RFC_BASIC;
     }
 
     private function mask_sid(string $sid): string
