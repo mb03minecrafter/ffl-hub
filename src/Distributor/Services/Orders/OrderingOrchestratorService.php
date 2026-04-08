@@ -595,8 +595,11 @@ final class OrderingOrchestratorService
 
             $status = (string) OrderPlacementJobLifeCycle::get_job_status($this->jobs_table, $order, $job_key_norm);
 
-            // If already succeeded, don't re-queue.
-            if ($status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
+            // Terminal states are not re-queued.
+            if (
+                $status === OrderPlacementKeys::JOB_STATUS_SUCCESS
+                || $status === OrderPlacementKeys::JOB_STATUS_MANUAL
+            ) {
                 continue;
             }
 

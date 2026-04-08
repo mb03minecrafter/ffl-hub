@@ -62,9 +62,12 @@ final class OrderPlacementJobRunner
             return;
         }
 
-        // Fast exit if already success.
+        // Fast exit on automation-terminal statuses.
         $existing_status = (string) OrderPlacementJobLifeCycle::get_job_status($jobs_table, $order, $job_key);
-        if ($existing_status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
+        if (
+            $existing_status === OrderPlacementKeys::JOB_STATUS_SUCCESS
+            || $existing_status === OrderPlacementKeys::JOB_STATUS_MANUAL
+        ) {
             return;
         }
 

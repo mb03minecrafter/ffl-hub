@@ -29,6 +29,7 @@ if (!defined('ABSPATH')) {
  * - Interpret distributor validation/place results and translate them into durable job-row state:
  *     - quick-glance diagnostics (last_step, last_codes_json)
  *     - scheduling decisions (retry_scheduled with next_run_at)
+ *     - manual decisions (manual)
  *     - terminal decisions (failed)
  *
  * This class DOES NOT:
@@ -150,6 +151,7 @@ final class OrderPlacementJobStateMachine
      * Apply a place-order result:
      * - Always writes quick-glance fields: last_step='place', last_codes_json=<codes>.
      * - If OK => continue
+     * - If MANUAL => mark manual and exit
      * - If retryable block => schedule DB-only retry and exit
      * - Otherwise => mark failed and exit
      *
@@ -192,6 +194,17 @@ final class OrderPlacementJobStateMachine
         if ($or->ok && $or->code === DistributorOrderResult::CODE_OK) {
 
             return ['action' => 'continue'];
+        }
+
+        if ($or->code === DistributorOrderResult::CODE_MANUAL) {
+            return $this->manual_and_exit(
+                $jobs_table,
+                $order,
+                $job_key,
+                (string) ($or->message ?? ''),
+                $codes,
+                'place'
+            );
         }
 
         if ($or->code === DistributorOrderResult::CODE_BLOCK_RETRYABLE) {
@@ -347,6 +360,55 @@ final class OrderPlacementJobStateMachine
         OrderPlacementJobLifeCycle::mark_job_failed($jobs_table, $order, $job_key, $reason);
 
         return ['action' => 'exit', 'reason' => 'failed'];
+    }
+
+    /**
+     * Mark a job as manual and return an exit decision.
+     *
+     * Semantics:
+     * - Writes quick-glance fields: last_step, last_codes_json (best-effort).
+     * - Marks automation-terminal manual state via lifecycle helper:
+     *     - status=manual
+     *     - last_error=<message>
+     *     - next_run_at cleared
+     *
+     * @param OrderPlacementJobsTable $jobs_table Jobs table helper.
+     * @param WC_Order $order WooCommerce order.
+     * @param string $job_key Job key (normalized).
+     * @param string $message Human readable manual message.
+     * @param string[] $codes Normalized codes.
+     * @param string $step Stage name.
+     * @return array{action:'exit', reason:string}
+     */
+    private function manual_and_exit(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $message,
+        array $codes,
+        string $step
+    ): array {
+        $job_key = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
+        if ($job_key === '') {
+            return ['action' => 'exit', 'reason' => 'invalid_job_key'];
+        }
+
+        /** @var string[] $codes */
+        $codes = OrderPlacementProductUtil::normalize_external_ids($codes);
+        $message = trim((string) $message);
+
+        OrderPlacementJobWriter::apply_patch_for_order(
+            $jobs_table,
+            $order,
+            $job_key,
+            OrderPlacementJobPatch::empty()
+                ->with_last_step($step)
+                ->with_last_codes($codes)
+        );
+
+        OrderPlacementJobLifeCycle::mark_job_manual($jobs_table, $order, $job_key, $message);
+
+        return ['action' => 'exit', 'reason' => 'manual'];
     }
 
     /**

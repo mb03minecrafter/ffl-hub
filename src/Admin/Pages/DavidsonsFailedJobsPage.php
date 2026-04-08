@@ -30,6 +30,11 @@ final class DavidsonsFailedJobsPage
     private const MANUAL_PO_NONCE_ACTION = 'fflhub_davidsons_manual_mark_success_nonce_action';
     private const MANUAL_PO_NONCE_FIELD = 'fflhub_davidsons_manual_mark_success_nonce';
     private const SUCCESS_ROWS_TOGGLE_ARG = 'fflhub_show_success_rows';
+    /** @var string[] */
+    private const TARGET_JOB_STATUSES = [
+        OrderPlacementKeys::JOB_STATUS_MANUAL,
+        OrderPlacementKeys::JOB_STATUS_SUCCESS,
+    ];
 
     private OrderPlacementJobsTable $jobs_table;
 
@@ -77,7 +82,7 @@ final class DavidsonsFailedJobsPage
             <?php $this->render_styles(); ?>
             <h1><?php esc_html_e("Davidson's Manual Order Status", 'ffl-hub'); ?></h1>
             <p>
-                <?php esc_html_e("This page shows Davidson's job-line entries for WooCommerce orders currently in Processing status.", 'ffl-hub'); ?>
+                <?php esc_html_e("This page shows Davidson's manual job-line entries for WooCommerce orders currently in Processing status.", 'ffl-hub'); ?>
             </p>
             <p>
                 <?php esc_html_e("Completed orders are excluded here.", 'ffl-hub'); ?>
@@ -194,6 +199,11 @@ final class DavidsonsFailedJobsPage
         $dist_id = strtolower(trim((string) $job->dist_id));
         if ($dist_id !== self::DAVIDSONS_DIST_ID) {
             return ['type' => 'error', 'message' => __("That row is not a Davidson's job.", 'ffl-hub')];
+        }
+
+        $job_status = strtolower(trim((string) $job->status));
+        if (!in_array($job_status, self::TARGET_JOB_STATUSES, true)) {
+            return ['type' => 'error', 'message' => __("That Davidson's row is not in a manual/success state.", 'ffl-hub')];
         }
 
         $done_at = gmdate('Y-m-d H:i:s');
@@ -318,6 +328,11 @@ final class DavidsonsFailedJobsPage
             }
 
             if ($order_status_cache[$order_id] !== self::TARGET_WOO_ORDER_STATUS) {
+                continue;
+            }
+
+            $job_status = strtolower(trim((string) $job->status));
+            if (!in_array($job_status, self::TARGET_JOB_STATUSES, true)) {
                 continue;
             }
 

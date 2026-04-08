@@ -62,9 +62,9 @@ final class DistributorDavidsons extends DistributorBase
 
     public function place_order(DistributorOrderRequest $request): DistributorOrderResult
     {
-        return DistributorOrderResult::block_fatal(
-            'Davidsons only supports manual ordering.',
-            [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED]
+        return DistributorOrderResult::manual(
+            "Davidson's requires manual ordering. Enter the merchant PO on the Davidson's Manual Order Status page.",
+            [DistributorOrderResult::REASON_MANUAL_REQUIRED]
         );
     }
 

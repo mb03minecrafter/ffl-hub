@@ -22,7 +22,7 @@ if (!defined('ABSPATH')) {
  * Responsibility:
  * - Create/init job rows (upsert-by order_id+job_key) while keeping stable identifiers.
  * - Provide durable lifecycle transitions used by the JobRunner/StateMachine:
- *     - queued / scheduled / running / success / failed / retry_scheduled
+ *     - queued / scheduled / running / success / manual / failed / retry_scheduled
  *     - atomic "claim" for execution (attempts++ and status transition)
  *     - clearing schedule metadata (next_run_at, action_id) on transitions where it must not remain
  *
@@ -363,6 +363,34 @@ final class OrderPlacementJobLifeCycle
             ->with_field('done_at', $done_mysql)
             ->with_field('last_error', '')
             ->with_last_codes([]) // clears last_codes_json
+            ->clear_action_and_schedule();
+
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
+    }
+
+    /**
+     * Transition job row to MANUAL (terminal for automation).
+     *
+     * Writes:
+     * - status=manual
+     * - last_error=<message> (optional context for operators)
+     * - next_run_at=NULL and action_id=NULL (cleared)
+     *
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param WC_Order $order
+     * @param string $job_key Job key (dist|lane).
+     * @param string $message Optional manual context.
+     * @return void
+     */
+    public static function mark_job_manual(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $message = ''
+    ): void {
+        $patch = OrderPlacementJobPatch::empty()
+            ->with_status(OrderPlacementKeys::JOB_STATUS_MANUAL)
+            ->with_last_error((string) $message)
             ->clear_action_and_schedule();
 
         OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);

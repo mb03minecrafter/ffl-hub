@@ -17,6 +17,7 @@ if (!defined('ABSPATH')) {
  * -----------
  * 1) Job-runner friendly control-plane:
  *    - OK              => mark job success (or continue pipeline)
+ *    - MANUAL          => stop automatic retries; wait for human/manual completion
  *    - BLOCK_RETRYABLE => retry with backoff (transient failure)
  *    - BLOCK_FATAL     => stop retrying (needs human / data fix)
  *
@@ -48,6 +49,9 @@ final class DistributorOrderResult
     /** Success */
     const CODE_OK = 'OK';
 
+    /** Manual handling required (terminal for automation; handled by ops/admin flow) */
+    const CODE_MANUAL = 'MANUAL';
+
     /** Retryable failure (worker should retry with backoff) */
     const CODE_BLOCK_RETRYABLE = 'BLOCK_RETRYABLE';
 
@@ -77,6 +81,7 @@ final class DistributorOrderResult
     const REASON_FATAL_UNKNOWN          = 'FATAL_UNKNOWN';
 
     // Meta / control-plane (optional usage)
+    const REASON_MANUAL_REQUIRED = 'MANUAL_REQUIRED';
     const REASON_CANCELLED = 'CANCELLED';
     const REASON_DRY_RUN   = 'DRY_RUN';
 
@@ -84,7 +89,7 @@ final class DistributorOrderResult
     public $ok;
 
     /**
-     * Primary result code: OK | BLOCK_RETRYABLE | BLOCK_FATAL
+     * Primary result code: OK | MANUAL | BLOCK_RETRYABLE | BLOCK_FATAL
      *
      * NOTE:
      * This is what your job runner should branch on for control flow.
@@ -235,6 +240,39 @@ final class DistributorOrderResult
     }
 
     /**
+     * Manual handling required.
+     *
+     * Use for:
+     * - distributors/workflows intentionally processed outside API automation
+     * - valid "manual lane" outcomes that should not be retried or marked failed
+     *
+     * @param string $message
+     * @param string[] $codes
+     * @param array<string,mixed> $details
+     * @param int $http_status
+     * @param string $provider_error_code
+     * @param string[] $external_order_ids
+     * @return self
+     */
+    public static function manual($message, array $codes = array(), array $details = array(), $http_status = 0, $provider_error_code = '', array $external_order_ids = array())
+    {
+        if (empty($codes)) {
+            $codes = array(self::REASON_MANUAL_REQUIRED);
+        }
+
+        return new self(
+            false,
+            self::CODE_MANUAL,
+            (string) $message,
+            $codes,
+            (int) $http_status,
+            (string) $provider_error_code,
+            $details,
+            $external_order_ids
+        );
+    }
+
+    /**
      * Retryable failure result.
      *
      * Use for:
@@ -346,6 +384,16 @@ final class DistributorOrderResult
     public function is_retryable()
     {
         return ($this->code === self::CODE_BLOCK_RETRYABLE);
+    }
+
+    /**
+     * True if this result requires manual handling.
+     *
+     * @return bool
+     */
+    public function is_manual()
+    {
+        return ($this->code === self::CODE_MANUAL);
     }
 
     /**

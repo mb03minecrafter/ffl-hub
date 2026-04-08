@@ -181,7 +181,7 @@ final class OrderTrashJobsService
      * - next_run_at => NULL
      * - last_error => "Paused: <reason>"
      *
-     * Does not pause successful jobs.
+     * Does not pause terminal jobs (success/manual).
      *
      * @return int Number of rows affected.
      */
@@ -210,14 +210,15 @@ final class OrderTrashJobsService
                          updated_at = %s,
                          last_error = %s
                      WHERE order_id = %d
-                       AND status <> %s",
-                    (string) OrderPlacementKeys::JOB_STATUS_PAUSED,
-                    (string) $now,
-                    ($reason !== '' ? 'Paused: ' . $reason : 'Paused'),
-                    $order_id,
-                    (string) OrderPlacementKeys::JOB_STATUS_SUCCESS
-                )
-            );
+                       AND status NOT IN (%s, %s)",
+                     (string) OrderPlacementKeys::JOB_STATUS_PAUSED,
+                     (string) $now,
+                     ($reason !== '' ? 'Paused: ' . $reason : 'Paused'),
+                     $order_id,
+                     (string) OrderPlacementKeys::JOB_STATUS_SUCCESS,
+                     (string) OrderPlacementKeys::JOB_STATUS_MANUAL
+                 )
+             );
 
             return is_numeric($affected) ? (int) $affected : 0;
         } catch (\Throwable $e) {

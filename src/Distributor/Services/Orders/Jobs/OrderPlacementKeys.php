@@ -51,6 +51,7 @@ final class OrderPlacementKeys
     public const JOB_STATUS_SCHEDULED       = 'scheduled';
     public const JOB_STATUS_RUNNING         = 'running';
     public const JOB_STATUS_SUCCESS         = 'success';
+    public const JOB_STATUS_MANUAL          = 'manual';
     public const JOB_STATUS_FAILED          = 'failed';
     public const JOB_STATUS_RETRY_SCHEDULED = 'retry_scheduled';
     public const JOB_STATUS_PAUSED = 'paused';
