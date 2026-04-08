@@ -9,6 +9,7 @@ use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Models\PartialShipmentEmailContext;
 use FFLHub\Distributor\Models\ShippingUpdateResult;
 use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
+use FFLHub\Distributor\Services\Orders\Cron\RSRDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
@@ -690,8 +691,8 @@ final class OrderPlacementMetaBox
      *
      * Behavior:
      * - only allows retry if job is currently FAILED
-     * - sets status=retry_scheduled and next_run_at=now
-     * - optionally kicks the dispatcher hook for faster UX
+     * - RSR dealer_fulfilled rows => status=batch_pending and batch cron wake-up
+     * - all other rows => status=retry_scheduled and normal dispatcher wake-up
      */
     public function handle_retry_job_post(): void
     {
@@ -726,15 +727,41 @@ final class OrderPlacementMetaBox
             return;
         }
 
-        // DB-only retry scheduling (dispatcher model)
+        $job_row = OrderPlacementJobsRepository::get_job_for_order($this->jobs_table, $order, $job_key);
+        $is_rsr_dealer_batch = (
+            $job_row !== null
+            && strtolower(trim((string) $job_row->dist_id_norm())) === 'rsr'
+            && OrderPlacementKeysUtil::is_dealer_fulfilled_lane((string) $job_row->lane_norm())
+        );
+
+        if ($is_rsr_dealer_batch) {
+            $patch = OrderPlacementJobPatch::empty()
+                ->with_status(OrderPlacementKeys::JOB_STATUS_BATCH_PENDING)
+                ->with_next_run_at_mysql(self::now_mysql_utc_plus(0))
+                ->with_last_error('');
+
+            OrderPlacementJobWriter::apply_patch($this->jobs_table, $order_id, $job_key, $patch);
+
+            if (function_exists('as_schedule_single_action')) {
+                as_schedule_single_action(
+                    time() + 1,
+                    RSRDealerBatchCronService::CRON_HOOK,
+                    [],
+                    'fflhub_place'
+                );
+            }
+
+            self::redirect_back($order_id, $job_key, 'batch_scheduled');
+            return;
+        }
+
         $patch = OrderPlacementJobPatch::empty()
             ->with_status(OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED)
             ->with_next_run_at_mysql(self::now_mysql_utc_plus(0))
-            ->with_last_error(''); // optional: clear terminal error when user retries
+            ->with_last_error('');
 
         OrderPlacementJobWriter::apply_patch($this->jobs_table, $order_id, $job_key, $patch);
 
-        // Kick dispatcher for UX (best-effort)
         if (function_exists('as_schedule_single_action')) {
             as_schedule_single_action(
                 time() + 1,
@@ -1175,6 +1202,7 @@ final class OrderPlacementMetaBox
         if ($s === 'failed')    return 'danger';
         if ($s === 'running')   return 'warning';
         if ($s === 'scheduled') return 'info';
+        if ($s === strtolower(OrderPlacementKeys::JOB_STATUS_BATCH_PENDING)) return 'info';
         if ($s === 'queued')    return 'muted';
         if ($s === strtolower(OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED)) return 'warning';
 

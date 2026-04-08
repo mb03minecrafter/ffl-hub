@@ -539,6 +539,93 @@ final class OrderPlacementJobsRepository
     }
 
     /**
+     * Select RSR dealer-fulfilled rows that are waiting for batch placement.
+     *
+     * Criteria:
+     * - dist_id = 'rsr'
+     * - lane = dealer_fulfilled
+     * - status = batch_pending
+     * - next_run_at is NULL/zero OR next_run_at <= $now_mysql_utc
+     *
+     * Order:
+     * - next_run_at ASC when present, then created_at ASC, then id ASC
+     *
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param string                  $now_mysql_utc
+     * @param int                     $limit
+     * @return OrderPlacementJobRow[]
+     */
+    public static function find_jobs_for_rsr_batch_processing(
+        OrderPlacementJobsTable $jobs_table,
+        string $now_mysql_utc,
+        int $limit
+    ): array {
+        global $wpdb;
+
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return [];
+        }
+
+        $limit = max(1, (int) $limit);
+        $dist_id = 'rsr';
+        $lane = OrderPlacementKeysUtil::LANE_DEALER_FULFILLED;
+        $status = OrderPlacementKeys::JOB_STATUS_BATCH_PENDING;
+
+        $sql = $wpdb->prepare(
+            "
+            SELECT
+                id, order_id, job_key, dist_id, lane, status,
+                attempts, created_at, updated_at,
+                action_id, next_run_at,
+                last_step, last_error, last_codes_json,
+                done_at,
+                payload_json, validate_result_json, place_result_json,
+                merchant_po, external_order_ids_json, external_order_id,
+                shipped_at, tracking_numbers_json, invoice_numbers_json,
+                last_shipping_poll_at, shipping_service, shipping_weight, shipment_raw_json
+            FROM {$table}
+            WHERE
+                dist_id = %s
+                AND lane = %s
+                AND status = %s
+                AND (
+                    next_run_at IS NULL
+                    OR next_run_at = '0000-00-00 00:00:00'
+                    OR next_run_at <= %s
+                )
+            ORDER BY
+                CASE
+                    WHEN next_run_at IS NULL OR next_run_at = '0000-00-00 00:00:00'
+                    THEN created_at
+                    ELSE next_run_at
+                END ASC,
+                id ASC
+            LIMIT %d
+            ",
+            $dist_id,
+            $lane,
+            $status,
+            (string) $now_mysql_utc,
+            $limit
+        );
+
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $out[] = new OrderPlacementJobRow($row);
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * Select jobs for a specific lane, newest first.
      *
      * Useful for admin/operator views where we need to inspect jobs by lane

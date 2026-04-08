@@ -20,7 +20,10 @@ if (!defined('ABSPATH')) {
  *   - pause all job rows (status=paused, next_run_at=NULL)
  * - Untrashed order:
  *   - remove "suspended"
- *   - resume paused rows (status=scheduled, next_run_at=now)
+ *   - resume paused rows:
+ *     - RSR dealer_fulfilled rows => batch_pending
+ *     - all other rows => scheduled
+ *     - next_run_at=now
  * - Permanently deleted order:
  *   - delete all job rows for order_id
  *
@@ -229,7 +232,8 @@ final class OrderTrashJobsService
 
     /**
      * Resume paused jobs:
-     * - status => scheduled
+     * - status => scheduled (default)
+     * - status => batch_pending for rsr + dealer_fulfilled rows
      * - next_run_at => now (dispatcher will pick them up)
      * - last_error => "Resumed: <reason>"
      *
@@ -257,12 +261,18 @@ final class OrderTrashJobsService
             $affected = $wpdb->query(
                 $wpdb->prepare(
                     "UPDATE {$table}
-                     SET status = %s,
+                     SET status = CASE
+                            WHEN dist_id = %s AND lane = %s THEN %s
+                            ELSE %s
+                         END,
                          next_run_at = %s,
                          updated_at = %s,
                          last_error = %s
                      WHERE order_id = %d
                        AND status = %s",
+                    'rsr',
+                    'dealer_fulfilled',
+                    (string) OrderPlacementKeys::JOB_STATUS_BATCH_PENDING,
                     (string) OrderPlacementKeys::JOB_STATUS_SCHEDULED,
                     (string) $now,
                     (string) $now,

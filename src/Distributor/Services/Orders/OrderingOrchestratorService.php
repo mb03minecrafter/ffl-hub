@@ -603,10 +603,25 @@ final class OrderingOrchestratorService
                 continue;
             }
 
-            // "scheduled" means: eligible in DB for dispatcher (not "AS action exists").
+            $dist_id = '';
+            $lane = '';
+            if (is_array($_job)) {
+                $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) ($_job['dist_id'] ?? ''));
+                $lane = OrderPlacementKeysUtil::normalize_lane((string) ($_job['lane'] ?? ''));
+            }
+
+            $next_status = OrderPlacementKeys::JOB_STATUS_SCHEDULED;
+            if (
+                $dist_id === 'rsr'
+                && OrderPlacementKeysUtil::is_dealer_fulfilled_lane($lane)
+            ) {
+                $next_status = OrderPlacementKeys::JOB_STATUS_BATCH_PENDING;
+            }
+
+            // "scheduled"/"batch_pending" means: eligible in DB for cron processors (not "AS action exists").
             $patch = OrderPlacementJobPatch::empty()
                 ->with_action_id(null)
-                ->with_status(OrderPlacementKeys::JOB_STATUS_SCHEDULED)
+                ->with_status($next_status)
                 ->with_next_run_at_mysql(OrderPlacementTimeUtil::now_mysql_utc());
 
             OrderPlacementJobWriter::apply_patch_for_order($this->jobs_table, $order, $job_key_norm, $patch);

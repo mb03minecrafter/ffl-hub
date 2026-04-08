@@ -155,6 +155,56 @@ final class RSRModule implements DistributorModuleInterface
             ],
 
             // ---------------------------
+            // Dealer-fulfilled batch placement
+            // ---------------------------
+            'dealer_batch_enabled' => [
+                'label'       => 'Enable Dealer Batch Queue',
+                'type'        => 'checkbox',
+                'description' => 'When enabled, RSR dealer-fulfilled rows are held in a batch queue instead of placing immediately.',
+                'default'     => '1',
+            ],
+            'dealer_batch_dispatch_time' => [
+                'label'       => 'Dealer Batch Dispatch Time',
+                'type'        => 'text',
+                'placeholder' => '17:00',
+                'description' => 'Daily local dispatch time in 24-hour HH:MM format. Example: 17:00.',
+                'default'     => '17:00',
+            ],
+            'dealer_batch_low_stock_threshold' => [
+                'label'       => 'Dealer Low-Stock Threshold',
+                'type'        => 'number',
+                'placeholder' => '3',
+                'description' => 'Rows containing low-stock UPCs at or below this threshold are placed immediately (not held for batch).',
+                'default'     => '3',
+                'min'         => 0,
+                'step'        => 1,
+            ],
+            'dealer_batch_retry_delay_seconds' => [
+                'label'       => 'Dealer Batch Retry Delay (Seconds)',
+                'type'        => 'number',
+                'placeholder' => '300',
+                'description' => 'Delay before retrying a failed aggregate batch call.',
+                'default'     => '300',
+                'min'         => 30,
+                'step'        => 1,
+            ],
+            'dealer_batch_max_rows_per_run' => [
+                'label'       => 'Dealer Batch Max Rows Per Run',
+                'type'        => 'number',
+                'placeholder' => '200',
+                'description' => 'Maximum queued dealer rows to evaluate in one batch cron execution.',
+                'default'     => '200',
+                'min'         => 1,
+                'step'        => 1,
+            ],
+            'dealer_batch_force_flush' => [
+                'label'       => 'Force Dealer Batch Flush On Next Run',
+                'type'        => 'checkbox',
+                'description' => 'If enabled, the next batch cron run will immediately flush queued dealer rows, then auto-reset this toggle.',
+                'default'     => '0',
+            ],
+
+            // ---------------------------
             // FTP feed (fulfillment table)
             // ---------------------------
             'ftp_host' => [
