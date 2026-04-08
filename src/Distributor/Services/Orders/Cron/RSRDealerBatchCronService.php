@@ -46,14 +46,18 @@ if (!defined('ABSPATH')) {
  */
 final class RSRDealerBatchCronService extends AbstractCronService
 {
+    /** Action Scheduler / WP-Cron hook polled every minute for RSR dealer batch work. */
     public const CRON_HOOK = 'fflhub_rsr_dealer_batch_poll';
 
+    /** Debug flag and log prefix used by log_ctx(). */
     private const DEBUG_CONST = 'FFLHUB_DEBUG_ORDER_BATCH';
     private const LOG_PREFIX  = '[FFLHub][RSRDealerBatchCron]';
 
+    /** Soft distributed lock (option row) to prevent concurrent batch runs. */
     private const LOCK_OPTION = 'fflhub_rsr_dealer_batch_lock';
     private const LOCK_TTL_SECONDS = 300;
 
+    /** Runtime option names for batch behavior. */
     private const OPT_ENABLED            = 'fflhub_rsr_dealer_batch_enabled';
     private const OPT_DISPATCH_TIME      = 'fflhub_rsr_dealer_batch_dispatch_time';
     private const OPT_LOW_STOCK_THRESHOLD = 'fflhub_rsr_dealer_batch_low_stock_threshold';
@@ -61,6 +65,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
     private const OPT_MAX_ROWS_PER_RUN    = 'fflhub_rsr_dealer_batch_max_rows_per_run';
     private const OPT_FORCE_FLUSH         = 'fflhub_rsr_dealer_batch_force_flush';
 
+    /** Safe defaults used when options are missing/invalid. */
     private const DEFAULT_DISPATCH_TIME = '17:00';
     private const DEFAULT_LOW_STOCK_THRESHOLD = 3;
     private const DEFAULT_RETRY_DELAY_SECONDS = 300;
@@ -102,20 +107,24 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
     public function run(): void
     {
+        // Unique run id for traceability across all log lines in this run.
         $run_id = substr(md5((string) microtime(true) . '|' . (string) wp_rand()), 0, 10);
         $now_mysql_utc = OrderPlacementTimeUtil::now_mysql_utc();
         $run_started = microtime(true);
 
+        // Hard gate: do not run if RSR is globally disabled or batch mode is disabled.
         if (!Options::is_distributor_enabled('rsr') || !$this->is_enabled()) {
             $this->log_ctx('skip_disabled', ['run_id' => $run_id]);
             return;
         }
 
+        // Soft lock gate: ensures only one worker performs batch placement at a time.
         if (!$this->acquire_lock($run_id)) {
             $this->log_ctx('skip_locked', ['run_id' => $run_id]);
             return;
         }
 
+        // Human-readable end-state label and structured run counters for diagnostics.
         $run_status = 'idle';
         $run_stats = [
             'jobs_found' => 0,
@@ -132,10 +141,12 @@ final class RSRDealerBatchCronService extends AbstractCronService
         ];
 
         try {
+            // Resolve runtime controls once per run for consistent behavior.
             $max_rows = $this->max_rows_per_run();
             $low_threshold = $this->low_stock_threshold();
             $retry_delay = $this->retry_delay_seconds();
 
+            // Pull only rows that are batch-pending and due now (bounded by max rows).
             $jobs = OrderPlacementJobsRepository::find_jobs_for_rsr_batch_processing(
                 $this->jobs_table,
                 $now_mysql_utc,
@@ -156,6 +167,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
                 return;
             }
 
+            // Distributor handle is required for stock lookup + place_order aggregate call.
             $rsr = $this->handler->get_distributor_by_id('rsr');
             if (!($rsr instanceof DistributorBase)) {
                 $this->log_ctx('error_missing_rsr_distributor', ['run_id' => $run_id]);
@@ -168,22 +180,26 @@ final class RSRDealerBatchCronService extends AbstractCronService
             /** @var array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $eligible_entries */
             $eligible_entries = [];
 
+            // Validate each candidate row before allowing it into any aggregate request.
             foreach ($jobs as $job) {
                 $order_id = (int) $job->order_id;
                 $job_key = (string) $job->job_key_norm();
                 $order = wc_get_order($order_id);
 
+                // Rows without a resolvable order or job key cannot be recovered here.
                 if (!($order instanceof WC_Order) || $job_key === '') {
                     $this->mark_failed($order_id, $job_key, 'Batch row skipped: missing order or job key.');
                     $failed_rows++;
                     continue;
                 }
 
+                // Suspended orders are skipped without mutation so manual workflows remain intact.
                 if (OrderPlacementPipelineMetaStore::is_order_suspended($order_id)) {
                     $skipped_suspended++;
                     continue;
                 }
 
+                // Empty payload cannot be sent; mark failed for operator visibility.
                 $lines = $job->payload_lines();
                 if (empty($lines)) {
                     $this->mark_failed($order_id, $job_key, 'Batch row has no valid payload lines.');
@@ -191,6 +207,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
                     continue;
                 }
 
+                // Every line must have a normalizable UPC key.
                 $has_invalid_upc = false;
                 foreach ($lines as $line) {
                     $upc_key = $this->normalize_upc_key((string) $line->upc);
@@ -221,8 +238,11 @@ final class RSRDealerBatchCronService extends AbstractCronService
                 return;
             }
 
+            // Build total demand per UPC across ALL eligible rows in this run.
             $demand_by_upc = $this->build_demand_by_upc($eligible_entries);
+            // Resolve current stock once per demanded UPC.
             $stock_cache = $this->build_stock_cache($rsr, $demand_by_upc);
+            // Risk set uses threshold and summed demand semantics.
             $risky_upcs = $this->find_risky_upcs($demand_by_upc, $stock_cache, $low_threshold);
 
             /** @var array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $priority_candidates */
@@ -230,6 +250,9 @@ final class RSRDealerBatchCronService extends AbstractCronService
             /** @var array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates */
             $batch_candidates = [];
 
+            // Partition rows:
+            // - priority_candidates: contains any risky UPC (flush immediately)
+            // - batch_candidates: safe to hold for dispatch window
             foreach ($eligible_entries as $entry) {
                 if ($this->entry_contains_any_upc($entry['lines'], $risky_upcs)) {
                     $priority_candidates[] = $entry;
@@ -253,6 +276,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
             ]);
 
             $priority_flushed_rows = 0;
+            // Flush risky rows now as ONE aggregate to reduce fragmentation/shipping overhead.
             if (!empty($priority_candidates)) {
                 try {
                     $this->flush_aggregate_batch($rsr, $priority_candidates, $retry_delay, $run_id, 'priority_low_stock');
@@ -270,6 +294,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
                 }
             }
 
+            // Force flush is one-shot: consume the flag this run, then evaluate dispatch gate.
             $force_flush = $this->consume_force_flush();
             $dispatch_due = $force_flush || $this->is_dispatch_window_open();
             $run_stats['force_flush'] = $force_flush ? 1 : 0;
@@ -287,6 +312,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
             $scheduled_flushed_rows = 0;
             try {
+                // Only flush scheduled rows when gate is open.
                 if ($dispatch_due && !empty($batch_candidates)) {
                     $this->flush_aggregate_batch($rsr, $batch_candidates, $retry_delay, $run_id, 'scheduled_batch');
                     $scheduled_flushed_rows = count($batch_candidates);
@@ -317,6 +343,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
                 $run_status = 'no_flush';
             }
         } finally {
+            // Always log final run metrics and always release lock.
             $this->log_ctx('run_end', [
                 'run_id' => $run_id,
                 'status' => $run_status,
@@ -339,12 +366,14 @@ final class RSRDealerBatchCronService extends AbstractCronService
         string $batch_kind = 'scheduled_batch'
     ): void
     {
+        // Collapse per-row lines into a single aggregate payload.
         $aggregate_lines = $this->aggregate_lines($batch_candidates);
         if (empty($aggregate_lines)) {
             $this->log_ctx('aggregate_skip_no_lines', ['run_id' => $run_id, 'batch_kind' => $batch_kind]);
             return;
         }
 
+        // Aggregate order uses ship-to from first order in the selected candidate set.
         /** @var WC_Order $first_order */
         $first_order = $batch_candidates[0]['order'];
         $ship_to = DistributorShipTo::from_order_shipping_fallback_billing($first_order);
@@ -358,6 +387,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
             return;
         }
 
+        // Shared batch PO for all rows covered by this aggregate call.
         $po = $this->build_batch_po($batch_candidates);
         $request = new DistributorOrderRequest(
             $aggregate_lines,
@@ -370,6 +400,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
             'dealer_fulfilled'
         );
 
+        // Transition all covered jobs to RUNNING before the external call.
         foreach ($batch_candidates as $entry) {
             /** @var OrderPlacementJobRow $job */
             $job = $entry['job'];
@@ -388,6 +419,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
         }
 
         try {
+            // One upstream order placement call for the full aggregate payload.
             $result = $rsr->place_order($request);
         } catch (\Throwable $e) {
             $result = DistributorOrderResult::block_retryable(
@@ -416,6 +448,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
         ]);
 
         if ($result->ok && $result->code === DistributorOrderResult::CODE_OK) {
+            // Success path: stamp snapshots/IDs/PO and mark each contributing row successful.
             foreach ($batch_candidates as $entry) {
                 /** @var OrderPlacementJobRow $job */
                 $job = $entry['job'];
@@ -439,6 +472,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
         }
 
         if ($result->code === DistributorOrderResult::CODE_BLOCK_RETRYABLE) {
+            // Retryable path: send all rows back to batch_pending with a delayed next_run_at.
             $next_retry = OrderPlacementTimeUtil::unix_to_mysql_utc(time() + max(30, $retry_delay_seconds));
             foreach ($batch_candidates as $entry) {
                 /** @var OrderPlacementJobRow $job */
@@ -474,6 +508,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function build_demand_by_upc(array $entries): array
     {
+        // Running total keyed by normalized UPC.
         $demand = [];
 
         foreach ($entries as $entry) {
@@ -500,6 +535,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function build_stock_cache(DistributorBase $rsr, array $demand_by_upc): array
     {
+        // Resolve each UPC once per run; avoid repeated distributor lookups.
         $stock_cache = [];
         foreach ($demand_by_upc as $upc => $_qty) {
             $stock_cache[$upc] = $rsr->get_stock_quantity_by_upc((string) $upc);
@@ -514,6 +550,10 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function find_risky_upcs(array $demand_by_upc, array $stock_cache, int $threshold): array
     {
+        // UPC is risky when:
+        // - stock unknown, or
+        // - stock at/below threshold, or
+        // - stock less than total queued demand in this run.
         $risky = [];
         foreach ($demand_by_upc as $upc => $requested_total) {
             $available = $stock_cache[$upc] ?? null;
@@ -530,6 +570,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function entry_contains_any_upc(array $lines, array $risky_upcs): bool
     {
+        // Any invalid/blank UPC is treated as risky to avoid accidentally holding unsafe rows.
         foreach ($lines as $line) {
             $upc_key = $this->normalize_upc_key((string) $line->upc);
             if ($upc_key === '') {
@@ -544,6 +585,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
     private function normalize_upc_key(string $upc): string
     {
+        // Prefer digit-only canonical UPC key; fallback to uppercase raw if needed.
         $upc = trim($upc);
         if ($upc === '') {
             return '';
@@ -562,6 +604,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function requeue_batch_candidates(array $candidates, int $retry_delay_seconds, string $error_message): void
     {
+        // Common requeue path used on unexpected exceptions around aggregate flush.
         $next_retry = OrderPlacementTimeUtil::unix_to_mysql_utc(time() + max(30, $retry_delay_seconds));
         foreach ($candidates as $entry) {
             /** @var OrderPlacementJobRow $job */
@@ -585,6 +628,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function aggregate_lines(array $batch_candidates): array
     {
+        // Collapse multiple rows into unique lines by {upc, ffl_required}, summing quantities.
         $line_map = [];
 
         foreach ($batch_candidates as $entry) {
@@ -609,6 +653,8 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
     private function dispatch_single_row_now(WC_Order $order, string $job_key): bool
     {
+        // Fallback for fatal/manual aggregate outcomes:
+        // convert row back to immediate scheduled execution and run state machine now.
         $job_key = trim((string) $job_key);
         if ($job_key === '') {
             return false;
@@ -631,6 +677,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
     private function mark_failed(int $order_id, string $job_key, string $message): void
     {
+        // Hard-fail helper for unrecoverable row-level issues detected during prep.
         $job_key = trim((string) $job_key);
         if ($order_id <= 0 || $job_key === '') {
             return;
@@ -670,6 +717,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
     private function consume_force_flush(): bool
     {
+        // One-shot toggle: read and immediately clear so only one run consumes it.
         $enabled = $this->truthy_option(self::OPT_FORCE_FLUSH, false);
         if ($enabled) {
             update_option(self::OPT_FORCE_FLUSH, '0', false);
@@ -679,6 +727,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
     private function is_dispatch_window_open(): bool
     {
+        // Parse configured HH:MM in site-local timezone.
         $hhmm = trim((string) get_option(self::OPT_DISPATCH_TIME, self::DEFAULT_DISPATCH_TIME));
         if (!preg_match('/^([0-1]?\d|2[0-3]):([0-5]\d)$/', $hhmm, $m)) {
             $hhmm = self::DEFAULT_DISPATCH_TIME;
@@ -700,6 +749,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function build_batch_po(array $batch_candidates): string
     {
+        // Format: FHRSRB-firstPO-to-lastPO (derived from first/last row in aggregate set).
         if (empty($batch_candidates)) {
             return 'FHRSRB-' . gmdate('ymdHi') . '-to-' . (string) wp_rand(100, 999);
         }
@@ -715,6 +765,10 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function batch_po_segment_from_candidate(array $candidate): string
     {
+        // Segment preference order:
+        // 1) existing merchant_po
+        // 2) normalized job_key
+        // 3) ORDER{order_id}
         $job = $candidate['job'];
         if (!($job instanceof OrderPlacementJobRow)) {
             return 'NA';
@@ -758,6 +812,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
     private function acquire_lock(string $run_id): bool
     {
+        // Try to atomically create lock option first.
         $now = time();
         $payload = wp_json_encode([
             'run_id' => $run_id,
@@ -776,12 +831,14 @@ final class RSRDealerBatchCronService extends AbstractCronService
             return false;
         }
 
+        // Existing lock expired; take ownership.
         update_option(self::LOCK_OPTION, $payload, false);
         return true;
     }
 
     private function release_lock(string $run_id): void
     {
+        // Remove lock only if unowned or owned by this run id.
         $raw = get_option(self::LOCK_OPTION, '');
         $existing = is_string($raw) ? json_decode($raw, true) : null;
         $existing_run_id = is_array($existing) ? (string) ($existing['run_id'] ?? '') : '';
