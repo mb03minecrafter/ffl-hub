@@ -96,6 +96,7 @@ final class RSRBatchQueuePage
             <?php $this->render_low_stock_watch_table($data, $settings); ?>
             <?php $this->render_running_totals_table($data); ?>
             <?php $this->render_entries_table($data); ?>
+            <?php $this->render_system_explainer($settings); ?>
         </div>
         <?php
     }
@@ -784,6 +785,38 @@ final class RSRBatchQueuePage
                 <?php endforeach; ?>
             </tbody>
         </table>
+        <?php
+    }
+
+    private function render_system_explainer(array $settings): void
+    {
+        $threshold = max(0, (int) ($settings['low_stock_threshold'] ?? self::DEFAULT_LOW_STOCK_THRESHOLD));
+        $dispatch_time = (string) ($settings['dispatch_time'] ?? self::DEFAULT_DISPATCH_TIME);
+        $retry_delay = max(30, (int) ($settings['retry_delay_seconds'] ?? self::DEFAULT_RETRY_DELAY_SECONDS));
+        $max_rows = max(1, (int) ($settings['max_rows_per_run'] ?? self::DEFAULT_MAX_ROWS_PER_RUN));
+        ?>
+        <section class="fflhub-rsr-batch-card">
+            <h2><?php esc_html_e('How This Works', 'ffl-hub'); ?></h2>
+            <p>
+                <?php esc_html_e('This page is a live, per-line-item view of RSR dealer-fulfilled jobs for Woo orders in Processing status. It helps you see what is queued, what is at risk, and what will dispatch.', 'ffl-hub'); ?>
+            </p>
+            <h3><?php esc_html_e('Low-Stock / Approaching Logic', 'ffl-hub'); ?></h3>
+            <ul style="list-style:disc;margin-left:18px;">
+                <li><?php echo esc_html(sprintf(__('Demand is summed by UPC across all batch_pending rows. This means threshold checks use total queued demand, not a single row.', 'ffl-hub'))); ?></li>
+                <li><?php echo esc_html(sprintf(__('Risky UPCs are flagged when any of these are true: stock is unknown, available stock is <= threshold (%d), or available stock is less than summed queued quantity.', 'ffl-hub'), $threshold)); ?></li>
+                <li><?php esc_html_e('Approaching UPCs are not currently risky, but would be at/under threshold after fulfilling the current queued demand.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Affected Rows shows exactly which jobs and orders contribute to that UPC demand.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Distance columns show buffer to threshold now and after the queued batch is applied.', 'ffl-hub'); ?></li>
+            </ul>
+            <h3><?php esc_html_e('Batch Flow', 'ffl-hub'); ?></h3>
+            <ul style="list-style:disc;margin-left:18px;">
+                <li><?php esc_html_e('Batch mode controls whether eligible RSR dealer rows are queued as batch_pending for grouped placement.', 'ffl-hub'); ?></li>
+                <li><?php echo esc_html(sprintf(__('Dispatch time is %s (local site time). Rows wait until that window unless force flush is enabled.', 'ffl-hub'), $dispatch_time)); ?></li>
+                <li><?php esc_html_e('Force Flush + Run Now sets a one-time force flag and schedules the batch cron immediately.', 'ffl-hub'); ?></li>
+                <li><?php echo esc_html(sprintf(__('Retry Delay (%d sec) and Max Rows Per Run (%d) bound how aggressively each cron run processes queue entries.', 'ffl-hub'), $retry_delay, $max_rows)); ?></li>
+                <li><?php esc_html_e('The queue tables above show both aggregated UPC demand and raw per-line entries so you can audit exactly what will be sent.', 'ffl-hub'); ?></li>
+            </ul>
+        </section>
         <?php
     }
 

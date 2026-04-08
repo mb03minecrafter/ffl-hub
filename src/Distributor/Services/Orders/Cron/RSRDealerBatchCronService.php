@@ -358,7 +358,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
             return;
         }
 
-        $po = $this->build_batch_po();
+        $po = $this->build_batch_po($batch_candidates);
         $request = new DistributorOrderRequest(
             $aggregate_lines,
             $ship_to,
@@ -695,9 +695,51 @@ final class RSRDealerBatchCronService extends AbstractCronService
         return $now_local >= $dispatch_local;
     }
 
-    private function build_batch_po(): string
+    /**
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates
+     */
+    private function build_batch_po(array $batch_candidates): string
     {
-        return 'FHRSRB' . gmdate('ymdHi') . (string) wp_rand(100, 999);
+        if (empty($batch_candidates)) {
+            return 'FHRSRB-' . gmdate('ymdHi') . '-to-' . (string) wp_rand(100, 999);
+        }
+
+        $first = $this->batch_po_segment_from_candidate($batch_candidates[0]);
+        $last = $this->batch_po_segment_from_candidate($batch_candidates[count($batch_candidates) - 1]);
+
+        return 'FHRSRB-' . $first . '-to-' . $last;
+    }
+
+    /**
+     * @param array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>} $candidate
+     */
+    private function batch_po_segment_from_candidate(array $candidate): string
+    {
+        $job = $candidate['job'];
+        if (!($job instanceof OrderPlacementJobRow)) {
+            return 'NA';
+        }
+
+        $raw = trim((string) $job->merchant_po_or_empty());
+        if ($raw === '') {
+            $raw = trim((string) $job->job_key_norm());
+        }
+        if ($raw === '') {
+            $oid = (int) $job->order_id;
+            $raw = $oid > 0 ? ('ORDER' . (string) $oid) : 'NA';
+        }
+
+        $raw = strtoupper($raw);
+        $raw = preg_replace('/[^A-Z0-9\-]+/', '-', $raw);
+        $raw = is_string($raw) ? $raw : '';
+        $raw = preg_replace('/\-{2,}/', '-', $raw);
+        $raw = is_string($raw) ? trim($raw, '-') : '';
+
+        if ($raw === '') {
+            return 'NA';
+        }
+
+        return $raw;
     }
 
     private function truthy_option(string $option_name, bool $default): bool
