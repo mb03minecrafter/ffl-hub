@@ -66,6 +66,31 @@ final class DealerFulfilledJobsPage
             $jobs,
             static fn($job): bool => ($job instanceof OrderPlacementJobRow) && $job->has_tracking()
         ));
+
+        // Tracker should show only rows tied to Woo orders that are not completed.
+        $order_status_cache = [];
+        $jobs = array_values(array_filter(
+            $jobs,
+            static function ($job) use (&$order_status_cache): bool {
+                if (!($job instanceof OrderPlacementJobRow)) {
+                    return false;
+                }
+
+                $order_id = (int) $job->order_id;
+                if ($order_id <= 0) {
+                    return false;
+                }
+
+                if (!array_key_exists($order_id, $order_status_cache)) {
+                    $order = wc_get_order($order_id);
+                    $order_status_cache[$order_id] = ($order && method_exists($order, 'get_status'))
+                        ? strtolower(trim((string) $order->get_status()))
+                        : '';
+                }
+
+                return $order_status_cache[$order_id] !== 'completed';
+            }
+        ));
 ?>
         <div class="wrap fflhub-dealer-shipment-tracker">
             <?php $this->render_tracker_styles(); ?>
