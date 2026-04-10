@@ -494,7 +494,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $coupon->set_individual_use(false);
         $coupon->set_usage_limit(1);
         $coupon->set_usage_limit_per_user(1);
-        $coupon->set_email_restrictions([$email]);
+        $coupon->set_email_restrictions([]);
         $coupon->set_date_expires($expires_ts);
         $coupon->set_free_shipping($force_free_shipping);
         $coupon->set_description(
