@@ -328,8 +328,14 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $product_id = 0;
         if ($upc !== '') {
             $product_id = $this->find_product_id_by_upc($upc);
-        }
-        if ($product_id <= 0 && $product_name !== '') {
+            if ($product_id <= 0 && $product_name !== '') {
+                self::debug_ctx('upc provided but product not resolved; falling back to exact name lookup', [
+                    'upc' => $upc,
+                    'quote_product_name' => $product_name,
+                ]);
+                $product_id = $this->find_product_id_by_exact_name($product_name);
+            }
+        } elseif ($product_name !== '') {
             $product_id = $this->find_product_id_by_exact_name($product_name);
         }
         if ($product_id <= 0) {
@@ -602,7 +608,10 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $rep_index = ($job_id > 0) ? ($job_id % count(self::REP_NAMES)) : 0;
 
         $first_name = trim((string) ($job_row['request_first_name'] ?? ''));
-        $product_name = (string) $product->get_name();
+        $resolved_upc_product_name = $this->resolve_upc_validated_product_name_for_job($job_row, $product);
+        $product_name = ($resolved_upc_product_name !== '')
+            ? $resolved_upc_product_name
+            : (string) __('requested product', 'ffl-hub');
         $product_url = get_permalink((int) $product->get_id());
         if (!is_string($product_url) || $product_url === '') {
             $product_url = home_url('/');
@@ -622,13 +631,18 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $final_price_display = $this->final_price_display_for_amount($final_price_amount);
         $shipping_phrase = $this->shipping_phrase_for_quote_product($product, $final_price_amount);
 
-        $subject = sprintf(__('Quote for %s', 'ffl-hub'), $product_name);
+        $subject = ($resolved_upc_product_name !== '')
+            ? sprintf(__('Quote for %s', 'ffl-hub'), $resolved_upc_product_name)
+            : (string) __('Email Quote Ready', 'ffl-hub');
         $rep_name = self::REP_NAMES[$rep_index] ?? self::REP_NAMES[0];
         $coupon_amount_display = wp_strip_all_tags(wc_price($coupon_amount));
 
         self::debug_ctx('email context built', [
             'job_id' => isset($job_row['id']) ? (int) $job_row['id'] : 0,
             'recipient' => $recipient,
+            'quote_upc' => trim((string) ($job_row['quote_upc'] ?? '')),
+            'resolved_upc_product_name' => $resolved_upc_product_name,
+            'display_product_name' => $product_name,
             'subject' => $subject,
             'variant_index' => $variant_index,
             'rep_name' => $rep_name,
@@ -651,6 +665,52 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             $shipping_phrase,
             $expires_display
         );
+    }
+
+    /**
+     * Resolve a product title only when it can be validated against the job UPC.
+     *
+     * If the job has a UPC and the resolved product does not match that UPC, return
+     * an empty string so callers can safely fall back to a generic subject/body label.
+     *
+     * @param array<string,mixed> $job_row
+     */
+    private function resolve_upc_validated_product_name_for_job(array $job_row, WC_Product $product): string
+    {
+        $name = trim((string) $product->get_name());
+        if ($name === '') {
+            return '';
+        }
+
+        $quote_upc = trim((string) ($job_row['quote_upc'] ?? ''));
+        if ($quote_upc === '') {
+            return $name;
+        }
+
+        return $this->product_matches_quote_upc($product, $quote_upc) ? $name : '';
+    }
+
+    private function product_matches_quote_upc(WC_Product $product, string $quote_upc): bool
+    {
+        $quote_upc = trim($quote_upc);
+        if ($quote_upc === '') {
+            return false;
+        }
+
+        $meta_keys = [
+            ProductMeta::FFLHUB_UPC_META,
+            '_upc',
+            'upc',
+        ];
+
+        foreach ($meta_keys as $meta_key) {
+            $value = trim((string) $product->get_meta($meta_key, true));
+            if ($value !== '' && $value === $quote_upc) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function recommended_price_for_product(WC_Product $product): float
