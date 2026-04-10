@@ -785,15 +785,16 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function build_batch_po(array $batch_candidates): string
     {
-        // Format: FHRSRB-firstPO-to-lastPO (derived from first/last row in aggregate set).
+        // Format: RSRB-{firstWooOrderNumber}-{lastWooOrderNumber}
+        // Keep each order token short so the final PO stays <= 22 chars (RSR cap).
         if (empty($batch_candidates)) {
-            return 'FHRSRB-' . gmdate('ymdHi') . '-to-' . (string) wp_rand(100, 999);
+            return 'RSRB-' . gmdate('mdHi') . '-' . (string) wp_rand(1000, 9999);
         }
 
         $first = $this->batch_po_segment_from_candidate($batch_candidates[0]);
         $last = $this->batch_po_segment_from_candidate($batch_candidates[count($batch_candidates) - 1]);
 
-        return 'FHRSRB-' . $first . '-to-' . $last;
+        return 'RSRB-' . $first . '-' . $last;
     }
 
     /**
@@ -801,24 +802,33 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function batch_po_segment_from_candidate(array $candidate): string
     {
-        // Segment preference order:
-        // 1) existing merchant_po
-        // 2) normalized job_key
-        // 3) ORDER{order_id}
-        $job = $candidate['job'];
-        if (!($job instanceof OrderPlacementJobRow)) {
-            return 'NA';
+        // Segment source is Woo order number only (explicit business requirement).
+        $order = $candidate['order'] ?? null;
+        if ($order instanceof WC_Order) {
+            $num = trim((string) $order->get_order_number());
+            if ($num !== '') {
+                return $this->sanitize_po_segment($num);
+            }
         }
 
-        $raw = trim((string) $job->merchant_po_or_empty());
-        if ($raw === '') {
-            $raw = trim((string) $job->job_key_norm());
-        }
-        if ($raw === '') {
+        $job = $candidate['job'] ?? null;
+        $raw = '';
+        if ($job instanceof OrderPlacementJobRow) {
             $oid = (int) $job->order_id;
-            $raw = $oid > 0 ? ('ORDER' . (string) $oid) : 'NA';
+            if ($oid > 0) {
+                $raw = (string) $oid;
+            }
         }
 
+        if ($raw === '') {
+            $raw = 'NA';
+        }
+
+        return $this->sanitize_po_segment($raw);
+    }
+
+    private function sanitize_po_segment(string $raw): string
+    {
         $raw = strtoupper($raw);
         $raw = preg_replace('/[^A-Z0-9\-]+/', '-', $raw);
         $raw = is_string($raw) ? $raw : '';
@@ -827,6 +837,11 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
         if ($raw === '') {
             return 'NA';
+        }
+
+        // 4 + 1 + 8 + 1 + 8 = 22 max total for "RSRB-{first}-{last}".
+        if (strlen($raw) > 8) {
+            $raw = substr($raw, -8);
         }
 
         return $raw;
