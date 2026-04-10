@@ -40,7 +40,8 @@ if (!defined('ABSPATH')) {
  * Behavior:
  * - Low-stock risk is computed from SUMMED UPC demand across currently queued rows.
  * - Risky rows are flushed immediately as one aggregate "priority" batch call.
- * - Remaining rows are held until dispatch window (or force flush), then sent as one aggregate scheduled batch call.
+ * - Remaining rows are held until the next daily dispatch window (or force flush), then sent as one aggregate scheduled batch call.
+ * - Scheduled dispatch is allowed at most once per Central-time day after the configured HH:MM gate opens.
  * - Aggregate retryable failures are re-queued in batch_pending with next_run_at delay.
  * - Aggregate non-retryable outcomes fall back to per-row dispatch for better salvage.
  */
@@ -64,12 +65,14 @@ final class RSRDealerBatchCronService extends AbstractCronService
     private const OPT_RETRY_DELAY_SECONDS = 'fflhub_rsr_dealer_batch_retry_delay_seconds';
     private const OPT_MAX_ROWS_PER_RUN    = 'fflhub_rsr_dealer_batch_max_rows_per_run';
     private const OPT_FORCE_FLUSH         = 'fflhub_rsr_dealer_batch_force_flush';
+    private const OPT_LAST_SCHEDULED_FLUSH_AT_UTC = 'fflhub_rsr_dealer_batch_last_scheduled_flush_at_utc';
 
     /** Safe defaults used when options are missing/invalid. */
     private const DEFAULT_DISPATCH_TIME = '17:00';
     private const DEFAULT_LOW_STOCK_THRESHOLD = 3;
     private const DEFAULT_RETRY_DELAY_SECONDS = 300;
     private const DEFAULT_MAX_ROWS_PER_RUN = 200;
+    private const DISPATCH_TZ = 'America/Chicago';
 
     private DistributorHandler $handler;
     private OrderPlacementJobsTable $jobs_table;
@@ -314,6 +317,10 @@ final class RSRDealerBatchCronService extends AbstractCronService
             try {
                 // Only flush scheduled rows when gate is open.
                 if ($dispatch_due && !empty($batch_candidates)) {
+                    // Consume today's scheduled dispatch slot before attempting flush.
+                    if (!$force_flush) {
+                        $this->mark_scheduled_flush_attempt((string) $now_mysql_utc);
+                    }
                     $this->flush_aggregate_batch($rsr, $batch_candidates, $retry_delay, $run_id, 'scheduled_batch');
                     $scheduled_flushed_rows = count($batch_candidates);
                 }
@@ -727,7 +734,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
     private function is_dispatch_window_open(): bool
     {
-        // Parse configured HH:MM in site-local timezone.
+        // Parse configured HH:MM in fixed Central timezone.
         $hhmm = trim((string) get_option(self::OPT_DISPATCH_TIME, self::DEFAULT_DISPATCH_TIME));
         if (!preg_match('/^([0-1]?\d|2[0-3]):([0-5]\d)$/', $hhmm, $m)) {
             $hhmm = self::DEFAULT_DISPATCH_TIME;
@@ -737,11 +744,40 @@ final class RSRDealerBatchCronService extends AbstractCronService
         $hour = isset($m[1]) ? (int) $m[1] : 17;
         $minute = isset($m[2]) ? (int) $m[2] : 0;
 
-        $tz = function_exists('wp_timezone') ? wp_timezone() : new \DateTimeZone('UTC');
+        $tz = new \DateTimeZone(self::DISPATCH_TZ);
         $now_local = new \DateTimeImmutable('now', $tz);
         $dispatch_local = $now_local->setTime($hour, $minute, 0);
+        if ($now_local < $dispatch_local) {
+            return false;
+        }
 
-        return $now_local >= $dispatch_local;
+        // Allow only one scheduled flush per local day after dispatch time.
+        $last_flush_utc = trim((string) get_option(self::OPT_LAST_SCHEDULED_FLUSH_AT_UTC, ''));
+        if ($last_flush_utc === '') {
+            return true;
+        }
+
+        $last_utc = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $last_flush_utc, new \DateTimeZone('UTC'));
+        if (!($last_utc instanceof \DateTimeImmutable)) {
+            return true;
+        }
+
+        $last_local = $last_utc->setTimezone($tz);
+        if ($last_local >= $dispatch_local) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function mark_scheduled_flush_attempt(string $now_mysql_utc): void
+    {
+        $now_mysql_utc = trim($now_mysql_utc);
+        if ($now_mysql_utc === '') {
+            $now_mysql_utc = gmdate('Y-m-d H:i:s');
+        }
+
+        update_option(self::OPT_LAST_SCHEDULED_FLUSH_AT_UTC, $now_mysql_utc, false);
     }
 
     /**
