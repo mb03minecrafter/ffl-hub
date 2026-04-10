@@ -631,9 +631,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $final_price_display = $this->final_price_display_for_amount($final_price_amount);
         $shipping_phrase = $this->shipping_phrase_for_quote_product($product, $final_price_amount);
 
-        $subject = ($resolved_upc_product_name !== '')
-            ? sprintf(__('Quote for %s', 'ffl-hub'), $resolved_upc_product_name)
-            : (string) __('Email Quote Ready', 'ffl-hub');
+        $subject = (string) __('Email Quote Ready', 'ffl-hub');
         $rep_name = self::REP_NAMES[$rep_index] ?? self::REP_NAMES[0];
         $coupon_amount_display = wp_strip_all_tags(wc_price($coupon_amount));
 
