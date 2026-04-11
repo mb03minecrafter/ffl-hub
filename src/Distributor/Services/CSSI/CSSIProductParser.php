@@ -83,6 +83,11 @@ class CSSIProductParser
         $allocationStatus = $allocatedFlag === '1'
             ? 'allocated'
             : $this->allocation_status($inventory, $inStockFlag);
+        $retailMap = $this->clean_money($this->get_csv($csv, $headerMap, ['retail map', 'map', 'map_price', 'retail_map']));
+        $retailMsrp = $this->clean_money($this->get_csv($csv, $headerMap, ['msrp', 'retail_price', 'retail_msrp']));
+        if ($retailMsrp === '' && $retailMap !== '') {
+            $retailMsrp = $retailMap;
+        }
 
         return [
             'upc' => $upc,
@@ -92,8 +97,8 @@ class CSSIProductParser
             'in_stock_flag' => $inStockFlag,
             'allocation_status' => $allocationStatus,
             'distributor_price' => $this->clean_money($this->get_csv($csv, $headerMap, ['price', 'custom_price', 'dealer_price'])),
-            'retail_map' => $this->clean_money($this->get_csv($csv, $headerMap, ['retail map', 'map', 'map_price', 'retail_map'])),
-            'retail_msrp' => $this->clean_money($this->get_csv($csv, $headerMap, ['msrp', 'retail_price', 'retail_msrp'])),
+            'retail_map' => $retailMap,
+            'retail_msrp' => $retailMsrp,
             'drop_ship_price' => $this->clean_money($this->get_csv($csv, $headerMap, ['drop ship price', 'drop_ship_price', 'dropship_price'])),
 
             'product_name' => $this->get_csv($csv, $headerMap, ['web item name', 'item name', 'name', 'product_name']),
@@ -138,6 +143,11 @@ class CSSIProductParser
         $inventory = $this->to_int_string($this->get_array($item, ['inventory', 'quantity']));
         $inStockFlag = $this->to_flag($this->get_array($item, ['in_stock_flag']));
         $dropShipFlag = $this->to_flag($this->get_array($item, ['drop_ship_flag']));
+        $retailMap = $this->clean_money($this->get_array($item, ['map_price']));
+        $retailMsrp = $this->clean_money($this->get_array($item, ['retail_price', 'msrp']));
+        if ($retailMsrp === '' && $retailMap !== '') {
+            $retailMsrp = $retailMap;
+        }
 
         return [
             'upc' => $upc,
@@ -147,8 +157,8 @@ class CSSIProductParser
             'in_stock_flag' => $inStockFlag,
             'allocation_status' => $this->allocation_status($inventory, $inStockFlag),
             'distributor_price' => $this->clean_money($this->get_array($item, ['custom_price', 'price'])),
-            'retail_map' => $this->clean_money($this->get_array($item, ['map_price'])),
-            'retail_msrp' => $this->clean_money($this->get_array($item, ['retail_price', 'msrp'])),
+            'retail_map' => $retailMap,
+            'retail_msrp' => $retailMsrp,
             'drop_ship_price' => $this->clean_money($this->get_array($item, ['drop_ship_price'])),
 
             'product_name' => $this->get_array($item, ['name', 'product_name']),
