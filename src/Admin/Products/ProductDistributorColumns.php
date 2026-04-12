@@ -155,6 +155,8 @@ final class ProductDistributorColumns
             .fflhub-product-pill.is-off { color: #6f1d1b; border-color: #f3b3b0; background: #fff2f2; }
             .fflhub-product-pill.is-unknown { color: #50575e; border-color: #dcdcde; background: #f6f7f7; }
             .fflhub-product-pill.is-dist { color: #1e3a5f; border-color: #b9d3ef; background: #f1f7ff; }
+            .fflhub-product-pill.is-price { color: #17324a; border-color: #9fc2df; background: #eaf4ff; }
+            .fflhub-product-pill.is-ship { color: #0f4c45; border-color: #93d8cd; background: #ebfdf8; }
         </style>';
     }
 
@@ -272,8 +274,8 @@ final class ProductDistributorColumns
     private function append_custom_columns(array &$columns): void
     {
         $columns[self::COL_DIST_PRICE] = __('Distributor Price', 'ffl-hub');
-        $columns[self::COL_DROPSHIP] = __('Drop Ship', 'ffl-hub');
         $columns[self::COL_SHIPPING] = __('Ship Cost', 'ffl-hub');
+        $columns[self::COL_DROPSHIP] = __('Drop Ship', 'ffl-hub');
         $columns[self::COL_DISTRIBUTOR] = __('Distributor', 'ffl-hub');
     }
 
@@ -285,13 +287,21 @@ final class ProductDistributorColumns
             return;
         }
 
+        $pill_class = ($meta_key === ProductMeta::FFLHUB_LAST_SHIPPING_COST_META) ? 'is-ship' : 'is-price';
+        $icon_class = ($meta_key === ProductMeta::FFLHUB_LAST_SHIPPING_COST_META) ? 'dashicons-admin-site-alt3' : 'dashicons-tag';
+
         $value = (float) $raw;
+        $money_html = '';
         if (function_exists('wc_price')) {
-            echo wp_kses_post(wc_price($value));
-            return;
+            $money_html = (string) wc_price($value);
+        } else {
+            $money_html = '$' . number_format($value, 2, '.', ',');
         }
 
-        echo '$' . esc_html(number_format($value, 2, '.', ','));
+        echo '<span class="fflhub-product-pill ' . esc_attr($pill_class) . '">'
+            . '<span class="dashicons ' . esc_attr($icon_class) . '"></span>'
+            . wp_kses_post($money_html)
+            . '</span>';
     }
 
     private function render_dropship_badge(int $post_id): void
