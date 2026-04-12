@@ -67,6 +67,9 @@ final class OrderPlacementMetaBox
         // Manual retry action (admin-post)
         add_action('admin_post_fflhub_retry_order_job', [$this, 'handle_retry_job_post']);
 
+        // Pipeline rebuild + force-start action (admin-post)
+        add_action('admin_post_fflhub_rebuild_pipeline', [$this, 'handle_rebuild_pipeline_post']);
+
         // Manual dealer-fulfilled shipment tracking update (admin-post)
         add_action('admin_post_fflhub_set_dealer_tracking', [$this, 'handle_set_dealer_tracking_post']);
         // Manual dealer-fulfilled shipment tracking update (admin-ajax fallback for stacks blocking admin-post)
@@ -156,6 +159,40 @@ final class OrderPlacementMetaBox
         $started    = OrderPlacementPipelineMetaStore::get_pipeline_started($order);
         $started_at = OrderPlacementPipelineMetaStore::get_pipeline_started_at($order);
         $started_by = OrderPlacementPipelineMetaStore::get_pipeline_started_by($order);
+        $order_id   = (int) $order->get_id();
+
+        $pipeline_result = isset($_GET['fflhub_pipeline_rebuild'])
+            ? sanitize_text_field(wp_unslash((string) $_GET['fflhub_pipeline_rebuild']))
+            : '';
+        $pipeline_order_id = isset($_GET['fflhub_pipeline_order']) ? (int) $_GET['fflhub_pipeline_order'] : 0;
+        if ($pipeline_order_id === $order_id) {
+            if ($pipeline_result === 'ok') {
+                $new_rows = isset($_GET['fflhub_pipeline_new']) ? max(0, (int) $_GET['fflhub_pipeline_new']) : 0;
+                $preserved = isset($_GET['fflhub_pipeline_preserved']) ? max(0, (int) $_GET['fflhub_pipeline_preserved']) : 0;
+                $still_suspended = !empty($_GET['fflhub_pipeline_suspended']);
+
+                $parts = [];
+                $parts[] = sprintf('Pipeline rebuild completed. New rows: %d.', $new_rows);
+                $parts[] = sprintf('Existing rows preserved: %d.', $preserved);
+                if ($still_suspended) {
+                    $parts[] = 'Order remains suspended.';
+                }
+
+                echo '<div class="notice notice-success inline"><p>'
+                    . esc_html(implode(' ', $parts))
+                    . '</p></div>';
+            } elseif ($pipeline_result === 'error') {
+                $msg = isset($_GET['fflhub_pipeline_msg'])
+                    ? sanitize_text_field(wp_unslash((string) $_GET['fflhub_pipeline_msg']))
+                    : 'Pipeline rebuild failed.';
+                if ($msg === '') {
+                    $msg = 'Pipeline rebuild failed.';
+                }
+                echo '<div class="notice notice-error inline"><p>'
+                    . esc_html($msg)
+                    . '</p></div>';
+            }
+        }
 
         // Jobs index is derived from the jobs table (new architecture)
         $job_keys = OrderPlacementJobsRepository::get_jobs_index($this->jobs_table, $order);
@@ -170,6 +207,7 @@ final class OrderPlacementMetaBox
         echo self::kv('Started at', $started_at !== '' ? esc_html($started_at) : '<span class="fflhub-muted">-</span>');
         echo self::kv('Started by', $started_by !== '' ? esc_html($started_by) : '<span class="fflhub-muted">-</span>');
         echo '</div>';
+        echo self::render_pipeline_rebuild_button($order);
         echo '</div>';
 
         // Index
@@ -775,6 +813,98 @@ final class OrderPlacementMetaBox
     }
 
     /**
+     * Rebuild missing job rows and force-start pipeline from the order admin page.
+     *
+     * Safety behavior:
+     * - Existing job rows are restored to their pre-click state.
+     * - Only newly-created rows from force-start remain queued.
+     */
+    public function handle_rebuild_pipeline_post(): void
+    {
+        if (!current_user_can('manage_woocommerce') && !current_user_can('edit_shop_orders')) {
+            wp_die('Insufficient permissions.');
+        }
+
+        $order_id = isset($_GET['order_id']) ? (int) $_GET['order_id'] : 0;
+        if ($order_id <= 0) {
+            wp_die('Missing order_id.');
+        }
+
+        check_admin_referer('fflhub_rebuild_pipeline_' . $order_id);
+
+        $order = wc_get_order($order_id);
+        if (!($order instanceof WC_Order)) {
+            self::redirect_back_pipeline_rebuild($order_id, 'error', 0, 0, false, 'Order not found.');
+            return;
+        }
+
+        $was_suspended = OrderPlacementPipelineMetaStore::is_order_suspended($order_id);
+
+        try {
+            $snapshot_before = $this->get_order_job_state_snapshot($order_id);
+
+            update_post_meta($order_id, OrderPlacementKeys::META_ORDER_SUSPENDED, '1');
+            delete_post_meta($order_id, '_fflhub_order_place_pipeline_lock');
+            $order->update_meta_data(OrderPlacementKeys::META_PIPELINE_STARTED, '0');
+            $order->save();
+
+            do_action('fflhub_ordering_force_start', $order_id);
+
+            $snapshot_after = $this->get_order_job_state_snapshot($order_id);
+            $new_job_keys = array_values(array_diff(array_keys($snapshot_after), array_keys($snapshot_before)));
+
+            $preserved = $this->restore_order_job_state_snapshot($order_id, $snapshot_before);
+
+            if (!$was_suspended) {
+                update_post_meta($order_id, OrderPlacementKeys::META_ORDER_SUSPENDED, '0');
+            }
+
+            if (function_exists('as_schedule_single_action')) {
+                as_schedule_single_action(
+                    time() + 1,
+                    OrderingCronService::CRON_HOOK,
+                    [],
+                    'fflhub_place'
+                );
+                as_schedule_single_action(
+                    time() + 1,
+                    RSRDealerBatchCronService::CRON_HOOK,
+                    [],
+                    'fflhub_place'
+                );
+            }
+
+            self::redirect_back_pipeline_rebuild(
+                $order_id,
+                'ok',
+                count($new_job_keys),
+                $preserved,
+                $was_suspended
+            );
+            return;
+        } catch (\Throwable $e) {
+            self::log_ctx('pipeline_rebuild_error', [
+                'order_id' => $order_id,
+                'exception_class' => get_class($e),
+                'exception_message' => $e->getMessage(),
+            ]);
+
+            if (!$was_suspended) {
+                update_post_meta($order_id, OrderPlacementKeys::META_ORDER_SUSPENDED, '0');
+            }
+
+            self::redirect_back_pipeline_rebuild(
+                $order_id,
+                'error',
+                0,
+                0,
+                $was_suspended,
+                'Pipeline rebuild failed. Check logs.'
+            );
+        }
+    }
+
+    /**
      * Process dealer-tracking fields during normal Woo "Update order" saves.
      *
      * Runs only when BOTH fields are present and non-empty.
@@ -1173,6 +1303,116 @@ final class OrderPlacementMetaBox
         return array_values(array_unique($out));
     }
 
+    /**
+     * @return array<string,array{status:string,attempts:int,action_id:mixed,next_run_at:mixed,done_at:mixed}>
+     */
+    private function get_order_job_state_snapshot(int $order_id): array
+    {
+        global $wpdb;
+
+        $table = $this->jobs_table->get_table_name();
+        if (!is_string($table) || $table === '' || $order_id <= 0) {
+            return [];
+        }
+
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT job_key,status,attempts,action_id,next_run_at,done_at
+                 FROM {$table}
+                 WHERE order_id = %d
+                 ORDER BY id ASC",
+                $order_id
+            ),
+            ARRAY_A
+        );
+
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $job_key = OrderPlacementKeysUtil::normalize_job_key((string) ($row['job_key'] ?? ''));
+            if ($job_key === '') {
+                continue;
+            }
+
+            $out[$job_key] = [
+                'status' => (string) ($row['status'] ?? ''),
+                'attempts' => (int) ($row['attempts'] ?? 0),
+                'action_id' => $row['action_id'] ?? null,
+                'next_run_at' => $row['next_run_at'] ?? null,
+                'done_at' => $row['done_at'] ?? null,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<string,array{status:string,attempts:int,action_id:mixed,next_run_at:mixed,done_at:mixed}> $snapshot
+     */
+    private function restore_order_job_state_snapshot(int $order_id, array $snapshot): int
+    {
+        global $wpdb;
+
+        $table = $this->jobs_table->get_table_name();
+        if (!is_string($table) || $table === '' || $order_id <= 0 || empty($snapshot)) {
+            return 0;
+        }
+
+        $restored = 0;
+        foreach ($snapshot as $job_key => $row) {
+            $job_key = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
+            if ($job_key === '') {
+                continue;
+            }
+
+            $status = (string) ($row['status'] ?? '');
+            $attempts = max(0, (int) ($row['attempts'] ?? 0));
+            $action_id = $row['action_id'] ?? null;
+            $next_run_at = $row['next_run_at'] ?? null;
+            $done_at = $row['done_at'] ?? null;
+
+            $has_action = !($action_id === null || $action_id === '' || (string) $action_id === '0');
+            $has_next_run_at = self::is_set_mysql_datetime($next_run_at);
+            $has_done_at = self::is_set_mysql_datetime($done_at);
+
+            $sql = "UPDATE {$table}
+                    SET status = %s,
+                        attempts = %d,
+                        action_id = " . ($has_action ? "%d" : "NULL") . ",
+                        next_run_at = " . ($has_next_run_at ? "%s" : "NULL") . ",
+                        done_at = " . ($has_done_at ? "%s" : "NULL") . ",
+                        updated_at = UTC_TIMESTAMP()
+                    WHERE order_id = %d AND job_key = %s";
+
+            $params = [$status, $attempts];
+            if ($has_action) {
+                $params[] = (int) $action_id;
+            }
+            if ($has_next_run_at) {
+                $params[] = (string) $next_run_at;
+            }
+            if ($has_done_at) {
+                $params[] = (string) $done_at;
+            }
+            $params[] = $order_id;
+            $params[] = $job_key;
+
+            $result = $wpdb->query($wpdb->prepare($sql, ...$params));
+            if ($result !== false) {
+                $restored++;
+            }
+        }
+
+        return $restored;
+    }
+
     private static function resolve_order($post_or_order): ?WC_Order
     {
         if ($post_or_order instanceof WC_Order) {
@@ -1365,6 +1605,32 @@ final class OrderPlacementMetaBox
             . '</div>';
     }
 
+    private static function render_pipeline_rebuild_button(WC_Order $order): string
+    {
+        $order_id = (int) $order->get_id();
+        if ($order_id <= 0) {
+            return '';
+        }
+
+        $url = add_query_arg([
+            'action'   => 'fflhub_rebuild_pipeline',
+            'order_id' => $order_id,
+        ], admin_url('admin-post.php'));
+
+        $url = wp_nonce_url($url, 'fflhub_rebuild_pipeline_' . $order_id);
+
+        $warning = '<div class="notice notice-warning inline" style="margin:10px 0;">'
+            . '<p style="margin:0;color:#b91c1c;font-weight:700;"><strong style="color:#b91c1c;">WARNING:</strong> ONLY USE THIS AFTER THE AUTHORIZE.NET CHARGE HAS BEEN CAPTURED.</p>'
+            . '</div>';
+
+        return '<div class="fflhub-retry-wrap">'
+            . $warning
+            . '<a class="button button-primary" href="' . esc_url($url) . '" '
+            . 'onclick="return confirm(\'Rebuild missing job rows and force-start this order pipeline?\');">'
+            . 'Reconstruct + Force Start</a>'
+            . '</div>';
+    }
+
     /**
      * UTC mysql datetime string for now + N seconds.
      */
@@ -1451,6 +1717,62 @@ final class OrderPlacementMetaBox
 
         wp_safe_redirect($ref);
         exit;
+    }
+
+    private static function redirect_back_pipeline_rebuild(
+        int $order_id,
+        string $result,
+        int $new_rows = 0,
+        int $preserved_rows = 0,
+        bool $still_suspended = false,
+        string $message = ''
+    ): void {
+        $ref = wp_get_referer();
+        if (!$ref) {
+            $ref = admin_url('post.php?post=' . $order_id . '&action=edit');
+        }
+
+        $args = [
+            'fflhub_pipeline_rebuild' => $result,
+            'fflhub_pipeline_order' => $order_id,
+        ];
+
+        if ($new_rows > 0) {
+            $args['fflhub_pipeline_new'] = $new_rows;
+        }
+
+        if ($preserved_rows > 0) {
+            $args['fflhub_pipeline_preserved'] = $preserved_rows;
+        }
+
+        if ($still_suspended) {
+            $args['fflhub_pipeline_suspended'] = 1;
+        }
+
+        if ($message !== '') {
+            $args['fflhub_pipeline_msg'] = $message;
+        }
+
+        $ref = add_query_arg($args, $ref);
+        wp_safe_redirect($ref);
+        exit;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function is_set_mysql_datetime($value): bool
+    {
+        if (!is_string($value)) {
+            return false;
+        }
+
+        $value = trim($value);
+        if ($value === '' || $value === '0000-00-00 00:00:00') {
+            return false;
+        }
+
+        return true;
     }
 
     /** @param array<string,mixed> $ctx */
