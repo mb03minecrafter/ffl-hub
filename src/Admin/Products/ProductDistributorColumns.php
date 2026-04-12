@@ -19,6 +19,21 @@ final class ProductDistributorColumns
     private const COL_DROPSHIP = 'fflhub_dropship_status';
     private const COL_SHIPPING = 'fflhub_shipping_cost';
     private const COL_DISTRIBUTOR = 'fflhub_distributor';
+    private const FILTER_DISTRIBUTOR_ARG = 'fflhub_product_distributor_filter';
+    private const FILTER_DROPSHIP_ARG = 'fflhub_product_dropship_filter';
+
+    private const DROPSHIP_FILTER_ENABLED = 'enabled';
+    private const DROPSHIP_FILTER_DISABLED = 'disabled';
+
+    /**
+     * @var string[]
+     */
+    private const DROPSHIP_ENABLED_VALUES = ['1', 'yes', 'true', 'on', 'Y', 'YES', 'TRUE', 'ON'];
+
+    /**
+     * @var string[]
+     */
+    private const DROPSHIP_DISABLED_VALUES = ['0', 'no', 'false', 'off', 'N', 'NO', 'FALSE', 'OFF'];
 
     /**
      * @var array<string,string>
@@ -31,10 +46,23 @@ final class ProductDistributorColumns
         '4' => "Davidson's",
     ];
 
+    /**
+     * @var array<string,string>
+     */
+    private const LEGACY_DIST_CODE_BY_SLUG = [
+        'rsr' => '0',
+        'lipseys' => '1',
+        'zanders' => '2',
+        'cssi' => '3',
+        'davidsons' => '4',
+    ];
+
     public function register(): void
     {
         add_filter('manage_edit-product_columns', [$this, 'inject_columns'], 25);
         add_action('manage_product_posts_custom_column', [$this, 'render_column'], 20, 2);
+        add_action('restrict_manage_posts', [$this, 'render_filter_controls']);
+        add_action('pre_get_posts', [$this, 'apply_list_filters']);
         add_action('admin_head', [$this, 'render_admin_styles']);
     }
 
@@ -104,6 +132,7 @@ final class ProductDistributorColumns
             .column-' . self::COL_DIST_PRICE . ', .column-' . self::COL_SHIPPING . ' { width: 120px; }
             .column-' . self::COL_DROPSHIP . ' { width: 160px; }
             .column-' . self::COL_DISTRIBUTOR . ' { width: 120px; }
+            select[name="' . self::FILTER_DISTRIBUTOR_ARG . '"], select[name="' . self::FILTER_DROPSHIP_ARG . '"] { min-width: 170px; }
             .fflhub-product-empty { color: #8c8f94; }
             .fflhub-product-pill {
                 display: inline-flex;
@@ -127,6 +156,114 @@ final class ProductDistributorColumns
             .fflhub-product-pill.is-unknown { color: #50575e; border-color: #dcdcde; background: #f6f7f7; }
             .fflhub-product-pill.is-dist { color: #1e3a5f; border-color: #b9d3ef; background: #f1f7ff; }
         </style>';
+    }
+
+    /**
+     * @param mixed $post_type
+     */
+    public function render_filter_controls($post_type = ''): void
+    {
+        if ((string) $post_type !== 'product') {
+            return;
+        }
+
+        $selected_dist = $this->requested_distributor_filter();
+        $selected_drop = $this->requested_dropship_filter();
+
+        $dist_options = $this->distributor_filter_options();
+        $drop_options = $this->dropship_filter_options();
+
+        echo '<select name="' . esc_attr(self::FILTER_DISTRIBUTOR_ARG) . '">';
+        foreach ($dist_options as $value => $label) {
+            echo '<option value="' . esc_attr($value) . '" ' . selected($selected_dist, $value, false) . '>' . esc_html($label) . '</option>';
+        }
+        echo '</select>';
+
+        echo '<select name="' . esc_attr(self::FILTER_DROPSHIP_ARG) . '">';
+        foreach ($drop_options as $value => $label) {
+            echo '<option value="' . esc_attr($value) . '" ' . selected($selected_drop, $value, false) . '>' . esc_html($label) . '</option>';
+        }
+        echo '</select>';
+    }
+
+    public function apply_list_filters(\WP_Query $query): void
+    {
+        if (!is_admin() || !$query->is_main_query()) {
+            return;
+        }
+
+        global $pagenow;
+        if ($pagenow !== 'edit.php') {
+            return;
+        }
+
+        $post_type = (string) $query->get('post_type');
+        if ($post_type !== 'product') {
+            return;
+        }
+
+        $dist_filter = $this->requested_distributor_filter();
+        $drop_filter = $this->requested_dropship_filter();
+
+        if ($dist_filter === '' && $drop_filter === '') {
+            return;
+        }
+
+        $meta_query = $query->get('meta_query');
+        if (!is_array($meta_query)) {
+            $meta_query = [];
+        }
+
+        if ($dist_filter !== '') {
+            $dist_values = $this->distributor_meta_values_for_filter($dist_filter);
+            if (count($dist_values) === 1) {
+                $meta_query[] = [
+                    'key' => ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META,
+                    'value' => $dist_values[0],
+                    'compare' => '=',
+                ];
+            } else {
+                $or = ['relation' => 'OR'];
+                foreach ($dist_values as $value) {
+                    $or[] = [
+                        'key' => ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META,
+                        'value' => $value,
+                        'compare' => '=',
+                    ];
+                }
+                $meta_query[] = $or;
+            }
+        }
+
+        if ($drop_filter === self::DROPSHIP_FILTER_ENABLED) {
+            $meta_query[] = [
+                'key' => ProductMeta::FFLHUB_DROPSHIP_ENABLED_META,
+                'value' => self::DROPSHIP_ENABLED_VALUES,
+                'compare' => 'IN',
+            ];
+        } elseif ($drop_filter === self::DROPSHIP_FILTER_DISABLED) {
+            $meta_query[] = [
+                'relation' => 'OR',
+                [
+                    'key' => ProductMeta::FFLHUB_DROPSHIP_ENABLED_META,
+                    'compare' => 'NOT EXISTS',
+                ],
+                [
+                    'key' => ProductMeta::FFLHUB_DROPSHIP_ENABLED_META,
+                    'value' => '',
+                    'compare' => '=',
+                ],
+                [
+                    'key' => ProductMeta::FFLHUB_DROPSHIP_ENABLED_META,
+                    'value' => self::DROPSHIP_DISABLED_VALUES,
+                    'compare' => 'IN',
+                ],
+            ];
+        }
+
+        if (!empty($meta_query)) {
+            $query->set('meta_query', $meta_query);
+        }
     }
 
     /**
@@ -214,5 +351,83 @@ final class ProductDistributorColumns
         }
 
         return strtoupper($normalized);
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function distributor_filter_options(): array
+    {
+        $options = ['' => __('All Distributors', 'ffl-hub')];
+
+        foreach (DistributorRegistry::get_modules() as $module) {
+            $id = strtolower(trim((string) $module->id()));
+            if ($id === '') {
+                continue;
+            }
+
+            $options[$id] = (string) $module->label();
+        }
+
+        return $options;
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function dropship_filter_options(): array
+    {
+        return [
+            '' => __('All Drop Ship Statuses', 'ffl-hub'),
+            self::DROPSHIP_FILTER_ENABLED => __('Drop Ship Enabled', 'ffl-hub'),
+            self::DROPSHIP_FILTER_DISABLED => __('Drop Ship Disabled', 'ffl-hub'),
+        ];
+    }
+
+    private function requested_distributor_filter(): string
+    {
+        if (!isset($_GET[self::FILTER_DISTRIBUTOR_ARG])) {
+            return '';
+        }
+
+        $raw = strtolower(trim(sanitize_text_field(wp_unslash((string) $_GET[self::FILTER_DISTRIBUTOR_ARG]))));
+        if ($raw === '') {
+            return '';
+        }
+
+        $options = $this->distributor_filter_options();
+        return isset($options[$raw]) ? $raw : '';
+    }
+
+    private function requested_dropship_filter(): string
+    {
+        if (!isset($_GET[self::FILTER_DROPSHIP_ARG])) {
+            return '';
+        }
+
+        $raw = strtolower(trim(sanitize_text_field(wp_unslash((string) $_GET[self::FILTER_DROPSHIP_ARG]))));
+        if (in_array($raw, [self::DROPSHIP_FILTER_ENABLED, self::DROPSHIP_FILTER_DISABLED], true)) {
+            return $raw;
+        }
+
+        return '';
+    }
+
+    /**
+     * @return string[]
+     */
+    private function distributor_meta_values_for_filter(string $dist_slug): array
+    {
+        $values = [$dist_slug];
+
+        if (isset(self::LEGACY_DIST_CODE_BY_SLUG[$dist_slug])) {
+            $values[] = self::LEGACY_DIST_CODE_BY_SLUG[$dist_slug];
+        }
+
+        $values[] = strtoupper($dist_slug);
+        $values[] = strtolower($dist_slug);
+
+        $values = array_values(array_unique(array_filter($values, static fn(string $v): bool => $v !== '')));
+        return $values;
     }
 }

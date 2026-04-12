@@ -71,11 +71,7 @@ final class DistributorOffer
     }
 
     /**
-     * Get the distributor's *true cost* for comparison.
-     *
-     * True cost is expected to already include:
-     * - distributor price
-     * - any fixed per-item shipping heuristics
+     * Get the distributor's stored true cost.
      *
      * Returns:
      * - float > 0 if valid
@@ -98,6 +94,36 @@ final class DistributorOffer
         $v = (float) $v;
 
         return ($v > 0) ? $v : null;
+    }
+
+    /**
+     * Get a landed unit cost for cross-distributor selection.
+     *
+     * Policy:
+     * - Prefer distributor price + shipping when price is available.
+     * - Fallback to true_cost when price is missing/invalid.
+     *
+     * This is intentionally separate from get_true_cost() so pricing logic
+     * can keep using true_cost semantics where needed.
+     */
+    public function get_selection_cost(): ?float
+    {
+        $price = $this->product->price;
+        $shipping = $this->product->shipping_cost;
+
+        if (is_numeric($price)) {
+            $price = (float) $price;
+            if ($price > 0) {
+                $ship = is_numeric($shipping) ? (float) $shipping : 0.0;
+                if (!is_finite($ship) || $ship < 0) {
+                    $ship = 0.0;
+                }
+
+                return $price + $ship;
+            }
+        }
+
+        return $this->get_true_cost();
     }
 
     /**

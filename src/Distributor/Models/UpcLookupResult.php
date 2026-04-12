@@ -16,14 +16,14 @@ use FFLHub\Settings\Options;
  * Responsibilities:
  * - Hold the set of offers keyed by distributor_id.
  * - Precompute (once) the best offer overall and best in-stock offer.
- *   Priority: drop-ship enabled first, then true_cost-based comparison.
+ *   Priority: drop-ship enabled first, then landed-cost comparison.
  * - Provide a deterministic "best default" selection for UI/business logic.
  *
  * Notes / invariants:
  * - Offers are expected to be a map of distributor_id => DistributorOffer.
- * - Computation compares DistributorOffer::get_true_cost() only after
+ * - Computation compares DistributorOffer::get_selection_cost() only after
  *   drop-ship-enabled preference has been applied.
- * - Offers with missing/invalid true_cost are ignored for "cheapest" computations.
+ * - Offers with missing/invalid selection cost are ignored for "cheapest" computations.
  * - "In stock" is defined by DistributorOffer::is_in_stock().
  * - No sorting or mutation of the offers map is performed.
  */
@@ -126,7 +126,7 @@ final class UpcLookupResult
      *
      * Comparison key:
      * - First: DistributorProductPayload::dropship_enabled (true preferred)
-     * - Then: DistributorOffer::get_true_cost() (null => not comparable)
+     * - Then: DistributorOffer::get_selection_cost() (null => not comparable)
      *
      * In-stock determination:
      * - DistributorOffer::is_in_stock()
@@ -141,25 +141,25 @@ final class UpcLookupResult
                 continue;
             }
 
-            $true_cost = $offer->get_true_cost();
-            if ($true_cost === null) {
+            $selection_cost = $offer->get_selection_cost();
+            if ($selection_cost === null) {
                 continue;
             }
 
             $best_any_cost = ($this->cheapest_any instanceof DistributorOffer)
-                ? $this->cheapest_any->get_true_cost()
+                ? $this->cheapest_any->get_selection_cost()
                 : null;
 
-            if ($this->should_replace_best_offer($offer, (float) $true_cost, $this->cheapest_any, $best_any_cost)) {
+            if ($this->should_replace_best_offer($offer, (float) $selection_cost, $this->cheapest_any, $best_any_cost)) {
                 $this->cheapest_any = $offer;
             }
 
             if ($offer->is_in_stock()) {
                 $best_stock_cost = ($this->cheapest_in_stock instanceof DistributorOffer)
-                    ? $this->cheapest_in_stock->get_true_cost()
+                    ? $this->cheapest_in_stock->get_selection_cost()
                     : null;
 
-                if ($this->should_replace_best_offer($offer, (float) $true_cost, $this->cheapest_in_stock, $best_stock_cost)) {
+                if ($this->should_replace_best_offer($offer, (float) $selection_cost, $this->cheapest_in_stock, $best_stock_cost)) {
                     $this->cheapest_in_stock = $offer;
                 }
             }

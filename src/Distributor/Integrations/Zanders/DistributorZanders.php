@@ -37,6 +37,7 @@ class DistributorZanders extends DistributorBase
     private const DEBUG_FLAG = 'FFLHUB_ZANDERS_DEBUG';
     private const LOG_PREFIX = '[FFLHub][ZandersDistributor]';
     private const FLAT_SHIPPING_COST = 15.0;
+    private const FREE_SHIPPING_DISTRIBUTOR_COST_THRESHOLD = 500.0;
 
     /**
      * Guardrail: prevent pathological carts from causing heavy DB lookups.
@@ -1024,15 +1025,21 @@ class DistributorZanders extends DistributorBase
 
 
     /*
-     * For Zanders, its $15 no matter what
+     * Zanders shipping rule:
+     * - Free shipping when distributor cost is over $500
+     * - Otherwise flat shipping
      */
     public function get_shipping_cost_by_upc(string $upc): ?float
     {
-        $normalized = $this->normalize_upc($upc);
-        if ($normalized === null) {
+        $lookup = $this->get_fulfillment_row_for_upc($upc);
+        if ($lookup === null) {
             return null;
         }
-        return self::FLAT_SHIPPING_COST;
+
+        $row = $lookup['row'];
+        $distributor_cost = $this->money_to_float($this->get_string_field($row, ['distributor_price']));
+
+        return $this->compute_shipping_cost_from_distributor_cost($distributor_cost);
     }
 
     /**
@@ -1137,7 +1144,7 @@ class DistributorZanders extends DistributorBase
         $quantity = $intish($this->get_string_field($row, ['inventory_quantity']));
         $shipping_weight = $this->get_string_field($row, ['shipping_weight']);
 
-        $shipping  = (float) ($this->get_shipping_cost_by_upc($normalized_upc) ?? 0.0);
+        $shipping = $this->compute_shipping_cost_from_distributor_cost($price);
         $true_cost = $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping);
         if ($true_cost === null) {
             $true_cost = $price + $shipping;
@@ -1188,6 +1195,35 @@ class DistributorZanders extends DistributorBase
             null,
             $brand
         );
+    }
+
+    private function compute_shipping_cost_from_distributor_cost(float $distributor_cost): float
+    {
+        if ($distributor_cost > self::FREE_SHIPPING_DISTRIBUTOR_COST_THRESHOLD) {
+            return 0.0;
+        }
+
+        return self::FLAT_SHIPPING_COST;
+    }
+
+    /**
+     * Parses mixed money-like values into a float.
+     *
+     * Supports values like "$1,234.56" as well as plain numeric strings.
+     *
+     * @param mixed $value
+     */
+    private function money_to_float($value): float
+    {
+        $s = trim((string) $value);
+        if ($s === '') {
+            return 0.0;
+        }
+
+        $s = preg_replace('/[^0-9\.\-]/', '', $s);
+        $s = is_string($s) ? $s : '';
+
+        return ($s === '') ? 0.0 : (float) $s;
     }
 
     /**
