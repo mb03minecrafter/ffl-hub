@@ -15,6 +15,7 @@ use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
 use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
+use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
 use FFLHub\Admin\Pages\ZandersCreditLimitPage;
 use FFLHub\Admin\ProductMeta\BOMMetaBox;
@@ -74,6 +75,7 @@ final class Plugin
     public MapPolicyPage $map_policy_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public OrderFulfillmentModeBadge $order_fulfillment_mode_badge;
+    public ProductDistributorColumns $product_distributor_columns;
 
     // Frontend-only
     public CheckoutFields $checkout_fields;
@@ -164,6 +166,9 @@ final class Plugin
 
             $this->order_fulfillment_mode_badge = new OrderFulfillmentModeBadge($this->distributor_handler->ordering_jobs_table);
             $this->order_fulfillment_mode_badge->register();
+
+            $this->product_distributor_columns = new ProductDistributorColumns();
+            $this->product_distributor_columns->register();
 
             $this->ffl_importer_page = new FFLImporterPage($this->ffl_table);
             $this->ffl_importer_page->register();
