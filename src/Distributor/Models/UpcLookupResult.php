@@ -23,6 +23,8 @@ use FFLHub\Settings\Options;
  * - Offers are expected to be a map of distributor_id => DistributorOffer.
  * - Computation compares DistributorOffer::get_selection_cost() only after
  *   drop-ship-enabled preference has been applied.
+ * - Special tie window: when RSR is within $1.00 of another distributor,
+ *   RSR is preferred.
  * - Offers with missing/invalid selection cost are ignored for "cheapest" computations.
  * - "In stock" is defined by DistributorOffer::is_in_stock().
  * - No sorting or mutation of the offers map is performed.
@@ -30,6 +32,8 @@ use FFLHub\Settings\Options;
 final class UpcLookupResult
 {
     private const FLOAT_EPSILON = 0.000001;
+    private const RSR_WITHIN_DELTA = 1.00;
+    private const DIST_ID_RSR = 'rsr';
 
     /**
      * Map of distributor_id => offer.
@@ -126,6 +130,7 @@ final class UpcLookupResult
      *
      * Comparison key:
      * - First: DistributorProductPayload::dropship_enabled (true preferred)
+     * - Then: RSR preference within a $1.00 landed-cost window
      * - Then: DistributorOffer::get_selection_cost() (null => not comparable)
      *
      * In-stock determination:
@@ -185,11 +190,20 @@ final class UpcLookupResult
             return $candidate_dropship;
         }
 
-        $delta = abs($candidate_cost - (float) $current_cost);
-        if ($delta <= self::FLOAT_EPSILON) {
-            $candidate_id = $this->offer_dist_id($candidate_offer);
-            $current_id = $this->offer_dist_id($current_offer);
+        $candidate_id = $this->offer_dist_id($candidate_offer);
+        $current_id = $this->offer_dist_id($current_offer);
 
+        // If RSR is within $1.00 of a competing offer, prefer RSR.
+        $delta = abs($candidate_cost - (float) $current_cost);
+        if ($delta <= (self::RSR_WITHIN_DELTA + self::FLOAT_EPSILON)) {
+            $candidate_is_rsr = ($candidate_id === self::DIST_ID_RSR);
+            $current_is_rsr = ($current_id === self::DIST_ID_RSR);
+            if ($candidate_is_rsr !== $current_is_rsr) {
+                return $candidate_is_rsr;
+            }
+        }
+
+        if ($delta <= self::FLOAT_EPSILON) {
             $candidate_rank = Options::get_distributor_priority_rank($candidate_id);
             $current_rank = Options::get_distributor_priority_rank($current_id);
 
