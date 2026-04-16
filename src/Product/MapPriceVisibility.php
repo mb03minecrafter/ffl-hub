@@ -216,6 +216,13 @@ class MapPriceVisibility
             return $price_html;
         }
 
+        if (self::should_force_holosun_msrp_price($product, null)) {
+            $msrp_html = self::msrp_price_html($product, null);
+            if ($msrp_html !== null) {
+                return $msrp_html;
+            }
+        }
+
         if (self::should_force_map_price($product, null)) {
             $map_html = self::map_price_html($product, null);
             if ($map_html !== null) {
@@ -242,6 +249,29 @@ class MapPriceVisibility
         }
 
         $parent_product = ($parent instanceof WC_Product) ? $parent : null;
+
+        if (self::should_force_holosun_msrp_price($variation, $parent_product)) {
+            $msrp = self::msrp_price_for_product($variation, $parent_product);
+            $msrp_html = self::msrp_price_html($variation, $parent_product);
+
+            if ($msrp_html !== null) {
+                $data['price_html'] = $msrp_html;
+            }
+
+            if (is_numeric($msrp) && (float) $msrp > 0.0) {
+                $msrp_value = (float) $msrp;
+                $msrp_decimal = function_exists('wc_format_decimal')
+                    ? wc_format_decimal($msrp_value, wc_get_price_decimals())
+                    : (string) $msrp_value;
+                $data['display_price'] = $msrp_value;
+                $data['display_regular_price'] = $msrp_value;
+                $data['price'] = $msrp_decimal;
+                $data['regular_price'] = $msrp_decimal;
+                $data['sale_price'] = '';
+            }
+
+            return $data;
+        }
 
         if (self::should_force_map_price($variation, $parent_product)) {
             $map = self::map_price_for_product($variation, $parent_product);
@@ -290,6 +320,33 @@ class MapPriceVisibility
     public static function filter_structured_offer($offer, $product)
     {
         if (!($product instanceof WC_Product)) {
+            return $offer;
+        }
+
+        if (self::should_force_holosun_msrp_price($product, null)) {
+            $msrp = self::msrp_price_for_product($product, null);
+            if (!is_numeric($msrp) || (float) $msrp <= 0.0 || !is_array($offer)) {
+                return $offer;
+            }
+
+            $msrp_decimal = function_exists('wc_format_decimal')
+                ? wc_format_decimal((float) $msrp, wc_get_price_decimals())
+                : (string) $msrp;
+
+            foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
+                if (isset($offer[$price_key])) {
+                    $offer[$price_key] = $msrp_decimal;
+                }
+            }
+
+            if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
+                foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
+                    if (isset($offer['priceSpecification'][$price_spec_key])) {
+                        $offer['priceSpecification'][$price_spec_key] = $msrp_decimal;
+                    }
+                }
+            }
+
             return $offer;
         }
 
@@ -382,7 +439,7 @@ class MapPriceVisibility
 
         $message = (string) apply_filters(
             'fflhub_holosun_brand_notice_text',
-            'Unfortunately, Holosun has placed us on the Do Not Sell LIst with no prior contact or warning. This is depsite the fact that we are in full compliance of all policies set forth by them down to the T. If you would like, you can file a compliant by emailing them at:',
+            'Unfortunately, Holosun has placed us on the Do Not Sell LIst with no prior contact or warning. This is depsite the fact that we are in full compliance of all policies set forth by them down to the T. If you would like, you can file a compliant by contacting them at:',
             $product
         );
         $message = trim($message);
@@ -704,6 +761,19 @@ class MapPriceVisibility
         return self::map_price_for_product($product, $parent) !== null;
     }
 
+    private static function should_force_holosun_msrp_price(WC_Product $product, ?WC_Product $parent = null): bool
+    {
+        if (!Options::get_holosun_image_notice_enabled()) {
+            return false;
+        }
+
+        if (!self::is_holosun_branded_product($product, $parent)) {
+            return false;
+        }
+
+        return self::msrp_price_for_product($product, $parent) !== null;
+    }
+
     private static function map_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
     {
         $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
@@ -718,6 +788,20 @@ class MapPriceVisibility
         return $map;
     }
 
+    private static function msrp_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
+    {
+        $msrp = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true);
+        if ($msrp <= 0.0 && $parent instanceof WC_Product) {
+            $msrp = (float) $parent->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true);
+        }
+
+        if ($msrp <= 0.0) {
+            return null;
+        }
+
+        return $msrp;
+    }
+
     private static function map_price_html(WC_Product $product, ?WC_Product $parent = null): ?string
     {
         $map = self::map_price_for_product($product, $parent);
@@ -728,6 +812,25 @@ class MapPriceVisibility
         $display_price = (float) $map;
         if (function_exists('wc_get_price_to_display')) {
             $display_price = (float) wc_get_price_to_display($product, ['price' => (float) $map]);
+        }
+
+        if (function_exists('wc_price')) {
+            return (string) wc_price($display_price);
+        }
+
+        return (string) $display_price;
+    }
+
+    private static function msrp_price_html(WC_Product $product, ?WC_Product $parent = null): ?string
+    {
+        $msrp = self::msrp_price_for_product($product, $parent);
+        if (!is_numeric($msrp) || (float) $msrp <= 0.0) {
+            return null;
+        }
+
+        $display_price = (float) $msrp;
+        if (function_exists('wc_get_price_to_display')) {
+            $display_price = (float) wc_get_price_to_display($product, ['price' => (float) $msrp]);
         }
 
         if (function_exists('wc_price')) {
