@@ -198,7 +198,7 @@ class MapPriceVisibility
             return false;
         }
 
-        // "Email for Quote" brands should still show MAP price.
+        // "Email for Quote" brands should still show an explicit price (MSRP).
         if (self::is_email_for_quote_policy($product, $parent)) {
             return false;
         }
@@ -216,6 +216,13 @@ class MapPriceVisibility
             return $price_html;
         }
 
+        if (self::should_force_email_quote_msrp_price($product, null)) {
+            $msrp_html = self::msrp_price_html($product, null);
+            if ($msrp_html !== null) {
+                return $msrp_html;
+            }
+        }
+
         if (self::should_force_holosun_msrp_price($product, null)) {
             $msrp_html = self::msrp_price_html($product, null);
             if ($msrp_html !== null) {
@@ -230,7 +237,7 @@ class MapPriceVisibility
             }
         }
 
-        // For "Email for Quote" brands, keep Woo regular/sale rendering unchanged.
+        // Fallback: if MSRP is unavailable, keep Woo regular/sale rendering unchanged.
         if (self::is_email_for_quote_policy($product, null)) {
             return $price_html;
         }
@@ -249,6 +256,29 @@ class MapPriceVisibility
         }
 
         $parent_product = ($parent instanceof WC_Product) ? $parent : null;
+
+        if (self::should_force_email_quote_msrp_price($variation, $parent_product)) {
+            $msrp = self::msrp_price_for_product($variation, $parent_product);
+            $msrp_html = self::msrp_price_html($variation, $parent_product);
+
+            if ($msrp_html !== null) {
+                $data['price_html'] = $msrp_html;
+            }
+
+            if (is_numeric($msrp) && (float) $msrp > 0.0) {
+                $msrp_value = (float) $msrp;
+                $msrp_decimal = function_exists('wc_format_decimal')
+                    ? wc_format_decimal($msrp_value, wc_get_price_decimals())
+                    : (string) $msrp_value;
+                $data['display_price'] = $msrp_value;
+                $data['display_regular_price'] = $msrp_value;
+                $data['price'] = $msrp_decimal;
+                $data['regular_price'] = $msrp_decimal;
+                $data['sale_price'] = '';
+            }
+
+            return $data;
+        }
 
         if (self::should_force_holosun_msrp_price($variation, $parent_product)) {
             $msrp = self::msrp_price_for_product($variation, $parent_product);
@@ -296,7 +326,7 @@ class MapPriceVisibility
             return $data;
         }
 
-        // For "Email for Quote" brands, keep Woo variation pricing data unchanged.
+        // Fallback: if MSRP is unavailable, keep Woo variation pricing data unchanged.
         if (self::is_email_for_quote_policy($variation, $parent_product)) {
             return $data;
         }
@@ -320,6 +350,33 @@ class MapPriceVisibility
     public static function filter_structured_offer($offer, $product)
     {
         if (!($product instanceof WC_Product)) {
+            return $offer;
+        }
+
+        if (self::should_force_email_quote_msrp_price($product, null)) {
+            $msrp = self::msrp_price_for_product($product, null);
+            if (!is_numeric($msrp) || (float) $msrp <= 0.0 || !is_array($offer)) {
+                return $offer;
+            }
+
+            $msrp_decimal = function_exists('wc_format_decimal')
+                ? wc_format_decimal((float) $msrp, wc_get_price_decimals())
+                : (string) $msrp;
+
+            foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
+                if (isset($offer[$price_key])) {
+                    $offer[$price_key] = $msrp_decimal;
+                }
+            }
+
+            if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
+                foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
+                    if (isset($offer['priceSpecification'][$price_spec_key])) {
+                        $offer['priceSpecification'][$price_spec_key] = $msrp_decimal;
+                    }
+                }
+            }
+
             return $offer;
         }
 
@@ -377,7 +434,7 @@ class MapPriceVisibility
             return $offer;
         }
 
-        // For "Email for Quote" brands, keep Woo structured offer untouched.
+        // Fallback: if MSRP is unavailable, keep Woo structured offer untouched.
         if (self::is_email_for_quote_policy($product, null)) {
             return $offer;
         }
@@ -768,6 +825,15 @@ class MapPriceVisibility
         }
 
         if (!self::is_holosun_branded_product($product, $parent)) {
+            return false;
+        }
+
+        return self::msrp_price_for_product($product, $parent) !== null;
+    }
+
+    private static function should_force_email_quote_msrp_price(WC_Product $product, ?WC_Product $parent = null): bool
+    {
+        if (!self::is_email_for_quote_policy($product, $parent)) {
             return false;
         }
 
