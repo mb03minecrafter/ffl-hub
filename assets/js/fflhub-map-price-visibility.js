@@ -1,15 +1,5 @@
 (function () {
-  var modal = document.getElementById("fflhub-email-for-quote-modal");
-  if (!modal) {
-    return;
-  }
-
-  var openButtons = document.querySelectorAll("[data-fflhub-quote-open='1']");
-  var closeButtons = modal.querySelectorAll("[data-fflhub-quote-close='1']");
-  var firstInput = modal.querySelector("input[name='fflhub_first_name']");
-  var form = modal.querySelector(".fflhub-email-for-quote-form");
   var rootElement = document.documentElement;
-  var lastFocused = null;
   var scrollLockState = null;
 
   function lockPageScroll() {
@@ -63,7 +53,7 @@
     window.scrollTo(0, previousScrollY);
   }
 
-  function shouldPreventOutsideScroll(target) {
+  function shouldPreventOutsideScroll(modal, target) {
     var dialog = modal.querySelector(".fflhub-email-for-quote-modal__dialog");
     if (!dialog) {
       return true;
@@ -72,81 +62,204 @@
     return !dialog.contains(target);
   }
 
-  function openModal(focusSource) {
-    lastFocused = focusSource || document.activeElement;
-    modal.classList.add("is-open");
-    modal.setAttribute("aria-hidden", "false");
-    lockPageScroll();
+  function wireQuoteModal() {
+    var modal = document.getElementById("fflhub-email-for-quote-modal");
+    if (!modal) {
+      return;
+    }
 
-    if (firstInput) {
-      firstInput.focus();
+    var openButtons = document.querySelectorAll("[data-fflhub-quote-open='1']");
+    var closeButtons = modal.querySelectorAll("[data-fflhub-quote-close='1']");
+    var firstInput = modal.querySelector("input[name='fflhub_first_name']");
+    var form = modal.querySelector(".fflhub-email-for-quote-form");
+    var lastFocused = null;
+
+    function openModal(focusSource) {
+      lastFocused = focusSource || document.activeElement;
+      modal.classList.add("is-open");
+      modal.setAttribute("aria-hidden", "false");
+      lockPageScroll();
+
+      if (firstInput) {
+        firstInput.focus();
+      }
+    }
+
+    function closeModal() {
+      modal.classList.remove("is-open");
+      modal.setAttribute("aria-hidden", "true");
+      unlockPageScroll();
+
+      if (lastFocused && typeof lastFocused.focus === "function") {
+        lastFocused.focus();
+      }
+    }
+
+    modal.addEventListener(
+      "touchmove",
+      function (event) {
+        if (!modal.classList.contains("is-open")) {
+          return;
+        }
+
+        if (shouldPreventOutsideScroll(modal, event.target)) {
+          event.preventDefault();
+        }
+      },
+      { passive: false }
+    );
+
+    for (var i = 0; i < openButtons.length; i += 1) {
+      openButtons[i].addEventListener("click", function (event) {
+        event.preventDefault();
+        openModal(event.currentTarget);
+      });
+    }
+
+    for (var j = 0; j < closeButtons.length; j += 1) {
+      closeButtons[j].addEventListener("click", function (event) {
+        event.preventDefault();
+        closeModal();
+      });
+    }
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && modal.classList.contains("is-open")) {
+        closeModal();
+      }
+    });
+
+    if (modal.getAttribute("data-open-on-load") === "1") {
+      openModal(null);
+    }
+
+    if (form) {
+      form.addEventListener("submit", function (event) {
+        if (form.getAttribute("data-submitting") === "1") {
+          event.preventDefault();
+          return false;
+        }
+
+        form.setAttribute("data-submitting", "1");
+        var submitButton = form.querySelector(".fflhub-email-for-quote-submit");
+        if (submitButton) {
+          var submittingLabel = submitButton.getAttribute("data-submitting-label") || "Sending...";
+          submitButton.setAttribute("aria-disabled", "true");
+          submitButton.disabled = true;
+          submitButton.textContent = submittingLabel;
+        }
+        return true;
+      });
     }
   }
 
-  function closeModal() {
-    modal.classList.remove("is-open");
-    modal.setAttribute("aria-hidden", "true");
-    unlockPageScroll();
-
-    if (lastFocused && typeof lastFocused.focus === "function") {
-      lastFocused.focus();
+  function setStrongText(container, text) {
+    if (!container) {
+      return;
     }
+
+    var strong = container.querySelector("strong");
+    if (strong) {
+      strong.textContent = text;
+      return;
+    }
+
+    container.textContent = text;
   }
 
-  modal.addEventListener(
-    "touchmove",
-    function (event) {
-      if (!modal.classList.contains("is-open")) {
+  function wireHolosunNoticeModal() {
+    var modal = document.getElementById("fflhub-holosun-notice-modal");
+    if (!modal) {
+      return;
+    }
+
+    var openButtons = document.querySelectorAll("[data-fflhub-holosun-open='1']");
+    var closeButtons = modal.querySelectorAll("[data-fflhub-holosun-close='1']");
+    var messageTarget = modal.querySelector("[data-fflhub-holosun-msg-target='1']");
+    var emailTarget = modal.querySelector("[data-fflhub-holosun-email-target='1']");
+    var phoneTarget = modal.querySelector("[data-fflhub-holosun-phone-target='1']");
+    var footerTarget = modal.querySelector("[data-fflhub-holosun-footer-target='1']");
+    var lastFocused = null;
+
+    function populateFromTrigger(trigger) {
+      if (!trigger) {
         return;
       }
 
-      if (shouldPreventOutsideScroll(event.target)) {
-        event.preventDefault();
+      var message = trigger.getAttribute("data-fflhub-holosun-msg");
+      var email = trigger.getAttribute("data-fflhub-holosun-email");
+      var phone = trigger.getAttribute("data-fflhub-holosun-phone");
+      var footer = trigger.getAttribute("data-fflhub-holosun-footer");
+
+      if (typeof message === "string" && messageTarget) {
+        setStrongText(messageTarget, message);
       }
-    },
-    { passive: false }
-  );
-
-  for (var i = 0; i < openButtons.length; i += 1) {
-    openButtons[i].addEventListener("click", function (event) {
-      event.preventDefault();
-      openModal(event.currentTarget);
-    });
-  }
-
-  for (var j = 0; j < closeButtons.length; j += 1) {
-    closeButtons[j].addEventListener("click", function (event) {
-      event.preventDefault();
-      closeModal();
-    });
-  }
-
-  document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape" && modal.classList.contains("is-open")) {
-      closeModal();
+      if (typeof email === "string" && emailTarget) {
+        setStrongText(emailTarget, "Email : " + email);
+      }
+      if (typeof phone === "string" && phoneTarget) {
+        setStrongText(phoneTarget, "Phone: " + phone);
+      }
+      if (footerTarget) {
+        var footerText = typeof footer === "string" ? footer : "";
+        setStrongText(footerTarget, footerText);
+        footerTarget.style.display = footerText === "" ? "none" : "";
+      }
     }
-  });
 
-  if (modal.getAttribute("data-open-on-load") === "1") {
-    openModal(null);
-  }
+    function openModal(focusSource) {
+      lastFocused = focusSource || document.activeElement;
+      populateFromTrigger(focusSource);
+      modal.classList.add("is-open");
+      modal.setAttribute("aria-hidden", "false");
+      lockPageScroll();
+    }
 
-  if (form) {
-    form.addEventListener("submit", function (event) {
-      if (form.getAttribute("data-submitting") === "1") {
+    function closeModal() {
+      modal.classList.remove("is-open");
+      modal.setAttribute("aria-hidden", "true");
+      unlockPageScroll();
+
+      if (lastFocused && typeof lastFocused.focus === "function") {
+        lastFocused.focus();
+      }
+    }
+
+    modal.addEventListener(
+      "touchmove",
+      function (event) {
+        if (!modal.classList.contains("is-open")) {
+          return;
+        }
+
+        if (shouldPreventOutsideScroll(modal, event.target)) {
+          event.preventDefault();
+        }
+      },
+      { passive: false }
+    );
+
+    for (var i = 0; i < openButtons.length; i += 1) {
+      openButtons[i].addEventListener("click", function (event) {
         event.preventDefault();
-        return false;
-      }
+        openModal(event.currentTarget);
+      });
+    }
 
-      form.setAttribute("data-submitting", "1");
-      var submitButton = form.querySelector(".fflhub-email-for-quote-submit");
-      if (submitButton) {
-        var submittingLabel = submitButton.getAttribute("data-submitting-label") || "Sending...";
-        submitButton.setAttribute("aria-disabled", "true");
-        submitButton.disabled = true;
-        submitButton.textContent = submittingLabel;
+    for (var j = 0; j < closeButtons.length; j += 1) {
+      closeButtons[j].addEventListener("click", function (event) {
+        event.preventDefault();
+        closeModal();
+      });
+    }
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && modal.classList.contains("is-open")) {
+        closeModal();
       }
-      return true;
     });
   }
+
+  wireQuoteModal();
+  wireHolosunNoticeModal();
 })();

@@ -331,7 +331,7 @@ class AdminPage
                         <?php checked($holosun_image_notice_enabled); ?> />
                     <p class="description">
                         <?php esc_html_e(
-                            'When enabled, Holosun-branded products show a bold information message in the single-product summary (same area as Email for Quote) and force MSRP-only price display.',
+                            'When enabled, Holosun-branded products show a bold information message in the single-product summary (same area as Email for Quote), force MSRP-only price display, and convert loop Read More actions into an Add to cart label that opens the Holosun notice modal.',
                             'ffl-hub'
                         ); ?>
                     </p>

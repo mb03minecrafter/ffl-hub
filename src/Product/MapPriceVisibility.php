@@ -42,16 +42,19 @@ class MapPriceVisibility
 
         // Hide offer/price from Woo structured data (prevents Google showing price)
         add_filter('woocommerce_structured_data_product_offer', [self::class, 'filter_structured_offer'], 99, 2);
+        add_filter('woocommerce_product_add_to_cart_text', [self::class, 'filter_loop_add_to_cart_text'], 99, 2);
+        add_filter('woocommerce_loop_add_to_cart_link', [self::class, 'filter_loop_add_to_cart_link'], 99, 3);
 
         // Render single-product notices/CTAs in the product summary area.
         add_action('woocommerce_single_product_summary', [self::class, 'render_email_for_quote_button'], 31);
         add_action('woocommerce_single_product_summary', [self::class, 'render_holosun_brand_notice_near_image'], 30);
         add_action('wp_footer', [self::class, 'render_email_for_quote_modal']);
+        add_action('wp_footer', [self::class, 'render_holosun_loop_notice_modal']);
     }
 
     public static function enqueue_assets(): void
     {
-        if (!function_exists('is_product') || !is_product()) {
+        if (!self::is_product_surface_page()) {
             return;
         }
 
@@ -447,6 +450,89 @@ class MapPriceVisibility
         return $offer;
     }
 
+    public static function filter_loop_add_to_cart_text(string $text, $product): string
+    {
+        if (!($product instanceof WC_Product)) {
+            return $text;
+        }
+
+        if (!self::should_intercept_holosun_loop_cta($product)) {
+            return $text;
+        }
+
+        return (string) apply_filters(
+            'fflhub_holosun_loop_add_to_cart_text',
+            __('Add to cart', 'ffl-hub'),
+            $product
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $args
+     */
+    public static function filter_loop_add_to_cart_link(string $html, $product, array $args): string
+    {
+        if (!($product instanceof WC_Product)) {
+            return $html;
+        }
+
+        if (!self::should_intercept_holosun_loop_cta($product)) {
+            return $html;
+        }
+
+        $notice = self::holosun_notice_parts_for_product($product);
+        if ($notice['message'] === '') {
+            return $html;
+        }
+
+        $label = (string) apply_filters(
+            'fflhub_holosun_loop_add_to_cart_text',
+            __('Add to cart', 'ffl-hub'),
+            $product
+        );
+
+        $attributes = [];
+        if (isset($args['attributes']) && is_array($args['attributes'])) {
+            foreach ($args['attributes'] as $key => $value) {
+                if (!is_scalar($value)) {
+                    continue;
+                }
+                $attributes[(string) $key] = (string) $value;
+            }
+        }
+
+        $classes = trim((string) ($args['class'] ?? 'button'));
+        if ($classes === '') {
+            $classes = 'button';
+        }
+        $classes .= ' fflhub-holosun-loop-modal-trigger';
+
+        $attributes['href'] = '#';
+        $attributes['class'] = trim($classes);
+        $attributes['role'] = 'button';
+        $attributes['rel'] = 'nofollow';
+        $attributes['data-fflhub-holosun-open'] = '1';
+        $attributes['data-fflhub-holosun-msg'] = $notice['message'];
+        $attributes['data-fflhub-holosun-email'] = $notice['email'];
+        $attributes['data-fflhub-holosun-phone'] = $notice['phone'];
+        $attributes['data-fflhub-holosun-footer'] = $notice['footer'];
+        $attributes['data-product_id'] = (string) $product->get_id();
+
+        if (!isset($attributes['aria-label']) || trim((string) $attributes['aria-label']) === '') {
+            $attributes['aria-label'] = sprintf(
+                /* translators: %s = product name */
+                __('View Holosun notice for %s', 'ffl-hub'),
+                (string) $product->get_name()
+            );
+        }
+
+        $attribute_string = function_exists('wc_implode_html_attributes')
+            ? wc_implode_html_attributes($attributes)
+            : self::implode_html_attributes($attributes);
+
+        return '<a ' . $attribute_string . '>' . esc_html($label) . '</a>';
+    }
+
     public static function render_email_for_quote_button(): void
     {
         $product = self::current_product_for_quote();
@@ -494,36 +580,48 @@ class MapPriceVisibility
             return;
         }
 
-        $message = (string) apply_filters(
-            'fflhub_holosun_brand_notice_text',
-            'Unfortunately, Holosun has placed us on the Do Not Sell List with no prior contact or warning. This is depsite the fact that we are in full compliance of all policies set forth by them down to the T. If you would like, you can file a compliant by contacting them at:',
-            $product
-        );
-        $message = trim($message);
-        if ($message === '') {
+        $notice = self::holosun_notice_parts_for_product($product);
+        if ($notice['message'] === '') {
             return;
         }
-
-        $contactEmail = (string) apply_filters('fflhub_holosun_brand_notice_email', 'info@holosun.com', $product);
-        $contactPhone = (string) apply_filters('fflhub_holosun_brand_notice_phone', '909 594 2888', $product);
-        $footerMessage = (string) apply_filters(
-            'fflhub_holosun_brand_notice_footer',
-            'If you choose to file a complaint, please be respectful and kind. Strong dealer-brand relationships matter just as much as customer relationships, and a professional tone helps everyone work toward a better outcome.',
-            $product
-        );
-        $contactEmail = trim($contactEmail);
-        $contactPhone = trim($contactPhone);
-        $footerMessage = trim($footerMessage);
 
         // Intentionally shown regardless of stock status.
         self::$holosun_notice_rendered = true;
         echo '<div class="fflhub-holosun-image-notice">';
-        echo '<p><strong>' . esc_html($message) . '</strong></p>';
-        echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Email : ' . $contactEmail) . '</strong></p>';
-        echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Phone: ' . $contactPhone) . '</strong></p>';
-        if ($footerMessage !== '') {
-            echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html($footerMessage) . '</strong></p>';
+        echo '<p><strong>' . esc_html($notice['message']) . '</strong></p>';
+        echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Email : ' . $notice['email']) . '</strong></p>';
+        echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Phone: ' . $notice['phone']) . '</strong></p>';
+        if ($notice['footer'] !== '') {
+            echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html($notice['footer']) . '</strong></p>';
         }
+        echo '</div>';
+    }
+
+    public static function render_holosun_loop_notice_modal(): void
+    {
+        if (!Options::get_holosun_image_notice_enabled()) {
+            return;
+        }
+
+        if (!self::is_product_surface_page()) {
+            return;
+        }
+
+        $notice = self::holosun_notice_parts_for_product(null);
+        if ($notice['message'] === '') {
+            return;
+        }
+
+        echo '<div id="fflhub-holosun-notice-modal" class="fflhub-email-for-quote-modal" aria-hidden="true" data-open-on-load="0">';
+        echo '<div class="fflhub-email-for-quote-modal__overlay" data-fflhub-holosun-close="1"></div>';
+        echo '<div class="fflhub-email-for-quote-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="fflhub-holosun-notice-title">';
+        echo '<button type="button" class="fflhub-email-for-quote-modal__close" aria-label="' . esc_attr__('Close Holosun notice', 'ffl-hub') . '" data-fflhub-holosun-close="1">&times;</button>';
+        echo '<h2 id="fflhub-holosun-notice-title" class="fflhub-email-for-quote-modal__title">' . esc_html__('Holosun Notice', 'ffl-hub') . '</h2>';
+        echo '<p data-fflhub-holosun-msg-target="1"><strong>' . esc_html($notice['message']) . '</strong></p>';
+        echo '<p class="fflhub-holosun-image-notice-contact" data-fflhub-holosun-email-target="1"><strong>' . esc_html('Email : ' . $notice['email']) . '</strong></p>';
+        echo '<p class="fflhub-holosun-image-notice-contact" data-fflhub-holosun-phone-target="1"><strong>' . esc_html('Phone: ' . $notice['phone']) . '</strong></p>';
+        echo '<p class="fflhub-holosun-image-notice-contact" data-fflhub-holosun-footer-target="1"><strong>' . esc_html($notice['footer']) . '</strong></p>';
+        echo '</div>';
         echo '</div>';
     }
 
@@ -904,6 +1002,86 @@ class MapPriceVisibility
         }
 
         return (string) $display_price;
+    }
+
+    /**
+     * @return array{message:string,email:string,phone:string,footer:string}
+     */
+    private static function holosun_notice_parts_for_product(?WC_Product $product = null): array
+    {
+        $message = 'Unfortunately, Holosun has placed us on the Do Not Sell List with no prior contact or warning. This is depsite the fact that we are in full compliance of all policies set forth by them down to the T. If you would like, you can file a compliant by contacting them at:';
+        $email = 'info@holosun.com';
+        $phone = '909 594 2888';
+        $footer = 'If you choose to file a complaint, please be respectful and kind. Strong dealer-brand relationships matter just as much as customer relationships, and a professional tone helps everyone work toward a better outcome.';
+
+        if ($product instanceof WC_Product) {
+            $message = (string) apply_filters('fflhub_holosun_brand_notice_text', $message, $product);
+            $email = (string) apply_filters('fflhub_holosun_brand_notice_email', $email, $product);
+            $phone = (string) apply_filters('fflhub_holosun_brand_notice_phone', $phone, $product);
+            $footer = (string) apply_filters('fflhub_holosun_brand_notice_footer', $footer, $product);
+        }
+
+        return [
+            'message' => trim($message),
+            'email' => trim($email),
+            'phone' => trim($phone),
+            'footer' => trim($footer),
+        ];
+    }
+
+    private static function should_intercept_holosun_loop_cta(WC_Product $product): bool
+    {
+        if (!Options::get_holosun_image_notice_enabled()) {
+            return false;
+        }
+
+        if (!self::is_holosun_branded_product($product, null)) {
+            return false;
+        }
+
+        if (method_exists($product, 'is_purchasable') && $product->is_purchasable()) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static function is_product_surface_page(): bool
+    {
+        if (function_exists('is_product') && is_product()) {
+            return true;
+        }
+
+        if (function_exists('is_shop') && is_shop()) {
+            return true;
+        }
+
+        if (function_exists('is_product_taxonomy') && is_product_taxonomy()) {
+            return true;
+        }
+
+        if (function_exists('is_post_type_archive') && is_post_type_archive('product')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string,string> $attributes
+     */
+    private static function implode_html_attributes(array $attributes): string
+    {
+        $parts = [];
+        foreach ($attributes as $name => $value) {
+            $name = trim((string) $name);
+            if ($name === '') {
+                continue;
+            }
+            $parts[] = sprintf('%s="%s"', esc_attr($name), esc_attr((string) $value));
+        }
+
+        return implode(' ', $parts);
     }
 
     private static function current_product_for_quote(): ?WC_Product
