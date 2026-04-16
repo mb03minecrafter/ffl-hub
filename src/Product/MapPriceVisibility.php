@@ -43,13 +43,9 @@ class MapPriceVisibility
         // Hide offer/price from Woo structured data (prevents Google showing price)
         add_filter('woocommerce_structured_data_product_offer', [self::class, 'filter_structured_offer'], 99, 2);
 
-        // Render an email CTA on single-product pages for "Email for Quote" brands.
+        // Render single-product notices/CTAs in the product summary area.
         add_action('woocommerce_single_product_summary', [self::class, 'render_email_for_quote_button'], 31);
-        add_action('woocommerce_product_thumbnails', [self::class, 'render_holosun_brand_notice_near_image'], 25);
-        // Fallback hook: some themes alter thumbnail hooks for out-of-stock layouts.
-        add_action('woocommerce_before_single_product_summary', [self::class, 'render_holosun_brand_notice_near_image'], 25);
-        // Secondary fallback for heavily customized templates.
-        add_action('woocommerce_single_product_summary', [self::class, 'render_holosun_brand_notice_near_image'], 4);
+        add_action('woocommerce_single_product_summary', [self::class, 'render_holosun_brand_notice_near_image'], 30);
         add_action('wp_footer', [self::class, 'render_email_for_quote_modal']);
     }
 

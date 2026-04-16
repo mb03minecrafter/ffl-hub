@@ -331,7 +331,7 @@ class AdminPage
                         <?php checked($holosun_image_notice_enabled); ?> />
                     <p class="description">
                         <?php esc_html_e(
-                            'When enabled, Holosun-branded products show a bold information message near the product image on single product pages.',
+                            'When enabled, Holosun-branded products show a bold information message in the single-product summary (same area as Email for Quote).',
                             'ffl-hub'
                         ); ?>
                     </p>
