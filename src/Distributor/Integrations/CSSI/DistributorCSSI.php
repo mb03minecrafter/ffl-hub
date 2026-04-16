@@ -728,8 +728,17 @@ final class DistributorCSSI extends DistributorBase
                         $orderNumbers[] = $orderNumber;
                     }
 
-                    $packages = isset($order['packages']) && is_array($order['packages']) ? (array) $order['packages'] : [];
-                    foreach ($packages as $pkg) {
+                    // CSSI returns tracking containers under `shipments` on this endpoint.
+                    // Keep `packages` support as a fallback for historical/variant payloads.
+                    $shipmentEntries = [];
+                    if (isset($order['shipments']) && is_array($order['shipments'])) {
+                        $shipmentEntries = array_merge($shipmentEntries, (array) $order['shipments']);
+                    }
+                    if (isset($order['packages']) && is_array($order['packages'])) {
+                        $shipmentEntries = array_merge($shipmentEntries, (array) $order['packages']);
+                    }
+
+                    foreach ($shipmentEntries as $pkg) {
                         if (!is_array($pkg)) {
                             continue;
                         }
