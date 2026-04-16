@@ -171,6 +171,7 @@ class AdminPage
             'payment_fee_percent'   => (string) Options::get_payment_processor_fee_percent(),
             'global_markup_percent' => (string) Options::get_global_markup(),
             'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
+            'holosun_image_notice_enabled' => Options::get_holosun_image_notice_enabled() ? '1' : '0',
             'distributor_priority_list' => (string) Options::get_distributor_priority_csv(),
 
             'usps_estimate_enabled' => Options::get_usps_estimate_enabled() ? '1' : '0',
@@ -227,6 +228,7 @@ class AdminPage
         $payment_fee_percent   = (string) ($settings['payment_fee_percent'] ?? '');
         $global_markup_percent = (string) ($settings['global_markup_percent'] ?? '');
         $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
+        $holosun_image_notice_enabled = ((string) ($settings['holosun_image_notice_enabled'] ?? '0') === '1');
         $distributor_priority_list = (string) ($settings['distributor_priority_list'] ?? '');
         $priority_choices = [];
         foreach (DistributorRegistry::get_modules() as $module) {
@@ -309,6 +311,27 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'When enabled, order jobs build distributor payloads but stop before outbound API calls. Place result stores the exact outbound message (JSON for Lipsey\'s/RSR, SOAP XML for Zanders).',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_holosun_image_notice_enabled"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Holosun image-side notice', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_holosun_image_notice_enabled" value="0" />
+                    <input
+                        id="fflhub_holosun_image_notice_enabled"
+                        name="fflhub_holosun_image_notice_enabled"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($holosun_image_notice_enabled); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'When enabled, Holosun-branded products show a bold information message near the product image on single product pages.',
                             'ffl-hub'
                         ); ?>
                     </p>

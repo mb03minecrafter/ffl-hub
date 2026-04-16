@@ -16,6 +16,7 @@ class MapPriceVisibility
     private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
     private const EMAIL_FOR_QUOTE_FORM_ACTION = 'fflhub_email_for_quote_submit';
     private const QUOTE_SUBMISSION_DEDUPE_TTL_SECONDS = 180;
+    private const HOLOSUN_BRAND_DEFAULT_ALIAS = 'holosun';
 
     /** @var array<string,string>|null */
     private static ?array $policy_lookup_cache = null;
@@ -43,6 +44,7 @@ class MapPriceVisibility
 
         // Render an email CTA on single-product pages for "Email for Quote" brands.
         add_action('woocommerce_single_product_summary', [self::class, 'render_email_for_quote_button'], 31);
+        add_action('woocommerce_product_thumbnails', [self::class, 'render_holosun_brand_notice_near_image'], 25);
         add_action('wp_footer', [self::class, 'render_email_for_quote_modal']);
     }
 
@@ -358,6 +360,43 @@ class MapPriceVisibility
         echo '</p>';
     }
 
+    public static function render_holosun_brand_notice_near_image(): void
+    {
+        if (!Options::get_holosun_image_notice_enabled()) {
+            return;
+        }
+
+        $product = self::current_product_for_quote();
+        if (!($product instanceof WC_Product)) {
+            return;
+        }
+
+        if (!self::is_holosun_branded_product($product, null)) {
+            return;
+        }
+
+        $message = (string) apply_filters(
+            'fflhub_holosun_brand_notice_text',
+            'Unfortunately, Holosun has placed us on the Do Not Sell LIst with no prior contact or warning. This is depsite the fact that we are in full compliance of all policies set forth by them down to the T. If you would like, you can file a compliant by emailing them at:',
+            $product
+        );
+        $message = trim($message);
+        if ($message === '') {
+            return;
+        }
+
+        $contactEmail = (string) apply_filters('fflhub_holosun_brand_notice_email', 'info@holosun.com', $product);
+        $contactPhone = (string) apply_filters('fflhub_holosun_brand_notice_phone', '225 678 1533', $product);
+        $contactEmail = trim($contactEmail);
+        $contactPhone = trim($contactPhone);
+
+        echo '<div class="fflhub-holosun-image-notice">';
+        echo '<p><strong>' . esc_html($message) . '</strong></p>';
+        echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Email : ' . $contactEmail) . '</strong></p>';
+        echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Phone: ' . $contactPhone) . '</strong></p>';
+        echo '</div>';
+    }
+
     public static function render_email_for_quote_modal(): void
     {
         $product = self::current_product_for_quote();
@@ -571,6 +610,49 @@ class MapPriceVisibility
     private static function is_no_email_no_add_to_cart_policy(WC_Product $product, ?WC_Product $parent = null): bool
     {
         return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
+    }
+
+    private static function is_holosun_branded_product(WC_Product $product, ?WC_Product $parent = null): bool
+    {
+        $aliases = (array) apply_filters(
+            'fflhub_holosun_brand_aliases',
+            [self::HOLOSUN_BRAND_DEFAULT_ALIAS],
+            $product,
+            $parent
+        );
+
+        $normalized_aliases = [];
+        foreach ($aliases as $alias) {
+            $value = strtolower(trim((string) $alias));
+            if ($value === '') {
+                continue;
+            }
+            $normalized_aliases[$value] = true;
+        }
+
+        if (empty($normalized_aliases)) {
+            $normalized_aliases[self::HOLOSUN_BRAND_DEFAULT_ALIAS] = true;
+        }
+
+        $brand_names = self::brand_names_for_product($product);
+        if (empty($brand_names) && $parent instanceof WC_Product) {
+            $brand_names = self::brand_names_for_product($parent);
+        }
+
+        foreach ($brand_names as $brand_name) {
+            $normalized_brand = strtolower(trim((string) $brand_name));
+            if ($normalized_brand === '') {
+                continue;
+            }
+
+            foreach ($normalized_aliases as $alias => $_true) {
+                if ($alias !== '' && strpos($normalized_brand, $alias) !== false) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static function should_force_map_price(WC_Product $product, ?WC_Product $parent = null): bool

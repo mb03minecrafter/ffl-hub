@@ -92,6 +92,16 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_holosun_image_notice_enabled() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_DISTRIBUTOR_PRIORITY_LIST,
             [
                 'type'              => 'string',
