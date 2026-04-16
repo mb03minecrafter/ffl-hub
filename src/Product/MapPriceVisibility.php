@@ -1039,7 +1039,11 @@ class MapPriceVisibility
             return false;
         }
 
-        if (method_exists($product, 'is_purchasable') && $product->is_purchasable()) {
+        $is_purchasable = method_exists($product, 'is_purchasable') ? (bool) $product->is_purchasable() : true;
+        $is_in_stock = method_exists($product, 'is_in_stock') ? (bool) $product->is_in_stock() : true;
+
+        // Preserve native behavior for true purchasable + in-stock products.
+        if ($is_purchasable && $is_in_stock) {
             return false;
         }
 
