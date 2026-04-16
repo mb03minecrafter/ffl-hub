@@ -394,8 +394,14 @@ class MapPriceVisibility
 
         $contactEmail = (string) apply_filters('fflhub_holosun_brand_notice_email', 'info@holosun.com', $product);
         $contactPhone = (string) apply_filters('fflhub_holosun_brand_notice_phone', '225 678 1533', $product);
+        $footerMessage = (string) apply_filters(
+            'fflhub_holosun_brand_notice_footer',
+            'If you choose to file a complaint, please be respectful and kind. Strong dealer-brand relationships matter just as much as customer relationships, and a professional tone helps everyone work toward a better outcome.',
+            $product
+        );
         $contactEmail = trim($contactEmail);
         $contactPhone = trim($contactPhone);
+        $footerMessage = trim($footerMessage);
 
         // Intentionally shown regardless of stock status.
         self::$holosun_notice_rendered = true;
@@ -403,6 +409,9 @@ class MapPriceVisibility
         echo '<p><strong>' . esc_html($message) . '</strong></p>';
         echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Email : ' . $contactEmail) . '</strong></p>';
         echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Phone: ' . $contactPhone) . '</strong></p>';
+        if ($footerMessage !== '') {
+            echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html($footerMessage) . '</strong></p>';
+        }
         echo '</div>';
     }
 
