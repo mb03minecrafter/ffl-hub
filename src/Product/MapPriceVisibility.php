@@ -23,6 +23,7 @@ class MapPriceVisibility
 
     /** @var array<int,array<int,string>> */
     private static array $brand_names_by_product_id = [];
+    private static bool $holosun_notice_rendered = false;
 
     public static function init(): void
     {
@@ -45,6 +46,8 @@ class MapPriceVisibility
         // Render an email CTA on single-product pages for "Email for Quote" brands.
         add_action('woocommerce_single_product_summary', [self::class, 'render_email_for_quote_button'], 31);
         add_action('woocommerce_product_thumbnails', [self::class, 'render_holosun_brand_notice_near_image'], 25);
+        // Fallback hook: some themes alter thumbnail hooks for out-of-stock layouts.
+        add_action('woocommerce_before_single_product_summary', [self::class, 'render_holosun_brand_notice_near_image'], 25);
         add_action('wp_footer', [self::class, 'render_email_for_quote_modal']);
     }
 
@@ -362,6 +365,10 @@ class MapPriceVisibility
 
     public static function render_holosun_brand_notice_near_image(): void
     {
+        if (self::$holosun_notice_rendered) {
+            return;
+        }
+
         if (!Options::get_holosun_image_notice_enabled()) {
             return;
         }
@@ -390,6 +397,8 @@ class MapPriceVisibility
         $contactEmail = trim($contactEmail);
         $contactPhone = trim($contactPhone);
 
+        // Intentionally shown regardless of stock status.
+        self::$holosun_notice_rendered = true;
         echo '<div class="fflhub-holosun-image-notice">';
         echo '<p><strong>' . esc_html($message) . '</strong></p>';
         echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Email : ' . $contactEmail) . '</strong></p>';
