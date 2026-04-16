@@ -391,7 +391,7 @@ class MapPriceVisibility
         }
 
         $contactEmail = (string) apply_filters('fflhub_holosun_brand_notice_email', 'info@holosun.com', $product);
-        $contactPhone = (string) apply_filters('fflhub_holosun_brand_notice_phone', '225 678 1533', $product);
+        $contactPhone = (string) apply_filters('fflhub_holosun_brand_notice_phone', '909 594 2888', $product);
         $footerMessage = (string) apply_filters(
             'fflhub_holosun_brand_notice_footer',
             'If you choose to file a complaint, please be respectful and kind. Strong dealer-brand relationships matter just as much as customer relationships, and a professional tone helps everyone work toward a better outcome.',
