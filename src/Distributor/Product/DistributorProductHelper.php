@@ -47,6 +47,7 @@ class DistributorProductHelper
      * potential auto-switch logic.
      */
     private const OFFERS_SNAPSHOT_META_KEY = 'fflhub_offers_snapshot';
+    private const CSSI_DISTRIBUTOR_ID = 'cssi';
     private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
     private const BRAND_TERM_ALIAS_MIGRATION_OPTION = 'fflhub_brand_term_alias_migration_v2';
     private const BRAND_TERM_ALIAS_MIGRATIONS = [
@@ -726,6 +727,7 @@ class DistributorProductHelper
      * - Does not depend on array keys being correct; uses $offer->distributor_id
      * - Skips offers with missing product payloads
      * - Skips entirely if DistributorProductImages class is unavailable
+     * - When non-CSSI image sources are available, CSSI images are skipped
      *
      * @param int $product_id
      * @param string $upc
@@ -743,6 +745,12 @@ class DistributorProductHelper
         }
 
         $selected_dist_id = trim($selected_dist_id);
+        $skip_cssi_images = self::should_skip_cssi_images_when_alternatives_exist($offers);
+        $primary_dist_id = self::resolve_primary_image_distributor_id(
+            $offers,
+            $selected_dist_id,
+            $skip_cssi_images
+        );
 
         foreach ($offers as $offer) {
             if (!($offer instanceof DistributorOffer)) {
@@ -755,7 +763,20 @@ class DistributorProductHelper
             }
 
             $offer_dist_id = (string) ($offer->distributor_id ?? '');
-            $is_primary = ($offer_dist_id !== '' && $offer_dist_id === $selected_dist_id);
+            if ($skip_cssi_images && self::is_cssi_distributor_id($offer_dist_id)) {
+                self::log_debug(
+                    sprintf(
+                        '[FFLHub][DistributorProductHelper] Skipping CSSI image import for UPC %s because non-CSSI image sources are available.',
+                        $upc
+                    )
+                );
+                continue;
+            }
+
+            $is_primary = (
+                $offer_dist_id !== ''
+                && self::normalize_distributor_id($offer_dist_id) === self::normalize_distributor_id($primary_dist_id)
+            );
 
             DistributorProductImages::import_images_for_distributor(
                 $product_id,
@@ -765,6 +786,144 @@ class DistributorProductHelper
                 $is_primary
             );
         }
+    }
+
+    /**
+     * Prefer non-CSSI sources whenever at least one non-CSSI offer has usable image URLs.
+     *
+     * @param array<string,DistributorOffer> $offers
+     */
+    private static function should_skip_cssi_images_when_alternatives_exist(array $offers): bool
+    {
+        foreach ($offers as $offer) {
+            if (!($offer instanceof DistributorOffer)) {
+                continue;
+            }
+
+            if (self::is_cssi_distributor_id((string) ($offer->distributor_id ?? ''))) {
+                continue;
+            }
+
+            if (!($offer->product instanceof DistributorProductPayload)) {
+                continue;
+            }
+
+            if (self::payload_has_usable_image_urls($offer->product)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Resolve which distributor should be treated as the primary image source.
+     *
+     * Rules:
+     * - Prefer selected distributor when it has usable images and is not skipped by policy.
+     * - Otherwise fall back to the first eligible distributor with usable images.
+     *
+     * @param array<string,DistributorOffer> $offers
+     */
+    private static function resolve_primary_image_distributor_id(
+        array $offers,
+        string $selected_dist_id,
+        bool $skip_cssi_images
+    ): string {
+        $selected_norm = self::normalize_distributor_id($selected_dist_id);
+        if ($selected_norm !== '') {
+            foreach ($offers as $offer) {
+                if (!($offer instanceof DistributorOffer)) {
+                    continue;
+                }
+
+                if (!($offer->product instanceof DistributorProductPayload)) {
+                    continue;
+                }
+
+                $offer_dist_id = (string) ($offer->distributor_id ?? '');
+                $offer_norm = self::normalize_distributor_id($offer_dist_id);
+                if ($offer_norm === '' || $offer_norm !== $selected_norm) {
+                    continue;
+                }
+
+                if ($skip_cssi_images && self::is_cssi_distributor_id($offer_dist_id)) {
+                    break;
+                }
+
+                if (self::payload_has_usable_image_urls($offer->product)) {
+                    return $offer_dist_id;
+                }
+
+                break;
+            }
+        }
+
+        foreach ($offers as $offer) {
+            if (!($offer instanceof DistributorOffer)) {
+                continue;
+            }
+
+            if (!($offer->product instanceof DistributorProductPayload)) {
+                continue;
+            }
+
+            $offer_dist_id = (string) ($offer->distributor_id ?? '');
+            if ($offer_dist_id === '') {
+                continue;
+            }
+
+            if ($skip_cssi_images && self::is_cssi_distributor_id($offer_dist_id)) {
+                continue;
+            }
+
+            if (self::payload_has_usable_image_urls($offer->product)) {
+                return $offer_dist_id;
+            }
+        }
+
+        return '';
+    }
+
+    private static function payload_has_usable_image_urls(DistributorProductPayload $payload): bool
+    {
+        if (empty($payload->image_urls) || !is_array($payload->image_urls)) {
+            return false;
+        }
+
+        foreach ($payload->image_urls as $url) {
+            if (self::is_usable_image_url((string) $url)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function is_usable_image_url(string $url): bool
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return false;
+        }
+
+        $url = esc_url_raw($url);
+        if (!is_string($url) || $url === '') {
+            return false;
+        }
+
+        $scheme = strtolower((string) wp_parse_url($url, PHP_URL_SCHEME));
+        return $scheme === 'http' || $scheme === 'https';
+    }
+
+    private static function is_cssi_distributor_id(string $distributor_id): bool
+    {
+        return self::normalize_distributor_id($distributor_id) === self::CSSI_DISTRIBUTOR_ID;
+    }
+
+    private static function normalize_distributor_id(string $distributor_id): string
+    {
+        return strtolower(trim($distributor_id));
     }
 
     /**
