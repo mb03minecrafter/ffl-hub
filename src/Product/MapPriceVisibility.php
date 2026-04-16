@@ -48,6 +48,8 @@ class MapPriceVisibility
         add_action('woocommerce_product_thumbnails', [self::class, 'render_holosun_brand_notice_near_image'], 25);
         // Fallback hook: some themes alter thumbnail hooks for out-of-stock layouts.
         add_action('woocommerce_before_single_product_summary', [self::class, 'render_holosun_brand_notice_near_image'], 25);
+        // Secondary fallback for heavily customized templates.
+        add_action('woocommerce_single_product_summary', [self::class, 'render_holosun_brand_notice_near_image'], 4);
         add_action('wp_footer', [self::class, 'render_email_for_quote_modal']);
     }
 
@@ -670,6 +672,22 @@ class MapPriceVisibility
             }
         }
 
+        // Last-resort fallback: match common storefront product names.
+        $names_to_check = [strtolower(trim((string) $product->get_name()))];
+        if ($parent instanceof WC_Product) {
+            $names_to_check[] = strtolower(trim((string) $parent->get_name()));
+        }
+        foreach ($names_to_check as $candidate_name) {
+            if ($candidate_name === '') {
+                continue;
+            }
+            foreach ($normalized_aliases as $alias => $_true) {
+                if ($alias !== '' && strpos($candidate_name, $alias) !== false) {
+                    return true;
+                }
+            }
+        }
+
         return false;
     }
 
@@ -1254,6 +1272,41 @@ class MapPriceVisibility
                 }
 
                 $names[$name] = $name;
+            }
+        }
+
+        // Fallback: support stores using non-standard brand taxonomies.
+        if (empty($names)) {
+            $taxonomies = get_object_taxonomies('product', 'names');
+            if (is_array($taxonomies)) {
+                foreach ($taxonomies as $taxonomy) {
+                    $taxonomy = (string) $taxonomy;
+                    if ($taxonomy === '') {
+                        continue;
+                    }
+                    if (in_array($taxonomy, self::BRAND_TAXONOMY_CANDIDATES, true)) {
+                        continue;
+                    }
+                    if (stripos($taxonomy, 'brand') === false) {
+                        continue;
+                    }
+                    if (!taxonomy_exists($taxonomy)) {
+                        continue;
+                    }
+
+                    $terms = wp_get_post_terms($product_id, $taxonomy, ['fields' => 'names']);
+                    if (is_wp_error($terms) || !is_array($terms)) {
+                        continue;
+                    }
+
+                    foreach ($terms as $term_name) {
+                        $name = trim((string) $term_name);
+                        if ($name === '') {
+                            continue;
+                        }
+                        $names[$name] = $name;
+                    }
+                }
             }
         }
 
