@@ -496,7 +496,7 @@ class MapPriceVisibility
 
         $message = (string) apply_filters(
             'fflhub_holosun_brand_notice_text',
-            'Unfortunately, Holosun has placed us on the Do Not Sell LIst with no prior contact or warning. This is depsite the fact that we are in full compliance of all policies set forth by them down to the T. If you would like, you can file a compliant by contacting them at:',
+            'Unfortunately, Holosun has placed us on the Do Not Sell List with no prior contact or warning. This is depsite the fact that we are in full compliance of all policies set forth by them down to the T. If you would like, you can file a compliant by contacting them at:',
             $product
         );
         $message = trim($message);
