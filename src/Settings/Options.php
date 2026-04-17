@@ -45,6 +45,7 @@ final class Options
     public const OPTION_GLOBAL_MARKUP                 = 'fflhub_global_markup';
     public const OPTION_TEST_ORDER_DEBUG_ENABLED      = 'fflhub_test_order_debug_enabled';
     public const OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED  = 'fflhub_holosun_image_notice_enabled';
+    public const OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = 'fflhub_pretty_random_email_quotes_enabled';
     public const OPTION_DISTRIBUTOR_PRIORITY_LIST     = 'fflhub_distributor_priority_list';
     public const OPTION_MAP_BRAND_POLICIES            = 'fflhub_map_brand_policies';
     public const OPTION_USPS_ESTIMATE_ENABLED         = 'fflhub_usps_estimate_enabled';
@@ -74,6 +75,7 @@ final class Options
     private const DEFAULT_GLOBAL_MARKUP                 = 10.0; // %
     private const DEFAULT_TEST_ORDER_DEBUG_ENABLED      = true;
     private const DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED  = false;
+    private const DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = true;
     private const DEFAULT_MAP_BRAND_POLICIES            = [];
     private const DEFAULT_USPS_ESTIMATE_ENABLED         = false;
     private const DEFAULT_USPS_USE_TEST_ENV             = true;
@@ -189,6 +191,11 @@ final class Options
         return self::DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED;
     }
 
+    public static function default_pretty_random_email_quotes_enabled(): bool
+    {
+        return self::DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED;
+    }
+
     public static function default_usps_estimate_enabled(): bool
     {
         return self::DEFAULT_USPS_ESTIMATE_ENABLED;
@@ -300,6 +307,13 @@ final class Options
 
         if (get_option(self::OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED, null) === null) {
             add_option(self::OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED, self::DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED ? '1' : '0');
+        }
+
+        if (get_option(self::OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED, null) === null) {
+            add_option(
+                self::OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED,
+                self::DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED ? '1' : '0'
+            );
         }
 
         if (get_option(self::OPTION_DISTRIBUTOR_PRIORITY_LIST, null) === null) {
@@ -820,6 +834,14 @@ final class Options
         return ((string) get_option(
             self::OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED,
             self::DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED ? '1' : '0'
+        )) === '1';
+    }
+
+    public static function get_pretty_random_email_quotes_enabled(): bool
+    {
+        return ((string) get_option(
+            self::OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED,
+            self::DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED ? '1' : '0'
         )) === '1';
     }
 

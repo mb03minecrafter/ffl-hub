@@ -102,6 +102,16 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_pretty_random_email_quotes_enabled() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_DISTRIBUTOR_PRIORITY_LIST,
             [
                 'type'              => 'string',

@@ -2,6 +2,7 @@
 
 namespace FFLHub\Woo\Emails;
 
+use FFLHub\Settings\Options;
 use FFLHub\Woo\Emails\Models\QuoteOfferEmailContext;
 use WC_Email;
 
@@ -43,6 +44,10 @@ final class FFLHubQuoteOffer extends WC_Email
 
         if (!$this->is_enabled() || !$this->get_recipient()) {
             return false;
+        }
+
+        if (!Options::get_pretty_random_email_quotes_enabled()) {
+            return $this->send_code_only_plain_text($context);
         }
 
         $this->setup_locale();
@@ -138,5 +143,73 @@ final class FFLHubQuoteOffer extends WC_Email
         ];
 
         return $templates[$variant_index] ?? $templates[0];
+    }
+
+    private function send_code_only_plain_text(QuoteOfferEmailContext $context): bool
+    {
+        $code = trim($context->coupon_code);
+        if ($code === '') {
+            return false;
+        }
+
+        $first_name = trim($context->first_name);
+        if ($first_name === '') {
+            $first_name = (string) __('there', 'ffl-hub');
+        }
+
+        $product_name = trim($context->product_name);
+        if ($product_name === '') {
+            $product_name = (string) __('requested product', 'ffl-hub');
+        }
+
+        $body = sprintf(
+            __('Hi %1$s, your manual coupon code for %2$s is: %3$s', 'ffl-hub'),
+            $first_name,
+            $product_name,
+            $code
+        );
+
+        $this->setup_locale();
+        $sent = wp_mail(
+            $this->get_recipient(),
+            $this->get_subject(),
+            $body . "\n",
+            $this->plain_text_headers(),
+            $this->get_attachments()
+        );
+        $this->restore_locale();
+
+        return (bool) $sent;
+    }
+
+    /**
+     * Keep all existing configured headers (From/Reply-To/Bcc), but force plain text content type.
+     *
+     * @return string[]
+     */
+    private function plain_text_headers(): array
+    {
+        $raw = (string) $this->get_headers();
+        $lines = preg_split('/\r\n|\r|\n/', $raw);
+        if (!is_array($lines)) {
+            $lines = [];
+        }
+
+        $headers = [];
+
+        foreach ($lines as $line) {
+            $line = trim((string) $line);
+            if ($line === '') {
+                continue;
+            }
+            if (stripos($line, 'Content-Type:') === 0) {
+                continue;
+            }
+            $headers[] = $line;
+        }
+
+        $headers[] = 'Content-Type: text/plain; charset=UTF-8';
+
+        return $headers;
     }
 }

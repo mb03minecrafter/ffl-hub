@@ -172,6 +172,7 @@ class AdminPage
             'global_markup_percent' => (string) Options::get_global_markup(),
             'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
             'holosun_image_notice_enabled' => Options::get_holosun_image_notice_enabled() ? '1' : '0',
+            'pretty_random_email_quotes_enabled' => Options::get_pretty_random_email_quotes_enabled() ? '1' : '0',
             'distributor_priority_list' => (string) Options::get_distributor_priority_csv(),
 
             'usps_estimate_enabled' => Options::get_usps_estimate_enabled() ? '1' : '0',
@@ -229,6 +230,7 @@ class AdminPage
         $global_markup_percent = (string) ($settings['global_markup_percent'] ?? '');
         $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
         $holosun_image_notice_enabled = ((string) ($settings['holosun_image_notice_enabled'] ?? '0') === '1');
+        $pretty_random_email_quotes_enabled = ((string) ($settings['pretty_random_email_quotes_enabled'] ?? '1') === '1');
         $distributor_priority_list = (string) ($settings['distributor_priority_list'] ?? '');
         $priority_choices = [];
         foreach (DistributorRegistry::get_modules() as $module) {
@@ -332,6 +334,27 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'When enabled, Holosun-branded products show a bold information message in the single-product summary (same area as Email for Quote), force MSRP-only price display, and convert loop Read More actions into an Add to cart label that opens the Holosun notice modal.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_pretty_random_email_quotes_enabled"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Pretty and Random Email Quotes Enabled', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_pretty_random_email_quotes_enabled" value="0" />
+                    <input
+                        id="fflhub_pretty_random_email_quotes_enabled"
+                        name="fflhub_pretty_random_email_quotes_enabled"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($pretty_random_email_quotes_enabled); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Enabled: sends the current styled quote emails with rotating templates and rep names. Disabled: sends plain-text email containing only the customer\'s quote code.',
                             'ffl-hub'
                         ); ?>
                     </p>
