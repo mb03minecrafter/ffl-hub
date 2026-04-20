@@ -23,10 +23,16 @@ final class MGEFtpCredentials
      */
     public static function load(): array
     {
-        $host = trim((string) Options::get_distributor_option('mge', 'ftp_host', ''));
+        $host = trim((string) Options::get_distributor_option('mge', 'ftp_host', 'ftp.mgegroup.com'));
+        $port_raw = trim((string) Options::get_distributor_option('mge', 'ftp_port', '21'));
         $username = trim((string) Options::get_distributor_option('mge', 'ftp_username', ''));
         $password = trim((string) Options::get_distributor_option('mge', 'ftp_password', ''));
-        $use_ssl_raw = trim((string) Options::get_distributor_option('mge', 'ftp_use_ssl', '0'));
+        $use_ssl_raw = trim((string) Options::get_distributor_option('mge', 'ftp_use_ssl', '1'));
+
+        $port = (int) $port_raw;
+        if ($port <= 0 || $port > 65535) {
+            $port = 21;
+        }
 
         $has_host = ($host !== '');
         $has_username = ($username !== '');
@@ -47,7 +53,7 @@ final class MGEFtpCredentials
                 'username' => $username,
                 'password' => $password,
                 'use_ssl'  => ($use_ssl_raw === '1'),
-                'port'     => 21,
+                'port'     => $port,
             ],
             'has_host'     => true,
             'has_username' => true,

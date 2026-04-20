@@ -8,6 +8,11 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
+use FFLHub\Distributor\Services\MGE\Cron\MGEInventoryCronService;
+use FFLHub\Distributor\Services\MGE\Cron\MGEProductCronService;
+use FFLHub\Distributor\Services\MGE\MGEServices;
+use FFLHub\Distributor\Services\MGE\Tables\MGEProductTableSchema;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 
 /**
  * MGE Wholesale module scaffold.
@@ -54,8 +59,15 @@ final class MGEModule implements DistributorModuleInterface
                 'label'       => 'FTP Host',
                 'type'        => 'text',
                 'placeholder' => 'ftp.mgegroup.com',
-                'description' => 'Hostname for the MGE FTP server.',
-                'default'     => '',
+                'description' => 'Hostname for the MGE FTP/FTPS server.',
+                'default'     => 'ftp.mgegroup.com',
+            ],
+            'ftp_port' => [
+                'label'       => 'FTP Port',
+                'type'        => 'text',
+                'placeholder' => '21',
+                'description' => 'Port for MGE FTP/FTPS connections (typically 21).',
+                'default'     => '21',
             ],
             'ftp_username' => [
                 'label'       => 'FTP Username',
@@ -74,14 +86,44 @@ final class MGEModule implements DistributorModuleInterface
             'ftp_use_ssl' => [
                 'label'       => 'Use FTPS (SSL)',
                 'type'        => 'checkbox',
-                'description' => 'Connect using FTPS/SSL when your MGE account supports it.',
-                'default'     => '0',
+                'description' => 'Connect using FTPS/SSL (AUTH TLS on port 21).',
+                'default'     => '1',
+            ],
+            'full_feed_remote_path' => [
+                'label'       => 'Full Feed Remote Path',
+                'type'        => 'text',
+                'placeholder' => '/feeds/vendorname_items.csv',
+                'description' => 'Remote path for the full MGE catalog CSV feed.',
+                'default'     => '/feeds/vendorname_items.csv',
+            ],
+            'delta_feed_remote_path' => [
+                'label'       => 'Delta Feed Remote Path',
+                'type'        => 'text',
+                'placeholder' => '/feeds/vendorname_cq.csv',
+                'description' => 'Remote path for the MGE quantity/cost delta CSV feed.',
+                'default'     => '/feeds/vendorname_cq.csv',
             ],
         ];
     }
 
     public function build_distributor(): DistributorBase
     {
-        return new DistributorMGE($this);
+        $schema = new MGEProductTableSchema();
+
+        $table = new DoubleBufferedProductTable(
+            $schema,
+            'fflhub_mge_fulfillment_last_swap'
+        );
+
+        $fulfillmentCron = new MGEProductCronService($table);
+        $inventoryCron = new MGEInventoryCronService($table);
+
+        $services = new MGEServices(
+            $table,
+            $fulfillmentCron,
+            $inventoryCron
+        );
+
+        return new DistributorMGE($this, $services);
     }
 }
