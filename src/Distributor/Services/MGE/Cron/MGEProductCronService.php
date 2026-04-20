@@ -151,7 +151,8 @@ final class MGEProductCronService extends AbstractTableCronService
             $port,
             30,
             true,
-            '[FFLHub][MGE][FTP]'
+            '[FFLHub][MGE][FTP]',
+            false
         );
 
         if (!$ftp->is_connected()) {

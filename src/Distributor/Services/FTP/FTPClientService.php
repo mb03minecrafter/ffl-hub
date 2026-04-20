@@ -66,6 +66,16 @@ class FTPClientService
     private $passive = true;
 
     /**
+     * Whether to trust PASV server-provided host for data channel.
+     *
+     * Some servers behind NAT return private RFC1918 addresses in PASV replies.
+     * Setting this false forces reuse of the control-connection host.
+     *
+     * @var bool
+     */
+    private $use_pasv_address = true;
+
+    /**
      * @var string
      */
     private $log_prefix = '[FFLHub][FTP]';
@@ -81,6 +91,7 @@ class FTPClientService
      * @param int    $timeout
      * @param bool   $passive
      * @param string $log_prefix
+     * @param bool   $use_pasv_address
      */
     public function __construct(
         string $host,
@@ -90,7 +101,8 @@ class FTPClientService
         int $port = 21,
         int $timeout = 30,
         bool $passive = true,
-        string $log_prefix = '[FFLHub][FTP]'
+        string $log_prefix = '[FFLHub][FTP]',
+        bool $use_pasv_address = true
     ) {
         $this->host       = $host;
         $this->username   = $username;
@@ -99,6 +111,7 @@ class FTPClientService
         $this->port       = $port;
         $this->timeout    = $timeout;
         $this->passive    = $passive;
+        $this->use_pasv_address = $use_pasv_address;
         $this->log_prefix = $log_prefix !== '' ? $log_prefix : '[FFLHub][FTP]';
 
         if ($host === '' || $username === '' || $password === '') {
@@ -130,6 +143,21 @@ class FTPClientService
         }
 
         if ($this->passive) {
+            // When supported, control whether PASV should trust server-provided host.
+            // For NATed FTP servers this is often required to avoid data-channel timeouts.
+            if (function_exists('ftp_set_option') && defined('FTP_USEPASVADDRESS')) {
+                $option = constant('FTP_USEPASVADDRESS');
+                if (!@ftp_set_option($conn, $option, $this->use_pasv_address)) {
+                    $this->log_debug(
+                        sprintf(
+                            '%s failed to set FTP_USEPASVADDRESS=%d',
+                            $this->log_prefix,
+                            $this->use_pasv_address ? 1 : 0
+                        )
+                    );
+                }
+            }
+
             if (!@ftp_pasv($conn, true)) {
                 $this->log_debug($this->log_prefix . ' failed to enable passive mode.');
             }
