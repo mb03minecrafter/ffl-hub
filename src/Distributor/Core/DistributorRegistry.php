@@ -10,6 +10,7 @@ use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Integrations\CSSI\CSSIModule;
 use FFLHub\Distributor\Integrations\Davidsons\DavidsonsModule;
 use FFLHub\Distributor\Integrations\Lipseys\LipseysModule;
+use FFLHub\Distributor\Integrations\MGE\MGEModule;
 use FFLHub\Distributor\Integrations\RSR\RSRModule;
 use FFLHub\Distributor\Integrations\Zanders\ZandersModule;
 
@@ -38,6 +39,7 @@ final class DistributorRegistry
             new RSRModule(),
             new LipseysModule(),
             new ZandersModule(),
+            new MGEModule(),
             new CSSIModule(),
             new DavidsonsModule()
         ];
