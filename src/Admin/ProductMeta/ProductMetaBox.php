@@ -2,6 +2,7 @@
 
 namespace FFLHub\Admin\ProductMeta;
 
+use FFLHub\Distributor\Core\DistributorRegistry;
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Settings\Options;
@@ -168,6 +169,18 @@ class ProductMetaBox
         $shipping_height_input = self::normalize_decimal_for_input(
             $product->get_meta(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, true)
         );
+        $distributor_lock_enabled = self::is_truthy_meta(
+            $product->get_meta(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_ENABLED_META, true)
+        );
+        $distributor_lock_ids = self::normalize_distributor_lock_ids(
+            $product->get_meta(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_IDS_META, true)
+        );
+        $enabled_distributors = self::enabled_distributor_options();
+        if (!empty($distributor_lock_ids) && !empty($enabled_distributors)) {
+            $distributor_lock_ids = array_values(
+                array_intersect($distributor_lock_ids, array_keys($enabled_distributors))
+            );
+        }
 
         echo '<div style="margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb;">';
         echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;">';
@@ -221,6 +234,48 @@ class ProductMetaBox
         echo '</div>';
 
         // 🆕 Editable pricing controls
+        echo '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;">';
+        echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;">';
+        echo '<input id="fflhub_distributor_lock_enabled" type="checkbox" name="fflhub_distributor_lock_enabled" value="1" ' .
+            checked(true, $distributor_lock_enabled, false) .
+            ' />';
+        echo '<span style="font-weight:600;">' .
+            esc_html__('Distributor Lock', 'ffl-hub') .
+            '</span>';
+        echo '</label>';
+        echo '<span style="display:block;margin-top:4px;font-size:11px;color:#6b7280;">' .
+            esc_html__('When enabled, select one or more enabled distributors to lock this managed product to.', 'ffl-hub') .
+            '</span>';
+
+        if (empty($enabled_distributors)) {
+            echo '<span style="display:block;margin-top:4px;font-size:11px;color:#b45309;">' .
+                esc_html__('No enabled distributors found. Enable distributors in FFLHub settings first.', 'ffl-hub') .
+                '</span>';
+        } else {
+            $select_rows = min(6, max(3, count($enabled_distributors)));
+            echo '<p style="margin:8px 0 0;">';
+            echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+                esc_html__('Locked Distributors', 'ffl-hub') .
+                '</label>';
+            echo '<select id="fflhub_distributor_lock_ids" name="fflhub_distributor_lock_ids[]" multiple="multiple" size="' .
+                esc_attr((string) $select_rows) .
+                '" style="width:100%;font-size:11px;">';
+
+            foreach ($enabled_distributors as $dist_id => $dist_label) {
+                echo '<option value="' . esc_attr($dist_id) . '" ' .
+                    selected(in_array($dist_id, $distributor_lock_ids, true), true, false) .
+                    '>' . esc_html($dist_label . ' (' . $dist_id . ')') . '</option>';
+            }
+
+            echo '</select>';
+            echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+                esc_html__('Hold Ctrl (Windows) or Command (Mac) to select multiple distributors.', 'ffl-hub') .
+                '</span>';
+            echo '</p>';
+        }
+
+        echo '</div>';
+
         echo '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;">';
         echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;">';
         echo '<input id="fflhub_manual_shipping_override" type="checkbox" name="fflhub_manual_shipping_override" value="1" ' .
@@ -660,10 +715,19 @@ class ProductMetaBox
                     qtyEl.disabled = !overrideEl.checked;
                 }
 
+                function applyDistributorLock() {
+                    var lockEnabledEl = document.getElementById('fflhub_distributor_lock_enabled');
+                    var lockIdsEl = document.getElementById('fflhub_distributor_lock_ids');
+                    if (!lockEnabledEl || !lockIdsEl) return;
+
+                    lockIdsEl.disabled = !lockEnabledEl.checked || lockIdsEl.options.length === 0;
+                }
+
                 document.addEventListener('DOMContentLoaded', function() {
                     applyMode();
                     applyManualShippingOverride();
                     applyLocalStockOverride();
+                    applyDistributorLock();
                     var modeEl = document.getElementById('fflhub_markup_mode');
                     var mapRealModeEl = document.getElementById('fflhub_map_real_price_mode');
                     var mapOffsetEl = document.getElementById('fflhub_map_real_price_offset');
@@ -671,6 +735,7 @@ class ProductMetaBox
                     var mapProfitEl = document.getElementById('fflhub_map_real_price_fixed_profit');
                     var overrideEl = document.getElementById('fflhub_manual_shipping_override');
                     var localOverrideEl = document.getElementById('fflhub_local_stock_override_enabled');
+                    var distributorLockEnabledEl = document.getElementById('fflhub_distributor_lock_enabled');
                     if (modeEl) {
                         modeEl.addEventListener('change', applyMode);
                     }
@@ -691,6 +756,9 @@ class ProductMetaBox
                     }
                     if (localOverrideEl) {
                         localOverrideEl.addEventListener('change', applyLocalStockOverride);
+                    }
+                    if (distributorLockEnabledEl) {
+                        distributorLockEnabledEl.addEventListener('change', applyDistributorLock);
                     }
                 });
             })();
@@ -757,6 +825,32 @@ class ProductMetaBox
             ? absint(sanitize_text_field(wp_unslash($_POST['fflhub_local_stock_override_qty'])))
             : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, $local_stock_override_qty);
+
+        $distributor_lock_enabled = isset($_POST['fflhub_distributor_lock_enabled']) ? 1 : 0;
+        $product->update_meta_data(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_ENABLED_META, $distributor_lock_enabled);
+
+        $selected_distributor_locks = [];
+        if ($distributor_lock_enabled === 1) {
+            $raw_dist_ids = $_POST['fflhub_distributor_lock_ids'] ?? [];
+            if (!is_array($raw_dist_ids)) {
+                $raw_dist_ids = [$raw_dist_ids];
+            }
+
+            $enabled_dist_ids = array_keys(self::enabled_distributor_options());
+            $enabled_lookup = array_fill_keys($enabled_dist_ids, true);
+
+            foreach ($raw_dist_ids as $raw_dist_id) {
+                $dist_id = strtolower(trim(sanitize_text_field(wp_unslash((string) $raw_dist_id))));
+                if ($dist_id === '' || !isset($enabled_lookup[$dist_id])) {
+                    continue;
+                }
+
+                $selected_distributor_locks[] = $dist_id;
+            }
+
+            $selected_distributor_locks = array_values(array_unique($selected_distributor_locks));
+        }
+        $product->update_meta_data(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_IDS_META, $selected_distributor_locks);
 
         // Manual shipping override + values
         $manual_shipping_override = isset($_POST['fflhub_manual_shipping_override']) ? 1 : 0;
@@ -940,6 +1034,65 @@ class ProductMetaBox
         }
 
         return (string) wc_format_decimal($value, 4);
+    }
+
+    /**
+     * @return array<string,string> Keyed by distributor id => distributor label.
+     */
+    private static function enabled_distributor_options(): array
+    {
+        $options = [];
+
+        foreach (DistributorRegistry::get_modules() as $module) {
+            $dist_id = strtolower(trim((string) $module->id()));
+            if ($dist_id === '' || !Options::is_distributor_enabled($dist_id)) {
+                continue;
+            }
+
+            $options[$dist_id] = (string) $module->label();
+        }
+
+        return $options;
+    }
+
+    /**
+     * @param mixed $raw
+     * @return string[]
+     */
+    private static function normalize_distributor_lock_ids($raw): array
+    {
+        if (is_array($raw)) {
+            $values = $raw;
+        } else {
+            $raw_string = trim((string) $raw);
+            if ($raw_string === '') {
+                return [];
+            }
+
+            $values = [];
+
+            $decoded = json_decode($raw_string, true);
+            if (is_array($decoded)) {
+                $values = $decoded;
+            } else {
+                $split = preg_split('/\s*,\s*/', $raw_string);
+                if (is_array($split)) {
+                    $values = $split;
+                }
+            }
+        }
+
+        $normalized = [];
+        foreach ($values as $value) {
+            $dist_id = strtolower(trim((string) $value));
+            if ($dist_id === '') {
+                continue;
+            }
+
+            $normalized[] = $dist_id;
+        }
+
+        return array_values(array_unique($normalized));
     }
 
     /**

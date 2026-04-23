@@ -342,13 +342,24 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
         /** @var array<string, DistributorOffer> $offers */
         $offers = $lookup->offers();
-        $cis    = $lookup->cheapest_in_stock();
-        $ca     = $lookup->cheapest_any();
+        $offers_before_lock = is_array($offers) ? count($offers) : 0;
+
+        $dist_lock = $this->get_distributor_lock_for_product($product);
+        if (!empty($dist_lock['enabled'])) {
+            $offers = $this->filter_offers_by_locked_distributors($offers, (array) ($dist_lock['ids'] ?? []));
+        }
+
+        $effective_lookup = new UpcLookupResult($offers);
+        $cis    = $effective_lookup->cheapest_in_stock();
+        $ca     = $effective_lookup->cheapest_any();
 
         $this->log_ctx('Lookup summary', array(
             'product_id'        => $product_id,
             'upc'               => $upc,
             'offers'            => is_array($offers) ? count($offers) : 0,
+            'offers_before_lock' => $offers_before_lock,
+            'lock_enabled'      => !empty($dist_lock['enabled']) ? 1 : 0,
+            'lock_ids'          => !empty($dist_lock['ids']) ? (array) $dist_lock['ids'] : array(),
             'cheapest_in_stock' => ($cis instanceof DistributorOffer) ? (string) $cis->distributor_id : null,
             'cheapest_any'      => ($ca instanceof DistributorOffer) ? (string) $ca->distributor_id : null,
         ));
@@ -647,6 +658,118 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $raw = $product->get_meta(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true);
         $normalized = strtolower(trim((string) $raw));
         return in_array($normalized, ['1', 'true', 'yes', 'y', 'on'], true);
+    }
+
+    /**
+     * @return array{enabled:bool,ids:array<int,string>}
+     */
+    private function get_distributor_lock_for_product(WC_Product $product): array
+    {
+        $enabled_raw = $product->get_meta(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_ENABLED_META, true);
+        $enabled = in_array(
+            strtolower(trim((string) $enabled_raw)),
+            ['1', 'true', 'yes', 'y', 'on'],
+            true
+        );
+
+        $ids_raw = $product->get_meta(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_IDS_META, true);
+        $ids = $this->normalize_distributor_lock_ids($ids_raw);
+
+        return array(
+            'enabled' => $enabled,
+            'ids' => $ids,
+        );
+    }
+
+    /**
+     * @param array<string,DistributorOffer> $offers
+     * @param string[] $locked_dist_ids
+     * @return array<string,DistributorOffer>
+     */
+    private function filter_offers_by_locked_distributors(array $offers, array $locked_dist_ids): array
+    {
+        if (empty($offers) || empty($locked_dist_ids)) {
+            return [];
+        }
+
+        $allowed = [];
+        foreach ($locked_dist_ids as $dist_id) {
+            $normalized = strtolower(trim((string) $dist_id));
+            if ($normalized === '') {
+                continue;
+            }
+
+            $allowed[$normalized] = true;
+        }
+
+        if (empty($allowed)) {
+            return [];
+        }
+
+        $filtered = [];
+        foreach ($offers as $offer_key => $offer) {
+            if (!$offer instanceof DistributorOffer) {
+                continue;
+            }
+
+            $candidate_ids = array(
+                strtolower(trim((string) $offer_key)),
+                strtolower(trim((string) $offer->distributor_id)),
+            );
+
+            foreach ($candidate_ids as $candidate_id) {
+                if ($candidate_id !== '' && isset($allowed[$candidate_id])) {
+                    $filtered[$candidate_id] = $offer;
+                    break;
+                }
+            }
+        }
+
+        return $filtered;
+    }
+
+    /**
+     * @param mixed $raw
+     * @return string[]
+     */
+    private function normalize_distributor_lock_ids($raw): array
+    {
+        if (is_array($raw)) {
+            $values = $raw;
+        } else {
+            $raw_string = trim((string) $raw);
+            if ($raw_string === '') {
+                return [];
+            }
+
+            $values = [];
+            $decoded = json_decode($raw_string, true);
+            if (is_array($decoded)) {
+                $values = $decoded;
+            } else {
+                $split = preg_split('/\s*,\s*/', $raw_string);
+                if (is_array($split)) {
+                    $values = $split;
+                }
+            }
+        }
+
+        $normalized = [];
+        foreach ($values as $value) {
+            $dist_id = strtolower(trim((string) $value));
+            if ($dist_id === '') {
+                continue;
+            }
+
+            // Respect only currently-enabled distributors.
+            if (!Options::is_distributor_enabled($dist_id)) {
+                continue;
+            }
+
+            $normalized[] = $dist_id;
+        }
+
+        return array_values(array_unique($normalized));
     }
 
     // ---------------------------------------------------------------------

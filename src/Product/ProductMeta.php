@@ -88,6 +88,8 @@ class ProductMeta
     public const FFLHUB_STOCK_OOS_OVERRIDE_META = '_fflhub_stock_oos_override';
     public const FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META = '_fflhub_local_stock_override_enabled';
     public const FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META = '_fflhub_local_stock_override_qty';
+    public const FFLHUB_DISTRIBUTOR_LOCK_ENABLED_META = '_fflhub_distributor_lock_enabled';
+    public const FFLHUB_DISTRIBUTOR_LOCK_IDS_META = '_fflhub_distributor_lock_ids';
 
     // BOM / build product metadata
     public const FFLHUB_BOM_ENABLED_META = '_fflhub_bom_enabled';
