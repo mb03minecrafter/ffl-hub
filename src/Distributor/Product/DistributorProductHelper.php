@@ -48,6 +48,7 @@ class DistributorProductHelper
      */
     private const OFFERS_SNAPSHOT_META_KEY = 'fflhub_offers_snapshot';
     private const CSSI_DISTRIBUTOR_ID = 'cssi';
+    private const LIPSEYS_DISTRIBUTOR_ID = 'lipseys';
     private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
     private const BRAND_TERM_ALIAS_MIGRATION_OPTION = 'fflhub_brand_term_alias_migration_v2';
     private const BRAND_TERM_ALIAS_MIGRATIONS = [
@@ -166,8 +167,8 @@ class DistributorProductHelper
             $sell_price
         );
 
-        // D) Apply categories (recommended_category path)
-        self::apply_categories_from_payload($product, $selected_product);
+        // D) Apply categories (prefer Lipsey's category path when available)
+        self::apply_categories_from_payload($product, $selected_product, $offers);
 
         // E) Save product and get ID
         $product_id = self::save_and_get_id($product);
@@ -371,12 +372,17 @@ class DistributorProductHelper
      *
      * @param WC_Product_Simple $product
      * @param DistributorProductPayload $selected_product
+     * @param array<string,DistributorOffer> $offers
      */
     private static function apply_categories_from_payload(
         WC_Product_Simple $product,
-        DistributorProductPayload $selected_product
+        DistributorProductPayload $selected_product,
+        array $offers = []
     ): void {
-        $recommended_category = $selected_product->recommended_category ?? null;
+        $recommended_category = self::resolve_recommended_category_for_creation(
+            $selected_product,
+            $offers
+        );
 
         if (!is_array($recommended_category) || empty($recommended_category)) {
             return;
@@ -393,6 +399,45 @@ class DistributorProductHelper
         if (!empty($term_ids)) {
             $product->set_category_ids($term_ids);
         }
+    }
+
+    /**
+     * Resolve category path for creation.
+     *
+     * Preference:
+     * - Lipsey's recommended_category when a Lipsey's offer has category data.
+     * - Otherwise selected payload recommended_category.
+     *
+     * @param array<string,DistributorOffer> $offers
+     * @return array<int,string>|null
+     */
+    private static function resolve_recommended_category_for_creation(
+        DistributorProductPayload $selected_product,
+        array $offers = []
+    ): ?array {
+        foreach ($offers as $offer) {
+            if (!($offer instanceof DistributorOffer)) {
+                continue;
+            }
+
+            $offer_dist_id = self::normalize_distributor_id((string) ($offer->distributor_id ?? ''));
+            if ($offer_dist_id !== self::LIPSEYS_DISTRIBUTOR_ID) {
+                continue;
+            }
+
+            $payload = $offer->product ?? null;
+            if (!($payload instanceof DistributorProductPayload)) {
+                continue;
+            }
+
+            $candidate = $payload->recommended_category ?? null;
+            if (is_array($candidate) && !empty($candidate)) {
+                return $candidate;
+            }
+        }
+
+        $fallback = $selected_product->recommended_category ?? null;
+        return (is_array($fallback) && !empty($fallback)) ? $fallback : null;
     }
 
     /**
