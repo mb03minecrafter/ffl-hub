@@ -475,6 +475,23 @@ class DistributorProductHelper
         $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
         $product->update_meta_data(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, 0);
 
+        if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            $map_value = self::to_positive_float($selected_product->map ?? null);
+            if ($map_value !== null) {
+                $profit_target = self::default_map_fixed_profit_target_from_global_markup($selected_product);
+                if ($profit_target !== null) {
+                    $product->update_meta_data(
+                        ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META,
+                        ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT
+                    );
+                    $product->update_meta_data(
+                        ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META,
+                        $profit_target
+                    );
+                }
+            }
+        }
+
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost);
 
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
@@ -1270,6 +1287,49 @@ class DistributorProductHelper
         }
 
         return self::get_recommended_price_from_payload($selected_product);
+    }
+
+    /**
+     * Derive MAP fixed-profit dollars so net profit equals global markup %
+     * of final sale price after payment fees and shipping.
+     */
+    private static function default_map_fixed_profit_target_from_global_markup(
+        DistributorProductPayload $selected_product
+    ): ?float {
+        $cost_base = (is_numeric($selected_product->true_cost) && (float) $selected_product->true_cost > 0.0)
+            ? (float) $selected_product->true_cost
+            : ((is_numeric($selected_product->price) && (float) $selected_product->price > 0.0)
+                ? (float) $selected_product->price
+                : 0.0);
+        if ($cost_base <= 0.0) {
+            return null;
+        }
+
+        $shipping_cost = self::to_non_negative_float($selected_product->shipping_cost ?? null) ?? 0.0;
+
+        $markup_percent = (float) Options::get_global_markup();
+        if (!is_finite($markup_percent) || $markup_percent < 0.0) {
+            $markup_percent = 0.0;
+        }
+        $margin_fraction = $markup_percent / 100.0;
+
+        $fee_percent = (float) Options::get_payment_processor_fee_percent();
+        if (!is_finite($fee_percent) || $fee_percent < 0.0) {
+            $fee_percent = 0.0;
+        }
+        $fee_fraction = min(0.99, $fee_percent / 100.0);
+
+        $denominator = 1.0 - $fee_fraction - $margin_fraction;
+        if ($denominator <= 0.0) {
+            return null;
+        }
+
+        $profit_target = ($margin_fraction * ($cost_base + $shipping_cost)) / $denominator;
+        if (!is_finite($profit_target) || $profit_target < 0.0) {
+            return null;
+        }
+
+        return round($profit_target, 2);
     }
 
     /**
