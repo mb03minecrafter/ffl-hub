@@ -1228,18 +1228,25 @@ class DistributorProductHelper
     /**
      * Determine default pricing mode for a payload at product creation.
      *
-     * MAP policy "Email for Quote" and "No Email, No Add to Cart" brands
-     * default to MAP Price mode.
+     * MAP policy behavior:
+     * - "Email for Quote" defaults to MAP Price mode only when payload MAP exists.
+     * - "No Email, No Add to Cart" always defaults to MAP Price mode.
+     * - Otherwise defaults to regular global pricing mode.
      */
     public static function default_markup_mode_for_payload(DistributorProductPayload $payload): int
     {
         $brand = self::normalize_brand_name((string) ($payload->brand ?? ''));
         $map_policy = ($brand !== '') ? Options::get_map_policy_for_brand($brand) : '';
-        if (
-            $map_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE
-            || $map_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART
-        ) {
+
+        if ($map_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
             return ProductMeta::MARKUP_MODE_MAP_PRICE;
+        }
+
+        if ($map_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+            $map_value = self::to_positive_float($payload->map ?? null);
+            if ($map_value !== null) {
+                return ProductMeta::MARKUP_MODE_MAP_PRICE;
+            }
         }
 
         return ProductMeta::MARKUP_MODE_GLOBAL;
