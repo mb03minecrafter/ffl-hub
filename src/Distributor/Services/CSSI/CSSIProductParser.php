@@ -11,6 +11,9 @@ if (!defined('ABSPATH')) {
  */
 class CSSIProductParser
 {
+    private const SIG_SAUER_MANUFACTURER = 'SIG SAUER';
+    private const SIG_SAUER_DROPSHIP_BLOCK_REASON = 'manufacturer_policy=sig_sauer_no_dropship';
+
     /**
      * @param array<int,mixed> $header
      * @return array<string,int>
@@ -79,6 +82,15 @@ class CSSIProductParser
             'drop_ship_flag',
             'dropship flag',
         ]));
+        $manufacturer = $this->get_csv($csv, $headerMap, ['manufacturer', 'brand']);
+        if ($this->is_sig_sauer_manufacturer($manufacturer)) {
+            $dropShipFlag = '0';
+        }
+        $dropShipBlockReason = ($dropShipFlag === '1')
+            ? ''
+            : ($this->is_sig_sauer_manufacturer($manufacturer)
+                ? self::SIG_SAUER_DROPSHIP_BLOCK_REASON
+                : 'drop_ship_flag=0');
         $allocatedFlag = $this->to_flag($this->get_csv($csv, $headerMap, ['allocated item?', 'allocated_flag', 'allocated item']));
         $allocationStatus = $allocatedFlag === '1'
             ? 'allocated'
@@ -103,7 +115,7 @@ class CSSIProductParser
 
             'product_name' => $this->get_csv($csv, $headerMap, ['web item name', 'item name', 'name', 'product_name']),
             'product_description' => $this->get_csv($csv, $headerMap, ['web item description', 'description', 'product_description']),
-            'manufacturer' => $this->get_csv($csv, $headerMap, ['manufacturer', 'brand']),
+            'manufacturer' => $manufacturer,
             'model' => $this->get_csv($csv, $headerMap, ['model', 'model_series']),
             'mfg_model_number' => $this->get_csv($csv, $headerMap, ['manufacturer item number', 'manufacturer_model_no', 'mfg_model_number']),
             'caliber_gauge' => $this->get_csv($csv, $headerMap, ['caliber', 'caliber_gauge']),
@@ -113,7 +125,7 @@ class CSSIProductParser
             'ffl_required' => $this->to_flag($this->get_csv($csv, $headerMap, ['ffl_flag', 'ffl_required', 'ffl flag'])),
             'sot_required' => $this->to_flag($this->get_csv($csv, $headerMap, ['sot_required', 'nfa_required'])),
             'dropship_enabled' => $dropShipFlag,
-            'dropship_block_reason' => ($dropShipFlag === '1') ? '' : 'drop_ship_flag=0',
+            'dropship_block_reason' => $dropShipBlockReason,
             'drop_ship_delivery_options' => $this->get_csv($csv, $headerMap, ['available drop ship delivery options', 'available_drop_ship_delivery_options', 'drop_ship_delivery_options']),
 
             // CSSI "Ship Weight" is pounds in feed exports; store normalized ounces.
@@ -143,6 +155,15 @@ class CSSIProductParser
         $inventory = $this->to_int_string($this->get_array($item, ['inventory', 'quantity']));
         $inStockFlag = $this->to_flag($this->get_array($item, ['in_stock_flag']));
         $dropShipFlag = $this->to_flag($this->get_array($item, ['drop_ship_flag']));
+        $manufacturer = $this->get_array($item, ['manufacturer', 'brand']);
+        if ($this->is_sig_sauer_manufacturer($manufacturer)) {
+            $dropShipFlag = '0';
+        }
+        $dropShipBlockReason = ($dropShipFlag === '1')
+            ? ''
+            : ($this->is_sig_sauer_manufacturer($manufacturer)
+                ? self::SIG_SAUER_DROPSHIP_BLOCK_REASON
+                : 'drop_ship_flag=0');
         $retailMap = $this->clean_money($this->get_array($item, ['map_price']));
         $retailMsrp = $this->clean_money($this->get_array($item, ['retail_price', 'msrp']));
         if ($retailMsrp === '' && $retailMap !== '') {
@@ -163,7 +184,7 @@ class CSSIProductParser
 
             'product_name' => $this->get_array($item, ['name', 'product_name']),
             'product_description' => $this->get_array($item, ['description', 'product_description']),
-            'manufacturer' => $this->get_array($item, ['manufacturer', 'brand']),
+            'manufacturer' => $manufacturer,
             'model' => $this->get_array($item, ['model', 'model_series']),
             'mfg_model_number' => $this->get_array($item, ['manufacturer_model_no', 'mfg_model_number']),
             'caliber_gauge' => $this->get_array($item, ['caliber', 'caliber_gauge']),
@@ -173,7 +194,7 @@ class CSSIProductParser
             'ffl_required' => $this->to_flag($this->get_array($item, ['ffl_flag', 'ffl_required'])),
             'sot_required' => $this->to_flag($this->get_array($item, ['sot_required', 'nfa_required'])),
             'dropship_enabled' => $dropShipFlag,
-            'dropship_block_reason' => ($dropShipFlag === '1') ? '' : 'drop_ship_flag=0',
+            'dropship_block_reason' => $dropShipBlockReason,
             'drop_ship_delivery_options' => $this->get_array($item, ['available_drop_ship_delivery_options', 'drop_ship_delivery_options']),
 
             'shipping_weight' => $this->pounds_to_ounces_or_empty($this->get_array($item, ['shipping_weight', 'weight'])),
@@ -357,6 +378,12 @@ class CSSIProductParser
         }
 
         return '0';
+    }
+
+    private function is_sig_sauer_manufacturer(string $manufacturer): bool
+    {
+        $normalized = strtoupper(trim((string) preg_replace('/\s+/', ' ', $manufacturer)));
+        return $normalized === self::SIG_SAUER_MANUFACTURER;
     }
 
     private function allocation_status(string $inventory, string $inStockFlag): string

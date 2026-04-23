@@ -27,6 +27,8 @@ final class CSSIInventoryCronService extends AbstractTableCronService
     private const MAX_PAGE_SAFETY = 2000;
     private const CURSOR_OVERLAP_SECONDS = 120;
     private const OPT_CURSOR_UTC = 'fflhub_cssi_inventory_cursor_utc';
+    private const SIG_SAUER_MANUFACTURER = 'SIG SAUER';
+    private const SIG_SAUER_DROPSHIP_BLOCK_REASON = 'manufacturer_policy=sig_sauer_no_dropship';
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -460,6 +462,13 @@ final class CSSIInventoryCronService extends AbstractTableCronService
 
         $rowsLoaded = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable}");
 
+        $sigMatchExpr = "UPPER(TRIM(COALESCE(NULLIF(S.manufacturer, ''), L.manufacturer, ''))) = '" . self::SIG_SAUER_MANUFACTURER . "'";
+        $dropshipEnabledExpr = "CASE WHEN {$sigMatchExpr} THEN 0 ELSE S.dropship_enabled END";
+        $dropshipBlockReasonExpr = "CASE WHEN {$sigMatchExpr} THEN '" . self::SIG_SAUER_DROPSHIP_BLOCK_REASON . "' ELSE S.dropship_block_reason END";
+        $insertSigMatchExpr = "UPPER(TRIM(COALESCE(S.manufacturer, ''))) = '" . self::SIG_SAUER_MANUFACTURER . "'";
+        $insertDropshipEnabledExpr = "CASE WHEN {$insertSigMatchExpr} THEN 0 ELSE S.dropship_enabled END";
+        $insertDropshipBlockReasonExpr = "CASE WHEN {$insertSigMatchExpr} THEN '" . self::SIG_SAUER_DROPSHIP_BLOCK_REASON . "' ELSE S.dropship_block_reason END";
+
         $joinUpcSql = "
             UPDATE {$liveTable} L
             INNER JOIN {$stageTable} S
@@ -483,8 +492,8 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 L.serialized_flag = S.serialized_flag,
                 L.ffl_required = S.ffl_required,
                 L.sot_required = S.sot_required,
-                L.dropship_enabled = S.dropship_enabled,
-                L.dropship_block_reason = S.dropship_block_reason,
+                L.dropship_enabled = {$dropshipEnabledExpr},
+                L.dropship_block_reason = {$dropshipBlockReasonExpr},
                 L.drop_ship_delivery_options = CASE WHEN S.drop_ship_delivery_options <> '' THEN S.drop_ship_delivery_options ELSE L.drop_ship_delivery_options END,
                 L.shipping_weight = CASE WHEN S.shipping_weight <> '' THEN S.shipping_weight ELSE L.shipping_weight END,
                 L.shipping_length_in = CASE WHEN S.shipping_length_in <> '' THEN S.shipping_length_in ELSE L.shipping_length_in END,
@@ -501,7 +510,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 OR COALESCE(L.drop_ship_price, '') <> COALESCE(S.drop_ship_price, '')
                 OR COALESCE(L.serialized_flag, 0) <> COALESCE(S.serialized_flag, 0)
                 OR COALESCE(L.ffl_required, 0) <> COALESCE(S.ffl_required, 0)
-                OR COALESCE(L.dropship_enabled, 0) <> COALESCE(S.dropship_enabled, 0)
+                OR COALESCE(L.dropship_enabled, 0) <> COALESCE({$dropshipEnabledExpr}, 0)
                 OR COALESCE(L.last_seen_utc, '') <> COALESCE(S.last_seen_utc, '')
         ";
 
@@ -536,8 +545,8 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 L.serialized_flag = S.serialized_flag,
                 L.ffl_required = S.ffl_required,
                 L.sot_required = S.sot_required,
-                L.dropship_enabled = S.dropship_enabled,
-                L.dropship_block_reason = S.dropship_block_reason,
+                L.dropship_enabled = {$dropshipEnabledExpr},
+                L.dropship_block_reason = {$dropshipBlockReasonExpr},
                 L.drop_ship_delivery_options = CASE WHEN S.drop_ship_delivery_options <> '' THEN S.drop_ship_delivery_options ELSE L.drop_ship_delivery_options END,
                 L.shipping_weight = CASE WHEN S.shipping_weight <> '' THEN S.shipping_weight ELSE L.shipping_weight END,
                 L.shipping_length_in = CASE WHEN S.shipping_length_in <> '' THEN S.shipping_length_in ELSE L.shipping_length_in END,
@@ -556,7 +565,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                     OR COALESCE(L.drop_ship_price, '') <> COALESCE(S.drop_ship_price, '')
                     OR COALESCE(L.serialized_flag, 0) <> COALESCE(S.serialized_flag, 0)
                     OR COALESCE(L.ffl_required, 0) <> COALESCE(S.ffl_required, 0)
-                    OR COALESCE(L.dropship_enabled, 0) <> COALESCE(S.dropship_enabled, 0)
+                    OR COALESCE(L.dropship_enabled, 0) <> COALESCE({$dropshipEnabledExpr}, 0)
                     OR COALESCE(L.last_seen_utc, '') <> COALESCE(S.last_seen_utc, '')
                 )
         ";
@@ -619,8 +628,8 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 S.serialized_flag,
                 S.ffl_required,
                 S.sot_required,
-                S.dropship_enabled,
-                S.dropship_block_reason,
+                {$insertDropshipEnabledExpr},
+                {$insertDropshipBlockReasonExpr},
                 S.drop_ship_delivery_options,
                 S.shipping_weight,
                 S.shipping_length_in,
@@ -809,6 +818,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $normalized['product_name'] = trim((string) ($row['product_name'] ?? ''));
         $normalized['product_description'] = trim((string) ($row['product_description'] ?? ''));
         $normalized['manufacturer'] = trim((string) ($row['manufacturer'] ?? ''));
+        $isSigSauer = $this->is_sig_sauer_manufacturer($normalized['manufacturer']);
         $normalized['model'] = trim((string) ($row['model'] ?? ''));
         $normalized['mfg_model_number'] = trim((string) ($row['mfg_model_number'] ?? ''));
         $normalized['caliber_gauge'] = trim((string) ($row['caliber_gauge'] ?? ''));
@@ -817,8 +827,10 @@ final class CSSIInventoryCronService extends AbstractTableCronService
 
         $normalized['ffl_required'] = $this->to_int01($row['ffl_required'] ?? 0);
         $normalized['sot_required'] = $this->to_int01($row['sot_required'] ?? 0);
-        $normalized['dropship_enabled'] = $this->to_int01($row['dropship_enabled'] ?? 0);
-        $normalized['dropship_block_reason'] = trim((string) ($row['dropship_block_reason'] ?? ''));
+        $normalized['dropship_enabled'] = $isSigSauer ? '0' : $this->to_int01($row['dropship_enabled'] ?? 0);
+        $normalized['dropship_block_reason'] = $isSigSauer
+            ? self::SIG_SAUER_DROPSHIP_BLOCK_REASON
+            : trim((string) ($row['dropship_block_reason'] ?? ''));
         $normalized['drop_ship_delivery_options'] = trim((string) ($row['drop_ship_delivery_options'] ?? ''));
 
         $normalized['shipping_weight'] = trim((string) ($row['shipping_weight'] ?? ''));
@@ -867,6 +879,12 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         }
 
         return '0';
+    }
+
+    private function is_sig_sauer_manufacturer(string $manufacturer): bool
+    {
+        $normalized = strtoupper(trim((string) preg_replace('/\s+/', ' ', $manufacturer)));
+        return $normalized === self::SIG_SAUER_MANUFACTURER;
     }
 
     /**
