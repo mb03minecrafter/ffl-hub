@@ -10,6 +10,7 @@ use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
+use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Settings\Options;
@@ -433,6 +434,30 @@ class DistributorProductHelper
             $candidate = $payload->recommended_category ?? null;
             if (is_array($candidate) && !empty($candidate)) {
                 return $candidate;
+            }
+
+            $raw = $payload->raw ?? null;
+            if (is_array($raw)) {
+                $raw_category_candidates = [
+                    $raw['item_group'] ?? null,
+                    $raw['itemGroup'] ?? null,
+                    $raw['family'] ?? null,
+                    $raw['item_type'] ?? null,
+                    $raw['itemType'] ?? null,
+                    $raw['type'] ?? null,
+                ];
+
+                foreach ($raw_category_candidates as $raw_category_candidate) {
+                    $raw_category_candidate = trim((string) ($raw_category_candidate ?? ''));
+                    if ($raw_category_candidate === '') {
+                        continue;
+                    }
+
+                    $mapped = DistributorProductCategoryMapper::map_lipseys($raw_category_candidate);
+                    if (is_array($mapped) && !empty($mapped)) {
+                        return $mapped;
+                    }
+                }
             }
         }
 
