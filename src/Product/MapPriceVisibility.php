@@ -1381,6 +1381,14 @@ class MapPriceVisibility
             return '';
         }
 
+        $parts = preg_split('/\s+/', $first_name);
+        if (is_array($parts) && !empty($parts)) {
+            $candidate = trim((string) ($parts[0] ?? ''));
+            if ($candidate !== '') {
+                $first_name = $candidate;
+            }
+        }
+
         $lower = strtolower($first_name);
         $normalized = preg_replace_callback(
             "/(^|[\\s\\-'])([a-z])/i",
