@@ -119,6 +119,18 @@ final class SettingsRegistrar
                 'default'           => Options::default_distributor_priority_csv(),
             ]
         );
+
+        foreach (Options::default_dealer_ship_to_options() as $option_name => $default_value) {
+            register_setting(
+                $group,
+                $option_name,
+                [
+                    'type'              => 'string',
+                    'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                    'default'           => $default_value,
+                ]
+            );
+        }
     }
 
     /**

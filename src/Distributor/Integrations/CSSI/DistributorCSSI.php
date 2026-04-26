@@ -510,14 +510,14 @@ final class DistributorCSSI extends DistributorBase
                 'lane' => $lane,
                 'drop_ship_flag' => 0,
             ]);
-            $ship = $this->resolve_cssi_dealer_ship_to($request);
+            $ship = $this->resolve_cssi_dealer_ship_to();
             if (!($ship instanceof DistributorShipTo)) {
                 $this->profile('Place-order lane failed (missing dealer ship-to)', $t0, [
                     'trace_id' => $traceId,
                     'lane' => $lane,
                 ]);
                 return DistributorOrderResult::block_fatal(
-                    'CSSI dealer-fulfilled: missing ship-to destination.',
+                    'CSSI dealer-fulfilled: missing dealer ship-to settings.',
                     [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
                     [],
                     0,
@@ -558,6 +558,10 @@ final class DistributorCSSI extends DistributorBase
                 '',
                 $external_ids
             );
+        }
+
+        if ($lane === 'dealer_fulfilled') {
+            $payload = $this->normalize_cssi_dealer_fulfilled_payload($payload);
         }
 
         $this->log('Place-order lane payload built', [
@@ -1044,17 +1048,61 @@ final class DistributorCSSI extends DistributorBase
         return null;
     }
 
-    private function resolve_cssi_dealer_ship_to(DistributorOrderRequest $request): ?DistributorShipTo
+    /**
+     * CSSI marks drop-ship-only fields invalid when drop_ship_flag=0.
+     *
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>
+     */
+    private function normalize_cssi_dealer_fulfilled_payload(array $payload): array
     {
-        if ($request->ship_to_ffl instanceof DistributorShipTo) {
-            return $request->ship_to_ffl;
+        $payload['drop_ship_flag'] = 0;
+
+        unset(
+            $payload['customer'],
+            $payload['delivery_option'],
+            $payload['insurance_flag'],
+            $payload['adult_signature_flag'],
+            $payload['federal_firearms_license_number']
+        );
+
+        return $payload;
+    }
+
+    private function resolve_cssi_dealer_ship_to(): ?DistributorShipTo
+    {
+        $cfg = Options::get_dealer_ship_to_address();
+
+        $name = trim((string) ($cfg['name'] ?? ''));
+        $company = trim((string) ($cfg['company'] ?? ''));
+        if ($name === '') {
+            $name = $company;
+        }
+        if ($company === '') {
+            $company = $name;
         }
 
-        if ($request->ship_to_customer instanceof DistributorShipTo) {
-            return $request->ship_to_customer;
+        $address1 = trim((string) ($cfg['address1'] ?? ''));
+        $address2 = trim((string) ($cfg['address2'] ?? ''));
+        $city = trim((string) ($cfg['city'] ?? ''));
+        $state = strtoupper(trim((string) ($cfg['state'] ?? '')));
+        $zip = trim((string) ($cfg['zip'] ?? ''));
+
+        if ($name === '' || $address1 === '' || $city === '' || $state === '' || $zip === '') {
+            return null;
         }
 
-        return null;
+        return new DistributorShipTo(
+            $name,
+            $company,
+            $address1,
+            $address2,
+            $city,
+            $state,
+            $zip,
+            trim((string) ($cfg['phone'] ?? '')),
+            trim((string) ($cfg['email'] ?? ''))
+        );
     }
 
     /**

@@ -174,6 +174,7 @@ class AdminPage
             'holosun_image_notice_enabled' => Options::get_holosun_image_notice_enabled() ? '1' : '0',
             'pretty_random_email_quotes_enabled' => Options::get_pretty_random_email_quotes_enabled() ? '1' : '0',
             'distributor_priority_list' => (string) Options::get_distributor_priority_csv(),
+            'dealer_ship_to' => Options::get_dealer_ship_to_address(),
 
             'usps_estimate_enabled' => Options::get_usps_estimate_enabled() ? '1' : '0',
             'usps_use_test_env'     => Options::get_usps_use_test_env() ? '1' : '0',
@@ -232,6 +233,65 @@ class AdminPage
         $holosun_image_notice_enabled = ((string) ($settings['holosun_image_notice_enabled'] ?? '0') === '1');
         $pretty_random_email_quotes_enabled = ((string) ($settings['pretty_random_email_quotes_enabled'] ?? '1') === '1');
         $distributor_priority_list = (string) ($settings['distributor_priority_list'] ?? '');
+        $dealer_ship_to = isset($settings['dealer_ship_to']) && is_array($settings['dealer_ship_to'])
+            ? $settings['dealer_ship_to']
+            : [];
+        $dealer_ship_to_fields = [
+            [
+                'key' => 'name',
+                'option' => Options::OPTION_DEALER_SHIP_TO_NAME,
+                'label' => __('Ship-to name', 'ffl-hub'),
+                'placeholder' => __('BICKHAM FIREARMS LLC', 'ffl-hub'),
+            ],
+            [
+                'key' => 'company',
+                'option' => Options::OPTION_DEALER_SHIP_TO_COMPANY,
+                'label' => __('Company', 'ffl-hub'),
+                'placeholder' => __('BICKHAM FIREARMS LLC', 'ffl-hub'),
+            ],
+            [
+                'key' => 'address1',
+                'option' => Options::OPTION_DEALER_SHIP_TO_ADDRESS1,
+                'label' => __('Address line 1', 'ffl-hub'),
+                'placeholder' => __('10322 BLACK ROAD', 'ffl-hub'),
+            ],
+            [
+                'key' => 'address2',
+                'option' => Options::OPTION_DEALER_SHIP_TO_ADDRESS2,
+                'label' => __('Address line 2', 'ffl-hub'),
+                'placeholder' => '',
+            ],
+            [
+                'key' => 'city',
+                'option' => Options::OPTION_DEALER_SHIP_TO_CITY,
+                'label' => __('City', 'ffl-hub'),
+                'placeholder' => __('ZACHARY', 'ffl-hub'),
+            ],
+            [
+                'key' => 'state',
+                'option' => Options::OPTION_DEALER_SHIP_TO_STATE,
+                'label' => __('State', 'ffl-hub'),
+                'placeholder' => __('LA', 'ffl-hub'),
+            ],
+            [
+                'key' => 'zip',
+                'option' => Options::OPTION_DEALER_SHIP_TO_ZIP,
+                'label' => __('ZIP', 'ffl-hub'),
+                'placeholder' => __('70791', 'ffl-hub'),
+            ],
+            [
+                'key' => 'phone',
+                'option' => Options::OPTION_DEALER_SHIP_TO_PHONE,
+                'label' => __('Phone', 'ffl-hub'),
+                'placeholder' => '',
+            ],
+            [
+                'key' => 'email',
+                'option' => Options::OPTION_DEALER_SHIP_TO_EMAIL,
+                'label' => __('Email', 'ffl-hub'),
+                'placeholder' => '',
+            ],
+        ];
         $priority_choices = [];
         foreach (DistributorRegistry::get_modules() as $module) {
             if (!($module instanceof DistributorModuleInterface)) {
@@ -384,6 +444,38 @@ class AdminPage
                         ?>
                     </p>
                 </div>
+
+                <div class="fflhub-field-row">
+                    <h3><?php esc_html_e('Dealer Fulfillment Ship-To', 'ffl-hub'); ?></h3>
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Used when a distributor order is dealer-fulfilled: the distributor ships to your shop, then you ship to the customer.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <?php foreach ($dealer_ship_to_fields as $field) : ?>
+                    <?php
+                    $key = (string) ($field['key'] ?? '');
+                    $option = (string) ($field['option'] ?? '');
+                    $value = (string) ($dealer_ship_to[$key] ?? '');
+                    ?>
+                    <div class="fflhub-field-row">
+                        <label
+                            for="<?php echo esc_attr($option); ?>"
+                            class="fflhub-field-label">
+                            <?php echo esc_html((string) ($field['label'] ?? $option)); ?>
+                        </label>
+                        <input
+                            id="<?php echo esc_attr($option); ?>"
+                            name="<?php echo esc_attr($option); ?>"
+                            type="text"
+                            class="fflhub-field-input"
+                            value="<?php echo esc_attr($value); ?>"
+                            placeholder="<?php echo esc_attr((string) ($field['placeholder'] ?? '')); ?>" />
+                    </div>
+                <?php endforeach; ?>
 
                 <?php submit_button(__('Save Global Settings', 'ffl-hub')); ?>
             </div>

@@ -48,6 +48,15 @@ final class Options
     public const OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = 'fflhub_pretty_random_email_quotes_enabled';
     public const OPTION_DISTRIBUTOR_PRIORITY_LIST     = 'fflhub_distributor_priority_list';
     public const OPTION_MAP_BRAND_POLICIES            = 'fflhub_map_brand_policies';
+    public const OPTION_DEALER_SHIP_TO_NAME           = 'fflhub_dealer_ship_to_name';
+    public const OPTION_DEALER_SHIP_TO_COMPANY        = 'fflhub_dealer_ship_to_company';
+    public const OPTION_DEALER_SHIP_TO_ADDRESS1       = 'fflhub_dealer_ship_to_address1';
+    public const OPTION_DEALER_SHIP_TO_ADDRESS2       = 'fflhub_dealer_ship_to_address2';
+    public const OPTION_DEALER_SHIP_TO_CITY           = 'fflhub_dealer_ship_to_city';
+    public const OPTION_DEALER_SHIP_TO_STATE          = 'fflhub_dealer_ship_to_state';
+    public const OPTION_DEALER_SHIP_TO_ZIP            = 'fflhub_dealer_ship_to_zip';
+    public const OPTION_DEALER_SHIP_TO_PHONE          = 'fflhub_dealer_ship_to_phone';
+    public const OPTION_DEALER_SHIP_TO_EMAIL          = 'fflhub_dealer_ship_to_email';
     public const OPTION_USPS_ESTIMATE_ENABLED         = 'fflhub_usps_estimate_enabled';
     public const OPTION_USPS_USE_TEST_ENV             = 'fflhub_usps_use_test_env';
     public const OPTION_USPS_BASE_URL                 = 'fflhub_usps_base_url';
@@ -77,6 +86,15 @@ final class Options
     private const DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED  = false;
     private const DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = true;
     private const DEFAULT_MAP_BRAND_POLICIES            = [];
+    private const DEFAULT_DEALER_SHIP_TO_NAME           = '';
+    private const DEFAULT_DEALER_SHIP_TO_COMPANY        = '';
+    private const DEFAULT_DEALER_SHIP_TO_ADDRESS1       = '';
+    private const DEFAULT_DEALER_SHIP_TO_ADDRESS2       = '';
+    private const DEFAULT_DEALER_SHIP_TO_CITY           = '';
+    private const DEFAULT_DEALER_SHIP_TO_STATE          = '';
+    private const DEFAULT_DEALER_SHIP_TO_ZIP            = '';
+    private const DEFAULT_DEALER_SHIP_TO_PHONE          = '';
+    private const DEFAULT_DEALER_SHIP_TO_EMAIL          = '';
     private const DEFAULT_USPS_ESTIMATE_ENABLED         = false;
     private const DEFAULT_USPS_USE_TEST_ENV             = true;
     private const DEFAULT_USPS_BASE_URL                 = '';
@@ -322,6 +340,12 @@ final class Options
 
         if (get_option(self::OPTION_MAP_BRAND_POLICIES, null) === null) {
             add_option(self::OPTION_MAP_BRAND_POLICIES, self::DEFAULT_MAP_BRAND_POLICIES);
+        }
+
+        foreach (self::default_dealer_ship_to_options() as $option_name => $default_value) {
+            if (get_option($option_name, null) === null) {
+                add_option($option_name, $default_value);
+            }
         }
 
         if (get_option(self::OPTION_USPS_ESTIMATE_ENABLED, null) === null) {
@@ -843,6 +867,42 @@ final class Options
             self::OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED,
             self::DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED ? '1' : '0'
         )) === '1';
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    public static function get_dealer_ship_to_address(): array
+    {
+        return [
+            'name'     => (string) get_option(self::OPTION_DEALER_SHIP_TO_NAME, self::DEFAULT_DEALER_SHIP_TO_NAME),
+            'company'  => (string) get_option(self::OPTION_DEALER_SHIP_TO_COMPANY, self::DEFAULT_DEALER_SHIP_TO_COMPANY),
+            'address1' => (string) get_option(self::OPTION_DEALER_SHIP_TO_ADDRESS1, self::DEFAULT_DEALER_SHIP_TO_ADDRESS1),
+            'address2' => (string) get_option(self::OPTION_DEALER_SHIP_TO_ADDRESS2, self::DEFAULT_DEALER_SHIP_TO_ADDRESS2),
+            'city'     => (string) get_option(self::OPTION_DEALER_SHIP_TO_CITY, self::DEFAULT_DEALER_SHIP_TO_CITY),
+            'state'    => (string) get_option(self::OPTION_DEALER_SHIP_TO_STATE, self::DEFAULT_DEALER_SHIP_TO_STATE),
+            'zip'      => (string) get_option(self::OPTION_DEALER_SHIP_TO_ZIP, self::DEFAULT_DEALER_SHIP_TO_ZIP),
+            'phone'    => (string) get_option(self::OPTION_DEALER_SHIP_TO_PHONE, self::DEFAULT_DEALER_SHIP_TO_PHONE),
+            'email'    => (string) get_option(self::OPTION_DEALER_SHIP_TO_EMAIL, self::DEFAULT_DEALER_SHIP_TO_EMAIL),
+        ];
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    public static function default_dealer_ship_to_options(): array
+    {
+        return [
+            self::OPTION_DEALER_SHIP_TO_NAME     => self::DEFAULT_DEALER_SHIP_TO_NAME,
+            self::OPTION_DEALER_SHIP_TO_COMPANY  => self::DEFAULT_DEALER_SHIP_TO_COMPANY,
+            self::OPTION_DEALER_SHIP_TO_ADDRESS1 => self::DEFAULT_DEALER_SHIP_TO_ADDRESS1,
+            self::OPTION_DEALER_SHIP_TO_ADDRESS2 => self::DEFAULT_DEALER_SHIP_TO_ADDRESS2,
+            self::OPTION_DEALER_SHIP_TO_CITY     => self::DEFAULT_DEALER_SHIP_TO_CITY,
+            self::OPTION_DEALER_SHIP_TO_STATE    => self::DEFAULT_DEALER_SHIP_TO_STATE,
+            self::OPTION_DEALER_SHIP_TO_ZIP      => self::DEFAULT_DEALER_SHIP_TO_ZIP,
+            self::OPTION_DEALER_SHIP_TO_PHONE    => self::DEFAULT_DEALER_SHIP_TO_PHONE,
+            self::OPTION_DEALER_SHIP_TO_EMAIL    => self::DEFAULT_DEALER_SHIP_TO_EMAIL,
+        ];
     }
 
     public static function get_usps_estimate_enabled(): bool
