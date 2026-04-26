@@ -33,7 +33,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         'Matthew Bickham',
         'Thomas Bickham',
         'Michelle Bickham',
-        'Rebecca Kent',
     ];
 
     private QuoteEmailJobsTable $jobs_table;
