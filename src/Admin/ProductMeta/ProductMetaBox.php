@@ -974,6 +974,8 @@ class ProductMetaBox
             );
         }
 
+        DistributorProductHelper::sync_woo_shipping_from_fflhub_meta($product);
+
         // Save all updated metadata before applying pricing.
         $product->save();
 

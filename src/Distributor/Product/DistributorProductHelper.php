@@ -537,6 +537,13 @@ class DistributorProductHelper
         $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length']);
         $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width']);
         $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height']);
+        self::sync_woo_shipping_from_fflhub_values(
+            $product,
+            $shipping_weight,
+            $dims['length'],
+            $dims['width'],
+            $dims['height']
+        );
         $product->update_meta_data(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required ? 1 : 0);
 
         $default_markup_mode = self::default_markup_mode_for_payload($selected_product);
@@ -654,6 +661,15 @@ class DistributorProductHelper
             $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length'], 4);
             $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width'], 4);
             $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height'], 4);
+            if (self::sync_woo_shipping_from_fflhub_values(
+                $product,
+                $shipping_weight,
+                $dims['length'],
+                $dims['width'],
+                $dims['height']
+            )) {
+                $changed = true;
+            }
         } else {
             DebugLogUtil::log_ctx(
                 'FFLHUB_CRON_DEBUG',
@@ -663,6 +679,69 @@ class DistributorProductHelper
                     'product_id' => $product->get_id(),
                 ]
             );
+
+            if (self::sync_woo_shipping_from_fflhub_meta($product)) {
+                $changed = true;
+            }
+        }
+
+        return $changed;
+    }
+
+    /**
+     * Mirror FFLHub shipping meta into WooCommerce native shipping fields.
+     *
+     * FFLHub stores weight in ounces. WooCommerce product weight is stored in
+     * the store's configured weight unit, which is usually pounds for this site.
+     */
+    public static function sync_woo_shipping_from_fflhub_meta(WC_Product $product): bool
+    {
+        return self::sync_woo_shipping_from_fflhub_values(
+            $product,
+            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true),
+            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, true),
+            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, true),
+            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, true)
+        );
+    }
+
+    /**
+     * @param mixed $weight_oz_raw
+     * @param mixed $length_in_raw
+     * @param mixed $width_in_raw
+     * @param mixed $height_in_raw
+     */
+    public static function sync_woo_shipping_from_fflhub_values(
+        WC_Product $product,
+        $weight_oz_raw,
+        $length_in_raw,
+        $width_in_raw,
+        $height_in_raw
+    ): bool {
+        $changed = false;
+
+        $weight = self::normalize_woo_weight_from_ounces($weight_oz_raw);
+        if ($weight !== null && self::normalized_product_prop($product->get_weight('edit')) !== $weight) {
+            $product->set_weight($weight);
+            $changed = true;
+        }
+
+        $length = self::normalize_woo_dimension_from_inches($length_in_raw);
+        if ($length !== null && self::normalized_product_prop($product->get_length('edit')) !== $length) {
+            $product->set_length($length);
+            $changed = true;
+        }
+
+        $width = self::normalize_woo_dimension_from_inches($width_in_raw);
+        if ($width !== null && self::normalized_product_prop($product->get_width('edit')) !== $width) {
+            $product->set_width($width);
+            $changed = true;
+        }
+
+        $height = self::normalize_woo_dimension_from_inches($height_in_raw);
+        if ($height !== null && self::normalized_product_prop($product->get_height('edit')) !== $height) {
+            $product->set_height($height);
+            $changed = true;
         }
 
         return $changed;
@@ -800,6 +879,102 @@ class DistributorProductHelper
     {
         $v = trim((string) ($value ?? ''));
         return ($v === '' || strtolower($v) === 'null') ? '' : $v;
+    }
+
+    /**
+     * Convert FFLHub ounce weight into Woo's configured product weight unit.
+     *
+     * @param mixed $value
+     */
+    private static function normalize_woo_weight_from_ounces($value): ?string
+    {
+        $ounces = self::to_positive_float($value);
+        if ($ounces === null) {
+            return null;
+        }
+
+        $target_unit = strtolower(trim((string) get_option('woocommerce_weight_unit', 'lbs')));
+        if ($target_unit === '') {
+            $target_unit = 'lbs';
+        }
+
+        if (function_exists('wc_get_weight')) {
+            return self::format_woo_decimal((float) wc_get_weight($ounces, $target_unit, 'oz'));
+        }
+
+        $converted = ($target_unit === 'oz') ? $ounces : ($ounces / 16);
+        return self::format_woo_decimal($converted);
+    }
+
+    /**
+     * Convert FFLHub inch dimensions into Woo's configured dimension unit.
+     *
+     * @param mixed $value
+     */
+    private static function normalize_woo_dimension_from_inches($value): ?string
+    {
+        $inches = self::to_positive_float($value);
+        if ($inches === null) {
+            return null;
+        }
+
+        $target_unit = strtolower(trim((string) get_option('woocommerce_dimension_unit', 'in')));
+        if ($target_unit === '') {
+            $target_unit = 'in';
+        }
+
+        if (function_exists('wc_get_dimension')) {
+            return self::format_woo_decimal((float) wc_get_dimension($inches, $target_unit, 'in'));
+        }
+
+        switch ($target_unit) {
+            case 'm':
+                $converted = $inches * 0.0254;
+                break;
+            case 'cm':
+                $converted = $inches * 2.54;
+                break;
+            case 'mm':
+                $converted = $inches * 25.4;
+                break;
+            case 'yd':
+                $converted = $inches / 36;
+                break;
+            case 'ft':
+                $converted = $inches / 12;
+                break;
+            case 'in':
+            default:
+                $converted = $inches;
+                break;
+        }
+
+        return self::format_woo_decimal($converted);
+    }
+
+    /**
+     * Normalize an existing Woo shipping prop so comparisons do not churn saves.
+     *
+     * @param mixed $value
+     */
+    private static function normalized_product_prop($value): string
+    {
+        $raw = trim((string) ($value ?? ''));
+        if ($raw === '') {
+            return '';
+        }
+
+        return is_numeric($raw) ? self::format_woo_decimal((float) $raw) : $raw;
+    }
+
+    private static function format_woo_decimal(float $value): string
+    {
+        $formatted = function_exists('wc_format_decimal')
+            ? (string) wc_format_decimal($value, 4)
+            : number_format($value, 4, '.', '');
+
+        $formatted = rtrim(rtrim($formatted, '0'), '.');
+        return $formatted === '' ? '0' : $formatted;
     }
 
     private static function has_complete_dimensions(string $length, string $width, string $height): bool
