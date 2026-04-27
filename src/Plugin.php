@@ -35,6 +35,7 @@ use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Order\OrderProfitAuditMeta;
+use FFLHub\Order\WooShippingLabelCostSync;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Product\MapPriceVisibility;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
@@ -124,6 +125,7 @@ final class Plugin
         ShippingRegistrar::init();
 
         OrderProfitAuditMeta::init();
+        WooShippingLabelCostSync::init();
 
         MapPriceVisibility::init();
 

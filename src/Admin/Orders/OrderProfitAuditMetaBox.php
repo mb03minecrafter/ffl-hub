@@ -85,8 +85,12 @@ final class OrderProfitAuditMetaBox
         $profit_label = $profit >= 0 ? 'Net profit' : 'Net loss';
         $processor_percent = self::float_value($audit['processor_fee_percent'] ?? 0);
         $customer_shipping = self::float_value($audit['customer_shipping_charge'] ?? 0);
+        $label_cost = self::float_value($audit['shipping_label_cost_total'] ?? 0);
         $lines = isset($audit['lines']) && is_array($audit['lines']) ? $audit['lines'] : [];
         $by_dist = isset($audit['item_cost_by_dist']) && is_array($audit['item_cost_by_dist']) ? $audit['item_cost_by_dist'] : [];
+        $shipping_caption = $label_cost > 0.0
+            ? 'Labels ' . wp_strip_all_tags(self::money($label_cost, $order)) . '; customer paid ' . wp_strip_all_tags(self::money($customer_shipping, $order))
+            : 'Customer paid ' . wp_strip_all_tags(self::money($customer_shipping, $order));
 
         echo '<div class="fflhub-profit-wrap">';
 
@@ -105,7 +109,7 @@ final class OrderProfitAuditMetaBox
         echo '<div class="fflhub-profit-metrics">';
         echo self::metric_card('Revenue', self::money(self::float_value($audit['revenue_total'] ?? 0), $order), 'Includes customer shipping; excludes tax', 'revenue');
         echo self::metric_card('Item Cost', self::money(self::float_value($audit['item_cost_total'] ?? 0), $order), 'Distributor unit cost x qty', 'cost');
-        echo self::metric_card('Shipping Cost', self::money(self::float_value($audit['shipping_cost_total'] ?? 0), $order), 'Customer paid ' . wp_strip_all_tags(self::money($customer_shipping, $order)), 'shipping');
+        echo self::metric_card('Shipping Cost', self::money(self::float_value($audit['shipping_cost_total'] ?? 0), $order), $shipping_caption, 'shipping');
         echo self::metric_card('Processor Fee', self::money(self::float_value($audit['processor_fee_amount'] ?? 0), $order), self::percent($processor_percent) . ' of order total', 'fee');
         echo '</div>';
 
@@ -153,6 +157,8 @@ final class OrderProfitAuditMetaBox
         echo '</div>';
         echo '</section>';
         echo '</div>';
+
+        self::render_shipping_label_panel($audit, $order);
 
         echo '<section class="fflhub-profit-panel fflhub-profit-lines-panel">';
         echo '<div class="fflhub-profit-panel-head">';
@@ -212,12 +218,84 @@ final class OrderProfitAuditMetaBox
             'item_cost_total' => self::float_value($order->get_meta('fflhub_order_item_cost_total', true)),
             'item_cost_by_dist' => self::json_array($order->get_meta('fflhub_order_item_cost_by_dist', true)),
             'shipping_cost_total' => self::float_value($order->get_meta('fflhub_order_shipping_cost_total', true)),
+            'shipping_planned_cost_total' => self::float_value($order->get_meta('fflhub_order_shipping_planned_cost_total', true)),
+            'shipping_non_label_cost_total' => self::float_value($order->get_meta('fflhub_order_shipping_non_label_cost_total', true)),
+            'shipping_label_cost_total' => self::float_value($order->get_meta('fflhub_order_shipping_label_cost_total', true)),
+            'shipping_label_count' => (int) $order->get_meta('fflhub_order_shipping_label_count', true),
+            'shipping_label_source' => (string) $order->get_meta('fflhub_order_shipping_label_source', true),
+            'shipping_label_lines' => self::json_array($order->get_meta('fflhub_order_shipping_label_lines', true)),
             'customer_shipping_charge' => self::float_value($order->get_meta('fflhub_order_customer_shipping_charge', true)),
             'processor_fee_percent' => self::float_value($order->get_meta('fflhub_order_processor_fee_percent', true)),
             'processor_fee_amount' => self::float_value($order->get_meta('fflhub_order_processor_fee_amount', true)),
             'actual_profit_total' => self::float_value($order->get_meta('fflhub_order_actual_profit_total', true)),
             'lines' => self::json_array($order->get_meta('fflhub_order_profit_lines', true)),
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $audit
+     */
+    private static function render_shipping_label_panel(array $audit, WC_Order $order): void
+    {
+        $planned_total = self::float_value($audit['shipping_planned_cost_total'] ?? 0);
+        $non_label_total = self::float_value($audit['shipping_non_label_cost_total'] ?? 0);
+        $label_total = self::float_value($audit['shipping_label_cost_total'] ?? 0);
+        $label_count = (int) ($audit['shipping_label_count'] ?? 0);
+        $label_source = trim((string) ($audit['shipping_label_source'] ?? ''));
+        $label_lines = isset($audit['shipping_label_lines']) && is_array($audit['shipping_label_lines'])
+            ? $audit['shipping_label_lines']
+            : [];
+
+        echo '<section class="fflhub-profit-panel fflhub-profit-label-panel">';
+        echo '<div class="fflhub-profit-panel-head">';
+        echo '<h4>Shipping Labels</h4>';
+        echo '<span>Estimated versus actual WooCommerce label cost</span>';
+        echo '</div>';
+
+        echo '<div class="fflhub-profit-label-summary">';
+        echo self::label_stat('Planned', self::money($planned_total, $order), 'FFLHub checkout estimate');
+        echo self::label_stat('Woo Labels', self::money($label_total, $order), sprintf('%d purchased label(s)', $label_count));
+        echo self::label_stat('Other Shipping', self::money($non_label_total, $order), 'Distributor/direct pieces kept');
+        echo self::label_stat('Source', esc_html($label_source !== '' ? $label_source : 'none yet'), 'Where label data was read');
+        echo '</div>';
+
+        if ($label_total <= 0.0 || empty($label_lines)) {
+            echo '<div class="fflhub-profit-empty">No purchased WooCommerce Shipping label cost found yet. Until a label exists, profit uses the planned FFLHub shipping estimate.</div>';
+            echo '</section>';
+            return;
+        }
+
+        echo '<div class="fflhub-profit-table-wrap">';
+        echo '<table class="fflhub-profit-table">';
+        echo '<thead><tr>';
+        echo '<th>Label</th><th>Cost</th><th>Service</th><th>Status</th><th>Tracking</th><th>Source</th>';
+        echo '</tr></thead><tbody>';
+
+        foreach ($label_lines as $label) {
+            if (!is_array($label)) {
+                continue;
+            }
+
+            $label_id = (string) ($label['label_id'] ?? '');
+            $service = trim((string) (($label['carrier_id'] ?? '') . ' ' . ($label['service_name'] ?? '')));
+            $status = (string) ($label['status'] ?? '');
+            $tracking = (string) ($label['tracking'] ?? '');
+            $source = (string) ($label['source'] ?? '');
+            $cost = self::float_value($label['cost'] ?? 0);
+
+            echo '<tr>';
+            echo '<td><code>' . esc_html($label_id !== '' ? $label_id : '-') . '</code></td>';
+            echo '<td>' . self::money($cost, $order) . '</td>';
+            echo '<td>' . esc_html($service !== '' ? $service : '-') . '</td>';
+            echo '<td><span class="fflhub-profit-mini-pill">' . esc_html($status !== '' ? $status : 'purchased') . '</span></td>';
+            echo '<td><code>' . esc_html($tracking !== '' ? $tracking : '-') . '</code></td>';
+            echo '<td>' . esc_html($source !== '' ? $source : '-') . '</td>';
+            echo '</tr>';
+        }
+
+        echo '</tbody></table>';
+        echo '</div>';
+        echo '</section>';
     }
 
     private static function metric_card(string $label, string $value_html, string $caption, string $tone): string
@@ -234,6 +312,15 @@ final class OrderProfitAuditMetaBox
         return '<div class="fflhub-profit-formula-step is-' . esc_attr($tone) . '">'
             . '<span>' . esc_html($label) . '</span>'
             . '<strong>' . $value_html . '</strong>'
+            . '</div>';
+    }
+
+    private static function label_stat(string $label, string $value_html, string $caption): string
+    {
+        return '<div class="fflhub-profit-label-stat">'
+            . '<span>' . esc_html($label) . '</span>'
+            . '<strong>' . $value_html . '</strong>'
+            . '<em>' . esc_html($caption) . '</em>'
             . '</div>';
     }
 

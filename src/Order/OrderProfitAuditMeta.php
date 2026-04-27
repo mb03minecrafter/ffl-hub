@@ -62,6 +62,12 @@ final class OrderProfitAuditMeta
         $order->update_meta_data('fflhub_order_item_cost_total', self::money($audit['item_cost_total']));
         $order->update_meta_data('fflhub_order_item_cost_by_dist', wp_json_encode($audit['item_cost_by_dist']));
         $order->update_meta_data('fflhub_order_shipping_cost_total', self::money($audit['shipping_cost_total']));
+        $order->update_meta_data('fflhub_order_shipping_planned_cost_total', self::money($audit['shipping_planned_cost_total']));
+        $order->update_meta_data('fflhub_order_shipping_non_label_cost_total', self::money($audit['shipping_non_label_cost_total']));
+        $order->update_meta_data('fflhub_order_shipping_label_cost_total', self::money($audit['shipping_label_cost_total']));
+        $order->update_meta_data('fflhub_order_shipping_label_count', (string) (int) $audit['shipping_label_count']);
+        $order->update_meta_data('fflhub_order_shipping_label_source', (string) $audit['shipping_label_source']);
+        $order->update_meta_data('fflhub_order_shipping_label_lines', wp_json_encode($audit['shipping_label_lines']));
         $order->update_meta_data('fflhub_order_customer_shipping_charge', self::money($audit['customer_shipping_charge']));
         $order->update_meta_data('fflhub_order_processor_fee_percent', self::money($audit['processor_fee_percent']));
         $order->update_meta_data('fflhub_order_processor_fee_amount', self::money($audit['processor_fee_amount']));
@@ -151,7 +157,8 @@ final class OrderProfitAuditMeta
             ];
         }
 
-        $shipping_cost_total = self::shipping_cost_total($order);
+        $shipping = self::shipping_cost_summary($order);
+        $shipping_cost_total = (float) $shipping['total'];
         $customer_shipping_charge = (float) $order->get_shipping_total();
         $order_total = (float) $order->get_total();
         $tax_total = (float) $order->get_total_tax();
@@ -172,6 +179,12 @@ final class OrderProfitAuditMeta
             'item_cost_total' => $item_cost_total,
             'item_cost_by_dist' => array_values($item_cost_by_dist),
             'shipping_cost_total' => $shipping_cost_total,
+            'shipping_planned_cost_total' => (float) $shipping['planned_total'],
+            'shipping_non_label_cost_total' => (float) $shipping['non_label_total'],
+            'shipping_label_cost_total' => (float) $shipping['label_total'],
+            'shipping_label_count' => (int) $shipping['label_count'],
+            'shipping_label_source' => (string) $shipping['label_source'],
+            'shipping_label_lines' => $shipping['label_lines'],
             'customer_shipping_charge' => $customer_shipping_charge,
             'processor_fee_percent' => $fee_percent,
             'processor_fee_amount' => $processor_fee_amount,
@@ -180,31 +193,254 @@ final class OrderProfitAuditMeta
         ];
     }
 
-    private static function shipping_cost_total(WC_Order $order): float
+    /**
+     * @return array<string,mixed>
+     */
+    private static function shipping_cost_summary(WC_Order $order): array
     {
-        $total = 0.0;
+        $planned_total = 0.0;
+        $non_label_total = 0.0;
 
         foreach ($order->get_items('shipping') as $shipping_item) {
             if (!($shipping_item instanceof WC_Order_Item_Shipping)) {
                 continue;
             }
 
-            $cost = self::non_negative_float($shipping_item->get_meta('fflhub_shipping_cost_total', true));
-            if ($cost !== null) {
-                $total += $cost;
-                continue;
-            }
+            $item_cost = self::shipping_item_cost_summary($shipping_item);
+            $planned_total += (float) $item_cost['planned_total'];
+            $non_label_total += (float) $item_cost['non_label_total'];
+        }
 
-            $plan = json_decode((string) $shipping_item->get_meta('fflhub_shipping_plan', true), true);
-            if (is_array($plan)) {
-                $plan_cost = self::non_negative_float($plan['total_cost'] ?? null);
-                if ($plan_cost !== null) {
-                    $total += $plan_cost;
-                }
+        $labels = self::woo_shipping_label_cost_summary($order);
+        $label_total = (float) $labels['total'];
+        $total = $label_total > 0.0 ? ($non_label_total + $label_total) : $planned_total;
+
+        return [
+            'total' => $total,
+            'planned_total' => $planned_total,
+            'non_label_total' => $non_label_total,
+            'label_total' => $label_total,
+            'label_count' => (int) $labels['count'],
+            'label_source' => (string) $labels['source'],
+            'label_lines' => $labels['lines'],
+        ];
+    }
+
+    /**
+     * @return array{planned_total:float,non_label_total:float}
+     */
+    private static function shipping_item_cost_summary(WC_Order_Item_Shipping $shipping_item): array
+    {
+        $planned_total = self::non_negative_float($shipping_item->get_meta('fflhub_shipping_cost_total', true));
+
+        $plan = json_decode((string) $shipping_item->get_meta('fflhub_shipping_plan', true), true);
+        if (is_array($plan)) {
+            $plan_cost = self::non_negative_float($plan['total_cost'] ?? null);
+            if ($plan_cost !== null) {
+                $planned_total = $plan_cost;
             }
         }
 
-        return $total;
+        if ($planned_total === null) {
+            $planned_total = 0.0;
+        }
+
+        $dealer_outbound = 0.0;
+        if (is_array($plan)) {
+            $dealer_home = self::non_negative_float($plan['dealer_outbound_home_cost'] ?? null);
+            if ($dealer_home === null) {
+                $dealer_home = self::non_negative_float($plan['dealer_outbound_home_cost_formula'] ?? null);
+            }
+
+            $dealer_ffl = self::non_negative_float($plan['dealer_outbound_ffl_cost'] ?? null);
+            if ($dealer_ffl === null) {
+                $dealer_ffl = self::non_negative_float($plan['dealer_outbound_ffl_cost_formula'] ?? null);
+            }
+
+            $dealer_outbound = ($dealer_home ?? 0.0) + ($dealer_ffl ?? 0.0);
+        }
+
+        return [
+            'planned_total' => $planned_total,
+            'non_label_total' => max(0.0, $planned_total - $dealer_outbound),
+        ];
+    }
+
+    /**
+     * @return array{total:float,count:int,source:string,lines:array<int,array<string,mixed>>}
+     */
+    private static function woo_shipping_label_cost_summary(WC_Order $order): array
+    {
+        $label_groups = [
+            'wcshipping_labels' => self::normalize_label_collection($order->get_meta('wcshipping_labels', true)),
+            'wc_connect_labels' => self::normalize_label_collection($order->get_meta('wc_connect_labels', true)),
+            'wcshipping_fulfillments' => self::fulfillment_label_collection($order),
+        ];
+
+        $total = 0.0;
+        $count = 0;
+        $sources = [];
+        $lines = [];
+        $seen = [];
+
+        foreach ($label_groups as $source => $labels) {
+            foreach ($labels as $label) {
+                $label_id = (string) ($label['label_id'] ?? $label['id'] ?? '');
+                $seen_key = $label_id !== ''
+                    ? 'label_id:' . $label_id
+                    : $source . ':' . md5(wp_json_encode($label));
+                if (isset($seen[$seen_key])) {
+                    continue;
+                }
+                $seen[$seen_key] = true;
+
+                if (self::is_ignored_label($label)) {
+                    continue;
+                }
+
+                $cost = self::non_negative_float($label['refundable_amount'] ?? $label['cost'] ?? null);
+                if ($cost === null || $cost <= 0.0) {
+                    continue;
+                }
+
+                $total += $cost;
+                $count++;
+                $sources[$source] = true;
+                $lines[] = [
+                    'label_id' => $label_id,
+                    'source' => $source,
+                    'cost' => self::money($cost),
+                    'status' => (string) ($label['status'] ?? ''),
+                    'carrier_id' => (string) ($label['carrier_id'] ?? ''),
+                    'service_name' => (string) ($label['service_name'] ?? ''),
+                    'tracking' => (string) ($label['tracking'] ?? ''),
+                    'created' => (string) ($label['created'] ?? ''),
+                    'is_return' => !empty($label['is_return']) ? '1' : '0',
+                ];
+            }
+        }
+
+        return [
+            'total' => $total,
+            'count' => $count,
+            'source' => implode(',', array_keys($sources)),
+            'lines' => $lines,
+        ];
+    }
+
+    /**
+     * @param mixed $value
+     * @return array<int,array<string,mixed>>
+     */
+    private static function normalize_label_collection($value): array
+    {
+        if (is_string($value) && $value !== '') {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                $value = $decoded;
+            } else {
+                $value = maybe_unserialize($value);
+            }
+        }
+
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $labels = [];
+        foreach ($value as $label) {
+            $normalized = self::normalize_label($label);
+            if (!empty($normalized)) {
+                $labels[] = $normalized;
+            }
+        }
+
+        return $labels;
+    }
+
+    /**
+     * @param mixed $label
+     * @return array<string,mixed>
+     */
+    private static function normalize_label($label): array
+    {
+        if (is_object($label)) {
+            $label = (array) $label;
+        }
+
+        if (!is_array($label)) {
+            return [];
+        }
+
+        foreach ($label as $key => $value) {
+            if (is_object($value)) {
+                $label[$key] = (array) $value;
+            }
+        }
+
+        return $label;
+    }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    private static function fulfillment_label_collection(WC_Order $order): array
+    {
+        global $wpdb;
+
+        $fulfillments_table = $wpdb->prefix . 'wc_order_fulfillments';
+        $meta_table = $wpdb->prefix . 'wc_order_fulfillment_meta';
+
+        $has_fulfillments_table = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $fulfillments_table));
+        $has_meta_table = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $meta_table));
+        if ($has_fulfillments_table !== $fulfillments_table || $has_meta_table !== $meta_table) {
+            return [];
+        }
+
+        $rows = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT fm.meta_value
+                 FROM {$fulfillments_table} f
+                 INNER JOIN {$meta_table} fm ON f.fulfillment_id = fm.fulfillment_id
+                 WHERE f.entity_type = %s
+                   AND f.entity_id = %s
+                   AND f.date_deleted IS NULL
+                   AND fm.meta_key = %s",
+                'WC_Order',
+                (string) $order->get_id(),
+                '_shipping_labels'
+            )
+        );
+
+        $labels = [];
+        foreach ($rows as $raw_labels) {
+            $labels = array_merge($labels, self::normalize_label_collection($raw_labels));
+        }
+
+        return $labels;
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     */
+    private static function is_ignored_label(array $label): bool
+    {
+        $status = strtoupper(trim((string) ($label['status'] ?? '')));
+        if (in_array($status, ['PURCHASE_ERROR', 'ANONYMIZED'], true)) {
+            return true;
+        }
+
+        $refund = $label['refund'] ?? null;
+        if (is_object($refund)) {
+            $refund = (array) $refund;
+        }
+
+        if (!empty($refund)) {
+            $refund_status = is_array($refund) ? strtolower((string) ($refund['status'] ?? '')) : '';
+            return $refund_status !== 'rejected';
+        }
+
+        return false;
     }
 
     private static function remove_obsolete_shipping_item_meta(WC_Order $order, bool $save): void
