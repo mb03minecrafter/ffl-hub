@@ -28,7 +28,7 @@ if (! defined('ABSPATH')) {
  *   - dealer outbound home/ffl costs (USPS API when enabled; formula fallback).
  *
  * FREE SHIPPING RULE:
- * - Compute cart profit P_total (net after processor fee) using stored true cost meta.
+ * - Compute cart profit P_total (net after processor fee) using stored dealer cost meta.
  * - If S_total < 0.5 * P_total, customer shipping = 0.
  * - Else customer pays full shipping grossed-up so you net S_total after processor fee:
  *      customer_charge = S_total / (1 - f)
@@ -222,15 +222,15 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'height_in'        => $height_in,
             ];
 
-            // Stored true cost (used exactly like your previous method)
-            $true_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
-            $true_cost = ($true_cost_raw === '' || $true_cost_raw === null) ? 0.0 : (float) $true_cost_raw;
+            // Dealer cost excludes distributor shipping, which is planned once at the order level.
+            $dealer_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
+            $dealer_cost = ($dealer_cost_raw === '' || $dealer_cost_raw === null) ? 0.0 : (float) $dealer_cost_raw;
 
             // Revenue ex-tax, after coupons (Woo line_total includes qty)
             $line_revenue = isset($item['line_total']) ? (float) $item['line_total'] : 0.0;
 
             // Net profit after processor % fee (same behavior as before)
-            $line_profit_net = ($line_revenue - ($true_cost * $qty)) * (1.0 - $f);
+            $line_profit_net = ($line_revenue - ($dealer_cost * $qty)) * (1.0 - $f);
             $profit_net_total += $line_profit_net;
 
             $line_debug_rows[] = [
@@ -247,7 +247,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'width_in'       => $width_in,
                 'height_in'      => $height_in,
                 'line_revenue'   => $line_revenue,
-                'true_cost'      => $true_cost,
+                'dealer_cost'    => $dealer_cost,
                 'profit_net'     => $line_profit_net,
             ];
         }
@@ -265,7 +265,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
             $this->log_debug(
                 sprintf(
-                    'LINE %d product=%d dist=%s qty=%d ffl=%d dropship=%d route=%s lane_fee=%s wt_oz=%.2f line_wt_oz=%.2f revenue=%s true_cost=%s profit_net=%s',
+                    'LINE %d product=%d dist=%s qty=%d ffl=%d dropship=%d route=%s lane_fee=%s wt_oz=%.2f line_wt_oz=%.2f revenue=%s dealer_cost=%s profit_net=%s',
                     $idx + 1,
                     (int) ($row['product_id'] ?? 0),
                     (string) ($row['dist_id'] ?? ''),
@@ -277,7 +277,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                     (float) ($row['weight_oz'] ?? 0.0),
                     (float) ($row['line_weight_oz'] ?? 0.0),
                     $this->fmt_money((float) ($row['line_revenue'] ?? 0.0)),
-                    $this->fmt_money((float) ($row['true_cost'] ?? 0.0)),
+                    $this->fmt_money((float) ($row['dealer_cost'] ?? 0.0)),
                     $this->fmt_money((float) ($row['profit_net'] ?? 0.0))
                 )
             );
@@ -488,12 +488,6 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
                 // What customer was charged at checkout for shipping (already in 'cost', but nice to have)
                 'fflhub_customer_shipping_charge' => (string) wc_format_decimal($customer_charge, 4),
-
-                // Profit net used in the decision
-                'fflhub_profit_net_total' => (string) wc_format_decimal($profit_net_total, 4),
-
-                // Processor fee percent used
-                'fflhub_processor_fee_percent' => (string) wc_format_decimal($fee_percent, 4),
 
                 // Planner output details (distributor lanes + routing assignments)
                 'fflhub_shipping_by_dist' => wp_json_encode($by_dist),

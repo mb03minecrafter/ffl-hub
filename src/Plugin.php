@@ -33,6 +33,7 @@ use FFLHub\Distributor\Services\Cron\QuoteEmailJobsCronService;
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
+use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Product\MapPriceVisibility;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
@@ -119,6 +120,8 @@ final class Plugin
         $this->distributor_handler->register_runtime_services();
 
         ShippingRegistrar::init();
+
+        OrderProfitAuditMeta::init();
 
         MapPriceVisibility::init();
 
