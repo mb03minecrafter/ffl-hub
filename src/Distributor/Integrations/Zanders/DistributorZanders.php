@@ -248,6 +248,11 @@ class DistributorZanders extends DistributorBase
     ): DistributorOrderResult {
         $lane = strtolower(trim((string) $lane));
 
+        $ca_drop_ship_manual = $this->manual_result_if_ca_drop_ship_to_california($request, $lane, $external_ids);
+        if ($ca_drop_ship_manual instanceof DistributorOrderResult) {
+            return $ca_drop_ship_manual;
+        }
+
         $auth = $this->get_zanders_auth_for_lane($lane);
         if (empty($auth['ok'])) {
             $r = DistributorOrderResult::block_fatal(
@@ -660,6 +665,49 @@ class DistributorZanders extends DistributorBase
 
 
     //END OF ORDERING SECTION
+
+    /**
+     * Zanders CA drop-ship orders must be handled manually.
+     *
+     * Dealer-fulfilled orders are intentionally not blocked here because they
+     * ship to the dealer first, not directly to the CA recipient/transfer FFL.
+     *
+     * @param array<int,string> $external_ids
+     */
+    private function manual_result_if_ca_drop_ship_to_california(
+        DistributorOrderRequest $request,
+        string $lane,
+        array $external_ids
+    ): ?DistributorOrderResult {
+        $lane = strtolower(trim((string) $lane));
+        if ($lane !== 'direct_ship_non_ffl' && $lane !== 'direct_ship_ffl') {
+            return null;
+        }
+
+        $ship_to = ($lane === 'direct_ship_ffl') ? $request->ship_to_ffl : $request->ship_to_customer;
+        $state = ($ship_to instanceof DistributorShipTo)
+            ? strtoupper(trim((string) $ship_to->state))
+            : strtoupper(trim((string) $request->dest_state));
+
+        if ($state !== 'CA') {
+            return null;
+        }
+
+        return DistributorOrderResult::manual(
+            'Zanders CA drop-ship order blocked: a manual order must be placed for CA drop orders.',
+            [
+                DistributorOrderResult::REASON_MANUAL_REQUIRED,
+                'ZANDERS_CA_DROP_SHIP_MANUAL_REQUIRED',
+            ],
+            [
+                'lane' => $lane,
+                'ship_to_state' => $state,
+            ],
+            0,
+            '',
+            $external_ids
+        );
+    }
 
 
     /**
