@@ -1,0 +1,344 @@
+.fflhub-profit-wrap {
+    --fflhub-ink: #0f172a;
+    --fflhub-panel: #111827;
+    --fflhub-panel-2: #172033;
+    --fflhub-line: rgba(148, 163, 184, 0.24);
+    --fflhub-text: #e5e7eb;
+    --fflhub-muted: #9ca3af;
+    --fflhub-green: #34d399;
+    --fflhub-red: #fb7185;
+    --fflhub-amber: #fbbf24;
+    --fflhub-blue: #60a5fa;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    color: var(--fflhub-text);
+}
+
+.fflhub-profit-hero {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 22px;
+    border: 1px solid var(--fflhub-line);
+    border-radius: 18px;
+    padding: 20px;
+    background:
+        radial-gradient(circle at 18% 20%, rgba(96, 165, 250, 0.25), transparent 28%),
+        radial-gradient(circle at 92% 5%, rgba(52, 211, 153, 0.22), transparent 32%),
+        linear-gradient(135deg, #0b1120 0%, #172033 55%, #111827 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 18px 38px rgba(15, 23, 42, 0.18);
+}
+
+.fflhub-profit-hero.is-negative {
+    background:
+        radial-gradient(circle at 18% 20%, rgba(251, 113, 133, 0.24), transparent 30%),
+        radial-gradient(circle at 92% 5%, rgba(251, 191, 36, 0.16), transparent 32%),
+        linear-gradient(135deg, #190f17 0%, #2a1720 58%, #111827 100%);
+}
+
+.fflhub-profit-hero::after {
+    content: "";
+    position: absolute;
+    inset: auto -50px -120px auto;
+    width: 230px;
+    height: 230px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 0 0 24px rgba(255, 255, 255, 0.025), 0 0 0 54px rgba(255, 255, 255, 0.015);
+}
+
+.fflhub-profit-eyebrow {
+    color: #bae6fd;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+
+.fflhub-profit-title {
+    margin-top: 4px;
+    font-size: 22px;
+    font-weight: 900;
+}
+
+.fflhub-profit-subtitle,
+.fflhub-profit-note {
+    max-width: 620px;
+    margin-top: 6px;
+    color: var(--fflhub-muted);
+}
+
+.fflhub-profit-note {
+    display: inline-flex;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    border-radius: 999px;
+    padding: 4px 10px;
+    color: #fde68a;
+    background: rgba(120, 53, 15, 0.24);
+}
+
+.fflhub-profit-net {
+    position: relative;
+    z-index: 1;
+    min-width: 180px;
+    text-align: right;
+    font-size: 34px;
+    font-weight: 950;
+    line-height: 1;
+}
+
+.fflhub-profit-hero.is-positive .fflhub-profit-net {
+    color: var(--fflhub-green);
+}
+
+.fflhub-profit-hero.is-negative .fflhub-profit-net {
+    color: var(--fflhub-red);
+}
+
+.fflhub-profit-metrics,
+.fflhub-profit-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.fflhub-profit-grid {
+    grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+}
+
+.fflhub-profit-metric,
+.fflhub-profit-panel {
+    border: 1px solid var(--fflhub-line);
+    border-radius: 16px;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
+        var(--fflhub-panel);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset;
+}
+
+.fflhub-profit-metric {
+    padding: 14px;
+    min-height: 96px;
+}
+
+.fflhub-profit-metric-label {
+    color: var(--fflhub-muted);
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.fflhub-profit-metric-value {
+    margin-top: 8px;
+    font-size: 22px;
+    font-weight: 900;
+}
+
+.fflhub-profit-metric-caption {
+    margin-top: 5px;
+    color: var(--fflhub-muted);
+    font-size: 12px;
+}
+
+.fflhub-profit-metric.is-revenue .fflhub-profit-metric-value {
+    color: var(--fflhub-blue);
+}
+
+.fflhub-profit-metric.is-cost .fflhub-profit-metric-value,
+.fflhub-profit-metric.is-shipping .fflhub-profit-metric-value,
+.fflhub-profit-metric.is-fee .fflhub-profit-metric-value {
+    color: #fcd34d;
+}
+
+.fflhub-profit-panel {
+    padding: 16px;
+}
+
+.fflhub-profit-panel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.fflhub-profit-panel-head h4 {
+    margin: 0;
+    color: #f8fafc;
+    font-size: 15px;
+    font-weight: 900;
+}
+
+.fflhub-profit-panel-head span {
+    color: var(--fflhub-muted);
+    font-size: 12px;
+}
+
+.fflhub-profit-dist-stack {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+}
+
+.fflhub-profit-dist-chip {
+    border: 1px solid rgba(96, 165, 250, 0.28);
+    border-radius: 14px;
+    padding: 12px;
+    background:
+        radial-gradient(circle at 85% 15%, rgba(96, 165, 250, 0.18), transparent 32%),
+        #0b1220;
+}
+
+.fflhub-profit-dist-id {
+    color: #bfdbfe;
+    font-size: 12px;
+    font-weight: 950;
+    letter-spacing: 0.12em;
+}
+
+.fflhub-profit-dist-cost {
+    margin-top: 6px;
+    font-size: 20px;
+    font-weight: 900;
+}
+
+.fflhub-profit-dist-meta {
+    margin-top: 4px;
+    color: var(--fflhub-muted);
+    font-size: 12px;
+}
+
+.fflhub-profit-formula {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.fflhub-profit-formula-step {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 12px;
+    padding: 9px 11px;
+    background: #0b1220;
+}
+
+.fflhub-profit-formula-step span {
+    color: var(--fflhub-muted);
+    font-weight: 700;
+}
+
+.fflhub-profit-formula-step strong {
+    font-size: 15px;
+}
+
+.fflhub-profit-formula-step.is-plus strong {
+    color: var(--fflhub-blue);
+}
+
+.fflhub-profit-formula-step.is-minus strong {
+    color: #fcd34d;
+}
+
+.fflhub-profit-formula-step.is-result-good {
+    border-color: rgba(52, 211, 153, 0.36);
+    background: rgba(6, 78, 59, 0.24);
+}
+
+.fflhub-profit-formula-step.is-result-good strong {
+    color: var(--fflhub-green);
+}
+
+.fflhub-profit-formula-step.is-result-bad {
+    border-color: rgba(251, 113, 133, 0.36);
+    background: rgba(136, 19, 55, 0.24);
+}
+
+.fflhub-profit-formula-step.is-result-bad strong {
+    color: var(--fflhub-red);
+}
+
+.fflhub-profit-table-wrap {
+    overflow-x: auto;
+}
+
+.fflhub-profit-table {
+    width: 100%;
+    border-collapse: collapse;
+    color: var(--fflhub-text);
+}
+
+.fflhub-profit-table th,
+.fflhub-profit-table td {
+    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    padding: 10px 9px;
+    text-align: left;
+    vertical-align: top;
+}
+
+.fflhub-profit-table th {
+    color: #bfdbfe;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.fflhub-profit-table code {
+    color: #e0f2fe;
+    background: rgba(14, 165, 233, 0.1);
+    border-radius: 6px;
+    padding: 2px 5px;
+}
+
+.fflhub-profit-mini-pill {
+    display: inline-flex;
+    border: 1px solid rgba(96, 165, 250, 0.32);
+    border-radius: 999px;
+    padding: 2px 8px;
+    background: rgba(96, 165, 250, 0.1);
+    color: #bfdbfe;
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+}
+
+.fflhub-profit-empty {
+    border: 1px dashed rgba(148, 163, 184, 0.3);
+    border-radius: 12px;
+    padding: 12px;
+    color: var(--fflhub-muted);
+    background: rgba(15, 23, 42, 0.5);
+}
+
+@media (max-width: 1100px) {
+    .fflhub-profit-metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .fflhub-profit-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 782px) {
+    .fflhub-profit-hero {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .fflhub-profit-net {
+        min-width: 0;
+        text-align: left;
+        font-size: 30px;
+    }
+
+    .fflhub-profit-metrics {
+        grid-template-columns: 1fr;
+    }
+}

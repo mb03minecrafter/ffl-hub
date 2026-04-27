@@ -28,7 +28,7 @@ final class OrderProfitAuditMeta
      */
     public static function capture_checkout_order(WC_Order $order, array $data = []): void
     {
-        self::write_profit_audit_meta($order, false);
+        self::recalculate_order($order, false);
     }
 
     /**
@@ -42,11 +42,16 @@ final class OrderProfitAuditMeta
         }
 
         if ($order instanceof WC_Order) {
-            self::write_profit_audit_meta($order, true);
+            self::recalculate_order($order, true);
         }
     }
 
-    private static function write_profit_audit_meta(WC_Order $order, bool $save): void
+    /**
+     * Rebuild the order-level profit audit snapshot from the best currently available product/order data.
+     *
+     * @return array<string,mixed>
+     */
+    public static function recalculate_order(WC_Order $order, bool $save = true): array
     {
         $audit = self::build_profit_audit($order);
 
@@ -62,10 +67,21 @@ final class OrderProfitAuditMeta
         $order->update_meta_data('fflhub_order_processor_fee_amount', self::money($audit['processor_fee_amount']));
         $order->update_meta_data('fflhub_order_actual_profit_total', self::money($audit['actual_profit_total']));
         $order->update_meta_data('fflhub_order_profit_lines', wp_json_encode($audit['lines']));
+        self::remove_obsolete_shipping_item_meta($order, $save);
 
         if ($save) {
             $order->save();
         }
+
+        return $audit;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    public static function preview_order(WC_Order $order): array
+    {
+        return self::build_profit_audit($order);
     }
 
     /**
@@ -189,6 +205,22 @@ final class OrderProfitAuditMeta
         }
 
         return $total;
+    }
+
+    private static function remove_obsolete_shipping_item_meta(WC_Order $order, bool $save): void
+    {
+        foreach ($order->get_items('shipping') as $shipping_item) {
+            if (!($shipping_item instanceof WC_Order_Item_Shipping)) {
+                continue;
+            }
+
+            $shipping_item->delete_meta_data('fflhub_profit_net_total');
+            $shipping_item->delete_meta_data('fflhub_processor_fee_percent');
+
+            if ($save) {
+                $shipping_item->save();
+            }
+        }
     }
 
     /**

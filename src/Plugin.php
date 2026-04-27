@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Admin\Orders\OrderPlacementMetaBox;
 use FFLHub\Admin\Orders\OrderFulfillmentModeBadge;
+use FFLHub\Admin\Orders\OrderProfitAuditMetaBox;
 use FFLHub\Admin\Pages\AdminPage;
 use FFLHub\Admin\Pages\DavidsonsFailedJobsPage;
 use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
@@ -75,6 +76,7 @@ final class Plugin
     public LipseysCreditLimitPage $lipseys_credit_limit_page;
     public MapPolicyPage $map_policy_page;
     public OrderPlacementMetaBox $order_placement_metabox;
+    public OrderProfitAuditMetaBox $order_profit_audit_metabox;
     public OrderFulfillmentModeBadge $order_fulfillment_mode_badge;
     public ProductDistributorColumns $product_distributor_columns;
 
@@ -166,6 +168,9 @@ final class Plugin
 
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();
+
+            $this->order_profit_audit_metabox = new OrderProfitAuditMetaBox();
+            $this->order_profit_audit_metabox->register();
 
             $this->order_fulfillment_mode_badge = new OrderFulfillmentModeBadge($this->distributor_handler->ordering_jobs_table);
             $this->order_fulfillment_mode_badge->register();
