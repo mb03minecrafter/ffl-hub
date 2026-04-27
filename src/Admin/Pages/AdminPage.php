@@ -173,8 +173,10 @@ class AdminPage
             'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
             'holosun_image_notice_enabled' => Options::get_holosun_image_notice_enabled() ? '1' : '0',
             'pretty_random_email_quotes_enabled' => Options::get_pretty_random_email_quotes_enabled() ? '1' : '0',
+            'batch_order_notification_email' => Options::get_batch_order_notification_email(),
             'distributor_priority_list' => (string) Options::get_distributor_priority_csv(),
             'dealer_ship_to' => Options::get_dealer_ship_to_address(),
+            'relay_ship_to' => Options::get_relay_ship_to_address(),
 
             'usps_estimate_enabled' => Options::get_usps_estimate_enabled() ? '1' : '0',
             'usps_use_test_env'     => Options::get_usps_use_test_env() ? '1' : '0',
@@ -232,9 +234,13 @@ class AdminPage
         $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
         $holosun_image_notice_enabled = ((string) ($settings['holosun_image_notice_enabled'] ?? '0') === '1');
         $pretty_random_email_quotes_enabled = ((string) ($settings['pretty_random_email_quotes_enabled'] ?? '1') === '1');
+        $batch_order_notification_email = (string) ($settings['batch_order_notification_email'] ?? Options::default_batch_order_notification_email());
         $distributor_priority_list = (string) ($settings['distributor_priority_list'] ?? '');
         $dealer_ship_to = isset($settings['dealer_ship_to']) && is_array($settings['dealer_ship_to'])
             ? $settings['dealer_ship_to']
+            : [];
+        $relay_ship_to = isset($settings['relay_ship_to']) && is_array($settings['relay_ship_to'])
+            ? $settings['relay_ship_to']
             : [];
         $dealer_ship_to_fields = [
             [
@@ -288,6 +294,62 @@ class AdminPage
             [
                 'key' => 'email',
                 'option' => Options::OPTION_DEALER_SHIP_TO_EMAIL,
+                'label' => __('Email', 'ffl-hub'),
+                'placeholder' => '',
+            ],
+        ];
+        $relay_ship_to_fields = [
+            [
+                'key' => 'name',
+                'option' => Options::OPTION_RELAY_SHIP_TO_NAME,
+                'label' => __('Ship-to name', 'ffl-hub'),
+                'placeholder' => __('Matthew Bickham', 'ffl-hub'),
+            ],
+            [
+                'key' => 'company',
+                'option' => Options::OPTION_RELAY_SHIP_TO_COMPANY,
+                'label' => __('Company', 'ffl-hub'),
+                'placeholder' => '',
+            ],
+            [
+                'key' => 'address1',
+                'option' => Options::OPTION_RELAY_SHIP_TO_ADDRESS1,
+                'label' => __('Address line 1', 'ffl-hub'),
+                'placeholder' => __('Home address line 1', 'ffl-hub'),
+            ],
+            [
+                'key' => 'address2',
+                'option' => Options::OPTION_RELAY_SHIP_TO_ADDRESS2,
+                'label' => __('Address line 2', 'ffl-hub'),
+                'placeholder' => '',
+            ],
+            [
+                'key' => 'city',
+                'option' => Options::OPTION_RELAY_SHIP_TO_CITY,
+                'label' => __('City', 'ffl-hub'),
+                'placeholder' => '',
+            ],
+            [
+                'key' => 'state',
+                'option' => Options::OPTION_RELAY_SHIP_TO_STATE,
+                'label' => __('State', 'ffl-hub'),
+                'placeholder' => __('LA', 'ffl-hub'),
+            ],
+            [
+                'key' => 'zip',
+                'option' => Options::OPTION_RELAY_SHIP_TO_ZIP,
+                'label' => __('ZIP', 'ffl-hub'),
+                'placeholder' => '',
+            ],
+            [
+                'key' => 'phone',
+                'option' => Options::OPTION_RELAY_SHIP_TO_PHONE,
+                'label' => __('Phone', 'ffl-hub'),
+                'placeholder' => '',
+            ],
+            [
+                'key' => 'email',
+                'option' => Options::OPTION_RELAY_SHIP_TO_EMAIL,
                 'label' => __('Email', 'ffl-hub'),
                 'placeholder' => '',
             ],
@@ -422,6 +484,27 @@ class AdminPage
 
                 <div class="fflhub-field-row">
                     <label
+                        for="fflhub_batch_order_notification_email"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Batch order notification email', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_batch_order_notification_email"
+                        name="fflhub_batch_order_notification_email"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($batch_order_notification_email); ?>"
+                        placeholder="<?php echo esc_attr(Options::default_batch_order_notification_email()); ?>" />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Receives internal emails when dealer batch or CA relay batch orders are successfully sent. Multiple emails can be separated by commas.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
                         for="fflhub_distributor_priority_list"
                         class="fflhub-field-label">
                         <?php esc_html_e('Distributor tie-break priority', 'ffl-hub'); ?>
@@ -460,6 +543,38 @@ class AdminPage
                     $key = (string) ($field['key'] ?? '');
                     $option = (string) ($field['option'] ?? '');
                     $value = (string) ($dealer_ship_to[$key] ?? '');
+                    ?>
+                    <div class="fflhub-field-row">
+                        <label
+                            for="<?php echo esc_attr($option); ?>"
+                            class="fflhub-field-label">
+                            <?php echo esc_html((string) ($field['label'] ?? $option)); ?>
+                        </label>
+                        <input
+                            id="<?php echo esc_attr($option); ?>"
+                            name="<?php echo esc_attr($option); ?>"
+                            type="text"
+                            class="fflhub-field-input"
+                            value="<?php echo esc_attr($value); ?>"
+                            placeholder="<?php echo esc_attr((string) ($field['placeholder'] ?? '')); ?>" />
+                    </div>
+                <?php endforeach; ?>
+
+                <div class="fflhub-field-row">
+                    <h3><?php esc_html_e('CA Relay Ship-To', 'ffl-hub'); ?></h3>
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Used only for CA-restricted non-FFL relay batches from Lipsey\'s and Zanders. These drop-ship orders ship here first, then you ship to the customer.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <?php foreach ($relay_ship_to_fields as $field) : ?>
+                    <?php
+                    $key = (string) ($field['key'] ?? '');
+                    $option = (string) ($field['option'] ?? '');
+                    $value = (string) ($relay_ship_to[$key] ?? '');
                     ?>
                     <div class="fflhub-field-row">
                         <label

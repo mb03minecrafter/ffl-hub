@@ -29,6 +29,7 @@ use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Fields\CheckoutFields;
 use FFLHub\Checkout\Map\CheckoutMap;
+use FFLHub\Checkout\Notice\CaliforniaRelayNotice;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Services\Cron\QuoteEmailJobsCronService;
 use FFLHub\FFL\API\FFLApi;
@@ -198,6 +199,7 @@ final class Plugin
         $this->checkout_fields->register();
 
         CheckoutMap::init();
+        CaliforniaRelayNotice::init();
 
     }
 

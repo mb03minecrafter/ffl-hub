@@ -6,6 +6,7 @@ use WC_Order;
 
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
+use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 
@@ -217,6 +218,7 @@ final class OrderPlacementJobsRepository
             WHERE
                 status = %s
                 AND lane IN (%s, %s)
+                AND payload_json NOT LIKE %s
                 AND merchant_po IS NOT NULL
                 AND merchant_po <> ''
                 AND (
@@ -238,6 +240,7 @@ final class OrderPlacementJobsRepository
             (string) $status,
             (string) $lane_non,
             (string) $lane_ffl,
+            '%"ca_relay"%',
             (string) $poll_cutoff_mysql_utc,
             (string) $ship_cutoff_mysql_utc,
             $limit
@@ -539,10 +542,10 @@ final class OrderPlacementJobsRepository
     }
 
     /**
-     * Select RSR dealer-fulfilled rows that are waiting for batch placement.
+     * Select dealer-fulfilled rows that are waiting for distributor batch placement.
      *
      * Criteria:
-     * - dist_id = 'rsr'
+     * - dist_id = requested distributor
      * - lane = dealer_fulfilled
      * - status = batch_pending
      * - next_run_at is NULL/zero OR next_run_at <= $now_mysql_utc
@@ -551,12 +554,14 @@ final class OrderPlacementJobsRepository
      * - next_run_at ASC when present, then created_at ASC, then id ASC
      *
      * @param OrderPlacementJobsTable $jobs_table
+     * @param string                  $dist_id
      * @param string                  $now_mysql_utc
      * @param int                     $limit
      * @return OrderPlacementJobRow[]
      */
-    public static function find_jobs_for_rsr_batch_processing(
+    public static function find_jobs_for_dealer_batch_processing(
         OrderPlacementJobsTable $jobs_table,
+        string $dist_id,
         string $now_mysql_utc,
         int $limit
     ): array {
@@ -568,7 +573,10 @@ final class OrderPlacementJobsRepository
         }
 
         $limit = max(1, (int) $limit);
-        $dist_id = 'rsr';
+        $dist_id = OrderPlacementKeysUtil::normalize_dist_id($dist_id);
+        if ($dist_id === '') {
+            return [];
+        }
         $lane = OrderPlacementKeysUtil::LANE_DEALER_FULFILLED;
         $status = OrderPlacementKeys::JOB_STATUS_BATCH_PENDING;
 
@@ -623,6 +631,122 @@ final class OrderPlacementJobsRepository
         }
 
         return $out;
+    }
+
+    /**
+     * Select CA relay rows that are waiting for distributor batch placement.
+     *
+     * Relay rows use the distributor direct-ship non-FFL lane, but they are
+     * batch-pending because the ship-to address is rewritten to the configured
+     * dealer/relay address during placement.
+     *
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param string                  $dist_id
+     * @param string                  $now_mysql_utc
+     * @param int                     $limit
+     * @return OrderPlacementJobRow[]
+     */
+    public static function find_jobs_for_ca_relay_batch_processing(
+        OrderPlacementJobsTable $jobs_table,
+        string $dist_id,
+        string $now_mysql_utc,
+        int $limit
+    ): array {
+        global $wpdb;
+
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return [];
+        }
+
+        $limit = max(1, (int) $limit);
+        $dist_id = OrderPlacementKeysUtil::normalize_dist_id($dist_id);
+        if ($dist_id === '') {
+            return [];
+        }
+
+        $lane = OrderPlacementKeysUtil::LANE_DIRECT_SHIP_NON_FFL;
+        $status = OrderPlacementKeys::JOB_STATUS_BATCH_PENDING;
+
+        $sql = $wpdb->prepare(
+            "
+            SELECT
+                id, order_id, job_key, dist_id, lane, status,
+                attempts, created_at, updated_at,
+                action_id, next_run_at,
+                last_step, last_error, last_codes_json,
+                done_at,
+                payload_json, validate_result_json, place_result_json,
+                merchant_po, external_order_ids_json, external_order_id,
+                shipped_at, tracking_numbers_json, invoice_numbers_json,
+                last_shipping_poll_at, shipping_service, shipping_weight, shipment_raw_json
+            FROM {$table}
+            WHERE
+                dist_id = %s
+                AND lane = %s
+                AND status = %s
+                AND payload_json LIKE %s
+                AND (
+                    next_run_at IS NULL
+                    OR next_run_at = '0000-00-00 00:00:00'
+                    OR next_run_at <= %s
+                )
+            ORDER BY
+                CASE
+                    WHEN next_run_at IS NULL OR next_run_at = '0000-00-00 00:00:00'
+                    THEN created_at
+                    ELSE next_run_at
+                END ASC,
+                id ASC
+            LIMIT %d
+            ",
+            $dist_id,
+            $lane,
+            $status,
+            '%"ca_relay"%',
+            (string) $now_mysql_utc,
+            $limit
+        );
+
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $job = new OrderPlacementJobRow($row);
+            if (DealerBatchCronRegistry::is_ca_relay_batch_job($job)) {
+                $out[] = $job;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Backward-compatible RSR-specific wrapper.
+     *
+     * @param OrderPlacementJobsTable $jobs_table
+     * @param string                  $now_mysql_utc
+     * @param int                     $limit
+     * @return OrderPlacementJobRow[]
+     */
+    public static function find_jobs_for_rsr_batch_processing(
+        OrderPlacementJobsTable $jobs_table,
+        string $now_mysql_utc,
+        int $limit
+    ): array {
+        return self::find_jobs_for_dealer_batch_processing(
+            $jobs_table,
+            'rsr',
+            $now_mysql_utc,
+            $limit
+        );
     }
 
     /**

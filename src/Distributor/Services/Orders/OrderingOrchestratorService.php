@@ -8,6 +8,7 @@ use WC_Order_Item_Product;
 
 use FFLHub\Product\ProductMeta;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
+use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
 use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
@@ -197,12 +198,14 @@ final class OrderingOrchestratorService
      *   order_id:int,
      *   dist_id:string,
      *   lane:string,
-     *   lines:array<int,array{upc:string,qty:int,ffl_required:int,dropship_enabled:int}>
+     *   lines:array<int,array{upc:string,qty:int,ffl_required:int,dropship_enabled:int}>,
+     *   ca_relay?:array<string,mixed>
      * }>
      */
     private function build_lane_jobs_from_order(WC_Order $order): array
     {
         $oid = (int) $order->get_id();
+        $customer_dest_state = $this->customer_dest_state($order);
 
         /** @var array<string,array<string,mixed>> $accepted_by_line_id */
         $accepted_by_line_id = [];
@@ -410,6 +413,13 @@ final class OrderingOrchestratorService
                     continue;
                 }
 
+                $is_ca_relay = $this->should_ca_relay_batch(
+                    $dist_id,
+                    $lane,
+                    !empty($row['ffl_required']),
+                    $customer_dest_state
+                );
+
                 if (!isset($agg[$dist_id])) {
                     $agg[$dist_id] = [];
                 }
@@ -426,10 +436,14 @@ final class OrderingOrchestratorService
                         'qty'              => 0,
                         'ffl_required'     => $ffl_int,
                         'dropship_enabled' => !empty($row['dropship_enabled']) ? 1 : 0,
+                        'ca_relay'         => $is_ca_relay ? 1 : 0,
                     ];
                 }
 
                 $agg[$dist_id][$lane][$line_key]['qty'] += max(1, (int) ($row['qty'] ?? 1));
+                if ($is_ca_relay) {
+                    $agg[$dist_id][$lane][$line_key]['ca_relay'] = 1;
+                }
             }
         }
 
@@ -448,6 +462,7 @@ final class OrderingOrchestratorService
                 }
 
                 $lines = [];
+                $has_ca_relay = false;
                 foreach ($by_line_key as $line_row) {
                     if (!is_array($line_row)) {
                         continue;
@@ -464,6 +479,10 @@ final class OrderingOrchestratorService
                         'ffl_required'     => !empty($line_row['ffl_required']) ? 1 : 0,
                         'dropship_enabled' => !empty($line_row['dropship_enabled']) ? 1 : 0,
                     ];
+
+                    if (!empty($line_row['ca_relay'])) {
+                        $has_ca_relay = true;
+                    }
                 }
 
                 if (empty($lines)) {
@@ -480,12 +499,24 @@ final class OrderingOrchestratorService
                     continue;
                 }
 
-                $jobs[$job_key] = [
+                $job_payload = [
                     'order_id' => $oid,
                     'dist_id'  => (string) $dist_id,
                     'lane'     => (string) $lane,
                     'lines'    => $lines,
                 ];
+
+                if ($has_ca_relay) {
+                    $job_payload['ca_relay'] = [
+                        'enabled' => 1,
+                        'restricted_state' => 'CA',
+                        'original_customer_state' => $customer_dest_state,
+                        'ship_to' => 'relay_ship_to',
+                        'reason' => 'CA_DIRECT_SHIP_RELAY',
+                    ];
+                }
+
+                $jobs[$job_key] = $job_payload;
             }
         }
 
@@ -529,6 +560,30 @@ final class OrderingOrchestratorService
         return $ffl_required
             ? OrderPlacementKeysUtil::LANE_DIRECT_SHIP_FFL
             : OrderPlacementKeysUtil::LANE_DIRECT_SHIP_NON_FFL;
+    }
+
+    private function should_ca_relay_batch(string $dist_id, string $lane, bool $ffl_required, string $customer_dest_state): bool
+    {
+        if ($ffl_required) {
+            return false;
+        }
+
+        if (strtoupper(trim($customer_dest_state)) !== 'CA') {
+            return false;
+        }
+
+        return DealerBatchCronRegistry::supports_ca_relay_distributor($dist_id)
+            && OrderPlacementKeysUtil::is_direct_ship_non_ffl_lane($lane);
+    }
+
+    private function customer_dest_state(WC_Order $order): string
+    {
+        $state = strtoupper(trim((string) $order->get_shipping_state()));
+        if ($state === '') {
+            $state = strtoupper(trim((string) $order->get_billing_state()));
+        }
+
+        return preg_match('/^[A-Z]{2}$/', $state) ? $state : '';
     }
 
     /**
@@ -611,10 +666,9 @@ final class OrderingOrchestratorService
             }
 
             $next_status = OrderPlacementKeys::JOB_STATUS_SCHEDULED;
-            if (
-                $dist_id === 'rsr'
-                && OrderPlacementKeysUtil::is_dealer_fulfilled_lane($lane)
-            ) {
+            if (DealerBatchCronRegistry::is_dealer_batch_lane($dist_id, $lane)) {
+                $next_status = OrderPlacementKeys::JOB_STATUS_BATCH_PENDING;
+            } elseif (is_array($_job) && DealerBatchCronRegistry::is_ca_relay_batch_payload($dist_id, $lane, $_job)) {
                 $next_status = OrderPlacementKeys::JOB_STATUS_BATCH_PENDING;
             }
 

@@ -8,8 +8,8 @@ use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Models\PartialShipmentEmailContext;
 use FFLHub\Distributor\Models\ShippingUpdateResult;
+use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
 use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
-use FFLHub\Distributor\Services\Orders\Cron\RSRDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
@@ -729,7 +729,8 @@ final class OrderPlacementMetaBox
      *
      * Behavior:
      * - only allows retry if job is currently FAILED
-     * - RSR dealer_fulfilled rows => status=batch_pending and batch cron wake-up
+     * - dealer-batch dealer_fulfilled rows => status=batch_pending and batch cron wake-up
+     * - CA relay rows => status=batch_pending and relay batch cron wake-up
      * - all other rows => status=retry_scheduled and normal dispatcher wake-up
      */
     public function handle_retry_job_post(): void
@@ -766,13 +767,16 @@ final class OrderPlacementMetaBox
         }
 
         $job_row = OrderPlacementJobsRepository::get_job_for_order($this->jobs_table, $order, $job_key);
-        $is_rsr_dealer_batch = (
-            $job_row !== null
-            && strtolower(trim((string) $job_row->dist_id_norm())) === 'rsr'
-            && OrderPlacementKeysUtil::is_dealer_fulfilled_lane((string) $job_row->lane_norm())
-        );
+        $batch_cron_hook = '';
+        if ($job_row !== null) {
+            if (DealerBatchCronRegistry::is_ca_relay_batch_job($job_row)) {
+                $batch_cron_hook = DealerBatchCronRegistry::ca_relay_hook_for_distributor((string) $job_row->dist_id_norm());
+            } elseif (OrderPlacementKeysUtil::is_dealer_fulfilled_lane((string) $job_row->lane_norm())) {
+                $batch_cron_hook = DealerBatchCronRegistry::hook_for_distributor((string) $job_row->dist_id_norm());
+            }
+        }
 
-        if ($is_rsr_dealer_batch) {
+        if ($batch_cron_hook !== '') {
             $patch = OrderPlacementJobPatch::empty()
                 ->with_status(OrderPlacementKeys::JOB_STATUS_BATCH_PENDING)
                 ->with_next_run_at_mysql(self::now_mysql_utc_plus(0))
@@ -783,7 +787,7 @@ final class OrderPlacementMetaBox
             if (function_exists('as_schedule_single_action')) {
                 as_schedule_single_action(
                     time() + 1,
-                    RSRDealerBatchCronService::CRON_HOOK,
+                    $batch_cron_hook,
                     [],
                     'fflhub_place'
                 );
@@ -866,12 +870,14 @@ final class OrderPlacementMetaBox
                     [],
                     'fflhub_place'
                 );
-                as_schedule_single_action(
-                    time() + 1,
-                    RSRDealerBatchCronService::CRON_HOOK,
-                    [],
-                    'fflhub_place'
-                );
+                foreach (DealerBatchCronRegistry::hooks() as $batch_hook) {
+                    as_schedule_single_action(
+                        time() + 1,
+                        (string) $batch_hook,
+                        [],
+                        'fflhub_place'
+                    );
+                }
             }
 
             self::redirect_back_pipeline_rebuild(

@@ -34,9 +34,9 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * RSRDealerBatchCronService
+ * ZandersDealerBatchCronService
  *
- * Runs every minute and processes only RSR dealer-fulfilled rows in batch_pending status.
+ * Runs every minute and processes only Zanders dealer-fulfilled rows in batch_pending status.
  *
  * Behavior:
  * - Low-stock risk is computed from SUMMED UPC demand across currently queued rows.
@@ -46,27 +46,27 @@ if (!defined('ABSPATH')) {
  * - Aggregate retryable failures are re-queued in batch_pending with next_run_at delay.
  * - Aggregate non-retryable outcomes fall back to per-row dispatch for better salvage.
  */
-final class RSRDealerBatchCronService extends AbstractCronService
+final class ZandersDealerBatchCronService extends AbstractCronService
 {
-    /** Action Scheduler / WP-Cron hook polled every minute for RSR dealer batch work. */
-    public const CRON_HOOK = 'fflhub_rsr_dealer_batch_poll';
+    /** Action Scheduler / WP-Cron hook polled every minute for Zanders dealer batch work. */
+    public const CRON_HOOK = 'fflhub_zanders_dealer_batch_poll';
 
     /** Debug flag and log prefix used by log_ctx(). */
     private const DEBUG_CONST = 'FFLHUB_DEBUG_ORDER_BATCH';
-    private const LOG_PREFIX  = '[FFLHub][RSRDealerBatchCron]';
+    private const LOG_PREFIX  = '[FFLHub][ZandersDealerBatchCronService]';
 
     /** Soft distributed lock (option row) to prevent concurrent batch runs. */
-    private const LOCK_OPTION = 'fflhub_rsr_dealer_batch_lock';
+    private const LOCK_OPTION = 'fflhub_zanders_dealer_batch_lock';
     private const LOCK_TTL_SECONDS = 300;
 
     /** Runtime option names for batch behavior. */
-    private const OPT_ENABLED            = 'fflhub_rsr_dealer_batch_enabled';
-    private const OPT_DISPATCH_TIME      = 'fflhub_rsr_dealer_batch_dispatch_time';
-    private const OPT_LOW_STOCK_THRESHOLD = 'fflhub_rsr_dealer_batch_low_stock_threshold';
-    private const OPT_RETRY_DELAY_SECONDS = 'fflhub_rsr_dealer_batch_retry_delay_seconds';
-    private const OPT_MAX_ROWS_PER_RUN    = 'fflhub_rsr_dealer_batch_max_rows_per_run';
-    private const OPT_FORCE_FLUSH         = 'fflhub_rsr_dealer_batch_force_flush';
-    private const OPT_LAST_SCHEDULED_FLUSH_AT_UTC = 'fflhub_rsr_dealer_batch_last_scheduled_flush_at_utc';
+    private const OPT_ENABLED            = 'fflhub_zanders_dealer_batch_enabled';
+    private const OPT_DISPATCH_TIME      = 'fflhub_zanders_dealer_batch_dispatch_time';
+    private const OPT_LOW_STOCK_THRESHOLD = 'fflhub_zanders_dealer_batch_low_stock_threshold';
+    private const OPT_RETRY_DELAY_SECONDS = 'fflhub_zanders_dealer_batch_retry_delay_seconds';
+    private const OPT_MAX_ROWS_PER_RUN    = 'fflhub_zanders_dealer_batch_max_rows_per_run';
+    private const OPT_FORCE_FLUSH         = 'fflhub_zanders_dealer_batch_force_flush';
+    private const OPT_LAST_SCHEDULED_FLUSH_AT_UTC = 'fflhub_zanders_dealer_batch_last_scheduled_flush_at_utc';
 
     /** Safe defaults used when options are missing/invalid. */
     private const DEFAULT_DISPATCH_TIME = '17:00';
@@ -116,8 +116,8 @@ final class RSRDealerBatchCronService extends AbstractCronService
         $now_mysql_utc = OrderPlacementTimeUtil::now_mysql_utc();
         $run_started = microtime(true);
 
-        // Hard gate: do not run if RSR is globally disabled or batch mode is disabled.
-        if (!Options::is_distributor_enabled('rsr') || !$this->is_enabled()) {
+        // Hard gate: do not run if Zanders is globally disabled or batch mode is disabled.
+        if (!Options::is_distributor_enabled('zanders') || !$this->is_enabled()) {
             $this->log_ctx('skip_disabled', ['run_id' => $run_id]);
             return;
         }
@@ -151,8 +151,9 @@ final class RSRDealerBatchCronService extends AbstractCronService
             $retry_delay = $this->retry_delay_seconds();
 
             // Pull only rows that are batch-pending and due now (bounded by max rows).
-            $jobs = OrderPlacementJobsRepository::find_jobs_for_rsr_batch_processing(
+            $jobs = OrderPlacementJobsRepository::find_jobs_for_dealer_batch_processing(
                 $this->jobs_table,
+                'zanders',
                 $now_mysql_utc,
                 $max_rows
             );
@@ -172,10 +173,10 @@ final class RSRDealerBatchCronService extends AbstractCronService
             }
 
             // Distributor handle is required for stock lookup + place_order aggregate call.
-            $rsr = $this->handler->get_distributor_by_id('rsr');
-            if (!($rsr instanceof DistributorBase)) {
-                $this->log_ctx('error_missing_rsr_distributor', ['run_id' => $run_id]);
-                $run_status = 'missing_rsr';
+            $distributor = $this->handler->get_distributor_by_id('zanders');
+            if (!($distributor instanceof DistributorBase)) {
+                $this->log_ctx('error_missing_zanders_distributor', ['run_id' => $run_id]);
+                $run_status = 'missing_zanders';
                 return;
             }
 
@@ -245,7 +246,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
             // Build total demand per UPC across ALL eligible rows in this run.
             $demand_by_upc = $this->build_demand_by_upc($eligible_entries);
             // Resolve current stock once per demanded UPC.
-            $stock_cache = $this->build_stock_cache($rsr, $demand_by_upc);
+            $stock_cache = $this->build_stock_cache($distributor, $demand_by_upc);
             // Risk set uses threshold and summed demand semantics.
             $risky_upcs = $this->find_risky_upcs($demand_by_upc, $stock_cache, $low_threshold);
 
@@ -283,7 +284,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
             // Flush risky rows now as ONE aggregate to reduce fragmentation/shipping overhead.
             if (!empty($priority_candidates)) {
                 try {
-                    $this->flush_aggregate_batch($rsr, $priority_candidates, $retry_delay, $run_id, 'priority_low_stock');
+                    $this->flush_aggregate_batch($distributor, $priority_candidates, $retry_delay, $run_id, 'priority_low_stock');
                     $priority_flushed_rows = count($priority_candidates);
                 } catch (\Throwable $e) {
                     $this->log_ctx('priority_flush_exception', [
@@ -322,7 +323,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
                     if (!$force_flush) {
                         $this->mark_scheduled_flush_attempt((string) $now_mysql_utc);
                     }
-                    $this->flush_aggregate_batch($rsr, $batch_candidates, $retry_delay, $run_id, 'scheduled_batch');
+                    $this->flush_aggregate_batch($distributor, $batch_candidates, $retry_delay, $run_id, 'scheduled_batch');
                     $scheduled_flushed_rows = count($batch_candidates);
                 }
             } catch (\Throwable $e) {
@@ -367,7 +368,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
      * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates
      */
     private function flush_aggregate_batch(
-        DistributorBase $rsr,
+        DistributorBase $distributor,
         array $batch_candidates,
         int $retry_delay_seconds,
         string $run_id,
@@ -404,7 +405,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
             $po,
             (string) $ship_to->state,
             '',
-            'RSR dealer batch aggregate [' . $batch_kind . ']',
+            'Zanders dealer batch aggregate [' . $batch_kind . ']',
             'dealer_fulfilled'
         );
 
@@ -428,7 +429,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
 
         try {
             // One upstream order placement call for the full aggregate payload.
-            $result = $rsr->place_order($request);
+            $result = $distributor->place_order($request);
         } catch (\Throwable $e) {
             $result = DistributorOrderResult::block_retryable(
                 'Batch aggregate call exception: ' . $e->getMessage(),
@@ -478,7 +479,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
             }
 
             BatchOrderNotificationEmail::send(
-                'rsr',
+                'zanders',
                 $po,
                 $batch_kind,
                 $result,
@@ -552,12 +553,12 @@ final class RSRDealerBatchCronService extends AbstractCronService
      * @param array<string,int> $demand_by_upc
      * @return array<string,int|null>
      */
-    private function build_stock_cache(DistributorBase $rsr, array $demand_by_upc): array
+    private function build_stock_cache(DistributorBase $distributor, array $demand_by_upc): array
     {
         // Resolve each UPC once per run; avoid repeated distributor lookups.
         $stock_cache = [];
         foreach ($demand_by_upc as $upc => $_qty) {
-            $stock_cache[$upc] = $rsr->get_stock_quantity_by_upc((string) $upc);
+            $stock_cache[$upc] = $distributor->get_stock_quantity_by_upc((string) $upc);
         }
         return $stock_cache;
     }
@@ -797,16 +798,16 @@ final class RSRDealerBatchCronService extends AbstractCronService
      */
     private function build_batch_po(array $batch_candidates): string
     {
-        // Format: RSRB-{firstWooOrderNumber}-{lastWooOrderNumber}
-        // Keep each order token short so the final PO stays <= 22 chars (RSR cap).
+        // Format: ZANB-{firstWooOrderNumber}-{lastWooOrderNumber}
+        // Keep each order token short so the final PO stays <= 22 chars (Zanders cap).
         if (empty($batch_candidates)) {
-            return 'RSRB-' . gmdate('mdHi') . '-' . (string) wp_rand(1000, 9999);
+            return 'ZANB-' . gmdate('mdHi') . '-' . (string) wp_rand(1000, 9999);
         }
 
         $first = $this->batch_po_segment_from_candidate($batch_candidates[0]);
         $last = $this->batch_po_segment_from_candidate($batch_candidates[count($batch_candidates) - 1]);
 
-        return 'RSRB-' . $first . '-' . $last;
+        return 'ZANB-' . $first . '-' . $last;
     }
 
     /**
@@ -851,7 +852,7 @@ final class RSRDealerBatchCronService extends AbstractCronService
             return 'NA';
         }
 
-        // 4 + 1 + 8 + 1 + 8 = 22 max total for "RSRB-{first}-{last}".
+        // 4 + 1 + 8 + 1 + 8 = 22 max total for "ZANB-{first}-{last}".
         if (strlen($raw) > 8) {
             $raw = substr($raw, -8);
         }
@@ -917,3 +918,5 @@ final class RSRDealerBatchCronService extends AbstractCronService
         DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
     }
 }
+
+

@@ -19,6 +19,8 @@ use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Services\Orders\Jobs\Identifiers\OrderPlacementJobIdentifiersStore;
 use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
 use FFLHub\Distributor\Services\Orders\Jobs\Snapshots\OrderPlacementJobSnapshotsStore;
+use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
+use FFLHub\Distributor\Services\Orders\Util\DealerShipToResolver;
 
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementPOUtil;
@@ -133,9 +135,26 @@ final class OrderPlacementJobRunner
             if (!($ship_customer instanceof DistributorShipTo)) {
                 throw new \RuntimeException('Customer ship-to incomplete on order');
             }
+            $original_customer_name = trim((string) $ship_customer->name);
 
             // Resolve FFL ship-to (if needed).
             [$ship_ffl, $receiving_ffl_number] = self::resolve_ship_to_ffl_if_needed($ffl_table, $order, $ffl_required);
+
+            $is_ca_relay = DealerBatchCronRegistry::is_ca_relay_batch_job($job);
+            if ($is_ca_relay) {
+                if ($ffl_required) {
+                    throw new \RuntimeException('CA relay job contains FFL-required lines; relay path is non-FFL only');
+                }
+
+                $relay_ship_to = DealerShipToResolver::resolve_relay();
+                if (!($relay_ship_to instanceof DistributorShipTo)) {
+                    throw new \RuntimeException('CA relay job missing configured dealer ship-to address');
+                }
+
+                $ship_customer = $relay_ship_to;
+                $ship_ffl = null;
+                $receiving_ffl_number = '';
+            }
 
             $dest_state = $ffl_required && ($ship_ffl instanceof DistributorShipTo)
                 ? (string) $ship_ffl->state
@@ -159,6 +178,9 @@ final class OrderPlacementJobRunner
                 $customer_name = 'Unknown';
             }
             $job_note = 'Woo Order ID: ' . $order_id . ' - Customer: ' . $customer_name;
+            if ($is_ca_relay) {
+                $job_note = 'Woo Order ID: ' . $order_id . ' - CA relay inbound for Customer: ' . ($original_customer_name !== '' ? $original_customer_name : 'Unknown');
+            }
             $req = new DistributorOrderRequest(
                 $lines,
                 $ship_customer,

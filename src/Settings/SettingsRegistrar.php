@@ -112,6 +112,16 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_BATCH_ORDER_NOTIFICATION_EMAIL,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_email_list'],
+                'default'           => Options::default_batch_order_notification_email(),
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_DISTRIBUTOR_PRIORITY_LIST,
             [
                 'type'              => 'string',
@@ -121,6 +131,18 @@ final class SettingsRegistrar
         );
 
         foreach (Options::default_dealer_ship_to_options() as $option_name => $default_value) {
+            register_setting(
+                $group,
+                $option_name,
+                [
+                    'type'              => 'string',
+                    'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                    'default'           => $default_value,
+                ]
+            );
+        }
+
+        foreach (Options::default_relay_ship_to_options() as $option_name => $default_value) {
             register_setting(
                 $group,
                 $option_name,
@@ -545,6 +567,26 @@ final class SettingsRegistrar
     public static function sanitize_distributor_priority_list($value): string
     {
         return Options::normalize_distributor_priority_csv((string) $value);
+    }
+
+    /**
+     * Sanitize one or more notification recipients into comma-separated email addresses.
+     *
+     * @param mixed $value
+     */
+    public static function sanitize_email_list($value): string
+    {
+        $parts = preg_split('/[,;\s]+/', (string) $value);
+        $emails = [];
+
+        foreach ((array) $parts as $part) {
+            $email = sanitize_email((string) $part);
+            if ($email !== '' && is_email($email)) {
+                $emails[] = $email;
+            }
+        }
+
+        return implode(',', array_values(array_unique($emails)));
     }
 
     /**

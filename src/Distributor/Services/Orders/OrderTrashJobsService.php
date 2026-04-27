@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Orders;
 
+use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
@@ -21,7 +22,8 @@ if (!defined('ABSPATH')) {
  * - Untrashed order:
  *   - remove "suspended"
  *   - resume paused rows:
- *     - RSR dealer_fulfilled rows => batch_pending
+ *     - dealer-batch distributor dealer_fulfilled rows => batch_pending
+ *     - CA relay direct_ship_non_ffl rows => batch_pending
  *     - all other rows => scheduled
  *     - next_run_at=now
  * - Permanently deleted order:
@@ -233,7 +235,8 @@ final class OrderTrashJobsService
     /**
      * Resume paused jobs:
      * - status => scheduled (default)
-     * - status => batch_pending for rsr + dealer_fulfilled rows
+     * - status => batch_pending for dealer-batch distributor + dealer_fulfilled rows
+     * - status => batch_pending for CA relay direct_ship_non_ffl rows
      * - next_run_at => now (dispatcher will pick them up)
      * - last_error => "Resumed: <reason>"
      *
@@ -256,29 +259,60 @@ final class OrderTrashJobsService
         }
 
         $now = OrderPlacementTimeUtil::now_mysql_utc();
+        $batch_dist_ids = DealerBatchCronRegistry::distributor_ids();
+        if (empty($batch_dist_ids)) {
+            $batch_dist_ids = ['rsr'];
+        }
+        $dist_placeholders = implode(',', array_fill(0, count($batch_dist_ids), '%s'));
+        $relay_dist_ids = DealerBatchCronRegistry::ca_relay_distributor_ids();
+        $relay_placeholders = implode(',', array_fill(0, count($relay_dist_ids), '%s'));
 
         try {
+            $case_sql = "WHEN dist_id IN ({$dist_placeholders}) AND lane = %s THEN %s";
+            $case_params = array_merge(
+                $batch_dist_ids,
+                [
+                    'dealer_fulfilled',
+                    (string) OrderPlacementKeys::JOB_STATUS_BATCH_PENDING,
+                ]
+            );
+
+            if (!empty($relay_dist_ids)) {
+                $case_sql .= " WHEN dist_id IN ({$relay_placeholders}) AND lane = %s AND payload_json LIKE %s THEN %s";
+                $case_params = array_merge(
+                    $case_params,
+                    $relay_dist_ids,
+                    [
+                        'direct_ship_non_ffl',
+                        '%"ca_relay"%',
+                        (string) OrderPlacementKeys::JOB_STATUS_BATCH_PENDING,
+                    ]
+                );
+            }
+
             $affected = $wpdb->query(
                 $wpdb->prepare(
                     "UPDATE {$table}
                      SET status = CASE
-                            WHEN dist_id = %s AND lane = %s THEN %s
+                            {$case_sql}
                             ELSE %s
-                         END,
-                         next_run_at = %s,
+                          END,
+                          next_run_at = %s,
                          updated_at = %s,
                          last_error = %s
                      WHERE order_id = %d
                        AND status = %s",
-                    'rsr',
-                    'dealer_fulfilled',
-                    (string) OrderPlacementKeys::JOB_STATUS_BATCH_PENDING,
-                    (string) OrderPlacementKeys::JOB_STATUS_SCHEDULED,
-                    (string) $now,
-                    (string) $now,
-                    ($reason !== '' ? 'Resumed: ' . $reason : 'Resumed'),
-                    $order_id,
-                    (string) OrderPlacementKeys::JOB_STATUS_PAUSED
+                    array_merge(
+                        $case_params,
+                        [
+                            (string) OrderPlacementKeys::JOB_STATUS_SCHEDULED,
+                            (string) $now,
+                            (string) $now,
+                            ($reason !== '' ? 'Resumed: ' . $reason : 'Resumed'),
+                            $order_id,
+                            (string) OrderPlacementKeys::JOB_STATUS_PAUSED,
+                        ]
+                    )
                 )
             );
 

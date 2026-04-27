@@ -9,8 +9,12 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
+use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
 use FFLHub\Distributor\Services\Orders\Cron\RSRDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\ZandersCaRelayBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\ZandersDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\OrderingOrchestratorService;
 use FFLHub\Distributor\Services\Orders\OrderTrashJobsService;
 use FFLHub\Distributor\Services\Orders\Shipping\Cron\DealerFulfilledCronService;
@@ -69,6 +73,10 @@ class DistributorHandler
     private DealerFulfilledCronService $orderDealerFulfilledCronService;
     private OrderingCronService $orderPlacementCronService;
     private RSRDealerBatchCronService $rsrDealerBatchCronService;
+    private LipseysDealerBatchCronService $lipseysDealerBatchCronService;
+    private ZandersDealerBatchCronService $zandersDealerBatchCronService;
+    private LipseysCaRelayBatchCronService $lipseysCaRelayBatchCronService;
+    private ZandersCaRelayBatchCronService $zandersCaRelayBatchCronService;
 
     // ---------------------------------------------------------------------
     // Cross-distributor services: order trash hooks
@@ -138,6 +146,18 @@ class DistributorHandler
 
         $this->rsrDealerBatchCronService = new RSRDealerBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
         $log_step('new RSRDealerBatchCronService');
+
+        $this->lipseysDealerBatchCronService = new LipseysDealerBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
+        $log_step('new LipseysDealerBatchCronService');
+
+        $this->zandersDealerBatchCronService = new ZandersDealerBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
+        $log_step('new ZandersDealerBatchCronService');
+
+        $this->lipseysCaRelayBatchCronService = new LipseysCaRelayBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
+        $log_step('new LipseysCaRelayBatchCronService');
+
+        $this->zandersCaRelayBatchCronService = new ZandersCaRelayBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
+        $log_step('new ZandersCaRelayBatchCronService');
 
         $this->orderShippingCronService  = new ShippingCronService($this, $this->ordering_jobs_table);
         $log_step('new ShippingCronService');
@@ -255,6 +275,10 @@ class DistributorHandler
         $this->orderDealerFulfilledCronService->on_activation();
         $this->orderPlacementCronService->on_activation();
         $this->rsrDealerBatchCronService->on_activation();
+        $this->lipseysDealerBatchCronService->on_activation();
+        $this->zandersDealerBatchCronService->on_activation();
+        $this->lipseysCaRelayBatchCronService->on_activation();
+        $this->zandersCaRelayBatchCronService->on_activation();
 
         // OrderTrashJobsService is hook-based (not cron-based); no schedule lifecycle.
     }
@@ -281,6 +305,10 @@ class DistributorHandler
         $this->orderDealerFulfilledCronService->on_deactivation();
         $this->orderPlacementCronService->on_deactivation();
         $this->rsrDealerBatchCronService->on_deactivation();
+        $this->lipseysDealerBatchCronService->on_deactivation();
+        $this->zandersDealerBatchCronService->on_deactivation();
+        $this->lipseysCaRelayBatchCronService->on_deactivation();
+        $this->zandersCaRelayBatchCronService->on_deactivation();
     }
 
     /**
@@ -310,6 +338,10 @@ class DistributorHandler
         $this->orderDealerFulfilledCronService->register();
         $this->orderPlacementCronService->register();
         $this->rsrDealerBatchCronService->register();
+        $this->lipseysDealerBatchCronService->register();
+        $this->zandersDealerBatchCronService->register();
+        $this->lipseysCaRelayBatchCronService->register();
+        $this->zandersCaRelayBatchCronService->register();
 
         $this->orderTrashJobsService->register();
     }
