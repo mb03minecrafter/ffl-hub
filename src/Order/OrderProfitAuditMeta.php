@@ -15,12 +15,17 @@ if (!defined('ABSPATH')) {
 
 final class OrderProfitAuditMeta
 {
-    private const VERSION = 'order_profit_v1';
+    private const VERSION = 'order_profit_v2';
 
     public static function init(): void
     {
         add_action('woocommerce_checkout_create_order', [__CLASS__, 'capture_checkout_order'], 90, 2);
         add_action('woocommerce_checkout_order_processed', [__CLASS__, 'capture_processed_order'], 20, 3);
+    }
+
+    public static function version(): string
+    {
+        return self::VERSION;
     }
 
     /**
@@ -62,6 +67,9 @@ final class OrderProfitAuditMeta
         $order->update_meta_data('fflhub_order_item_cost_total', self::money($audit['item_cost_total']));
         $order->update_meta_data('fflhub_order_item_cost_by_dist', wp_json_encode($audit['item_cost_by_dist']));
         $order->update_meta_data('fflhub_order_shipping_cost_total', self::money($audit['shipping_cost_total']));
+        $order->update_meta_data('fflhub_order_distributor_shipping_cost_total', self::money($audit['distributor_shipping_cost_total']));
+        $order->update_meta_data('fflhub_order_distributor_shipping_by_dist', wp_json_encode($audit['distributor_shipping_by_dist']));
+        $order->update_meta_data('fflhub_order_distributor_shipping_source', (string) $audit['distributor_shipping_source']);
         $order->update_meta_data('fflhub_order_shipping_label_cost_total', self::money($audit['shipping_label_cost_total']));
         $order->update_meta_data('fflhub_order_shipping_label_count', (string) (int) $audit['shipping_label_count']);
         $order->update_meta_data('fflhub_order_shipping_label_source', (string) $audit['shipping_label_source']);
@@ -157,8 +165,9 @@ final class OrderProfitAuditMeta
             ];
         }
 
-        $shipping = self::woo_shipping_label_cost_summary($order);
-        $shipping_cost_total = (float) $shipping['total'];
+        $distributor_shipping = self::distributor_shipping_cost_summary($order);
+        $label_shipping = self::woo_shipping_label_cost_summary($order);
+        $shipping_cost_total = (float) $distributor_shipping['total'] + (float) $label_shipping['total'];
         $customer_shipping_charge = (float) $order->get_shipping_total();
         $order_total = (float) $order->get_total();
         $tax_total = (float) $order->get_total_tax();
@@ -179,16 +188,145 @@ final class OrderProfitAuditMeta
             'item_cost_total' => $item_cost_total,
             'item_cost_by_dist' => array_values($item_cost_by_dist),
             'shipping_cost_total' => $shipping_cost_total,
-            'shipping_label_cost_total' => $shipping_cost_total,
-            'shipping_label_count' => (int) $shipping['count'],
-            'shipping_label_source' => (string) $shipping['source'],
-            'shipping_label_lines' => $shipping['lines'],
+            'distributor_shipping_cost_total' => (float) $distributor_shipping['total'],
+            'distributor_shipping_by_dist' => $distributor_shipping['by_dist'],
+            'distributor_shipping_source' => (string) $distributor_shipping['source'],
+            'shipping_label_cost_total' => (float) $label_shipping['total'],
+            'shipping_label_count' => (int) $label_shipping['count'],
+            'shipping_label_source' => (string) $label_shipping['source'],
+            'shipping_label_lines' => $label_shipping['lines'],
             'customer_shipping_charge' => $customer_shipping_charge,
             'processor_fee_percent' => $fee_percent,
             'processor_fee_amount' => $processor_fee_amount,
             'actual_profit_total' => $actual_profit_total,
             'lines' => $lines,
         ];
+    }
+
+    /**
+     * Distributor shipping is the real distributor lane fee from the FFLHub checkout plan.
+     * It intentionally excludes dealer outbound estimates; bought Woo labels cover those
+     * only after a label is actually purchased.
+     *
+     * @return array{total:float,source:string,by_dist:array<int,array<string,mixed>>}
+     */
+    private static function distributor_shipping_cost_summary(WC_Order $order): array
+    {
+        $total = 0.0;
+        $sources = [];
+        $by_dist = [];
+
+        foreach ($order->get_items('shipping') as $item_id => $shipping_item) {
+            if (!($shipping_item instanceof WC_Order_Item_Shipping)) {
+                continue;
+            }
+
+            $plan = self::decode_array($shipping_item->get_meta('fflhub_shipping_plan', true));
+            $rows = isset($plan['by_dist']) && is_array($plan['by_dist'])
+                ? $plan['by_dist']
+                : self::decode_array($shipping_item->get_meta('fflhub_shipping_by_dist', true));
+
+            $row_total = self::sum_distributor_shipping_rows($rows, $by_dist, (int) $item_id);
+            if ($row_total > 0.0) {
+                $total += $row_total;
+                $sources['shipping_item_by_dist'] = true;
+                continue;
+            }
+
+            $plan_total = self::non_negative_float($plan['distributor_cost_total'] ?? null);
+            if ($plan_total !== null && $plan_total > 0.0) {
+                $total += $plan_total;
+                $sources['shipping_plan_distributor_cost_total'] = true;
+                self::add_distributor_shipping_total($by_dist, 'unknown', $plan_total, (int) $item_id);
+            }
+        }
+
+        return [
+            'total' => $total,
+            'source' => implode(',', array_keys($sources)),
+            'by_dist' => array_values($by_dist),
+        ];
+    }
+
+    /**
+     * @param array<int|string,mixed> $rows
+     * @param array<string,array<string,mixed>> $by_dist
+     */
+    private static function sum_distributor_shipping_rows(array $rows, array &$by_dist, int $shipping_item_id = 0): float
+    {
+        $total = 0.0;
+
+        foreach ($rows as $dist_id => $row) {
+            if (is_object($row)) {
+                $row = (array) $row;
+            }
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $cost = self::non_negative_float($row['cost'] ?? null);
+            if ($cost === null || $cost <= 0.0) {
+                continue;
+            }
+
+            $dist_key = strtolower(trim((string) ($row['dist_id'] ?? $dist_id)));
+            if ($dist_key === '' || is_numeric($dist_key)) {
+                $dist_key = 'unknown';
+            }
+
+            $total += $cost;
+            self::add_distributor_shipping_total($by_dist, $dist_key, $cost, $shipping_item_id, $row);
+        }
+
+        return $total;
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $by_dist
+     * @param array<string,mixed> $row
+     */
+    private static function add_distributor_shipping_total(
+        array &$by_dist,
+        string $dist_id,
+        float $cost,
+        int $shipping_item_id = 0,
+        array $row = []
+    ): void {
+        $dist_id = strtolower(trim($dist_id));
+        if ($dist_id === '') {
+            $dist_id = 'unknown';
+        }
+
+        if (!isset($by_dist[$dist_id])) {
+            $by_dist[$dist_id] = [
+                'dist_id' => $dist_id,
+                'cost' => '0.0000',
+                'shipping_item_ids' => [],
+                'active_lanes' => 0,
+                'direct_home' => false,
+                'direct_ffl' => false,
+                'dealer_inbound' => false,
+            ];
+        }
+
+        $by_dist[$dist_id]['cost'] = self::money((float) $by_dist[$dist_id]['cost'] + $cost);
+
+        if ($shipping_item_id > 0 && !in_array($shipping_item_id, $by_dist[$dist_id]['shipping_item_ids'], true)) {
+            $by_dist[$dist_id]['shipping_item_ids'][] = $shipping_item_id;
+        }
+
+        if (isset($row['active_lanes'])) {
+            $by_dist[$dist_id]['active_lanes'] += max(0, (int) $row['active_lanes']);
+        }
+        if (!empty($row['direct_home'])) {
+            $by_dist[$dist_id]['direct_home'] = true;
+        }
+        if (!empty($row['direct_ffl'])) {
+            $by_dist[$dist_id]['direct_ffl'] = true;
+        }
+        if (!empty($row['dealer_inbound'])) {
+            $by_dist[$dist_id]['dealer_inbound'] = true;
+        }
     }
 
     /**
@@ -251,6 +389,35 @@ final class OrderProfitAuditMeta
             'source' => implode(',', array_keys($sources)),
             'lines' => $lines,
         ];
+    }
+
+    /**
+     * @param mixed $value
+     * @return array<int|string,mixed>
+     */
+    private static function decode_array($value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_object($value)) {
+            return (array) $value;
+        }
+
+        if (is_string($value) && $value !== '') {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+
+            $unserialized = maybe_unserialize($value);
+            if (is_array($unserialized)) {
+                return $unserialized;
+            }
+        }
+
+        return [];
     }
 
     /**
