@@ -12,6 +12,7 @@ use FFLHub\Admin\Orders\OrderProfitAuditMetaBox;
 use FFLHub\Admin\Pages\AdminPage;
 use FFLHub\Admin\Pages\DavidsonsFailedJobsPage;
 use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
+use FFLHub\Admin\Pages\DistributorBatchQueuePage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
 use FFLHub\Admin\Pages\LipseysCreditLimitPage;
@@ -32,6 +33,10 @@ use FFLHub\Checkout\Map\CheckoutMap;
 use FFLHub\Checkout\Notice\CaliforniaRelayNotice;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Services\Cron\QuoteEmailJobsCronService;
+use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\ZandersCaRelayBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\ZandersDealerBatchCronService;
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
@@ -74,6 +79,8 @@ final class Plugin
     public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
     public DavidsonsFailedJobsPage $davidsons_failed_jobs_page;
     public RSRBatchQueuePage $rsr_batch_queue_page;
+    /** @var DistributorBatchQueuePage[] */
+    public array $distributor_batch_queue_pages = [];
     public ZandersCreditLimitPage $zanders_credit_limit_page;
     public LipseysCreditLimitPage $lipseys_credit_limit_page;
     public MapPolicyPage $map_policy_page;
@@ -160,6 +167,16 @@ final class Plugin
             );
             $this->rsr_batch_queue_page->register();
 
+            foreach ($this->distributor_batch_queue_page_configs() as $config) {
+                $page = new DistributorBatchQueuePage(
+                    $this->distributor_handler->ordering_jobs_table,
+                    $this->distributor_handler,
+                    $config
+                );
+                $page->register();
+                $this->distributor_batch_queue_pages[] = $page;
+            }
+
             $this->zanders_credit_limit_page = new ZandersCreditLimitPage($this->distributor_handler->ordering_jobs_table);
             $this->zanders_credit_limit_page->register();
 
@@ -201,6 +218,67 @@ final class Plugin
         CheckoutMap::init();
         CaliforniaRelayNotice::init();
 
+    }
+
+    /**
+     * @return array<int,array<string,string>>
+     */
+    private function distributor_batch_queue_page_configs(): array
+    {
+        return [
+            [
+                'page_slug' => 'fflhub-lipseys-dealer-batch-queue',
+                'menu_title' => "Lipsey's Dealer Batch Queue",
+                'page_title' => "Lipsey's Dealer Batch Queue",
+                'description' => "Per-line-item UPC queue view for Lipsey's dealer-fulfilled rows on Processing orders.",
+                'dist_id' => 'lipseys',
+                'dist_label' => "Lipsey's",
+                'mode' => 'dealer',
+                'mode_label' => 'Dealer Batch',
+                'option_prefix' => 'fflhub_lipseys_dealer_batch',
+                'field_prefix' => 'fflhub_lipseys_dealer_batch_page',
+                'cron_hook' => LipseysDealerBatchCronService::CRON_HOOK,
+            ],
+            [
+                'page_slug' => 'fflhub-zanders-dealer-batch-queue',
+                'menu_title' => 'Zanders Dealer Batch Queue',
+                'page_title' => 'Zanders Dealer Batch Queue',
+                'description' => 'Per-line-item UPC queue view for Zanders dealer-fulfilled rows on Processing orders.',
+                'dist_id' => 'zanders',
+                'dist_label' => 'Zanders',
+                'mode' => 'dealer',
+                'mode_label' => 'Dealer Batch',
+                'option_prefix' => 'fflhub_zanders_dealer_batch',
+                'field_prefix' => 'fflhub_zanders_dealer_batch_page',
+                'cron_hook' => ZandersDealerBatchCronService::CRON_HOOK,
+            ],
+            [
+                'page_slug' => 'fflhub-lipseys-ca-relay-batch-queue',
+                'menu_title' => "Lipsey's CA Relay Batch Queue",
+                'page_title' => "Lipsey's CA Relay Batch Queue",
+                'description' => "Per-line-item UPC queue view for Lipsey's non-FFL CA relay rows on Processing orders.",
+                'dist_id' => 'lipseys',
+                'dist_label' => "Lipsey's",
+                'mode' => 'ca_relay',
+                'mode_label' => 'CA Relay Batch',
+                'option_prefix' => 'fflhub_lipseys_ca_relay_batch',
+                'field_prefix' => 'fflhub_lipseys_ca_relay_batch_page',
+                'cron_hook' => LipseysCaRelayBatchCronService::CRON_HOOK,
+            ],
+            [
+                'page_slug' => 'fflhub-zanders-ca-relay-batch-queue',
+                'menu_title' => 'Zanders CA Relay Batch Queue',
+                'page_title' => 'Zanders CA Relay Batch Queue',
+                'description' => 'Per-line-item UPC queue view for Zanders non-FFL CA relay rows on Processing orders.',
+                'dist_id' => 'zanders',
+                'dist_label' => 'Zanders',
+                'mode' => 'ca_relay',
+                'mode_label' => 'CA Relay Batch',
+                'option_prefix' => 'fflhub_zanders_ca_relay_batch',
+                'field_prefix' => 'fflhub_zanders_ca_relay_batch_page',
+                'cron_hook' => ZandersCaRelayBatchCronService::CRON_HOOK,
+            ],
+        ];
     }
 
     public static function activate(): void
