@@ -89,8 +89,8 @@ final class OrderProfitAuditMetaBox
         $lines = isset($audit['lines']) && is_array($audit['lines']) ? $audit['lines'] : [];
         $by_dist = isset($audit['item_cost_by_dist']) && is_array($audit['item_cost_by_dist']) ? $audit['item_cost_by_dist'] : [];
         $shipping_caption = $label_cost > 0.0
-            ? 'Labels ' . wp_strip_all_tags(self::money($label_cost, $order)) . '; customer paid ' . wp_strip_all_tags(self::money($customer_shipping, $order))
-            : 'Customer paid ' . wp_strip_all_tags(self::money($customer_shipping, $order));
+            ? 'Bought Woo labels only; customer paid ' . wp_strip_all_tags(self::money($customer_shipping, $order))
+            : 'No bought labels; customer paid ' . wp_strip_all_tags(self::money($customer_shipping, $order));
 
         echo '<div class="fflhub-profit-wrap">';
 
@@ -98,7 +98,7 @@ final class OrderProfitAuditMetaBox
         echo '<div>';
         echo '<div class="fflhub-profit-eyebrow">Order Profit Snapshot</div>';
         echo '<div class="fflhub-profit-title">' . esc_html($profit_label) . '</div>';
-        echo '<div class="fflhub-profit-subtitle">Revenue minus distributor item cost, fulfillment shipping, and processor fee.</div>';
+        echo '<div class="fflhub-profit-subtitle">Revenue minus distributor item cost, bought shipping labels, and processor fee.</div>';
         if (!$is_saved) {
             echo '<div class="fflhub-profit-note">Preview only. Run the backfill command to save this snapshot on older orders.</div>';
         }
@@ -218,8 +218,6 @@ final class OrderProfitAuditMetaBox
             'item_cost_total' => self::float_value($order->get_meta('fflhub_order_item_cost_total', true)),
             'item_cost_by_dist' => self::json_array($order->get_meta('fflhub_order_item_cost_by_dist', true)),
             'shipping_cost_total' => self::float_value($order->get_meta('fflhub_order_shipping_cost_total', true)),
-            'shipping_planned_cost_total' => self::float_value($order->get_meta('fflhub_order_shipping_planned_cost_total', true)),
-            'shipping_non_label_cost_total' => self::float_value($order->get_meta('fflhub_order_shipping_non_label_cost_total', true)),
             'shipping_label_cost_total' => self::float_value($order->get_meta('fflhub_order_shipping_label_cost_total', true)),
             'shipping_label_count' => (int) $order->get_meta('fflhub_order_shipping_label_count', true),
             'shipping_label_source' => (string) $order->get_meta('fflhub_order_shipping_label_source', true),
@@ -237,8 +235,6 @@ final class OrderProfitAuditMetaBox
      */
     private static function render_shipping_label_panel(array $audit, WC_Order $order): void
     {
-        $planned_total = self::float_value($audit['shipping_planned_cost_total'] ?? 0);
-        $non_label_total = self::float_value($audit['shipping_non_label_cost_total'] ?? 0);
         $label_total = self::float_value($audit['shipping_label_cost_total'] ?? 0);
         $label_count = (int) ($audit['shipping_label_count'] ?? 0);
         $label_source = trim((string) ($audit['shipping_label_source'] ?? ''));
@@ -249,18 +245,17 @@ final class OrderProfitAuditMetaBox
         echo '<section class="fflhub-profit-panel fflhub-profit-label-panel">';
         echo '<div class="fflhub-profit-panel-head">';
         echo '<h4>Shipping Labels</h4>';
-        echo '<span>Estimated versus actual WooCommerce label cost</span>';
+        echo '<span>Bought WooCommerce label cost only</span>';
         echo '</div>';
 
         echo '<div class="fflhub-profit-label-summary">';
-        echo self::label_stat('Planned', self::money($planned_total, $order), 'FFLHub checkout estimate');
-        echo self::label_stat('Woo Labels', self::money($label_total, $order), sprintf('%d purchased label(s)', $label_count));
-        echo self::label_stat('Other Shipping', self::money($non_label_total, $order), 'Distributor/direct pieces kept');
+        echo self::label_stat('Bought Labels', self::money($label_total, $order), 'Actual purchased label cost');
+        echo self::label_stat('Label Count', esc_html((string) $label_count), 'Non-refunded purchased labels');
         echo self::label_stat('Source', esc_html($label_source !== '' ? $label_source : 'none yet'), 'Where label data was read');
         echo '</div>';
 
         if ($label_total <= 0.0 || empty($label_lines)) {
-            echo '<div class="fflhub-profit-empty">No purchased WooCommerce Shipping label cost found yet. Until a label exists, profit uses the planned FFLHub shipping estimate.</div>';
+            echo '<div class="fflhub-profit-empty">No purchased WooCommerce Shipping labels found. Shipping cost is stored as $0.00 for this order.</div>';
             echo '</section>';
             return;
         }
