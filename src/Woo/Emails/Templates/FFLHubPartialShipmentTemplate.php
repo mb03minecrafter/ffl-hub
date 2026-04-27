@@ -26,23 +26,32 @@ $brand_panel_bg = '#ffffff';
 $email_heading = $email->get_heading();
 
 // -----------------------------
-// Build "items in this shipment update" based on job payload UPCs
-// context->lines is DistributorOrderLine[]
+// Build "items in this shipment update" based on job payload UPCs.
+// Do not use wc_get_email_order_items() here; Woo renders the whole order.
 // -----------------------------
 $lines = (isset($context->lines) && is_array($context->lines)) ? $context->lines : [];
 
-$upc_set = [];
+$upc_qty_map = [];
+$upc_label_map = [];
+$normalize_upc = static function (string $upc): string {
+    $digits = (string) preg_replace('/\D+/', '', $upc);
+    return $digits !== '' ? $digits : strtolower(trim($upc));
+};
+
 foreach ($lines as $ln) {
     if (!($ln instanceof \FFLHub\Distributor\Models\DistributorOrderLine)) {
         continue;
     }
     $u = trim((string) $ln->upc);
     if ($u !== '') {
-        $upc_set[$u] = true;
+        $key = $normalize_upc($u);
+        $upc_qty_map[$key] = ($upc_qty_map[$key] ?? 0) + max(1, (int) $ln->quantity);
+        $upc_label_map[$key] = $u;
     }
 }
 
-$shipment_items = [];
+$shipment_rows = [];
+$matched_upc_keys = [];
 foreach ($order->get_items() as $item_id => $item) {
     if (!($item instanceof WC_Order_Item_Product)) {
         continue;
@@ -53,29 +62,48 @@ foreach ($order->get_items() as $item_id => $item) {
         continue;
     }
 
-    $upc = trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true));
-    if ($upc !== '' && isset($upc_set[$upc])) {
-        $shipment_items[$item_id] = $item;
+    $candidate_upcs = [
+        trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true)),
+        trim((string) $product->get_meta('_upc', true)),
+    ];
+    if (method_exists($product, 'get_global_unique_id')) {
+        $candidate_upcs[] = trim((string) $product->get_global_unique_id('edit'));
+    }
+
+    $matched_key = '';
+    foreach ($candidate_upcs as $candidate_upc) {
+        if ($candidate_upc === '') {
+            continue;
+        }
+
+        $candidate_key = $normalize_upc($candidate_upc);
+        if (isset($upc_qty_map[$candidate_key])) {
+            $matched_key = $candidate_key;
+            break;
+        }
+    }
+
+    if ($matched_key !== '') {
+        $matched_upc_keys[$matched_key] = true;
+        $shipment_rows[] = [
+            'name'  => (string) $item->get_name(),
+            'qty'   => max(1, (int) $upc_qty_map[$matched_key]),
+            'sku'   => (string) $product->get_sku(),
+            'image' => $product->get_image([48, 48], ['style' => 'display:block;border:0;outline:none;text-decoration:none;']),
+        ];
     }
 }
 
 // Fallback lines (job-row scope only): render UPC + qty when order-item matching fails.
 $fallback_lines = [];
-foreach ($lines as $ln) {
-    if (!($ln instanceof \FFLHub\Distributor\Models\DistributorOrderLine)) {
+foreach ($upc_qty_map as $key => $qty) {
+    if (isset($matched_upc_keys[$key])) {
         continue;
     }
-    $u = trim((string) $ln->upc);
-    $q = (int) $ln->quantity;
-    if ($u === '') {
-        continue;
-    }
-    if ($q < 1) {
-        $q = 1;
-    }
+
     $fallback_lines[] = [
-        'upc' => $u,
-        'qty' => $q,
+        'upc' => $upc_label_map[$key] ?? $key,
+        'qty' => max(1, (int) $qty),
     ];
 }
 
@@ -127,21 +155,21 @@ do_action('woocommerce_email_header', $email_heading, $email);
     <table class="td font-family email-order-details" cellspacing="0" cellpadding="6" border="0" style='color: <?php echo esc_attr($brand_muted); ?>; border: 0; vertical-align: middle; font-family: "Helvetica Neue",Helvetica,Roboto,Arial,sans-serif; width: 100%;' width="100%">
         <tbody>
             <?php
-            if (!empty($shipment_items)) {
-                // ✅ This outputs rows that match Woo's completed-order styling.
-                // ✅ We pass ONLY the shipped job-row items.
-                echo wc_get_email_order_items(
-                    $order,
-                    [
-                        'items'              => $shipment_items,
-                        'show_sku'           => false,
-                        'show_image'         => true,
-                        'image_size'         => [48, 48],
-                        'show_purchase_note' => false,
-                        'plain_text'         => false,
-                        'sent_to_admin'      => false,
-                    ]
-                );
+            if (!empty($shipment_rows)) {
+                foreach ($shipment_rows as $row) {
+                    echo '<tr>';
+                    echo '<td style="padding:10px 12px 10px 0;width:54px;vertical-align:top;">' . wp_kses_post((string) $row['image']) . '</td>';
+                    echo '<td style="padding:10px 0;color:' . esc_attr($brand_text) . ';vertical-align:top;">';
+                    echo '<strong>' . esc_html((string) $row['name']) . '</strong>';
+                    if ((string) $row['sku'] !== '') {
+                        echo '<br><span style="color:' . esc_attr($brand_muted) . ';font-size:12px;">SKU: ' . esc_html((string) $row['sku']) . '</span>';
+                    }
+                    echo '</td>';
+                    echo '<td style="padding:10px 0 10px 12px;text-align:right;color:' . esc_attr($brand_text) . ';vertical-align:top;white-space:nowrap;">' .
+                        esc_html('x' . (string) $row['qty']) .
+                        '</td>';
+                    echo '</tr>';
+                }
             } elseif (!empty($fallback_lines)) {
                 foreach ($fallback_lines as $row) {
                     echo '<tr>';
