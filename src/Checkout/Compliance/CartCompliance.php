@@ -886,10 +886,6 @@ final class CartCompliance
                 $lines   = isset($ctx['lines']) && is_array($ctx['lines']) ? $ctx['lines'] : [];
                 $has_ffl = !empty($ctx['has_ffl']);
 
-                if (empty($lines)) {
-                    continue;
-                }
-
                 $this->dbg('cart.dist.lane', [
                     'cart_dist_id' => $cart_dist_id,
                     'has_ffl'      => $has_ffl ? 1 : 0,
@@ -920,6 +916,10 @@ final class CartCompliance
                             __('This cart contains items that must ship to a receiving FFL. Please select a receiving FFL to continue checkout.', 'ffl-hub'),
                         ],
                     ];
+                    continue;
+                }
+
+                if (empty($lines)) {
                     continue;
                 }
 

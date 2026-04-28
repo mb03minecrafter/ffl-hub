@@ -120,8 +120,10 @@ final class CheckoutOrderRequestBuilder
             return [];
         }
 
-        /** @var array<string, array{by_key: array<string, array{upc:string,qty:int,ffl:bool}>, has_ffl: bool}> $agg */
+        /** @var array<string, array{by_key: array<string, array{upc:string,qty:int,ffl_required:bool}>, has_ffl: bool}> $agg */
         $agg = [];
+        /** @var array<int,int> $local_remaining_by_product */
+        $local_remaining_by_product = [];
 
         foreach (WC()->cart->get_cart() as $cart_item) {
             if (!is_array($cart_item)) {
@@ -160,8 +162,35 @@ final class CheckoutOrderRequestBuilder
 
             $ffl_required = ((int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true) === 1);
 
-            $qty = isset($cart_item['quantity']) ? (int) $cart_item['quantity'] : 1;
-            $qty = max(1, $qty);
+            $original_qty = isset($cart_item['quantity']) ? (int) $cart_item['quantity'] : 1;
+            $original_qty = max(1, $original_qty);
+
+            if (!isset($agg[$dist_id])) {
+                $agg[$dist_id] = [
+                    'by_key'  => [],
+                    'has_ffl' => false,
+                ];
+            }
+
+            if ($ffl_required) {
+                $agg[$dist_id]['has_ffl'] = true;
+            }
+
+            $qty = $original_qty;
+            $local_take_qty = 0;
+            if (self::local_stock_override_enabled($product)) {
+                // Only distributor-fulfilled quantity should be sent through distributor validation.
+                if (!isset($local_remaining_by_product[$product_id])) {
+                    $local_remaining_by_product[$product_id] = self::local_stock_override_qty($product);
+                }
+
+                $local_available_qty = max(0, (int) ($local_remaining_by_product[$product_id] ?? 0));
+                $local_take_qty = min($qty, $local_available_qty);
+                if ($local_take_qty > 0) {
+                    $local_remaining_by_product[$product_id] = $local_available_qty - $local_take_qty;
+                    $qty -= $local_take_qty;
+                }
+            }
 
             if (is_callable($debug)) {
                 $debug('cart item picked', [
@@ -170,15 +199,14 @@ final class CheckoutOrderRequestBuilder
                     'dist_id'       => $dist_id,
                     'upc'           => $upc,
                     'ffl_required'  => $ffl_required ? 1 : 0,
-                    'qty'           => $qty,
+                    'qty'           => $original_qty,
+                    'local_qty'     => $local_take_qty,
+                    'dist_qty'      => $qty,
                 ]);
             }
 
-            if (!isset($agg[$dist_id])) {
-                $agg[$dist_id] = [
-                    'by_key'  => [],
-                    'has_ffl' => false,
-                ];
+            if ($qty <= 0) {
+                continue;
             }
 
             $key = $upc . '|' . ($ffl_required ? '1' : '0');
@@ -192,9 +220,6 @@ final class CheckoutOrderRequestBuilder
             }
 
             $agg[$dist_id]['by_key'][$key]['qty'] += $qty;
-            if ($ffl_required) {
-                $agg[$dist_id]['has_ffl'] = true;
-            }
         }
 
         /** @var array<string, array{lines: array<int,DistributorOrderLine>, has_ffl: bool}> $out */
@@ -207,7 +232,7 @@ final class CheckoutOrderRequestBuilder
                 $lines[] = new DistributorOrderLine((string) $r['upc'], (int) $r['qty'], (bool) ($r['ffl_required'] ?? false));
             }
 
-            if (!empty($lines)) {
+            if (!empty($lines) || !empty($row['has_ffl'])) {
                 $out[$dist_id] = [
                     'lines'   => $lines,
                     'has_ffl' => (bool) ($row['has_ffl'] ?? false),
@@ -773,6 +798,31 @@ final class CheckoutOrderRequestBuilder
     {
         $v = preg_replace('/\D+/', '', $s);
         return is_string($v) ? $v : '';
+    }
+
+    private static function local_stock_override_enabled(WC_Product $product): bool
+    {
+        return self::is_truthy_meta($product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true));
+    }
+
+    private static function local_stock_override_qty(WC_Product $product): int
+    {
+        $raw = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
+        return is_numeric((string) $raw) ? max(0, (int) $raw) : 0;
+    }
+
+    private static function is_truthy_meta(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return ((float) $value) > 0;
+        }
+
+        $normalized = strtolower(trim((string) $value));
+        return in_array($normalized, ['1', 'yes', 'true', 'on'], true);
     }
 }
 
