@@ -172,6 +172,7 @@ class AdminPage
             'global_markup_percent' => (string) Options::get_global_markup(),
             'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
             'holosun_image_notice_enabled' => Options::get_holosun_image_notice_enabled() ? '1' : '0',
+            'holosun_show_price_override_enabled' => Options::get_holosun_show_price_override_enabled() ? '1' : '0',
             'pretty_random_email_quotes_enabled' => Options::get_pretty_random_email_quotes_enabled() ? '1' : '0',
             'batch_order_notification_email' => Options::get_batch_order_notification_email(),
             'distributor_priority_list' => (string) Options::get_distributor_priority_csv(),
@@ -233,6 +234,7 @@ class AdminPage
         $global_markup_percent = (string) ($settings['global_markup_percent'] ?? '');
         $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
         $holosun_image_notice_enabled = ((string) ($settings['holosun_image_notice_enabled'] ?? '0') === '1');
+        $holosun_show_price_override_enabled = ((string) ($settings['holosun_show_price_override_enabled'] ?? '0') === '1');
         $pretty_random_email_quotes_enabled = ((string) ($settings['pretty_random_email_quotes_enabled'] ?? '1') === '1');
         $batch_order_notification_email = (string) ($settings['batch_order_notification_email'] ?? Options::default_batch_order_notification_email());
         $distributor_priority_list = (string) ($settings['distributor_priority_list'] ?? '');
@@ -455,7 +457,28 @@ class AdminPage
                         <?php checked($holosun_image_notice_enabled); ?> />
                     <p class="description">
                         <?php esc_html_e(
-                            'When enabled, Holosun-branded products show a bold information message in the single-product summary (same area as Email for Quote), force MSRP-only price display, and convert loop Read More actions into an Add to cart label that opens the Holosun notice modal.',
+                            'When enabled, Holosun-branded products show a bold information message in the single-product summary (same area as Email for Quote), force MSRP-only price display unless the show-price override is enabled, and convert loop Read More actions into an Add to cart label that opens the Holosun notice modal.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_holosun_show_price_override_enabled"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Holosun show-price override', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_holosun_show_price_override_enabled" value="0" />
+                    <input
+                        id="fflhub_holosun_show_price_override_enabled"
+                        name="fflhub_holosun_show_price_override_enabled"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($holosun_show_price_override_enabled); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'When enabled, Holosun-branded products use normal WooCommerce price output even when the sale price is below MAP. This takes priority over Holosun MSRP replacement and MAP hide/quote display rules for Holosun products only.',
                             'ffl-hub'
                         ); ?>
                     </p>

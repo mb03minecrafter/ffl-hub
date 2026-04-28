@@ -167,6 +167,10 @@ class MapPriceVisibility
             return false;
         }
 
+        if (self::should_show_holosun_price_override($product, $parent)) {
+            return false;
+        }
+
         // MAP: prefer variation meta, fallback to parent meta
         $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
         if ($map <= 0.0 && $parent instanceof WC_Product) {
@@ -832,12 +836,29 @@ class MapPriceVisibility
 
     private static function is_email_for_quote_policy(WC_Product $product, ?WC_Product $parent = null): bool
     {
+        if (self::should_show_holosun_price_override($product, $parent)) {
+            return false;
+        }
+
         return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_EMAIL_FOR_QUOTE;
     }
 
     private static function is_no_email_no_add_to_cart_policy(WC_Product $product, ?WC_Product $parent = null): bool
     {
+        if (self::should_show_holosun_price_override($product, $parent)) {
+            return false;
+        }
+
         return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
+    }
+
+    private static function should_show_holosun_price_override(WC_Product $product, ?WC_Product $parent = null): bool
+    {
+        if (!Options::get_holosun_show_price_override_enabled()) {
+            return false;
+        }
+
+        return self::is_holosun_branded_product($product, $parent);
     }
 
     private static function is_holosun_branded_product(WC_Product $product, ?WC_Product $parent = null): bool
@@ -918,6 +939,10 @@ class MapPriceVisibility
 
     private static function should_force_holosun_msrp_price(WC_Product $product, ?WC_Product $parent = null): bool
     {
+        if (self::should_show_holosun_price_override($product, $parent)) {
+            return false;
+        }
+
         if (!Options::get_holosun_image_notice_enabled()) {
             return false;
         }

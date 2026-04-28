@@ -45,6 +45,7 @@ final class Options
     public const OPTION_GLOBAL_MARKUP                 = 'fflhub_global_markup';
     public const OPTION_TEST_ORDER_DEBUG_ENABLED      = 'fflhub_test_order_debug_enabled';
     public const OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED  = 'fflhub_holosun_image_notice_enabled';
+    public const OPTION_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED = 'fflhub_holosun_show_price_override_enabled';
     public const OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = 'fflhub_pretty_random_email_quotes_enabled';
     public const OPTION_BATCH_ORDER_NOTIFICATION_EMAIL = 'fflhub_batch_order_notification_email';
     public const OPTION_DISTRIBUTOR_PRIORITY_LIST     = 'fflhub_distributor_priority_list';
@@ -94,6 +95,7 @@ final class Options
     private const DEFAULT_GLOBAL_MARKUP                 = 10.0; // %
     private const DEFAULT_TEST_ORDER_DEBUG_ENABLED      = true;
     private const DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED  = false;
+    private const DEFAULT_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED = false;
     private const DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = true;
     private const DEFAULT_BATCH_ORDER_NOTIFICATION_EMAIL = 'matthew@bickhamfirearms.com';
     private const DEFAULT_MAP_BRAND_POLICIES            = [];
@@ -229,6 +231,11 @@ final class Options
         return self::DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED;
     }
 
+    public static function default_holosun_show_price_override_enabled(): bool
+    {
+        return self::DEFAULT_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED;
+    }
+
     public static function default_pretty_random_email_quotes_enabled(): bool
     {
         return self::DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED;
@@ -350,6 +357,13 @@ final class Options
 
         if (get_option(self::OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED, null) === null) {
             add_option(self::OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED, self::DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED ? '1' : '0');
+        }
+
+        if (get_option(self::OPTION_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED, null) === null) {
+            add_option(
+                self::OPTION_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED,
+                self::DEFAULT_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED ? '1' : '0'
+            );
         }
 
         if (get_option(self::OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED, null) === null) {
@@ -893,6 +907,14 @@ final class Options
         return ((string) get_option(
             self::OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED,
             self::DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED ? '1' : '0'
+        )) === '1';
+    }
+
+    public static function get_holosun_show_price_override_enabled(): bool
+    {
+        return ((string) get_option(
+            self::OPTION_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED,
+            self::DEFAULT_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED ? '1' : '0'
         )) === '1';
     }
 

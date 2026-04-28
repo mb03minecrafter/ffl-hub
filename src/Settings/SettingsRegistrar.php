@@ -102,6 +102,16 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_holosun_show_price_override_enabled() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED,
             [
                 'type'              => 'string',
