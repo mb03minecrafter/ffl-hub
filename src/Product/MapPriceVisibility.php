@@ -37,6 +37,13 @@ class MapPriceVisibility
         // Replace price HTML everywhere except cart/checkout
         add_filter('woocommerce_get_price_html', [self::class, 'filter_price_html'], 99, 2);
 
+        // If Holosun show-price override is enabled, fixed-price mode must win
+        // even if Woo's _price cache is stale from an earlier MAP sync.
+        add_filter('woocommerce_product_get_price', [self::class, 'filter_holosun_override_active_price'], 99, 2);
+        add_filter('woocommerce_product_variation_get_price', [self::class, 'filter_holosun_override_active_price'], 99, 2);
+        add_filter('woocommerce_product_get_sale_price', [self::class, 'filter_holosun_override_sale_price'], 99, 2);
+        add_filter('woocommerce_product_variation_get_sale_price', [self::class, 'filter_holosun_override_sale_price'], 99, 2);
+
         // Variable products / variation JSON (prevents price appearing on selection UI)
         add_filter('woocommerce_available_variation', [self::class, 'filter_available_variation'], 99, 3);
 
@@ -135,6 +142,10 @@ class MapPriceVisibility
      */
     private static function is_out_of_stock_for_quote(WC_Product $product): bool
     {
+        if (self::has_local_stock_override_stock($product)) {
+            return false;
+        }
+
         $stock_status = strtolower(trim((string) $product->get_stock_status()));
         if ($stock_status === 'outofstock') {
             return true;
@@ -145,6 +156,16 @@ class MapPriceVisibility
         }
 
         return self::is_truthy_value($product->get_meta(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true));
+    }
+
+    private static function has_local_stock_override_stock(WC_Product $product): bool
+    {
+        if (!self::is_truthy_value($product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true))) {
+            return false;
+        }
+
+        $qty = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
+        return is_numeric($qty) && (int) $qty > 0;
     }
 
     /**
@@ -223,6 +244,10 @@ class MapPriceVisibility
             return $price_html;
         }
 
+        if (self::should_show_holosun_price_override($product, null)) {
+            return self::stored_visible_price_html($product, null) ?? $price_html;
+        }
+
         if (self::should_force_email_quote_msrp_price($product, null)) {
             $msrp_html = self::msrp_price_html($product, null);
             if ($msrp_html !== null) {
@@ -256,6 +281,39 @@ class MapPriceVisibility
         return '<span class="fflhub-map-hidden-price">' . esc_html(self::hidden_text($product, null)) . '</span>';
     }
 
+    public static function filter_holosun_override_active_price($price, $product)
+    {
+        if (!($product instanceof WC_Product)) {
+            return $price;
+        }
+
+        $fixed = self::fixed_price_override_for_product($product, null);
+        if ($fixed === null) {
+            return $price;
+        }
+
+        return function_exists('wc_format_decimal') ? wc_format_decimal($fixed) : (string) $fixed;
+    }
+
+    public static function filter_holosun_override_sale_price($sale_price, $product)
+    {
+        if (!($product instanceof WC_Product)) {
+            return $sale_price;
+        }
+
+        $fixed = self::fixed_price_override_for_product($product, null);
+        if ($fixed === null) {
+            return $sale_price;
+        }
+
+        $regular = self::positive_float_or_null($product->get_regular_price());
+        if ($regular !== null && $regular > $fixed) {
+            return function_exists('wc_format_decimal') ? wc_format_decimal($fixed) : (string) $fixed;
+        }
+
+        return '';
+    }
+
     public static function filter_available_variation(array $data, $parent, $variation): array
     {
         if (!($variation instanceof WC_Product)) {
@@ -263,6 +321,10 @@ class MapPriceVisibility
         }
 
         $parent_product = ($parent instanceof WC_Product) ? $parent : null;
+
+        if (self::should_show_holosun_price_override($variation, $parent_product)) {
+            return self::apply_stored_visible_variation_price_data($data, $variation, $parent_product);
+        }
 
         if (self::should_force_email_quote_msrp_price($variation, $parent_product)) {
             $msrp = self::msrp_price_for_product($variation, $parent_product);
@@ -358,6 +420,10 @@ class MapPriceVisibility
     {
         if (!($product instanceof WC_Product)) {
             return $offer;
+        }
+
+        if (self::should_show_holosun_price_override($product, null)) {
+            return self::apply_stored_visible_structured_offer($offer, $product, null);
         }
 
         if (self::should_force_email_quote_msrp_price($product, null)) {
@@ -963,6 +1029,179 @@ class MapPriceVisibility
         return self::msrp_price_for_product($product, $parent) !== null;
     }
 
+    private static function stored_visible_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
+    {
+        $fixed = self::fixed_price_override_for_product($product, $parent);
+        if ($fixed !== null) {
+            return $fixed;
+        }
+
+        $sale = self::positive_float_or_null($product->get_sale_price());
+        if ($sale !== null) {
+            return $sale;
+        }
+
+        $active = self::positive_float_or_null($product->get_price());
+        if ($active !== null) {
+            return $active;
+        }
+
+        $regular = self::positive_float_or_null($product->get_regular_price());
+        if ($regular !== null) {
+            return $regular;
+        }
+
+        if ($parent instanceof WC_Product) {
+            return self::stored_visible_price_for_product($parent, null);
+        }
+
+        return null;
+    }
+
+    private static function fixed_price_override_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
+    {
+        if (!self::should_show_holosun_price_override($product, $parent)) {
+            return null;
+        }
+
+        $mode = (int) $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
+        $fixed = self::positive_float_or_null($product->get_meta(ProductMeta::FFLHUB_FIXED_PRICE_META, true));
+        if ($mode === ProductMeta::MARKUP_MODE_FIXED_PRICE && $fixed !== null) {
+            return $fixed;
+        }
+
+        if ($parent instanceof WC_Product) {
+            $parent_mode = (int) $parent->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
+            $parent_fixed = self::positive_float_or_null($parent->get_meta(ProductMeta::FFLHUB_FIXED_PRICE_META, true));
+            if ($parent_mode === ProductMeta::MARKUP_MODE_FIXED_PRICE && $parent_fixed !== null) {
+                return $parent_fixed;
+            }
+        }
+
+        return null;
+    }
+
+    private static function stored_regular_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
+    {
+        $regular = self::positive_float_or_null($product->get_regular_price());
+        if ($regular !== null) {
+            return $regular;
+        }
+
+        if ($parent instanceof WC_Product) {
+            return self::positive_float_or_null($parent->get_regular_price());
+        }
+
+        return null;
+    }
+
+    private static function stored_visible_price_html(WC_Product $product, ?WC_Product $parent = null): ?string
+    {
+        $active = self::stored_visible_price_for_product($product, $parent);
+        if ($active === null) {
+            return null;
+        }
+
+        $regular = self::stored_regular_price_for_product($product, $parent);
+        $active_display = self::display_price_for_product($product, $active);
+        $active_html = function_exists('wc_price') ? (string) wc_price($active_display) : (string) $active_display;
+
+        $html = $active_html;
+        if ($regular !== null && $regular > $active) {
+            $regular_display = self::display_price_for_product($product, $regular);
+            $regular_html = function_exists('wc_price') ? (string) wc_price($regular_display) : (string) $regular_display;
+            $html = function_exists('wc_format_sale_price')
+                ? (string) wc_format_sale_price($regular_html, $active_html)
+                : $active_html;
+        }
+
+        if (method_exists($product, 'get_price_suffix')) {
+            $html .= (string) $product->get_price_suffix();
+        }
+
+        return $html;
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     * @return array<string,mixed>
+     */
+    private static function apply_stored_visible_variation_price_data(array $data, WC_Product $variation, ?WC_Product $parent = null): array
+    {
+        $active = self::stored_visible_price_for_product($variation, $parent);
+        if ($active === null) {
+            return $data;
+        }
+
+        $regular = self::stored_regular_price_for_product($variation, $parent) ?? $active;
+        $price_html = self::stored_visible_price_html($variation, $parent);
+        if ($price_html !== null) {
+            $data['price_html'] = $price_html;
+        }
+
+        $active_decimal = function_exists('wc_format_decimal')
+            ? wc_format_decimal($active, function_exists('wc_get_price_decimals') ? wc_get_price_decimals() : 2)
+            : (string) $active;
+        $regular_decimal = function_exists('wc_format_decimal')
+            ? wc_format_decimal($regular, function_exists('wc_get_price_decimals') ? wc_get_price_decimals() : 2)
+            : (string) $regular;
+
+        $data['display_price'] = $active;
+        $data['display_regular_price'] = $regular;
+        $data['price'] = $active_decimal;
+        $data['regular_price'] = $regular_decimal;
+        $data['sale_price'] = ($regular > $active) ? $active_decimal : '';
+
+        return $data;
+    }
+
+    private static function apply_stored_visible_structured_offer($offer, WC_Product $product, ?WC_Product $parent = null)
+    {
+        $active = self::stored_visible_price_for_product($product, $parent);
+        if ($active === null || !is_array($offer)) {
+            return $offer;
+        }
+
+        $price_decimal = function_exists('wc_format_decimal')
+            ? wc_format_decimal($active, function_exists('wc_get_price_decimals') ? wc_get_price_decimals() : 2)
+            : (string) $active;
+
+        foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
+            if (isset($offer[$price_key])) {
+                $offer[$price_key] = $price_decimal;
+            }
+        }
+
+        if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
+            foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
+                if (isset($offer['priceSpecification'][$price_spec_key])) {
+                    $offer['priceSpecification'][$price_spec_key] = $price_decimal;
+                }
+            }
+        }
+
+        return $offer;
+    }
+
+    private static function display_price_for_product(WC_Product $product, float $price): float
+    {
+        if (function_exists('wc_get_price_to_display')) {
+            return (float) wc_get_price_to_display($product, ['price' => $price]);
+        }
+
+        return $price;
+    }
+
+    private static function positive_float_or_null($value): ?float
+    {
+        if (!is_numeric($value)) {
+            return null;
+        }
+
+        $float = (float) $value;
+        return ($float > 0.0) ? $float : null;
+    }
+
     private static function map_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
     {
         $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
@@ -1065,7 +1304,8 @@ class MapPriceVisibility
         }
 
         $is_purchasable = method_exists($product, 'is_purchasable') ? (bool) $product->is_purchasable() : true;
-        $is_in_stock = method_exists($product, 'is_in_stock') ? (bool) $product->is_in_stock() : true;
+        $is_in_stock = self::has_local_stock_override_stock($product)
+            || (method_exists($product, 'is_in_stock') ? (bool) $product->is_in_stock() : true);
 
         // Preserve native behavior for true purchasable + in-stock products.
         if ($is_purchasable && $is_in_stock) {

@@ -286,9 +286,11 @@ final class DistributorProductSyncCronService extends AbstractCronService
         ));
 
         $stock_oos_override_enabled = $this->is_stock_oos_override_enabled($product);
+        $local_stock_override_qty = $this->get_local_stock_override_qty_for_sync($product);
         $this->log_ctx('Stock override state', array(
             'product_id'                => $product_id,
             'stock_oos_override_enabled' => $stock_oos_override_enabled ? 1 : 0,
+            'local_stock_override_qty'  => $local_stock_override_qty,
         ));
 
         $t0 = microtime(true);
@@ -367,14 +369,17 @@ final class DistributorProductSyncCronService extends AbstractCronService
         if (empty($offers)) {
             $t0 = microtime(true);
 
+            $desired_qty = $this->resolve_desired_stock_qty(0, $stock_oos_override_enabled, $local_stock_override_qty);
+            $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
+
             $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
             $cur_status = (string) $product->get_stock_status();
-            $needs_save = (!$stock_oos_override_enabled) && (($cur_qty !== 0) || ($cur_status !== 'outofstock'));
+            $needs_save = (($cur_qty !== $desired_qty) || ($cur_status !== $desired_status));
 
             if ($needs_save) {
                 $product->set_manage_stock(true);
-                $product->set_stock_quantity(0);
-                $product->set_stock_status('outofstock');
+                $product->set_stock_quantity($desired_qty);
+                $product->set_stock_status($desired_status);
                 $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
                 $product->save();
             } else {
@@ -387,6 +392,9 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'product_id' => $product_id,
                 'upc'        => $upc,
                 'stock_override' => $stock_oos_override_enabled ? 1 : 0,
+                'local_stock_override_qty' => $local_stock_override_qty,
+                'final_qty' => $desired_qty,
+                'final_status' => $desired_status,
                 'saved'      => $needs_save ? 1 : 0,
             ));
 
@@ -462,13 +470,13 @@ final class DistributorProductSyncCronService extends AbstractCronService
         if (! is_numeric($sell_price) || (float) $sell_price <= 0) {
             $t0 = microtime(true);
 
-            $desired_qty    = $qty;
-            $desired_status = ($qty > 0 ? 'instock' : 'outofstock');
+            $desired_qty    = $this->resolve_desired_stock_qty((int) $qty, $stock_oos_override_enabled, $local_stock_override_qty);
+            $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
 
             $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
             $cur_status = (string) $product->get_stock_status();
 
-            $needs_save = (!$stock_oos_override_enabled) && (($cur_qty !== (int) $desired_qty) || ($cur_status !== (string) $desired_status));
+            $needs_save = (($cur_qty !== (int) $desired_qty) || ($cur_status !== (string) $desired_status));
 
             if ($needs_save) {
                 $product->set_manage_stock(true);
@@ -488,6 +496,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'selected'   => $selected_dist_id,
                 'qty'        => $desired_qty,
                 'stock_override' => $stock_oos_override_enabled ? 1 : 0,
+                'local_stock_override_qty' => $local_stock_override_qty,
                 'brand_changed' => $brand_changed ? 1 : 0,
                 'saved'      => $needs_save ? 1 : 0,
             ));
@@ -524,14 +533,17 @@ final class DistributorProductSyncCronService extends AbstractCronService
         if ($min_profitable_price !== null && $sell_price < $min_profitable_price) {
             $t0 = microtime(true);
 
+            $desired_qty = $this->resolve_desired_stock_qty(0, $stock_oos_override_enabled, $local_stock_override_qty);
+            $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
+
             $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
             $cur_status = (string) $product->get_stock_status();
-            $needs_save = (!$stock_oos_override_enabled) && (($cur_qty !== 0) || ($cur_status !== 'outofstock'));
+            $needs_save = (($cur_qty !== $desired_qty) || ($cur_status !== $desired_status));
 
             if ($needs_save) {
                 $product->set_manage_stock(true);
-                $product->set_stock_quantity(0);
-                $product->set_stock_status('outofstock');
+                $product->set_stock_quantity($desired_qty);
+                $product->set_stock_status($desired_status);
                 $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
                 $product->save();
             } else {
@@ -547,6 +559,9 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'sell'       => $sell_price,
                 'floor'      => $min_profitable_price,
                 'stock_override' => $stock_oos_override_enabled ? 1 : 0,
+                'local_stock_override_qty' => $local_stock_override_qty,
+                'final_qty' => $desired_qty,
+                'final_status' => $desired_status,
                 'brand_changed' => $brand_changed ? 1 : 0,
                 'saved'      => $needs_save ? 1 : 0,
             ));
@@ -562,7 +577,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         // Normal diff-aware write
         $t0 = microtime(true);
 
-        $desired_qty    = (int) $qty;
+        $desired_qty    = $this->resolve_desired_stock_qty((int) $qty, $stock_oos_override_enabled, $local_stock_override_qty);
         $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
         $price_pair = DistributorProductHelper::resolve_regular_and_sale_prices(
             (float) $sell_price,
@@ -576,7 +591,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $cur_regular_price = (string) $product->get_regular_price();
         $cur_sale_price    = (string) $product->get_sale_price();
 
-        $stock_changed = (!$stock_oos_override_enabled) && (($cur_qty !== $desired_qty) || ($cur_status !== $desired_status));
+        $stock_changed = (($cur_qty !== $desired_qty) || ($cur_status !== $desired_status));
         $price_changed = ($cur_regular_price !== $desired_regular_price) || ($cur_sale_price !== $desired_sale_price);
 
         if ($stock_changed) {
@@ -620,6 +635,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'sell'          => $sell_price,
             'computed_for_meta' => (float) $computed_price_for_meta,
             'stock_override' => $stock_oos_override_enabled ? 1 : 0,
+            'local_stock_override_qty' => $local_stock_override_qty,
             'stock_changed' => $stock_changed ? 1 : 0,
             'price_changed' => $price_changed ? 1 : 0,
             'meta_changed'  => $meta_changed ? 1 : 0,
@@ -631,8 +647,8 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'product_id'   => $product_id,
             'upc'          => $upc,
             'selected'     => $selected_dist_id,
-            'final_qty'    => $stock_oos_override_enabled ? $cur_qty : $desired_qty,
-            'final_status' => $stock_oos_override_enabled ? $cur_status : $desired_status,
+            'final_qty'    => $desired_qty,
+            'final_status' => $desired_status,
             'final_regular' => $desired_regular_price,
             'final_sale'   => $desired_sale_price,
             'saved'        => $needs_save ? 1 : 0,
@@ -658,6 +674,38 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $raw = $product->get_meta(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true);
         $normalized = strtolower(trim((string) $raw));
         return in_array($normalized, ['1', 'true', 'yes', 'y', 'on'], true);
+    }
+
+    private function get_local_stock_override_qty_for_sync(WC_Product $product): int
+    {
+        $enabled_raw = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true);
+        $enabled = in_array(strtolower(trim((string) $enabled_raw)), ['1', 'true', 'yes', 'y', 'on'], true);
+        if (!$enabled) {
+            return 0;
+        }
+
+        $qty_raw = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
+        if (!is_numeric($qty_raw)) {
+            return 0;
+        }
+
+        return max(0, (int) $qty_raw);
+    }
+
+    private function resolve_desired_stock_qty(int $distributor_qty, bool $stock_oos_override_enabled, int $local_stock_override_qty): int
+    {
+        $distributor_qty = max(0, $distributor_qty);
+        $local_stock_override_qty = max(0, $local_stock_override_qty);
+
+        if ($stock_oos_override_enabled) {
+            return $local_stock_override_qty;
+        }
+
+        if ($distributor_qty <= 0 && $local_stock_override_qty > 0) {
+            return $local_stock_override_qty;
+        }
+
+        return $distributor_qty;
     }
 
     /**

@@ -208,7 +208,7 @@ class ProductMetaBox
             '</span>';
         echo '</label>';
         echo '<span style="display:block;margin-top:4px;font-size:11px;color:#6b7280;">' .
-            esc_html__('When enabled, sync jobs will not overwrite stock quantity or stock status.', 'ffl-hub') .
+            esc_html__('When enabled, distributor stock is treated as unavailable. Local Stock Override can still make the product purchasable.', 'ffl-hub') .
             '</span>';
 
         echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;margin-top:6px;">';
@@ -812,11 +812,6 @@ class ProductMetaBox
         // Out of stock override
         $stock_oos_override = isset($_POST['fflhub_stock_oos_override']) ? 1 : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, $stock_oos_override);
-        if ($stock_oos_override === 1) {
-            $product->set_manage_stock(true);
-            $product->set_stock_quantity(0);
-            $product->set_stock_status('outofstock');
-        }
 
         $local_stock_override_enabled = isset($_POST['fflhub_local_stock_override_enabled']) ? 1 : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, $local_stock_override_enabled);
@@ -825,6 +820,16 @@ class ProductMetaBox
             ? absint(sanitize_text_field(wp_unslash($_POST['fflhub_local_stock_override_qty'])))
             : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, $local_stock_override_qty);
+
+        if ($local_stock_override_enabled === 1 && $local_stock_override_qty > 0) {
+            $product->set_manage_stock(true);
+            $product->set_stock_quantity($local_stock_override_qty);
+            $product->set_stock_status('instock');
+        } elseif ($stock_oos_override === 1) {
+            $product->set_manage_stock(true);
+            $product->set_stock_quantity(0);
+            $product->set_stock_status('outofstock');
+        }
 
         $distributor_lock_enabled = isset($_POST['fflhub_distributor_lock_enabled']) ? 1 : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_ENABLED_META, $distributor_lock_enabled);

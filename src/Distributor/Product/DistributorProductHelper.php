@@ -1498,6 +1498,10 @@ class DistributorProductHelper
     public static function default_markup_mode_for_payload(DistributorProductPayload $payload): int
     {
         $brand = self::normalize_brand_name((string) ($payload->brand ?? ''));
+        if ($brand !== '' && self::should_bypass_map_policy_pricing_for_brand($brand)) {
+            return ProductMeta::MARKUP_MODE_GLOBAL;
+        }
+
         $map_policy = ($brand !== '') ? Options::get_map_policy_for_brand($brand) : '';
 
         if ($map_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
@@ -1591,9 +1595,14 @@ class DistributorProductHelper
     public static function compute_sell_price_for_product(int $product_id, DistributorProductPayload $payload): ?float
     {
         // "No Email, No Add to Cart" policy enforces MAP/MSRP pricing
-        // regardless of stored per-product markup mode.
+        // unless Holosun's explicit show-price override says to honor the
+        // product's stored Woo/FFLHub pricing mode.
         $brand = self::normalize_brand_name((string) ($payload->brand ?? ''));
-        if ($brand !== '' && Options::get_map_policy_for_brand($brand) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+        if (
+            $brand !== ''
+            && Options::get_map_policy_for_brand($brand) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART
+            && !self::should_bypass_map_policy_pricing_for_brand($brand)
+        ) {
             return self::resolve_map_mode_sell_price($payload->map ?? null, $payload->msrp ?? null);
         }
 
@@ -2107,5 +2116,15 @@ class DistributorProductHelper
         $s = strtolower(trim($brand));
         $s = (string) preg_replace('/[^a-z0-9]+/', '', $s);
         return $s;
+    }
+
+    private static function should_bypass_map_policy_pricing_for_brand(string $brand): bool
+    {
+        if (!Options::get_holosun_show_price_override_enabled()) {
+            return false;
+        }
+
+        $normalized = self::normalize_brand_name($brand);
+        return self::brand_alias_key($normalized) === 'holosun';
     }
 }
