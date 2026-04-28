@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
 
 final class OrderProfitAuditMeta
 {
-    private const VERSION = 'order_profit_v2';
+    private const VERSION = 'order_profit_v3';
 
     public static function init(): void
     {
@@ -103,6 +103,7 @@ final class OrderProfitAuditMeta
      */
     private static function build_profit_audit(WC_Order $order): array
     {
+        $is_refunded_order = self::is_fully_refunded_order($order);
         $item_cost_total = 0.0;
         $item_cost_by_dist = [];
         $lines = [];
@@ -121,9 +122,9 @@ final class OrderProfitAuditMeta
                 : '';
 
             $unit_cost = null;
-            $unit_cost_source = 'missing';
+            $unit_cost_source = $is_refunded_order ? 'refunded_order' : 'missing';
 
-            if ($product instanceof WC_Product) {
+            if (!$is_refunded_order && $product instanceof WC_Product) {
                 $dealer_price = self::positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
 
                 if ($dealer_price !== null) {
@@ -136,7 +137,7 @@ final class OrderProfitAuditMeta
             $item_cost_total += $line_cost;
             $dist_key = $dist_id !== '' ? $dist_id : 'unknown';
 
-            if (!isset($item_cost_by_dist[$dist_key])) {
+            if (!$is_refunded_order && !isset($item_cost_by_dist[$dist_key])) {
                 $item_cost_by_dist[$dist_key] = [
                     'dist_id' => $dist_key,
                     'line_count' => 0,
@@ -145,11 +146,13 @@ final class OrderProfitAuditMeta
                 ];
             }
 
-            $item_cost_by_dist[$dist_key]['line_count']++;
-            $item_cost_by_dist[$dist_key]['qty'] += $qty;
-            $item_cost_by_dist[$dist_key]['item_cost'] = self::money(
-                (float) $item_cost_by_dist[$dist_key]['item_cost'] + $line_cost
-            );
+            if (!$is_refunded_order) {
+                $item_cost_by_dist[$dist_key]['line_count']++;
+                $item_cost_by_dist[$dist_key]['qty'] += $qty;
+                $item_cost_by_dist[$dist_key]['item_cost'] = self::money(
+                    (float) $item_cost_by_dist[$dist_key]['item_cost'] + $line_cost
+                );
+            }
 
             $lines[] = [
                 'item_id' => (int) $item_id,
@@ -161,24 +164,30 @@ final class OrderProfitAuditMeta
                 'distributor_unit_cost' => self::money($unit_cost ?? 0.0),
                 'unit_cost_source' => $unit_cost_source,
                 'distributor_line_cost' => self::money($line_cost),
-                'line_revenue' => self::money((float) $item->get_total()),
+                'line_revenue' => self::money($is_refunded_order ? 0.0 : (float) $item->get_total()),
             ];
         }
 
-        $distributor_shipping = self::distributor_shipping_cost_summary($order);
+        $distributor_shipping = $is_refunded_order
+            ? ['total' => 0.0, 'source' => 'refunded_order', 'by_dist' => []]
+            : self::distributor_shipping_cost_summary($order);
         $label_shipping = self::woo_shipping_label_cost_summary($order);
         $shipping_cost_total = (float) $distributor_shipping['total'] + (float) $label_shipping['total'];
-        $customer_shipping_charge = (float) $order->get_shipping_total();
+        $customer_shipping_charge = $is_refunded_order ? 0.0 : (float) $order->get_shipping_total();
         $order_total = (float) $order->get_total();
         $tax_total = (float) $order->get_total_tax();
-        $revenue_total = max(0.0, $order_total - $tax_total);
+        $revenue_total = $is_refunded_order ? 0.0 : max(0.0, $order_total - $tax_total);
 
         $fee_percent = (float) Options::get_payment_processor_fee_percent();
         if ($fee_percent < 0.0) {
             $fee_percent = 0.0;
         }
 
-        $processor_fee_amount = $order_total * ($fee_percent / 100.0);
+        $processor_fee_base = $is_refunded_order
+            ? max(0.0, $order_total, (float) $order->get_total_refunded())
+            : $order_total;
+        $processor_fee_multiplier = $is_refunded_order ? 2.0 : 1.0;
+        $processor_fee_amount = $processor_fee_base * ($fee_percent / 100.0) * $processor_fee_multiplier;
         $actual_profit_total = $revenue_total - $item_cost_total - $shipping_cost_total - $processor_fee_amount;
 
         return [
@@ -553,6 +562,22 @@ final class OrderProfitAuditMeta
                 $shipping_item->save();
             }
         }
+    }
+
+    private static function is_fully_refunded_order(WC_Order $order): bool
+    {
+        if ($order->has_status('refunded')) {
+            return true;
+        }
+
+        $order_total = max(0.0, (float) $order->get_total());
+        if ($order_total <= 0.0) {
+            return false;
+        }
+
+        $refunded_total = max(0.0, (float) $order->get_total_refunded());
+
+        return $refunded_total + 0.0001 >= $order_total;
     }
 
     /**
