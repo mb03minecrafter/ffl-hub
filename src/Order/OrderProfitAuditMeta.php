@@ -16,11 +16,20 @@ if (!defined('ABSPATH')) {
 final class OrderProfitAuditMeta
 {
     private const VERSION = 'order_profit_v3';
+    private const ORDER_ITEM_UNIT_COST_META = '_fflhub_order_distributor_unit_cost';
+    private const ORDER_ITEM_SOURCE_DISTRIBUTOR_META = '_fflhub_order_source_distributor';
+    private const ORDER_ITEM_UNIT_COST_SOURCE_META = '_fflhub_order_unit_cost_source';
 
     public static function init(): void
     {
         add_action('woocommerce_checkout_create_order', [__CLASS__, 'capture_checkout_order'], 90, 2);
         add_action('woocommerce_checkout_order_processed', [__CLASS__, 'capture_processed_order'], 20, 3);
+        add_action('woocommerce_store_api_checkout_order_processed', [__CLASS__, 'capture_store_api_order'], 20, 1);
+        add_action('woocommerce_payment_complete', [__CLASS__, 'capture_order_id'], 20, 1);
+        add_action('woocommerce_order_status_processing', [__CLASS__, 'capture_order_id'], 20, 1);
+        add_action('woocommerce_order_status_completed', [__CLASS__, 'capture_order_id'], 20, 1);
+        add_action('woocommerce_order_status_refunded', [__CLASS__, 'capture_order_id'], 20, 1);
+        add_action('woocommerce_order_refunded', [__CLASS__, 'capture_refunded_order'], 20, 2);
     }
 
     public static function version(): string
@@ -49,6 +58,50 @@ final class OrderProfitAuditMeta
         if ($order instanceof WC_Order) {
             self::recalculate_order($order, true);
         }
+    }
+
+    /**
+     * Blocks/Store API checkout does not always travel through the same classic checkout hooks.
+     *
+     * @param mixed $order
+     */
+    public static function capture_store_api_order($order): void
+    {
+        if ($order instanceof WC_Order) {
+            self::recalculate_order($order, true);
+            return;
+        }
+
+        if (is_numeric($order)) {
+            self::capture_order_id((int) $order);
+        }
+    }
+
+    /**
+     * Payment/status hooks are the durable safety net once line items are finalized.
+     *
+     * @param mixed $order_id
+     */
+    public static function capture_order_id($order_id): void
+    {
+        if ($order_id instanceof WC_Order) {
+            self::recalculate_order($order_id, true);
+            return;
+        }
+
+        $order = wc_get_order((int) $order_id);
+        if ($order instanceof WC_Order) {
+            self::recalculate_order($order, true);
+        }
+    }
+
+    /**
+     * @param mixed $order_id
+     * @param mixed $refund_id
+     */
+    public static function capture_refunded_order($order_id, $refund_id = null): void
+    {
+        self::capture_order_id($order_id);
     }
 
     /**
@@ -84,6 +137,10 @@ final class OrderProfitAuditMeta
         self::remove_obsolete_shipping_item_meta($order, $save);
 
         if ($save) {
+            self::write_order_item_profit_meta($order, $audit);
+        }
+
+        if ($save) {
             $order->save();
         }
 
@@ -96,6 +153,56 @@ final class OrderProfitAuditMeta
     public static function preview_order(WC_Order $order): array
     {
         return self::build_profit_audit($order);
+    }
+
+    /**
+     * Freeze the captured unit cost on each Woo line item so later label/refund recalcs do not
+     * rewrite historical order profit when distributor product costs change.
+     *
+     * @param array<string,mixed> $audit
+     */
+    private static function write_order_item_profit_meta(WC_Order $order, array $audit): void
+    {
+        $lines_by_item_id = [];
+        foreach (($audit['lines'] ?? []) as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+
+            $item_id = (int) ($line['item_id'] ?? 0);
+            if ($item_id > 0) {
+                $lines_by_item_id[$item_id] = $line;
+            }
+        }
+
+        foreach ($order->get_items('line_item') as $item_id => $item) {
+            if (!($item instanceof WC_Order_Item_Product)) {
+                continue;
+            }
+
+            $line = $lines_by_item_id[(int) $item_id] ?? null;
+            if (!is_array($line)) {
+                continue;
+            }
+
+            $unit_cost_source = (string) ($line['unit_cost_source'] ?? '');
+            if ($unit_cost_source === 'refunded_order') {
+                continue;
+            }
+
+            $unit_cost = self::positive_float($line['distributor_unit_cost'] ?? null);
+            if ($unit_cost !== null) {
+                $item->update_meta_data(self::ORDER_ITEM_UNIT_COST_META, self::money($unit_cost));
+                $item->update_meta_data(self::ORDER_ITEM_UNIT_COST_SOURCE_META, $unit_cost_source);
+            }
+
+            $dist_id = strtolower(trim((string) ($line['source_distributor'] ?? '')));
+            if ($dist_id !== '' && $dist_id !== 'unknown') {
+                $item->update_meta_data(self::ORDER_ITEM_SOURCE_DISTRIBUTOR_META, $dist_id);
+            }
+
+            $item->save();
+        }
     }
 
     /**
@@ -120,11 +227,23 @@ final class OrderProfitAuditMeta
             $dist_id = ($product instanceof WC_Product)
                 ? strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)))
                 : '';
+            $saved_dist_id = strtolower(trim((string) $item->get_meta(self::ORDER_ITEM_SOURCE_DISTRIBUTOR_META, true)));
+            if ($saved_dist_id !== '') {
+                $dist_id = $saved_dist_id;
+            }
 
             $unit_cost = null;
             $unit_cost_source = $is_refunded_order ? 'refunded_order' : 'missing';
 
-            if (!$is_refunded_order && $product instanceof WC_Product) {
+            if (!$is_refunded_order) {
+                $saved_unit_cost = self::positive_float($item->get_meta(self::ORDER_ITEM_UNIT_COST_META, true));
+                if ($saved_unit_cost !== null) {
+                    $unit_cost = $saved_unit_cost;
+                    $unit_cost_source = self::ORDER_ITEM_UNIT_COST_META;
+                }
+            }
+
+            if (!$is_refunded_order && $unit_cost === null && $product instanceof WC_Product) {
                 $dealer_price = self::positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
 
                 if ($dealer_price !== null) {
