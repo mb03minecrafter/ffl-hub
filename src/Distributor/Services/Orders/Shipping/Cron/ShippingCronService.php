@@ -9,6 +9,7 @@ use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\PartialShipmentEmailContext;
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
+use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
@@ -95,6 +96,7 @@ final class ShippingCronService extends AbstractCronService
             'skipped_suspended'  => 0,
             'skipped_disabled'   => 0,
             'skipped_no_lookup'  => 0,
+            'skipped_ca_relay'   => 0,
             'touch_failed'       => 0,
             'shipment_none'      => 0,
             'result_no_changes'  => 0,
@@ -177,6 +179,18 @@ final class ShippingCronService extends AbstractCronService
                     'order_id' => $order_id,
                     'job_key'  => $job_key,
                     'dist_id'  => $dist_id,
+                ]);
+                continue;
+            }
+
+            if (DealerBatchCronRegistry::is_ca_relay_batch_job($job)) {
+                $stats['skipped_ca_relay']++;
+                $this->log_ctx('skip_ca_relay_inbound_shipment', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'po'       => $po,
+                    'reason'   => 'CA relay distributor tracking is inbound to dealer/relay address, not customer delivery.',
                 ]);
                 continue;
             }

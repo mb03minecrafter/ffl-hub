@@ -167,6 +167,7 @@ final class OrderPlacementJobsRepository
      * Eligible jobs:
      * - status matches $status (typically JOB_STATUS_SUCCESS)
      * - lane is direct-ship (dealer_fulfilled is intentionally excluded; shipped manually)
+     * - CA relay rows are excluded because distributor tracking is only the inbound leg to the dealer/relay address
      * - merchant_po present (we need a PO to query shipments)
      * - not shipped yet (shipped_at is NULL/zero)
      * - last_shipping_poll_at is NULL/zero or older than $poll_cutoff_mysql_utc
@@ -321,9 +322,16 @@ final class OrderPlacementJobsRepository
 
         $out = [];
         foreach ($rows as $row) {
-            if (is_array($row)) {
-                $out[] = new OrderPlacementJobRow($row);
+            if (!is_array($row)) {
+                continue;
             }
+
+            $job = new OrderPlacementJobRow($row);
+            if (DealerBatchCronRegistry::is_ca_relay_batch_job($job)) {
+                continue;
+            }
+
+            $out[] = $job;
         }
 
         return $out;
