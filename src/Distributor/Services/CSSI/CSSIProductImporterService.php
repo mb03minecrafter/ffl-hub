@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Services\CSSI;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Util\DebugLogUtil;
 
@@ -350,6 +351,12 @@ class CSSIProductImporterService
                     OR LOWER(TRIM(upc)) = 'null'
                 "
             ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $sigApprovedForced = SigDropshipApproval::apply_to_table('cssi', $tableName);
+            if ($sigApprovedForced > 0) {
+                $this->log('LOAD DATA SIG approval override applied.', [
+                    'rows_forced' => (int) $sigApprovedForced,
+                ]);
+            }
         } catch (\Throwable $e) {
             $this->log('LOAD DATA exception.', [
                 'error' => $e->getMessage(),

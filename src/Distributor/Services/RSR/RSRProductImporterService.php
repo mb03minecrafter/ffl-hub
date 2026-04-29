@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Services\RSR;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\RSR\Tables\RSRProductTableSchema;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
@@ -304,6 +305,12 @@ class RSRProductImporterService
                 } else {
                     $deleted_excluded_dept = (int) $delete_result;
                 }
+            }
+            $sig_approved_forced = SigDropshipApproval::apply_to_table('rsr', $table_name);
+            if ($sig_approved_forced > 0) {
+                $this->log_debug(
+                    sprintf('[FFLHub][RSR Import][LOAD DATA] sig_approved_forced=%d', $sig_approved_forced)
+                );
             }
         } catch (\Throwable $e) {
             $this->log_debug('[FFLHub][RSR Import][LOAD DATA] exception: ' . $e->getMessage());

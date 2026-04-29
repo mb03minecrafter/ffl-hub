@@ -403,6 +403,18 @@ final class SettingsRegistrar
                 ]
             );
 
+            // Shared per-distributor toggle:
+            // if enabled, SIG SAUER rows are treated as drop-ship eligible.
+            register_setting(
+                $group,
+                Options::distributor_sig_approved_option_name($dist_id),
+                [
+                    'type'              => 'string',
+                    'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                    'default'           => '0',
+                ]
+            );
+
             foreach ($fields as $key => $def) {
                 $key = (string) $key;
 

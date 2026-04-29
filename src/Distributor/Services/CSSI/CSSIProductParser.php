@@ -2,6 +2,8 @@
 
 namespace FFLHub\Distributor\Services\CSSI;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -83,7 +85,9 @@ class CSSIProductParser
             'dropship flag',
         ]));
         $manufacturer = $this->get_csv($csv, $headerMap, ['manufacturer', 'brand']);
-        if ($this->is_sig_sauer_manufacturer($manufacturer)) {
+        if (SigDropshipApproval::should_force_row('cssi', ['manufacturer' => $manufacturer])) {
+            $dropShipFlag = '1';
+        } elseif ($this->is_sig_sauer_manufacturer($manufacturer)) {
             $dropShipFlag = '0';
         }
         $dropShipBlockReason = ($dropShipFlag === '1')
@@ -156,7 +160,9 @@ class CSSIProductParser
         $inStockFlag = $this->to_flag($this->get_array($item, ['in_stock_flag']));
         $dropShipFlag = $this->to_flag($this->get_array($item, ['drop_ship_flag']));
         $manufacturer = $this->get_array($item, ['manufacturer', 'brand']);
-        if ($this->is_sig_sauer_manufacturer($manufacturer)) {
+        if (SigDropshipApproval::should_force_row('cssi', ['manufacturer' => $manufacturer])) {
+            $dropShipFlag = '1';
+        } elseif ($this->is_sig_sauer_manufacturer($manufacturer)) {
             $dropShipFlag = '0';
         }
         $dropShipBlockReason = ($dropShipFlag === '1')

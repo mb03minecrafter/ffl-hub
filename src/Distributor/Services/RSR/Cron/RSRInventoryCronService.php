@@ -10,6 +10,7 @@ use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -466,6 +467,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
             throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
         }
 
+        $sig_approved_forced = SigDropshipApproval::apply_to_table('rsr', $live_table);
         $join_ms = (microtime(true) - $t_join) * 1000.0;
 
         // No DROP for persistent stage table
@@ -479,6 +481,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
             'join_matched'   => (int) $join_matched,
             'would_change'   => (int) $would_change,
             'join_updated'   => (int) $join_updated,
+            'sig_approved_forced' => (int) $sig_approved_forced,
             'stage_table'    => (string) $stage_table,
             'ignore_lines'   => (int) $ignore_lines,
             'create_ms'      => number_format($create_ms, 2, '.', ''),

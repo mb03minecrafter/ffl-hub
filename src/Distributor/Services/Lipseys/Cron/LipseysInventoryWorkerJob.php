@@ -5,6 +5,7 @@ namespace FFLHub\Distributor\Services\Lipseys\Cron;
 if (!defined('ABSPATH')) exit;
 
 use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -409,6 +410,13 @@ final class LipseysInventoryWorkerJob
             'last_error'   => (string) $wpdb->last_error,
         ]);
 
+        $sig_approved_forced = SigDropshipApproval::apply_to_table('lipseys', $live);
+        if ($sig_approved_forced > 0) {
+            self::log('PROFILE: sig_approved_override', [
+                'rows_forced' => (int) $sig_approved_forced,
+            ]);
+        }
+
         // -----------------------
         // Drop stage
         // -----------------------
@@ -431,6 +439,7 @@ final class LipseysInventoryWorkerJob
             'live_count'    => $live_count,
             'join_matched'  => $join_matched,
             'would_change'  => $would_change,
+            'sig_approved_forced' => (int) $sig_approved_forced,
         ];
     }
 

@@ -14,6 +14,7 @@ use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\DistributorShipTo;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Zanders\API\ZandersSoapCurlClient;
 use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
 use FFLHub\Distributor\Services\Zanders\ZandersServices;
@@ -1219,6 +1220,13 @@ class DistributorZanders extends DistributorBase
         $ffl_required = $to_boolish($this->get_string_field($row, ['ffl_required']) ?? '0');
         $sot_required = $to_boolish($this->get_string_field($row, ['sot_required']) ?? '0');
         $dropship_enabled = $to_boolish($this->get_string_field($row, ['dropship_enabled']) ?? '1');
+        $sig_check_row = $row;
+        if ($brand !== '') {
+            $sig_check_row['brand'] = $brand;
+        }
+        if (SigDropshipApproval::should_force_row($this->get_id(), $sig_check_row)) {
+            $dropship_enabled = true;
+        }
 
         return new DistributorProductPayload(
             $upc,

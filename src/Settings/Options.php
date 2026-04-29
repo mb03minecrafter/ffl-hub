@@ -207,6 +207,17 @@ final class Options
         return self::distributor_option_name($distributor_id, 'non_dropship_blocked');
     }
 
+    /**
+     * Canonical option name for per-distributor SIG SAUER dropship approval.
+     *
+     * When enabled, SIG SAUER rows from this distributor are forced to
+     * drop-ship eligible during product and inventory imports.
+     */
+    public static function distributor_sig_approved_option_name(string $distributor_id): string
+    {
+        return self::distributor_option_name($distributor_id, 'sig_approved');
+    }
+
     /* -------------------------------------------------------------------------
      * Defaults (exposed for registrars / installers)
      * ---------------------------------------------------------------------- */
@@ -1211,6 +1222,21 @@ final class Options
         }
 
         $option_name = self::distributor_non_dropship_blocked_option_name($id);
+        $raw = (string) get_option($option_name, '0');
+        return $raw === '1';
+    }
+
+    /**
+     * Whether a distributor is approved to drop ship SIG SAUER products.
+     */
+    public static function is_distributor_sig_approved(string $distributor_id): bool
+    {
+        $id = strtolower(trim($distributor_id));
+        if ($id === '') {
+            return false;
+        }
+
+        $option_name = self::distributor_sig_approved_option_name($id);
         $raw = (string) get_option($option_name, '0');
         return $raw === '1';
     }

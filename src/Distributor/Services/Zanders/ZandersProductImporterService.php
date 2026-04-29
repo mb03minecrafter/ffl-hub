@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Zanders;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Util\DebugLogUtil;
 
@@ -354,11 +355,13 @@ class ZandersProductImporterService
 
             // Drop-ship restricted: keep rows, flag as non-dropship.
             $marked_restricted = $this->mark_restricted_manufacturers_in_table($table_name);
+            $sig_approved_forced = SigDropshipApproval::apply_to_table('zanders', $table_name);
 
             $this->log_debug(
                 sprintf(
-                    '[FFLHub][Zanders Import][LOAD DATA] marked_restricted_manufacturers=%d',
-                    $marked_restricted
+                    '[FFLHub][Zanders Import][LOAD DATA] marked_restricted_manufacturers=%d, sig_approved_forced=%d',
+                    $marked_restricted,
+                    $sig_approved_forced
                 )
             );
         } catch (\Throwable $e) {
@@ -530,6 +533,7 @@ class ZandersProductImporterService
                 $row['dropship_enabled'] = '1';
                 $row['dropship_block_reason'] = '';
             }
+            $row = SigDropshipApproval::apply_to_row('zanders', $row);
 
             $batch_rows[] = $row;
 

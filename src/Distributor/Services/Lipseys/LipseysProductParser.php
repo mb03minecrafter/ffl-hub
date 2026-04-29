@@ -1,6 +1,8 @@
 <?php
 namespace FFLHub\Distributor\Services\Lipseys;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
@@ -113,7 +115,7 @@ class LipseysProductParser {
         $final_item_type = $item_type !== '' ? $item_type : $type;
 
         // Build the row keyed to the Lipsey's fulfillment table schema.
-        return array(
+        $row = array(
             
             'upc'                     => $upc,
 // Core identifiers
@@ -167,6 +169,8 @@ class LipseysProductParser {
             'shipping_width_in'       => $packageWidth,
             'shipping_height_in'      => $packageHeight,
         );
+
+        return SigDropshipApproval::apply_to_row('lipseys', $row);
     }
 
     /**

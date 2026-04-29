@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Services\MGE;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Util\DebugLogUtil;
 
@@ -200,6 +201,12 @@ class MGEProductImporterService
                     OR TRIM(mge_item_number) = ''
                 "
             ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $sig_approved_forced = SigDropshipApproval::apply_to_table('mge', $table_name);
+            if ($sig_approved_forced > 0) {
+                $this->log_debug(
+                    sprintf('[FFLHub][MGE Import][LOAD DATA] sig_approved_forced=%d', $sig_approved_forced)
+                );
+            }
         } catch (\Throwable $e) {
             $this->log_debug('[FFLHub][MGE Import][LOAD DATA] exception: ' . $e->getMessage());
             return -1;

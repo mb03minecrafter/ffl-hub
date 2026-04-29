@@ -10,6 +10,7 @@ use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
 use FFLHub\Distributor\Services\MGE\MGEFtpCredentials;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -412,6 +413,7 @@ final class MGEInventoryCronService extends AbstractTableCronService
             throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
         }
 
+        $sig_approved_forced = SigDropshipApproval::apply_to_table('mge', $live_table);
         $join_ms = (microtime(true) - $t_join) * 1000.0;
 
         $drop_ms = 0.0;
@@ -423,6 +425,7 @@ final class MGEInventoryCronService extends AbstractTableCronService
             'join_matched' => (int) $join_matched,
             'would_change' => (int) $would_change,
             'join_updated' => (int) $join_updated,
+            'sig_approved_forced' => (int) $sig_approved_forced,
             'stage_table' => (string) $stage_table,
             'ignore_lines' => (int) $ignore_lines,
             'create_ms' => number_format($create_ms, 2, '.', ''),

@@ -12,6 +12,7 @@ use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Util\DebugLogUtil;
 
 /**
@@ -120,8 +121,8 @@ final class DistributorDavidsons extends DistributorBase
             $include_images
         );
 
-        // Davidson's is manual-order-only and does not support dropship lanes.
-        $payload->dropship_enabled = false;
+        // Davidson's is manual-order-only unless SIG approval explicitly opts it into dropship treatment.
+        $payload->dropship_enabled = SigDropshipApproval::should_force_row($this->get_id(), $lookup['row']);
 
         return $payload;
     }

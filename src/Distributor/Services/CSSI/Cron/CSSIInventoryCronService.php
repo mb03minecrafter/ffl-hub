@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\CSSI\API\CSSIClient;
 use FFLHub\Distributor\Services\CSSI\CSSIProductParser;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -463,11 +464,20 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $rowsLoaded = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable}");
 
         $sigMatchExpr = "UPPER(TRIM(COALESCE(NULLIF(S.manufacturer, ''), L.manufacturer, ''))) = '" . self::SIG_SAUER_MANUFACTURER . "'";
-        $dropshipEnabledExpr = "CASE WHEN {$sigMatchExpr} THEN 0 ELSE S.dropship_enabled END";
-        $dropshipBlockReasonExpr = "CASE WHEN {$sigMatchExpr} THEN '" . self::SIG_SAUER_DROPSHIP_BLOCK_REASON . "' ELSE S.dropship_block_reason END";
         $insertSigMatchExpr = "UPPER(TRIM(COALESCE(S.manufacturer, ''))) = '" . self::SIG_SAUER_MANUFACTURER . "'";
-        $insertDropshipEnabledExpr = "CASE WHEN {$insertSigMatchExpr} THEN 0 ELSE S.dropship_enabled END";
-        $insertDropshipBlockReasonExpr = "CASE WHEN {$insertSigMatchExpr} THEN '" . self::SIG_SAUER_DROPSHIP_BLOCK_REASON . "' ELSE S.dropship_block_reason END";
+        $sigApproved = SigDropshipApproval::is_distributor_sig_approved('cssi');
+        $dropshipEnabledExpr = $sigApproved
+            ? "CASE WHEN {$sigMatchExpr} THEN 1 ELSE S.dropship_enabled END"
+            : "CASE WHEN {$sigMatchExpr} THEN 0 ELSE S.dropship_enabled END";
+        $dropshipBlockReasonExpr = $sigApproved
+            ? "CASE WHEN {$sigMatchExpr} THEN '' ELSE S.dropship_block_reason END"
+            : "CASE WHEN {$sigMatchExpr} THEN '" . self::SIG_SAUER_DROPSHIP_BLOCK_REASON . "' ELSE S.dropship_block_reason END";
+        $insertDropshipEnabledExpr = $sigApproved
+            ? "CASE WHEN {$insertSigMatchExpr} THEN 1 ELSE S.dropship_enabled END"
+            : "CASE WHEN {$insertSigMatchExpr} THEN 0 ELSE S.dropship_enabled END";
+        $insertDropshipBlockReasonExpr = $sigApproved
+            ? "CASE WHEN {$insertSigMatchExpr} THEN '' ELSE S.dropship_block_reason END"
+            : "CASE WHEN {$insertSigMatchExpr} THEN '" . self::SIG_SAUER_DROPSHIP_BLOCK_REASON . "' ELSE S.dropship_block_reason END";
 
         $joinUpcSql = "
             UPDATE {$liveTable} L
@@ -654,6 +664,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             throw new \RuntimeException('CSSI insert-new rows failed: ' . (string) $wpdb->last_error);
         }
         $insertNewMs = (microtime(true) - $tInsertNew) * 1000.0;
+        $sigApprovedForced = SigDropshipApproval::apply_to_table('cssi', $liveTable);
 
         $totalSqlMs = (microtime(true) - $tSqlStart) * 1000.0;
 
@@ -663,6 +674,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             'join_updated_upc' => (int) $joinUpdatedUpc,
             'join_updated_item' => (int) $joinUpdatedItem,
             'inserted_new' => (int) $insertedNew,
+            'sig_approved_forced' => (int) $sigApprovedForced,
             'stage_table' => $stageTable,
             'insert_batches' => (int) ($insertStats['batches'] ?? 0),
             'insert_batch_failures' => (int) ($insertStats['batch_failures'] ?? 0),
@@ -819,6 +831,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $normalized['product_description'] = trim((string) ($row['product_description'] ?? ''));
         $normalized['manufacturer'] = trim((string) ($row['manufacturer'] ?? ''));
         $isSigSauer = $this->is_sig_sauer_manufacturer($normalized['manufacturer']);
+        $sigApproved = SigDropshipApproval::should_force_row('cssi', $normalized);
         $normalized['model'] = trim((string) ($row['model'] ?? ''));
         $normalized['mfg_model_number'] = trim((string) ($row['mfg_model_number'] ?? ''));
         $normalized['caliber_gauge'] = trim((string) ($row['caliber_gauge'] ?? ''));
@@ -827,10 +840,12 @@ final class CSSIInventoryCronService extends AbstractTableCronService
 
         $normalized['ffl_required'] = $this->to_int01($row['ffl_required'] ?? 0);
         $normalized['sot_required'] = $this->to_int01($row['sot_required'] ?? 0);
-        $normalized['dropship_enabled'] = $isSigSauer ? '0' : $this->to_int01($row['dropship_enabled'] ?? 0);
-        $normalized['dropship_block_reason'] = $isSigSauer
+        $normalized['dropship_enabled'] = $sigApproved ? '1' : ($isSigSauer ? '0' : $this->to_int01($row['dropship_enabled'] ?? 0));
+        $normalized['dropship_block_reason'] = $sigApproved
+            ? ''
+            : ($isSigSauer
             ? self::SIG_SAUER_DROPSHIP_BLOCK_REASON
-            : trim((string) ($row['dropship_block_reason'] ?? ''));
+            : trim((string) ($row['dropship_block_reason'] ?? '')));
         $normalized['drop_ship_delivery_options'] = trim((string) ($row['drop_ship_delivery_options'] ?? ''));
 
         $normalized['shipping_weight'] = trim((string) ($row['shipping_weight'] ?? ''));

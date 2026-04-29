@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Lipseys;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Util\DebugLogUtil;
 
@@ -294,6 +295,12 @@ class LipseysProductImporterService
 
             // Post-clean: remove rows with empty UPC.
             $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $sig_approved_forced = SigDropshipApproval::apply_to_table('lipseys', $table_name);
+            if ($sig_approved_forced > 0) {
+                $this->log_debug(
+                    sprintf('[FFLHub][Lipseys Import][LOAD DATA] sig_approved_forced=%d', $sig_approved_forced)
+                );
+            }
         } catch (\Throwable $e) {
             $this->log_debug('[FFLHub][Lipseys Import][LOAD DATA] exception: ' . $e->getMessage());
             return -1;
@@ -388,6 +395,7 @@ class LipseysProductImporterService
                 continue;
             }
 
+            $row = SigDropshipApproval::apply_to_row('lipseys', $row);
             $batch_rows[] = $row;
 
             if (count($batch_rows) >= $batch_size) {

@@ -2,6 +2,8 @@
 
 namespace FFLHub\Distributor\Services\RSR;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
@@ -239,6 +241,6 @@ class RSRProductParser
         $row['shipping_height_in']    = $shipping_height;
         $row['reserved_future']       = $reserved_future;
 
-        return $row;
+        return SigDropshipApproval::apply_to_row('rsr', $row);
     }
 }

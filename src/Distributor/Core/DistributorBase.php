@@ -17,6 +17,7 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Services\DistributorServicesInterface;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DistributorTableInterface;
 
 /**
@@ -658,6 +659,13 @@ abstract class DistributorBase implements DistributorInterface
         $dropship_raw = $this->get_string_field($row, $map['dropship_enabled'] ?? ['dropship_enabled']);
         if ($dropship_raw !== null) {
             $dropship_enabled = $this->to_boolish($dropship_raw, true);
+        }
+        $sig_check_row = $row;
+        if ($brand !== '') {
+            $sig_check_row['brand'] = $brand;
+        }
+        if (SigDropshipApproval::should_force_row($this->get_id(), $sig_check_row)) {
+            $dropship_enabled = true;
         }
 
         return new DistributorProductPayload(

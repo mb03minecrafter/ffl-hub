@@ -2,6 +2,8 @@
 
 namespace FFLHub\Distributor\Services\MGE;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -62,7 +64,7 @@ class MGEProductParser
         $description = $this->get($csv, $header_map, 'description');
         $map_raw = $this->get($csv, $header_map, 'map');
 
-        return [
+        $row = [
             'upc' => $upc,
             'mge_item_number' => $item_number,
             'vendor_item_number' => $this->get($csv, $header_map, 'vendoritemno'),
@@ -92,6 +94,8 @@ class MGEProductParser
             'row_index' => $this->get($csv, $header_map, 'rowindex'),
             'barcod_raw' => $this->get($csv, $header_map, 'barcod'),
         ];
+
+        return SigDropshipApproval::apply_to_row('mge', $row);
     }
 
     /**

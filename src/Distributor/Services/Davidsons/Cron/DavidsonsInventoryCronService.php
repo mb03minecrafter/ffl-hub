@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Davidsons\API\DavidsonsPortalInventoryClient;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -348,6 +349,7 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
         }
 
         $join_updated = (int) $join_updated_upc + (int) $join_updated_item;
+        $sig_approved_forced = SigDropshipApproval::apply_to_table('davidsons', $live_table);
 
         $join_ms = (microtime(true) - $t_join) * 1000.0;
         $drop_ms = 0.0; // persistent stage table
@@ -361,6 +363,7 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
             'join_updated'   => (int) $join_updated,
             'join_updated_upc' => (int) $join_updated_upc,
             'join_updated_item' => (int) $join_updated_item,
+            'sig_approved_forced' => (int) $sig_approved_forced,
             'stage_table'    => (string) $stage_table,
             'ignore_lines'   => (int) $ignore_lines,
             'create_ms'      => number_format($create_ms, 2, '.', ''),

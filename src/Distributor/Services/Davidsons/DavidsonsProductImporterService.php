@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Davidsons;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Util\DebugLogUtil;
 
@@ -199,6 +200,12 @@ class DavidsonsProductImporterService
                     OR TRIM(davidsons_item_number) = ''
                 "
             ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $sig_approved_forced = SigDropshipApproval::apply_to_table('davidsons', $table_name);
+            if ($sig_approved_forced > 0) {
+                $this->log_debug(
+                    sprintf('[FFLHub][Davidsons Import][LOAD DATA] sig_approved_forced=%d', $sig_approved_forced)
+                );
+            }
         } catch (\Throwable $e) {
             $this->log_debug('[FFLHub][Davidsons Import][LOAD DATA] exception: ' . $e->getMessage());
             return -1;

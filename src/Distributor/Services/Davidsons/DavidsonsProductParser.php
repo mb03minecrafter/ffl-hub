@@ -2,6 +2,8 @@
 
 namespace FFLHub\Distributor\Services\Davidsons;
 
+use FFLHub\Distributor\Services\SigDropshipApproval;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -67,7 +69,7 @@ class DavidsonsProductParser
 
         $retail_msrp = $this->clean_money($this->get($csv, $header_map, 'retail price'));
 
-        return [
+        $row = [
             'upc'                  => $upc,
             'davidsons_item_number' => $item_number,
 
@@ -98,6 +100,8 @@ class DavidsonsProductParser
             'dropship_enabled'     => '0',
             'dropship_block_reason' => '',
         ];
+
+        return SigDropshipApproval::apply_to_row('davidsons', $row);
     }
 
     /**

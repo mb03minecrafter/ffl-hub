@@ -13,6 +13,7 @@ use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorShipment;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Product\CategorySchema;
 
 /**
@@ -130,8 +131,8 @@ final class DistributorMGE extends DistributorBase
             $include_images
         );
 
-        // Per MGE feed policy, keep this false until a true drop-ship lane exists.
-        $payload->dropship_enabled = false;
+        // Per MGE feed policy, keep this false unless SIG approval explicitly opts it into dropship treatment.
+        $payload->dropship_enabled = SigDropshipApproval::should_force_row($this->get_id(), $lookup['row']);
 
         return $payload;
     }

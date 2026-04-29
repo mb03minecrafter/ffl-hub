@@ -1077,6 +1077,8 @@ class AdminPage
         $credit_limit_value = (string) Options::get_distributor_credit_limit($id, (float) $credit_limit_default);
         $non_dropship_blocked_option_name = Options::distributor_non_dropship_blocked_option_name($id);
         $non_dropship_blocked_enabled = Options::is_distributor_non_dropship_blocked($id);
+        $sig_approved_option_name = Options::distributor_sig_approved_option_name($id);
+        $sig_approved_enabled = Options::is_distributor_sig_approved($id);
 
     ?>
         <div class="fflhub-distributor-settings-wrapper">
@@ -1167,6 +1169,25 @@ class AdminPage
                                     <?php checked($non_dropship_blocked_enabled); ?> />
                                 <p class="description">
                                     <?php esc_html_e('When enabled, this distributor is treated as drop-ship only. Non-drop-ship offers are ignored for product creation and product sync source selection.', 'ffl-hub'); ?>
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">
+                                <label for="<?php echo esc_attr($sig_approved_option_name); ?>">
+                                    <?php esc_html_e('Sig Approved', 'ffl-hub'); ?>
+                                </label>
+                            </th>
+                            <td>
+                                <input type="hidden" name="<?php echo esc_attr($sig_approved_option_name); ?>" value="0" />
+                                <input
+                                    type="checkbox"
+                                    id="<?php echo esc_attr($sig_approved_option_name); ?>"
+                                    name="<?php echo esc_attr($sig_approved_option_name); ?>"
+                                    value="1"
+                                    <?php checked($sig_approved_enabled); ?> />
+                                <p class="description">
+                                    <?php esc_html_e('When enabled, SIG SAUER products from this distributor are forced to drop-ship eligible during product and inventory updates.', 'ffl-hub'); ?>
                                 </p>
                             </td>
                         </tr>
