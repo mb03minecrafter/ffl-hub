@@ -142,6 +142,7 @@ final class LipseysDealerBatchCronService extends AbstractCronService
             'risky_upcs' => 0,
             'priority_flushed_rows' => 0,
             'scheduled_flushed_rows' => 0,
+            'deferred_post_window_rows' => 0,
         ];
 
         try {
@@ -306,10 +307,22 @@ final class LipseysDealerBatchCronService extends AbstractCronService
             $run_stats['dispatch_due'] = $dispatch_due ? 1 : 0;
             $run_stats['priority_flushed_rows'] = $priority_flushed_rows;
 
+            $scheduled_candidates = $batch_candidates;
+            $deferred_candidates = [];
+            if ($dispatch_due && !$force_flush && !empty($batch_candidates)) {
+                [$scheduled_candidates, $deferred_candidates] = $this->split_scheduled_candidates_for_current_window($batch_candidates);
+                if (!empty($deferred_candidates)) {
+                    $this->defer_candidates_until_next_dispatch_window($deferred_candidates);
+                }
+            }
+            $run_stats['deferred_post_window_rows'] = count($deferred_candidates);
+
             $this->log_ctx('batch_gate', [
                 'run_id' => $run_id,
                 'priority_rows' => count($priority_candidates),
                 'scheduled_rows' => count($batch_candidates),
+                'scheduled_ready_rows' => count($scheduled_candidates),
+                'deferred_post_window_rows' => count($deferred_candidates),
                 'priority_flushed_rows' => $priority_flushed_rows,
                 'force_flush' => $force_flush ? 1 : 0,
                 'dispatch_due' => $dispatch_due ? 1 : 0,
@@ -318,13 +331,13 @@ final class LipseysDealerBatchCronService extends AbstractCronService
             $scheduled_flushed_rows = 0;
             try {
                 // Only flush scheduled rows when gate is open.
-                if ($dispatch_due && !empty($batch_candidates)) {
+                if ($dispatch_due && !empty($scheduled_candidates)) {
                     // Consume today's scheduled dispatch slot before attempting flush.
                     if (!$force_flush) {
                         $this->mark_scheduled_flush_attempt((string) $now_mysql_utc);
                     }
-                    $this->flush_aggregate_batch($distributor, $batch_candidates, $retry_delay, $run_id, 'scheduled_batch');
-                    $scheduled_flushed_rows = count($batch_candidates);
+                    $this->flush_aggregate_batch($distributor, $scheduled_candidates, $retry_delay, $run_id, 'scheduled_batch');
+                    $scheduled_flushed_rows = count($scheduled_candidates);
                 }
             } catch (\Throwable $e) {
                 $this->log_ctx('scheduled_flush_exception', [
@@ -332,7 +345,7 @@ final class LipseysDealerBatchCronService extends AbstractCronService
                     'error' => $e->getMessage(),
                 ]);
                 $this->requeue_batch_candidates(
-                    $batch_candidates,
+                    $scheduled_candidates,
                     $retry_delay,
                     'Scheduled batch flush exception: ' . $e->getMessage()
                 );
@@ -346,6 +359,8 @@ final class LipseysDealerBatchCronService extends AbstractCronService
                 $run_status = 'priority_flushed';
             } elseif ($scheduled_flushed_rows > 0) {
                 $run_status = 'scheduled_flushed';
+            } elseif ($dispatch_due && empty($scheduled_candidates) && !empty($batch_candidates)) {
+                $run_status = 'post_window_deferred';
             } elseif (!$dispatch_due && !empty($batch_candidates)) {
                 $run_status = 'holding';
             } else {
@@ -745,7 +760,104 @@ final class LipseysDealerBatchCronService extends AbstractCronService
         return $enabled;
     }
 
-    private function is_dispatch_window_open(): bool
+    /**
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates
+     * @return array{
+     *   0:array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}>,
+     *   1:array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}>
+     * }
+     */
+    private function split_scheduled_candidates_for_current_window(array $batch_candidates): array
+    {
+        $ctx = $this->dispatch_window_context();
+        /** @var \DateTimeImmutable $dispatch_local */
+        $dispatch_local = $ctx['dispatch_local'];
+        /** @var \DateTimeZone $tz */
+        $tz = $ctx['tz'];
+
+        $ready = [];
+        $deferred = [];
+
+        foreach ($batch_candidates as $entry) {
+            $job = $entry['job'] ?? null;
+            if (!($job instanceof OrderPlacementJobRow)) {
+                $ready[] = $entry;
+                continue;
+            }
+
+            $created_at_utc = trim((string) ($job->created_at ?? ''));
+            if ($created_at_utc === '') {
+                $ready[] = $entry;
+                continue;
+            }
+
+            $created_utc = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $created_at_utc, new \DateTimeZone('UTC'));
+            if (!($created_utc instanceof \DateTimeImmutable)) {
+                $ready[] = $entry;
+                continue;
+            }
+
+            $created_local = $created_utc->setTimezone($tz);
+            if ($created_local > $dispatch_local) {
+                $deferred[] = $entry;
+                continue;
+            }
+
+            $ready[] = $entry;
+        }
+
+        return [$ready, $deferred];
+    }
+
+    /**
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $candidates
+     */
+    private function defer_candidates_until_next_dispatch_window(array $candidates): void
+    {
+        if (empty($candidates)) {
+            return;
+        }
+
+        $next_dispatch_utc = $this->next_dispatch_boundary_utc_mysql();
+        foreach ($candidates as $entry) {
+            $job = $entry['job'] ?? null;
+            if (!($job instanceof OrderPlacementJobRow)) {
+                continue;
+            }
+
+            OrderPlacementJobWriter::apply_patch(
+                $this->jobs_table,
+                (int) $job->order_id,
+                (string) $job->job_key_norm(),
+                OrderPlacementJobPatch::empty()
+                    ->with_status(OrderPlacementKeys::JOB_STATUS_BATCH_PENDING)
+                    ->with_next_run_at_mysql($next_dispatch_utc)
+            );
+        }
+    }
+
+    private function next_dispatch_boundary_utc_mysql(): string
+    {
+        $ctx = $this->dispatch_window_context();
+        /** @var \DateTimeImmutable $dispatch_local */
+        $dispatch_local = $ctx['dispatch_local'];
+
+        return $dispatch_local
+            ->modify('+1 day')
+            ->setTimezone(new \DateTimeZone('UTC'))
+            ->format('Y-m-d H:i:s');
+    }
+
+    /**
+     * @return array{
+     *   hour:int,
+     *   minute:int,
+     *   tz:\DateTimeZone,
+     *   now_local:\DateTimeImmutable,
+     *   dispatch_local:\DateTimeImmutable
+     * }
+     */
+    private function dispatch_window_context(): array
     {
         // Parse configured HH:MM in fixed Central timezone.
         $hhmm = trim((string) get_option(self::OPT_DISPATCH_TIME, self::DEFAULT_DISPATCH_TIME));
@@ -760,6 +872,26 @@ final class LipseysDealerBatchCronService extends AbstractCronService
         $tz = new \DateTimeZone(self::DISPATCH_TZ);
         $now_local = new \DateTimeImmutable('now', $tz);
         $dispatch_local = $now_local->setTime($hour, $minute, 0);
+
+        return [
+            'hour' => $hour,
+            'minute' => $minute,
+            'tz' => $tz,
+            'now_local' => $now_local,
+            'dispatch_local' => $dispatch_local,
+        ];
+    }
+
+    private function is_dispatch_window_open(): bool
+    {
+        $ctx = $this->dispatch_window_context();
+        /** @var \DateTimeImmutable $now_local */
+        $now_local = $ctx['now_local'];
+        /** @var \DateTimeImmutable $dispatch_local */
+        $dispatch_local = $ctx['dispatch_local'];
+        /** @var \DateTimeZone $tz */
+        $tz = $ctx['tz'];
+
         if ($now_local < $dispatch_local) {
             return false;
         }
