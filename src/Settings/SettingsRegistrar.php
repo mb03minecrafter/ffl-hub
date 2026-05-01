@@ -82,6 +82,26 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_FORCE_SHIPPING_COST_OVERRIDE_ENABLED,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_force_shipping_cost_override_enabled() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_FORCE_SHIPPING_COST_OVERRIDE_AMOUNT,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_non_negative_decimal_string'],
+                'default'           => (string) Options::default_force_shipping_cost_override_amount(),
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_TEST_ORDER_DEBUG_ENABLED,
             [
                 'type'              => 'string',

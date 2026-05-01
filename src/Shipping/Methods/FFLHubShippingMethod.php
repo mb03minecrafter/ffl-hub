@@ -2,6 +2,7 @@
 
 namespace FFLHub\Shipping\Methods;
 
+use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\FFL\Data\FFLRepository;
 use FFLHub\FFL\Data\FFLRowMapper;
@@ -189,11 +190,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $dropship_enabled = $this->to_boolish($dropship_enabled_raw, true);
 
             // Distributor lane fee for this line (used as per-lane fee by planner).
-            $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
-            $ship = ($ship_raw === '' || $ship_raw === null) ? $fallback_ship : (float) $ship_raw;
-            if (! is_finite($ship) || $ship < 0) {
-                $ship = $fallback_ship;
-            }
+            $ship = DistributorProductHelper::resolve_effective_shipping_cost_for_product($product, $fallback_ship);
 
             // Per-unit shipping weight in ounces.
             $weight_raw = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true);

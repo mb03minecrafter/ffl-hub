@@ -370,7 +370,7 @@ class ProductMetaBox
 
         $preview_true_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
         $preview_dealer_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
-        $preview_shipping_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
+        $preview_shipping_effective = DistributorProductHelper::resolve_effective_shipping_cost_for_product($product, 0.0);
         $preview_map_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
         $preview_msrp_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true);
         $preview_recommended_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true);
@@ -382,8 +382,8 @@ class ProductMetaBox
             ? (float) $preview_dealer_cost_raw
             : 0.0;
         $preview_cost_base = ($preview_true_cost > 0.0) ? $preview_true_cost : $preview_dealer_cost;
-        $preview_shipping = (is_numeric($preview_shipping_raw) && (float) $preview_shipping_raw >= 0.0)
-            ? (float) $preview_shipping_raw
+        $preview_shipping = (is_numeric($preview_shipping_effective) && (float) $preview_shipping_effective >= 0.0)
+            ? (float) $preview_shipping_effective
             : 0.0;
         $preview_map = (is_numeric($preview_map_raw) && (float) $preview_map_raw > 0.0)
             ? (float) $preview_map_raw

@@ -170,6 +170,8 @@ class AdminPage
         $global_settings = [
             'payment_fee_percent'   => (string) Options::get_payment_processor_fee_percent(),
             'global_markup_percent' => (string) Options::get_global_markup(),
+            'force_shipping_cost_override_enabled' => Options::get_force_shipping_cost_override_enabled() ? '1' : '0',
+            'force_shipping_cost_override_amount' => (string) Options::get_force_shipping_cost_override_amount(),
             'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
             'holosun_image_notice_enabled' => Options::get_holosun_image_notice_enabled() ? '1' : '0',
             'holosun_show_price_override_enabled' => Options::get_holosun_show_price_override_enabled() ? '1' : '0',
@@ -232,6 +234,8 @@ class AdminPage
     {
         $payment_fee_percent   = (string) ($settings['payment_fee_percent'] ?? '');
         $global_markup_percent = (string) ($settings['global_markup_percent'] ?? '');
+        $force_shipping_cost_override_enabled = ((string) ($settings['force_shipping_cost_override_enabled'] ?? '0') === '1');
+        $force_shipping_cost_override_amount = (string) ($settings['force_shipping_cost_override_amount'] ?? (string) Options::default_force_shipping_cost_override_amount());
         $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
         $holosun_image_notice_enabled = ((string) ($settings['holosun_image_notice_enabled'] ?? '0') === '1');
         $holosun_show_price_override_enabled = ((string) ($settings['holosun_show_price_override_enabled'] ?? '0') === '1');
@@ -416,6 +420,50 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'Default markup applied to your true cost when calculating prices.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_force_shipping_cost_override_enabled"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Force shipping cost override', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_force_shipping_cost_override_enabled" value="0" />
+                    <input
+                        id="fflhub_force_shipping_cost_override_enabled"
+                        name="fflhub_force_shipping_cost_override_enabled"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($force_shipping_cost_override_enabled); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'When enabled, all managed FFLHub products use the override shipping cost below instead of each product\'s imported shipping cost.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_force_shipping_cost_override_amount"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Forced shipping cost ($)', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_force_shipping_cost_override_amount"
+                        name="fflhub_force_shipping_cost_override_amount"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($force_shipping_cost_override_amount); ?>" />
+                    <span class="fflhub-field-suffix">$</span>
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Global shipping-cost value used when force shipping cost override is enabled.',
                             'ffl-hub'
                         ); ?>
                     </p>

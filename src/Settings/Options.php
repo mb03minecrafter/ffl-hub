@@ -43,6 +43,8 @@ final class Options
      */
     public const OPTION_PAYMENT_PROCESSOR_FEE_PERCENT = 'fflhub_payment_processor_fee_percent';
     public const OPTION_GLOBAL_MARKUP                 = 'fflhub_global_markup';
+    public const OPTION_FORCE_SHIPPING_COST_OVERRIDE_ENABLED = 'fflhub_force_shipping_cost_override_enabled';
+    public const OPTION_FORCE_SHIPPING_COST_OVERRIDE_AMOUNT  = 'fflhub_force_shipping_cost_override_amount';
     public const OPTION_TEST_ORDER_DEBUG_ENABLED      = 'fflhub_test_order_debug_enabled';
     public const OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED  = 'fflhub_holosun_image_notice_enabled';
     public const OPTION_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED = 'fflhub_holosun_show_price_override_enabled';
@@ -93,6 +95,8 @@ final class Options
      */
     private const DEFAULT_PAYMENT_PROCESSOR_FEE_PERCENT = 2.9;  // %
     private const DEFAULT_GLOBAL_MARKUP                 = 10.0; // %
+    private const DEFAULT_FORCE_SHIPPING_COST_OVERRIDE_ENABLED = false;
+    private const DEFAULT_FORCE_SHIPPING_COST_OVERRIDE_AMOUNT  = 0.0;
     private const DEFAULT_TEST_ORDER_DEBUG_ENABLED      = true;
     private const DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED  = false;
     private const DEFAULT_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED = false;
@@ -232,6 +236,16 @@ final class Options
         return self::DEFAULT_GLOBAL_MARKUP;
     }
 
+    public static function default_force_shipping_cost_override_enabled(): bool
+    {
+        return self::DEFAULT_FORCE_SHIPPING_COST_OVERRIDE_ENABLED;
+    }
+
+    public static function default_force_shipping_cost_override_amount(): float
+    {
+        return self::DEFAULT_FORCE_SHIPPING_COST_OVERRIDE_AMOUNT;
+    }
+
     public static function default_test_order_debug_enabled(): bool
     {
         return self::DEFAULT_TEST_ORDER_DEBUG_ENABLED;
@@ -359,6 +373,20 @@ final class Options
             add_option(
                 self::OPTION_GLOBAL_MARKUP,
                 (string) self::DEFAULT_GLOBAL_MARKUP
+            );
+        }
+
+        if (get_option(self::OPTION_FORCE_SHIPPING_COST_OVERRIDE_ENABLED, null) === null) {
+            add_option(
+                self::OPTION_FORCE_SHIPPING_COST_OVERRIDE_ENABLED,
+                self::DEFAULT_FORCE_SHIPPING_COST_OVERRIDE_ENABLED ? '1' : '0'
+            );
+        }
+
+        if (get_option(self::OPTION_FORCE_SHIPPING_COST_OVERRIDE_AMOUNT, null) === null) {
+            add_option(
+                self::OPTION_FORCE_SHIPPING_COST_OVERRIDE_AMOUNT,
+                (string) self::DEFAULT_FORCE_SHIPPING_COST_OVERRIDE_AMOUNT
             );
         }
 
@@ -589,6 +617,37 @@ final class Options
     public static function set_global_markup(float $percent): void
     {
         update_option(self::OPTION_GLOBAL_MARKUP, (string) $percent);
+    }
+
+    public static function get_force_shipping_cost_override_enabled(): bool
+    {
+        return ((string) get_option(
+            self::OPTION_FORCE_SHIPPING_COST_OVERRIDE_ENABLED,
+            self::DEFAULT_FORCE_SHIPPING_COST_OVERRIDE_ENABLED ? '1' : '0'
+        )) === '1';
+    }
+
+    public static function get_force_shipping_cost_override_amount(): float
+    {
+        $value = (float) get_option(
+            self::OPTION_FORCE_SHIPPING_COST_OVERRIDE_AMOUNT,
+            (string) self::DEFAULT_FORCE_SHIPPING_COST_OVERRIDE_AMOUNT
+        );
+
+        if (!is_finite($value) || $value < 0.0) {
+            return 0.0;
+        }
+
+        return $value;
+    }
+
+    public static function get_force_shipping_cost_override_amount_if_enabled(): ?float
+    {
+        if (!self::get_force_shipping_cost_override_enabled()) {
+            return null;
+        }
+
+        return self::get_force_shipping_cost_override_amount();
     }
 
     /**

@@ -6,6 +6,7 @@ use WC_Order;
 use WC_Product;
 use WC_Order_Item_Product;
 
+use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
@@ -270,10 +271,7 @@ final class OrderingOrchestratorService
                 $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true),
                 0.0
             );
-            $dist_lane_fee = $this->to_non_negative_float(
-                $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true),
-                0.0
-            );
+            $dist_lane_fee = DistributorProductHelper::resolve_effective_shipping_cost_for_product($product, 0.0);
 
             $item_id = (int) $item->get_id();
             $line_id = ($item_id > 0) ? ('oi_' . (string) $item_id) : ('oi_idx_' . (string) $seen['items_iterated']);

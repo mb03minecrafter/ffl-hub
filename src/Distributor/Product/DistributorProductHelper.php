@@ -509,7 +509,7 @@ class DistributorProductHelper
         $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
         $dims = self::resolve_shipping_dimensions_for_meta($selected_product, $offers);
 
-        $ship_cost = $selected_product->shipping_cost ?? null;
+        $ship_cost = self::resolve_effective_shipping_cost_for_meta_value($selected_product->shipping_cost ?? null);
 
         // Keep global_unique_id (UPC/GTIN-ish) but only set if non-empty
         if ($upc !== '') {
@@ -597,7 +597,7 @@ class DistributorProductHelper
 
         $map       = (float) ($selected_product->map ?? 0);
         $msrp      = (float) ($selected_product->msrp ?? 0);
-        $ship_cost = $selected_product->shipping_cost ?? null;
+        $ship_cost = self::resolve_effective_shipping_cost_for_meta_value($selected_product->shipping_cost ?? null);
         $dropship_enabled = ($selected_product->dropship_enabled ?? true) ? 1 : 0;
         $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
         $dims = self::resolve_shipping_dimensions_for_meta($selected_product, $offers);
@@ -1439,7 +1439,7 @@ class DistributorProductHelper
                 return null;
             }
 
-            $shipping_cost = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true)) ?? 0.0;
+            $shipping_cost = self::resolve_effective_shipping_cost_for_product($product, 0.0);
             $profit_target = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META, true)) ?? 0.0;
 
             $fee_percent = (float) Options::get_payment_processor_fee_percent();
@@ -1554,7 +1554,7 @@ class DistributorProductHelper
             return null;
         }
 
-        $shipping_cost = self::to_non_negative_float($selected_product->shipping_cost ?? null) ?? 0.0;
+        $shipping_cost = self::resolve_effective_shipping_cost_for_meta_value($selected_product->shipping_cost ?? null);
 
         $markup_percent = (float) Options::get_global_markup();
         if (!is_finite($markup_percent) || $markup_percent < 0.0) {
@@ -1796,6 +1796,44 @@ class DistributorProductHelper
         }
         $f = (float) $value;
         return $f >= 0 ? $f : null;
+    }
+
+    /**
+     * Resolve the effective shipping cost to store in FFLHub meta snapshots.
+     *
+     * When the global force-shipping override is enabled, this always returns
+     * that configured override amount.
+     *
+     * @param mixed $shipping_cost_raw
+     */
+    private static function resolve_effective_shipping_cost_for_meta_value($shipping_cost_raw): float
+    {
+        $forced = Options::get_force_shipping_cost_override_amount_if_enabled();
+        if (is_numeric($forced) && (float) $forced >= 0.0) {
+            return (float) $forced;
+        }
+
+        return self::to_non_negative_float($shipping_cost_raw) ?? 0.0;
+    }
+
+    /**
+     * Resolve the effective shipping cost for a product at runtime.
+     *
+     * If the global force-shipping override is enabled and the product is
+     * FFLHub-managed, the override amount is returned.
+     */
+    public static function resolve_effective_shipping_cost_for_product(WC_Product $product, float $fallback = 0.0): float
+    {
+        $forced = Options::get_force_shipping_cost_override_amount_if_enabled();
+        if (
+            is_numeric($forced)
+            && (float) $forced >= 0.0
+            && (int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true) === 1
+        ) {
+            return (float) $forced;
+        }
+
+        return self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true)) ?? $fallback;
     }
 
     /**

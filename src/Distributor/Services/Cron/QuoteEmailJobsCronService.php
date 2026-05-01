@@ -884,8 +884,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             true
         );
 
-        $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
-        $dist_lane_fee = $this->to_non_negative_float($ship_raw, $fallback_ship);
+        $dist_lane_fee = DistributorProductHelper::resolve_effective_shipping_cost_for_product($product, $fallback_ship);
         $weight_oz = $this->to_non_negative_float(
             $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true),
             0.0
