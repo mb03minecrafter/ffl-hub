@@ -155,6 +155,8 @@ class ProductMetaBox
         $local_stock_override_qty = is_numeric((string) $raw_local_stock_override_qty)
             ? max(0, (int) $raw_local_stock_override_qty)
             : 0;
+        $raw_local_stock_free_shipping = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_FREE_SHIPPING_META, true);
+        $local_stock_free_shipping = self::is_truthy_meta($raw_local_stock_free_shipping);
         $raw_manual_shipping_override = $product->get_meta(ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, true);
         $manual_shipping_override = self::is_truthy_meta($raw_manual_shipping_override);
         $shipping_weight_input = self::normalize_decimal_for_input(
@@ -231,6 +233,18 @@ class ProductMetaBox
             esc_html__('When enabled and quantity is above 0, order placement uses local stock and skips distributor placement for that quantity.', 'ffl-hub') .
             '</span>';
         echo '</p>';
+
+        echo '<label style="display:flex;align-items:center;font-size:11px;gap:6px;margin-top:6px;">';
+        echo '<input id="fflhub_local_stock_free_shipping" type="checkbox" name="fflhub_local_stock_free_shipping" value="1" ' .
+            checked(true, $local_stock_free_shipping, false) .
+            ' />';
+        echo '<span style="font-weight:600;">' .
+            esc_html__('Free Shipping When Local Stock Is Used', 'ffl-hub') .
+            '</span>';
+        echo '</label>';
+        echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+            esc_html__('When enabled, checkout shipping excludes local-stock quantities for this product from shipping-cost calculations.', 'ffl-hub') .
+            '</span>';
         echo '</div>';
 
         // 🆕 Editable pricing controls
@@ -370,7 +384,7 @@ class ProductMetaBox
 
         $preview_true_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true);
         $preview_dealer_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
-        $preview_shipping_effective = DistributorProductHelper::resolve_effective_shipping_cost_for_product($product, 0.0);
+        $preview_shipping_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
         $preview_map_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
         $preview_msrp_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true);
         $preview_recommended_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true);
@@ -382,8 +396,8 @@ class ProductMetaBox
             ? (float) $preview_dealer_cost_raw
             : 0.0;
         $preview_cost_base = ($preview_true_cost > 0.0) ? $preview_true_cost : $preview_dealer_cost;
-        $preview_shipping = (is_numeric($preview_shipping_effective) && (float) $preview_shipping_effective >= 0.0)
-            ? (float) $preview_shipping_effective
+        $preview_shipping = (is_numeric($preview_shipping_raw) && (float) $preview_shipping_raw >= 0.0)
+            ? (float) $preview_shipping_raw
             : 0.0;
         $preview_map = (is_numeric($preview_map_raw) && (float) $preview_map_raw > 0.0)
             ? (float) $preview_map_raw
@@ -710,9 +724,13 @@ class ProductMetaBox
                 function applyLocalStockOverride() {
                     var overrideEl = document.getElementById('fflhub_local_stock_override_enabled');
                     var qtyEl = document.getElementById('fflhub_local_stock_override_qty');
+                    var freeShipEl = document.getElementById('fflhub_local_stock_free_shipping');
                     if (!overrideEl || !qtyEl) return;
 
                     qtyEl.disabled = !overrideEl.checked;
+                    if (freeShipEl) {
+                        freeShipEl.disabled = !overrideEl.checked;
+                    }
                 }
 
                 function applyDistributorLock() {
@@ -820,6 +838,8 @@ class ProductMetaBox
             ? absint(sanitize_text_field(wp_unslash($_POST['fflhub_local_stock_override_qty'])))
             : 0;
         $product->update_meta_data(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, $local_stock_override_qty);
+        $local_stock_free_shipping = isset($_POST['fflhub_local_stock_free_shipping']) ? 1 : 0;
+        $product->update_meta_data(ProductMeta::FFLHUB_LOCAL_STOCK_FREE_SHIPPING_META, $local_stock_free_shipping);
 
         if ($local_stock_override_enabled === 1 && $local_stock_override_qty > 0) {
             $product->set_manage_stock(true);

@@ -2,7 +2,6 @@
 
 namespace FFLHub\Shipping\Methods;
 
-use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\FFL\Data\FFLRepository;
 use FFLHub\FFL\Data\FFLRowMapper;
@@ -150,6 +149,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         // Planner input lines (shared model with future order routing work)
         $routing_lines = [];
         $line_debug_rows = [];
+        $local_available_by_product = [];
 
         // Cart-level profit (net after fee) across ALL FFLHub items in this package
         $profit_net_total = 0.0;
@@ -189,13 +189,67 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $dropship_enabled_raw = $product->get_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true);
             $dropship_enabled = $this->to_boolish($dropship_enabled_raw, true);
 
+            // Dealer cost excludes distributor shipping, which is planned once at the order level.
+            $dealer_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
+            $dealer_cost = ($dealer_cost_raw === '' || $dealer_cost_raw === null) ? 0.0 : (float) $dealer_cost_raw;
+
+            // Revenue ex-tax, after coupons (Woo line_total includes qty)
+            $line_revenue = isset($item['line_total']) ? (float) $item['line_total'] : 0.0;
+
+            // Net profit after processor % fee (same behavior as before)
+            $line_profit_net = ($line_revenue - ($dealer_cost * $qty)) * (1.0 - $f);
+            $profit_net_total += $line_profit_net;
+
+            $qty_for_routing = $qty;
+            $local_free_ship_qty = 0;
+            $local_free_ship_enabled = $this->to_boolish(
+                $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_FREE_SHIPPING_META, true),
+                false
+            );
+            $local_stock_override_enabled = $this->to_boolish(
+                $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true),
+                false
+            );
+
+            if ($local_free_ship_enabled && $local_stock_override_enabled && $product_id > 0) {
+                if (!array_key_exists($product_id, $local_available_by_product)) {
+                    $local_qty_raw = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
+                    $local_available_by_product[$product_id] = max(0, (int) $local_qty_raw);
+                }
+
+                $local_available_qty = max(0, (int) ($local_available_by_product[$product_id] ?? 0));
+                if ($local_available_qty > 0) {
+                    $local_free_ship_qty = min($qty_for_routing, $local_available_qty);
+                    $qty_for_routing -= $local_free_ship_qty;
+                    $local_available_by_product[$product_id] = $local_available_qty - $local_free_ship_qty;
+
+                    $this->log_debug(
+                        sprintf(
+                            'LOCAL_FREE_SHIP product_id=%d qty_local=%d qty_routed=%d local_remaining=%d',
+                            $product_id,
+                            $local_free_ship_qty,
+                            $qty_for_routing,
+                            (int) $local_available_by_product[$product_id]
+                        )
+                    );
+                }
+            }
+
+            if ($qty_for_routing <= 0) {
+                continue;
+            }
+
             // Distributor lane fee for this line (used as per-lane fee by planner).
-            $ship = DistributorProductHelper::resolve_effective_shipping_cost_for_product($product, $fallback_ship);
+            $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
+            $ship = ($ship_raw === '' || $ship_raw === null) ? $fallback_ship : (float) $ship_raw;
+            if (! is_finite($ship) || $ship < 0) {
+                $ship = $fallback_ship;
+            }
 
             // Per-unit shipping weight in ounces.
             $weight_raw = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true);
             $weight_oz  = $this->to_non_negative_float($weight_raw, 0.0);
-            $line_weight_oz = $weight_oz * (float) $qty;
+            $line_weight_oz = $weight_oz * (float) $qty_for_routing;
 
             // Optional dimensions in inches (may be empty for some distributors).
             $length_raw = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, true);
@@ -209,7 +263,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $routing_lines[] = [
                 'line_id'          => (string) $item_key,
                 'dist_id'          => strtolower(trim((string) $dist_id)),
-                'qty'              => $qty,
+                'qty'              => $qty_for_routing,
                 'weight_oz'        => $weight_oz,
                 'ffl_required'     => $is_ffl ? 1 : 0,
                 'dropship_enabled' => $dropship_enabled ? 1 : 0,
@@ -218,23 +272,18 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'width_in'         => $width_in,
                 'height_in'        => $height_in,
             ];
-
-            // Dealer cost excludes distributor shipping, which is planned once at the order level.
-            $dealer_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
-            $dealer_cost = ($dealer_cost_raw === '' || $dealer_cost_raw === null) ? 0.0 : (float) $dealer_cost_raw;
-
-            // Revenue ex-tax, after coupons (Woo line_total includes qty)
-            $line_revenue = isset($item['line_total']) ? (float) $item['line_total'] : 0.0;
-
-            // Net profit after processor % fee (same behavior as before)
-            $line_profit_net = ($line_revenue - ($dealer_cost * $qty)) * (1.0 - $f);
-            $profit_net_total += $line_profit_net;
+            $line_revenue_routed = ($qty > 0)
+                ? ((float) $line_revenue * ((float) $qty_for_routing / (float) $qty))
+                : 0.0;
+            $line_profit_net_routed = ($line_revenue_routed - ($dealer_cost * $qty_for_routing)) * (1.0 - $f);
 
             $line_debug_rows[] = [
                 'line_id'        => (string) $item_key,
                 'product_id'     => $product_id,
                 'dist_id'        => strtolower(trim((string) $dist_id)),
-                'qty'            => $qty,
+                'qty'            => $qty_for_routing,
+                'qty_ordered'    => $qty,
+                'qty_local_free' => $local_free_ship_qty,
                 'ffl_required'   => $is_ffl,
                 'dropship'       => $dropship_enabled,
                 'lane_fee'       => $ship,
@@ -243,9 +292,9 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'length_in'      => $length_in,
                 'width_in'       => $width_in,
                 'height_in'      => $height_in,
-                'line_revenue'   => $line_revenue,
+                'line_revenue'   => $line_revenue_routed,
                 'dealer_cost'    => $dealer_cost,
-                'profit_net'     => $line_profit_net,
+                'profit_net'     => $line_profit_net_routed,
             ];
         }
 

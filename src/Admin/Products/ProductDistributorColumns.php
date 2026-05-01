@@ -3,7 +3,6 @@ declare(strict_types=1);
 
 namespace FFLHub\Admin\Products;
 
-use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Core\DistributorRegistry;
 use FFLHub\Product\ProductMeta;
 
@@ -108,7 +107,7 @@ final class ProductDistributorColumns
         }
 
         if ($column_name === self::COL_SHIPPING) {
-            $this->render_shipping_cost_meta($post_id);
+            $this->render_money_meta($post_id, ProductMeta::FFLHUB_LAST_SHIPPING_COST_META);
             return;
         }
 
@@ -303,31 +302,6 @@ final class ProductDistributorColumns
             . '<span class="dashicons ' . esc_attr($icon_class) . '"></span>'
             . wp_kses_post($money_html)
             . '</span>';
-    }
-
-    private function render_shipping_cost_meta(int $post_id): void
-    {
-        $product = function_exists('wc_get_product') ? wc_get_product($post_id) : null;
-        if ($product instanceof \WC_Product) {
-            $is_managed = ((int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true) === 1);
-            if (!$is_managed) {
-                $this->render_money_meta($post_id, ProductMeta::FFLHUB_LAST_SHIPPING_COST_META);
-                return;
-            }
-
-            $value = DistributorProductHelper::resolve_effective_shipping_cost_for_product($product, 0.0);
-            $money_html = function_exists('wc_price')
-                ? (string) wc_price($value)
-                : '$' . number_format($value, 2, '.', ',');
-
-            echo '<span class="fflhub-product-pill is-ship">'
-                . '<span class="dashicons dashicons-admin-site-alt3"></span>'
-                . wp_kses_post($money_html)
-                . '</span>';
-            return;
-        }
-
-        $this->render_money_meta($post_id, ProductMeta::FFLHUB_LAST_SHIPPING_COST_META);
     }
 
     private function render_dropship_badge(int $post_id): void
