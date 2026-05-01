@@ -8,6 +8,11 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
+use FFLHub\Distributor\Services\Orion\Cron\OrionInventoryCronService;
+use FFLHub\Distributor\Services\Orion\Cron\OrionProductCronService;
+use FFLHub\Distributor\Services\Orion\OrionServices;
+use FFLHub\Distributor\Services\Orion\Tables\OrionProductTableSchema;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 
 /**
  * Orion distributor module scaffold.
@@ -62,6 +67,22 @@ final class OrionModule implements DistributorModuleInterface
 
     public function build_distributor(): DistributorBase
     {
-        return new DistributorOrion($this);
+        $schema = new OrionProductTableSchema();
+
+        $table = new DoubleBufferedProductTable(
+            $schema,
+            'fflhub_orion_fulfillment_last_swap'
+        );
+
+        $productCron = new OrionProductCronService($table);
+        $inventoryCron = new OrionInventoryCronService($table);
+
+        $services = new OrionServices(
+            $table,
+            $productCron,
+            $inventoryCron
+        );
+
+        return new DistributorOrion($this, $services);
     }
 }

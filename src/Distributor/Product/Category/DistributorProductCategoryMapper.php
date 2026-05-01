@@ -483,6 +483,123 @@ class DistributorProductCategoryMapper
         return null;
     }
 
+    /**
+     * Map Orion product category strings to the unified category path.
+     *
+     * Orion can return one or more comma-delimited category codes such as
+     * PISTOLS, RIFLES, TACTICAL_RIFLES, MAGAZINES, OPTICS, etc. We map exact
+     * firearm/accessory categories first, then fall back to conservative
+     * keyword checks for the broader catalog.
+     */
+    public static function map_orion(string $category): ?array
+    {
+        $raw = strtoupper(trim($category));
+        if ($raw === '') {
+            return null;
+        }
+
+        $tokens = preg_split('/[,|;]+/', $raw);
+        $tokens = array_values(
+            array_filter(
+                array_map(
+                    static fn($token): string => trim((string) preg_replace('/\s+/', '_', (string) $token)),
+                    (array) $tokens
+                ),
+                static fn(string $token): bool => $token !== ''
+            )
+        );
+
+        $exact = [
+            'PISTOLS' => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'PISTOL' => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'REVOLVERS' => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'REVOLVER' => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'RIFLES' => [CategorySchema::CAT_FIREARMS, 'Rifles'],
+            'TACTICAL_RIFLES' => [CategorySchema::CAT_FIREARMS, 'Rifles', 'Semi-Auto'],
+            'SHOTGUNS' => [CategorySchema::CAT_FIREARMS, 'Shotguns'],
+            'COMPLETE_LOWERS' => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'RECEIVERS' => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'FRAMES' => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'COMPLETE_UPPERS' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+            'BARRELS' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+            'TRIGGERS' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+            'CHOKE_TUBES' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+
+            'SCOPES' => [CategorySchema::CAT_OPTICS, 'Scopes / Magnified Optics'],
+            'OPTICS' => [CategorySchema::CAT_OPTICS],
+            'RED_DOTS' => [CategorySchema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'],
+            'SIGHTS' => [CategorySchema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'],
+            'BINOCULARS' => [CategorySchema::CAT_OPTICS, 'Observation / Range Finding'],
+            'RANGE_FINDERS' => [CategorySchema::CAT_OPTICS, 'Observation / Range Finding'],
+            'BORE_SIGHTERS' => [CategorySchema::CAT_OPTICS, 'Optics Accessories'],
+            'BASES' => [CategorySchema::CAT_OPTICS, 'Optic Mounts & Rings'],
+            'RINGS' => [CategorySchema::CAT_OPTICS, 'Optic Mounts & Rings'],
+
+            'LIGHTS' => [CategorySchema::CAT_LIGHTS],
+            'LASERS' => [CategorySchema::CAT_LIGHTS],
+
+            'MAGAZINES' => [CategorySchema::CAT_MAGAZINES],
+            'AIR_GUN_MAGAZINES' => [CategorySchema::CAT_MAGAZINES],
+
+            'AMMUNITION' => [CategorySchema::CAT_AMMO],
+            'AMMO' => [CategorySchema::CAT_AMMO],
+
+            'SUPPRESSORS' => [CategorySchema::CAT_NFA],
+            'SILENCERS' => [CategorySchema::CAT_NFA],
+            'SUPPRESSOR_ACCESSORIES' => [CategorySchema::CAT_NFA, 'Suppressor Accessories'],
+
+            'BLACK_POWDER_GUNS' => [CategorySchema::CAT_BLACK_POWDER, 'Guns'],
+            'BLACK_POWDER_TOOLS' => [CategorySchema::CAT_BLACK_POWDER, 'Accessories'],
+
+            'BATONS' => [CategorySchema::CAT_LESS_LETHAL],
+            'PEPPER_SPRAY' => [CategorySchema::CAT_LESS_LETHAL],
+        ];
+
+        foreach ($tokens as $token) {
+            if (isset($exact[$token])) {
+                return array_values($exact[$token]);
+            }
+        }
+
+        $haystack = implode(' ', $tokens);
+
+        if (strpos($haystack, 'SUPPRESS') !== false || strpos($haystack, 'SILENC') !== false) {
+            return [CategorySchema::CAT_NFA];
+        }
+        if (strpos($haystack, 'BLACK_POWDER') !== false || strpos($haystack, 'MUZZLE') !== false) {
+            return [CategorySchema::CAT_BLACK_POWDER];
+        }
+        if (strpos($haystack, 'MAGAZ') !== false) {
+            return [CategorySchema::CAT_MAGAZINES];
+        }
+        if (strpos($haystack, 'AMMO') !== false || strpos($haystack, 'AMMUNITION') !== false) {
+            return [CategorySchema::CAT_AMMO];
+        }
+        if (strpos($haystack, 'OPTIC') !== false || strpos($haystack, 'SCOPE') !== false || strpos($haystack, 'SIGHT') !== false) {
+            return [CategorySchema::CAT_OPTICS];
+        }
+        if (strpos($haystack, 'LIGHT') !== false || strpos($haystack, 'LASER') !== false) {
+            return [CategorySchema::CAT_LIGHTS];
+        }
+        if (strpos($haystack, 'SHOTGUN') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Shotguns'];
+        }
+        if (strpos($haystack, 'RIFLE') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Rifles'];
+        }
+        if (strpos($haystack, 'PISTOL') !== false || strpos($haystack, 'HANDGUN') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'];
+        }
+        if (strpos($haystack, 'REVOLVER') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'];
+        }
+        if (strpos($haystack, 'RECEIVER') !== false || strpos($haystack, 'LOWER') !== false || strpos($haystack, 'FRAME') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Other / Specialty'];
+        }
+
+        return null;
+    }
+
 
 
 
