@@ -1,0 +1,67 @@
+<?php
+
+namespace FFLHub\Distributor\Integrations\Orion;
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+use FFLHub\Distributor\Contracts\DistributorModuleInterface;
+use FFLHub\Distributor\Core\DistributorBase;
+
+/**
+ * Orion distributor module scaffold.
+ *
+ * Orion's published API authenticates requests with a single Connection-Key
+ * header, so the initial settings surface only asks for that credential.
+ */
+final class OrionModule implements DistributorModuleInterface
+{
+    public function id(): string
+    {
+        return 'orion';
+    }
+
+    public function label(): string
+    {
+        return 'Orion';
+    }
+
+    public function name(): string
+    {
+        return 'Orion Wholesale';
+    }
+
+    public function description(): string
+    {
+        return 'Orion Wholesale Distributor';
+    }
+
+    public function section_description(): string
+    {
+        return 'Orion Wholesale Distributor';
+    }
+
+    public function icon_url(): string
+    {
+        return '';
+    }
+
+    public function settings_schema(): array
+    {
+        return [
+            'connection_key' => [
+                'label'       => 'Connection Key',
+                'type'        => 'password',
+                'placeholder' => '',
+                'description' => 'Your Orion Wholesale API connection key. Orion sends this as the Connection-Key request header.',
+                'default'     => '',
+            ],
+        ];
+    }
+
+    public function build_distributor(): DistributorBase
+    {
+        return new DistributorOrion($this);
+    }
+}
