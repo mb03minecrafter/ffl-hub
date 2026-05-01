@@ -14,13 +14,12 @@ use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 
 /**
- * Runtime placeholder for the Orion integration.
- *
- * Product import, order placement, and shipment tracking will be added behind
- * this module once the settings scaffold is in place.
+ * Orion runtime distributor backed by the local Orion catalog tables.
  */
 final class DistributorOrion extends DistributorBase
 {
+    private const DEFAULT_FLAT_SHIPPING_COST = 13.0;
+
     public function get_product_by_upc(string $upc): ?DistributorProductPayload
     {
         return $this->build_payload_from_local_row($upc, true);
@@ -42,6 +41,23 @@ final class DistributorOrion extends DistributorBase
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
     {
         return null;
+    }
+
+    public function get_shipping_cost_by_upc(string $upc): ?float
+    {
+        $normalized = $this->normalize_upc($upc);
+        if ($normalized === null) {
+            return null;
+        }
+
+        $cost = apply_filters(
+            'fflhub_orion_flat_shipping_cost',
+            self::DEFAULT_FLAT_SHIPPING_COST,
+            $normalized,
+            $this
+        );
+
+        return is_numeric($cost) ? max(0.0, (float) $cost) : self::DEFAULT_FLAT_SHIPPING_COST;
     }
 
     /**
