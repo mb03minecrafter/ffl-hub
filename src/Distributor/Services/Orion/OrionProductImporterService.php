@@ -35,11 +35,77 @@ final class OrionProductImporterService
      */
     public function import_products_array(array $products, array $inventoryResponseOrRows = []): int
     {
+        $t_start = microtime(true);
+        $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
         $inventory_lookup = $this->parser->build_inventory_lookup($inventoryResponseOrRows);
+        $columns = $this->table->get_schema()->get_insert_columns();
+        $tsv_path = $this->resolve_catalog_tsv_path();
+
+        $this->log('Orion product import start.', [
+            'products_in' => count($products),
+            'inventory_lookup_rows' => count($inventory_lookup),
+            'column_count' => count($columns),
+            'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
+            'tsv_path' => (string) $tsv_path,
+        ]);
+
+        if ($tsv_path === '' || empty($columns)) {
+            $this->log('Orion product import falling back to batched inserts; TSV path or columns unavailable.', [
+                'tsv_path' => (string) $tsv_path,
+                'column_count' => count($columns),
+            ]);
+
+            return $this->import_products_array_via_batches($products, $inventory_lookup, $t_start, $mem_start);
+        }
+
+        $write_stats = $this->write_catalog_tsv($products, $inventory_lookup, $columns, $tsv_path);
+        if ((int) ($write_stats['rows_written'] ?? 0) <= 0) {
+            $this->log('Orion product import wrote zero TSV rows; not loading.', $write_stats);
+            return 0;
+        }
+
+        $count = $this->import_from_tsv_file($tsv_path, $columns);
+
+        if ($count > 0) {
+            update_option('fflhub_orion_fulfillment_last_import', current_time('mysql'), false);
+            update_option('fflhub_orion_fulfillment_last_import_count', (int) $count, false);
+        }
+
+        $ctx = array_merge($write_stats, [
+            'rows_inserted' => (int) $count,
+            'elapsed_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
+        ]);
+
+        if ($mem_start > 0 && function_exists('memory_get_usage')) {
+            $mem_end = (int) memory_get_usage(true);
+            $ctx['memory_start_kb'] = (int) round($mem_start / 1024);
+            $ctx['memory_end_kb'] = (int) round($mem_end / 1024);
+            $ctx['memory_delta_kb'] = (int) round(($mem_end - $mem_start) / 1024);
+        }
+
+        $this->log('Orion product import complete.', $ctx);
+
+        return (int) $count;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $products
+     * @param array<string,array<string,mixed>> $inventoryLookup
+     */
+    private function import_products_array_via_batches(
+        array $products,
+        array $inventoryLookup,
+        float $t_start,
+        int $mem_start
+    ): int {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
 
         try {
             $this->table->truncate_staging();
@@ -60,7 +126,7 @@ final class OrionProductImporterService
                 continue;
             }
 
-            $row = $this->parser->parse_product($product, $inventory_lookup);
+            $row = $this->parser->parse_product($product, $inventoryLookup);
             if (!is_array($row)) {
                 $skipped_missing_upc++;
                 continue;
@@ -96,13 +162,317 @@ final class OrionProductImporterService
         }
 
         $this->log('Orion product import complete.', [
+            'mode' => 'batched_insert_fallback',
             'products_in' => count($products),
             'rows_inserted' => (int) $total_inserted,
             'skipped_missing_upc' => (int) $skipped_missing_upc,
             'skipped_dupe_upc' => (int) $skipped_dupe_upc,
+            'elapsed_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
+            'memory_start_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
         ]);
 
         return (int) $total_inserted;
+    }
+
+    /**
+     * Import TSV into the staging table, preferring LOAD DATA LOCAL INFILE.
+     *
+     * @param string[] $columns
+     */
+    private function import_from_tsv_file(string $file_path, array $columns): int
+    {
+        if (!file_exists($file_path) || !is_readable($file_path)) {
+            $this->log('Orion TSV import file missing/unreadable.', [
+                'file_path' => $file_path,
+            ]);
+            return 0;
+        }
+
+        if ($this->can_use_load_data_local_infile()) {
+            $rows = $this->import_tsv_via_load_data($file_path, $columns);
+            if ($rows >= 0) {
+                return $rows;
+            }
+
+            $this->log('Orion LOAD DATA path failed; falling back to PHP TSV batching.', [
+                'file_path' => $file_path,
+            ]);
+        }
+
+        return $this->import_tsv_via_php($file_path, $columns);
+    }
+
+    /**
+     * @param string[] $columns
+     */
+    private function import_tsv_via_load_data(string $file_path, array $columns): int
+    {
+        global $wpdb;
+
+        $t_start = microtime(true);
+        $table_name = $this->table->get_staging_table_name();
+
+        $column_list = implode(
+            ', ',
+            array_map(
+                static fn(string $column): string => '`' . str_replace('`', '``', $column) . '`',
+                $columns
+            )
+        );
+
+        $sql = "
+            LOAD DATA LOCAL INFILE %s
+            INTO TABLE {$table_name}
+            CHARACTER SET utf8mb4
+            FIELDS TERMINATED BY '\\t' ENCLOSED BY '\"' ESCAPED BY '\\\\'
+            LINES TERMINATED BY '\\n'
+            ({$column_list})
+        ";
+
+        try {
+            $this->table->truncate_staging();
+
+            $prepared = $wpdb->prepare($sql, $file_path);
+            $result = $wpdb->query($prepared);
+            if ($result === false) {
+                $this->log('Orion LOAD DATA query failed.', [
+                    'error' => (string) $wpdb->last_error,
+                    'file_path' => $file_path,
+                ]);
+                return -1;
+            }
+
+            $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $sig_approved_forced = SigDropshipApproval::apply_to_table('orion', $table_name);
+        } catch (\Throwable $e) {
+            $this->log('Orion LOAD DATA exception.', [
+                'error' => $e->getMessage(),
+                'file_path' => $file_path,
+            ]);
+            return -1;
+        }
+
+        $rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $this->log('Orion TSV loaded via LOAD DATA LOCAL INFILE.', [
+            'file_path' => $file_path,
+            'rows' => (int) $rows,
+            'sig_approved_forced' => (int) $sig_approved_forced,
+            'elapsed_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
+        ]);
+
+        return $rows;
+    }
+
+    /**
+     * @param string[] $columns
+     */
+    private function import_tsv_via_php(string $file_path, array $columns): int
+    {
+        $t_start = microtime(true);
+        $handle = fopen($file_path, 'r');
+        if (!$handle) {
+            $this->log('Orion PHP TSV fallback fopen failed.', [
+                'file_path' => $file_path,
+            ]);
+            return 0;
+        }
+
+        try {
+            $this->table->truncate_staging();
+        } catch (\Throwable $e) {
+            fclose($handle);
+            $this->log('Orion PHP TSV fallback truncate failed.', [
+                'error' => $e->getMessage(),
+            ]);
+            return 0;
+        }
+
+        $batch_size = 1000;
+        $batch_rows = [];
+        $inserted_total = 0;
+        $line_count = 0;
+
+        while (($values = fgetcsv($handle, 0, "\t", '"', '\\')) !== false) {
+            $line_count++;
+            if (!is_array($values) || empty($values)) {
+                continue;
+            }
+
+            $values = array_pad($values, count($columns), '');
+            if (count($values) > count($columns)) {
+                $values = array_slice($values, 0, count($columns));
+            }
+
+            $row = [];
+            foreach ($columns as $index => $column) {
+                $row[$column] = $values[$index] ?? '';
+            }
+
+            $upc = trim((string) ($row['upc'] ?? ''));
+            if ($upc === '' || strtolower($upc) === 'null') {
+                continue;
+            }
+
+            $batch_rows[] = $row;
+            if (count($batch_rows) >= $batch_size) {
+                $inserted_total += $this->flush_staging_batch($batch_rows);
+                $batch_rows = [];
+            }
+        }
+
+        fclose($handle);
+
+        if (!empty($batch_rows)) {
+            $inserted_total += $this->flush_staging_batch($batch_rows);
+        }
+
+        $this->log('Orion TSV imported via PHP fallback.', [
+            'file_path' => $file_path,
+            'lines_seen' => (int) $line_count,
+            'rows_inserted' => (int) $inserted_total,
+            'elapsed_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
+        ]);
+
+        return (int) $inserted_total;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $products
+     * @param array<string,array<string,mixed>> $inventoryLookup
+     * @param string[] $columns
+     * @return array<string,mixed>
+     */
+    private function write_catalog_tsv(array $products, array $inventoryLookup, array $columns, string $tsvPath): array
+    {
+        $t_start = microtime(true);
+        $handle = fopen($tsvPath, 'w');
+        if (!$handle) {
+            return [
+                'tsv_path' => $tsvPath,
+                'rows_written' => 0,
+                'skipped_missing_upc' => 0,
+                'skipped_dupe_upc' => 0,
+                'write_error' => 'fopen failed',
+            ];
+        }
+
+        $rows_written = 0;
+        $skipped_missing_upc = 0;
+        $skipped_dupe_upc = 0;
+        $seen_upcs = [];
+
+        foreach ($products as $product) {
+            if (!is_array($product)) {
+                continue;
+            }
+
+            $row = $this->parser->parse_product($product, $inventoryLookup);
+            if (!is_array($row)) {
+                $skipped_missing_upc++;
+                continue;
+            }
+
+            $upc = trim((string) ($row['upc'] ?? ''));
+            if ($upc === '') {
+                $skipped_missing_upc++;
+                continue;
+            }
+
+            if (isset($seen_upcs[$upc])) {
+                $skipped_dupe_upc++;
+                continue;
+            }
+            $seen_upcs[$upc] = true;
+
+            $row = SigDropshipApproval::apply_to_row('orion', $row);
+
+            $values = [];
+            foreach ($columns as $column) {
+                $values[] = array_key_exists($column, $row) ? (string) $row[$column] : '';
+            }
+
+            fputcsv($handle, $values, "\t", '"', '\\');
+            $rows_written++;
+        }
+
+        fclose($handle);
+
+        clearstatcache(true, $tsvPath);
+
+        return [
+            'tsv_path' => $tsvPath,
+            'tsv_bytes' => file_exists($tsvPath) ? (int) filesize($tsvPath) : 0,
+            'products_in' => count($products),
+            'rows_written' => (int) $rows_written,
+            'skipped_missing_upc' => (int) $skipped_missing_upc,
+            'skipped_dupe_upc' => (int) $skipped_dupe_upc,
+            'write_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
+        ];
+    }
+
+    private function resolve_catalog_tsv_path(): string
+    {
+        $uploads = wp_upload_dir();
+        $base_dir = rtrim((string) ($uploads['basedir'] ?? ''), '/\\');
+        if ($base_dir === '') {
+            return '';
+        }
+
+        $dir = $base_dir . '/fflhub/orion';
+        if (!is_dir($dir) && !wp_mkdir_p($dir)) {
+            $this->log('Failed to create Orion catalog TSV directory.', [
+                'dir' => $dir,
+            ]);
+            return '';
+        }
+
+        if (!is_dir($dir) || !is_writable($dir)) {
+            $this->log('Orion catalog TSV directory is not writable.', [
+                'dir' => $dir,
+            ]);
+            return '';
+        }
+
+        return $dir . '/catalog_' . gmdate('Ymd_His') . '.tsv';
+    }
+
+    private function can_use_load_data_local_infile(): bool
+    {
+        global $wpdb;
+
+        $row = $wpdb->get_row("SHOW VARIABLES LIKE 'local_infile'", ARRAY_A);
+        $mysql_value = is_array($row) ? strtolower((string) ($row['Value'] ?? $row['value'] ?? '')) : '';
+        $mysql_ok = in_array($mysql_value, ['on', '1', 'true'], true);
+
+        $mysqli = ini_get('mysqli.allow_local_infile');
+        $pdo = ini_get('pdo_mysql.allow_local_infile');
+
+        $php_ok = $this->ini_truthy($mysqli) || $this->ini_truthy($pdo);
+        $ok = $mysql_ok && $php_ok;
+
+        $this->log('Orion LOAD DATA LOCAL INFILE capability check.', [
+            'mysql_local_infile' => $mysql_value,
+            'mysql_ok' => $mysql_ok ? 1 : 0,
+            'mysqli_allow_local_infile' => $mysqli !== false ? (string) $mysqli : '',
+            'pdo_mysql_allow_local_infile' => $pdo !== false ? (string) $pdo : '',
+            'php_ok' => $php_ok ? 1 : 0,
+            'result' => $ok ? 1 : 0,
+        ]);
+
+        return $ok;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function ini_truthy($value): bool
+    {
+        if ($value === false || $value === null) {
+            return false;
+        }
+
+        return in_array(strtolower(trim((string) $value)), ['1', 'on', 'true', 'yes'], true);
     }
 
     /**
