@@ -68,6 +68,34 @@ final class OrionApiClient
     }
 
     /**
+     * @param array<string,mixed> $params
+     * @return array{ok:bool,status:int,data:array<string,mixed>,error:string}
+     */
+    public function place_order(array $params): array
+    {
+        return $this->post('place_order', $this->normalize_params($params));
+    }
+
+    /**
+     * @return array{ok:bool,status:int,data:array<string,mixed>,error:string}
+     */
+    public function get_shipment_data(string $orderId = '', ?int $days = null): array
+    {
+        $params = [];
+
+        $orderId = trim($orderId);
+        if ($orderId !== '') {
+            $params['order_id'] = $orderId;
+        }
+
+        if ($days !== null && $days > 0) {
+            $params['days'] = (string) $days;
+        }
+
+        return $this->get('get_shipment_data', $params);
+    }
+
+    /**
      * @param array<string,string> $params
      * @return array{ok:bool,status:int,data:array<string,mixed>,error:string}
      */
@@ -92,6 +120,38 @@ final class OrionApiClient
                     'Accept'         => 'application/json',
                     'Connection-Key' => $this->connectionKey,
                 ],
+            ]
+        );
+
+        return $this->parse_response($response);
+    }
+
+    /**
+     * @param array<string,string> $params
+     * @return array{ok:bool,status:int,data:array<string,mixed>,error:string}
+     */
+    private function post(string $method, array $params = []): array
+    {
+        if (!$this->has_credentials()) {
+            return [
+                'ok'     => false,
+                'status' => 0,
+                'data'   => [],
+                'error'  => 'Missing Orion connection key.',
+            ];
+        }
+
+        $url = add_query_arg(array_merge(['method' => $method], $params), $this->baseUrl);
+
+        $response = wp_remote_post(
+            $url,
+            [
+                'timeout' => $this->timeoutSeconds,
+                'headers' => [
+                    'Accept'         => 'application/json',
+                    'Connection-Key' => $this->connectionKey,
+                ],
+                'body'    => [],
             ]
         );
 
@@ -165,5 +225,36 @@ final class OrionApiClient
         }
 
         return implode(',', array_values($ids));
+    }
+
+    /**
+     * @param array<string,mixed> $params
+     * @return array<string,string>
+     */
+    private function normalize_params(array $params): array
+    {
+        $out = [];
+
+        foreach ($params as $key => $value) {
+            $key = trim((string) $key);
+            if ($key === '' || $value === null) {
+                continue;
+            }
+
+            if (is_bool($value)) {
+                $out[$key] = $value ? '1' : '0';
+                continue;
+            }
+
+            if (is_array($value)) {
+                $encoded = wp_json_encode($value, JSON_UNESCAPED_SLASHES);
+                $out[$key] = is_string($encoded) ? $encoded : '';
+                continue;
+            }
+
+            $out[$key] = trim((string) $value);
+        }
+
+        return $out;
     }
 }

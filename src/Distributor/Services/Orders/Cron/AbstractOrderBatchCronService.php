@@ -460,9 +460,11 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         } catch (\Throwable $e) {
             $result = DistributorOrderResult::block_retryable(
                 'Batch aggregate call exception: ' . $e->getMessage(),
-                '',
-                ['aggregate_exception'],
-                ['exception' => $e->getMessage()]
+                [DistributorOrderResult::REASON_RETRY_UNKNOWN],
+                [
+                    'aggregate_exception' => 1,
+                    'exception' => $e->getMessage(),
+                ]
             );
         }
 

@@ -96,7 +96,7 @@ final class DealerFulfilledCronService extends AbstractCronService
             'shipment_found'          => 0,
             'tracking_added'          => 0,
             'email_fired'             => 0,
-            'skipped_zanders'         => 0,
+            'skipped_distributor_no_dealer_tracking' => 0,
             'skipped_invalid'         => 0,
             'skipped_no_po'           => 0,
             'skipped_suspended'       => 0,
@@ -183,10 +183,10 @@ final class DealerFulfilledCronService extends AbstractCronService
                 continue;
             }
 
-            // Temporary policy: ignore Zanders in dealer-fulfilled shipment polling.
-            if (strtolower(trim($dist_id)) === 'zanders') {
-                $stats['skipped_zanders']++;
-                $this->log_ctx('skip_zanders_for_dealer_poll', [
+            // Some distributors only expose API tracking for drop-ship orders.
+            if (in_array(strtolower(trim($dist_id)), ['orion', 'zanders'], true)) {
+                $stats['skipped_distributor_no_dealer_tracking']++;
+                $this->log_ctx('skip_distributor_for_dealer_poll', [
                     'order_id' => $order_id,
                     'job_key'  => $job_key,
                     'dist_id'  => $dist_id,

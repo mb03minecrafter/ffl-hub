@@ -20,6 +20,7 @@ final class DealerBatchCronRegistry
         return [
             'rsr'     => RSRDealerBatchCronService::CRON_HOOK,
             'lipseys' => LipseysDealerBatchCronService::CRON_HOOK,
+            'orion'   => OrionDealerBatchCronService::CRON_HOOK,
             'zanders' => ZandersDealerBatchCronService::CRON_HOOK,
         ];
     }
@@ -29,6 +30,7 @@ final class DealerBatchCronRegistry
     {
         return [
             'lipseys' => LipseysCaRelayBatchCronService::CRON_HOOK,
+            'orion'   => OrionCaRelayBatchCronService::CRON_HOOK,
             'zanders' => ZandersCaRelayBatchCronService::CRON_HOOK,
         ];
     }

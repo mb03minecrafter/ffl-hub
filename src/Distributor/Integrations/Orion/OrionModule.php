@@ -8,6 +8,8 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsSchema;
+use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Distributor\Services\Orion\Cron\OrionInventoryCronService;
 use FFLHub\Distributor\Services\Orion\Cron\OrionProductCronService;
 use FFLHub\Distributor\Services\Orion\OrionServices;
@@ -76,11 +78,13 @@ final class OrionModule implements DistributorModuleInterface
 
         $productCron = new OrionProductCronService($table);
         $inventoryCron = new OrionInventoryCronService($table);
+        $orderTable = new OrderPlacementJobsTable(new OrderPlacementJobsSchema());
 
         $services = new OrionServices(
             $table,
             $productCron,
-            $inventoryCron
+            $inventoryCron,
+            $orderTable
         );
 
         return new DistributorOrion($this, $services);
