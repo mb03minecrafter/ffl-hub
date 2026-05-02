@@ -40,6 +40,7 @@ final class RSRBatchQueuePage
     private const DEFAULT_LOW_STOCK_THRESHOLD = 3;
     private const DEFAULT_RETRY_DELAY_SECONDS = 300;
     private const DEFAULT_MAX_ROWS_PER_RUN = 200;
+    private const DISPATCH_TZ = 'America/Chicago';
 
     private OrderPlacementJobsTable $jobs_table;
     private DistributorHandler $handler;
@@ -179,6 +180,9 @@ final class RSRBatchQueuePage
         $msg = $scheduled
             ? __('Force flush enabled and batch run scheduled.', 'ffl-hub')
             : __('Force flush enabled and batch run triggered.', 'ffl-hub');
+        if ($this->is_weekend_hold_active()) {
+            $msg = __('Force flush enabled. RSR weekend hold is active, so non-priority queued rows will flush at the next weekday dispatch time.', 'ffl-hub');
+        }
         $this->redirect_with_notice('success', $msg);
     }
 
@@ -229,13 +233,17 @@ final class RSRBatchQueuePage
 
     private function read_settings(): array
     {
+        $dispatch_time = $this->sanitize_dispatch_time((string) get_option(self::OPT_DISPATCH_TIME, self::DEFAULT_DISPATCH_TIME));
+
         return [
             'enabled' => $this->truthy_option(self::OPT_BATCH_ENABLED, true),
-            'dispatch_time' => $this->sanitize_dispatch_time((string) get_option(self::OPT_DISPATCH_TIME, self::DEFAULT_DISPATCH_TIME)),
+            'dispatch_time' => $dispatch_time,
             'low_stock_threshold' => max(0, (int) get_option(self::OPT_LOW_STOCK_THRESHOLD, self::DEFAULT_LOW_STOCK_THRESHOLD)),
             'retry_delay_seconds' => max(30, (int) get_option(self::OPT_RETRY_DELAY_SECONDS, self::DEFAULT_RETRY_DELAY_SECONDS)),
             'max_rows_per_run' => max(1, (int) get_option(self::OPT_MAX_ROWS_PER_RUN, self::DEFAULT_MAX_ROWS_PER_RUN)),
             'force_flush' => $this->truthy_option(self::OPT_FORCE_FLUSH, false),
+            'weekend_hold_active' => $this->is_weekend_hold_active(),
+            'next_allowed_dispatch_label' => $this->next_allowed_dispatch_label($dispatch_time),
         ];
     }
 
@@ -255,6 +263,7 @@ final class RSRBatchQueuePage
                     </td></tr>
                     <tr><th scope="row"><?php esc_html_e('Dispatch Time (Local)', 'ffl-hub'); ?></th><td>
                         <input type="text" class="regular-text" name="fflhub_rsr_dealer_batch_dispatch_time" value="<?php echo esc_attr((string) $settings['dispatch_time']); ?>" placeholder="17:00" />
+                        <p class="description"><?php esc_html_e('RSR scheduled dealer batch placement is held on Saturdays and Sundays. Low-stock priority rows can still place immediately.', 'ffl-hub'); ?></p>
                     </td></tr>
                     <tr><th scope="row"><?php esc_html_e('Low Stock Threshold', 'ffl-hub'); ?></th><td>
                         <input type="number" min="0" step="1" class="small-text" name="fflhub_rsr_dealer_batch_low_stock_threshold" value="<?php echo esc_attr((string) ((int) $settings['low_stock_threshold'])); ?>" />
@@ -268,7 +277,7 @@ final class RSRBatchQueuePage
                     <tr><th scope="row"><?php esc_html_e('Force Flush Next Run', 'ffl-hub'); ?></th><td>
                         <input type="hidden" name="fflhub_rsr_dealer_batch_force_flush" value="0" />
                         <label><input type="checkbox" name="fflhub_rsr_dealer_batch_force_flush" value="1" <?php checked(!empty($settings['force_flush'])); ?> />
-                            <?php esc_html_e('Keep force flush enabled until next batch cron run consumes it', 'ffl-hub'); ?></label>
+                            <?php esc_html_e('Keep force flush enabled until the next eligible batch cron run consumes it', 'ffl-hub'); ?></label>
                     </td></tr>
                 </tbody></table>
                 <?php submit_button(__('Save RSR Batch Settings', 'ffl-hub')); ?>
@@ -285,13 +294,31 @@ final class RSRBatchQueuePage
             <p>
                 <?php echo esc_html(sprintf(__('Queued rows: %d | Dispatch-ready now: %d | Dispatch time: %s', 'ffl-hub'), (int) ($data['batch_pending_jobs'] ?? 0), (int) ($data['dispatch_ready_jobs'] ?? 0), (string) ($settings['dispatch_time'] ?? self::DEFAULT_DISPATCH_TIME))); ?>
             </p>
+            <?php if (!empty($settings['weekend_hold_active'])) : ?>
+                <p class="description">
+                    <strong><?php esc_html_e('Weekend hold active:', 'ffl-hub'); ?></strong>
+                    <?php
+                    echo esc_html(
+                        sprintf(
+                            __('Non-priority RSR batch rows will not be placed again until %s. Low-stock priority rows can still place immediately.', 'ffl-hub'),
+                            (string) ($settings['next_allowed_dispatch_label'] ?? '')
+                        )
+                    );
+                    ?>
+                </p>
+            <?php endif; ?>
             <?php if (!empty($settings['force_flush'])) : ?>
                 <p class="description"><?php esc_html_e('Force flush flag is ON and will be consumed by the next batch run.', 'ffl-hub'); ?></p>
             <?php endif; ?>
             <form method="post" action="">
                 <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
                 <input type="hidden" name="fflhub_rsr_batch_action" value="<?php echo esc_attr(self::FORM_ACTION_FORCE_RUN); ?>" />
-                <?php submit_button(__('Force Flush + Run Now', 'ffl-hub'), 'secondary', '', false); ?>
+                <?php
+                $button_label = !empty($settings['weekend_hold_active'])
+                    ? __('Force Flush at Next Weekday Window', 'ffl-hub')
+                    : __('Force Flush + Run Now', 'ffl-hub');
+                submit_button($button_label, 'secondary', '', false);
+                ?>
             </form>
         </section>
         <?php
@@ -812,6 +839,7 @@ final class RSRBatchQueuePage
             <ul style="list-style:disc;margin-left:18px;">
                 <li><?php esc_html_e('Batch mode controls whether eligible RSR dealer rows are queued as batch_pending for grouped placement.', 'ffl-hub'); ?></li>
                 <li><?php echo esc_html(sprintf(__('Dispatch time is %s (local site time). Rows wait until that window unless force flush is enabled.', 'ffl-hub'), $dispatch_time)); ?></li>
+                <li><?php esc_html_e('RSR scheduled batch placement is blocked on Saturdays and Sundays; low-stock priority rows can still place immediately.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('Force Flush + Run Now sets a one-time force flag and schedules the batch cron immediately.', 'ffl-hub'); ?></li>
                 <li><?php echo esc_html(sprintf(__('Retry Delay (%d sec) and Max Rows Per Run (%d) bound how aggressively each cron run processes queue entries.', 'ffl-hub'), $retry_delay, $max_rows)); ?></li>
                 <li><?php esc_html_e('The queue tables above show both aggregated UPC demand and raw per-line entries so you can audit exactly what will be sent.', 'ffl-hub'); ?></li>
@@ -918,6 +946,36 @@ final class RSRBatchQueuePage
             return self::DEFAULT_DISPATCH_TIME;
         }
         return sprintf('%02d:%02d', (int) ($m[1] ?? 17), (int) ($m[2] ?? 0));
+    }
+
+    private function is_weekend_hold_active(): bool
+    {
+        $now = new \DateTimeImmutable('now', new \DateTimeZone(self::DISPATCH_TZ));
+        $day_of_week = (int) $now->format('N');
+        return $day_of_week >= 6;
+    }
+
+    private function next_allowed_dispatch_label(string $dispatch_time): string
+    {
+        $dispatch_time = $this->sanitize_dispatch_time($dispatch_time);
+        [$hour, $minute] = array_map('intval', explode(':', $dispatch_time, 2));
+
+        $tz = new \DateTimeZone(self::DISPATCH_TZ);
+        $now = new \DateTimeImmutable('now', $tz);
+        $candidate = $now->setTime($hour, $minute, 0);
+        if ($now >= $candidate) {
+            $candidate = $candidate->modify('+1 day')->setTime($hour, $minute, 0);
+        }
+
+        for ($i = 0; $i < 14; $i++) {
+            $day_of_week = (int) $candidate->format('N');
+            if ($day_of_week >= 1 && $day_of_week <= 5) {
+                return $candidate->format('D M j, Y g:i A T');
+            }
+            $candidate = $candidate->modify('+1 day')->setTime($hour, $minute, 0);
+        }
+
+        return $candidate->format('D M j, Y g:i A T');
     }
 
     private function to_non_negative_float($value): float

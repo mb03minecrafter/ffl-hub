@@ -139,6 +139,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             'risky_upcs' => 0,
             'priority_flushed_rows' => 0,
             'scheduled_flushed_rows' => 0,
+            'dispatch_blocked_rows' => 0,
         ];
 
         try {
@@ -311,6 +312,25 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                         'Priority batch flush exception: ' . $e->getMessage()
                     );
                 }
+            }
+
+            $dispatch_block_reason = $this->current_dispatch_block_reason();
+            if ($dispatch_block_reason !== '' && !empty($batch_candidates)) {
+                $next_dispatch_utc = $this->next_dispatch_boundary_utc_mysql();
+                $this->defer_candidates_until_next_dispatch_window($batch_candidates, $next_dispatch_utc);
+                $run_stats['dispatch_blocked_rows'] = count($batch_candidates);
+                $run_stats['priority_flushed_rows'] = $priority_flushed_rows;
+                $this->log_ctx('dispatch_blocked', [
+                    'run_id' => $run_id,
+                    'reason' => $dispatch_block_reason,
+                    'rows' => count($batch_candidates),
+                    'priority_flushed_rows' => $priority_flushed_rows,
+                    'next_dispatch_utc' => $next_dispatch_utc,
+                ]);
+                $run_status = $priority_flushed_rows > 0
+                    ? 'priority_flushed_dispatch_blocked'
+                    : 'dispatch_blocked';
+                return;
             }
 
             // Force flush is one-shot: consume the flag this run, then evaluate dispatch gate.
@@ -820,13 +840,17 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     /**
      * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $candidates
      */
-    private function defer_candidates_until_next_dispatch_window(array $candidates): void
+    private function defer_candidates_until_next_dispatch_window(array $candidates, ?string $next_dispatch_utc = null): void
     {
         if (empty($candidates)) {
             return;
         }
 
-        $next_dispatch_utc = $this->next_dispatch_boundary_utc_mysql();
+        $next_dispatch_utc = trim((string) $next_dispatch_utc);
+        if ($next_dispatch_utc === '') {
+            $next_dispatch_utc = $this->next_dispatch_boundary_utc_mysql();
+        }
+
         foreach ($candidates as $entry) {
             $job = $entry['job'] ?? null;
             if (!($job instanceof OrderPlacementJobRow)) {
@@ -847,13 +871,43 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     private function next_dispatch_boundary_utc_mysql(): string
     {
         $ctx = $this->dispatch_window_context();
-        /** @var \DateTimeImmutable $dispatch_local */
-        $dispatch_local = $ctx['dispatch_local'];
+        $next_dispatch_local = $this->next_dispatch_boundary_local($ctx);
 
-        return $dispatch_local
-            ->modify('+1 day')
+        return $next_dispatch_local
             ->setTimezone(new \DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
+    }
+
+    /**
+     * @param array{
+     *   hour:int,
+     *   minute:int,
+     *   tz:\DateTimeZone,
+     *   now_local:\DateTimeImmutable,
+     *   dispatch_local:\DateTimeImmutable
+     * } $ctx
+     */
+    private function next_dispatch_boundary_local(array $ctx): \DateTimeImmutable
+    {
+        /** @var \DateTimeImmutable $now_local */
+        $now_local = $ctx['now_local'];
+        /** @var \DateTimeImmutable $dispatch_local */
+        $dispatch_local = $ctx['dispatch_local'];
+        $hour = (int) ($ctx['hour'] ?? 17);
+        $minute = (int) ($ctx['minute'] ?? 0);
+
+        $candidate = ($now_local < $dispatch_local)
+            ? $dispatch_local
+            : $dispatch_local->modify('+1 day')->setTime($hour, $minute, 0);
+
+        for ($i = 0; $i < 14; $i++) {
+            if ($this->is_dispatch_day_allowed($candidate)) {
+                return $candidate;
+            }
+            $candidate = $candidate->modify('+1 day')->setTime($hour, $minute, 0);
+        }
+
+        return $candidate;
     }
 
     /**
@@ -900,6 +954,10 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         /** @var \DateTimeZone $tz */
         $tz = $ctx['tz'];
 
+        if (!$this->is_dispatch_day_allowed($now_local)) {
+            return false;
+        }
+
         if ($now_local < $dispatch_local) {
             return false;
         }
@@ -921,6 +979,29 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         }
 
         return true;
+    }
+
+    private function current_dispatch_block_reason(): string
+    {
+        $ctx = $this->dispatch_window_context();
+        /** @var \DateTimeImmutable $now_local */
+        $now_local = $ctx['now_local'];
+
+        if ($this->is_dispatch_day_allowed($now_local)) {
+            return '';
+        }
+
+        return $this->dispatch_day_block_reason($now_local);
+    }
+
+    protected function is_dispatch_day_allowed(\DateTimeImmutable $local_time): bool
+    {
+        return true;
+    }
+
+    protected function dispatch_day_block_reason(\DateTimeImmutable $local_time): string
+    {
+        return 'dispatch_day_not_allowed';
     }
 
     private function mark_scheduled_flush_attempt(string $now_mysql_utc): void

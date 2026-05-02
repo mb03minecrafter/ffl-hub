@@ -167,7 +167,7 @@ final class RSRModule implements DistributorModuleInterface
                 'label'       => 'Dealer Batch Dispatch Time',
                 'type'        => 'text',
                 'placeholder' => '17:00',
-                'description' => 'Daily local dispatch time in 24-hour HH:MM format. Example: 17:00.',
+                'description' => 'Weekday local dispatch time in 24-hour HH:MM format. RSR scheduled dealer batches are held on Saturdays and Sundays, but low-stock priority rows can still place immediately. Example: 17:00.',
                 'default'     => '17:00',
             ],
             'dealer_batch_low_stock_threshold' => [
@@ -200,7 +200,7 @@ final class RSRModule implements DistributorModuleInterface
             'dealer_batch_force_flush' => [
                 'label'       => 'Force Dealer Batch Flush On Next Run',
                 'type'        => 'checkbox',
-                'description' => 'If enabled, the next batch cron run will immediately flush queued dealer rows, then auto-reset this toggle.',
+                'description' => 'If enabled, the next eligible batch cron run will flush queued dealer rows, then auto-reset this toggle. Weekend holds still apply.',
                 'default'     => '0',
             ],
 

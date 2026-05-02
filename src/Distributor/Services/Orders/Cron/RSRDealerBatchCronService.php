@@ -50,5 +50,16 @@ final class RSRDealerBatchCronService extends AbstractOrderBatchCronService
     {
         return self::MODE_DEALER;
     }
+
+    protected function is_dispatch_day_allowed(\DateTimeImmutable $local_time): bool
+    {
+        $day_of_week = (int) $local_time->format('N');
+        return $day_of_week >= 1 && $day_of_week <= 5;
+    }
+
+    protected function dispatch_day_block_reason(\DateTimeImmutable $local_time): string
+    {
+        return 'rsr_weekend_hold';
+    }
 }
 
