@@ -28,7 +28,7 @@ if (!in_array($mode, ['test', 'dry-run', 'batch'], true)) {
 
 $test_email = sanitize_email((string) holosun_opt($opts, 'test-email', 'mattbick2003@gmail.com'));
 $test_first_name = trim((string) holosun_opt($opts, 'test-first-name', 'Matthew'));
-$subject = trim((string) holosun_opt($opts, 'subject', 'Holosun restock update from Bickham Firearms'));
+$subject = trim((string) holosun_opt($opts, 'subject', 'Removal from Quote Email System, Holosun Update'));
 $source = strtolower(trim((string) holosun_opt($opts, 'source', 'all')));
 $limit = max(0, (int) holosun_opt($opts, 'limit', 0));
 $offset = max(0, (int) holosun_opt($opts, 'offset', 0));
@@ -38,11 +38,6 @@ $from_email = sanitize_email((string) holosun_opt($opts, 'from-email', (string) 
 $from_name = trim((string) holosun_opt($opts, 'from-name', 'Bickham Firearms'));
 $reply_to = sanitize_email((string) holosun_opt($opts, 'reply-to', $from_email));
 $physical_address = trim((string) holosun_opt($opts, 'physical-address', ''));
-$unsubscribe_line = trim((string) holosun_opt(
-    $opts,
-    'unsubscribe-line',
-    'Prefer not to receive future emails? Reply with UNSUBSCRIBE and we will remove you.'
-));
 
 if ($subject === '') {
     holosun_fail('Missing --subject.');
@@ -118,7 +113,7 @@ foreach ($recipients as $recipient) {
     }
 
     $first_name = holosun_first_name((string) ($recipient['first_name'] ?? ''));
-    $html = holosun_build_email_html($first_name, $products, $physical_address, $unsubscribe_line);
+    $html = holosun_build_email_html($first_name, $products, $physical_address);
 
     if ($dry_run) {
         if ($preview_count < 25) {
@@ -673,13 +668,13 @@ function holosun_first_name(string $name): string
 /**
  * @param array<int,array<string,mixed>> $products
  */
-function holosun_build_email_html(string $first_name, array $products, string $physical_address, string $unsubscribe_line): string
+function holosun_build_email_html(string $first_name, array $products, string $physical_address): string
 {
     $site_url = home_url('/');
     $cards = holosun_product_cards_html($products, $site_url);
 
-    $address_html = $physical_address !== ''
-        ? '<div style="margin-top:8px;">' . esc_html($physical_address) . '</div>'
+    $footer_html = $physical_address !== ''
+        ? '<tr><td style="background:#f7f7f7;color:#666666;padding:18px 26px;font-size:12px;line-height:1.5;border-top:1px solid #dddddd;">' . esc_html($physical_address) . '</td></tr>'
         : '';
 
     return '<!doctype html>'
@@ -700,10 +695,7 @@ function holosun_build_email_html(string $first_name, array $products, string $p
         . $cards
         . '<p style="margin:24px 0 0;font-size:16px;line-height:1.55;">Best wishes,<br>Matthew Bickham<br>Bickham Firearms</p>'
         . '</td></tr>'
-        . '<tr><td style="background:#f7f7f7;color:#666666;padding:18px 26px;font-size:12px;line-height:1.5;border-top:1px solid #dddddd;">'
-        . esc_html($unsubscribe_line)
-        . $address_html
-        . '</td></tr>'
+        . $footer_html
         . '</table>'
         . '</td></tr>'
         . '</table>'
@@ -765,18 +757,18 @@ function holosun_product_card_html(array $product, string $site_url): string
     }
 
     $image = $image_url !== ''
-        ? '<a href="' . esc_url($url) . '" style="display:block;text-decoration:none;"><img src="' . esc_url($image_url) . '" alt="' . esc_attr($promo_name) . '" width="250" style="display:block;width:100%;max-width:250px;height:auto;border:0;background:#ffffff;"></a>'
-        : '<a href="' . esc_url($url) . '" style="display:block;text-decoration:none;background:#f5f5f5;color:#515151;text-align:center;padding:44px 8px;font-size:13px;">View product</a>';
+        ? '<a href="' . esc_url($url) . '" style="display:block;text-decoration:none;height:160px;line-height:160px;text-align:center;"><img src="' . esc_url($image_url) . '" alt="' . esc_attr($promo_name) . '" width="220" style="display:inline-block;width:auto;max-width:220px;max-height:145px;height:auto;border:0;background:#ffffff;vertical-align:middle;"></a>'
+        : '<a href="' . esc_url($url) . '" style="display:block;text-decoration:none;background:#f5f5f5;color:#515151;text-align:center;height:160px;line-height:160px;font-size:13px;">View product</a>';
 
     return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0;border:1px solid #dddddd;border-radius:0;overflow:hidden;background:#ffffff;">'
-        . '<tr><td align="center" style="padding:14px 14px 10px;background:#ffffff;border-bottom:1px solid #eeeeee;">' . $image . '</td></tr>'
+        . '<tr><td align="center" height="188" style="padding:14px;background:#ffffff;border-bottom:1px solid #eeeeee;height:188px;vertical-align:middle;">' . $image . '</td></tr>'
         . '<tr><td style="padding:14px;">'
         . ($subline !== '' ? '<div style="margin:0 0 7px;font-size:11px;line-height:1.3;color:#666666;text-transform:uppercase;letter-spacing:.04em;">' . $subline . '</div>' : '')
         . '<a href="' . esc_url($url) . '" style="display:block;min-height:42px;font-size:14px;line-height:1.35;color:#111111;font-weight:700;text-decoration:none;">' . esc_html($name) . '</a>'
         . '<div style="margin-top:12px;font-size:12px;line-height:1.2;color:#666666;">Below MAP price</div>'
         . '<div style="margin-top:2px;font-size:24px;line-height:1.1;color:#111111;font-weight:800;">' . esc_html($price) . '</div>'
         . $site_price
-        . '<a href="' . esc_url($url) . '" style="display:block;margin-top:14px;background:#111111;color:#ffffff;border-radius:0;padding:10px 12px;font-size:13px;font-weight:700;text-align:center;text-decoration:none;">View product</a>'
+        . '<a href="' . esc_url($url) . '" style="display:block;margin-top:14px;background:#c9a24d;color:#111111;border-radius:0;padding:10px 12px;font-size:13px;font-weight:700;text-align:center;text-decoration:none;">View product</a>'
         . '</td></tr>'
         . '</table>';
 }
