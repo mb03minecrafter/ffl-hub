@@ -344,6 +344,8 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
         /** @var array<string, DistributorOffer> $offers */
         $offers = $lookup->offers();
+        $offers_before_enabled_filter = is_array($offers) ? count($offers) : 0;
+        $offers = $this->filter_offers_by_enabled_distributors($offers);
         $offers_before_lock = is_array($offers) ? count($offers) : 0;
 
         $dist_lock = $this->get_distributor_lock_for_product($product);
@@ -359,6 +361,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'product_id'        => $product_id,
             'upc'               => $upc,
             'offers'            => is_array($offers) ? count($offers) : 0,
+            'offers_before_enabled_filter' => $offers_before_enabled_filter,
             'offers_before_lock' => $offers_before_lock,
             'lock_enabled'      => !empty($dist_lock['enabled']) ? 1 : 0,
             'lock_ids'          => !empty($dist_lock['ids']) ? (array) $dist_lock['ids'] : array(),
@@ -727,6 +730,38 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'enabled' => $enabled,
             'ids' => $ids,
         );
+    }
+
+    /**
+     * @param array<string,DistributorOffer> $offers
+     * @return array<string,DistributorOffer>
+     */
+    private function filter_offers_by_enabled_distributors(array $offers): array
+    {
+        if (empty($offers)) {
+            return [];
+        }
+
+        $filtered = [];
+
+        foreach ($offers as $offer_key => $offer) {
+            if (!$offer instanceof DistributorOffer) {
+                continue;
+            }
+
+            $dist_id = strtolower(trim((string) ($offer->distributor_id ?: $offer_key)));
+            if ($dist_id === '') {
+                continue;
+            }
+
+            if (!Options::is_distributor_enabled($dist_id)) {
+                continue;
+            }
+
+            $filtered[$dist_id] = $offer;
+        }
+
+        return $filtered;
     }
 
     /**
