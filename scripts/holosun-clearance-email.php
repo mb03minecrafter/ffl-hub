@@ -4,15 +4,15 @@
  *
  * Run from the WordPress root on the VPS with WP-CLI:
  *
- *   wp eval-file wp-content/plugins/ffl-hub/scripts/holosun-clearance-email.php -- --mode=test --test-email=mattbick2003@gmail.com
+ *   wp eval-file wp-content/plugins/ffl-hub/scripts/holosun-clearance-email.php mode=test test-email=mattbick2003@gmail.com
  *
  * Batch mode is guarded:
  *
- *   wp eval-file wp-content/plugins/ffl-hub/scripts/holosun-clearance-email.php -- --mode=batch --send=1 --sleep-ms=250 --limit=100
+ *   wp eval-file wp-content/plugins/ffl-hub/scripts/holosun-clearance-email.php mode=batch send=1 sleep-ms=250 limit=100
  */
 
 if (!defined('ABSPATH')) {
-    fwrite(STDERR, "Run this through WP-CLI from the WordPress root: wp eval-file wp-content/plugins/ffl-hub/scripts/holosun-clearance-email.php -- --mode=test\n");
+    fwrite(STDERR, "Run this through WP-CLI from the WordPress root: wp eval-file wp-content/plugins/ffl-hub/scripts/holosun-clearance-email.php mode=test\n");
     exit(1);
 }
 
@@ -160,11 +160,14 @@ function holosun_parse_args(array $raw_args): array
     $opts = [];
     foreach ($raw_args as $arg) {
         $arg = trim((string) $arg);
-        if ($arg === '' || strpos($arg, '--') !== 0) {
+        if ($arg === '') {
             continue;
         }
 
-        $arg = substr($arg, 2);
+        if (strpos($arg, '--') === 0) {
+            $arg = substr($arg, 2);
+        }
+
         if (strpos($arg, '=') === false) {
             $opts[$arg] = '1';
             continue;
