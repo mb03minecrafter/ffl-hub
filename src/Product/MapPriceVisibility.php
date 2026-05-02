@@ -43,6 +43,9 @@ class MapPriceVisibility
         add_filter('woocommerce_product_variation_get_price', [self::class, 'filter_holosun_override_active_price'], 99, 2);
         add_filter('woocommerce_product_get_sale_price', [self::class, 'filter_holosun_override_sale_price'], 99, 2);
         add_filter('woocommerce_product_variation_get_sale_price', [self::class, 'filter_holosun_override_sale_price'], 99, 2);
+        add_filter('woocommerce_product_get_sku', [self::class, 'filter_holosun_single_product_sku'], 99, 2);
+        add_filter('woocommerce_product_variation_get_sku', [self::class, 'filter_holosun_single_product_sku'], 99, 2);
+        add_filter('wc_product_sku_enabled', [self::class, 'filter_holosun_single_product_sku_enabled'], 99, 1);
 
         // Variable products / variation JSON (prevents price appearing on selection UI)
         add_filter('woocommerce_available_variation', [self::class, 'filter_available_variation'], 99, 3);
@@ -91,6 +94,77 @@ class MapPriceVisibility
             (string) filemtime($js_abs_path),
             true
         );
+    }
+
+    /**
+     * Hide Holosun SKU/stock number text on the public single-product page.
+     *
+     * @param mixed $sku
+     * @param mixed $product
+     * @return mixed
+     */
+    public static function filter_holosun_single_product_sku($sku, $product)
+    {
+        if (!self::should_hide_holosun_stock_number($product)) {
+            return $sku;
+        }
+
+        return '';
+    }
+
+    /**
+     * Suppress Woo's stock number wrapper for Holosun single-product pages.
+     *
+     * @param mixed $enabled
+     * @return mixed
+     */
+    public static function filter_holosun_single_product_sku_enabled($enabled)
+    {
+        if (!$enabled || (is_admin() && !wp_doing_ajax())) {
+            return $enabled;
+        }
+
+        if (!function_exists('is_product') || !is_product()) {
+            return $enabled;
+        }
+
+        global $product;
+        if ($product instanceof WC_Product && self::should_hide_holosun_stock_number($product)) {
+            return false;
+        }
+
+        return $enabled;
+    }
+
+    /**
+     * @param mixed $product
+     */
+    private static function should_hide_holosun_stock_number($product): bool
+    {
+        if (!($product instanceof WC_Product)) {
+            return false;
+        }
+
+        if (is_admin() && !wp_doing_ajax()) {
+            return false;
+        }
+
+        if (!function_exists('is_product') || !is_product()) {
+            return false;
+        }
+
+        $parent = null;
+        if (method_exists($product, 'get_parent_id')) {
+            $parent_id = (int) $product->get_parent_id();
+            if ($parent_id > 0) {
+                $maybe_parent = wc_get_product($parent_id);
+                if ($maybe_parent instanceof WC_Product) {
+                    $parent = $maybe_parent;
+                }
+            }
+        }
+
+        return self::is_holosun_branded_product($product, $parent);
     }
 
     private static function in_cart_flow(): bool
