@@ -244,16 +244,10 @@ function holosun_products(): array
 {
     return [
         [
-            'model' => 'HS507COMP',
+            'model' => 'HSHS507COMP',
             'name' => 'Holosun HS507COMP 2 MOA Reflex Sight, Black',
             'price' => '$285',
-            'terms' => ['HS507COMP'],
-        ],
-        [
-            'model' => 'HE507COMP-GR',
-            'name' => 'Holosun HE507COMP-GR 2 MOA Reflex Sight, Black',
-            'price' => '$325',
-            'terms' => ['HE507COMP-GR', 'HE507COMP'],
+            'terms' => ['HSHS507COMP', 'HS507COMP'],
         ],
         [
             'model' => 'HS510C',
@@ -262,58 +256,28 @@ function holosun_products(): array
             'terms' => ['HS510C'],
         ],
         [
-            'model' => 'HE510C-GR',
-            'name' => 'Holosun HE510C-GR 2/65 MOA Reflex Sight, Black',
-            'price' => '$275',
-            'terms' => ['HE510C-GR', 'HE510C'],
-        ],
-        [
-            'model' => 'HS507K X2',
-            'name' => 'Holosun HS507K X2 2/32 MOA Mini Reflex Sight, Black',
-            'price' => '$220',
-            'terms' => ['HS507K', 'X2'],
-        ],
-        [
-            'model' => 'HS407K X2',
+            'model' => 'HS407KX2',
             'name' => 'Holosun HS407K X2 6 MOA Reflex Sight, Black',
             'price' => '$170',
-            'terms' => ['HS407K', 'X2'],
+            'terms' => ['HS407KX2', 'HS407K', 'X2'],
         ],
         [
-            'model' => 'HM3X',
+            'model' => 'HSHM3X',
             'name' => 'Holosun HM3X Magnifier with Flip and QD Mount, Black',
             'price' => '$165',
-            'terms' => ['HM3X'],
+            'terms' => ['HSHM3X', 'HM3X'],
         ],
         [
-            'model' => 'HS507C X3 RD',
+            'model' => 'HS507C-X3-RD',
             'name' => 'Holosun HS507C X3 RD 2/32 MOA Reflex Sight, Black',
             'price' => '$235',
-            'terms' => ['HS507C', 'X3', 'RD'],
+            'terms' => ['HS507C-X3-RD', 'HS507C', 'X3', 'RD'],
         ],
         [
-            'model' => 'HS407C X3',
-            'name' => 'Holosun HS407C X3 2 MOA Red Dot Sight, Black',
+            'model' => 'HS407C-X3-RD',
+            'name' => 'Holosun HS407C X3 RD 2 MOA Red Dot Sight, Black',
             'price' => '$190',
-            'terms' => ['HS407C', 'X3'],
-        ],
-        [
-            'model' => 'EPS Carry 2 MOA',
-            'name' => 'Holosun EPS Carry 2 MOA Reflex Sight, Black',
-            'price' => '$290',
-            'terms' => ['EPS', 'Carry', '2 MOA'],
-        ],
-        [
-            'model' => 'HS407C X2',
-            'name' => 'Holosun HS407C X2 2 MOA Reflex Sight, Black',
-            'price' => '$170',
-            'terms' => ['HS407C', 'X2'],
-        ],
-        [
-            'model' => 'HS510C / HM3X Combo',
-            'name' => 'Holosun HS510C / HM3X Combo, Black',
-            'price' => '$390',
-            'terms' => ['HS510C', 'HM3X', 'Combo'],
+            'terms' => ['HS407C-X3-RD', 'HS407C', 'X3', 'RD'],
         ],
     ];
 }
@@ -719,24 +683,24 @@ function holosun_build_email_html(string $first_name, array $products, string $p
         : '';
 
     return '<!doctype html>'
-        . '<html><body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111827;">'
+        . '<html><body style="margin:0;padding:0;background:#f5f5f5;font-family:Arial,Helvetica,sans-serif;color:#111111;">'
         . '<span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;">Holosun restock update and quote list notice from Bickham Firearms.</span>'
-        . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f3f4f6;margin:0;padding:28px 12px;">'
+        . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f5f5;margin:0;padding:28px 12px;">'
         . '<tr><td align="center">'
-        . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#ffffff;border:1px solid #d9dde3;border-radius:8px;overflow:hidden;">'
-        . '<tr><td style="background:#111827;color:#ffffff;padding:22px 26px;">'
-        . '<div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#cbd5e1;">Bickham Firearms</div>'
-        . '<div style="font-size:24px;font-weight:800;margin-top:6px;line-height:1.2;">Holosun restock update</div>'
+        . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#ffffff;border:1px solid #dddddd;border-radius:0;overflow:hidden;">'
+        . '<tr><td style="background:#ffffff;color:#111111;padding:24px 26px 18px;border-bottom:1px solid #dddddd;">'
+        . '<div style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#666666;">Bickham Firearms</div>'
+        . '<div style="font-size:24px;font-weight:800;margin-top:6px;line-height:1.2;color:#111111;">Holosun restock update</div>'
         . '</td></tr>'
         . '<tr><td style="padding:26px;">'
         . '<p style="margin:0 0 16px;font-size:16px;line-height:1.55;">Hi ' . esc_html($first_name) . ',</p>'
         . '<p style="margin:0 0 16px;font-size:16px;line-height:1.55;">This is a notification letting you know that your email has been scrubbed from our quote list.</p>'
-        . '<p style="margin:0 0 16px;font-size:16px;line-height:1.55;">We have started an email list if you would like to get updates on restocks and deals. That email list can be found at the bottom of <a href="' . esc_url($site_url) . '" style="color:#0f766e;font-weight:700;">our site</a>.</p>'
+        . '<p style="margin:0 0 16px;font-size:16px;line-height:1.55;">We have started an email list if you would like to get updates on restocks and deals. That email list can be found at the bottom of <a href="' . esc_url($site_url) . '" style="color:#111111;font-weight:700;text-decoration:underline;">our site</a>.</p>'
         . '<p style="margin:0 0 18px;font-size:16px;line-height:1.55;">In addition, given our current Holosun dispute, we have now restocked these Holosun products at below MAP prices:</p>'
         . $cards
         . '<p style="margin:24px 0 0;font-size:16px;line-height:1.55;">Best wishes,<br>Matthew Bickham<br>Bickham Firearms</p>'
         . '</td></tr>'
-        . '<tr><td style="background:#f9fafb;color:#6b7280;padding:18px 26px;font-size:12px;line-height:1.5;">'
+        . '<tr><td style="background:#f7f7f7;color:#666666;padding:18px 26px;font-size:12px;line-height:1.5;border-top:1px solid #dddddd;">'
         . esc_html($unsubscribe_line)
         . $address_html
         . '</td></tr>'
@@ -797,22 +761,22 @@ function holosun_product_card_html(array $product, string $site_url): string
 
     $site_price = '';
     if ($woo_price_html !== '') {
-        $site_price = '<div style="margin-top:4px;font-size:12px;line-height:1.35;color:#6b7280;">Site listing: ' . wp_kses_post($woo_price_html) . '</div>';
+        $site_price = '<div style="margin-top:4px;font-size:12px;line-height:1.35;color:#767676;">Site listing: ' . wp_kses_post($woo_price_html) . '</div>';
     }
 
     $image = $image_url !== ''
         ? '<a href="' . esc_url($url) . '" style="display:block;text-decoration:none;"><img src="' . esc_url($image_url) . '" alt="' . esc_attr($promo_name) . '" width="250" style="display:block;width:100%;max-width:250px;height:auto;border:0;background:#ffffff;"></a>'
-        : '<a href="' . esc_url($url) . '" style="display:block;text-decoration:none;background:#f3f4f6;color:#6b7280;text-align:center;padding:44px 8px;font-size:13px;">View product</a>';
+        : '<a href="' . esc_url($url) . '" style="display:block;text-decoration:none;background:#f5f5f5;color:#515151;text-align:center;padding:44px 8px;font-size:13px;">View product</a>';
 
-    return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0;border:1px solid #dfe3e8;border-radius:8px;overflow:hidden;background:#ffffff;">'
-        . '<tr><td align="center" style="padding:14px 14px 10px;background:#f9fafb;">' . $image . '</td></tr>'
+    return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0;border:1px solid #dddddd;border-radius:0;overflow:hidden;background:#ffffff;">'
+        . '<tr><td align="center" style="padding:14px 14px 10px;background:#ffffff;border-bottom:1px solid #eeeeee;">' . $image . '</td></tr>'
         . '<tr><td style="padding:14px;">'
-        . ($subline !== '' ? '<div style="margin:0 0 7px;font-size:11px;line-height:1.3;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;">' . $subline . '</div>' : '')
-        . '<a href="' . esc_url($url) . '" style="display:block;min-height:42px;font-size:14px;line-height:1.35;color:#111827;font-weight:700;text-decoration:none;">' . esc_html($name) . '</a>'
-        . '<div style="margin-top:12px;font-size:12px;line-height:1.2;color:#6b7280;">Below MAP price</div>'
-        . '<div style="margin-top:2px;font-size:24px;line-height:1.1;color:#0f766e;font-weight:800;">' . esc_html($price) . '</div>'
+        . ($subline !== '' ? '<div style="margin:0 0 7px;font-size:11px;line-height:1.3;color:#666666;text-transform:uppercase;letter-spacing:.04em;">' . $subline . '</div>' : '')
+        . '<a href="' . esc_url($url) . '" style="display:block;min-height:42px;font-size:14px;line-height:1.35;color:#111111;font-weight:700;text-decoration:none;">' . esc_html($name) . '</a>'
+        . '<div style="margin-top:12px;font-size:12px;line-height:1.2;color:#666666;">Below MAP price</div>'
+        . '<div style="margin-top:2px;font-size:24px;line-height:1.1;color:#111111;font-weight:800;">' . esc_html($price) . '</div>'
         . $site_price
-        . '<a href="' . esc_url($url) . '" style="display:block;margin-top:14px;background:#111827;color:#ffffff;border-radius:6px;padding:10px 12px;font-size:13px;font-weight:700;text-align:center;text-decoration:none;">View product</a>'
+        . '<a href="' . esc_url($url) . '" style="display:block;margin-top:14px;background:#111111;color:#ffffff;border-radius:0;padding:10px 12px;font-size:13px;font-weight:700;text-align:center;text-decoration:none;">View product</a>'
         . '</td></tr>'
         . '</table>';
 }
