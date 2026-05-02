@@ -995,16 +995,17 @@ final class CartCompliance
                         continue;
                     }
 
-                    // Ignore out-of-stock blocks unless the voter is the cart's source distributor.
+                    // Ignore non-source votes that cannot authoritatively block this source lane.
                     if ($this->should_ignore_vote_for_cart_source($cart_dist_id, $voter_id_str, $vr)) {
                         $details_summary = $this->summarize_validation_details(
                             is_array($vr->details) ? $vr->details : []
                         );
 
-                        $this->dbg('vote.ignored_oos_non_source', [
+                        $this->dbg('vote.ignored_non_source', [
                             'cart_dist_id' => $cart_dist_id,
                             'voter_id'     => strtolower(trim($voter_id_str)),
                             'label'        => $label,
+                            'reason'       => $this->ignored_non_source_vote_reason($vr),
                             'codes'        => is_array($vr->codes) ? $vr->codes : [],
                             'message'      => (string) ($vr->message ?? ''),
                             'details'      => $details_summary,
@@ -1101,6 +1102,10 @@ final class CartCompliance
     {
         $codes = is_array($vr->codes) ? $vr->codes : [];
         $msg   = strtolower((string) ($vr->message ?? ''));
+
+        if ($vr->is_retryable()) {
+            return true;
+        }
 
         if (in_array('FFLHUB_VALIDATE_EXCEPTION', $codes, true)) {
             return true;
@@ -1231,7 +1236,8 @@ final class CartCompliance
     }
 
     /**
-     * For non-source voters, ignore OOS blocks entirely.
+     * For non-source voters, ignore failures that cannot authoritatively block
+     * this source distributor's cart lane.
      */
     private function should_ignore_vote_for_cart_source(
         string $cart_dist_id,
@@ -1245,12 +1251,24 @@ final class CartCompliance
             return false;
         }
 
-        // Only ignore OUT_OF_STOCK when voter is NOT the source distributor.
-        if ($cart_dist_id !== $voter_id && $this->is_out_of_stock_vote($vr)) {
-            return true;
+        if ($cart_dist_id === $voter_id) {
+            return false;
         }
 
-        return false;
+        return $this->is_out_of_stock_vote($vr) || $vr->is_retryable();
+    }
+
+    private function ignored_non_source_vote_reason(DistributorOrderValidationResult $vr): string
+    {
+        if ($this->is_out_of_stock_vote($vr)) {
+            return 'out_of_stock';
+        }
+
+        if ($vr->is_retryable()) {
+            return 'retryable';
+        }
+
+        return 'unknown';
     }
 }
 
