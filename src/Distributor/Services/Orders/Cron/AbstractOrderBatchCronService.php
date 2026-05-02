@@ -3,6 +3,9 @@
 namespace FFLHub\Distributor\Services\Orders\Cron;
 
 use WC_Order;
+use WC_Order_Item_Product;
+use WC_Order_Item_Shipping;
+use WC_Product;
 
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
@@ -21,12 +24,15 @@ use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
 use FFLHub\Distributor\Services\Orders\Jobs\Snapshots\OrderPlacementJobSnapshotsStore;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementSnapshotUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 use FFLHub\Distributor\Services\Orders\Notifications\BatchOrderNotificationEmail;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Distributor\Services\Orders\Util\DealerShipToResolver;
 use FFLHub\FFL\Tables\FFLTable;
+use FFLHub\Order\OrderProfitAuditMeta;
+use FFLHub\Product\ProductMeta;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -47,6 +53,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     /** Debug flag and lock TTL are common for all batch services. */
     private const DEBUG_CONST = 'FFLHUB_DEBUG_ORDER_BATCH';
     private const LOCK_TTL_SECONDS = 300;
+    private const DEALER_BATCH_FREE_INBOUND_THRESHOLD = 1000.0;
 
     /** Safe defaults used when options are missing/invalid. */
     private const DEFAULT_DISPATCH_TIME = '17:00';
@@ -523,6 +530,12 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                 OrderPlacementJobLifeCycle::mark_job_success($this->jobs_table, $order, $job_key);
             }
 
+            $this->apply_successful_dealer_batch_profit_audit_shipping_rule(
+                $batch_candidates,
+                $po,
+                $batch_kind
+            );
+
             BatchOrderNotificationEmail::send(
                 $this->get_distributor_id(),
                 $po,
@@ -712,6 +725,492 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         }
 
         return array_values($line_map);
+    }
+
+    /**
+     * Dealer-fulfilled aggregate orders can earn free inbound freight from the
+     * distributor when the combined dealer-cost batch exceeds the distributor's
+     * freight threshold. This must be applied after successful placement because
+     * the threshold is based on the upstream aggregate batch, not one Woo order.
+     *
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates
+     */
+    private function apply_successful_dealer_batch_profit_audit_shipping_rule(
+        array $batch_candidates,
+        string $po,
+        string $batch_kind
+    ): void {
+        if ($this->is_ca_relay_mode()) {
+            return;
+        }
+
+        $batch_total = $this->dealer_batch_distributor_cost_total($batch_candidates);
+        $free_inbound = $batch_total >= self::DEALER_BATCH_FREE_INBOUND_THRESHOLD;
+
+        $this->log_ctx('dealer_batch_inbound_shipping_rule', [
+            'po' => $po,
+            'batch_kind' => $batch_kind,
+            'distributor' => $this->get_distributor_id(),
+            'batch_total' => $batch_total,
+            'threshold' => self::DEALER_BATCH_FREE_INBOUND_THRESHOLD,
+            'free_inbound' => $free_inbound ? 1 : 0,
+            'rows' => count($batch_candidates),
+        ]);
+
+        if (!$free_inbound) {
+            return;
+        }
+
+        $seen_order_ids = [];
+        $adjusted_orders = 0;
+        $waived_total = 0.0;
+
+        foreach ($batch_candidates as $entry) {
+            $order = $entry['order'] ?? null;
+            if (!($order instanceof WC_Order)) {
+                continue;
+            }
+
+            $order_id = (int) $order->get_id();
+            if ($order_id <= 0 || isset($seen_order_ids[$order_id])) {
+                continue;
+            }
+            $seen_order_ids[$order_id] = true;
+
+            $waived = $this->waive_dealer_inbound_shipping_for_order(
+                $order,
+                $po,
+                $batch_kind,
+                $batch_total
+            );
+
+            if ($waived <= 0.0) {
+                continue;
+            }
+
+            $waived_total += $waived;
+            $adjusted_orders++;
+
+            OrderProfitAuditMeta::recalculate_order($order, true);
+        }
+
+        $this->log_ctx('dealer_batch_inbound_shipping_rule_applied', [
+            'po' => $po,
+            'batch_kind' => $batch_kind,
+            'distributor' => $this->get_distributor_id(),
+            'batch_total' => $batch_total,
+            'adjusted_orders' => $adjusted_orders,
+            'waived_total' => $waived_total,
+        ]);
+    }
+
+    /**
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates
+     */
+    private function dealer_batch_distributor_cost_total(array $batch_candidates): float
+    {
+        $total = 0.0;
+
+        foreach ($batch_candidates as $entry) {
+            $order = $entry['order'] ?? null;
+            $lines = $entry['lines'] ?? [];
+            if (!($order instanceof WC_Order) || !is_array($lines)) {
+                continue;
+            }
+
+            $total += $this->dealer_batch_candidate_distributor_cost_total($order, $lines);
+        }
+
+        return max(0.0, $total);
+    }
+
+    /**
+     * @param array<int,DistributorOrderLine> $lines
+     */
+    private function dealer_batch_candidate_distributor_cost_total(WC_Order $order, array $lines): float
+    {
+        $needed_by_upc = [];
+        foreach ($lines as $line) {
+            if (!($line instanceof DistributorOrderLine)) {
+                continue;
+            }
+
+            $upc = OrderPlacementProductUtil::normalize_upc((string) $line->upc);
+            if ($upc === '') {
+                continue;
+            }
+
+            if (!isset($needed_by_upc[$upc])) {
+                $needed_by_upc[$upc] = 0;
+            }
+            $needed_by_upc[$upc] += max(1, (int) $line->quantity);
+        }
+
+        if (empty($needed_by_upc)) {
+            return 0.0;
+        }
+
+        $total = 0.0;
+        foreach ($order->get_items('line_item') as $item) {
+            if (!($item instanceof WC_Order_Item_Product)) {
+                continue;
+            }
+
+            $product = $item->get_product();
+            if (!($product instanceof WC_Product)) {
+                $product = $this->resolve_order_item_product($item);
+            }
+
+            $source_dist = $this->order_item_source_distributor($item, $product);
+            if ($source_dist !== '' && $source_dist !== $this->get_distributor_id()) {
+                continue;
+            }
+
+            $upc = $this->order_item_upc($item, $product);
+            if ($upc === '' || empty($needed_by_upc[$upc])) {
+                continue;
+            }
+
+            $take_qty = min(max(1, (int) $item->get_quantity()), (int) $needed_by_upc[$upc]);
+            $unit_cost = $this->order_item_distributor_unit_cost($item, $product);
+            if ($unit_cost <= 0.0) {
+                $needed_by_upc[$upc] -= $take_qty;
+                continue;
+            }
+
+            $total += $unit_cost * (float) $take_qty;
+            $needed_by_upc[$upc] -= $take_qty;
+        }
+
+        return max(0.0, $total);
+    }
+
+    private function waive_dealer_inbound_shipping_for_order(
+        WC_Order $order,
+        string $po,
+        string $batch_kind,
+        float $batch_total
+    ): float {
+        $dist_id = $this->get_distributor_id();
+        $waived_total = 0.0;
+
+        foreach ($order->get_items('shipping') as $shipping_item) {
+            if (!($shipping_item instanceof WC_Order_Item_Shipping)) {
+                continue;
+            }
+
+            $plan = $this->decode_shipping_meta_array($shipping_item->get_meta('fflhub_shipping_plan', true));
+            $by_dist = (isset($plan['by_dist']) && is_array($plan['by_dist']))
+                ? $plan['by_dist']
+                : $this->decode_shipping_meta_array($shipping_item->get_meta('fflhub_shipping_by_dist', true));
+
+            if (empty($by_dist)) {
+                continue;
+            }
+
+            $changed = false;
+            $item_waived_total = 0.0;
+            foreach ($by_dist as $key => $row) {
+                if (is_object($row)) {
+                    $row = (array) $row;
+                }
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                $row_dist_id = strtolower(trim((string) ($row['dist_id'] ?? $key)));
+                if ($row_dist_id !== $dist_id) {
+                    continue;
+                }
+
+                $waived = $this->waive_dealer_inbound_shipping_row($row, $po, $batch_kind, $batch_total);
+                if ($waived <= 0.0) {
+                    continue;
+                }
+
+                $waived_total += $waived;
+                $item_waived_total += $waived;
+                $by_dist[$key] = $row;
+                $changed = true;
+            }
+
+            if (!$changed) {
+                continue;
+            }
+
+            $plan['by_dist'] = $by_dist;
+            $distributor_cost_total = $this->sum_shipping_by_dist_cost($by_dist);
+            $plan['distributor_cost_total'] = $this->money4($distributor_cost_total);
+            $plan['total_cost'] = $this->money4(
+                $this->adjust_shipping_plan_total_after_dealer_inbound_waiver(
+                    $plan,
+                    $distributor_cost_total,
+                    $item_waived_total
+                )
+            );
+            $plan['dealer_batch_free_inbound_shipping_po'] = $po;
+            $plan['dealer_batch_free_inbound_shipping_batch_total'] = $this->money4($batch_total);
+            $plan['dealer_batch_free_inbound_shipping_threshold'] = $this->money4(self::DEALER_BATCH_FREE_INBOUND_THRESHOLD);
+            $plan['dealer_batch_free_inbound_shipping_updated_at_utc'] = gmdate('Y-m-d H:i:s');
+
+            $shipping_item->update_meta_data('fflhub_shipping_plan', wp_json_encode($plan));
+            $shipping_item->update_meta_data('fflhub_shipping_by_dist', wp_json_encode($by_dist));
+            $shipping_item->update_meta_data('fflhub_shipping_cost_total', $plan['total_cost']);
+            $shipping_item->save();
+        }
+
+        if ($waived_total > 0.0) {
+            $order->add_order_note(sprintf(
+                'FFLHub dealer batch %s exceeded $%s. Waived %s inbound distributor shipping for profit audit on PO %s.',
+                $batch_kind,
+                number_format(self::DEALER_BATCH_FREE_INBOUND_THRESHOLD, 2, '.', ''),
+                '$' . number_format($waived_total, 2, '.', ''),
+                $po
+            ));
+            $order->save();
+        }
+
+        return max(0.0, $waived_total);
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    private function waive_dealer_inbound_shipping_row(array &$row, string $po, string $batch_kind, float $batch_total): float
+    {
+        if (empty($row['dealer_inbound'])) {
+            return 0.0;
+        }
+
+        if (!empty($row['dealer_batch_free_inbound_shipping_applied'])) {
+            return 0.0;
+        }
+
+        $cost = $this->non_negative_float($row['cost'] ?? null) ?? 0.0;
+        if ($cost <= 0.0) {
+            return 0.0;
+        }
+
+        $active_lanes = max(0, (int) ($row['active_lanes'] ?? 0));
+        $direct_lanes = 0;
+        if (!empty($row['direct_home'])) {
+            $direct_lanes++;
+        }
+        if (!empty($row['direct_ffl'])) {
+            $direct_lanes++;
+        }
+
+        $lane_fee = $this->positive_float($row['lane_fee'] ?? null);
+        if ($lane_fee === null && $active_lanes > 0) {
+            $lane_fee = $cost / (float) $active_lanes;
+        }
+
+        $waived = ($direct_lanes < 1)
+            ? $cost
+            : min($cost, max(0.0, (float) ($lane_fee ?? 0.0)));
+
+        if ($waived <= 0.0) {
+            return 0.0;
+        }
+
+        $row['cost_before_dealer_batch_free_inbound'] = $this->money4($cost);
+        $row['dealer_inbound_cost_waived'] = $this->money4($waived);
+        $row['cost'] = $this->money4(max(0.0, $cost - $waived));
+        $row['dealer_batch_free_inbound_shipping_applied'] = true;
+        $row['dealer_batch_free_inbound_shipping_po'] = $po;
+        $row['dealer_batch_free_inbound_shipping_batch_kind'] = $batch_kind;
+        $row['dealer_batch_free_inbound_shipping_batch_total'] = $this->money4($batch_total);
+        $row['dealer_batch_free_inbound_shipping_threshold'] = $this->money4(self::DEALER_BATCH_FREE_INBOUND_THRESHOLD);
+        $row['dealer_batch_free_inbound_shipping_updated_at_utc'] = gmdate('Y-m-d H:i:s');
+
+        return $waived;
+    }
+
+    /**
+     * @param mixed $value
+     * @return array<string|int,mixed>
+     */
+    private function decode_shipping_meta_array($value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_object($value)) {
+            $decoded = json_decode(wp_json_encode($value), true);
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        if (is_string($value) && $value !== '') {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+
+            $unserialized = maybe_unserialize($value);
+            if (is_array($unserialized)) {
+                return $unserialized;
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * @param array<string|int,mixed> $by_dist
+     */
+    private function sum_shipping_by_dist_cost(array $by_dist): float
+    {
+        $total = 0.0;
+        foreach ($by_dist as $row) {
+            if (is_object($row)) {
+                $row = (array) $row;
+            }
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $total += $this->non_negative_float($row['cost'] ?? null) ?? 0.0;
+        }
+
+        return max(0.0, $total);
+    }
+
+    /**
+     * @param array<string,mixed> $plan
+     */
+    private function adjust_shipping_plan_total_after_dealer_inbound_waiver(
+        array $plan,
+        float $distributor_cost_total,
+        float $waived_total
+    ): float {
+        $dealer_home = $this->non_negative_float($plan['dealer_outbound_home_cost'] ?? null);
+        $dealer_ffl = $this->non_negative_float($plan['dealer_outbound_ffl_cost'] ?? null);
+
+        if ($dealer_home !== null || $dealer_ffl !== null) {
+            return max(0.0, $distributor_cost_total + (float) ($dealer_home ?? 0.0) + (float) ($dealer_ffl ?? 0.0));
+        }
+
+        $existing_total = $this->non_negative_float($plan['total_cost'] ?? null);
+        if ($existing_total !== null) {
+            return max(0.0, $existing_total - $waived_total);
+        }
+
+        return max(0.0, $distributor_cost_total);
+    }
+
+    private function resolve_order_item_product(WC_Order_Item_Product $item): ?WC_Product
+    {
+        $variation_id = (int) $item->get_variation_id();
+        if ($variation_id > 0) {
+            $product = wc_get_product($variation_id);
+            if ($product instanceof WC_Product) {
+                return $product;
+            }
+        }
+
+        $product_id = (int) $item->get_product_id();
+        if ($product_id > 0) {
+            $product = wc_get_product($product_id);
+            if ($product instanceof WC_Product) {
+                return $product;
+            }
+        }
+
+        return null;
+    }
+
+    private function order_item_upc(WC_Order_Item_Product $item, ?WC_Product $product): string
+    {
+        if ($product instanceof WC_Product) {
+            $upc = OrderPlacementProductUtil::extract_upc_from_product($product);
+            if ($upc !== '') {
+                return $upc;
+            }
+        }
+
+        foreach ([ProductMeta::FFLHUB_UPC_META, '_upc', 'upc', 'UPC'] as $meta_key) {
+            $upc = OrderPlacementProductUtil::normalize_upc((string) $item->get_meta($meta_key, true));
+            if ($upc !== '') {
+                return $upc;
+            }
+        }
+
+        return OrderPlacementProductUtil::normalize_upc((string) $item->get_meta('_sku', true));
+    }
+
+    private function order_item_source_distributor(WC_Order_Item_Product $item, ?WC_Product $product): string
+    {
+        $saved = strtolower(trim((string) $item->get_meta('_fflhub_order_source_distributor', true)));
+        if ($saved !== '') {
+            return $saved;
+        }
+
+        if ($product instanceof WC_Product) {
+            return strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)));
+        }
+
+        return '';
+    }
+
+    private function order_item_distributor_unit_cost(WC_Order_Item_Product $item, ?WC_Product $product): float
+    {
+        $saved = $this->positive_float($item->get_meta('_fflhub_order_distributor_unit_cost', true));
+        if ($saved !== null) {
+            return $saved;
+        }
+
+        if ($product instanceof WC_Product) {
+            $dealer_price = $this->positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
+            if ($dealer_price !== null) {
+                return $dealer_price;
+            }
+        }
+
+        return 0.0;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function positive_float($value): ?float
+    {
+        $float = $this->non_negative_float($value);
+        return ($float !== null && $float > 0.0) ? $float : null;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function non_negative_float($value): ?float
+    {
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return null;
+        }
+
+        $num = $raw;
+        if (!is_numeric($num)) {
+            $num = trim((string) preg_replace('/[^0-9\.\-]/', '', $raw));
+        }
+
+        if ($num === '' || !is_numeric($num)) {
+            return null;
+        }
+
+        $float = (float) $num;
+        if (!is_finite($float) || $float < 0.0) {
+            return null;
+        }
+
+        return $float;
+    }
+
+    private function money4(float $value): string
+    {
+        return function_exists('wc_format_decimal')
+            ? (string) wc_format_decimal(max(0.0, $value), 4)
+            : number_format(max(0.0, $value), 4, '.', '');
     }
 
     private function dispatch_single_row_now(WC_Order $order, string $job_key): bool

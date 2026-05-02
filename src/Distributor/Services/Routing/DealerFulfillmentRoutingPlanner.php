@@ -30,6 +30,11 @@ final class DealerFulfillmentRoutingPlanner
     private const OUTBOUND_STEP_OZ   = 4.0;
     private const TOP_CANDIDATE_LIMIT = 12;
 
+    public static function estimate_dealer_outbound_cost(float $weight_oz): float
+    {
+        return self::dealer_outbound_cost($weight_oz);
+    }
+
     /**
      * @param array<int, array<string,mixed>> $lines
      * @return array<string,mixed>
@@ -246,10 +251,20 @@ final class DealerFulfillmentRoutingPlanner
             }
 
             if (abs($cost - $best_cost) <= 0.000001) {
-                $current = wp_json_encode($plan['assignments'] ?? []);
-                $best    = wp_json_encode($best_plan['assignments'] ?? []);
-                if (is_string($current) && is_string($best) && strcmp($current, $best) < 0) {
+                $current_dealer_count = self::dealer_fulfilled_assignment_count((array) ($plan['assignments'] ?? []));
+                $best_dealer_count    = self::dealer_fulfilled_assignment_count((array) ($best_plan['assignments'] ?? []));
+
+                if ($current_dealer_count < $best_dealer_count) {
                     $best_plan = $plan;
+                    return;
+                }
+
+                if ($current_dealer_count === $best_dealer_count) {
+                    $current = wp_json_encode($plan['assignments'] ?? []);
+                    $best    = wp_json_encode($best_plan['assignments'] ?? []);
+                    if (is_string($current) && is_string($best) && strcmp($current, $best) < 0) {
+                        $best_plan = $plan;
+                    }
                 }
             }
             return;
@@ -322,6 +337,25 @@ final class DealerFulfillmentRoutingPlanner
         }
 
         return implode('|', $parts);
+    }
+
+    /**
+     * Prefer direct-ship assignments when cost is equal. Dealer fulfillment adds
+     * real operational handling and can hide missing outbound weight data, so it
+     * should only win when it is actually cheaper.
+     *
+     * @param array<string,string> $assignments
+     */
+    private static function dealer_fulfilled_assignment_count(array $assignments): int
+    {
+        $count = 0;
+        foreach ($assignments as $route) {
+            if (strtolower(trim((string) $route)) === 'dealer_fulfilled') {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     /**

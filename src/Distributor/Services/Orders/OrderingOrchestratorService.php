@@ -270,10 +270,16 @@ final class OrderingOrchestratorService
                 $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true),
                 0.0
             );
-            $dist_lane_fee = $this->to_non_negative_float(
-                $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true),
-                0.0
-            );
+            $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
+            $dist_lane_fee = $this->resolve_distributor_lane_fee($ship_raw);
+            if ($this->to_non_negative_float($ship_raw, 0.0) <= 0.0 && $dist_lane_fee > 0.0) {
+                $this->log_ctx('shipping_lane_fee_fallback_applied', [
+                    'order_id'   => $oid,
+                    'product_id' => (int) $product->get_id(),
+                    'ship_raw'   => (string) $ship_raw,
+                    'lane_fee'   => $dist_lane_fee,
+                ]);
+            }
 
             $item_id = (int) $item->get_id();
             $line_id = ($item_id > 0) ? ('oi_' . (string) $item_id) : ('oi_idx_' . (string) $seen['items_iterated']);
@@ -389,6 +395,14 @@ final class OrderingOrchestratorService
                 'assignment_count'    => count($assignments),
                 'local_fulfilled'     => $seen['local_fulfilled'],
                 'local_partial'       => $seen['local_partial'],
+            ]);
+
+            $this->log_ctx('lane_plan_detail', [
+                'order_id'       => $oid,
+                'routing_lines'  => $routing_lines,
+                'assignments'    => $assignments,
+                'by_dist'        => $plan['by_dist'] ?? [],
+                'top_candidates' => $plan['meta']['top_candidates'] ?? [],
             ]);
 
             foreach ($accepted_by_line_id as $line_id => $row) {
@@ -899,6 +913,84 @@ final class OrderingOrchestratorService
         }
 
         return $v;
+    }
+
+    /**
+     * Resolve the distributor per-lane shipping fee used by the route planner.
+     *
+     * The order-placement splitter must not treat missing or zero distributor
+     * freight as free. A dealer-fulfilled distributor item still has inbound
+     * freight to the shop, so unknown/non-positive values fall back to the
+     * configured FFLHub shipping fallback lane cost.
+     *
+     * @param mixed $value
+     */
+    private function resolve_distributor_lane_fee($value): float
+    {
+        $fallback = $this->shipping_fallback_lane_fee();
+        $fee = $this->to_non_negative_float($value, $fallback);
+
+        if ($fee <= 0.0) {
+            return $fallback;
+        }
+
+        return $fee;
+    }
+
+    private function shipping_fallback_lane_fee(): float
+    {
+        static $fallback = null;
+        if ($fallback !== null) {
+            return $fallback;
+        }
+
+        $default = 15.0;
+        $settings = null;
+
+        global $wpdb;
+        if (isset($wpdb) && $wpdb) {
+            $like = $wpdb->esc_like('woocommerce_fflhub_shipping_') . '%_settings';
+            $option_names = $wpdb->get_col(
+                $wpdb->prepare(
+                    "SELECT option_name
+                     FROM {$wpdb->options}
+                     WHERE option_name LIKE %s
+                     ORDER BY option_name ASC",
+                    $like
+                )
+            );
+
+            if (is_array($option_names)) {
+                foreach ($option_names as $option_name) {
+                    if (!is_string($option_name) || $option_name === '') {
+                        continue;
+                    }
+
+                    $candidate = get_option($option_name, null);
+                    if (is_array($candidate)) {
+                        $settings = $candidate;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!is_array($settings)) {
+            $legacy = get_option('woocommerce_fflhub_shipping_settings', null);
+            if (is_array($legacy)) {
+                $settings = $legacy;
+            }
+        }
+
+        $fallback = is_array($settings)
+            ? $this->to_non_negative_float($settings['fallback_shipping'] ?? null, $default)
+            : $default;
+
+        if ($fallback <= 0.0) {
+            $fallback = $default;
+        }
+
+        return $fallback;
     }
 
     /**

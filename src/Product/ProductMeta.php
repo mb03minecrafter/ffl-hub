@@ -47,7 +47,7 @@ class ProductMeta
     public const FFLHUB_MAP_REAL_PRICE_OFFSET_META = '_fflhub_map_real_price_offset'; // float, add to true cost (dealer fallback) when fixed-offset mode is selected
     public const FFLHUB_MAP_REAL_PRICE_PERCENT_META = '_fflhub_map_real_price_percent'; // float percent, subtract from MAP/MSRP base
     public const FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META = '_fflhub_map_real_price_fixed_profit'; // float dollars of desired net profit after shipping + processor fee
-    public const FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META = '_fflhub_map_real_price_free_shipping_override'; // 0/1 force free-shipping on quote coupon
+    public const FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META = '_fflhub_map_real_price_free_shipping_override'; // 0/1 MAP quote customer-facing free-shipping flag
 
 
     public const FFLHUB_SOT_REQUIRED_META = '_fflhub_sot_required'; // 0/1 flag

@@ -470,7 +470,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         $coupon = new \WC_Coupon();
-        $force_free_shipping = $this->map_real_price_free_shipping_override_enabled($product);
+        $customer_free_shipping = $this->map_real_price_free_shipping_override_enabled($product);
 
         $expires_ts = (int) current_time('timestamp', true) + (48 * HOUR_IN_SECONDS);
         $product_name = (string) $product->get_name();
@@ -483,7 +483,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'coupon_amount' => $coupon_amount,
             'recipient_email' => $email,
             'expires_ts' => $expires_ts,
-            'force_free_shipping' => $force_free_shipping ? 1 : 0,
+            'customer_free_shipping_product_meta' => $customer_free_shipping ? 1 : 0,
+            'coupon_free_shipping' => 0,
         ]);
 
         $coupon->set_code($coupon_code);
@@ -495,7 +496,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $coupon->set_usage_limit_per_user(1);
         $coupon->set_email_restrictions([]);
         $coupon->set_date_expires($expires_ts);
-        $coupon->set_free_shipping($force_free_shipping);
+        $coupon->set_free_shipping(false);
         $coupon->set_description(
             sprintf(
                 'Quote coupon for %s',
@@ -886,6 +887,9 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
         $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
         $dist_lane_fee = $this->to_non_negative_float($ship_raw, $fallback_ship);
+        if ($dist_lane_fee <= 0.0) {
+            $dist_lane_fee = max(0.0, $fallback_ship);
+        }
         $weight_oz = $this->to_non_negative_float(
             $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true),
             0.0

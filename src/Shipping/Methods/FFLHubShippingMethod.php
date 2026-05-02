@@ -28,8 +28,10 @@ if (! defined('ABSPATH')) {
  *   - dealer outbound home/ffl costs (USPS API when enabled; formula fallback).
  *
  * FREE SHIPPING RULE:
+ * - Product MAP quote free-shipping override removes that product's routed
+ *   shipping from the customer charge only; internal cost remains for audit.
  * - Compute cart profit P_total (net after processor fee) using stored dealer cost meta.
- * - If S_total < 0.5 * P_total, customer shipping = 0.
+ * - If customer-chargeable S_total < 0.5 * P_total, customer shipping = 0.
  * - Else customer pays full shipping grossed-up so you net S_total after processor fee:
  *      customer_charge = S_total / (1 - f)
  *
@@ -188,6 +190,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             // Dropship eligibility (default true if unset).
             $dropship_enabled_raw = $product->get_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true);
             $dropship_enabled = $this->to_boolish($dropship_enabled_raw, true);
+            $customer_free_shipping = $this->product_customer_free_shipping_enabled($product);
 
             // Dealer cost excludes distributor shipping, which is planned once at the order level.
             $dealer_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
@@ -242,7 +245,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             // Distributor lane fee for this line (used as per-lane fee by planner).
             $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
             $ship = ($ship_raw === '' || $ship_raw === null) ? $fallback_ship : (float) $ship_raw;
-            if (! is_finite($ship) || $ship < 0) {
+            if (! is_finite($ship) || $ship <= 0) {
                 $ship = $fallback_ship;
             }
 
@@ -271,6 +274,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'length_in'        => $length_in,
                 'width_in'         => $width_in,
                 'height_in'        => $height_in,
+                'customer_free_shipping' => $customer_free_shipping ? 1 : 0,
             ];
             $line_revenue_routed = ($qty > 0)
                 ? ((float) $line_revenue * ((float) $qty_for_routing / (float) $qty))
@@ -286,6 +290,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'qty_local_free' => $local_free_ship_qty,
                 'ffl_required'   => $is_ffl,
                 'dropship'       => $dropship_enabled,
+                'customer_free_shipping' => $customer_free_shipping,
                 'lane_fee'       => $ship,
                 'weight_oz'      => $weight_oz,
                 'line_weight_oz' => $line_weight_oz,
@@ -311,13 +316,14 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
             $this->log_debug(
                 sprintf(
-                    'LINE %d product=%d dist=%s qty=%d ffl=%d dropship=%d route=%s lane_fee=%s wt_oz=%.2f line_wt_oz=%.2f revenue=%s dealer_cost=%s profit_net=%s',
+                    'LINE %d product=%d dist=%s qty=%d ffl=%d dropship=%d customer_free_ship=%d route=%s lane_fee=%s wt_oz=%.2f line_wt_oz=%.2f revenue=%s dealer_cost=%s profit_net=%s',
                     $idx + 1,
                     (int) ($row['product_id'] ?? 0),
                     (string) ($row['dist_id'] ?? ''),
                     (int) ($row['qty'] ?? 0),
                     !empty($row['ffl_required']) ? 1 : 0,
                     !empty($row['dropship']) ? 1 : 0,
+                    !empty($row['customer_free_shipping']) ? 1 : 0,
                     $route,
                     $this->fmt_money((float) ($row['lane_fee'] ?? 0.0)),
                     (float) ($row['weight_oz'] ?? 0.0),
@@ -437,6 +443,30 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             'ffl_zip'     => $ffl_dest_zip,
         ];
 
+        $customer_shipping = $this->customer_chargeable_shipping_cost_summary(
+            $line_debug_rows,
+            $assignments,
+            $usps_helper,
+            $dealer_home_source,
+            $dealer_ffl_source,
+            $home_dest_zip,
+            $ffl_dest_zip
+        );
+        $customer_chargeable_shipping_cost_total = min(
+            $shipping_cost_total,
+            max(0.0, (float) ($customer_shipping['total'] ?? $shipping_cost_total))
+        );
+        $customer_free_shipping_credit_total = max(0.0, $shipping_cost_total - $customer_chargeable_shipping_cost_total);
+        $customer_free_shipping_product_applied = $customer_free_shipping_credit_total > 0.0001;
+
+        $plan['customer_chargeable_shipping_cost_total'] = $customer_chargeable_shipping_cost_total;
+        $plan['customer_free_shipping_credit_total'] = $customer_free_shipping_credit_total;
+        $plan['customer_chargeable_distributor_cost_total'] = (float) ($customer_shipping['distributor_cost_total'] ?? 0.0);
+        $plan['customer_chargeable_dealer_outbound_home_cost'] = (float) ($customer_shipping['dealer_outbound_home_cost'] ?? 0.0);
+        $plan['customer_chargeable_dealer_outbound_ffl_cost'] = (float) ($customer_shipping['dealer_outbound_ffl_cost'] ?? 0.0);
+        $plan['customer_chargeable_by_dist'] = (array) ($customer_shipping['by_dist'] ?? []);
+        $plan['customer_free_shipping_product_applied'] = $customer_free_shipping_product_applied ? 1 : 0;
+
         $this->log_debug(
             sprintf(
                 'OUTBOUND dealer_home wt_oz=%.2f dims=%s zip=%s source=%s cost=%s | dealer_ffl wt_oz=%.2f dims=%s zip=%s source=%s cost=%s',
@@ -455,10 +485,12 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         $this->log_debug(
             sprintf(
-                'PLAN total=%s dist_total=%s outbound_total=%s decision_lines=%d combos=%d',
+                'PLAN total=%s dist_total=%s outbound_total=%s customer_chargeable=%s customer_free_credit=%s decision_lines=%d combos=%d',
                 $this->fmt_money($shipping_cost_total),
                 $this->fmt_money($dist_total),
                 $this->fmt_money($outbound_total),
+                $this->fmt_money($customer_chargeable_shipping_cost_total),
+                $this->fmt_money($customer_free_shipping_credit_total),
                 (int) (($plan['meta']['decision_lines'] ?? 0)),
                 (int) (($plan['meta']['combinations_evaluated'] ?? 0))
             )
@@ -471,28 +503,34 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         if ($shipping_cost_total <= 0.0) {
             $customer_charge = 0.0;
             $this->log_debug('RULE shipping_cost_total=0 so customer_charge=$0.00');
+        } elseif ($customer_chargeable_shipping_cost_total <= 0.0) {
+            $customer_charge = 0.0;
+            $this->log_debug('RULE customer_chargeable_shipping_cost_total=0 so customer_charge=$0.00');
         } else {
             $free_threshold = 0.5 * (float) $profit_net_total;
 
             $this->log_debug(
                 sprintf(
-                    'RULE profit_net_total=%s shipping_cost_total=%s free_threshold=%s',
+                    'RULE profit_net_total=%s shipping_cost_total=%s customer_chargeable_shipping_cost_total=%s free_threshold=%s',
                     $this->fmt_money($profit_net_total),
                     $this->fmt_money($shipping_cost_total),
+                    $this->fmt_money($customer_chargeable_shipping_cost_total),
                     $this->fmt_money($free_threshold)
                 )
             );
 
-            if ($profit_net_total > 0.0 && $shipping_cost_total < $free_threshold) {
+            if ($profit_net_total > 0.0 && $customer_chargeable_shipping_cost_total < $free_threshold) {
                 $customer_charge = 0.0;
                 $this->log_debug('RULE free_shipping=yes');
             } else {
-                $customer_charge = ($f >= 0.99) ? $shipping_cost_total : ($shipping_cost_total / (1.0 - $f));
+                $customer_charge = ($f >= 0.99)
+                    ? $customer_chargeable_shipping_cost_total
+                    : ($customer_chargeable_shipping_cost_total / (1.0 - $f));
                 $this->log_debug(
                     sprintf(
                         'RULE free_shipping=no customer_charge=%s net_shipping_cost=%s',
                         $this->fmt_money($customer_charge),
-                        $this->fmt_money($shipping_cost_total)
+                        $this->fmt_money($customer_chargeable_shipping_cost_total)
                     )
                 );
             }
@@ -501,9 +539,11 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         // 3) Cart-level clamps
         $before_clamp = $customer_charge;
 
-        $customer_charge = max($min_cart_ship, $customer_charge);
-        if ($max_cart_ship > 0.0) {
-            $customer_charge = min($max_cart_ship, $customer_charge);
+        if ($customer_chargeable_shipping_cost_total > 0.0001) {
+            $customer_charge = max($min_cart_ship, $customer_charge);
+            if ($max_cart_ship > 0.0) {
+                $customer_charge = min($max_cart_ship, $customer_charge);
+            }
         }
 
         if (abs($customer_charge - $before_clamp) > 0.0001) {
@@ -534,6 +574,8 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
                 // What customer was charged at checkout for shipping (already in 'cost', but nice to have)
                 'fflhub_customer_shipping_charge' => (string) wc_format_decimal($customer_charge, 4),
+                'fflhub_customer_chargeable_shipping_cost_total' => (string) wc_format_decimal($customer_chargeable_shipping_cost_total, 4),
+                'fflhub_customer_free_shipping_credit_total' => (string) wc_format_decimal($customer_free_shipping_credit_total, 4),
 
                 // Planner output details (distributor lanes + routing assignments)
                 'fflhub_shipping_by_dist' => wp_json_encode($by_dist),
@@ -542,6 +584,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
                 // Optional: record whether free shipping rule triggered
                 'fflhub_free_shipping_applied' => ($customer_charge <= 0.0001) ? '1' : '0',
+                'fflhub_customer_free_shipping_product_applied' => $customer_free_shipping_product_applied ? '1' : '0',
             ],
         ]);
 
@@ -631,6 +674,190 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         }
 
         return $v;
+    }
+
+    private function product_customer_free_shipping_enabled(WC_Product $product): bool
+    {
+        $mode_raw = $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
+        $mode = ($mode_raw === '' && (string) $mode_raw !== '0')
+            ? ProductMeta::MARKUP_MODE_GLOBAL
+            : (int) $mode_raw;
+        if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            return false;
+        }
+
+        return $this->to_boolish(
+            $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true),
+            false
+        );
+    }
+
+    /**
+     * Build the shipping amount the customer can be charged after product-level
+     * customer-free-shipping flags are removed. Internal distributor freight stays
+     * untouched in the primary plan for profit audit.
+     *
+     * @param array<int,array<string,mixed>> $line_debug_rows
+     * @param array<string,string> $assignments
+     * @return array<string,mixed>
+     */
+    private function customer_chargeable_shipping_cost_summary(
+        array $line_debug_rows,
+        array $assignments,
+        USPSRateHelper $usps_helper,
+        string $dealer_home_source,
+        string $dealer_ffl_source,
+        string $home_dest_zip,
+        string $ffl_dest_zip
+    ): array {
+        $dist_summary = $this->customer_chargeable_distributor_shipping_summary($line_debug_rows, $assignments);
+
+        $home_pkg = $this->build_dealer_lane_package($line_debug_rows, $assignments, false, true);
+        $ffl_pkg = $this->build_dealer_lane_package($line_debug_rows, $assignments, true, true);
+
+        $home = $this->dealer_outbound_chargeable_cost($home_pkg, $usps_helper, $dealer_home_source, $home_dest_zip, 'home');
+        $ffl = $this->dealer_outbound_chargeable_cost($ffl_pkg, $usps_helper, $dealer_ffl_source, $ffl_dest_zip, 'ffl');
+
+        $dist_total = max(0.0, (float) ($dist_summary['total'] ?? 0.0));
+        $home_cost = max(0.0, (float) ($home['cost'] ?? 0.0));
+        $ffl_cost = max(0.0, (float) ($ffl['cost'] ?? 0.0));
+
+        return [
+            'total' => $dist_total + $home_cost + $ffl_cost,
+            'distributor_cost_total' => $dist_total,
+            'dealer_outbound_home_cost' => $home_cost,
+            'dealer_outbound_ffl_cost' => $ffl_cost,
+            'dealer_outbound_home_source' => (string) ($home['source'] ?? 'none'),
+            'dealer_outbound_ffl_source' => (string) ($ffl['source'] ?? 'none'),
+            'dealer_outbound_home_oz' => (float) ($home_pkg['weight_oz'] ?? 0.0),
+            'dealer_outbound_ffl_oz' => (float) ($ffl_pkg['weight_oz'] ?? 0.0),
+            'by_dist' => (array) ($dist_summary['by_dist'] ?? []),
+        ];
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $line_debug_rows
+     * @param array<string,string> $assignments
+     * @return array{total:float,by_dist:array<string,array<string,mixed>>}
+     */
+    private function customer_chargeable_distributor_shipping_summary(array $line_debug_rows, array $assignments): array
+    {
+        $by_dist = [];
+
+        foreach ($line_debug_rows as $row) {
+            if (!is_array($row) || !empty($row['customer_free_shipping'])) {
+                continue;
+            }
+
+            $dist_id = strtolower(trim((string) ($row['dist_id'] ?? '')));
+            if ($dist_id === '') {
+                continue;
+            }
+
+            if (!isset($by_dist[$dist_id])) {
+                $by_dist[$dist_id] = [
+                    'dist_id' => $dist_id,
+                    'lane_fee' => 0.0,
+                    'dealer_inbound' => false,
+                    'direct_home' => false,
+                    'direct_ffl' => false,
+                    'active_lanes' => 0,
+                    'cost' => 0.0,
+                ];
+            }
+
+            $line_fee = max(0.0, (float) ($row['lane_fee'] ?? 0.0));
+            if ($line_fee > (float) $by_dist[$dist_id]['lane_fee']) {
+                $by_dist[$dist_id]['lane_fee'] = $line_fee;
+            }
+
+            $line_id = (string) ($row['line_id'] ?? '');
+            $route = isset($assignments[$line_id])
+                ? (string) $assignments[$line_id]
+                : (!empty($row['dropship']) ? 'direct_ship' : 'dealer_fulfilled');
+
+            if ($route === 'dealer_fulfilled') {
+                $by_dist[$dist_id]['dealer_inbound'] = true;
+                continue;
+            }
+
+            if (!empty($row['ffl_required'])) {
+                $by_dist[$dist_id]['direct_ffl'] = true;
+            } else {
+                $by_dist[$dist_id]['direct_home'] = true;
+            }
+        }
+
+        $total = 0.0;
+        foreach ($by_dist as $dist_id => $row) {
+            $lane_count = 0;
+            if (!empty($row['dealer_inbound'])) {
+                $lane_count++;
+            }
+            if (!empty($row['direct_home'])) {
+                $lane_count++;
+            }
+            if (!empty($row['direct_ffl'])) {
+                $lane_count++;
+            }
+
+            $cost = max(0.0, (float) ($row['lane_fee'] ?? 0.0)) * (float) $lane_count;
+            $by_dist[$dist_id]['active_lanes'] = $lane_count;
+            $by_dist[$dist_id]['cost'] = $cost;
+            $total += $cost;
+        }
+
+        ksort($by_dist);
+
+        return [
+            'total' => max(0.0, $total),
+            'by_dist' => $by_dist,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $pkg
+     * @return array{cost:float,source:string}
+     */
+    private function dealer_outbound_chargeable_cost(
+        array $pkg,
+        USPSRateHelper $usps_helper,
+        string $original_source,
+        string $destination_zip,
+        string $lane_label
+    ): array {
+        $weight_oz = max(0.0, (float) ($pkg['weight_oz'] ?? 0.0));
+        $line_count = max(0, (int) ($pkg['line_count'] ?? 0));
+        if ($weight_oz <= 0.0 || $line_count < 1) {
+            return ['cost' => 0.0, 'source' => 'none'];
+        }
+
+        $formula_cost = DealerFulfillmentRoutingPlanner::estimate_dealer_outbound_cost($weight_oz);
+        if ($original_source !== 'usps_api' || !$usps_helper->is_enabled() || $destination_zip === '') {
+            return ['cost' => max(0.0, $formula_cost), 'source' => 'formula'];
+        }
+
+        $quote = $usps_helper->estimate_rate([
+            'destination_zip' => $destination_zip,
+            'weight_oz' => $weight_oz,
+            'length_in' => (float) ($pkg['length_in'] ?? 0.0),
+            'width_in' => (float) ($pkg['width_in'] ?? 0.0),
+            'height_in' => (float) ($pkg['height_in'] ?? 0.0),
+        ]);
+
+        if (!empty($quote['ok'])) {
+            return ['cost' => max(0.0, (float) ($quote['cost'] ?? 0.0)), 'source' => 'usps_api'];
+        }
+
+        $this->log_debug(
+            sprintf(
+                'USPS customer-chargeable %s quote failed, using formula fallback error=%s',
+                $lane_label,
+                (string) ($quote['error'] ?? 'unknown')
+            )
+        );
+
+        return ['cost' => max(0.0, $formula_cost), 'source' => 'formula'];
     }
 
     /**
@@ -737,7 +964,12 @@ class FFLHubShippingMethod extends WC_Shipping_Method
      * @param array<string,string> $assignments
      * @return array<string,mixed>
      */
-    private function build_dealer_lane_package(array $line_debug_rows, array $assignments, bool $ffl_lane): array
+    private function build_dealer_lane_package(
+        array $line_debug_rows,
+        array $assignments,
+        bool $ffl_lane,
+        bool $customer_chargeable_only = false
+    ): array
     {
         $weight_oz = 0.0;
         $volume_cuin = 0.0;
@@ -746,6 +978,10 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         foreach ($line_debug_rows as $row) {
             if (!is_array($row)) {
+                continue;
+            }
+
+            if ($customer_chargeable_only && !empty($row['customer_free_shipping'])) {
                 continue;
             }
 

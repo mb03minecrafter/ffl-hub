@@ -583,7 +583,7 @@ class ProductMetaBox
         echo esc_html__('MAP Price Real Price Free Shipping Override', 'ffl-hub');
         echo '</label>';
         echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
-            esc_html__('When enabled, quote coupons for this MAP product will force free shipping.', 'ffl-hub') .
+            esc_html__('When enabled, quote emails show free shipping and checkout removes this product from the customer-facing shipping charge. Distributor shipping cost still remains in profit audit.', 'ffl-hub') .
             '</span>';
         echo '</p>';
 
