@@ -40,6 +40,9 @@ class LipseysClient
         $verifyTls = $this->shouldVerifyTls();
         curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, $verifyTls ? 2 : 0);
         curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, $verifyTls);
+        if ($this->shouldForceIpv4()) {
+            curl_setopt($curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+        }
         curl_setopt_array($curl, $options);
         return $curl;
     }
@@ -132,6 +135,15 @@ class LipseysClient
             $verifyTls = (bool) apply_filters('fflhub_lipseys_verify_tls', true);
         }
         return $verifyTls;
+    }
+
+    private function shouldForceIpv4(): bool
+    {
+        $forceIpv4 = true;
+        if (function_exists('apply_filters')) {
+            $forceIpv4 = (bool) apply_filters('fflhub_lipseys_force_ipv4', true);
+        }
+        return $forceIpv4;
     }
 
     private function sessionTokenKey(): string
