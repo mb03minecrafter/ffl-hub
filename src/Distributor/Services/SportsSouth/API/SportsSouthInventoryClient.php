@@ -1,0 +1,197 @@
+<?php
+
+namespace FFLHub\Distributor\Services\SportsSouth\API;
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+/**
+ * Thin client for Sports South's ASMX inventory service.
+ *
+ * The service supports SOAP, GET, and form POST. We use form POST because it
+ * gives the same XML payload without building SOAP envelopes.
+ */
+final class SportsSouthInventoryClient
+{
+    public const DEFAULT_BASE_URL = 'https://webservices.theshootingwarehouse.com/smart/inventory.asmx';
+
+    private string $customerNumber;
+    private string $username;
+    private string $password;
+    private string $source;
+    private string $baseUrl;
+    private int $timeoutSeconds;
+
+    public function __construct(
+        string $customerNumber,
+        string $username,
+        string $password,
+        string $source = '',
+        string $baseUrl = self::DEFAULT_BASE_URL,
+        int $timeoutSeconds = 180
+    ) {
+        $this->customerNumber = trim($customerNumber);
+        $this->username = trim($username);
+        $this->password = trim($password);
+        $this->source = trim($source) !== '' ? trim($source) : $this->customerNumber;
+        $this->baseUrl = rtrim(trim($baseUrl) !== '' ? trim($baseUrl) : self::DEFAULT_BASE_URL, '/');
+        $this->timeoutSeconds = max(10, $timeoutSeconds);
+    }
+
+    public function has_credentials(): bool
+    {
+        return $this->customerNumber !== '' && $this->username !== '' && $this->password !== '';
+    }
+
+    /**
+     * @return array{ok:bool,status:int,xml:string,body:string,error:string}
+     */
+    public function daily_item_update(string $lastUpdate = '1/1/1990', int $lastItem = -1): array
+    {
+        return $this->post_operation('DailyItemUpdate', [
+            'LastUpdate' => trim($lastUpdate) !== '' ? trim($lastUpdate) : '1/1/1990',
+            'LastItem' => (string) $lastItem,
+        ]);
+    }
+
+    /**
+     * @return array{ok:bool,status:int,xml:string,body:string,error:string}
+     */
+    public function incremental_onhand_update(string $sinceDateTime): array
+    {
+        return $this->post_operation('IncrementalOnhandUpdate', [
+            'SinceDateTime' => trim($sinceDateTime),
+        ]);
+    }
+
+    /**
+     * @param array<string,string> $operationParams
+     * @return array{ok:bool,status:int,xml:string,body:string,error:string}
+     */
+    private function post_operation(string $operation, array $operationParams): array
+    {
+        if (!$this->has_credentials()) {
+            return [
+                'ok' => false,
+                'status' => 0,
+                'xml' => '',
+                'body' => '',
+                'error' => 'Missing Sports South credentials.',
+            ];
+        }
+
+        $url = $this->baseUrl . '/' . rawurlencode($operation);
+        $body = array_merge($this->credential_body(), $operationParams);
+
+        $response = wp_remote_post(
+            $url,
+            [
+                'timeout' => $this->timeoutSeconds,
+                'headers' => [
+                    'Accept' => 'text/xml, application/xml, */*',
+                ],
+                'body' => $body,
+            ]
+        );
+
+        return $this->parse_response($response, $operation);
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function credential_body(): array
+    {
+        return [
+            'CustomerNumber' => $this->customerNumber,
+            'UserName' => $this->username,
+            'Password' => $this->password,
+            'Source' => $this->source,
+        ];
+    }
+
+    /**
+     * @param mixed $response
+     * @return array{ok:bool,status:int,xml:string,body:string,error:string}
+     */
+    private function parse_response($response, string $operation): array
+    {
+        if (is_wp_error($response)) {
+            return [
+                'ok' => false,
+                'status' => 0,
+                'xml' => '',
+                'body' => '',
+                'error' => $response->get_error_message(),
+            ];
+        }
+
+        $status = (int) wp_remote_retrieve_response_code($response);
+        $body = (string) wp_remote_retrieve_body($response);
+        $xml = $this->extract_inner_xml($body);
+
+        $error = '';
+        if ($status < 200 || $status >= 300) {
+            $error = 'Sports South ' . $operation . ' failed with HTTP status ' . $status . '.';
+        } elseif ($xml === '' && trim($body) === '') {
+            $error = 'Sports South ' . $operation . ' returned an empty response.';
+        } elseif ($this->looks_like_auth_failure($body . "\n" . $xml)) {
+            $error = 'Sports South ' . $operation . ' authentication failed.';
+        }
+
+        return [
+            'ok' => $error === '',
+            'status' => $status,
+            'xml' => $xml !== '' ? $xml : $body,
+            'body' => $body,
+            'error' => $error,
+        ];
+    }
+
+    private function extract_inner_xml(string $body): string
+    {
+        $trimmed = trim($body);
+        if ($trimmed === '') {
+            return '';
+        }
+
+        $previous = libxml_use_internal_errors(true);
+        $xml = simplexml_load_string($trimmed);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        if ($xml instanceof \SimpleXMLElement) {
+            $name = strtolower((string) $xml->getName());
+            if ($name === 'string') {
+                return html_entity_decode(trim((string) $xml), ENT_QUOTES | ENT_XML1, 'UTF-8');
+            }
+
+            $namespaces = $xml->getNamespaces(true);
+            foreach ($namespaces as $prefix => $namespace) {
+                $xml->registerXPathNamespace($prefix !== '' ? $prefix : 'x', $namespace);
+            }
+
+            $result_nodes = $xml->xpath('//*[local-name()="DailyItemUpdateResult" or local-name()="IncrementalOnhandUpdateResult"]');
+            if (is_array($result_nodes) && isset($result_nodes[0])) {
+                return html_entity_decode(trim((string) $result_nodes[0]), ENT_QUOTES | ENT_XML1, 'UTF-8');
+            }
+        }
+
+        if (preg_match('/<string\b[^>]*>(.*?)<\/string>/is', $trimmed, $m)) {
+            return html_entity_decode(trim((string) $m[1]), ENT_QUOTES | ENT_XML1, 'UTF-8');
+        }
+
+        return $trimmed;
+    }
+
+    private function looks_like_auth_failure(string $text): bool
+    {
+        $needle = strtolower($text);
+
+        return strpos($needle, 'not authenticated') !== false
+            || strpos($needle, 'not authorized') !== false
+            || strpos($needle, 'invalid password') !== false
+            || strpos($needle, 'invalid username') !== false;
+    }
+}

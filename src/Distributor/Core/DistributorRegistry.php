@@ -13,6 +13,7 @@ use FFLHub\Distributor\Integrations\Lipseys\LipseysModule;
 use FFLHub\Distributor\Integrations\MGE\MGEModule;
 use FFLHub\Distributor\Integrations\Orion\OrionModule;
 use FFLHub\Distributor\Integrations\RSR\RSRModule;
+use FFLHub\Distributor\Integrations\SportsSouth\SportsSouthModule;
 use FFLHub\Distributor\Integrations\Zanders\ZandersModule;
 
 /**
@@ -41,6 +42,7 @@ final class DistributorRegistry
             new LipseysModule(),
             new ZandersModule(),
             new OrionModule(),
+            new SportsSouthModule(),
             new MGEModule(),
             new CSSIModule(),
             new DavidsonsModule()
