@@ -62,7 +62,7 @@ if ($reply_to !== '' && !is_email($reply_to)) {
 
 $products = holosun_products();
 foreach ($products as &$product) {
-    $product['url'] = holosun_resolve_product_url($product);
+    $product = array_merge($product, holosun_resolve_product_card_data($product));
 }
 unset($product);
 
@@ -317,8 +317,109 @@ function holosun_products(): array
 
 /**
  * @param array<string,mixed> $product
+ * @return array<string,mixed>
+ */
+function holosun_resolve_product_card_data(array $product): array
+{
+    $product_id = holosun_resolve_product_id($product);
+    $url = holosun_url_for_product_id($product_id);
+    if ($url === '') {
+        $url = holosun_fallback_search_url($product);
+    }
+
+    $card_name = trim((string) ($product['name'] ?? ''));
+    $image_url = '';
+    $sku = trim((string) ($product['model'] ?? ''));
+    $stock_label = '';
+    $woo_price_html = '';
+
+    if ($product_id > 0 && function_exists('wc_get_product')) {
+        $woo_product = wc_get_product($product_id);
+        if (is_object($woo_product)) {
+            if (method_exists($woo_product, 'get_name')) {
+                $woo_name = trim((string) $woo_product->get_name());
+                if ($woo_name !== '') {
+                    $card_name = $woo_name;
+                }
+            }
+
+            if (method_exists($woo_product, 'get_sku')) {
+                $woo_sku = trim((string) $woo_product->get_sku());
+                if ($woo_sku !== '') {
+                    $sku = $woo_sku;
+                }
+            }
+
+            if (method_exists($woo_product, 'get_price_html')) {
+                $woo_price_html = trim((string) $woo_product->get_price_html());
+            }
+
+            if (method_exists($woo_product, 'is_in_stock') && $woo_product->is_in_stock()) {
+                $stock_label = 'In stock';
+                if (method_exists($woo_product, 'get_stock_quantity')) {
+                    $qty = $woo_product->get_stock_quantity();
+                    if (is_numeric($qty) && (int) $qty > 0) {
+                        $stock_label = 'In stock';
+                    }
+                }
+            }
+
+            $image_id = 0;
+            if (method_exists($woo_product, 'get_image_id')) {
+                $image_id = (int) $woo_product->get_image_id();
+            }
+
+            if ($image_id <= 0 && method_exists($woo_product, 'get_parent_id')) {
+                $parent_id = (int) $woo_product->get_parent_id();
+                if ($parent_id > 0 && function_exists('wc_get_product')) {
+                    $parent = wc_get_product($parent_id);
+                    if (is_object($parent) && method_exists($parent, 'get_image_id')) {
+                        $image_id = (int) $parent->get_image_id();
+                    }
+                }
+            }
+
+            if ($image_id > 0) {
+                $image = wp_get_attachment_image_url($image_id, 'woocommerce_thumbnail');
+                if (is_string($image) && $image !== '') {
+                    $image_url = $image;
+                }
+            }
+        }
+    }
+
+    if ($image_url === '' && function_exists('wc_placeholder_img_src')) {
+        $placeholder = wc_placeholder_img_src('woocommerce_thumbnail');
+        if (is_string($placeholder) && $placeholder !== '') {
+            $image_url = $placeholder;
+        }
+    }
+
+    return [
+        'product_id' => $product_id,
+        'url' => $url,
+        'card_name' => $card_name !== '' ? $card_name : (string) ($product['name'] ?? 'Holosun product'),
+        'image_url' => $image_url,
+        'sku' => $sku,
+        'stock_label' => $stock_label,
+        'woo_price_html' => $woo_price_html,
+    ];
+}
+
+/**
+ * @param array<string,mixed> $product
  */
 function holosun_resolve_product_url(array $product): string
+{
+    $product_id = holosun_resolve_product_id($product);
+    $url = holosun_url_for_product_id($product_id);
+    return $url !== '' ? $url : holosun_fallback_search_url($product);
+}
+
+/**
+ * @param array<string,mixed> $product
+ */
+function holosun_resolve_product_id(array $product): int
 {
     $terms = array_values(array_filter(array_map('strval', (array) ($product['terms'] ?? []))));
     $model = trim((string) ($product['model'] ?? ''));
@@ -327,25 +428,31 @@ function holosun_resolve_product_url(array $product): string
     foreach ($candidates as $candidate) {
         if (function_exists('wc_get_product_id_by_sku')) {
             $product_id = (int) wc_get_product_id_by_sku($candidate);
-            $url = holosun_url_for_product_id($product_id);
-            if ($url !== '') {
-                return $url;
+            if ($product_id > 0) {
+                return $product_id;
             }
         }
 
         $product_id = holosun_find_product_id_by_sku_like($candidate);
-        $url = holosun_url_for_product_id($product_id);
-        if ($url !== '') {
-            return $url;
+        if ($product_id > 0) {
+            return $product_id;
         }
     }
 
     $product_id = holosun_find_product_id_by_title_terms($terms);
-    $url = holosun_url_for_product_id($product_id);
-    if ($url !== '') {
-        return $url;
+    if ($product_id > 0) {
+        return $product_id;
     }
 
+    return 0;
+}
+
+/**
+ * @param array<string,mixed> $product
+ */
+function holosun_fallback_search_url(array $product): string
+{
+    $model = trim((string) ($product['model'] ?? ''));
     $search = $model !== '' ? $model : (string) ($product['name'] ?? 'Holosun');
     return add_query_arg(
         [
@@ -602,22 +709,7 @@ function holosun_first_name(string $name): string
 function holosun_build_email_html(string $first_name, array $products, string $physical_address, string $unsubscribe_line): string
 {
     $site_url = home_url('/');
-    $rows = '';
-
-    foreach ($products as $product) {
-        $name = (string) ($product['name'] ?? '');
-        $price = (string) ($product['price'] ?? '');
-        $url = (string) ($product['url'] ?? $site_url);
-
-        $rows .= '<tr>'
-            . '<td style="padding:14px 0;border-bottom:1px solid #e6e8eb;">'
-            . '<a href="' . esc_url($url) . '" style="font-size:15px;line-height:1.35;color:#111827;font-weight:700;text-decoration:none;">' . esc_html($name) . '</a>'
-            . '</td>'
-            . '<td align="right" style="padding:14px 0;border-bottom:1px solid #e6e8eb;white-space:nowrap;">'
-            . '<a href="' . esc_url($url) . '" style="display:inline-block;background:#111827;color:#ffffff;border-radius:6px;padding:8px 12px;font-size:14px;font-weight:700;text-decoration:none;">' . esc_html($price) . '</a>'
-            . '</td>'
-            . '</tr>';
-    }
+    $cards = holosun_product_cards_html($products, $site_url);
 
     $address_html = $physical_address !== ''
         ? '<div style="margin-top:8px;">' . esc_html($physical_address) . '</div>'
@@ -638,7 +730,7 @@ function holosun_build_email_html(string $first_name, array $products, string $p
         . '<p style="margin:0 0 16px;font-size:16px;line-height:1.55;">This is a notification letting you know that your email has been scrubbed from our quote list.</p>'
         . '<p style="margin:0 0 16px;font-size:16px;line-height:1.55;">We have started an email list if you would like to get updates on restocks and deals. That email list can be found at the bottom of <a href="' . esc_url($site_url) . '" style="color:#0f766e;font-weight:700;">our site</a>.</p>'
         . '<p style="margin:0 0 18px;font-size:16px;line-height:1.55;">In addition, given our current Holosun dispute, we have now restocked these Holosun products at below MAP prices:</p>'
-        . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">' . $rows . '</table>'
+        . $cards
         . '<p style="margin:24px 0 0;font-size:16px;line-height:1.55;">Best wishes,<br>Matthew Bickham<br>Bickham Firearms</p>'
         . '</td></tr>'
         . '<tr><td style="background:#f9fafb;color:#6b7280;padding:18px 26px;font-size:12px;line-height:1.5;">'
@@ -649,6 +741,77 @@ function holosun_build_email_html(string $first_name, array $products, string $p
         . '</td></tr>'
         . '</table>'
         . '</body></html>';
+}
+
+/**
+ * @param array<int,array<string,mixed>> $products
+ */
+function holosun_product_cards_html(array $products, string $site_url): string
+{
+    $html = '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">';
+    $chunks = array_chunk($products, 2);
+
+    foreach ($chunks as $pair) {
+        $html .= '<tr>';
+        foreach ($pair as $product) {
+            $html .= '<td valign="top" width="50%" style="padding:8px;">'
+                . holosun_product_card_html($product, $site_url)
+                . '</td>';
+        }
+
+        if (count($pair) === 1) {
+            $html .= '<td valign="top" width="50%" style="padding:8px;">&nbsp;</td>';
+        }
+
+        $html .= '</tr>';
+    }
+
+    return $html . '</table>';
+}
+
+/**
+ * @param array<string,mixed> $product
+ */
+function holosun_product_card_html(array $product, string $site_url): string
+{
+    $name = trim((string) ($product['card_name'] ?? $product['name'] ?? 'Holosun product'));
+    $promo_name = trim((string) ($product['name'] ?? $name));
+    $price = trim((string) ($product['price'] ?? ''));
+    $url = trim((string) ($product['url'] ?? $site_url));
+    $image_url = trim((string) ($product['image_url'] ?? ''));
+    $sku = trim((string) ($product['sku'] ?? $product['model'] ?? ''));
+    $stock_label = trim((string) ($product['stock_label'] ?? ''));
+    $woo_price_html = trim((string) ($product['woo_price_html'] ?? ''));
+
+    $subline_parts = [];
+    if ($sku !== '') {
+        $subline_parts[] = 'SKU: ' . $sku;
+    }
+    if ($stock_label !== '') {
+        $subline_parts[] = $stock_label;
+    }
+    $subline = implode(' &bull; ', array_map('esc_html', $subline_parts));
+
+    $site_price = '';
+    if ($woo_price_html !== '') {
+        $site_price = '<div style="margin-top:4px;font-size:12px;line-height:1.35;color:#6b7280;">Site listing: ' . wp_kses_post($woo_price_html) . '</div>';
+    }
+
+    $image = $image_url !== ''
+        ? '<a href="' . esc_url($url) . '" style="display:block;text-decoration:none;"><img src="' . esc_url($image_url) . '" alt="' . esc_attr($promo_name) . '" width="250" style="display:block;width:100%;max-width:250px;height:auto;border:0;background:#ffffff;"></a>'
+        : '<a href="' . esc_url($url) . '" style="display:block;text-decoration:none;background:#f3f4f6;color:#6b7280;text-align:center;padding:44px 8px;font-size:13px;">View product</a>';
+
+    return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0;border:1px solid #dfe3e8;border-radius:8px;overflow:hidden;background:#ffffff;">'
+        . '<tr><td align="center" style="padding:14px 14px 10px;background:#f9fafb;">' . $image . '</td></tr>'
+        . '<tr><td style="padding:14px;">'
+        . ($subline !== '' ? '<div style="margin:0 0 7px;font-size:11px;line-height:1.3;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;">' . $subline . '</div>' : '')
+        . '<a href="' . esc_url($url) . '" style="display:block;min-height:42px;font-size:14px;line-height:1.35;color:#111827;font-weight:700;text-decoration:none;">' . esc_html($name) . '</a>'
+        . '<div style="margin-top:12px;font-size:12px;line-height:1.2;color:#6b7280;">Below MAP price</div>'
+        . '<div style="margin-top:2px;font-size:24px;line-height:1.1;color:#0f766e;font-weight:800;">' . esc_html($price) . '</div>'
+        . $site_price
+        . '<a href="' . esc_url($url) . '" style="display:block;margin-top:14px;background:#111827;color:#ffffff;border-radius:6px;padding:10px 12px;font-size:13px;font-weight:700;text-align:center;text-decoration:none;">View product</a>'
+        . '</td></tr>'
+        . '</table>';
 }
 
 function holosun_header_name(string $name): string
