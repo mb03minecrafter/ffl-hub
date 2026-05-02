@@ -73,7 +73,7 @@ final class CaliforniaRelayNotice
 
     private static function message(): string
     {
-        return 'California orders may take longer to ship due to CA restrictions and the need to ship eligible items from a separate warehouse before final delivery.';
+        return 'California orders may take longer to ship due to CA restrictions and the need to ship eligible items from a separate warehouse before final delivery. A $10 California shipping surcharge applies.';
     }
 
     private static function css(): string

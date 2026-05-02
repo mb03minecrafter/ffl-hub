@@ -40,6 +40,8 @@ if (! defined('ABSPATH')) {
  */
 class FFLHubShippingMethod extends WC_Shipping_Method
 {
+    private const CA_SHIPPING_SURCHARGE = 10.0;
+
     public function __construct($instance_id = 0)
     {
         $this->id                 = 'fflhub_shipping';
@@ -558,6 +560,27 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             );
         }
 
+        $customer_dest_state = $this->resolve_customer_destination_state($package);
+        $ca_surcharge = ($customer_dest_state === 'CA') ? self::CA_SHIPPING_SURCHARGE : 0.0;
+        if ($ca_surcharge > 0.0) {
+            $customer_charge += $ca_surcharge;
+            $plan['ca_shipping_surcharge_applied'] = 1;
+            $plan['ca_shipping_surcharge'] = $ca_surcharge;
+            $plan['ca_shipping_surcharge_customer_state'] = $customer_dest_state;
+            $this->log_debug(
+                sprintf(
+                    'CA_SURCHARGE state=%s amount=%s customer_charge_after=%s',
+                    $customer_dest_state,
+                    $this->fmt_money($ca_surcharge),
+                    $this->fmt_money($customer_charge)
+                )
+            );
+        } else {
+            $plan['ca_shipping_surcharge_applied'] = 0;
+            $plan['ca_shipping_surcharge'] = 0.0;
+            $plan['ca_shipping_surcharge_customer_state'] = $customer_dest_state;
+        }
+
         $plan_version = (($dealer_home_source === 'usps_api') || ($dealer_ffl_source === 'usps_api'))
             ? 'dealer_fulfilled_v2_usps_outbound'
             : 'dealer_fulfilled_v1';
@@ -576,6 +599,8 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'fflhub_customer_shipping_charge' => (string) wc_format_decimal($customer_charge, 4),
                 'fflhub_customer_chargeable_shipping_cost_total' => (string) wc_format_decimal($customer_chargeable_shipping_cost_total, 4),
                 'fflhub_customer_free_shipping_credit_total' => (string) wc_format_decimal($customer_free_shipping_credit_total, 4),
+                'fflhub_ca_shipping_surcharge' => (string) wc_format_decimal($ca_surcharge, 4),
+                'fflhub_ca_shipping_surcharge_applied' => ($ca_surcharge > 0.0) ? '1' : '0',
 
                 // Planner output details (distributor lanes + routing assignments)
                 'fflhub_shipping_by_dist' => wp_json_encode($by_dist),
@@ -955,6 +980,35 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         }
 
         return substr($digits, 0, 5);
+    }
+
+    /**
+     * @param array<string,mixed> $package
+     */
+    private function resolve_customer_destination_state(array $package): string
+    {
+        $candidates = [];
+
+        if (!empty($package['destination']['state'])) {
+            $candidates[] = (string) $package['destination']['state'];
+        }
+
+        if (function_exists('WC') && WC() && WC()->customer) {
+            $candidates[] = (string) WC()->customer->get_shipping_state();
+            $candidates[] = (string) WC()->customer->get_billing_state();
+        }
+
+        foreach ($candidates as $raw) {
+            $state = strtoupper(trim($raw));
+            if ($state === 'CALIFORNIA') {
+                return 'CA';
+            }
+            if (preg_match('/^[A-Z]{2}$/', $state)) {
+                return $state;
+            }
+        }
+
+        return '';
     }
 
     /**
