@@ -678,9 +678,9 @@ function holosun_build_email_html(string $first_name, array $products, string $p
         : '';
 
     return '<!doctype html>'
-        . '<html><body style="margin:0;padding:0;background:#f5f5f5;font-family:Arial,Helvetica,sans-serif;color:#111111;">'
+        . '<html><body style="margin:0;padding:0;background:#ffffff;font-family:Arial,Helvetica,sans-serif;color:#111111;">'
         . '<span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;">Holosun restock update and quote list notice from Bickham Firearms.</span>'
-        . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f5f5;margin:0;padding:28px 12px;">'
+        . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;margin:0;padding:28px 12px;">'
         . '<tr><td align="center">'
         . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#ffffff;border:1px solid #dddddd;border-radius:0;overflow:hidden;">'
         . '<tr><td style="background:#ffffff;color:#111111;padding:24px 26px 18px;border-bottom:1px solid #dddddd;">'
@@ -740,7 +740,6 @@ function holosun_product_card_html(array $product, string $site_url): string
     $image_url = trim((string) ($product['image_url'] ?? ''));
     $sku = trim((string) ($product['sku'] ?? $product['model'] ?? ''));
     $stock_label = trim((string) ($product['stock_label'] ?? ''));
-    $woo_price_html = trim((string) ($product['woo_price_html'] ?? ''));
 
     $subline_parts = [];
     if ($sku !== '') {
@@ -750,11 +749,6 @@ function holosun_product_card_html(array $product, string $site_url): string
         $subline_parts[] = $stock_label;
     }
     $subline = implode(' &bull; ', array_map('esc_html', $subline_parts));
-
-    $site_price = '';
-    if ($woo_price_html !== '') {
-        $site_price = '<div style="margin-top:4px;font-size:12px;line-height:1.35;color:#767676;">Site listing: ' . wp_kses_post($woo_price_html) . '</div>';
-    }
 
     $image = $image_url !== ''
         ? '<a href="' . esc_url($url) . '" style="display:block;text-decoration:none;height:160px;line-height:160px;text-align:center;"><img src="' . esc_url($image_url) . '" alt="' . esc_attr($promo_name) . '" width="220" style="display:inline-block;width:auto;max-width:220px;max-height:145px;height:auto;border:0;background:#ffffff;vertical-align:middle;"></a>'
@@ -767,8 +761,7 @@ function holosun_product_card_html(array $product, string $site_url): string
         . '<a href="' . esc_url($url) . '" style="display:block;min-height:42px;font-size:14px;line-height:1.35;color:#111111;font-weight:700;text-decoration:none;">' . esc_html($name) . '</a>'
         . '<div style="margin-top:12px;font-size:12px;line-height:1.2;color:#666666;">Below MAP price</div>'
         . '<div style="margin-top:2px;font-size:24px;line-height:1.1;color:#111111;font-weight:800;">' . esc_html($price) . '</div>'
-        . $site_price
-        . '<a href="' . esc_url($url) . '" style="display:block;margin-top:14px;background:#c9a24d;color:#111111;border-radius:0;padding:10px 12px;font-size:13px;font-weight:700;text-align:center;text-decoration:none;">View product</a>'
+        . '<a href="' . esc_url($url) . '" style="display:block;margin-top:14px;background:#c9a24d;color:#111111;border-radius:5px;padding:10px 12px;font-size:13px;font-weight:700;text-align:center;text-decoration:none;">View product</a>'
         . '</td></tr>'
         . '</table>';
 }
