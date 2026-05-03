@@ -129,10 +129,13 @@ final class DealerFulfillmentRoutingPlanner
 
             if (!isset($by_dist[$dist_id])) {
                 $by_dist[$dist_id] = [
-                    'lane_fee'       => 0.0,
-                    'dealer_inbound' => false,
-                    'direct_home'    => false,
-                    'direct_ffl'     => false,
+                    'lane_fee'                => 0.0,
+                    'dealer_inbound_lane_fee' => 0.0,
+                    'direct_home_lane_fee'    => 0.0,
+                    'direct_ffl_lane_fee'     => 0.0,
+                    'dealer_inbound'          => false,
+                    'direct_home'             => false,
+                    'direct_ffl'              => false,
                 ];
             }
 
@@ -158,6 +161,9 @@ final class DealerFulfillmentRoutingPlanner
 
             if ($route === 'dealer_fulfilled') {
                 $by_dist[$dist_id]['dealer_inbound'] = true;
+                if ($lane_fee > (float) $by_dist[$dist_id]['dealer_inbound_lane_fee']) {
+                    $by_dist[$dist_id]['dealer_inbound_lane_fee'] = $lane_fee;
+                }
 
                 if ($ffl_required) {
                     $dealer_ffl_weight_oz += $line_weight_oz;
@@ -170,8 +176,14 @@ final class DealerFulfillmentRoutingPlanner
 
             if ($ffl_required) {
                 $by_dist[$dist_id]['direct_ffl'] = true;
+                if ($lane_fee > (float) $by_dist[$dist_id]['direct_ffl_lane_fee']) {
+                    $by_dist[$dist_id]['direct_ffl_lane_fee'] = $lane_fee;
+                }
             } else {
                 $by_dist[$dist_id]['direct_home'] = true;
+                if ($lane_fee > (float) $by_dist[$dist_id]['direct_home_lane_fee']) {
+                    $by_dist[$dist_id]['direct_home_lane_fee'] = $lane_fee;
+                }
             }
         }
 
@@ -193,7 +205,20 @@ final class DealerFulfillmentRoutingPlanner
             }
 
             $lane_fee = max(0.0, (float) ($row['lane_fee'] ?? 0.0));
-            $cost = $lane_fee * (float) $lane_count;
+            $dealer_inbound_lane_fee = max(0.0, (float) ($row['dealer_inbound_lane_fee'] ?? 0.0));
+            $direct_home_lane_fee = max(0.0, (float) ($row['direct_home_lane_fee'] ?? 0.0));
+            $direct_ffl_lane_fee = max(0.0, (float) ($row['direct_ffl_lane_fee'] ?? 0.0));
+
+            $cost = 0.0;
+            if (!empty($row['dealer_inbound'])) {
+                $cost += $dealer_inbound_lane_fee > 0.0 ? $dealer_inbound_lane_fee : $lane_fee;
+            }
+            if (!empty($row['direct_home'])) {
+                $cost += $direct_home_lane_fee > 0.0 ? $direct_home_lane_fee : $lane_fee;
+            }
+            if (!empty($row['direct_ffl'])) {
+                $cost += $direct_ffl_lane_fee > 0.0 ? $direct_ffl_lane_fee : $lane_fee;
+            }
 
             $by_dist[$dist_id]['active_lanes'] = $lane_count;
             $by_dist[$dist_id]['cost'] = $cost;

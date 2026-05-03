@@ -1000,7 +1000,10 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             $direct_lanes++;
         }
 
-        $lane_fee = $this->positive_float($row['lane_fee'] ?? null);
+        $lane_fee = $this->positive_float($row['dealer_inbound_lane_fee'] ?? null);
+        if ($lane_fee === null) {
+            $lane_fee = $this->positive_float($row['lane_fee'] ?? null);
+        }
         if ($lane_fee === null && $active_lanes > 0) {
             $lane_fee = $cost / (float) $active_lanes;
         }

@@ -47,7 +47,8 @@ use FFLHub\Util\DebugLogUtil;
  */
 class DistributorLipseys extends DistributorBase
 {
-    private const FLAT_SHIPPING_COST = 10.0;
+    private const ACCESSORY_DROPSHIP_SHIPPING_COST = 8.0;
+    private const FIREARM_DROPSHIP_SHIPPING_COST = 9.95;
 
     /**
      * ValidateItem caching:
@@ -141,11 +142,12 @@ class DistributorLipseys extends DistributorBase
     }
 
     /**
-     * Placeholder shipping estimator for Lipsey's.
+     * Lipsey's prepaid dropship lane rates.
      *
-     * Right now this is a fixed heuristic. If/when Lipsey's provides
-     * reliable per-item shipping or you derive a model from historical orders,
-     * this is the choke point.
+     * Their published rate is per dropship order/lane, and our planner stores
+     * this product value as the distributor lane fee. Continental US only:
+     * - Accessories/non-FFL: $8.00
+     * - Firearms/FFL: $9.95
      */
     public function get_shipping_cost_by_upc(string $upc): ?float
     {
@@ -154,7 +156,19 @@ class DistributorLipseys extends DistributorBase
             return null;
         }
 
-        return self::FLAT_SHIPPING_COST;
+        $row = null;
+        if ($this->services) {
+            $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized);
+        }
+
+        if (is_array($row)) {
+            $ffl_required = $this->to_boolish($row['ffl_required'] ?? null, false);
+            return $ffl_required
+                ? self::FIREARM_DROPSHIP_SHIPPING_COST
+                : self::ACCESSORY_DROPSHIP_SHIPPING_COST;
+        }
+
+        return self::ACCESSORY_DROPSHIP_SHIPPING_COST;
     }
 
 
