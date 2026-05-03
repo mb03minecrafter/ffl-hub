@@ -29,8 +29,7 @@ if (! defined('ABSPATH')) {
  */
 class DistributorRSR extends DistributorBase
 {
-    private const BASE_SHIPPING_COST = 15.0;
-    private const ADULT_SIGNATURE_SURCHARGE = 5.0;
+    private const DROPSHIP_SHIPPING_COST = 10.0;
 
     public function __construct(DistributorModuleInterface $module, ?RSRServices $services = null)
     {
@@ -194,14 +193,7 @@ class DistributorRSR extends DistributorBase
             return null;
         }
 
-        $cost = self::BASE_SHIPPING_COST;
-
-        $requires_signature = $this->get_bool_field($product, ['adult_sig_required']);
-        if ($requires_signature === true) {
-            $cost += self::ADULT_SIGNATURE_SURCHARGE;
-        }
-
-        return $cost;
+        return self::DROPSHIP_SHIPPING_COST;
     }
 
 
