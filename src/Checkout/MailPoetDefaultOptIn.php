@@ -9,9 +9,9 @@ if (!defined('ABSPATH')) {
 /**
  * Defaults the MailPoet WooCommerce checkout newsletter opt-in checkbox to on.
  *
- * MailPoet's checkout opt-in is rendered by Woo Blocks/React and does not expose
- * a reliable server-side field default. This script clicks the checkbox once
- * when it appears, then respects the customer if they manually uncheck it.
+ * MailPoet's checkout opt-in is rendered by Woo Blocks/React and starts with
+ * local component state set to false. This script defaults it on for the current
+ * checkout page, then respects the customer if they manually uncheck it.
  */
 final class MailPoetDefaultOptIn
 {
@@ -44,8 +44,9 @@ final class MailPoetDefaultOptIn
     {
         return <<<'JS'
 (function () {
-    const storageKey = "fflhub_mailpoet_checkout_opt_in_unchecked";
     let programmatic = false;
+    let customerOptedOut = false;
+    let mailPoetOptInDetected = false;
     let timer = 0;
 
     function normalize(value) {
@@ -84,6 +85,7 @@ final class MailPoetDefaultOptIn
 
             const checkbox = label.querySelector("input[type='checkbox']");
             if (checkbox && !checkbox.disabled) {
+                mailPoetOptInDetected = true;
                 return checkbox;
             }
         }
@@ -108,27 +110,16 @@ final class MailPoetDefaultOptIn
         }
 
         const label = checkbox.closest("label");
-        return isMailPoetOptInLabel(label) ? checkbox : null;
-    }
-
-    function customerOptedOut() {
-        try {
-            return window.sessionStorage.getItem(storageKey) === "1";
-        } catch (error) {
-            return false;
+        if (!isMailPoetOptInLabel(label)) {
+            return null;
         }
+
+        mailPoetOptInDetected = true;
+        return checkbox;
     }
 
     function setCustomerOptedOut(value) {
-        try {
-            if (value) {
-                window.sessionStorage.setItem(storageKey, "1");
-            } else {
-                window.sessionStorage.removeItem(storageKey);
-            }
-        } catch (error) {
-            // Some privacy modes block sessionStorage. The checkbox default still works.
-        }
+        customerOptedOut = !!value;
     }
 
     function setCheckedWithNativeEvents(checkbox) {
@@ -145,7 +136,7 @@ final class MailPoetDefaultOptIn
     }
 
     function defaultOptIn() {
-        if (customerOptedOut()) {
+        if (customerOptedOut) {
             return;
         }
 
@@ -160,7 +151,7 @@ final class MailPoetDefaultOptIn
             checkbox.click();
 
             window.setTimeout(function () {
-                if (!checkbox.checked && !customerOptedOut()) {
+                if (!checkbox.checked && !customerOptedOut) {
                     setCheckedWithNativeEvents(checkbox);
                 }
             }, 0);
@@ -174,6 +165,105 @@ final class MailPoetDefaultOptIn
     function scheduleDefaultOptIn() {
         window.clearTimeout(timer);
         timer = window.setTimeout(defaultOptIn, 100);
+    }
+
+    function shouldOptInForRequest() {
+        return !customerOptedOut;
+    }
+
+    function isCheckoutEndpoint(url) {
+        return typeof url === "string"
+            && url.indexOf("/wc/store/v1/checkout") !== -1;
+    }
+
+    function isMailPoetOptInAvailable() {
+        if (mailPoetOptInDetected) {
+            return true;
+        }
+
+        try {
+            const settings = window.wc
+                && window.wc.wcSettings
+                && typeof window.wc.wcSettings.getSetting === "function"
+                    ? window.wc.wcSettings.getSetting("mailpoet_data", {})
+                    : null;
+
+            return !!(settings && settings.optinEnabled);
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function forceMailPoetOptInPayload(rawBody) {
+        if (!isMailPoetOptInAvailable() || typeof rawBody !== "string" || rawBody === "") {
+            return rawBody;
+        }
+
+        try {
+            const payload = JSON.parse(rawBody);
+            payload.extensions = payload.extensions && typeof payload.extensions === "object"
+                ? payload.extensions
+                : {};
+            payload.extensions.mailpoet = payload.extensions.mailpoet && typeof payload.extensions.mailpoet === "object"
+                ? payload.extensions.mailpoet
+                : {};
+            payload.extensions.mailpoet.optin = shouldOptInForRequest();
+
+            return JSON.stringify(payload);
+        } catch (error) {
+            return rawBody;
+        }
+    }
+
+    function patchFetchCheckoutPayloads() {
+        if (!window.fetch || window.fetch.fflhubMailPoetOptInPatched) {
+            return;
+        }
+
+        const originalFetch = window.fetch;
+        const patchedFetch = function (input, init) {
+            const requestUrl = typeof input === "string"
+                ? input
+                : input && typeof input.url === "string"
+                    ? input.url
+                    : "";
+
+            if (isCheckoutEndpoint(requestUrl) && init && typeof init.body === "string") {
+                init = Object.assign({}, init, {
+                    body: forceMailPoetOptInPayload(init.body),
+                });
+            }
+
+            return originalFetch.call(this, input, init);
+        };
+
+        patchedFetch.fflhubMailPoetOptInPatched = true;
+        window.fetch = patchedFetch;
+    }
+
+    function patchXhrCheckoutPayloads() {
+        if (!window.XMLHttpRequest || window.XMLHttpRequest.prototype.fflhubMailPoetOptInPatched) {
+            return;
+        }
+
+        const proto = window.XMLHttpRequest.prototype;
+        const originalOpen = proto.open;
+        const originalSend = proto.send;
+
+        proto.open = function (method, url) {
+            this.fflhubMailPoetCheckoutUrl = typeof url === "string" ? url : "";
+            return originalOpen.apply(this, arguments);
+        };
+
+        proto.send = function (body) {
+            if (isCheckoutEndpoint(this.fflhubMailPoetCheckoutUrl)) {
+                body = forceMailPoetOptInPayload(body);
+            }
+
+            return originalSend.call(this, body);
+        };
+
+        proto.fflhubMailPoetOptInPatched = true;
     }
 
     document.addEventListener("click", function (event) {
@@ -195,6 +285,9 @@ final class MailPoetDefaultOptIn
 
         setCustomerOptedOut(!checkbox.checked);
     }, true);
+
+    patchFetchCheckoutPayloads();
+    patchXhrCheckoutPayloads();
 
     document.addEventListener("DOMContentLoaded", scheduleDefaultOptIn);
     window.addEventListener("load", scheduleDefaultOptIn);
