@@ -29,6 +29,7 @@ use FFLHub\BOM\Tables\BOMTable;
 use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Fields\CheckoutFields;
+use FFLHub\Checkout\MailPoetDefaultOptIn;
 use FFLHub\Checkout\Map\CheckoutMap;
 use FFLHub\Checkout\Notice\CaliforniaRelayNotice;
 use FFLHub\Distributor\Core\DistributorHandler;
@@ -217,6 +218,7 @@ final class Plugin
 
         CheckoutMap::init();
         CaliforniaRelayNotice::init();
+        MailPoetDefaultOptIn::init();
 
     }
 
