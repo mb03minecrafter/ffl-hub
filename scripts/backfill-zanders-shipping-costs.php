@@ -8,7 +8,14 @@ if (!defined('ABSPATH')) {
     exit(1);
 }
 
-$mode = strtolower(trim((string)($argv[1] ?? 'dry-run')));
+$cli_args = [];
+if (isset($args) && is_array($args)) {
+    $cli_args = array_values($args);
+} elseif (isset($argv) && is_array($argv)) {
+    $cli_args = array_slice($argv, 1);
+}
+
+$mode = strtolower(trim((string)($cli_args[0] ?? 'dry-run')));
 if (!in_array($mode, ['dry-run', 'commit'], true)) {
     fwrite(STDERR, "Usage: wp eval-file backfill-zanders-shipping-costs.php -- [dry-run|commit] [order_batch_limit] [all|products|orders]\n");
     exit(1);
@@ -18,7 +25,7 @@ $commit = ($mode === 'commit');
 $order_batch_limit = 100;
 $scope = 'all';
 
-foreach (array_slice($argv, 2) as $arg) {
+foreach (array_slice($cli_args, 1) as $arg) {
     $arg = strtolower(trim((string)$arg));
     if ($arg === '') {
         continue;
