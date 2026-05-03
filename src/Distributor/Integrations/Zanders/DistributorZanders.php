@@ -1075,7 +1075,7 @@ class DistributorZanders extends DistributorBase
 
     /*
      * Zanders shipping rule:
-     * - Free shipping when distributor cost is over $500
+     * - Free shipping when distributor cost is at or over $500
      * - Otherwise flat shipping
      */
     public function get_shipping_cost_by_upc(string $upc): ?float
@@ -1255,7 +1255,7 @@ class DistributorZanders extends DistributorBase
 
     private function compute_shipping_cost_from_distributor_cost(float $distributor_cost): float
     {
-        if ($distributor_cost > self::FREE_SHIPPING_DISTRIBUTOR_COST_THRESHOLD) {
+        if ($distributor_cost >= self::FREE_SHIPPING_DISTRIBUTOR_COST_THRESHOLD) {
             return 0.0;
         }
 

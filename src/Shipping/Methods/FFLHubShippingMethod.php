@@ -246,10 +246,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
             // Distributor lane fee for this line (used as per-lane fee by planner).
             $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
-            $ship = ($ship_raw === '' || $ship_raw === null) ? $fallback_ship : (float) $ship_raw;
-            if (! is_finite($ship) || $ship <= 0) {
-                $ship = $fallback_ship;
-            }
+            $ship = $this->resolve_distributor_lane_fee($ship_raw, $fallback_ship);
 
             // Per-unit shipping weight in ounces.
             $weight_raw = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true);
@@ -699,6 +696,39 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         }
 
         return $v;
+    }
+
+    /**
+     * Resolve distributor freight while preserving explicit free-freight values.
+     *
+     * Blank, invalid, or negative meta means "unknown" and uses fallback. A real
+     * zero is valid for distributor programs such as Zanders free freight.
+     *
+     * @param mixed $value
+     */
+    private function resolve_distributor_lane_fee($value, float $fallback): float
+    {
+        $fallback = max(0.0, $fallback);
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return $fallback;
+        }
+
+        $num = $raw;
+        if (!is_numeric($num)) {
+            $num = trim((string) preg_replace('/[^0-9\.\-]/', '', $raw));
+        }
+
+        if ($num === '' || !is_numeric($num)) {
+            return $fallback;
+        }
+
+        $fee = (float) $num;
+        if (!is_finite($fee) || $fee < 0.0) {
+            return $fallback;
+        }
+
+        return $fee;
     }
 
     private function product_customer_free_shipping_enabled(WC_Product $product): bool

@@ -918,19 +918,32 @@ final class OrderingOrchestratorService
     /**
      * Resolve the distributor per-lane shipping fee used by the route planner.
      *
-     * The order-placement splitter must not treat missing or zero distributor
-     * freight as free. A dealer-fulfilled distributor item still has inbound
-     * freight to the shop, so unknown/non-positive values fall back to the
-     * configured FFLHub shipping fallback lane cost.
+     * The order-placement splitter must not treat missing distributor freight
+     * as free. Blank, invalid, or negative values fall back to the configured
+     * FFLHub shipping fallback lane cost. Explicit zero is valid because some
+     * distributor programs report true free freight.
      *
      * @param mixed $value
      */
     private function resolve_distributor_lane_fee($value): float
     {
         $fallback = $this->shipping_fallback_lane_fee();
-        $fee = $this->to_non_negative_float($value, $fallback);
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return $fallback;
+        }
 
-        if ($fee <= 0.0) {
+        $num = $raw;
+        if (!is_numeric($num)) {
+            $num = trim((string) preg_replace('/[^0-9\.\-]/', '', $raw));
+        }
+
+        if ($num === '' || !is_numeric($num)) {
+            return $fallback;
+        }
+
+        $fee = (float) $num;
+        if (!is_finite($fee) || $fee < 0.0) {
             return $fallback;
         }
 
