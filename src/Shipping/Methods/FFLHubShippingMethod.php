@@ -558,15 +558,19 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         }
 
         $customer_dest_state = $this->resolve_customer_destination_state($package);
-        $ca_surcharge = ($customer_dest_state === 'CA') ? self::CA_SHIPPING_SURCHARGE : 0.0;
+        $ca_surcharge_has_drop_ship_lane = $this->shipping_plan_has_drop_ship_lane($plan);
+        $ca_surcharge = ($customer_dest_state === 'CA' && $ca_surcharge_has_drop_ship_lane)
+            ? self::CA_SHIPPING_SURCHARGE
+            : 0.0;
         if ($ca_surcharge > 0.0) {
             $customer_charge += $ca_surcharge;
             $plan['ca_shipping_surcharge_applied'] = 1;
             $plan['ca_shipping_surcharge'] = $ca_surcharge;
             $plan['ca_shipping_surcharge_customer_state'] = $customer_dest_state;
+            $plan['ca_shipping_surcharge_drop_ship_lane'] = 1;
             $this->log_debug(
                 sprintf(
-                    'CA_SURCHARGE state=%s amount=%s customer_charge_after=%s',
+                    'CA_SURCHARGE state=%s drop_ship_lane=yes amount=%s customer_charge_after=%s',
                     $customer_dest_state,
                     $this->fmt_money($ca_surcharge),
                     $this->fmt_money($customer_charge)
@@ -576,6 +580,10 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $plan['ca_shipping_surcharge_applied'] = 0;
             $plan['ca_shipping_surcharge'] = 0.0;
             $plan['ca_shipping_surcharge_customer_state'] = $customer_dest_state;
+            $plan['ca_shipping_surcharge_drop_ship_lane'] = $ca_surcharge_has_drop_ship_lane ? 1 : 0;
+            if ($customer_dest_state === 'CA') {
+                $this->log_debug('CA_SURCHARGE skipped because no drop-ship lane is active.');
+            }
         }
 
         $plan_version = (($dealer_home_source === 'usps_api') || ($dealer_ffl_source === 'usps_api'))
@@ -1039,6 +1047,34 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         }
 
         return '';
+    }
+
+    /**
+     * CA surcharge only applies when the selected plan has a direct/drop-ship lane.
+     *
+     * @param array<string,mixed> $plan
+     */
+    private function shipping_plan_has_drop_ship_lane(array $plan): bool
+    {
+        $by_dist = isset($plan['by_dist']) && is_array($plan['by_dist'])
+            ? $plan['by_dist']
+            : [];
+
+        foreach ($by_dist as $row) {
+            if (is_object($row)) {
+                $row = (array) $row;
+            }
+
+            if (!is_array($row)) {
+                continue;
+            }
+
+            if (!empty($row['direct_home']) || !empty($row['direct_ffl'])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
