@@ -518,18 +518,19 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 )
             );
 
-            if ($profit_net_total > 0.0 && $customer_chargeable_shipping_cost_total < $free_threshold) {
+            if ($profit_net_total > 0.0 && $shipping_cost_total < $free_threshold) {
                 $customer_charge = 0.0;
-                $this->log_debug('RULE free_shipping=yes');
+                $this->log_debug('RULE free_shipping=yes basis=shipping_cost_total');
             } else {
                 $customer_charge = ($f >= 0.99)
                     ? $customer_chargeable_shipping_cost_total
                     : ($customer_chargeable_shipping_cost_total / (1.0 - $f));
                 $this->log_debug(
                     sprintf(
-                        'RULE free_shipping=no customer_charge=%s net_shipping_cost=%s',
+                        'RULE free_shipping=no customer_charge=%s net_shipping_cost=%s basis_shipping_cost=%s',
                         $this->fmt_money($customer_charge),
-                        $this->fmt_money($customer_chargeable_shipping_cost_total)
+                        $this->fmt_money($customer_chargeable_shipping_cost_total),
+                        $this->fmt_money($shipping_cost_total)
                     )
                 );
             }
