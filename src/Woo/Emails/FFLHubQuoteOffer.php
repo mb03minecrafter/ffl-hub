@@ -169,6 +169,14 @@ final class FFLHubQuoteOffer extends WC_Email
             $code
         );
 
+        $quote_cart_url = trim($context->quote_cart_url);
+        if ($quote_cart_url !== '') {
+            $body .= "\n\n" . sprintf(
+                __('Use this link to add the item to cart and apply the quote code automatically: %s', 'ffl-hub'),
+                $quote_cart_url
+            );
+        }
+
         $this->setup_locale();
         $sent = wp_mail(
             $this->get_recipient(),

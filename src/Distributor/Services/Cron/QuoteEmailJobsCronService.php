@@ -2,6 +2,7 @@
 
 namespace FFLHub\Distributor\Services\Cron;
 
+use FFLHub\Checkout\QuoteCartLinkHandler;
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\Product\ProductMeta;
@@ -621,6 +622,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         if ($coupon_code === '') {
             return null;
         }
+        $quote_cart_url = QuoteCartLinkHandler::build_url((int) $product->get_id(), $coupon_code, 'checkout');
 
         $coupon_amount = (float) ($coupon_payload['amount'] ?? 0.0);
         $expires_ts = (int) ($coupon_payload['expires_ts'] ?? 0);
@@ -645,6 +647,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'variant_index' => $variant_index,
             'rep_name' => $rep_name,
             'coupon_code' => $coupon_code,
+            'quote_cart_url' => $quote_cart_url,
             'final_price' => $final_price_display,
             'shipping_phrase' => $shipping_phrase,
         ]);
@@ -657,6 +660,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             $rep_name,
             $product_name,
             $product_url,
+            $quote_cart_url,
             $coupon_code,
             $coupon_amount_display,
             $final_price_display,

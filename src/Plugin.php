@@ -32,6 +32,7 @@ use FFLHub\Checkout\Fields\CheckoutFields;
 use FFLHub\Checkout\MailPoetDefaultOptIn;
 use FFLHub\Checkout\Map\CheckoutMap;
 use FFLHub\Checkout\Notice\CaliforniaRelayNotice;
+use FFLHub\Checkout\QuoteCartLinkHandler;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Services\Cron\QuoteEmailJobsCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
@@ -137,6 +138,7 @@ final class Plugin
         WooShippingLabelCostSync::init();
 
         MapPriceVisibility::init();
+        QuoteCartLinkHandler::init();
 
         $this->cart_compliance = new CartCompliance($this->ffl_table, $this->distributor_handler);
 

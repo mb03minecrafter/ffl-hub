@@ -15,6 +15,9 @@ if (stripos($shipping_phrase_text, 'free shipping') !== false) {
 echo sprintf(__('Hi %s,', 'ffl-hub'), $first_name) . "\n\n";
 echo __('Thanks for reaching out for a quote. I reviewed your request and got pricing approved for you.', 'ffl-hub') . "\n\n";
 echo sprintf(__('For the %1$s, your final price is %2$s %3$s.', 'ffl-hub'), $context->product_name, '**' . $context->final_price_display . '**', $shipping_phrase_text) . "\n\n";
+if ($context->quote_cart_url !== '') {
+    echo __('Add to cart with quoted price:', 'ffl-hub') . ' ' . $context->quote_cart_url . "\n\n";
+}
 echo __('Product link:', 'ffl-hub') . ' ' . $context->product_url . "\n\n";
 echo __('Your code:', 'ffl-hub') . ' ' . '**' . $context->coupon_code . '**' . "\n";
 echo __('Expires:', 'ffl-hub') . ' ' . $context->expires_display . ' ' . __('(48 hours)', 'ffl-hub') . "\n\n";
