@@ -201,8 +201,8 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             // Revenue ex-tax, after coupons (Woo line_total includes qty)
             $line_revenue = isset($item['line_total']) ? (float) $item['line_total'] : 0.0;
 
-            // Net profit after processor % fee (same behavior as before)
-            $line_profit_net = ($line_revenue - ($dealer_cost * $qty)) * (1.0 - $f);
+            // Net profit after processor % fee. The card fee is charged on revenue, not margin.
+            $line_profit_net = ($line_revenue * (1.0 - $f)) - ($dealer_cost * $qty);
             $profit_net_total += $line_profit_net;
 
             $qty_for_routing = $qty;
@@ -278,7 +278,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $line_revenue_routed = ($qty > 0)
                 ? ((float) $line_revenue * ((float) $qty_for_routing / (float) $qty))
                 : 0.0;
-            $line_profit_net_routed = ($line_revenue_routed - ($dealer_cost * $qty_for_routing)) * (1.0 - $f);
+            $line_profit_net_routed = ($line_revenue_routed * (1.0 - $f)) - ($dealer_cost * $qty_for_routing);
 
             $line_debug_rows[] = [
                 'line_id'        => (string) $item_key,
@@ -502,9 +502,6 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         if ($shipping_cost_total <= 0.0) {
             $customer_charge = 0.0;
             $this->log_debug('RULE shipping_cost_total=0 so customer_charge=$0.00');
-        } elseif ($customer_chargeable_shipping_cost_total <= 0.0) {
-            $customer_charge = 0.0;
-            $this->log_debug('RULE customer_chargeable_shipping_cost_total=0 so customer_charge=$0.00');
         } else {
             $free_threshold = 0.5 * (float) $profit_net_total;
 
@@ -522,15 +519,22 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 $customer_charge = 0.0;
                 $this->log_debug('RULE free_shipping=yes basis=shipping_cost_total');
             } else {
+                $charge_basis_shipping_cost = $customer_chargeable_shipping_cost_total;
+                if ($charge_basis_shipping_cost <= 0.0 && $shipping_cost_total > 0.0) {
+                    $charge_basis_shipping_cost = $shipping_cost_total;
+                    $this->log_debug('RULE charge_basis restored to shipping_cost_total because full shipping failed free threshold');
+                }
+
                 $customer_charge = ($f >= 0.99)
-                    ? $customer_chargeable_shipping_cost_total
-                    : ($customer_chargeable_shipping_cost_total / (1.0 - $f));
+                    ? $charge_basis_shipping_cost
+                    : ($charge_basis_shipping_cost / (1.0 - $f));
                 $this->log_debug(
                     sprintf(
-                        'RULE free_shipping=no customer_charge=%s net_shipping_cost=%s basis_shipping_cost=%s',
+                        'RULE free_shipping=no customer_charge=%s net_shipping_cost=%s basis_shipping_cost=%s charge_basis=%s',
                         $this->fmt_money($customer_charge),
                         $this->fmt_money($customer_chargeable_shipping_cost_total),
-                        $this->fmt_money($shipping_cost_total)
+                        $this->fmt_money($shipping_cost_total),
+                        $this->fmt_money($charge_basis_shipping_cost)
                     )
                 );
             }
