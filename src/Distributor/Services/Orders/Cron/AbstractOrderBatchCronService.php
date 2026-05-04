@@ -147,6 +147,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             'priority_flushed_rows' => 0,
             'scheduled_flushed_rows' => 0,
             'dispatch_blocked_rows' => 0,
+            'manual_hold_rows' => 0,
         ];
 
         try {
@@ -262,6 +263,37 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
 
             if (empty($eligible_entries)) {
                 $run_status = 'no_eligible_rows';
+                return;
+            }
+
+            /** @var array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $manual_hold_entries */
+            $manual_hold_entries = [];
+            /** @var array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $automation_entries */
+            $automation_entries = [];
+            foreach ($eligible_entries as $entry) {
+                if ($this->should_hold_batch_entry_for_manual_order($entry)) {
+                    $manual_hold_entries[] = $entry;
+                    $this->mark_batch_entry_manual($entry);
+                    continue;
+                }
+
+                $automation_entries[] = $entry;
+            }
+
+            $run_stats['manual_hold_rows'] = count($manual_hold_entries);
+            $eligible_entries = $automation_entries;
+
+            if (!empty($manual_hold_entries)) {
+                $this->log_ctx('manual_hold_partition', [
+                    'run_id' => $run_id,
+                    'manual_hold_rows' => count($manual_hold_entries),
+                    'automation_rows' => count($eligible_entries),
+                    'reason' => $this->manual_batch_entry_reason_code(),
+                ]);
+            }
+
+            if (empty($eligible_entries)) {
+                $run_status = !empty($manual_hold_entries) ? 'manual_hold_only' : 'no_eligible_rows';
                 return;
             }
 
@@ -578,6 +610,56 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             $job = $entry['job'];
             $this->dispatch_single_row_now($order, (string) $job->job_key_norm());
         }
+    }
+
+    /**
+     * Distributor-specific escape hatch for rows that should stay visible but be
+     * manually ordered outside the aggregate batch call.
+     *
+     * @param array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>} $entry
+     */
+    protected function should_hold_batch_entry_for_manual_order(array $entry): bool
+    {
+        return false;
+    }
+
+    protected function manual_batch_entry_message(): string
+    {
+        return 'Batch row requires manual distributor ordering.';
+    }
+
+    protected function manual_batch_entry_reason_code(): string
+    {
+        return 'BATCH_MANUAL_ORDER';
+    }
+
+    /**
+     * @param array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>} $entry
+     */
+    private function mark_batch_entry_manual(array $entry): void
+    {
+        $job = $entry['job'] ?? null;
+        $order = $entry['order'] ?? null;
+        if (!($job instanceof OrderPlacementJobRow) || !($order instanceof WC_Order)) {
+            return;
+        }
+
+        $job_key = (string) $job->job_key_norm();
+        if ($job_key === '') {
+            return;
+        }
+
+        OrderPlacementJobWriter::apply_patch_for_order(
+            $this->jobs_table,
+            $order,
+            $job_key,
+            OrderPlacementJobPatch::empty()
+                ->with_status(OrderPlacementKeys::JOB_STATUS_MANUAL)
+                ->with_last_step('place')
+                ->with_last_error($this->manual_batch_entry_message())
+                ->with_last_codes([$this->manual_batch_entry_reason_code()])
+                ->clear_action_and_schedule()
+        );
     }
 
     /**

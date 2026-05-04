@@ -5,12 +5,15 @@ namespace FFLHub\Admin\Pages;
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Services\Orders\Cron\RSRDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Product\HolosunProductDetector;
 use FFLHub\Product\ProductMeta;
 
 if (!defined('ABSPATH')) {
@@ -26,6 +29,7 @@ final class RSRBatchQueuePage
 
     private const FORM_ACTION_SAVE_SETTINGS = 'fflhub_rsr_batch_save_settings';
     private const FORM_ACTION_FORCE_RUN = 'fflhub_rsr_batch_force_run';
+    private const FORM_ACTION_HOLOSUN_MANUAL_PO = 'fflhub_rsr_holosun_manual_po';
     private const NONCE_ACTION = 'fflhub_rsr_batch_page_action';
     private const NONCE_FIELD = 'fflhub_rsr_batch_nonce';
 
@@ -94,6 +98,7 @@ final class RSRBatchQueuePage
             <?php $this->render_settings_form($settings); ?>
             <?php $this->render_force_run_box($data, $settings); ?>
             <?php $this->render_summary_cards($data, $settings); ?>
+            <?php $this->render_holosun_manual_table($data); ?>
             <?php $this->render_low_stock_watch_table($data, $settings); ?>
             <?php $this->render_running_totals_table($data); ?>
             <?php $this->render_entries_table($data); ?>
@@ -111,7 +116,7 @@ final class RSRBatchQueuePage
         $action = isset($_POST['fflhub_rsr_batch_action'])
             ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_rsr_batch_action']))
             : '';
-        if (!in_array($action, [self::FORM_ACTION_SAVE_SETTINGS, self::FORM_ACTION_FORCE_RUN], true)) {
+        if (!in_array($action, [self::FORM_ACTION_SAVE_SETTINGS, self::FORM_ACTION_FORCE_RUN, self::FORM_ACTION_HOLOSUN_MANUAL_PO], true)) {
             return;
         }
 
@@ -127,6 +132,11 @@ final class RSRBatchQueuePage
 
         if ($action === self::FORM_ACTION_SAVE_SETTINGS) {
             $this->handle_save_settings_post();
+            return;
+        }
+
+        if ($action === self::FORM_ACTION_HOLOSUN_MANUAL_PO) {
+            $this->handle_holosun_manual_po_post();
             return;
         }
 
@@ -186,6 +196,74 @@ final class RSRBatchQueuePage
         $this->redirect_with_notice('success', $msg);
     }
 
+    private function handle_holosun_manual_po_post(): void
+    {
+        $order_id = isset($_POST['fflhub_rsr_manual_order_id']) ? (int) $_POST['fflhub_rsr_manual_order_id'] : 0;
+        $job_key = isset($_POST['fflhub_rsr_manual_job_key'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_rsr_manual_job_key']))
+            : '';
+        $merchant_po = $this->sanitize_manual_po(
+            isset($_POST['fflhub_rsr_manual_merchant_po'])
+                ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_rsr_manual_merchant_po']))
+                : ''
+        );
+
+        if ($order_id <= 0 || trim($job_key) === '') {
+            $this->redirect_with_notice('error', __('Missing order or job key for manual RSR row.', 'ffl-hub'));
+        }
+        if ($merchant_po === '') {
+            $this->redirect_with_notice('error', __('Please enter a valid RSR PO number.', 'ffl-hub'));
+        }
+
+        $order = wc_get_order($order_id);
+        if (!$order || !method_exists($order, 'get_status')) {
+            $this->redirect_with_notice('error', __('Order not found for this RSR row.', 'ffl-hub'));
+        }
+
+        $order_status = strtolower(trim((string) $order->get_status()));
+        if ($order_status !== self::TARGET_WOO_ORDER_STATUS) {
+            $this->redirect_with_notice('error', __('This order is no longer in Processing status.', 'ffl-hub'));
+        }
+
+        $job = OrderPlacementJobsRepository::get_job($this->jobs_table, $order_id, $job_key);
+        if (!($job instanceof OrderPlacementJobRow)) {
+            $this->redirect_with_notice('error', __('RSR job row not found.', 'ffl-hub'));
+        }
+
+        if (strtolower(trim((string) $job->dist_id)) !== self::RSR_DIST_ID) {
+            $this->redirect_with_notice('error', __('That row is not an RSR job.', 'ffl-hub'));
+        }
+        if (!OrderPlacementKeysUtil::is_dealer_fulfilled_lane((string) $job->lane_norm())) {
+            $this->redirect_with_notice('error', __('That RSR row is not a dealer-fulfilled row.', 'ffl-hub'));
+        }
+        if (!$this->job_contains_holosun_line($job)) {
+            $this->redirect_with_notice('error', __('That RSR row is not a Holosun manual row.', 'ffl-hub'));
+        }
+
+        $job_status = strtolower(trim((string) $job->status));
+        if (!in_array($job_status, [OrderPlacementKeys::JOB_STATUS_BATCH_PENDING, OrderPlacementKeys::JOB_STATUS_MANUAL, OrderPlacementKeys::JOB_STATUS_SUCCESS], true)) {
+            $this->redirect_with_notice('error', __('That Holosun RSR row is not ready for manual PO completion yet.', 'ffl-hub'));
+        }
+
+        OrderPlacementJobWriter::apply_patch(
+            $this->jobs_table,
+            $order_id,
+            (string) $job->job_key,
+            OrderPlacementJobPatch::empty()
+                ->with_status(OrderPlacementKeys::JOB_STATUS_SUCCESS)
+                ->with_field('done_at', gmdate('Y-m-d H:i:s'))
+                ->with_field('merchant_po', $merchant_po)
+                ->with_field('last_error', '')
+                ->with_last_codes([])
+                ->clear_action_and_schedule()
+        );
+
+        $this->redirect_with_notice(
+            'success',
+            sprintf(__('Marked RSR Holosun job #%d successful with PO %s.', 'ffl-hub'), (int) $job->id, $merchant_po)
+        );
+    }
+
     private function redirect_with_notice(string $type, string $message): void
     {
         $url = add_query_arg(
@@ -198,6 +276,26 @@ final class RSRBatchQueuePage
         );
         wp_safe_redirect($url);
         exit;
+    }
+
+    private function sanitize_manual_po(string $value): string
+    {
+        $value = strtoupper(trim($value));
+        if ($value === '') {
+            return '';
+        }
+
+        $value = preg_replace('/[^A-Z0-9._-]/', '', $value);
+        if (!is_string($value)) {
+            return '';
+        }
+
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        return strlen($value) > 32 ? substr($value, 0, 32) : $value;
     }
 
     private function read_notice_from_query(): ?array
@@ -357,6 +455,7 @@ final class RSRBatchQueuePage
         $unit_cost_by_upc = [];
         $totals_by_upc = [];
         $entries = [];
+        $holosun_manual_entries = [];
         $processing_order_ids = [];
         $status_counts = [];
         $total_quantity = 0;
@@ -378,7 +477,8 @@ final class RSRBatchQueuePage
             $processing_order_ids[(int) $job->order_id] = true;
             $job_status = strtolower(trim((string) $job->status));
             $status_counts[$job_status] = (int) ($status_counts[$job_status] ?? 0) + 1;
-            $include_in_queue_totals = ($job_status === OrderPlacementKeys::JOB_STATUS_BATCH_PENDING);
+            $job_contains_holosun = $this->job_contains_holosun_line($job);
+            $include_in_queue_totals = ($job_status === OrderPlacementKeys::JOB_STATUS_BATCH_PENDING && !$job_contains_holosun);
             if ($include_in_queue_totals) {
                 $batch_pending_jobs++;
                 if ($this->is_job_dispatch_ready((string) ($job->next_run_at ?? ''), $now_utc_ts)) {
@@ -399,7 +499,7 @@ final class RSRBatchQueuePage
                 $unit_cost = $this->resolve_distributor_unit_cost_for_upc($upc, $unit_cost_by_upc);
                 $line_cost = $unit_cost * (float) $qty;
 
-                $entries[] = [
+                $entry = [
                     'job_id' => (int) $job->id,
                     'order_id' => (int) $job->order_id,
                     'job_key' => (string) $job->job_key,
@@ -413,7 +513,14 @@ final class RSRBatchQueuePage
                     'product_name' => $name,
                     'unit_cost' => $unit_cost,
                     'line_cost' => $line_cost,
+                    'is_holosun_manual_row' => $job_contains_holosun,
+                    'last_error' => (string) ($job->last_error ?? ''),
                 ];
+                $entries[] = $entry;
+
+                if ($job_contains_holosun) {
+                    $holosun_manual_entries[] = $entry;
+                }
 
                 if (!$include_in_queue_totals) {
                     continue;
@@ -488,6 +595,7 @@ final class RSRBatchQueuePage
             'status_counts' => $status_counts,
             'totals_by_upc' => $totals_rows,
             'stock_watch_rows' => $stock_watch_rows,
+            'holosun_manual_entries' => $holosun_manual_entries,
             'entries' => $entries,
         ];
     }
@@ -610,6 +718,8 @@ final class RSRBatchQueuePage
         $scheduled = (int) ($status_counts[OrderPlacementKeys::JOB_STATUS_SCHEDULED] ?? 0);
         $retry = (int) ($status_counts[OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED] ?? 0);
         $failed = (int) ($status_counts[OrderPlacementKeys::JOB_STATUS_FAILED] ?? 0);
+        $manual = (int) ($status_counts[OrderPlacementKeys::JOB_STATUS_MANUAL] ?? 0);
+        $holosun_manual_entries = (array) ($data['holosun_manual_entries'] ?? []);
         $queue_total_cost = (float) ($data['queue_total_cost'] ?? 0.0);
         ?>
         <div class="fflhub-rsr-summary-grid">
@@ -620,7 +730,12 @@ final class RSRBatchQueuePage
             <section class="fflhub-rsr-summary-card">
                 <h2><?php esc_html_e('Dealer Jobs', 'ffl-hub'); ?></h2>
                 <div class="fflhub-rsr-metric"><?php echo esc_html((string) ((int) $data['job_count'])); ?></div>
-                <p><?php echo esc_html(sprintf(__('pending=%d, running=%d, scheduled=%d, retry=%d, failed=%d', 'ffl-hub'), $batch_pending, $running, $scheduled, $retry, $failed)); ?></p>
+                <p><?php echo esc_html(sprintf(__('pending=%d, manual=%d, running=%d, scheduled=%d, retry=%d, failed=%d', 'ffl-hub'), $batch_pending, $manual, $running, $scheduled, $retry, $failed)); ?></p>
+            </section>
+            <section class="fflhub-rsr-summary-card is-danger">
+                <h2><?php esc_html_e('Holosun Manual Rows', 'ffl-hub'); ?></h2>
+                <div class="fflhub-rsr-metric"><?php echo esc_html((string) count($holosun_manual_entries)); ?></div>
+                <p><?php esc_html_e('Excluded from automatic RSR batch ordering.', 'ffl-hub'); ?></p>
             </section>
             <section class="fflhub-rsr-summary-card is-ok">
                 <h2><?php esc_html_e('Queue Totals by UPC', 'ffl-hub'); ?></h2>
@@ -659,6 +774,79 @@ final class RSRBatchQueuePage
                 <?php endforeach; ?>
             </tbody>
         </table>
+        <?php
+    }
+
+    private function render_holosun_manual_table(array $data): void
+    {
+        $entries = (array) ($data['holosun_manual_entries'] ?? []);
+        ?>
+        <section class="fflhub-rsr-holosun-manual-box">
+            <h2><?php esc_html_e('RSR Holosun Manual Order Rows', 'ffl-hub'); ?></h2>
+            <p class="description">
+                <?php esc_html_e('Holosun dealer-fulfilled RSR rows are held out of automatic RSR batch placement. Manually place them with RSR, enter the PO here, then mark the row successful.', 'ffl-hub'); ?>
+            </p>
+            <?php if (empty($entries)) : ?>
+                <p><?php esc_html_e('No Holosun RSR manual rows found for processing orders.', 'ffl-hub'); ?></p>
+            <?php else : ?>
+                <table class="widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th><?php esc_html_e('Job ID', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Order', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Status', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Merchant PO', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Product', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Qty', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Line Cost', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Manual PO / Mark Success', 'ffl-hub'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($entries as $entry) : ?>
+                            <?php
+                            $order_id = (int) ($entry['order_id'] ?? 0);
+                            $job_id = (int) ($entry['job_id'] ?? 0);
+                            $job_key = (string) ($entry['job_key'] ?? '');
+                            $status = strtolower(trim((string) ($entry['job_status'] ?? '')));
+                            $merchant_po = trim((string) ($entry['merchant_po'] ?? ''));
+                            $order_edit_url = admin_url('post.php?post=' . $order_id . '&action=edit');
+                            $status_class = $this->status_class($status);
+                            ?>
+                            <tr>
+                                <td><?php echo esc_html((string) $job_id); ?></td>
+                                <td><?php if ($order_id > 0) : ?><a href="<?php echo esc_url($order_edit_url); ?>"><?php echo esc_html('#' . (string) $order_id); ?></a><?php else : ?>-<?php endif; ?></td>
+                                <td><span class="fflhub-rsr-status-pill <?php echo esc_attr($status_class); ?>"><?php echo esc_html((string) ($entry['job_status'] ?? '')); ?></span></td>
+                                <td><code><?php echo esc_html($merchant_po !== '' ? $merchant_po : '-'); ?></code></td>
+                                <td><code><?php echo esc_html((string) ($entry['upc'] ?? '')); ?></code></td>
+                                <td><?php echo esc_html((string) ($entry['product_name'] ?? 'Unknown product')); ?></td>
+                                <td><?php echo esc_html((string) ((int) ($entry['qty'] ?? 0))); ?></td>
+                                <td><?php echo esc_html($this->format_money((float) ($entry['line_cost'] ?? 0.0))); ?></td>
+                                <td>
+                                    <form method="post" action="" class="fflhub-rsr-manual-po-form">
+                                        <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
+                                        <input type="hidden" name="fflhub_rsr_batch_action" value="<?php echo esc_attr(self::FORM_ACTION_HOLOSUN_MANUAL_PO); ?>" />
+                                        <input type="hidden" name="fflhub_rsr_manual_order_id" value="<?php echo esc_attr((string) $order_id); ?>" />
+                                        <input type="hidden" name="fflhub_rsr_manual_job_key" value="<?php echo esc_attr($job_key); ?>" />
+                                        <input
+                                            type="text"
+                                            name="fflhub_rsr_manual_merchant_po"
+                                            value="<?php echo esc_attr($merchant_po); ?>"
+                                            maxlength="32"
+                                            placeholder="<?php esc_attr_e('Enter RSR PO', 'ffl-hub'); ?>"
+                                            class="regular-text fflhub-rsr-manual-po-input" />
+                                        <button type="submit" class="button button-secondary button-small">
+                                            <?php echo esc_html($status === OrderPlacementKeys::JOB_STATUS_SUCCESS ? __('Update PO', 'ffl-hub') : __('Save + Mark Success', 'ffl-hub')); ?>
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php endif; ?>
+        </section>
         <?php
     }
 
@@ -764,7 +952,9 @@ final class RSRBatchQueuePage
 
     private function render_entries_table(array $data): void
     {
-        $entries = $data['entries'];
+        $entries = array_values(array_filter((array) $data['entries'], static function (array $entry): bool {
+            return empty($entry['is_holosun_manual_row']);
+        }));
         if (empty($entries)) {
             echo '<p>' . esc_html__('No RSR dealer line entries found for processing orders.', 'ffl-hub') . '</p>';
             return;
@@ -783,16 +973,7 @@ final class RSRBatchQueuePage
                     $order_id = (int) ($entry['order_id'] ?? 0);
                     $order_edit_url = admin_url('post.php?post=' . $order_id . '&action=edit');
                     $status = strtolower(trim((string) ($entry['job_status'] ?? '')));
-                    $status_class = 'fflhub-rsr-status-neutral';
-                    if ($status === OrderPlacementKeys::JOB_STATUS_BATCH_PENDING) {
-                        $status_class = 'fflhub-rsr-status-pending';
-                    } elseif ($status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
-                        $status_class = 'fflhub-rsr-status-success';
-                    } elseif ($status === OrderPlacementKeys::JOB_STATUS_FAILED) {
-                        $status_class = 'fflhub-rsr-status-danger';
-                    } elseif ($status === OrderPlacementKeys::JOB_STATUS_RUNNING) {
-                        $status_class = 'fflhub-rsr-status-running';
-                    }
+                    $status_class = $this->status_class($status);
                     ?>
                     <tr>
                         <td><?php echo esc_html((string) ((int) ($entry['job_id'] ?? 0))); ?></td>
@@ -859,6 +1040,21 @@ final class RSRBatchQueuePage
             return true;
         }
         return $ts <= $now_utc_ts;
+    }
+
+    private function job_contains_holosun_line(OrderPlacementJobRow $job): bool
+    {
+        foreach ($job->payload_lines() as $line) {
+            if (!($line instanceof DistributorOrderLine)) {
+                continue;
+            }
+
+            if (HolosunProductDetector::is_holosun_upc((string) $line->upc)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function resolve_product_name_for_upc(string $upc, array &$cache): string
@@ -1018,11 +1214,33 @@ final class RSRBatchQueuePage
         return '$' . number_format($amount, 2);
     }
 
+    private function status_class(string $status): string
+    {
+        $status = strtolower(trim($status));
+        if ($status === OrderPlacementKeys::JOB_STATUS_BATCH_PENDING) {
+            return 'fflhub-rsr-status-pending';
+        }
+        if ($status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
+            return 'fflhub-rsr-status-success';
+        }
+        if ($status === OrderPlacementKeys::JOB_STATUS_FAILED) {
+            return 'fflhub-rsr-status-danger';
+        }
+        if ($status === OrderPlacementKeys::JOB_STATUS_RUNNING) {
+            return 'fflhub-rsr-status-running';
+        }
+        if ($status === OrderPlacementKeys::JOB_STATUS_MANUAL) {
+            return 'fflhub-rsr-status-manual';
+        }
+
+        return 'fflhub-rsr-status-neutral';
+    }
+
     private function render_styles(): void
     {
         ?>
         <style>
-            .fflhub-rsr-batch-card,.fflhub-rsr-batch-force-box,.fflhub-rsr-summary-card{background:#fff;border:1px solid #dcdcde;border-radius:10px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.04);margin:14px 0}
+            .fflhub-rsr-batch-card,.fflhub-rsr-batch-force-box,.fflhub-rsr-summary-card,.fflhub-rsr-holosun-manual-box{background:#fff;border:1px solid #dcdcde;border-radius:10px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.04);margin:14px 0}
             .fflhub-rsr-summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:14px 0 18px}
             .fflhub-rsr-summary-card{margin:0}
             .fflhub-rsr-summary-card.is-ok{border-color:#a7f3d0;background:#ecfdf5}
@@ -1032,7 +1250,9 @@ final class RSRBatchQueuePage
             .fflhub-rsr-summary-card p{margin:8px 0 0;color:#50575e}
             .fflhub-rsr-batch-status table code{word-break:break-all}
             .fflhub-rsr-status-pill{display:inline-block;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:700;text-transform:uppercase}
-            .fflhub-rsr-status-pending{background:#e0f2fe;color:#0c4a6e}.fflhub-rsr-status-running{background:#fef3c7;color:#92400e}.fflhub-rsr-status-success{background:#dcfce7;color:#166534}.fflhub-rsr-status-danger{background:#fee2e2;color:#991b1b}.fflhub-rsr-status-neutral{background:#f3f4f6;color:#374151}
+            .fflhub-rsr-status-pending{background:#e0f2fe;color:#0c4a6e}.fflhub-rsr-status-running{background:#fef3c7;color:#92400e}.fflhub-rsr-status-success{background:#dcfce7;color:#166534}.fflhub-rsr-status-danger{background:#fee2e2;color:#991b1b}.fflhub-rsr-status-manual{background:#ede9fe;color:#5b21b6}.fflhub-rsr-status-neutral{background:#f3f4f6;color:#374151}
+            .fflhub-rsr-manual-po-form{display:flex;flex-direction:column;gap:6px;min-width:170px}
+            .fflhub-rsr-manual-po-input{width:100%;min-width:140px}
         </style>
         <?php
     }

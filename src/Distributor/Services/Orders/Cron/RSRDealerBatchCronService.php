@@ -2,6 +2,9 @@
 
 namespace FFLHub\Distributor\Services\Orders\Cron;
 
+use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Product\HolosunProductDetector;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -60,6 +63,39 @@ final class RSRDealerBatchCronService extends AbstractOrderBatchCronService
     protected function dispatch_day_block_reason(\DateTimeImmutable $local_time): string
     {
         return 'rsr_weekend_hold';
+    }
+
+    /**
+     * @param array<string,mixed> $entry
+     */
+    protected function should_hold_batch_entry_for_manual_order(array $entry): bool
+    {
+        $lines = $entry['lines'] ?? [];
+        if (!is_array($lines)) {
+            return false;
+        }
+
+        foreach ($lines as $line) {
+            if (!($line instanceof DistributorOrderLine)) {
+                continue;
+            }
+
+            if (HolosunProductDetector::is_holosun_upc((string) $line->upc)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function manual_batch_entry_message(): string
+    {
+        return 'RSR Holosun dealer batch row requires manual RSR ordering.';
+    }
+
+    protected function manual_batch_entry_reason_code(): string
+    {
+        return 'RSR_HOLOSUN_MANUAL_ORDER';
     }
 }
 
