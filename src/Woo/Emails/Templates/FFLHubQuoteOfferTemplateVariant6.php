@@ -21,7 +21,7 @@ do_action('woocommerce_email_header', $email_heading, $email);
 <p style="margin:0 0 14px;"><?php echo esc_html__('I got your quote request handled and wanted to send over your pricing details right away.', 'ffl-hub'); ?></p>
 <p style="margin:0 0 14px;"><?php echo sprintf(wp_kses_post(__('Your quote for the %1$s comes out to <strong>%2$s</strong> %3$s.', 'ffl-hub')), esc_html($context->product_name), esc_html($context->final_price_display), $shipping_phrase_markup); ?></p>
 <?php if ($context->quote_cart_url !== '') : ?>
-<p style="margin:0 0 14px;"><a href="<?php echo esc_url($context->quote_cart_url); ?>" style="display:inline-block;padding:10px 16px;background:#111111;color:#ffffff;text-decoration:none;border-radius:4px;font-weight:700;"><?php echo esc_html__('Add to cart with quoted price', 'ffl-hub'); ?></a></p>
+<p style="margin:0 0 14px;text-align:center;"><a href="<?php echo esc_url($context->quote_cart_url); ?>" style="display:inline-block;padding:10px 16px;background:#c9a24d;color:#000000;text-decoration:none;border:0;border-radius:4px;font-weight:700;"><?php echo esc_html__('Add to cart with quoted price', 'ffl-hub'); ?></a></p>
 <?php endif; ?>
 <p style="margin:0 0 14px;"><?php echo esc_html__('Product link:', 'ffl-hub'); ?> <?php echo esc_url($context->product_url); ?></p>
 <p style="margin:0 0 10px;"><?php echo esc_html__('Your code:', 'ffl-hub'); ?> <strong><?php echo esc_html($context->coupon_code); ?></strong></p>
