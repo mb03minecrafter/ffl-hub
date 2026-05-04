@@ -18,6 +18,9 @@ if (isset($args) && is_array($args)) {
 } elseif (isset($argv) && is_array($argv)) {
     $cli_args = array_slice($argv, 1);
 }
+if (($cli_args[0] ?? null) === '--') {
+    array_shift($cli_args);
+}
 
 $mode = strtolower(trim((string)($cli_args[0] ?? 'dry-run')));
 $input_file = trim((string)($cli_args[1] ?? ''));
