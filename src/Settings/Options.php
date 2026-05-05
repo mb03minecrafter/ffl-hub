@@ -43,6 +43,7 @@ final class Options
      */
     public const OPTION_PAYMENT_PROCESSOR_FEE_PERCENT = 'fflhub_payment_processor_fee_percent';
     public const OPTION_GLOBAL_MARKUP                 = 'fflhub_global_markup';
+    public const OPTION_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT = 'fflhub_free_shipping_max_profit_spend_percent';
     public const OPTION_TEST_ORDER_DEBUG_ENABLED      = 'fflhub_test_order_debug_enabled';
     public const OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED  = 'fflhub_holosun_image_notice_enabled';
     public const OPTION_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED = 'fflhub_holosun_show_price_override_enabled';
@@ -93,6 +94,7 @@ final class Options
      */
     private const DEFAULT_PAYMENT_PROCESSOR_FEE_PERCENT = 2.9;  // %
     private const DEFAULT_GLOBAL_MARKUP                 = 10.0; // %
+    private const DEFAULT_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT = 50.0; // %
     private const DEFAULT_TEST_ORDER_DEBUG_ENABLED      = true;
     private const DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED  = false;
     private const DEFAULT_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED = false;
@@ -232,6 +234,11 @@ final class Options
         return self::DEFAULT_GLOBAL_MARKUP;
     }
 
+    public static function default_free_shipping_max_profit_spend_percent(): float
+    {
+        return self::DEFAULT_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT;
+    }
+
     public static function default_test_order_debug_enabled(): bool
     {
         return self::DEFAULT_TEST_ORDER_DEBUG_ENABLED;
@@ -359,6 +366,13 @@ final class Options
             add_option(
                 self::OPTION_GLOBAL_MARKUP,
                 (string) self::DEFAULT_GLOBAL_MARKUP
+            );
+        }
+
+        if (get_option(self::OPTION_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT, null) === null) {
+            add_option(
+                self::OPTION_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT,
+                (string) self::DEFAULT_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT
             );
         }
 
@@ -589,6 +603,33 @@ final class Options
     public static function set_global_markup(float $percent): void
     {
         update_option(self::OPTION_GLOBAL_MARKUP, (string) $percent);
+    }
+
+    /**
+     * Percent of net cart profit that customer-facing free shipping may consume.
+     *
+     * 50 preserves the original "shipping is less than half of profit" behavior.
+     * 100 allows free shipping as long as at least one cent of net profit remains.
+     */
+    public static function get_free_shipping_max_profit_spend_percent(): float
+    {
+        $value = get_option(
+            self::OPTION_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT,
+            (string) self::DEFAULT_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT
+        );
+
+        $percent = self::to_non_negative_float($value);
+        if ($percent > 100.0) {
+            return 100.0;
+        }
+
+        return $percent;
+    }
+
+    public static function set_free_shipping_max_profit_spend_percent(float $percent): void
+    {
+        $percent = max(0.0, min(100.0, $percent));
+        update_option(self::OPTION_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT, (string) $percent);
     }
 
     /**

@@ -131,6 +131,17 @@ if ($fee_percent < 0.0) {
     $fee_percent = 0.0;
 }
 $fee_fraction = min(0.99, $fee_percent / 100.0);
+$free_shipping_max_profit_spend_percent = fflhub_debug_number(
+    get_option('fflhub_free_shipping_max_profit_spend_percent', '50'),
+    50.0
+);
+if ($free_shipping_max_profit_spend_percent < 0.0) {
+    $free_shipping_max_profit_spend_percent = 0.0;
+}
+if ($free_shipping_max_profit_spend_percent > 100.0) {
+    $free_shipping_max_profit_spend_percent = 100.0;
+}
+$minimum_profit_after_free_shipping = 0.01;
 
 $profit_net_total = 0.0;
 $line_rows = [];
@@ -242,6 +253,7 @@ foreach ($order->get_items('shipping') as $item_id => $shipping_item) {
             'dealer_outbound_ffl_cost' => isset($plan['dealer_outbound_ffl_cost']) ? fflhub_debug_money(fflhub_debug_number($plan['dealer_outbound_ffl_cost'])) : null,
             'customer_chargeable_shipping_cost_total' => isset($plan['customer_chargeable_shipping_cost_total']) ? fflhub_debug_money(fflhub_debug_number($plan['customer_chargeable_shipping_cost_total'])) : null,
             'customer_free_shipping_credit_total' => isset($plan['customer_free_shipping_credit_total']) ? fflhub_debug_money(fflhub_debug_number($plan['customer_free_shipping_credit_total'])) : null,
+            'free_shipping_profit_rule' => $plan['free_shipping_profit_rule'] ?? null,
             'ca_shipping_surcharge_applied' => $plan['ca_shipping_surcharge_applied'] ?? null,
             'ca_shipping_surcharge' => isset($plan['ca_shipping_surcharge']) ? fflhub_debug_money(fflhub_debug_number($plan['ca_shipping_surcharge'])) : null,
             'ca_shipping_surcharge_customer_state' => $plan['ca_shipping_surcharge_customer_state'] ?? null,
@@ -253,9 +265,18 @@ foreach ($order->get_items('shipping') as $item_id => $shipping_item) {
     ];
 }
 
-$free_threshold = 0.5 * $profit_net_total;
-$current_code_would_free = ($profit_net_total > 0.0 && $shipping_cost_total < $free_threshold);
-$chargeable_basis_would_free = ($profit_net_total > 0.0 && $customer_chargeable_shipping_cost_total < $free_threshold);
+$legacy_half_profit_threshold = 0.5 * $profit_net_total;
+$free_threshold = 0.0;
+if ($profit_net_total > $minimum_profit_after_free_shipping) {
+    $free_threshold = min(
+        $profit_net_total * ($free_shipping_max_profit_spend_percent / 100.0),
+        $profit_net_total - $minimum_profit_after_free_shipping
+    );
+}
+$free_threshold = max(0.0, $free_threshold);
+$current_code_would_free = ($profit_net_total > 0.0 && $shipping_cost_total <= ($free_threshold + 0.0001));
+$chargeable_basis_would_free = ($profit_net_total > 0.0 && $customer_chargeable_shipping_cost_total <= ($free_threshold + 0.0001));
+$legacy_half_profit_rule_would_free = ($profit_net_total > 0.0 && $shipping_cost_total < $legacy_half_profit_threshold);
 $grossed_chargeable_shipping = ($fee_fraction >= 0.99)
     ? $customer_chargeable_shipping_cost_total
     : ($customer_chargeable_shipping_cost_total / (1.0 - $fee_fraction));
@@ -294,13 +315,17 @@ $out = [
     ],
     'checkout_rule_recomputed_from_order' => [
         'payment_processor_fee_percent' => fflhub_debug_money($fee_percent),
+        'free_shipping_max_profit_spend_percent' => fflhub_debug_money($free_shipping_max_profit_spend_percent),
+        'minimum_profit_after_free_shipping' => fflhub_debug_money($minimum_profit_after_free_shipping),
         'profit_net_total_for_threshold' => fflhub_debug_money($profit_net_total),
-        'free_threshold_half_profit_net_total' => fflhub_debug_money($free_threshold),
+        'free_threshold_configured' => fflhub_debug_money($free_threshold),
+        'legacy_free_threshold_half_profit_net_total' => fflhub_debug_money($legacy_half_profit_threshold),
         'shipping_cost_total_basis_used_by_current_code' => fflhub_debug_money($shipping_cost_total),
         'customer_chargeable_shipping_cost_total' => fflhub_debug_money($customer_chargeable_shipping_cost_total),
         'grossed_customer_chargeable_shipping_before_clamps_or_surcharge' => fflhub_debug_money($grossed_chargeable_shipping),
         'current_code_would_free_using_full_shipping_cost' => $current_code_would_free ? 'yes' : 'no',
         'chargeable_basis_would_free_if_rule_used_customer_chargeable_shipping' => $chargeable_basis_would_free ? 'yes' : 'no',
+        'legacy_half_profit_rule_would_free' => $legacy_half_profit_rule_would_free ? 'yes' : 'no',
         'fflhub_free_shipping_meta_seen_on_shipping_item' => $free_meta_seen ? 'yes' : 'no',
         'customer_free_shipping_credit_total' => fflhub_debug_money($customer_free_shipping_credit_total),
         'ca_surcharge_total' => fflhub_debug_money($ca_surcharge_total),

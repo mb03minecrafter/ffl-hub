@@ -170,6 +170,7 @@ class AdminPage
         $global_settings = [
             'payment_fee_percent'   => (string) Options::get_payment_processor_fee_percent(),
             'global_markup_percent' => (string) Options::get_global_markup(),
+            'free_shipping_max_profit_spend_percent' => (string) Options::get_free_shipping_max_profit_spend_percent(),
             'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
             'holosun_image_notice_enabled' => Options::get_holosun_image_notice_enabled() ? '1' : '0',
             'holosun_show_price_override_enabled' => Options::get_holosun_show_price_override_enabled() ? '1' : '0',
@@ -232,6 +233,10 @@ class AdminPage
     {
         $payment_fee_percent   = (string) ($settings['payment_fee_percent'] ?? '');
         $global_markup_percent = (string) ($settings['global_markup_percent'] ?? '');
+        $free_shipping_max_profit_spend_percent = (string) (
+            $settings['free_shipping_max_profit_spend_percent']
+            ?? Options::default_free_shipping_max_profit_spend_percent()
+        );
         $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
         $holosun_image_notice_enabled = ((string) ($settings['holosun_image_notice_enabled'] ?? '0') === '1');
         $holosun_show_price_override_enabled = ((string) ($settings['holosun_show_price_override_enabled'] ?? '0') === '1');
@@ -416,6 +421,30 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'Default markup applied to your true cost when calculating prices.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_free_shipping_max_profit_spend_percent"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Free shipping max profit spend (%)', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_free_shipping_max_profit_spend_percent"
+                        name="fflhub_free_shipping_max_profit_spend_percent"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="100"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($free_shipping_max_profit_spend_percent); ?>" />
+                    <span class="fflhub-field-suffix">%</span>
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Percent of net cart profit you are willing to spend to make checkout shipping free. 50 keeps the current half-profit rule. 100 waives shipping as long as at least $0.01 profit remains after eating shipping.',
                             'ffl-hub'
                         ); ?>
                     </p>
