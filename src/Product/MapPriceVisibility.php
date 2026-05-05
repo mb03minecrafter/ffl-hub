@@ -1552,7 +1552,9 @@ class MapPriceVisibility
         $upc = self::quote_product_upc($product);
         $product_name = self::truncate_quote_job_value((string) $product->get_name(), 255);
         $submitted_at = (string) current_time('mysql', true);
-        $random_delay_minutes = self::preferred_quote_delay_minutes();
+        $random_delay_minutes = self::quote_email_should_use_random_delay($product)
+            ? self::preferred_quote_delay_minutes()
+            : 0;
 
         if (self::has_recent_duplicate_quote_job_values($table_name, $first_name, $last_name, $email, $upc, $product_name)) {
             return true;
@@ -1585,6 +1587,15 @@ class MapPriceVisibility
         );
 
         return $inserted === 1;
+    }
+
+    private static function quote_email_should_use_random_delay(WC_Product $product): bool
+    {
+        $upc = self::quote_product_upc($product);
+
+        return self::is_holosun_branded_product($product, null)
+            || HolosunProductDetector::is_holosun_product($product)
+            || ($upc !== '' && HolosunProductDetector::is_holosun_upc($upc));
     }
 
     /**

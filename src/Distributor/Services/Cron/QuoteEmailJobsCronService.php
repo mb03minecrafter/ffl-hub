@@ -5,6 +5,7 @@ namespace FFLHub\Distributor\Services\Cron;
 use FFLHub\Checkout\QuoteCartLinkHandler;
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
+use FFLHub\Product\HolosunProductDetector;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
@@ -25,6 +26,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     public const CRON_HOOK = 'fflhub_quote_email_jobs_poll';
 
     private const BATCH_LIMIT = 100;
+    private const CANDIDATE_SCAN_LIMIT = 500;
     private const DEBUG_CONST = 'FFLHUB_DEBUG_QUOTE_EMAIL_CRON';
     private const LOG_PREFIX = '[FFLHub][QuoteEmailCron]';
     private const BUSINESS_HOURS_TZ = 'America/Chicago';
@@ -72,6 +74,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $table_name = $this->jobs_table->get_table_name();
         $now_utc = (string) current_time('mysql', true);
         $limit = max(1, (int) self::BATCH_LIMIT);
+        $candidate_limit = max($limit, (int) self::CANDIDATE_SCAN_LIMIT);
         $force_no_delay = self::force_no_delay_mode();
         $hours_ctx = self::business_hours_context();
 
@@ -79,55 +82,72 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'table' => $table_name,
             'now_utc' => $now_utc,
             'limit' => $limit,
+            'candidate_scan_limit' => $candidate_limit,
             'force_no_delay' => $force_no_delay ? 1 : 0,
             'business_hours_open' => !empty($hours_ctx['is_open']) ? 1 : 0,
             'business_hours_now_local' => (string) ($hours_ctx['now_local'] ?? ''),
             'business_hours_tz' => self::BUSINESS_HOURS_TZ,
+            'business_hours_applies_to' => 'holosun_random_delay_only',
         ]);
 
-        if (!$force_no_delay && empty($hours_ctx['is_open'])) {
-            self::debug_ctx('run skipped: outside business hours', [
-                'now_local' => (string) ($hours_ctx['now_local'] ?? ''),
-                'hour_local' => (int) ($hours_ctx['hour_local'] ?? -1),
-                'start_hour' => self::BUSINESS_HOUR_START,
-                'end_hour' => self::BUSINESS_HOUR_END,
-                'tz' => self::BUSINESS_HOURS_TZ,
-            ]);
-            return;
-        }
+        $sql = $wpdb->prepare(
+            "SELECT id, request_first_name, request_last_name, request_email, quote_upc, quote_product_name, submitted_at, random_delay_minutes, email_sent
+             FROM {$table_name}
+             WHERE email_sent = 0
+             ORDER BY CASE WHEN random_delay_minutes = 0 THEN 0 ELSE 1 END ASC, submitted_at ASC, id ASC
+             LIMIT %d",
+            $candidate_limit
+        );
 
-        if ($force_no_delay) {
-            $sql = $wpdb->prepare(
-                "SELECT id, request_first_name, request_last_name, request_email, quote_upc, quote_product_name, submitted_at, random_delay_minutes, email_sent
-                 FROM {$table_name}
-                 WHERE email_sent = 0
-                 ORDER BY submitted_at ASC, id ASC
-                 LIMIT %d",
-                $limit
-            );
-        } else {
-            $sql = $wpdb->prepare(
-                "SELECT id, request_first_name, request_last_name, request_email, quote_upc, quote_product_name, submitted_at, random_delay_minutes, email_sent
-                 FROM {$table_name}
-                 WHERE email_sent = 0
-                   AND DATE_ADD(submitted_at, INTERVAL random_delay_minutes MINUTE) <= %s
-                 ORDER BY submitted_at ASC, id ASC
-                 LIMIT %d",
-                $now_utc,
-                $limit
-            );
-        }
-
-        $due_jobs = $wpdb->get_results($sql, ARRAY_A);
-        if (!is_array($due_jobs)) {
+        $candidate_jobs = $wpdb->get_results($sql, ARRAY_A);
+        if (!is_array($candidate_jobs)) {
             self::debug_ctx('query failed', [
                 'last_error' => (string) $wpdb->last_error,
             ]);
             return;
         }
 
+        if (empty($candidate_jobs)) {
+            self::debug('run complete: no pending jobs');
+            return;
+        }
+
+        $due_jobs = [];
+        $deferred_counts = [];
+        $due_counts = [];
+        $candidate_rows_seen = 0;
+
+        foreach ($candidate_jobs as $candidate_job_row) {
+            $candidate_rows_seen++;
+            if (!is_array($candidate_job_row)) {
+                $deferred_counts['invalid_row'] = (int) ($deferred_counts['invalid_row'] ?? 0) + 1;
+                self::debug_ctx('skip candidate row: invalid row type', ['row_index' => $candidate_rows_seen]);
+                continue;
+            }
+
+            $due_ctx = $this->quote_job_due_context($candidate_job_row, $now_utc, $force_no_delay, $hours_ctx);
+            $reason = (string) ($due_ctx['reason'] ?? 'unknown');
+
+            if (empty($due_ctx['is_due'])) {
+                $deferred_counts[$reason] = (int) ($deferred_counts[$reason] ?? 0) + 1;
+                continue;
+            }
+
+            $candidate_job_row['_fflhub_quote_is_holosun'] = !empty($due_ctx['is_holosun']) ? 1 : 0;
+            $due_counts[$reason] = (int) ($due_counts[$reason] ?? 0) + 1;
+            $due_jobs[] = $candidate_job_row;
+
+            if (count($due_jobs) >= $limit) {
+                break;
+            }
+        }
+
         if (empty($due_jobs)) {
-            self::debug('run complete: no due jobs');
+            self::debug_ctx('run complete: no due jobs', [
+                'candidate_rows_seen' => $candidate_rows_seen,
+                'candidate_rows_available' => count($candidate_jobs),
+                'deferred_counts' => $deferred_counts,
+            ]);
             return;
         }
 
@@ -157,12 +177,135 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         self::debug_ctx('run complete', [
+            'candidate_rows_seen' => $candidate_rows_seen,
+            'candidate_rows_available' => count($candidate_jobs),
+            'due_counts' => $due_counts,
+            'deferred_counts' => $deferred_counts,
             'rows_seen' => $rows_seen,
             'rows_sent' => $rows_sent,
             'rows_skipped' => $rows_skipped,
             'status_counts' => $status_counts,
             'elapsed_ms' => round((microtime(true) - $run_started) * 1000, 2),
         ]);
+    }
+
+    /**
+     * @param array<string,mixed> $job_row
+     * @param array<string,mixed> $hours_ctx
+     *
+     * @return array{is_due:bool,is_holosun:bool,reason:string}
+     */
+    private function quote_job_due_context(array $job_row, string $now_utc, bool $force_no_delay, array $hours_ctx): array
+    {
+        $is_holosun = $this->job_row_is_holosun_quote($job_row);
+
+        if ($force_no_delay) {
+            return [
+                'is_due' => true,
+                'is_holosun' => $is_holosun,
+                'reason' => 'force_no_delay',
+            ];
+        }
+
+        if (!$is_holosun) {
+            return [
+                'is_due' => true,
+                'is_holosun' => false,
+                'reason' => 'non_holosun_instant',
+            ];
+        }
+
+        if (empty($hours_ctx['is_open'])) {
+            return [
+                'is_due' => false,
+                'is_holosun' => true,
+                'reason' => 'holosun_outside_business_hours',
+            ];
+        }
+
+        if (!$this->job_row_random_delay_due($job_row, $now_utc)) {
+            return [
+                'is_due' => false,
+                'is_holosun' => true,
+                'reason' => 'holosun_random_delay_pending',
+            ];
+        }
+
+        return [
+            'is_due' => true,
+            'is_holosun' => true,
+            'reason' => 'holosun_random_delay_due',
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $job_row
+     */
+    private function job_row_is_holosun_quote(array $job_row): bool
+    {
+        $quote_upc = trim((string) ($job_row['quote_upc'] ?? ''));
+        if ($quote_upc !== '' && HolosunProductDetector::is_holosun_upc($quote_upc)) {
+            return true;
+        }
+
+        $quote_product_name = trim((string) ($job_row['quote_product_name'] ?? ''));
+        if ($this->quote_text_looks_holosun($quote_product_name)) {
+            return true;
+        }
+
+        $product_id = 0;
+        if ($quote_upc !== '') {
+            $product_id = $this->find_product_id_by_upc($quote_upc);
+        }
+        if ($product_id <= 0 && $quote_product_name !== '') {
+            $product_id = $this->find_product_id_by_exact_name($quote_product_name);
+        }
+        if ($product_id <= 0) {
+            return false;
+        }
+
+        $product = wc_get_product($product_id);
+        return ($product instanceof WC_Product) && HolosunProductDetector::is_holosun_product($product);
+    }
+
+    private function quote_text_looks_holosun(string $value): bool
+    {
+        $value = strtolower(trim($value));
+        if ($value === '') {
+            return false;
+        }
+
+        return strpos($value, 'holosun') !== false || strpos($value, 'holoson') !== false;
+    }
+
+    /**
+     * @param array<string,mixed> $job_row
+     */
+    private function job_row_random_delay_due(array $job_row, string $now_utc): bool
+    {
+        $submitted_at = trim((string) ($job_row['submitted_at'] ?? ''));
+        if ($submitted_at === '') {
+            return true;
+        }
+
+        $delay_minutes = max(0, (int) ($job_row['random_delay_minutes'] ?? 0));
+
+        try {
+            $utc = new \DateTimeZone('UTC');
+            $submitted = new \DateTimeImmutable($submitted_at, $utc);
+            $now = new \DateTimeImmutable($now_utc, $utc);
+            $due_at = $submitted->modify('+' . $delay_minutes . ' minutes');
+        } catch (\Throwable $e) {
+            self::debug_ctx('random delay parse failed; treating job as due', [
+                'submitted_at' => $submitted_at,
+                'now_utc' => $now_utc,
+                'delay_minutes' => $delay_minutes,
+                'error' => $e->getMessage(),
+            ]);
+            return true;
+        }
+
+        return $due_at->getTimestamp() <= $now->getTimestamp();
     }
 
     /**
@@ -299,6 +442,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
                 'recipient' => $context->recipient_email,
                 'subject' => $context->subject,
                 'variant_index' => $context->variant_index,
+                'force_plain_text' => $context->force_plain_text ? 1 : 0,
             ]);
             return 'send_failed';
         }
@@ -315,6 +459,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'job_id' => $job_id,
             'recipient' => $context->recipient_email,
             'coupon_code' => $context->coupon_code,
+            'force_plain_text' => $context->force_plain_text ? 1 : 0,
         ]);
 
         return 'sent';
@@ -636,6 +781,14 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $subject = (string) __('Email Quote Ready', 'ffl-hub');
         $rep_name = self::REP_NAMES[$rep_index] ?? self::REP_NAMES[0];
         $coupon_amount_display = wp_strip_all_tags(wc_price($coupon_amount));
+        $force_plain_text = !empty($job_row['_fflhub_quote_is_holosun'])
+            || HolosunProductDetector::is_holosun_product($product);
+        if (!$force_plain_text) {
+            $quote_upc = trim((string) ($job_row['quote_upc'] ?? ''));
+            $quote_product_name = trim((string) ($job_row['quote_product_name'] ?? ''));
+            $force_plain_text = ($quote_upc !== '' && HolosunProductDetector::is_holosun_upc($quote_upc))
+                || $this->quote_text_looks_holosun($quote_product_name);
+        }
 
         self::debug_ctx('email context built', [
             'job_id' => isset($job_row['id']) ? (int) $job_row['id'] : 0,
@@ -650,6 +803,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'quote_cart_url' => $quote_cart_url,
             'final_price' => $final_price_display,
             'shipping_phrase' => $shipping_phrase,
+            'force_plain_text' => $force_plain_text ? 1 : 0,
         ]);
 
         return new QuoteOfferEmailContext(
@@ -665,7 +819,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             $coupon_amount_display,
             $final_price_display,
             $shipping_phrase,
-            $expires_display
+            $expires_display,
+            $force_plain_text
         );
     }
 
@@ -1067,6 +1222,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'recipient' => $context->recipient_email,
             'subject' => $context->subject,
             'variant_index' => $context->variant_index,
+            'force_plain_text' => $context->force_plain_text ? 1 : 0,
             'sent' => $sent ? 1 : 0,
         ]);
 
