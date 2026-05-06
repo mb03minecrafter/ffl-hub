@@ -1599,12 +1599,12 @@ class MapPriceVisibility
     }
 
     /**
-     * Generate a 5-15 minute delay biased toward values closer to 5.
+     * Generate a 3-7 minute delay biased toward values closer to 3.
      */
     private static function preferred_quote_delay_minutes(): int
     {
-        $min = 5;
-        $max = 15;
+        $min = 3;
+        $max = 7;
         $choices = ($max - $min) + 1; // inclusive count
 
         // Uniform [0,1), squared to bias toward 0 (lower delays).

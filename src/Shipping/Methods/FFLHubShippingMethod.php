@@ -31,7 +31,7 @@ if (! defined('ABSPATH')) {
  * FREE SHIPPING RULE:
  * - Product MAP quote free-shipping override removes that product's routed
  *   shipping from the customer charge only; internal cost remains for audit.
- * - CA drop-ship surcharge is internal shipping cost first; it becomes
+ * - CA drop-ship surcharge is not treated as cost-to-us; it becomes
  *   customer-facing only if the full cart fails the free-shipping rule.
  * - Compute cart profit P_total (net after processor fee) using stored dealer cost meta.
  * - If shipping cost is within the configured profit-spend allowance, customer shipping = 0.
@@ -433,7 +433,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $ca_surcharge = ($customer_dest_state === 'CA' && $ca_surcharge_has_drop_ship_lane)
             ? self::CA_SHIPPING_SURCHARGE
             : 0.0;
-        $shipping_cost_total = max(0.0, $dist_total + $outbound_total + $ca_surcharge);
+        $shipping_cost_total = max(0.0, $dist_total + $outbound_total);
 
         $plan['dealer_outbound_home_cost_formula'] = $dealer_home_cost_formula;
         $plan['dealer_outbound_ffl_cost_formula'] = $dealer_ffl_cost_formula;
@@ -466,10 +466,10 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         );
         $customer_chargeable_base_total = isset($customer_shipping['total'])
             ? max(0.0, (float) $customer_shipping['total'])
-            : max(0.0, $shipping_cost_total - $ca_surcharge);
+            : $shipping_cost_total;
         $customer_chargeable_shipping_cost_total = min(
             $shipping_cost_total,
-            max(0.0, $customer_chargeable_base_total + $ca_surcharge)
+            $customer_chargeable_base_total
         );
         $customer_free_shipping_credit_total = max(0.0, $shipping_cost_total - $customer_chargeable_shipping_cost_total);
         $customer_free_shipping_product_applied = $customer_free_shipping_credit_total > 0.0001;
@@ -514,7 +514,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         if ($ca_surcharge > 0.0) {
             $this->log_debug(
                 sprintf(
-                    'CA_SURCHARGE state=%s drop_ship_lane=yes amount=%s included_in_shipping_cost_total=yes',
+                    'CA_SURCHARGE state=%s drop_ship_lane=yes amount=%s eligible_customer_surcharge=yes cost_to_us=no',
                     $customer_dest_state,
                     $this->fmt_money($ca_surcharge)
                 )
@@ -572,6 +572,16 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 if ($charge_basis_shipping_cost <= 0.0 && $shipping_cost_total > 0.0) {
                     $charge_basis_shipping_cost = $shipping_cost_total;
                     $this->log_debug('RULE charge_basis restored to shipping_cost_total because full shipping failed free threshold');
+                }
+                if ($ca_surcharge > 0.0) {
+                    $charge_basis_shipping_cost += $ca_surcharge;
+                    $this->log_debug(
+                        sprintf(
+                            'RULE CA_SURCHARGE customer-facing because free shipping failed amount=%s charge_basis_after=%s',
+                            $this->fmt_money($ca_surcharge),
+                            $this->fmt_money($charge_basis_shipping_cost)
+                        )
+                    );
                 }
 
                 $customer_charge = ($f >= 0.99)
