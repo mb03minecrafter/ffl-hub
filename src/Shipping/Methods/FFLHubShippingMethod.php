@@ -30,9 +30,11 @@ if (! defined('ABSPATH')) {
  * FREE SHIPPING RULE:
  * - Product MAP quote free-shipping override removes that product's routed
  *   shipping from the customer charge only; internal cost remains for audit.
+ * - CA drop-ship surcharge is internal shipping cost first; it becomes
+ *   customer-facing only if the full cart fails the free-shipping rule.
  * - Compute cart profit P_total (net after processor fee) using stored dealer cost meta.
- * - If customer-chargeable S_total < 0.5 * P_total, customer shipping = 0.
- * - Else customer pays full shipping grossed-up so you net S_total after processor fee:
+ * - If full internal shipping cost S_total < 0.5 * P_total, customer shipping = 0.
+ * - Else customer pays chargeable shipping grossed-up so you net it after processor fee:
  *      customer_charge = S_total / (1 - f)
  *
  * DEBUG:
@@ -424,7 +426,12 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         $dist_total = (float) ($plan['distributor_cost_total'] ?? 0.0);
         $outbound_total = $dealer_home_cost + $dealer_ffl_cost;
-        $shipping_cost_total = max(0.0, $dist_total + $outbound_total);
+        $customer_dest_state = $this->resolve_customer_destination_state($package);
+        $ca_surcharge_has_drop_ship_lane = $this->shipping_plan_has_drop_ship_lane($plan);
+        $ca_surcharge = ($customer_dest_state === 'CA' && $ca_surcharge_has_drop_ship_lane)
+            ? self::CA_SHIPPING_SURCHARGE
+            : 0.0;
+        $shipping_cost_total = max(0.0, $dist_total + $outbound_total + $ca_surcharge);
 
         $plan['dealer_outbound_home_cost_formula'] = $dealer_home_cost_formula;
         $plan['dealer_outbound_ffl_cost_formula'] = $dealer_ffl_cost_formula;
@@ -435,6 +442,10 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $plan['dealer_outbound_home_cost_source'] = $dealer_home_source;
         $plan['dealer_outbound_ffl_cost_source'] = $dealer_ffl_source;
         $plan['total_cost'] = $shipping_cost_total;
+        $plan['ca_shipping_surcharge_applied'] = ($ca_surcharge > 0.0) ? 1 : 0;
+        $plan['ca_shipping_surcharge'] = $ca_surcharge;
+        $plan['ca_shipping_surcharge_customer_state'] = $customer_dest_state;
+        $plan['ca_shipping_surcharge_drop_ship_lane'] = $ca_surcharge_has_drop_ship_lane ? 1 : 0;
         $plan['meta']['outbound_pricing'] = [
             'home_source' => $dealer_home_source,
             'ffl_source'  => $dealer_ffl_source,
@@ -451,9 +462,12 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $home_dest_zip,
             $ffl_dest_zip
         );
+        $customer_chargeable_base_total = isset($customer_shipping['total'])
+            ? max(0.0, (float) $customer_shipping['total'])
+            : max(0.0, $shipping_cost_total - $ca_surcharge);
         $customer_chargeable_shipping_cost_total = min(
             $shipping_cost_total,
-            max(0.0, (float) ($customer_shipping['total'] ?? $shipping_cost_total))
+            max(0.0, $customer_chargeable_base_total + $ca_surcharge)
         );
         $customer_free_shipping_credit_total = max(0.0, $shipping_cost_total - $customer_chargeable_shipping_cost_total);
         $customer_free_shipping_product_applied = $customer_free_shipping_credit_total > 0.0001;
@@ -484,16 +498,28 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         $this->log_debug(
             sprintf(
-                'PLAN total=%s dist_total=%s outbound_total=%s customer_chargeable=%s customer_free_credit=%s decision_lines=%d combos=%d',
+                'PLAN total=%s dist_total=%s outbound_total=%s ca_surcharge=%s customer_chargeable=%s customer_free_credit=%s decision_lines=%d combos=%d',
                 $this->fmt_money($shipping_cost_total),
                 $this->fmt_money($dist_total),
                 $this->fmt_money($outbound_total),
+                $this->fmt_money($ca_surcharge),
                 $this->fmt_money($customer_chargeable_shipping_cost_total),
                 $this->fmt_money($customer_free_shipping_credit_total),
                 (int) (($plan['meta']['decision_lines'] ?? 0)),
                 (int) (($plan['meta']['combinations_evaluated'] ?? 0))
             )
         );
+        if ($ca_surcharge > 0.0) {
+            $this->log_debug(
+                sprintf(
+                    'CA_SURCHARGE state=%s drop_ship_lane=yes amount=%s included_in_shipping_cost_total=yes',
+                    $customer_dest_state,
+                    $this->fmt_money($ca_surcharge)
+                )
+            );
+        } elseif ($customer_dest_state === 'CA') {
+            $this->log_debug('CA_SURCHARGE skipped because no drop-ship lane is active.');
+        }
         $this->log_planner_alternatives($plan, $line_debug_rows, $planner_formula_total);
 
         // 2) Apply cart-level free shipping rule
@@ -562,34 +588,8 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             );
         }
 
-        $customer_dest_state = $this->resolve_customer_destination_state($package);
-        $ca_surcharge_has_drop_ship_lane = $this->shipping_plan_has_drop_ship_lane($plan);
-        $ca_surcharge = ($customer_dest_state === 'CA' && $ca_surcharge_has_drop_ship_lane)
-            ? self::CA_SHIPPING_SURCHARGE
-            : 0.0;
-        if ($ca_surcharge > 0.0) {
-            $customer_charge += $ca_surcharge;
-            $plan['ca_shipping_surcharge_applied'] = 1;
-            $plan['ca_shipping_surcharge'] = $ca_surcharge;
-            $plan['ca_shipping_surcharge_customer_state'] = $customer_dest_state;
-            $plan['ca_shipping_surcharge_drop_ship_lane'] = 1;
-            $this->log_debug(
-                sprintf(
-                    'CA_SURCHARGE state=%s drop_ship_lane=yes amount=%s customer_charge_after=%s',
-                    $customer_dest_state,
-                    $this->fmt_money($ca_surcharge),
-                    $this->fmt_money($customer_charge)
-                )
-            );
-        } else {
-            $plan['ca_shipping_surcharge_applied'] = 0;
-            $plan['ca_shipping_surcharge'] = 0.0;
-            $plan['ca_shipping_surcharge_customer_state'] = $customer_dest_state;
-            $plan['ca_shipping_surcharge_drop_ship_lane'] = $ca_surcharge_has_drop_ship_lane ? 1 : 0;
-            if ($customer_dest_state === 'CA') {
-                $this->log_debug('CA_SURCHARGE skipped because no drop-ship lane is active.');
-            }
-        }
+        $plan['ca_shipping_surcharge_customer_facing'] = ($ca_surcharge > 0.0 && $customer_charge > 0.0001) ? 1 : 0;
+        $ca_surcharge_customer_facing = !empty($plan['ca_shipping_surcharge_customer_facing']);
 
         $plan_version = (($dealer_home_source === 'usps_api') || ($dealer_ffl_source === 'usps_api'))
             ? 'dealer_fulfilled_v2_usps_outbound'
@@ -611,6 +611,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'fflhub_customer_free_shipping_credit_total' => (string) wc_format_decimal($customer_free_shipping_credit_total, 4),
                 'fflhub_ca_shipping_surcharge' => (string) wc_format_decimal($ca_surcharge, 4),
                 'fflhub_ca_shipping_surcharge_applied' => ($ca_surcharge > 0.0) ? '1' : '0',
+                'fflhub_ca_shipping_surcharge_customer_facing' => $ca_surcharge_customer_facing ? '1' : '0',
 
                 // Planner output details (distributor lanes + routing assignments)
                 'fflhub_shipping_by_dist' => wp_json_encode($by_dist),
