@@ -82,6 +82,16 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_percent_0_to_100_string'],
+                'default'           => (string) Options::default_free_shipping_max_profit_spend_percent(),
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_TEST_ORDER_DEBUG_ENABLED,
             [
                 'type'              => 'string',
@@ -460,6 +470,25 @@ final class SettingsRegistrar
     {
         $value = preg_replace('/[^0-9.]/', '', (string) $value);
         return (string) (float) $value;
+    }
+
+    /**
+     * Percent sanitizer clamped to 0-100.
+     *
+     * @param mixed $value
+     */
+    public static function sanitize_percent_0_to_100_string($value): string
+    {
+        $value = preg_replace('/[^0-9.]/', '', (string) $value);
+        $num = is_numeric($value) ? (float) $value : 0.0;
+        if (!is_finite($num) || $num < 0.0) {
+            $num = 0.0;
+        }
+        if ($num > 100.0) {
+            $num = 100.0;
+        }
+
+        return (string) $num;
     }
 
     /**

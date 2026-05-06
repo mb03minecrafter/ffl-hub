@@ -8,6 +8,7 @@ use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Product\ProductMeta;
+use FFLHub\Settings\Options;
 use FFLHub\Shipping\USPS\USPSRateHelper;
 use FFLHub\Util\DebugLogUtil;
 use WC_Shipping_Method;
@@ -33,7 +34,7 @@ if (! defined('ABSPATH')) {
  * - CA drop-ship surcharge is internal shipping cost first; it becomes
  *   customer-facing only if the full cart fails the free-shipping rule.
  * - Compute cart profit P_total (net after processor fee) using stored dealer cost meta.
- * - If full internal shipping cost S_total < 0.5 * P_total, customer shipping = 0.
+ * - If shipping cost is within the configured profit-spend allowance, customer shipping = 0.
  * - Else customer pays chargeable shipping grossed-up so you net it after processor fee:
  *      customer_charge = S_total / (1 - f)
  *
@@ -43,6 +44,7 @@ if (! defined('ABSPATH')) {
 class FFLHubShippingMethod extends WC_Shipping_Method
 {
     private const CA_SHIPPING_SURCHARGE = 10.0;
+    private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;
 
     public function __construct($instance_id = 0)
     {
@@ -524,26 +526,47 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         // 2) Apply cart-level free shipping rule
         $customer_charge = 0.0;
+        $free_shipping_max_profit_spend_percent = Options::get_free_shipping_max_profit_spend_percent();
+        $free_threshold = $this->free_shipping_cost_threshold(
+            (float) $profit_net_total,
+            $free_shipping_max_profit_spend_percent
+        );
+        $profit_after_free_shipping = (float) $profit_net_total - (float) $shipping_cost_total;
+        $profit_based_free_shipping_applies = $this->should_apply_profit_based_free_shipping(
+            (float) $profit_net_total,
+            (float) $shipping_cost_total,
+            $free_shipping_max_profit_spend_percent
+        );
+
+        $plan['free_shipping_profit_rule'] = [
+            'max_profit_spend_percent' => $free_shipping_max_profit_spend_percent,
+            'minimum_profit_after_free_shipping' => self::MIN_PROFIT_AFTER_FREE_SHIPPING,
+            'profit_net_total' => (float) $profit_net_total,
+            'shipping_cost_threshold' => $free_threshold,
+            'profit_after_free_shipping' => $profit_after_free_shipping,
+            'matched' => $profit_based_free_shipping_applies ? 1 : 0,
+        ];
 
         if ($shipping_cost_total <= 0.0) {
             $customer_charge = 0.0;
             $this->log_debug('RULE shipping_cost_total=0 so customer_charge=$0.00');
         } else {
-            $free_threshold = 0.5 * (float) $profit_net_total;
-
             $this->log_debug(
                 sprintf(
-                    'RULE profit_net_total=%s shipping_cost_total=%s customer_chargeable_shipping_cost_total=%s free_threshold=%s',
+                    'RULE profit_net_total=%s shipping_cost_total=%s customer_chargeable_shipping_cost_total=%s max_profit_spend_pct=%.2f min_profit_after_free=%s free_threshold=%s profit_after_free=%s',
                     $this->fmt_money($profit_net_total),
                     $this->fmt_money($shipping_cost_total),
                     $this->fmt_money($customer_chargeable_shipping_cost_total),
-                    $this->fmt_money($free_threshold)
+                    $free_shipping_max_profit_spend_percent,
+                    $this->fmt_money(self::MIN_PROFIT_AFTER_FREE_SHIPPING),
+                    $this->fmt_money($free_threshold),
+                    $this->fmt_money($profit_after_free_shipping)
                 )
             );
 
-            if ($profit_net_total > 0.0 && $shipping_cost_total < $free_threshold) {
+            if ($profit_based_free_shipping_applies) {
                 $customer_charge = 0.0;
-                $this->log_debug('RULE free_shipping=yes basis=shipping_cost_total');
+                $this->log_debug('RULE free_shipping=yes basis=shipping_cost_total_profit_spend_setting');
             } else {
                 $charge_basis_shipping_cost = $customer_chargeable_shipping_cost_total;
                 if ($charge_basis_shipping_cost <= 0.0 && $shipping_cost_total > 0.0) {
@@ -650,6 +673,36 @@ class FFLHubShippingMethod extends WC_Shipping_Method
     {
         $sign = ($value >= 0.0) ? '+' : '-';
         return $sign . '$' . number_format(abs($value), 2, '.', '');
+    }
+
+    private function should_apply_profit_based_free_shipping(
+        float $profit_net_total,
+        float $shipping_cost_total,
+        float $max_profit_spend_percent
+    ): bool {
+        if ($profit_net_total <= 0.0 || $shipping_cost_total <= 0.0) {
+            return false;
+        }
+
+        $free_threshold = $this->free_shipping_cost_threshold($profit_net_total, $max_profit_spend_percent);
+        if ($free_threshold <= 0.0) {
+            return false;
+        }
+
+        return $shipping_cost_total <= ($free_threshold + 0.0001);
+    }
+
+    private function free_shipping_cost_threshold(float $profit_net_total, float $max_profit_spend_percent): float
+    {
+        if ($profit_net_total <= self::MIN_PROFIT_AFTER_FREE_SHIPPING) {
+            return 0.0;
+        }
+
+        $max_profit_spend_percent = max(0.0, min(100.0, $max_profit_spend_percent));
+        $percent_threshold = $profit_net_total * ($max_profit_spend_percent / 100.0);
+        $penny_profit_threshold = $profit_net_total - self::MIN_PROFIT_AFTER_FREE_SHIPPING;
+
+        return max(0.0, min($percent_threshold, $penny_profit_threshold));
     }
 
     /**

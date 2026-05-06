@@ -24,6 +24,7 @@ final class QuoteOfferEmailContext
     public string $final_price_display;
     public string $shipping_phrase;
     public string $expires_display;
+    public bool $force_plain_text;
 
     public function __construct(
         string $recipient_email,
@@ -38,7 +39,8 @@ final class QuoteOfferEmailContext
         string $coupon_amount_display,
         string $final_price_display,
         string $shipping_phrase,
-        string $expires_display
+        string $expires_display,
+        bool $force_plain_text = false
     ) {
         $this->recipient_email = trim($recipient_email);
         $this->subject = trim($subject);
@@ -53,6 +55,7 @@ final class QuoteOfferEmailContext
         $this->final_price_display = trim($final_price_display);
         $this->shipping_phrase = trim($shipping_phrase);
         $this->expires_display = trim($expires_display);
+        $this->force_plain_text = $force_plain_text;
     }
 
     private static function normalize_first_name_for_display(string $first_name): string

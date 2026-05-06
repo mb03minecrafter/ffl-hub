@@ -290,6 +290,34 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                     'automation_rows' => count($eligible_entries),
                     'reason' => $this->manual_batch_entry_reason_code(),
                 ]);
+
+                if ($this->should_alert_risky_manual_hold_entries()) {
+                    $manual_demand_by_upc = $this->build_demand_by_upc($manual_hold_entries);
+                    $manual_stock_cache = $this->build_stock_cache($distributor, $manual_demand_by_upc);
+                    $manual_risky_upcs = $this->find_risky_upcs(
+                        $manual_demand_by_upc,
+                        $manual_stock_cache,
+                        $low_threshold
+                    );
+
+                    if (!empty($manual_risky_upcs)) {
+                        $this->send_risky_manual_hold_alert(
+                            $manual_hold_entries,
+                            $manual_demand_by_upc,
+                            $manual_stock_cache,
+                            $manual_risky_upcs,
+                            $low_threshold,
+                            $run_id
+                        );
+
+                        $this->log_ctx('manual_hold_risk_alert', [
+                            'run_id' => $run_id,
+                            'manual_hold_rows' => count($manual_hold_entries),
+                            'risky_upcs' => count($manual_risky_upcs),
+                            'risky_upcs_head' => array_slice(array_keys($manual_risky_upcs), 0, 10),
+                        ]);
+                    }
+                }
             }
 
             if (empty($eligible_entries)) {
@@ -631,6 +659,27 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     protected function manual_batch_entry_reason_code(): string
     {
         return 'BATCH_MANUAL_ORDER';
+    }
+
+    protected function should_alert_risky_manual_hold_entries(): bool
+    {
+        return false;
+    }
+
+    /**
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $manual_hold_entries
+     * @param array<string,int> $demand_by_upc
+     * @param array<string,int|null> $stock_cache
+     * @param array<string,true> $risky_upcs
+     */
+    protected function send_risky_manual_hold_alert(
+        array $manual_hold_entries,
+        array $demand_by_upc,
+        array $stock_cache,
+        array $risky_upcs,
+        int $low_threshold,
+        string $run_id
+    ): void {
     }
 
     /**

@@ -46,7 +46,7 @@ final class FFLHubQuoteOffer extends WC_Email
             return false;
         }
 
-        if (!Options::get_pretty_random_email_quotes_enabled()) {
+        if ($context->force_plain_text || !Options::get_pretty_random_email_quotes_enabled()) {
             return $this->send_code_only_plain_text($context);
         }
 
