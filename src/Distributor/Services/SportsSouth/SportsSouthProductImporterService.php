@@ -133,7 +133,7 @@ final class SportsSouthProductImporterService
             'join_updated' => (int) max(0, $updated_item) + (int) max(0, $updated_upc),
             'join_updated_item' => (int) max(0, $updated_item),
             'join_updated_upc' => (int) max(0, $updated_upc),
-            'quantity_mode' => $treatQuantityAsDelta ? 'delta' : 'absolute',
+            'quantity_mode' => $treatQuantityAsDelta ? 'quantity_delta' : 'current_quantity',
             'sig_approved_forced' => (int) $sig_approved_forced,
         ];
 
@@ -542,9 +542,14 @@ final class SportsSouthProductImporterService
     {
         global $wpdb;
 
+        $current_qty_expression = "CAST(COALESCE(NULLIF(L.inventory_quantity, ''), '0') AS SIGNED)";
+        $incoming_qty_expression = 'GREATEST(S.quantity_delta, 0)';
         $qty_expression = $treatQuantityAsDelta
-            ? "GREATEST(CAST(COALESCE(NULLIF(L.inventory_quantity, ''), '0') AS SIGNED) + S.quantity_delta, 0)"
-            : 'GREATEST(S.quantity_delta, 0)';
+            ? "GREATEST({$current_qty_expression} + S.quantity_delta, 0)"
+            : $incoming_qty_expression;
+        $quantity_changed_condition = $treatQuantityAsDelta
+            ? 'S.quantity_delta <> 0'
+            : "{$current_qty_expression} <> {$incoming_qty_expression}";
 
         $sql = "
             UPDATE {$liveTable} L
@@ -557,7 +562,7 @@ final class SportsSouthProductImporterService
                 L.distributor_price = CASE WHEN S.customer_price <> '' THEN S.customer_price ELSE L.distributor_price END,
                 L.last_onhand_utc = %s
             WHERE
-                S.quantity_delta <> 0
+                {$quantity_changed_condition}
                 OR (S.customer_price <> '' AND COALESCE(L.distributor_price, '') <> S.customer_price)
                 OR (S.catalog_price <> '' AND COALESCE(L.catalog_price, '') <> S.catalog_price)
         ";
@@ -570,9 +575,14 @@ final class SportsSouthProductImporterService
     {
         global $wpdb;
 
+        $current_qty_expression = "CAST(COALESCE(NULLIF(L.inventory_quantity, ''), '0') AS SIGNED)";
+        $incoming_qty_expression = 'GREATEST(S.quantity_delta, 0)';
         $qty_expression = $treatQuantityAsDelta
-            ? "GREATEST(CAST(COALESCE(NULLIF(L.inventory_quantity, ''), '0') AS SIGNED) + S.quantity_delta, 0)"
-            : 'GREATEST(S.quantity_delta, 0)';
+            ? "GREATEST({$current_qty_expression} + S.quantity_delta, 0)"
+            : $incoming_qty_expression;
+        $quantity_changed_condition = $treatQuantityAsDelta
+            ? 'S.quantity_delta <> 0'
+            : "{$current_qty_expression} <> {$incoming_qty_expression}";
 
         $sql = "
             UPDATE {$liveTable} L
@@ -589,7 +599,7 @@ final class SportsSouthProductImporterService
             WHERE
                 SI.id IS NULL
                 AND (
-                    S.quantity_delta <> 0
+                    {$quantity_changed_condition}
                     OR (S.customer_price <> '' AND COALESCE(L.distributor_price, '') <> S.customer_price)
                     OR (S.catalog_price <> '' AND COALESCE(L.catalog_price, '') <> S.catalog_price)
                 )

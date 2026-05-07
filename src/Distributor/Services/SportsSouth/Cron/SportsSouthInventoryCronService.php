@@ -86,7 +86,9 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
         }
 
         $t_apply = microtime(true);
-        $quantity_is_delta = (bool) apply_filters('fflhub_sports_south_incremental_quantity_is_delta', true);
+        // Sports South IncrementalOnhandUpdate returns Q as current on-hand,
+        // not a quantity delta.
+        $quantity_is_delta = (bool) apply_filters('fflhub_sports_south_incremental_quantity_is_delta', false);
         $importer = new SportsSouthProductImporterService($this->table, $parser);
         $stats = $importer->apply_onhand_delta_file_to_live($xml_path, $quantity_is_delta);
         $stats['apply_ms'] = number_format((microtime(true) - $t_apply) * 1000.0, 2, '.', '');

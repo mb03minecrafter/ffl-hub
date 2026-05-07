@@ -235,6 +235,13 @@ final class SportsSouthProductParser
 
     public function extract_next_since_datetime(string $xml): string
     {
+        if (preg_match('/<SERVERTIME\b[^>]*>(.*?)<\/SERVERTIME>/is', $xml, $server_time_match)) {
+            $server_time = trim(html_entity_decode((string) ($server_time_match[1] ?? ''), ENT_QUOTES | ENT_XML1, 'UTF-8'));
+            if ($server_time !== '') {
+                return $this->format_since_datetime($server_time);
+            }
+        }
+
         $candidates = [];
         if (preg_match_all('/<([A-Za-z0-9_:\-]*?(?:SinceDateTime|SinceDate|TimeStamp|Timestamp|DATETIME|LASTUPDATE)[A-Za-z0-9_:\-]*)\b[^>]*>(.*?)<\/\1>/is', $xml, $m)) {
             foreach ($m[2] as $value) {
