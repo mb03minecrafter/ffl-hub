@@ -20,6 +20,7 @@ use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
+use FFLHub\Admin\Pages\UpcStockAlertsPage;
 use FFLHub\Admin\Pages\ZandersCreditLimitPage;
 use FFLHub\Admin\ProductMeta\BOMMetaBox;
 use FFLHub\Admin\ProductMeta\OrderFFLPanel;
@@ -49,6 +50,7 @@ use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Order\WooShippingLabelCostSync;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Product\MapPriceVisibility;
+use FFLHub\Product\StockAlerts\UpcStockAlertCronService;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
 use FFLHub\Settings\Options;
@@ -89,6 +91,7 @@ final class Plugin
     public ZandersCreditLimitPage $zanders_credit_limit_page;
     public LipseysCreditLimitPage $lipseys_credit_limit_page;
     public MapPolicyPage $map_policy_page;
+    public UpcStockAlertsPage $upc_stock_alerts_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public OrderCartComplianceMetaBox $order_cart_compliance_metabox;
     public OrderProfitAuditMetaBox $order_profit_audit_metabox;
@@ -101,6 +104,7 @@ final class Plugin
     // Always-on
     public CartCompliance $cart_compliance;
     private QuoteEmailJobsCronService $quote_email_jobs_cron_service;
+    private UpcStockAlertCronService $upc_stock_alert_cron_service;
 
     public static function instance(): self
     {
@@ -135,6 +139,9 @@ final class Plugin
 
         $this->distributor_handler = new DistributorHandler($this->ffl_table);
         $this->distributor_handler->register_runtime_services();
+
+        $this->upc_stock_alert_cron_service = new UpcStockAlertCronService($this->distributor_handler);
+        $this->upc_stock_alert_cron_service->register();
 
         ShippingRegistrar::init();
 
@@ -192,6 +199,9 @@ final class Plugin
 
             $this->map_policy_page = new MapPolicyPage();
             $this->map_policy_page->register();
+
+            $this->upc_stock_alerts_page = new UpcStockAlertsPage($this->upc_stock_alert_cron_service);
+            $this->upc_stock_alerts_page->register();
 
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();
@@ -336,6 +346,9 @@ final class Plugin
 
         $handler = new DistributorHandler($ffl_table);
         $handler->on_activate();
+
+        $upc_stock_alert_cron = new UpcStockAlertCronService($handler);
+        $upc_stock_alert_cron->on_activation();
     }
 
     public static function deactivate(): void
@@ -348,6 +361,9 @@ final class Plugin
 
         $handler = new DistributorHandler($ffl_table);
         $handler->on_deactivate();
+
+        $upc_stock_alert_cron = new UpcStockAlertCronService($handler);
+        $upc_stock_alert_cron->on_deactivation();
     }
 
     private static function ensure_quote_email_jobs_table(): void
