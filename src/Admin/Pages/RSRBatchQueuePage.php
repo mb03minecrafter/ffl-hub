@@ -98,6 +98,7 @@ final class RSRBatchQueuePage
             <?php $this->render_settings_form($settings); ?>
             <?php $this->render_force_run_box($data, $settings); ?>
             <?php $this->render_summary_cards($data, $settings); ?>
+            <?php $this->render_holosun_manual_totals_table($data); ?>
             <?php $this->render_holosun_manual_table($data); ?>
             <?php $this->render_low_stock_watch_table($data, $settings); ?>
             <?php $this->render_running_totals_table($data); ?>
@@ -456,11 +457,15 @@ final class RSRBatchQueuePage
         $totals_by_upc = [];
         $entries = [];
         $holosun_manual_entries = [];
+        $holosun_manual_totals_by_upc = [];
         $processing_order_ids = [];
         $status_counts = [];
         $total_quantity = 0;
         $line_count = 0;
         $queue_total_cost = 0.0;
+        $holosun_manual_total_quantity = 0;
+        $holosun_manual_line_count = 0;
+        $holosun_manual_total_cost = 0.0;
         $batch_pending_jobs = 0;
         $dispatch_ready_jobs = 0;
         $now_utc_ts = (int) current_time('timestamp', true);
@@ -520,6 +525,18 @@ final class RSRBatchQueuePage
 
                 if ($job_contains_holosun) {
                     $holosun_manual_entries[] = $entry;
+                    if (!isset($holosun_manual_totals_by_upc[$upc])) {
+                        $holosun_manual_totals_by_upc[$upc] = ['upc' => $upc, 'product_name' => $name, 'total_qty' => 0, 'line_count' => 0, 'total_estimated_cost' => 0.0];
+                    }
+                    if ($holosun_manual_totals_by_upc[$upc]['product_name'] === 'Unknown product' && $name !== 'Unknown product') {
+                        $holosun_manual_totals_by_upc[$upc]['product_name'] = $name;
+                    }
+                    $holosun_manual_totals_by_upc[$upc]['total_qty'] += $qty;
+                    $holosun_manual_totals_by_upc[$upc]['line_count']++;
+                    $holosun_manual_totals_by_upc[$upc]['total_estimated_cost'] += $line_cost;
+                    $holosun_manual_total_quantity += $qty;
+                    $holosun_manual_line_count++;
+                    $holosun_manual_total_cost += $line_cost;
                 }
 
                 if (!$include_in_queue_totals) {
@@ -575,6 +592,16 @@ final class RSRBatchQueuePage
             return strcmp((string) ($a['upc'] ?? ''), (string) ($b['upc'] ?? ''));
         });
 
+        $holosun_manual_totals_rows = array_values($holosun_manual_totals_by_upc);
+        usort($holosun_manual_totals_rows, static function (array $a, array $b): int {
+            $aq = (int) ($a['total_qty'] ?? 0);
+            $bq = (int) ($b['total_qty'] ?? 0);
+            if ($aq !== $bq) {
+                return ($aq > $bq) ? -1 : 1;
+            }
+            return strcmp((string) ($a['upc'] ?? ''), (string) ($b['upc'] ?? ''));
+        });
+
         $stock_watch_rows = $this->build_stock_watch_rows(
             $batch_pending_demand_by_upc,
             $batch_pending_rows_by_upc,
@@ -594,6 +621,11 @@ final class RSRBatchQueuePage
             'queue_total_cost' => $queue_total_cost,
             'status_counts' => $status_counts,
             'totals_by_upc' => $totals_rows,
+            'holosun_manual_totals_by_upc' => $holosun_manual_totals_rows,
+            'holosun_manual_distinct_upc_count' => count($holosun_manual_totals_rows),
+            'holosun_manual_total_quantity' => $holosun_manual_total_quantity,
+            'holosun_manual_line_count' => $holosun_manual_line_count,
+            'holosun_manual_total_cost' => $holosun_manual_total_cost,
             'stock_watch_rows' => $stock_watch_rows,
             'holosun_manual_entries' => $holosun_manual_entries,
             'entries' => $entries,
@@ -721,6 +753,9 @@ final class RSRBatchQueuePage
         $manual = (int) ($status_counts[OrderPlacementKeys::JOB_STATUS_MANUAL] ?? 0);
         $holosun_manual_entries = (array) ($data['holosun_manual_entries'] ?? []);
         $queue_total_cost = (float) ($data['queue_total_cost'] ?? 0.0);
+        $holosun_manual_total_quantity = (int) ($data['holosun_manual_total_quantity'] ?? 0);
+        $holosun_manual_distinct_upc_count = (int) ($data['holosun_manual_distinct_upc_count'] ?? 0);
+        $holosun_manual_total_cost = (float) ($data['holosun_manual_total_cost'] ?? 0.0);
         ?>
         <div class="fflhub-rsr-summary-grid">
             <section class="fflhub-rsr-summary-card">
@@ -735,6 +770,7 @@ final class RSRBatchQueuePage
             <section class="fflhub-rsr-summary-card is-danger">
                 <h2><?php esc_html_e('Holosun Manual Rows', 'ffl-hub'); ?></h2>
                 <div class="fflhub-rsr-metric"><?php echo esc_html((string) count($holosun_manual_entries)); ?></div>
+                <p><?php echo esc_html(sprintf(__('Qty: %d | Distinct UPCs: %d | Est. cost: %s', 'ffl-hub'), $holosun_manual_total_quantity, $holosun_manual_distinct_upc_count, $this->format_money($holosun_manual_total_cost))); ?></p>
                 <p><?php esc_html_e('Excluded from automatic RSR batch ordering.', 'ffl-hub'); ?></p>
             </section>
             <section class="fflhub-rsr-summary-card is-ok">
@@ -760,6 +796,31 @@ final class RSRBatchQueuePage
         }
         ?>
         <h2><?php esc_html_e('Batch-Pending Totals by UPC', 'ffl-hub'); ?></h2>
+        <table class="widefat fixed striped">
+            <thead><tr><th><?php esc_html_e('UPC', 'ffl-hub'); ?></th><th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th><th><?php esc_html_e('Total Qty', 'ffl-hub'); ?></th><th><?php esc_html_e('Line Entries', 'ffl-hub'); ?></th><th><?php esc_html_e('Est. Distributor Cost', 'ffl-hub'); ?></th></tr></thead>
+            <tbody>
+                <?php foreach ($rows as $row) : ?>
+                    <tr>
+                        <td><code><?php echo esc_html((string) ($row['upc'] ?? '')); ?></code></td>
+                        <td><?php echo esc_html((string) ($row['product_name'] ?? 'Unknown product')); ?></td>
+                        <td><?php echo esc_html((string) ((int) ($row['total_qty'] ?? 0))); ?></td>
+                        <td><?php echo esc_html((string) ((int) ($row['line_count'] ?? 0))); ?></td>
+                        <td><?php echo esc_html($this->format_money((float) ($row['total_estimated_cost'] ?? 0.0))); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php
+    }
+
+    private function render_holosun_manual_totals_table(array $data): void
+    {
+        $rows = (array) ($data['holosun_manual_totals_by_upc'] ?? []);
+        if (empty($rows)) {
+            return;
+        }
+        ?>
+        <h2><?php esc_html_e('Holosun Manual Totals by UPC', 'ffl-hub'); ?></h2>
         <table class="widefat fixed striped">
             <thead><tr><th><?php esc_html_e('UPC', 'ffl-hub'); ?></th><th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th><th><?php esc_html_e('Total Qty', 'ffl-hub'); ?></th><th><?php esc_html_e('Line Entries', 'ffl-hub'); ?></th><th><?php esc_html_e('Est. Distributor Cost', 'ffl-hub'); ?></th></tr></thead>
             <tbody>
