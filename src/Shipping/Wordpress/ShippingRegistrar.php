@@ -68,7 +68,7 @@ class ShippingRegistrar
             // Not mixed: keep package intact and tag it for downstream rate gating.
             if (empty($fflhub_contents) || empty($external_contents)) {
                 $package['fflhub_package_type'] = empty($fflhub_contents) ? 'external' : 'fflhub';
-                $split_packages[] = $package;
+                $split_packages[] = self::attach_coupon_shipping_context($package);
                 continue;
             }
 
@@ -76,13 +76,13 @@ class ShippingRegistrar
             $fflhub_package['contents'] = $fflhub_contents;
             $fflhub_package['contents_cost'] = self::compute_contents_cost($fflhub_contents);
             $fflhub_package['fflhub_package_type'] = 'fflhub';
-            $split_packages[] = $fflhub_package;
+            $split_packages[] = self::attach_coupon_shipping_context($fflhub_package);
 
             $external_package = $package;
             $external_package['contents'] = $external_contents;
             $external_package['contents_cost'] = self::compute_contents_cost($external_contents);
             $external_package['fflhub_package_type'] = 'external';
-            $split_packages[] = $external_package;
+            $split_packages[] = self::attach_coupon_shipping_context($external_package);
         }
 
         return $split_packages;
@@ -143,6 +143,59 @@ class ShippingRegistrar
         }
 
         return max(0.0, $total);
+    }
+
+    /**
+     * Woo caches shipping rates by package hash. Include applied free-shipping
+     * coupon state so the FFLHub fulfillment rate recalculates when a qualifying
+     * coupon is applied or removed.
+     *
+     * @param array<string, mixed> $package
+     * @return array<string, mixed>
+     */
+    private static function attach_coupon_shipping_context(array $package): array
+    {
+        $package['fflhub_free_shipping_coupon_codes'] = implode(',', self::applied_free_shipping_coupon_codes());
+        return $package;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private static function applied_free_shipping_coupon_codes(): array
+    {
+        if (!function_exists('WC') || !WC() || !WC()->cart) {
+            return [];
+        }
+
+        $cart = WC()->cart;
+        $coupons = method_exists($cart, 'get_coupons') ? (array) $cart->get_coupons() : [];
+
+        if (empty($coupons) && method_exists($cart, 'get_applied_coupons')) {
+            foreach ((array) $cart->get_applied_coupons() as $code) {
+                $code = trim((string) $code);
+                if ($code !== '' && class_exists('\WC_Coupon')) {
+                    $coupons[$code] = new \WC_Coupon($code);
+                }
+            }
+        }
+
+        $codes = [];
+        foreach ($coupons as $code => $coupon) {
+            if (!($coupon instanceof \WC_Coupon) || !$coupon->get_free_shipping()) {
+                continue;
+            }
+
+            $coupon_code = trim((string) $coupon->get_code());
+            if ($coupon_code === '') {
+                $coupon_code = trim((string) $code);
+            }
+            if ($coupon_code !== '') {
+                $codes[] = $coupon_code;
+            }
+        }
+
+        return array_values(array_unique($codes));
     }
 
     /**
