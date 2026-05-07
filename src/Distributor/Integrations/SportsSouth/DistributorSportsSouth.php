@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
+use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
@@ -23,6 +24,15 @@ final class DistributorSportsSouth extends DistributorBase
     public function __construct(DistributorModuleInterface $module, $services = null)
     {
         parent::__construct($module, $services);
+    }
+
+    public function get_offer_by_upc(string $upc, bool $include_images = true): ?DistributorOffer
+    {
+        if (!self::lookup_offers_enabled()) {
+            return null;
+        }
+
+        return parent::get_offer_by_upc($upc, $include_images);
     }
 
     public function get_product_by_upc(string $upc): ?DistributorProductPayload
@@ -77,6 +87,11 @@ final class DistributorSportsSouth extends DistributorBase
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
     {
         return null;
+    }
+
+    private static function lookup_offers_enabled(): bool
+    {
+        return (bool) apply_filters('fflhub_sports_south_expose_lookup_offers', false);
     }
 
     public function get_shipping_cost_by_upc(string $upc): ?float
