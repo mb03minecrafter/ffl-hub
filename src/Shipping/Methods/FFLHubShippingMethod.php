@@ -537,6 +537,8 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             (float) $shipping_cost_total,
             $free_shipping_max_profit_spend_percent
         );
+        $free_shipping_coupon_codes = $this->applied_free_shipping_coupon_codes();
+        $free_shipping_coupon_applied = !empty($free_shipping_coupon_codes);
 
         $plan['free_shipping_profit_rule'] = [
             'max_profit_spend_percent' => $free_shipping_max_profit_spend_percent,
@@ -545,6 +547,11 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             'shipping_cost_threshold' => $free_threshold,
             'profit_after_free_shipping' => $profit_after_free_shipping,
             'matched' => $profit_based_free_shipping_applies ? 1 : 0,
+        ];
+        $plan['free_shipping_coupon_rule'] = [
+            'matched' => $free_shipping_coupon_applied ? 1 : 0,
+            'coupon_codes' => $free_shipping_coupon_codes,
+            'charge_before_coupon' => 0.0,
         ];
 
         if ($shipping_cost_total <= 0.0) {
@@ -621,6 +628,18 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             );
         }
 
+        if ($free_shipping_coupon_applied) {
+            $plan['free_shipping_coupon_rule']['charge_before_coupon'] = (float) $customer_charge;
+            $customer_charge = 0.0;
+            $this->log_debug(
+                sprintf(
+                    'RULE free_shipping=yes basis=applied_coupon codes=%s charge_before_coupon=%s',
+                    implode(',', $free_shipping_coupon_codes),
+                    $this->fmt_money((float) $plan['free_shipping_coupon_rule']['charge_before_coupon'])
+                )
+            );
+        }
+
         $plan['ca_shipping_surcharge_customer_facing'] = ($ca_surcharge > 0.0 && $customer_charge > 0.0001) ? 1 : 0;
         $ca_surcharge_customer_facing = !empty($plan['ca_shipping_surcharge_customer_facing']);
 
@@ -654,6 +673,8 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 // Optional: record whether free shipping rule triggered
                 'fflhub_free_shipping_applied' => ($customer_charge <= 0.0001) ? '1' : '0',
                 'fflhub_customer_free_shipping_product_applied' => $customer_free_shipping_product_applied ? '1' : '0',
+                'fflhub_free_shipping_coupon_applied' => $free_shipping_coupon_applied ? '1' : '0',
+                'fflhub_free_shipping_coupon_codes' => implode(',', $free_shipping_coupon_codes),
             ],
         ]);
 
@@ -713,6 +734,53 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $penny_profit_threshold = $profit_net_total - self::MIN_PROFIT_AFTER_FREE_SHIPPING;
 
         return max(0.0, min($percent_threshold, $penny_profit_threshold));
+    }
+
+    /**
+     * Woo's native free-shipping coupon flag only affects native free-shipping
+     * methods. Since this plugin owns the fulfillment shipping rate, it must
+     * explicitly honor applied coupons with that flag.
+     *
+     * @return array<int,string>
+     */
+    private function applied_free_shipping_coupon_codes(): array
+    {
+        if (!function_exists('WC') || !WC() || !WC()->cart) {
+            return [];
+        }
+
+        $cart = WC()->cart;
+        $coupons = method_exists($cart, 'get_coupons') ? (array) $cart->get_coupons() : [];
+
+        if (empty($coupons) && method_exists($cart, 'get_applied_coupons')) {
+            foreach ((array) $cart->get_applied_coupons() as $code) {
+                $code = trim((string) $code);
+                if ($code !== '' && class_exists('\WC_Coupon')) {
+                    $coupons[$code] = new \WC_Coupon($code);
+                }
+            }
+        }
+
+        $codes = [];
+        foreach ($coupons as $code => $coupon) {
+            if (!($coupon instanceof \WC_Coupon)) {
+                continue;
+            }
+
+            if (!$coupon->get_free_shipping()) {
+                continue;
+            }
+
+            $coupon_code = trim((string) $coupon->get_code());
+            if ($coupon_code === '') {
+                $coupon_code = trim((string) $code);
+            }
+            if ($coupon_code !== '') {
+                $codes[] = $coupon_code;
+            }
+        }
+
+        return array_values(array_unique($codes));
     }
 
     /**
