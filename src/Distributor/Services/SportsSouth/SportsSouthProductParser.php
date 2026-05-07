@@ -334,7 +334,7 @@ final class SportsSouthProductParser
 
     private function decode_xml_markup_entities(string $xml): string
     {
-        return strtr($xml, [
+        $xml = strtr($xml, [
             '&lt;' => '<',
             '&LT;' => '<',
             '&#60;' => '<',
@@ -346,6 +346,15 @@ final class SportsSouthProductParser
             '&#x3e;' => '>',
             '&#X3E;' => '>',
         ]);
+
+        return $this->escape_bare_text_less_than($xml);
+    }
+
+    private function escape_bare_text_less_than(string $xml): string
+    {
+        $fixed = preg_replace('/<(?!(?:\/?(?:NewDataSet|Table|[A-Z][A-Z0-9_]*)(?:\s[^<>]*)?\/?>|[?!]))/', '&lt;', $xml);
+
+        return is_string($fixed) ? $fixed : $xml;
     }
 
     /**

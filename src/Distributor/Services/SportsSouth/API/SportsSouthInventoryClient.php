@@ -221,7 +221,7 @@ final class SportsSouthInventoryClient
         // Sports South returns the catalog as escaped XML inside an ASMX string.
         // Decode only markup entities. Product text ampersands arrive as
         // &amp;amp; and must remain valid XML as &amp; until the row parser reads them.
-        return strtr($xml, [
+        $xml = strtr($xml, [
             '&lt;' => '<',
             '&LT;' => '<',
             '&#60;' => '<',
@@ -233,6 +233,17 @@ final class SportsSouthInventoryClient
             '&#x3e;' => '>',
             '&#X3E;' => '>',
         ]);
+
+        return $this->escape_bare_text_less_than($xml);
+    }
+
+    private function escape_bare_text_less_than(string $xml): string
+    {
+        // Vendor text can contain values like "<5mW". After unwrapping the
+        // escaped ASMX string, those become invalid XML unless we re-escape them.
+        $fixed = preg_replace('/<(?!(?:\/?(?:NewDataSet|Table|[A-Z][A-Z0-9_]*)(?:\s[^<>]*)?\/?>|[?!]))/', '&lt;', $xml);
+
+        return is_string($fixed) ? $fixed : $xml;
     }
 
     private function looks_like_auth_failure(string $text): bool
