@@ -944,7 +944,7 @@ final class CartCompliance
                     $merchant_order_id,
                     $dest_state,
                     $receiving_ffl_number ? (string) $receiving_ffl_number : '',
-                    'FFLHub checkout validation (single DOR; validate against all distributors)'
+                    'FFLHub checkout validation (single DOR; local-only validation)'
                 );
 
                 // Vote across all validators
@@ -976,7 +976,9 @@ final class CartCompliance
                         $req->notes
                     );
 
-                    $vr = $this->call_validate($dist, $voter_req);
+                    // Checkout compliance must stay local-only so a distributor API hiccup
+                    // cannot block checkout or burn PHP workers.
+                    $vr = $this->call_validate_local_only($dist, $voter_req);
                     if (!($vr instanceof DistributorOrderValidationResult)) {
                         continue;
                     }
@@ -1162,12 +1164,12 @@ final class CartCompliance
         return ['direct_ship_non_ffl', 'direct_ship_ffl'];
     }
 
-    private function call_validate(
+    private function call_validate_local_only(
         DistributorBase $dist,
         DistributorOrderRequest $req
     ): ?DistributorOrderValidationResult {
         try {
-            return $dist->validate_order_request($req);
+            return $dist->validate_order_request($req, true);
         } catch (\Throwable $e) {
             $this->dbg('validate.exception', [
                 'dist'  => get_class($dist),
