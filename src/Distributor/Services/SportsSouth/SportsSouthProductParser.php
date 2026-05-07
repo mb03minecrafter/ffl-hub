@@ -407,7 +407,7 @@ final class SportsSouthProductParser
             return $this->decode_xml_markup_entities(trim((string) $m[1]));
         }
 
-        if (strpos($trimmed, '&lt;') !== false && strpos($trimmed, '<') === false) {
+        if (strpos($trimmed, '&lt;') !== false) {
             return $this->decode_xml_markup_entities($trimmed);
         }
 
@@ -434,7 +434,7 @@ final class SportsSouthProductParser
 
     private function escape_bare_text_less_than(string $xml): string
     {
-        $fixed = preg_replace('/<(?!(?:\/?(?:NewDataSet|Table|[A-Z][A-Z0-9_]*)(?:\s[^<>]*)?\/?>|[?!]))/', '&lt;', $xml);
+        $fixed = preg_replace('/<(?!(?:\/?(?:NewDataSet|Table|Onhand|ServerDateTime|[A-Z][A-Z0-9_]*)(?:\s[^<>]*)?\/?>|[?!]))/', '&lt;', $xml);
 
         return is_string($fixed) ? $fixed : $xml;
     }

@@ -490,7 +490,7 @@ final class SportsSouthInventoryClient
     {
         // Vendor text can contain values like "<5mW". After unwrapping the
         // escaped ASMX string, those become invalid XML unless we re-escape them.
-        $fixed = preg_replace('/<(?!(?:\/?(?:NewDataSet|Table|[A-Z][A-Z0-9_]*)(?:\s[^<>]*)?\/?>|[?!]))/', '&lt;', $xml);
+        $fixed = preg_replace('/<(?!(?:\/?(?:NewDataSet|Table|Onhand|ServerDateTime|[A-Z][A-Z0-9_]*)(?:\s[^<>]*)?\/?>|[?!]))/', '&lt;', $xml);
 
         return is_string($fixed) ? $fixed : $xml;
     }
