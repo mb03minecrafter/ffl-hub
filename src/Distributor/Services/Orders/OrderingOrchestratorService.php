@@ -6,6 +6,7 @@ use WC_Order;
 use WC_Product;
 use WC_Order_Item_Product;
 
+use FFLHub\Product\HolosunProductDetector;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
@@ -686,6 +687,26 @@ final class OrderingOrchestratorService
                 $next_status = OrderPlacementKeys::JOB_STATUS_BATCH_PENDING;
             }
 
+            if (is_array($_job) && $this->should_hold_job_for_manual_batch_order($dist_id, $lane, $_job)) {
+                $patch = OrderPlacementJobPatch::empty()
+                    ->with_status(OrderPlacementKeys::JOB_STATUS_MANUAL)
+                    ->with_last_step('place')
+                    ->with_last_error('RSR Holosun dealer batch row requires manual RSR ordering.')
+                    ->with_last_codes(['RSR_HOLOSUN_MANUAL_ORDER'])
+                    ->clear_action_and_schedule();
+
+                $this->log_ctx('mark_eligible_manual_batch_hold', [
+                    'order_id' => $oid,
+                    'job_key' => $job_key_norm,
+                    'dist_id' => $dist_id,
+                    'lane' => $lane,
+                    'reason' => 'RSR_HOLOSUN_MANUAL_ORDER',
+                ]);
+
+                OrderPlacementJobWriter::apply_patch_for_order($this->jobs_table, $order, $job_key_norm, $patch);
+                continue;
+            }
+
             // "scheduled"/"batch_pending" means: eligible in DB for cron processors (not "AS action exists").
             $patch = OrderPlacementJobPatch::empty()
                 ->with_action_id(null)
@@ -694,6 +715,33 @@ final class OrderingOrchestratorService
 
             OrderPlacementJobWriter::apply_patch_for_order($this->jobs_table, $order, $job_key_norm, $patch);
         }
+    }
+
+    /**
+     * Some dealer-batch rows should be visible on the batch page but never
+     * auto-submitted to the distributor aggregate endpoint.
+     *
+     * @param array<string,mixed> $job
+     */
+    private function should_hold_job_for_manual_batch_order(string $dist_id, string $lane, array $job): bool
+    {
+        if ($dist_id !== 'rsr' || !DealerBatchCronRegistry::is_dealer_batch_lane($dist_id, $lane)) {
+            return false;
+        }
+
+        $lines = isset($job['lines']) && is_array($job['lines']) ? $job['lines'] : [];
+        foreach ($lines as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+
+            $upc = trim((string) ($line['upc'] ?? ''));
+            if ($upc !== '' && HolosunProductDetector::is_holosun_upc($upc)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
