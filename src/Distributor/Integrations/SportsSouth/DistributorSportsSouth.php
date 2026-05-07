@@ -18,6 +18,7 @@ use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\DistributorShipTo;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthOrdersClient;
+use FFLHub\Distributor\Services\SportsSouth\SportsSouthAccessoriesOnlyPolicy;
 use FFLHub\Settings\Options;
 
 /**
@@ -307,6 +308,9 @@ final class DistributorSportsSouth extends DistributorBase
                 return null;
             }
             $row = get_object_vars($row);
+        }
+        if (SportsSouthAccessoriesOnlyPolicy::should_skip_row($row)) {
+            return null;
         }
 
         return $this->build_payload_from_row(

@@ -162,8 +162,10 @@ final class SportsSouthProductImporterService
         $brand_hits = 0;
         $category_hits = 0;
         $fulfillment_policy_blocks = 0;
+        $accessories_only_enabled = SportsSouthAccessoriesOnlyPolicy::is_enabled();
+        $accessories_only_skipped = 0;
 
-        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use (&$batch, &$total, &$seen, &$skipped_dupes, &$brand_hits, &$category_hits, &$fulfillment_policy_blocks, $brandMap, $categoryMap): void {
+        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use (&$batch, &$total, &$seen, &$skipped_dupes, &$brand_hits, &$category_hits, &$fulfillment_policy_blocks, $accessories_only_enabled, &$accessories_only_skipped, $brandMap, $categoryMap): void {
             $upc = trim((string) ($row['upc'] ?? ''));
             if ($upc === '') {
                 return;
@@ -180,6 +182,10 @@ final class SportsSouthProductImporterService
             $row = SigDropshipApproval::apply_to_row('sports_south', $row);
             if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
                 $fulfillment_policy_blocks++;
+            }
+            if ($accessories_only_enabled && SportsSouthAccessoriesOnlyPolicy::row_is_ffl_or_sot($row)) {
+                $accessories_only_skipped++;
+                return;
             }
 
             $batch[] = $row;
@@ -202,6 +208,8 @@ final class SportsSouthProductImporterService
             'category_map_count' => count($categoryMap),
             'category_map_hits' => (int) $category_hits,
             'fulfillment_policy_blocks' => (int) $fulfillment_policy_blocks,
+            'accessories_only_enabled' => $accessories_only_enabled ? 1 : 0,
+            'accessories_only_skipped' => (int) $accessories_only_skipped,
             'elapsed_ms' => number_format((microtime(true) - $tStart) * 1000.0, 2, '.', ''),
             'memory_start_kb' => $memStart > 0 ? (int) round($memStart / 1024) : 0,
         ]);
@@ -232,9 +240,11 @@ final class SportsSouthProductImporterService
         $brand_hits = 0;
         $category_hits = 0;
         $fulfillment_policy_blocks = 0;
+        $accessories_only_enabled = SportsSouthAccessoriesOnlyPolicy::is_enabled();
+        $accessories_only_skipped = 0;
         $seen = [];
 
-        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use ($handle, $columns, &$rows_written, &$skipped_dupes, &$brand_hits, &$category_hits, &$fulfillment_policy_blocks, &$seen, $brandMap, $categoryMap): void {
+        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use ($handle, $columns, &$rows_written, &$skipped_dupes, &$brand_hits, &$category_hits, &$fulfillment_policy_blocks, $accessories_only_enabled, &$accessories_only_skipped, &$seen, $brandMap, $categoryMap): void {
             $upc = trim((string) ($row['upc'] ?? ''));
             if ($upc === '') {
                 return;
@@ -251,6 +261,10 @@ final class SportsSouthProductImporterService
             $row = SigDropshipApproval::apply_to_row('sports_south', $row);
             if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
                 $fulfillment_policy_blocks++;
+            }
+            if ($accessories_only_enabled && SportsSouthAccessoriesOnlyPolicy::row_is_ffl_or_sot($row)) {
+                $accessories_only_skipped++;
+                return;
             }
 
             $values = [];
@@ -275,6 +289,8 @@ final class SportsSouthProductImporterService
             'category_map_count' => count($categoryMap),
             'category_map_hits' => (int) $category_hits,
             'fulfillment_policy_blocks' => (int) $fulfillment_policy_blocks,
+            'accessories_only_enabled' => $accessories_only_enabled ? 1 : 0,
+            'accessories_only_skipped' => (int) $accessories_only_skipped,
             'write_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
         ];
     }
