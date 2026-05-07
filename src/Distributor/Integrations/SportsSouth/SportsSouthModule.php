@@ -109,6 +109,12 @@ final class SportsSouthModule implements DistributorModuleInterface
                 'description' => 'Optional first-run cursor. After the first run, FFLHub stores Sports South inventory cursor automatically.',
                 'default' => '',
             ],
+            'product_sync_enabled' => [
+                'label' => 'Allow Product Sync Selection',
+                'type' => 'checkbox',
+                'description' => 'When disabled, Sports South can still provide UPC/product creation payloads, but managed product sync will not choose it as the source.',
+                'default' => '0',
+            ],
         ], SportsSouthFulfillmentPolicy::settings_schema_fields());
     }
 

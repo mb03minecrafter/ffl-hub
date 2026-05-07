@@ -91,7 +91,7 @@ final class DistributorSportsSouth extends DistributorBase
 
     private static function lookup_offers_enabled(): bool
     {
-        return (bool) apply_filters('fflhub_sports_south_expose_lookup_offers', false);
+        return (bool) apply_filters('fflhub_sports_south_expose_lookup_offers', true);
     }
 
     public function get_shipping_cost_by_upc(string $upc): ?float
