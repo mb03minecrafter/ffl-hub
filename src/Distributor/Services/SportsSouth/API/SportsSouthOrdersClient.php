@@ -2,6 +2,8 @@
 
 namespace FFLHub\Distributor\Services\SportsSouth\API;
 
+use FFLHub\Util\DebugLogUtil;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -15,6 +17,8 @@ if (!defined('ABSPATH')) {
 final class SportsSouthOrdersClient
 {
     public const DEFAULT_BASE_URL = 'https://webservices.theshootingwarehouse.com/smart/orders.asmx';
+    private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
+    private const LOG_PREFIX = '[FFLHub][SportsSouthOrdersAPI]';
 
     private string $customerNumber;
     private string $username;
@@ -51,7 +55,7 @@ final class SportsSouthOrdersClient
 
     /**
      * @param array<string,string> $params
-     * @return array{ok:bool,status:int,order_number:string,scalar:string,body:string,error:string}
+     * @return array<string,mixed>
      */
     public function add_header(array $params): array
     {
@@ -64,19 +68,19 @@ final class SportsSouthOrdersClient
             $error = 'Sports South AddHeader returned no order number.';
         }
 
-        return [
+        return array_merge($resp, [
             'ok' => $ok,
             'status' => (int) ($resp['status'] ?? 0),
             'order_number' => $ok ? $orderNumber : '',
             'scalar' => $orderNumber,
             'body' => (string) ($resp['body'] ?? ''),
             'error' => $error,
-        ];
+        ]);
     }
 
     /**
      * @param array<string,string> $params
-     * @return array{ok:bool,status:int,scalar:string,body:string,error:string}
+     * @return array<string,mixed>
      */
     public function add_detail(string $orderNumber, array $params): array
     {
@@ -86,7 +90,7 @@ final class SportsSouthOrdersClient
     }
 
     /**
-     * @return array{ok:bool,status:int,scalar:string,body:string,error:string}
+     * @return array<string,mixed>
      */
     public function submit(string $orderNumber): array
     {
@@ -97,7 +101,7 @@ final class SportsSouthOrdersClient
 
     /**
      * @param array<string,string> $params
-     * @return array{ok:bool,status:int,scalar:string,body:string,error:string}
+     * @return array<string,mixed>
      */
     private function boolean_operation(string $operation, array $params): array
     {
@@ -110,33 +114,56 @@ final class SportsSouthOrdersClient
             $error = 'Sports South ' . $operation . ' returned false.';
         }
 
-        return [
+        return array_merge($resp, [
             'ok' => $ok,
             'status' => (int) ($resp['status'] ?? 0),
             'scalar' => (string) ($resp['scalar'] ?? ''),
             'body' => (string) ($resp['body'] ?? ''),
             'error' => $error,
-        ];
+        ]);
     }
 
     /**
      * @param array<string,string> $operationParams
-     * @return array{ok:bool,status:int,scalar:string,body:string,error:string}
+     * @return array<string,mixed>
      */
     private function post_operation(string $operation, array $operationParams): array
     {
+        $url = $this->baseUrl . '/' . rawurlencode($operation);
+
         if (!$this->has_credentials()) {
+            $this->log('Sports South order API request blocked: missing credentials.', [
+                'operation' => $operation,
+                'base_url' => $this->baseUrl,
+                'has_customer' => $this->customerNumber !== '' ? 1 : 0,
+                'has_username' => $this->username !== '' ? 1 : 0,
+                'has_password' => $this->password !== '' ? 1 : 0,
+            ]);
+
             return [
                 'ok' => false,
                 'status' => 0,
                 'scalar' => '',
                 'body' => '',
+                'body_excerpt' => '',
+                'response_bytes' => 0,
                 'error' => 'Missing Sports South order credentials.',
+                'operation' => $operation,
+                'url' => $url,
+                'elapsed_ms' => '0.00',
+                'request' => [],
             ];
         }
 
-        $url = $this->baseUrl . '/' . rawurlencode($operation);
         $body = array_merge($this->credential_body(), $this->normalize_params($operationParams));
+        $t0 = microtime(true);
+
+        $this->log('Sports South order API request starting.', [
+            'operation' => $operation,
+            'url' => $url,
+            'timeout_seconds' => $this->timeoutSeconds,
+            'request' => $this->sanitize_params_for_log($body),
+        ]);
 
         $response = wp_remote_post(
             $url,
@@ -149,7 +176,25 @@ final class SportsSouthOrdersClient
             ]
         );
 
-        return $this->parse_response($response, $operation);
+        $parsed = $this->parse_response($response, $operation);
+        $parsed['operation'] = $operation;
+        $parsed['url'] = $url;
+        $parsed['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000.0, 2, '.', '');
+        $parsed['request'] = $this->sanitize_params_for_log($body);
+
+        $this->log(empty($parsed['ok']) ? 'Sports South order API response failed.' : 'Sports South order API response OK.', [
+            'operation' => $operation,
+            'url' => $url,
+            'status' => (int) ($parsed['status'] ?? 0),
+            'ok' => !empty($parsed['ok']) ? 1 : 0,
+            'scalar' => $this->safe_scalar_for_log((string) ($parsed['scalar'] ?? '')),
+            'error' => (string) ($parsed['error'] ?? ''),
+            'body_excerpt' => (string) ($parsed['body_excerpt'] ?? ''),
+            'response_bytes' => (int) ($parsed['response_bytes'] ?? 0),
+            'elapsed_ms' => (string) ($parsed['elapsed_ms'] ?? ''),
+        ]);
+
+        return $parsed;
     }
 
     /**
@@ -202,13 +247,17 @@ final class SportsSouthOrdersClient
                 'status' => 0,
                 'scalar' => '',
                 'body' => '',
+                'body_excerpt' => '',
+                'response_bytes' => 0,
                 'error' => $response->get_error_message(),
+                'wp_error_code' => $response->get_error_code(),
             ];
         }
 
         $status = (int) wp_remote_retrieve_response_code($response);
         $body = (string) wp_remote_retrieve_body($response);
         $scalar = $this->extract_scalar($body, $operation);
+        $fault = $this->extract_fault_string($body);
 
         $error = '';
         if ($status < 200 || $status >= 300) {
@@ -217,6 +266,8 @@ final class SportsSouthOrdersClient
             $error = 'Sports South ' . $operation . ' returned an empty response.';
         } elseif ($this->looks_like_auth_failure($body)) {
             $error = 'Sports South ' . $operation . ' authentication failed.';
+        } elseif ($fault !== '') {
+            $error = 'Sports South ' . $operation . ' SOAP fault: ' . $fault;
         }
 
         return [
@@ -224,6 +275,8 @@ final class SportsSouthOrdersClient
             'status' => $status,
             'scalar' => $scalar,
             'body' => $body,
+            'body_excerpt' => $this->excerpt_for_log($body),
+            'response_bytes' => strlen($body),
             'error' => $error,
         ];
     }
@@ -264,6 +317,32 @@ final class SportsSouthOrdersClient
         return '';
     }
 
+    private function extract_fault_string(string $body): string
+    {
+        $trimmed = trim($body);
+        if ($trimmed === '') {
+            return '';
+        }
+
+        $previous = libxml_use_internal_errors(true);
+        $xml = simplexml_load_string($trimmed);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        if ($xml instanceof \SimpleXMLElement) {
+            $nodes = $xml->xpath('//*[local-name()="faultstring" or local-name()="FaultString"]');
+            if (is_array($nodes) && isset($nodes[0])) {
+                return $this->excerpt_for_log((string) $nodes[0], 500);
+            }
+        }
+
+        if (preg_match('/<faultstring\b[^>]*>(.*?)<\/faultstring>/is', $trimmed, $m)) {
+            return $this->excerpt_for_log(html_entity_decode((string) $m[1], ENT_QUOTES | ENT_XML1, 'UTF-8'), 500);
+        }
+
+        return '';
+    }
+
     private function looks_like_auth_failure(string $text): bool
     {
         $needle = strtolower($text);
@@ -272,5 +351,84 @@ final class SportsSouthOrdersClient
             || strpos($needle, 'not authorized') !== false
             || strpos($needle, 'invalid password') !== false
             || strpos($needle, 'invalid username') !== false;
+    }
+
+    /**
+     * @param array<string,string> $params
+     * @return array<string,string>
+     */
+    private function sanitize_params_for_log(array $params): array
+    {
+        $out = [];
+        foreach ($params as $key => $value) {
+            $key = trim((string) $key);
+            if ($key === '') {
+                continue;
+            }
+
+            if (in_array(strtolower($key), ['password'], true)) {
+                $out[$key] = '[redacted]';
+                continue;
+            }
+
+            if (in_array(strtolower($key), ['customernumber', 'username'], true)) {
+                $out[$key] = $this->mask_value((string) $value);
+                continue;
+            }
+
+            $out[$key] = $this->excerpt_for_log((string) $value, 300);
+        }
+
+        return $out;
+    }
+
+    private function mask_value(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        $len = strlen($value);
+        if ($len <= 2) {
+            return str_repeat('*', $len);
+        }
+
+        return substr($value, 0, 1) . str_repeat('*', max(1, $len - 2)) . substr($value, -1);
+    }
+
+    private function safe_scalar_for_log(string $scalar): string
+    {
+        return $this->excerpt_for_log($scalar, 500);
+    }
+
+    private function excerpt_for_log(string $text, int $max = 1200): string
+    {
+        $text = trim((string) preg_replace('/\s+/', ' ', $text));
+        if ($text === '') {
+            return '';
+        }
+
+        $text = (string) preg_replace('/(<Password>).*?(<\/Password>)/i', '$1[redacted]$2', $text);
+        $text = (string) preg_replace('/(Password=)[^&\s]+/i', '$1[redacted]', $text);
+
+        if (strlen($text) <= $max) {
+            return $text;
+        }
+
+        return substr($text, 0, $max) . '...';
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function log(string $message, array $ctx = []): void
+    {
+        if (empty($ctx)) {
+            DebugLogUtil::log_if(true, self::LOG_PREFIX, $message, self::DEBUG_FLAG);
+            return;
+        }
+
+        DebugLogUtil::log_if_ctx(true, self::LOG_PREFIX, $message, $ctx, self::DEBUG_FLAG);
     }
 }

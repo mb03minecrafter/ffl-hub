@@ -21,6 +21,7 @@ use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInvoicesClient;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthOrdersClient;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthAccessoriesOnlyPolicy;
 use FFLHub\Settings\Options;
+use FFLHub\Util\DebugLogUtil;
 
 /**
  * Sports South runtime distributor backed by the local catalog table.
@@ -28,6 +29,8 @@ use FFLHub\Settings\Options;
 final class DistributorSportsSouth extends DistributorBase
 {
     private const DEFAULT_SHIP_VIA = '';
+    private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
+    private const LOG_PREFIX = '[FFLHub][SportsSouthDistributor]';
 
     public function __construct(DistributorModuleInterface $module, $services = null)
     {
@@ -101,12 +104,91 @@ final class DistributorSportsSouth extends DistributorBase
         DistributorOrderRequest $request,
         bool $local_only = false
     ): DistributorOrderValidationResult {
-        return parent::validate_order_request($request, $local_only);
+        $t0 = microtime(true);
+        $trace_id = self::new_trace_id();
+        $this->log('Sports South validation start.', [
+            'trace_id' => $trace_id,
+            'request' => $this->summarize_order_request($request),
+            'local_only' => $local_only ? 1 : 0,
+        ]);
+
+        try {
+            $result = parent::validate_order_request($request, $local_only);
+        } catch (\Throwable $e) {
+            $this->profile('Sports South validation exception', $t0, [
+                'trace_id' => $trace_id,
+                'exception' => get_class($e),
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => (int) $e->getLine(),
+            ]);
+
+            $result = $this->classify_sports_south_validation_exception($e, [
+                'trace_id' => $trace_id,
+                'request' => $this->summarize_order_request($request),
+                'local_only' => $local_only ? 1 : 0,
+            ]);
+
+            $this->log('Sports South validation exception classified.', [
+                'trace_id' => $trace_id,
+                'result' => self::summarize_validation_result($result),
+            ]);
+
+            return $result;
+        }
+
+        $this->profile('Sports South validation complete', $t0, [
+            'trace_id' => $trace_id,
+            'result' => self::summarize_validation_result($result),
+        ]);
+
+        return $result;
     }
 
     public function place_order(DistributorOrderRequest $request): DistributorOrderResult
     {
-        return parent::place_order($request);
+        $t0 = microtime(true);
+        $trace_id = self::new_trace_id();
+        $this->log('Sports South place_order start.', [
+            'trace_id' => $trace_id,
+            'request' => $this->summarize_order_request($request),
+            'orders_endpoint' => $this->get_orders_api_base_url(),
+        ]);
+
+        try {
+            $result = parent::place_order($request);
+        } catch (\Throwable $e) {
+            $this->profile('Sports South place_order exception', $t0, [
+                'trace_id' => $trace_id,
+                'exception' => get_class($e),
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => (int) $e->getLine(),
+            ]);
+
+            $result = $this->classify_sports_south_exception_as_order_result(
+                $e,
+                'Sports South place_order',
+                [
+                    'trace_id' => $trace_id,
+                    'request' => $this->summarize_order_request($request),
+                ]
+            );
+
+            $this->log('Sports South place_order exception classified.', [
+                'trace_id' => $trace_id,
+                'result' => self::summarize_order_result($result),
+            ]);
+
+            return $result;
+        }
+
+        $this->profile('Sports South place_order complete', $t0, [
+            'trace_id' => $trace_id,
+            'result' => self::summarize_order_result($result),
+        ]);
+
+        return $result;
     }
 
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
@@ -238,10 +320,19 @@ final class DistributorSportsSouth extends DistributorBase
     {
         $base = parent::place_order_precheck($request);
         if ($base instanceof DistributorOrderResult) {
+            $this->log('Sports South order precheck blocked by base precheck.', [
+                'result' => self::summarize_order_result($base),
+            ]);
             return $base;
         }
 
         if ($this->get_customer_number() === '' || $this->get_username() === '' || $this->get_password() === '') {
+            $this->log('Sports South order precheck failed: missing credentials.', [
+                'has_customer_number' => $this->get_customer_number() !== '' ? 1 : 0,
+                'has_username' => $this->get_username() !== '' ? 1 : 0,
+                'has_password' => $this->get_password() !== '' ? 1 : 0,
+            ]);
+
             return DistributorOrderResult::block_fatal(
                 'Sports South: missing order credentials.',
                 [DistributorOrderResult::REASON_FATAL_MISSING_CREDS]
@@ -250,6 +341,10 @@ final class DistributorSportsSouth extends DistributorBase
 
         $po = $this->sanitize_and_truncate_po((string) $request->merchant_order_id, 32);
         if ($po === '') {
+            $this->log('Sports South order precheck failed: missing merchant PO.', [
+                'raw_po_present' => trim((string) $request->merchant_order_id) !== '' ? 1 : 0,
+            ]);
+
             return DistributorOrderResult::block_fatal(
                 'Sports South: missing merchant PO.',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
@@ -265,10 +360,19 @@ final class DistributorSportsSouth extends DistributorBase
         array $lines,
         array &$external_ids
     ): DistributorOrderResult {
+        $t0 = microtime(true);
+        $trace_id = self::new_trace_id();
         $lane = strtolower(trim((string) $lane));
+        $this->log('Sports South lane placement start.', [
+            'trace_id' => $trace_id,
+            'lane' => $lane,
+            'line_count' => count($lines),
+            'lines' => $this->summarize_lines($lines),
+            'external_ids_before' => $external_ids,
+        ]);
 
         if ($lane === 'direct_ship_ffl') {
-            return DistributorOrderResult::block_fatal(
+            $result = DistributorOrderResult::block_fatal(
                 'Sports South direct firearm fulfillment is not enabled; use dealer-fulfilled Sports South batch ordering.',
                 [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED],
                 [],
@@ -276,10 +380,17 @@ final class DistributorSportsSouth extends DistributorBase
                 '',
                 $external_ids
             );
+            $this->profile('Sports South lane placement blocked', $t0, [
+                'trace_id' => $trace_id,
+                'lane' => $lane,
+                'result' => self::summarize_order_result($result),
+            ]);
+
+            return $result;
         }
 
         if ($lane !== 'dealer_fulfilled' && $lane !== 'direct_ship_non_ffl') {
-            return DistributorOrderResult::block_fatal(
+            $result = DistributorOrderResult::block_fatal(
                 'Sports South: unsupported lane "' . $lane . '".',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
                 [],
@@ -287,13 +398,32 @@ final class DistributorSportsSouth extends DistributorBase
                 '',
                 $external_ids
             );
+            $this->profile('Sports South lane placement blocked', $t0, [
+                'trace_id' => $trace_id,
+                'lane' => $lane,
+                'result' => self::summarize_order_result($result),
+            ]);
+
+            return $result;
         }
 
         $details = $this->build_sports_south_detail_rows($lines);
         if ($details instanceof DistributorOrderResult) {
             $details->external_order_ids = $external_ids;
+            $this->profile('Sports South detail mapping failed', $t0, [
+                'trace_id' => $trace_id,
+                'lane' => $lane,
+                'result' => self::summarize_order_result($details),
+            ]);
             return $details;
         }
+
+        $this->log('Sports South detail rows prepared.', [
+            'trace_id' => $trace_id,
+            'lane' => $lane,
+            'detail_count' => count($details),
+            'details' => array_map([$this, 'summarize_detail_row'], $details),
+        ]);
 
         $po = $this->sanitize_and_truncate_po((string) $request->merchant_order_id, 32);
         if ($po === '') {
@@ -303,14 +433,27 @@ final class DistributorSportsSouth extends DistributorBase
         $header = $this->build_header_params($request, $lane, $po);
         if ($header instanceof DistributorOrderResult) {
             $header->external_order_ids = $external_ids;
+            $this->profile('Sports South header build failed', $t0, [
+                'trace_id' => $trace_id,
+                'lane' => $lane,
+                'po' => $po,
+                'result' => self::summarize_order_result($header),
+            ]);
             return $header;
         }
 
         $client = $this->make_orders_client(60);
         $endpoint = rtrim($this->get_orders_api_base_url(), '/');
+        $this->log('Sports South header row prepared.', [
+            'trace_id' => $trace_id,
+            'lane' => $lane,
+            'po' => $po,
+            'endpoint' => $endpoint,
+            'header' => self::summarize_header_for_log($header),
+        ]);
 
         if ($this->is_test_order_debug_enabled()) {
-            return $this->build_test_order_debug_block(
+            $result = $this->build_test_order_debug_block(
                 $lane,
                 $endpoint . '/AddHeader + /AddDetail + /Submit',
                 'POST',
@@ -323,13 +466,27 @@ final class DistributorSportsSouth extends DistributorBase
                 [
                     'po' => $po,
                     'item_count' => count($details),
-                    'ship_via' => (string) ($header['ShipVIA'] ?? ''),
+                    'ship_via' => (string) ($header['ShipVia'] ?? ''),
                 ],
                 $external_ids
             );
+            $this->profile('Sports South test order debug block', $t0, [
+                'trace_id' => $trace_id,
+                'lane' => $lane,
+                'po' => $po,
+                'result' => self::summarize_order_result($result),
+            ]);
+
+            return $result;
         }
 
         $headerResp = $client->add_header($header);
+        $this->log('Sports South AddHeader completed.', [
+            'trace_id' => $trace_id,
+            'lane' => $lane,
+            'po' => $po,
+            'response' => self::summarize_api_response($headerResp),
+        ]);
         if (empty($headerResp['ok'])) {
             $failure = $this->classify_sports_south_failure($headerResp, 'Sports South AddHeader', [
                 'lane' => $lane,
@@ -337,6 +494,12 @@ final class DistributorSportsSouth extends DistributorBase
                 'item_count' => count($details),
             ]);
             $failure->external_order_ids = $external_ids;
+            $this->profile('Sports South AddHeader failed', $t0, [
+                'trace_id' => $trace_id,
+                'lane' => $lane,
+                'po' => $po,
+                'result' => self::summarize_order_result($failure),
+            ]);
             return $failure;
         }
 
@@ -345,8 +508,17 @@ final class DistributorSportsSouth extends DistributorBase
             $external_ids[] = $ssOrderNumber;
         }
 
-        foreach ($details as $detail) {
+        foreach ($details as $detail_index => $detail) {
             $detailResp = $client->add_detail($ssOrderNumber, $detail);
+            $this->log('Sports South AddDetail completed.', [
+                'trace_id' => $trace_id,
+                'lane' => $lane,
+                'po' => $po,
+                'sports_south_order_number' => $ssOrderNumber,
+                'detail_index' => (int) $detail_index,
+                'item' => $this->summarize_detail_row($detail),
+                'response' => self::summarize_api_response($detailResp),
+            ]);
             if (empty($detailResp['ok'])) {
                 $failure = $this->classify_sports_south_failure($detailResp, 'Sports South AddDetail', [
                     'lane' => $lane,
@@ -355,11 +527,26 @@ final class DistributorSportsSouth extends DistributorBase
                     'item' => $this->summarize_detail_row($detail),
                 ], $external_ids);
                 $failure->external_order_ids = $external_ids;
+                $this->profile('Sports South AddDetail failed', $t0, [
+                    'trace_id' => $trace_id,
+                    'lane' => $lane,
+                    'po' => $po,
+                    'sports_south_order_number' => $ssOrderNumber,
+                    'detail_index' => (int) $detail_index,
+                    'result' => self::summarize_order_result($failure),
+                ]);
                 return $failure;
             }
         }
 
         $submitResp = $client->submit($ssOrderNumber);
+        $this->log('Sports South Submit completed.', [
+            'trace_id' => $trace_id,
+            'lane' => $lane,
+            'po' => $po,
+            'sports_south_order_number' => $ssOrderNumber,
+            'response' => self::summarize_api_response($submitResp),
+        ]);
         if (empty($submitResp['ok'])) {
             $failure = $this->classify_sports_south_failure($submitResp, 'Sports South Submit', [
                 'lane' => $lane,
@@ -368,10 +555,17 @@ final class DistributorSportsSouth extends DistributorBase
                 'item_count' => count($details),
             ], $external_ids);
             $failure->external_order_ids = $external_ids;
+            $this->profile('Sports South Submit failed', $t0, [
+                'trace_id' => $trace_id,
+                'lane' => $lane,
+                'po' => $po,
+                'sports_south_order_number' => $ssOrderNumber,
+                'result' => self::summarize_order_result($failure),
+            ]);
             return $failure;
         }
 
-        return DistributorOrderResult::ok(
+        $result = DistributorOrderResult::ok(
             'Sports South ' . $this->lane_label($lane) . ' order submitted.',
             $external_ids,
             [
@@ -380,6 +574,14 @@ final class DistributorSportsSouth extends DistributorBase
                 'item_count' => count($details),
             ]
         );
+        $this->profile('Sports South lane placement complete', $t0, [
+            'trace_id' => $trace_id,
+            'lane' => $lane,
+            'po' => $po,
+            'result' => self::summarize_order_result($result),
+        ]);
+
+        return $result;
     }
 
     private function build_payload_from_local_row(string $upc, bool $includeImages): ?DistributorProductPayload
@@ -501,9 +703,9 @@ final class DistributorSportsSouth extends DistributorBase
 
         $header = [
             'PO' => $po,
-            'CustomerOrderNumber' => self::truncate_string($po, 32),
+            'OrderNumber' => self::truncate_string($po, 32),
             'SalesMessage' => $notes,
-            'ShipVIA' => $this->normalize_ship_via($this->get_order_ship_via()),
+            'ShipVia' => $this->normalize_ship_via($this->get_order_ship_via()),
             'AdultSignature' => $this->bool_string($this->get_order_bool_option('order_adult_signature', false)),
             'Signature' => $this->bool_string($this->get_order_bool_option('order_signature', false)),
             'Insurance' => $this->bool_string($this->get_order_bool_option('order_insurance', false)),
@@ -762,42 +964,454 @@ final class DistributorSportsSouth extends DistributorBase
             $msg = $ctx . ' failed.';
         }
 
-        $msgLc = strtolower($msg);
-        $retryable = (
-            $http === 0 ||
-            $http === 408 ||
-            $http === 429 ||
-            $http >= 500 ||
-            strpos($msgLc, 'timeout') !== false ||
-            strpos($msgLc, 'timed out') !== false ||
-            strpos($msgLc, 'could not resolve') !== false ||
-            strpos($msgLc, 'connection') !== false
-        );
+        $operation = trim((string) ($resp['operation'] ?? $ctx));
+        $provider = trim((string) ($resp['provider_error_code'] ?? ''));
+        if ($provider === '') {
+            $provider = $operation;
+        }
 
         $safeDetails = array_merge($details, [
+            'operation' => $operation,
             'http_status' => $http,
             'error' => $msg,
-            'scalar' => (string) ($resp['scalar'] ?? ''),
+            'scalar' => self::excerpt_for_log((string) ($resp['scalar'] ?? ''), 500),
+            'body_excerpt' => self::excerpt_for_log((string) ($resp['body_excerpt'] ?? ''), 1000),
+            'response_bytes' => (int) ($resp['response_bytes'] ?? 0),
+            'elapsed_ms' => (string) ($resp['elapsed_ms'] ?? ''),
+            'url' => (string) ($resp['url'] ?? ''),
+            'request' => isset($resp['request']) && is_array($resp['request']) ? $resp['request'] : [],
+        ]);
+
+        $scalarLc = strtolower(trim((string) ($resp['scalar'] ?? '')));
+        $lc = strtolower($msg . ' ' . (string) ($resp['scalar'] ?? '') . ' ' . (string) ($resp['body_excerpt'] ?? ''));
+
+        if ($http === 429) {
+            return $this->sports_south_failure_result(
+                true,
+                $ctx,
+                'rate limit (HTTP 429): ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_RATE_LIMIT],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if ($http === 408 || $http === 504) {
+            return $this->sports_south_failure_result(
+                true,
+                $ctx,
+                'timeout (HTTP ' . $http . '): ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_TIMEOUT],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if ($http === 502 || $http === 503 || $http >= 500) {
+            return $this->sports_south_failure_result(
+                true,
+                $ctx,
+                'upstream error (HTTP ' . $http . '): ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_UPSTREAM],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if (
+            $http === 401 ||
+            $http === 403 ||
+            strpos($lc, 'auth') !== false ||
+            strpos($lc, 'not authorized') !== false ||
+            strpos($lc, 'unauthorized') !== false ||
+            strpos($lc, 'invalid password') !== false ||
+            strpos($lc, 'invalid username') !== false
+        ) {
+            return $this->sports_south_failure_result(
+                false,
+                $ctx,
+                'not authorized: ' . $msg,
+                [DistributorOrderResult::REASON_FATAL_MISSING_CREDS],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if ($http === 400 || $http === 422) {
+            return $this->sports_south_failure_result(
+                false,
+                $ctx,
+                'bad request (HTTP ' . $http . '): ' . $msg,
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if (
+            strpos($lc, 'quota') !== false ||
+            strpos($lc, 'rate') !== false ||
+            strpos($lc, 'throttle') !== false ||
+            strpos($lc, 'too many') !== false ||
+            strpos($lc, 'exceeded') !== false
+        ) {
+            return $this->sports_south_failure_result(
+                true,
+                $ctx,
+                'rate/quota: ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_RATE_LIMIT],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if (
+            strpos($lc, 'timeout') !== false ||
+            strpos($lc, 'timed out') !== false ||
+            strpos($lc, 'could not resolve') !== false ||
+            strpos($lc, 'connection') !== false ||
+            strpos($lc, 'ssl') !== false ||
+            strpos($lc, 'curl error 28') !== false
+        ) {
+            return $this->sports_south_failure_result(
+                true,
+                $ctx,
+                'timeout/network: ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_TIMEOUT],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if (
+            strpos($lc, 'bad gateway') !== false ||
+            strpos($lc, 'service unavailable') !== false ||
+            strpos($lc, 'temporar') !== false ||
+            strpos($lc, '502') !== false ||
+            strpos($lc, '503') !== false
+        ) {
+            return $this->sports_south_failure_result(
+                true,
+                $ctx,
+                'upstream: ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_UPSTREAM],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if (
+            strpos($lc, 'restricted') !== false ||
+            strpos($lc, 'restriction') !== false ||
+            strpos($lc, 'cannot ship') !== false ||
+            strpos($lc, 'not allowed') !== false ||
+            strpos($lc, 'prohibited') !== false ||
+            strpos($lc, 'denied') !== false ||
+            strpos($lc, 'blocked') !== false
+        ) {
+            return $this->sports_south_failure_result(
+                false,
+                $ctx,
+                'restricted: ' . $msg,
+                [DistributorOrderResult::REASON_FATAL_RESTRICTED],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if (
+            strpos($lc, 'out of stock') !== false ||
+            strpos($lc, 'insufficient') !== false ||
+            strpos($lc, 'not enough') !== false ||
+            strpos($lc, 'quantity available') !== false
+        ) {
+            return $this->sports_south_failure_result(
+                false,
+                $ctx,
+                'out of stock: ' . $msg,
+                [DistributorOrderResult::REASON_FATAL_OUT_OF_STOCK],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if (in_array($scalarLc, ['false', '0'], true)) {
+            return $this->sports_south_failure_result(
+                false,
+                $ctx,
+                'provider rejected request: ' . $msg,
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if ($http === 0) {
+            return $this->sports_south_failure_result(
+                true,
+                $ctx,
+                'network/unknown transport failure: ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_UNKNOWN],
+                $safeDetails,
+                0,
+                $provider,
+                $external_ids
+            );
+        }
+
+        if ($http >= 400 && $http < 500) {
+            return $this->sports_south_failure_result(
+                false,
+                $ctx,
+                'bad request (HTTP ' . $http . '): ' . $msg,
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                $safeDetails,
+                $http,
+                $provider,
+                $external_ids
+            );
+        }
+
+        return $this->sports_south_failure_result(
+            false,
+            $ctx,
+            'order failed: ' . $msg,
+            [DistributorOrderResult::REASON_FATAL_UNKNOWN],
+            $safeDetails,
+            $http,
+            $provider,
+            $external_ids
+        );
+    }
+
+    /**
+     * @param string[] $codes
+     * @param array<string,mixed> $details
+     * @param string[] $external_ids
+     */
+    private function sports_south_failure_result(
+        bool $retryable,
+        string $ctx,
+        string $message,
+        array $codes,
+        array $details,
+        int $http,
+        string $provider,
+        array $external_ids
+    ): DistributorOrderResult {
+        $codes = array_values(array_unique(array_filter(array_map('strval', $codes))));
+
+        $this->log($retryable ? 'Sports South order API failure classified retryable.' : 'Sports South order API failure classified terminal.', [
+            'context' => $ctx,
+            'codes' => $codes,
+            'http_status' => $http,
+            'provider_error_code' => $provider,
+            'details' => $details,
+            'external_ids' => $external_ids,
         ]);
 
         if ($retryable) {
             return DistributorOrderResult::block_retryable(
-                $ctx . ': ' . $msg,
-                [DistributorOrderResult::REASON_RETRY_UNKNOWN],
-                $safeDetails,
+                $ctx . ': ' . $message,
+                $codes,
+                $details,
                 $http,
-                '',
+                $provider,
                 $external_ids
             );
         }
 
         return DistributorOrderResult::block_fatal(
-            $ctx . ': ' . $msg,
-            [DistributorOrderResult::REASON_FATAL_UNKNOWN],
-            $safeDetails,
+            $ctx . ': ' . $message,
+            $codes,
+            $details,
             $http,
-            '',
+            $provider,
             $external_ids
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $details
+     * @param string[] $external_ids
+     */
+    private function classify_sports_south_exception_as_order_result(
+        \Throwable $e,
+        string $prefix,
+        array $details = [],
+        array $external_ids = []
+    ): DistributorOrderResult {
+        $msg = (string) $e->getMessage();
+        $lc = strtolower($msg);
+        $details = array_merge($details, [
+            'exception' => get_class($e),
+            'error' => self::excerpt_for_log($msg, 1000),
+            'file' => $e->getFile(),
+            'line' => (int) $e->getLine(),
+        ]);
+
+        if (
+            strpos($lc, 'quota') !== false ||
+            strpos($lc, 'rate') !== false ||
+            strpos($lc, 'throttle') !== false ||
+            strpos($lc, 'too many') !== false ||
+            strpos($lc, 'exceeded') !== false
+        ) {
+            return DistributorOrderResult::block_retryable(
+                $prefix . ' exception: ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_RATE_LIMIT],
+                $details,
+                0,
+                'EXCEPTION',
+                $external_ids
+            );
+        }
+
+        if (
+            strpos($lc, 'timeout') !== false ||
+            strpos($lc, 'timed out') !== false ||
+            strpos($lc, 'could not resolve') !== false ||
+            strpos($lc, 'connection') !== false ||
+            strpos($lc, 'ssl') !== false ||
+            strpos($lc, 'curl error 28') !== false
+        ) {
+            return DistributorOrderResult::block_retryable(
+                $prefix . ' exception: ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_TIMEOUT],
+                $details,
+                0,
+                'EXCEPTION',
+                $external_ids
+            );
+        }
+
+        if (
+            strpos($lc, 'bad gateway') !== false ||
+            strpos($lc, 'service unavailable') !== false ||
+            strpos($lc, 'temporar') !== false ||
+            strpos($lc, '502') !== false ||
+            strpos($lc, '503') !== false
+        ) {
+            return DistributorOrderResult::block_retryable(
+                $prefix . ' exception: ' . $msg,
+                [DistributorOrderResult::REASON_RETRY_UPSTREAM],
+                $details,
+                0,
+                'EXCEPTION',
+                $external_ids
+            );
+        }
+
+        if (
+            strpos($lc, 'auth') !== false ||
+            strpos($lc, 'not authorized') !== false ||
+            strpos($lc, 'unauthorized') !== false ||
+            strpos($lc, 'invalid password') !== false ||
+            strpos($lc, 'invalid username') !== false
+        ) {
+            return DistributorOrderResult::block_fatal(
+                $prefix . ' exception: ' . $msg,
+                [DistributorOrderResult::REASON_FATAL_MISSING_CREDS],
+                $details,
+                0,
+                'EXCEPTION',
+                $external_ids
+            );
+        }
+
+        return DistributorOrderResult::block_fatal(
+            $prefix . ' exception: ' . $msg,
+            [DistributorOrderResult::REASON_FATAL_UNKNOWN],
+            $details,
+            0,
+            'EXCEPTION',
+            $external_ids
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $details
+     */
+    private function classify_sports_south_validation_exception(\Throwable $e, array $details = []): DistributorOrderValidationResult
+    {
+        $msg = (string) $e->getMessage();
+        $lc = strtolower($msg);
+        $details = array_merge($details, [
+            'exception' => get_class($e),
+            'error' => self::excerpt_for_log($msg, 1000),
+            'file' => $e->getFile(),
+            'line' => (int) $e->getLine(),
+        ]);
+
+        if (
+            strpos($lc, 'quota') !== false ||
+            strpos($lc, 'rate') !== false ||
+            strpos($lc, 'throttle') !== false ||
+            strpos($lc, 'too many') !== false ||
+            strpos($lc, 'exceeded') !== false
+        ) {
+            return DistributorOrderValidationResult::block_retryable(
+                'Sports South validation exception: ' . $msg,
+                ['SPORTS_SOUTH_VALIDATION_RETRY_RATE_LIMIT'],
+                $details
+            );
+        }
+
+        if (
+            strpos($lc, 'timeout') !== false ||
+            strpos($lc, 'timed out') !== false ||
+            strpos($lc, 'could not resolve') !== false ||
+            strpos($lc, 'connection') !== false ||
+            strpos($lc, 'ssl') !== false ||
+            strpos($lc, 'curl error 28') !== false
+        ) {
+            return DistributorOrderValidationResult::block_retryable(
+                'Sports South validation exception: ' . $msg,
+                ['SPORTS_SOUTH_VALIDATION_RETRY_TIMEOUT'],
+                $details
+            );
+        }
+
+        if (
+            strpos($lc, 'bad gateway') !== false ||
+            strpos($lc, 'service unavailable') !== false ||
+            strpos($lc, 'temporar') !== false ||
+            strpos($lc, '502') !== false ||
+            strpos($lc, '503') !== false
+        ) {
+            return DistributorOrderValidationResult::block_retryable(
+                'Sports South validation exception: ' . $msg,
+                ['SPORTS_SOUTH_VALIDATION_RETRY_UPSTREAM'],
+                $details
+            );
+        }
+
+        return DistributorOrderValidationResult::block(
+            'Sports South validation exception: ' . $msg,
+            ['SPORTS_SOUTH_VALIDATION_EXCEPTION'],
+            $details
         );
     }
 
@@ -813,6 +1427,187 @@ final class DistributorSportsSouth extends DistributorBase
             'OrderPrice' => (string) ($detail['OrderPrice'] ?? ''),
             'CustomerItemNumber' => (string) ($detail['CustomerItemNumber'] ?? ''),
         ];
+    }
+
+    /**
+     * @param array<string,string> $header
+     * @return array<string,string>
+     */
+    private static function summarize_header_for_log(array $header): array
+    {
+        return [
+            'PO' => (string) ($header['PO'] ?? ''),
+            'OrderNumber' => (string) ($header['OrderNumber'] ?? ''),
+            'SalesMessage' => self::excerpt_for_log((string) ($header['SalesMessage'] ?? ''), 160),
+            'ShipVia' => (string) ($header['ShipVia'] ?? ''),
+            'ShipToName' => (string) ($header['ShipToName'] ?? ''),
+            'ShipToCity' => (string) ($header['ShipToCity'] ?? ''),
+            'ShipToState' => (string) ($header['ShipToState'] ?? ''),
+            'ShipToZip' => (string) ($header['ShipToZip'] ?? ''),
+            'ShipToPhoneTail4' => self::tail4((string) ($header['ShipToPhone'] ?? '')),
+            'AdultSignature' => (string) ($header['AdultSignature'] ?? ''),
+            'Signature' => (string) ($header['Signature'] ?? ''),
+            'Insurance' => (string) ($header['Insurance'] ?? ''),
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $resp
+     * @return array<string,mixed>
+     */
+    private static function summarize_api_response(array $resp): array
+    {
+        return [
+            'ok' => !empty($resp['ok']) ? 1 : 0,
+            'status' => (int) ($resp['status'] ?? 0),
+            'operation' => (string) ($resp['operation'] ?? ''),
+            'scalar' => self::excerpt_for_log((string) ($resp['scalar'] ?? ''), 500),
+            'order_number' => (string) ($resp['order_number'] ?? ''),
+            'error' => self::excerpt_for_log((string) ($resp['error'] ?? ''), 500),
+            'body_excerpt' => self::excerpt_for_log((string) ($resp['body_excerpt'] ?? ''), 1000),
+            'response_bytes' => (int) ($resp['response_bytes'] ?? 0),
+            'elapsed_ms' => (string) ($resp['elapsed_ms'] ?? ''),
+        ];
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function summarize_order_request(DistributorOrderRequest $request): array
+    {
+        $required = $this->build_required_qty_by_upc((array) $request->lines);
+
+        return [
+            'merchant_order_id' => $this->sanitize_and_truncate_po((string) $request->merchant_order_id, 32),
+            'lane' => strtolower(trim((string) ($request->lane ?? ''))),
+            'destination_state' => (string) ($request->dest_state ?? ''),
+            'line_count' => count((array) $request->lines),
+            'valid_line_count' => method_exists($request, 'valid_lines') ? count((array) $request->valid_lines()) : 0,
+            'required_by_upc' => self::summarize_required_by_upc($required),
+            'has_ship_to_customer' => $request->ship_to_customer instanceof DistributorShipTo ? 1 : 0,
+            'has_ship_to_ffl' => $request->ship_to_ffl instanceof DistributorShipTo ? 1 : 0,
+            'receiving_ffl_tail4' => self::tail4((string) $request->receiving_ffl_number),
+        ];
+    }
+
+    /**
+     * @param array<int,mixed> $lines
+     * @return array<int,array<string,mixed>>
+     */
+    private function summarize_lines(array $lines): array
+    {
+        $out = [];
+        foreach ($lines as $line) {
+            if (!$line instanceof DistributorOrderLine) {
+                continue;
+            }
+
+            $upc = $this->normalize_upc($this->read_line_upc($line));
+            $out[] = [
+                'upc_tail4' => self::tail4((string) ($upc ?? '')),
+                'qty' => $this->read_line_qty($line),
+                'ffl_required' => property_exists($line, 'ffl_required') ? (int) ($line->ffl_required ?? 0) : null,
+            ];
+        }
+
+        return array_slice($out, 0, 25);
+    }
+
+    /**
+     * @param array<string,int> $required
+     * @return array<int,array<string,mixed>>
+     */
+    private static function summarize_required_by_upc(array $required): array
+    {
+        $out = [];
+        foreach ($required as $upc => $qty) {
+            $out[] = [
+                'upc_tail4' => self::tail4((string) $upc),
+                'qty' => (int) $qty,
+            ];
+        }
+
+        return array_slice($out, 0, 25);
+    }
+
+    private static function summarize_validation_result(DistributorOrderValidationResult $result): array
+    {
+        return [
+            'ok' => !empty($result->ok) ? 1 : 0,
+            'code' => (string) $result->code,
+            'codes' => (array) $result->codes,
+            'message' => self::excerpt_for_log((string) $result->message, 500),
+            'detail_keys' => array_keys((array) $result->details),
+            'failure_flags' => isset($result->details['failure_flags']) && is_array($result->details['failure_flags']) ? $result->details['failure_flags'] : [],
+        ];
+    }
+
+    private static function summarize_order_result(DistributorOrderResult $result): array
+    {
+        return [
+            'ok' => !empty($result->ok) ? 1 : 0,
+            'code' => (string) $result->code,
+            'codes' => (array) $result->codes,
+            'message' => self::excerpt_for_log((string) $result->message, 500),
+            'external_order_ids' => (array) $result->external_order_ids,
+            'http_status' => (int) $result->http_status,
+            'provider_error_code' => (string) $result->provider_error_code,
+            'detail_keys' => array_keys((array) $result->details),
+        ];
+    }
+
+    private static function new_trace_id(): string
+    {
+        return substr(md5(uniqid('sports_south_order_', true)), 0, 12);
+    }
+
+    private static function tail4(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        return strlen($value) > 4 ? substr($value, -4) : $value;
+    }
+
+    private static function excerpt_for_log(string $text, int $max = 1200): string
+    {
+        $text = trim((string) preg_replace('/\s+/', ' ', $text));
+        if ($text === '') {
+            return '';
+        }
+
+        $text = (string) preg_replace('/(<Password>).*?(<\/Password>)/i', '$1[redacted]$2', $text);
+        $text = (string) preg_replace('/(Password=)[^&\s]+/i', '$1[redacted]', $text);
+
+        if (strlen($text) <= $max) {
+            return $text;
+        }
+
+        return substr($text, 0, $max) . '...';
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function log(string $message, array $ctx = []): void
+    {
+        if (empty($ctx)) {
+            DebugLogUtil::log_if(true, self::LOG_PREFIX, $message, self::DEBUG_FLAG);
+            return;
+        }
+
+        DebugLogUtil::log_if_ctx(true, self::LOG_PREFIX, $message, $ctx, self::DEBUG_FLAG);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function profile(string $label, float $t0, array $ctx = []): void
+    {
+        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000.0, 2, '.', '');
+        $this->log('PROFILE: ' . $label, $ctx);
     }
 
 }
