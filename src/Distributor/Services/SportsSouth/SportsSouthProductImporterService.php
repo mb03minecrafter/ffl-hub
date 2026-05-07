@@ -31,8 +31,9 @@ final class SportsSouthProductImporterService
 
     /**
      * @param array<string,array<string,mixed>> $brandMap
+     * @param array<string,array<string,mixed>> $categoryMap
      */
-    public function import_catalog_file(string $xmlFilePath, array $brandMap = []): int
+    public function import_catalog_file(string $xmlFilePath, array $brandMap = [], array $categoryMap = []): int
     {
         $t_start = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
@@ -51,10 +52,10 @@ final class SportsSouthProductImporterService
         $columns = $this->table->get_schema()->get_insert_columns();
         $tsv_path = $this->catalog_tsv_path();
         if ($tsv_path === '' || empty($columns)) {
-            return $this->import_catalog_file_via_batches($xmlFilePath, $t_start, $mem_start, $brandMap);
+            return $this->import_catalog_file_via_batches($xmlFilePath, $t_start, $mem_start, $brandMap, $categoryMap);
         }
 
-        $write_stats = $this->write_catalog_tsv($xmlFilePath, $tsv_path, $columns, $brandMap);
+        $write_stats = $this->write_catalog_tsv($xmlFilePath, $tsv_path, $columns, $brandMap, $categoryMap);
         if ((int) ($write_stats['rows_written'] ?? 0) <= 0) {
             $this->log('Sports South catalog import wrote zero TSV rows; not loading.', $write_stats);
             return 0;
@@ -143,8 +144,9 @@ final class SportsSouthProductImporterService
 
     /**
      * @param array<string,array<string,mixed>> $brandMap
+     * @param array<string,array<string,mixed>> $categoryMap
      */
-    private function import_catalog_file_via_batches(string $xmlFilePath, float $tStart, int $memStart, array $brandMap = []): int
+    private function import_catalog_file_via_batches(string $xmlFilePath, float $tStart, int $memStart, array $brandMap = [], array $categoryMap = []): int
     {
         try {
             $this->table->truncate_staging();
@@ -158,9 +160,10 @@ final class SportsSouthProductImporterService
         $seen = [];
         $skipped_dupes = 0;
         $brand_hits = 0;
+        $category_hits = 0;
         $fulfillment_policy_blocks = 0;
 
-        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use (&$batch, &$total, &$seen, &$skipped_dupes, &$brand_hits, &$fulfillment_policy_blocks, $brandMap): void {
+        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use (&$batch, &$total, &$seen, &$skipped_dupes, &$brand_hits, &$category_hits, &$fulfillment_policy_blocks, $brandMap, $categoryMap): void {
             $upc = trim((string) ($row['upc'] ?? ''));
             if ($upc === '') {
                 return;
@@ -172,6 +175,7 @@ final class SportsSouthProductImporterService
             $seen[$upc] = true;
 
             $row = $this->apply_brand_map($row, $brandMap, $brand_hits);
+            $row = $this->apply_category_map($row, $categoryMap, $category_hits);
             $row = SportsSouthFulfillmentPolicy::apply_to_row($row);
             $row = SigDropshipApproval::apply_to_row('sports_south', $row);
             if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
@@ -195,6 +199,8 @@ final class SportsSouthProductImporterService
             'skipped_dupes' => (int) $skipped_dupes,
             'brand_map_count' => count($brandMap),
             'brand_map_hits' => (int) $brand_hits,
+            'category_map_count' => count($categoryMap),
+            'category_map_hits' => (int) $category_hits,
             'fulfillment_policy_blocks' => (int) $fulfillment_policy_blocks,
             'elapsed_ms' => number_format((microtime(true) - $tStart) * 1000.0, 2, '.', ''),
             'memory_start_kb' => $memStart > 0 ? (int) round($memStart / 1024) : 0,
@@ -206,9 +212,10 @@ final class SportsSouthProductImporterService
     /**
      * @param string[] $columns
      * @param array<string,array<string,mixed>> $brandMap
+     * @param array<string,array<string,mixed>> $categoryMap
      * @return array<string,mixed>
      */
-    private function write_catalog_tsv(string $xmlFilePath, string $tsvPath, array $columns, array $brandMap = []): array
+    private function write_catalog_tsv(string $xmlFilePath, string $tsvPath, array $columns, array $brandMap = [], array $categoryMap = []): array
     {
         $t_start = microtime(true);
         $handle = fopen($tsvPath, 'w');
@@ -223,10 +230,11 @@ final class SportsSouthProductImporterService
         $rows_written = 0;
         $skipped_dupes = 0;
         $brand_hits = 0;
+        $category_hits = 0;
         $fulfillment_policy_blocks = 0;
         $seen = [];
 
-        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use ($handle, $columns, &$rows_written, &$skipped_dupes, &$brand_hits, &$fulfillment_policy_blocks, &$seen, $brandMap): void {
+        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use ($handle, $columns, &$rows_written, &$skipped_dupes, &$brand_hits, &$category_hits, &$fulfillment_policy_blocks, &$seen, $brandMap, $categoryMap): void {
             $upc = trim((string) ($row['upc'] ?? ''));
             if ($upc === '') {
                 return;
@@ -238,6 +246,7 @@ final class SportsSouthProductImporterService
             $seen[$upc] = true;
 
             $row = $this->apply_brand_map($row, $brandMap, $brand_hits);
+            $row = $this->apply_category_map($row, $categoryMap, $category_hits);
             $row = SportsSouthFulfillmentPolicy::apply_to_row($row);
             $row = SigDropshipApproval::apply_to_row('sports_south', $row);
             if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
@@ -263,6 +272,8 @@ final class SportsSouthProductImporterService
             'skipped_dupes' => (int) $skipped_dupes,
             'brand_map_count' => count($brandMap),
             'brand_map_hits' => (int) $brand_hits,
+            'category_map_count' => count($categoryMap),
+            'category_map_hits' => (int) $category_hits,
             'fulfillment_policy_blocks' => (int) $fulfillment_policy_blocks,
             'write_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
         ];
@@ -313,6 +324,27 @@ final class SportsSouthProductImporterService
         $brandHits++;
 
         return $row;
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @param array<string,array<string,mixed>> $categoryMap
+     * @return array<string,mixed>
+     */
+    private function apply_category_map(array $row, array $categoryMap, int &$categoryHits): array
+    {
+        if (empty($categoryMap)) {
+            return $row;
+        }
+
+        $category_id = trim((string) ($row['category_id'] ?? ''));
+        if ($category_id === '' || !isset($categoryMap[$category_id])) {
+            return $row;
+        }
+
+        $categoryHits++;
+
+        return SportsSouthCategoryPolicy::apply_to_row($row, $categoryMap);
     }
 
     /**

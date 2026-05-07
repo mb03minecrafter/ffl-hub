@@ -89,6 +89,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
 
         $parser = new SportsSouthProductParser();
         $brand_map = $this->download_brand_map($client, $parser);
+        $category_map = $this->download_category_map($client, $parser);
 
         update_option('fflhub_sports_south_fulfillment_last_stage', 'download_xml', false);
         $xml_path = $this->build_xml_file_path('daily_item_update');
@@ -131,11 +132,12 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         update_option('fflhub_sports_south_fulfillment_last_stage', 'import_xml', false);
         $t_import = microtime(true);
         $importer = new SportsSouthProductImporterService($this->table, $parser);
-        $count = $importer->import_catalog_file($xml_path, $brand_map);
+        $count = $importer->import_catalog_file($xml_path, $brand_map, $category_map);
         $this->profile('Import DailyItemUpdate XML', $t_import, [
             'rows_imported' => (int) $count,
             'xml_path' => $xml_path,
             'brand_map_count' => count($brand_map),
+            'category_map_count' => count($category_map),
         ]);
 
         if ($count <= 0) {
@@ -231,6 +233,60 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         ]);
 
         return $brand_map;
+    }
+
+    /**
+     * @return array<string,array<string,mixed>>
+     */
+    private function download_category_map(SportsSouthInventoryClient $client, SportsSouthProductParser $parser): array
+    {
+        update_option('fflhub_sports_south_fulfillment_last_stage', 'category_update_request', false);
+        $category_path = $this->build_xml_file_path('category_update');
+        if ($category_path === '') {
+            $this->log('Sports South CategoryUpdate skipped: failed to build XML path.');
+            return [];
+        }
+
+        $t_category = microtime(true);
+        $response = $client->category_update_to_file($category_path);
+        $this->profile('CategoryUpdate request', $t_category, [
+            'ok' => empty($response['ok']) ? 0 : 1,
+            'status' => (int) ($response['status'] ?? 0),
+            'xml_path' => $category_path,
+            'xml_bytes' => (int) ($response['xml_bytes'] ?? 0),
+            'body_bytes' => (int) ($response['body_bytes'] ?? 0),
+            'raw_path' => (string) ($response['raw_path'] ?? ''),
+        ]);
+
+        if (empty($response['ok'])) {
+            $this->log('Sports South CategoryUpdate failed; FFL/category mapping will use raw feed fields.', [
+                'status' => (int) ($response['status'] ?? 0),
+                'error' => (string) ($response['error'] ?? ''),
+            ]);
+            return [];
+        }
+
+        update_option('fflhub_sports_south_fulfillment_last_category_download', current_time('mysql'), false);
+        update_option('fflhub_sports_south_fulfillment_last_category_download_path', $category_path, false);
+        update_option('fflhub_sports_south_fulfillment_last_category_download_size', (string) (file_exists($category_path) ? filesize($category_path) : 0), false);
+
+        $category_map = [];
+        $parser->each_category_row($category_path, function (array $category) use (&$category_map): void {
+            $category_id = trim((string) ($category['category_id'] ?? ''));
+            if ($category_id === '') {
+                return;
+            }
+
+            $category_map[$category_id] = $category;
+        });
+
+        update_option('fflhub_sports_south_fulfillment_last_category_count', count($category_map), false);
+        $this->log('Sports South CategoryUpdate map ready.', [
+            'category_count' => count($category_map),
+            'xml_path' => $category_path,
+        ]);
+
+        return $category_map;
     }
 
     private function build_xml_file_path(string $prefix): string

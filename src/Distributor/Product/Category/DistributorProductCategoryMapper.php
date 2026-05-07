@@ -600,6 +600,127 @@ class DistributorProductCategoryMapper
         return null;
     }
 
+    /**
+     * Map Sports South CategoryUpdate CATDES/DEP values to unified categories.
+     *
+     * Sports South DailyItemUpdate provides CATID, while CategoryUpdate gives
+     * CATDES and DEP. The importer stores CATDES as item_type, so runtime
+     * product creation can use this mapper just like the other distributors.
+     */
+    public static function map_sports_south(string $category): ?array
+    {
+        $c = strtoupper(trim((string) preg_replace('/\s+/', ' ', $category)));
+        if ($c === '') {
+            return null;
+        }
+
+        $exact = [
+            // Firearms
+            'PISTOLS' => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'],
+            'REVOLVERS' => [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'],
+            'RIFLES CENTERFIRE' => [CategorySchema::CAT_FIREARMS, 'Rifles'],
+            'RIFLES CENTERFIRE TACTICAL' => [CategorySchema::CAT_FIREARMS, 'Rifles', 'Semi-Auto'],
+            'SHOTGUNS' => [CategorySchema::CAT_FIREARMS, 'Shotguns'],
+            'SHOTGUNS TACTICAL' => [CategorySchema::CAT_FIREARMS, 'Shotguns'],
+            'COMBO' => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'SPECIALTY' => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'LOWERS' => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'FRAMES' => [CategorySchema::CAT_FIREARMS, 'Other / Specialty'],
+            'UPPERS' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+            'FIREARM PARTS' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+            'STOCKS AND FORENDS' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+            'GRIPS AND RECOIL PADS' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+            'EXTRA BARRELS' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+            'CONVERSION KITS' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+            'CHOKE TUBES' => [CategorySchema::CAT_FIREARMS, 'Parts'],
+
+            // Black powder
+            'BLACK POWDER FIREARMS' => [CategorySchema::CAT_BLACK_POWDER, 'Firearms'],
+
+            // Ammo
+            'CENTERFIRE HANDGUN ROUNDS' => [CategorySchema::CAT_AMMO, 'Handgun'],
+            'CENTERFIRE RIFLE ROUNDS' => [CategorySchema::CAT_AMMO, 'Rifle'],
+            'SHOTGUN ROUNDS' => [CategorySchema::CAT_AMMO, 'Shotgun'],
+
+            // Magazines
+            'MAGAZINES AND ACCESSORIES' => [CategorySchema::CAT_MAGAZINES],
+
+            // Optics / sights / mounts
+            'GUN SIGHTS' => [CategorySchema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'],
+            'LASER SIGHTS' => [CategorySchema::CAT_LIGHTS],
+            'BASES' => [CategorySchema::CAT_OPTICS, 'Optic Mounts & Rings'],
+
+            // Less lethal
+            'LESS LETHAL' => [CategorySchema::CAT_LESS_LETHAL],
+            'PEPPER SPRAY' => [CategorySchema::CAT_LESS_LETHAL],
+            'STUN GUNS' => [CategorySchema::CAT_LESS_LETHAL],
+        ];
+
+        if (isset($exact[$c])) {
+            return array_values($exact[$c]);
+        }
+
+        if (strpos($c, 'SUPPRESS') !== false || strpos($c, 'SILENC') !== false || strpos($c, 'NFA') !== false) {
+            return [CategorySchema::CAT_NFA];
+        }
+        if (strpos($c, 'BLACK POWDER') !== false || strpos($c, 'MUZZLE') !== false) {
+            return [CategorySchema::CAT_BLACK_POWDER];
+        }
+        if (strpos($c, 'MAGAZ') !== false) {
+            return [CategorySchema::CAT_MAGAZINES];
+        }
+        if (strpos($c, 'AMMO') !== false || strpos($c, 'ROUNDS') !== false || strpos($c, 'CARTRIDGE') !== false) {
+            if (strpos($c, 'HANDGUN') !== false || strpos($c, 'PISTOL') !== false) {
+                return [CategorySchema::CAT_AMMO, 'Handgun'];
+            }
+            if (strpos($c, 'SHOTGUN') !== false || strpos($c, 'SHOTSHELL') !== false) {
+                return [CategorySchema::CAT_AMMO, 'Shotgun'];
+            }
+            if (strpos($c, 'RIFLE') !== false) {
+                return [CategorySchema::CAT_AMMO, 'Rifle'];
+            }
+            return [CategorySchema::CAT_AMMO];
+        }
+        if (strpos($c, 'OPTIC') !== false || strpos($c, 'SCOPE') !== false || strpos($c, 'SIGHT') !== false || strpos($c, 'BINOC') !== false || strpos($c, 'RANGE') !== false) {
+            if (strpos($c, 'BASE') !== false || strpos($c, 'MOUNT') !== false || strpos($c, 'RING') !== false) {
+                return [CategorySchema::CAT_OPTICS, 'Optic Mounts & Rings'];
+            }
+            if (strpos($c, 'BINOC') !== false || strpos($c, 'RANGE') !== false) {
+                return [CategorySchema::CAT_OPTICS, 'Observation / Range Finding'];
+            }
+            if (strpos($c, 'SCOPE') !== false) {
+                return [CategorySchema::CAT_OPTICS, 'Scopes / Magnified Optics'];
+            }
+            return [CategorySchema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'];
+        }
+        if (strpos($c, 'LIGHT') !== false || strpos($c, 'LASER') !== false) {
+            return [CategorySchema::CAT_LIGHTS];
+        }
+        if (strpos($c, 'LESS LETHAL') !== false || strpos($c, 'TASER') !== false || strpos($c, 'PEPPER') !== false) {
+            return [CategorySchema::CAT_LESS_LETHAL];
+        }
+        if (strpos($c, 'REVOLVER') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'];
+        }
+        if (strpos($c, 'PISTOL') !== false || strpos($c, 'HANDGUN') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'];
+        }
+        if (strpos($c, 'SHOTGUN') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Shotguns'];
+        }
+        if (strpos($c, 'RIFLE') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Rifles'];
+        }
+        if (strpos($c, 'LOWER') !== false || strpos($c, 'FRAME') !== false || strpos($c, 'RECEIVER') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Other / Specialty'];
+        }
+        if (strpos($c, 'BARREL') !== false || strpos($c, 'CHOKE') !== false || strpos($c, 'STOCK') !== false || strpos($c, 'FOREND') !== false || strpos($c, 'GRIP') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Parts'];
+        }
+
+        return null;
+    }
+
 
 
 

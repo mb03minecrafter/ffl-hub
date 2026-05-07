@@ -14,7 +14,7 @@ use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorShipment;
-use FFLHub\Product\CategorySchema;
+use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 
 /**
  * Sports South runtime distributor backed by the local catalog table.
@@ -150,7 +150,7 @@ final class DistributorSportsSouth extends DistributorBase
                 'sot_required' => ['sot_required'],
                 'dropship_enabled' => ['dropship_enabled'],
             ],
-            static fn($raw): ?array => self::map_sports_south_category((string) $raw),
+            [DistributorProductCategoryMapper::class, 'map_sports_south'],
             $normalized_upc,
             $includeImages
         );
@@ -177,53 +177,4 @@ final class DistributorSportsSouth extends DistributorBase
         return '';
     }
 
-    /**
-     * @return array<int,string>|null
-     */
-    private static function map_sports_south_category(string $raw): ?array
-    {
-        $c = strtoupper(trim((string) preg_replace('/\s+/', ' ', $raw)));
-        if ($c === '') {
-            return null;
-        }
-
-        if (strpos($c, 'SUPPRESS') !== false || strpos($c, 'SILENC') !== false || strpos($c, 'NFA') !== false) {
-            return [CategorySchema::CAT_NFA];
-        }
-        if (strpos($c, 'BLACK POWDER') !== false || strpos($c, 'MUZZLE') !== false) {
-            return [CategorySchema::CAT_BLACK_POWDER];
-        }
-        if (strpos($c, 'MAGAZ') !== false) {
-            return [CategorySchema::CAT_MAGAZINES];
-        }
-        if (strpos($c, 'AMMO') !== false || strpos($c, 'AMMUNITION') !== false) {
-            return [CategorySchema::CAT_AMMO];
-        }
-        if (strpos($c, 'OPTIC') !== false || strpos($c, 'SCOPE') !== false || strpos($c, 'SIGHT') !== false || strpos($c, 'BINOC') !== false || strpos($c, 'RANGE') !== false) {
-            return [CategorySchema::CAT_OPTICS];
-        }
-        if (strpos($c, 'LIGHT') !== false || strpos($c, 'LASER') !== false) {
-            return [CategorySchema::CAT_LIGHTS];
-        }
-        if (strpos($c, 'LESS LETHAL') !== false || strpos($c, 'TASER') !== false || strpos($c, 'PEPPER') !== false) {
-            return [CategorySchema::CAT_LESS_LETHAL];
-        }
-        if (strpos($c, 'REVOLVER') !== false) {
-            return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'];
-        }
-        if (strpos($c, 'PISTOL') !== false || strpos($c, 'HANDGUN') !== false) {
-            return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'];
-        }
-        if (strpos($c, 'SHOTGUN') !== false) {
-            return [CategorySchema::CAT_FIREARMS, 'Shotguns'];
-        }
-        if (strpos($c, 'RIFLE') !== false) {
-            return [CategorySchema::CAT_FIREARMS, 'Rifles'];
-        }
-        if (strpos($c, 'FIREARM') !== false || strpos($c, 'RECEIVER') !== false || strpos($c, 'FRAME') !== false || strpos($c, 'LOWER') !== false) {
-            return [CategorySchema::CAT_FIREARMS, 'Other / Specialty'];
-        }
-
-        return null;
-    }
 }

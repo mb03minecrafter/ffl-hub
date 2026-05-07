@@ -68,6 +68,24 @@ final class SportsSouthProductParser
     }
 
     /**
+     * @param callable(array<string,mixed>):void $callback
+     */
+    public function each_category_row(string $filePath, callable $callback): int
+    {
+        return $this->each_xml_row(
+            $filePath,
+            ['Table', 'Category'],
+            ['CATID'],
+            function (array $raw) use ($callback): void {
+                $row = $this->parse_category($raw);
+                if (is_array($row)) {
+                    $callback($row);
+                }
+            }
+        );
+    }
+
+    /**
      * @param array<string,mixed> $raw
      * @return array<string,mixed>|null
      */
@@ -98,7 +116,6 @@ final class SportsSouthProductParser
 
         $image_urls = $this->image_urls($image_ref);
         $restricted_states = $this->clean_text($this->first($raw, ['RESTRICTEDSTATES', 'STATE_RESTRICTIONS', 'STATES']));
-        $haystack = strtoupper(trim($name . ' ' . $description . ' ' . $item_type . ' ' . $category_id));
         $quantity = $this->quantity_string($this->first($raw, ['QTYOH', 'ONHAND', 'QTY', 'QUANTITY']));
 
         $row = [
@@ -124,8 +141,8 @@ final class SportsSouthProductParser
             'caliber_gauge' => $this->clean_text($this->first($raw, ['CALIBER', 'GAUGE', 'CALGAUGE'])),
             'attributes_json' => $this->encode_json($this->extract_attributes($raw)),
 
-            'ffl_required' => $this->looks_ffl_required($haystack) ? '1' : '0',
-            'sot_required' => $this->looks_sot_required($haystack) ? '1' : '0',
+            'ffl_required' => '0',
+            'sot_required' => '0',
             'dropship_enabled' => $this->dropship_enabled($raw) ? '1' : '0',
             'dropship_block_reason' => $this->dropship_enabled($raw) ? '' : 'feed_flag',
             'restricted_states' => $restricted_states,
@@ -193,6 +210,26 @@ final class SportsSouthProductParser
             'brand_name' => $this->clean_text($this->first($raw, ['BRDNM', 'BRAND', 'BRANDNAME'])),
             'brand_url' => $this->clean_text($this->first($raw, ['BRDURL', 'BRANDURL', 'URL'])),
             'item_count' => (int) $this->first($raw, ['ITCOUNT', 'ITEMCOUNT', 'COUNT']),
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $raw
+     * @return array<string,mixed>|null
+     */
+    public function parse_category(array $raw): ?array
+    {
+        $category_id = $this->clean_text($this->first($raw, ['CATID', 'CATEGORYID', 'CAT']));
+        if ($category_id === '') {
+            return null;
+        }
+
+        return [
+            'category_id' => $category_id,
+            'category_description' => $this->clean_text($this->first($raw, ['CATDES', 'CATEGORY', 'CATEGORYDESCRIPTION', 'CATDESC'])),
+            'department_id' => $this->clean_text($this->first($raw, ['DEPID', 'DEPARTMENTID', 'DEPTID'])),
+            'department_name' => $this->clean_text($this->first($raw, ['DEP', 'DEPARTMENT', 'DEPARTMENTNAME'])),
+            'attributes' => $this->extract_attributes($raw),
         ];
     }
 
@@ -537,28 +574,6 @@ final class SportsSouthProductParser
         $value = (string) preg_replace('/\s+/', ' ', $value);
 
         return trim($value);
-    }
-
-    private function looks_ffl_required(string $haystack): bool
-    {
-        foreach (['PISTOL', 'REVOLVER', 'RIFLE', 'SHOTGUN', 'FIREARM', 'RECEIVER', 'FRAME', 'LOWER'] as $needle) {
-            if (strpos($haystack, $needle) !== false) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function looks_sot_required(string $haystack): bool
-    {
-        foreach (['SOT', 'NFA', 'SUPPRESSOR', 'SUPPRESSORS', 'SILENCER', 'SILENCERS', 'CLASS 3', 'CLASS III'] as $needle) {
-            if (strpos($haystack, $needle) !== false) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
