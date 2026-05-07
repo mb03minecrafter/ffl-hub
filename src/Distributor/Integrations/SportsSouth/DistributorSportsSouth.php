@@ -466,7 +466,7 @@ final class DistributorSportsSouth extends DistributorBase
                 [
                     'po' => $po,
                     'item_count' => count($details),
-                    'ship_via' => (string) ($header['ShipVia'] ?? ''),
+                    'ship_via' => (string) ($header['ShipVIA'] ?? ''),
                 ],
                 $external_ids
             );
@@ -703,9 +703,9 @@ final class DistributorSportsSouth extends DistributorBase
 
         $header = [
             'PO' => $po,
-            'OrderNumber' => self::truncate_string($po, 32),
+            'CustomerOrderNumber' => self::truncate_string($po, 32),
             'SalesMessage' => $notes,
-            'ShipVia' => $this->normalize_ship_via($this->get_order_ship_via()),
+            'ShipVIA' => $this->normalize_ship_via($this->get_order_ship_via()),
             'AdultSignature' => $this->bool_string($this->get_order_bool_option('order_adult_signature', false)),
             'Signature' => $this->bool_string($this->get_order_bool_option('order_signature', false)),
             'Insurance' => $this->bool_string($this->get_order_bool_option('order_insurance', false)),
@@ -1437,9 +1437,9 @@ final class DistributorSportsSouth extends DistributorBase
     {
         return [
             'PO' => (string) ($header['PO'] ?? ''),
-            'OrderNumber' => (string) ($header['OrderNumber'] ?? ''),
+            'CustomerOrderNumber' => (string) ($header['CustomerOrderNumber'] ?? ''),
             'SalesMessage' => self::excerpt_for_log((string) ($header['SalesMessage'] ?? ''), 160),
-            'ShipVia' => (string) ($header['ShipVia'] ?? ''),
+            'ShipVIA' => (string) ($header['ShipVIA'] ?? ''),
             'ShipToName' => (string) ($header['ShipToName'] ?? ''),
             'ShipToCity' => (string) ($header['ShipToCity'] ?? ''),
             'ShipToState' => (string) ($header['ShipToState'] ?? ''),
