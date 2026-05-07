@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductImporterService;
+use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductParser;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -86,6 +87,9 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             'last_item' => $last_item,
         ]);
 
+        $parser = new SportsSouthProductParser();
+        $brand_map = $this->download_brand_map($client, $parser);
+
         update_option('fflhub_sports_south_fulfillment_last_stage', 'download_xml', false);
         $xml_path = $this->build_xml_file_path('daily_item_update');
         if ($xml_path === '') {
@@ -126,11 +130,12 @@ final class SportsSouthProductCronService extends AbstractTableCronService
 
         update_option('fflhub_sports_south_fulfillment_last_stage', 'import_xml', false);
         $t_import = microtime(true);
-        $importer = new SportsSouthProductImporterService($this->table);
-        $count = $importer->import_catalog_file($xml_path);
+        $importer = new SportsSouthProductImporterService($this->table, $parser);
+        $count = $importer->import_catalog_file($xml_path, $brand_map);
         $this->profile('Import DailyItemUpdate XML', $t_import, [
             'rows_imported' => (int) $count,
             'xml_path' => $xml_path,
+            'brand_map_count' => count($brand_map),
         ]);
 
         if ($count <= 0) {
@@ -171,6 +176,61 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         $base_url = (string) apply_filters('fflhub_sports_south_inventory_api_base_url', $base_url);
 
         return new SportsSouthInventoryClient($customer, $username, $password, $source, $base_url, 240);
+    }
+
+    /**
+     * @return array<string,array<string,mixed>>
+     */
+    private function download_brand_map(SportsSouthInventoryClient $client, SportsSouthProductParser $parser): array
+    {
+        update_option('fflhub_sports_south_fulfillment_last_stage', 'brand_update_request', false);
+        $brand_path = $this->build_xml_file_path('brand_update');
+        if ($brand_path === '') {
+            $this->log('Sports South BrandUpdate skipped: failed to build XML path.');
+            return [];
+        }
+
+        $t_brand = microtime(true);
+        $response = $client->brand_update_to_file($brand_path);
+        $this->profile('BrandUpdate request', $t_brand, [
+            'ok' => empty($response['ok']) ? 0 : 1,
+            'status' => (int) ($response['status'] ?? 0),
+            'xml_path' => $brand_path,
+            'xml_bytes' => (int) ($response['xml_bytes'] ?? 0),
+            'body_bytes' => (int) ($response['body_bytes'] ?? 0),
+            'raw_path' => (string) ($response['raw_path'] ?? ''),
+        ]);
+
+        if (empty($response['ok'])) {
+            $this->log('Sports South BrandUpdate failed; catalog import will use raw feed brand fields.', [
+                'status' => (int) ($response['status'] ?? 0),
+                'error' => (string) ($response['error'] ?? ''),
+            ]);
+            return [];
+        }
+
+        update_option('fflhub_sports_south_fulfillment_last_brand_download', current_time('mysql'), false);
+        update_option('fflhub_sports_south_fulfillment_last_brand_download_path', $brand_path, false);
+        update_option('fflhub_sports_south_fulfillment_last_brand_download_size', (string) (file_exists($brand_path) ? filesize($brand_path) : 0), false);
+
+        $brand_map = [];
+        $parser->each_brand_row($brand_path, function (array $brand) use (&$brand_map): void {
+            $brand_number = trim((string) ($brand['brand_number'] ?? ''));
+            $brand_name = trim((string) ($brand['brand_name'] ?? ''));
+            if ($brand_number === '' || $brand_name === '') {
+                return;
+            }
+
+            $brand_map[$brand_number] = $brand;
+        });
+
+        update_option('fflhub_sports_south_fulfillment_last_brand_count', count($brand_map), false);
+        $this->log('Sports South BrandUpdate map ready.', [
+            'brand_count' => count($brand_map),
+            'xml_path' => $brand_path,
+        ]);
+
+        return $brand_map;
     }
 
     private function build_xml_file_path(string $prefix): string

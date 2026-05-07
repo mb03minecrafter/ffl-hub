@@ -29,7 +29,10 @@ final class SportsSouthProductImporterService
         $this->parser = $parser ?: new SportsSouthProductParser();
     }
 
-    public function import_catalog_file(string $xmlFilePath): int
+    /**
+     * @param array<string,array<string,mixed>> $brandMap
+     */
+    public function import_catalog_file(string $xmlFilePath, array $brandMap = []): int
     {
         $t_start = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
@@ -48,10 +51,10 @@ final class SportsSouthProductImporterService
         $columns = $this->table->get_schema()->get_insert_columns();
         $tsv_path = $this->catalog_tsv_path();
         if ($tsv_path === '' || empty($columns)) {
-            return $this->import_catalog_file_via_batches($xmlFilePath, $t_start, $mem_start);
+            return $this->import_catalog_file_via_batches($xmlFilePath, $t_start, $mem_start, $brandMap);
         }
 
-        $write_stats = $this->write_catalog_tsv($xmlFilePath, $tsv_path, $columns);
+        $write_stats = $this->write_catalog_tsv($xmlFilePath, $tsv_path, $columns, $brandMap);
         if ((int) ($write_stats['rows_written'] ?? 0) <= 0) {
             $this->log('Sports South catalog import wrote zero TSV rows; not loading.', $write_stats);
             return 0;
@@ -138,7 +141,10 @@ final class SportsSouthProductImporterService
         return $stats;
     }
 
-    private function import_catalog_file_via_batches(string $xmlFilePath, float $tStart, int $memStart): int
+    /**
+     * @param array<string,array<string,mixed>> $brandMap
+     */
+    private function import_catalog_file_via_batches(string $xmlFilePath, float $tStart, int $memStart, array $brandMap = []): int
     {
         try {
             $this->table->truncate_staging();
@@ -151,8 +157,9 @@ final class SportsSouthProductImporterService
         $total = 0;
         $seen = [];
         $skipped_dupes = 0;
+        $brand_hits = 0;
 
-        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use (&$batch, &$total, &$seen, &$skipped_dupes): void {
+        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use (&$batch, &$total, &$seen, &$skipped_dupes, &$brand_hits, $brandMap): void {
             $upc = trim((string) ($row['upc'] ?? ''));
             if ($upc === '') {
                 return;
@@ -163,6 +170,7 @@ final class SportsSouthProductImporterService
             }
             $seen[$upc] = true;
 
+            $row = $this->apply_brand_map($row, $brandMap, $brand_hits);
             $batch[] = SigDropshipApproval::apply_to_row('sports_south', $row);
             if (count($batch) >= 500) {
                 $total += $this->flush_staging_batch($batch);
@@ -178,6 +186,8 @@ final class SportsSouthProductImporterService
             'mode' => 'batched_insert_fallback',
             'rows_inserted' => (int) $total,
             'skipped_dupes' => (int) $skipped_dupes,
+            'brand_map_count' => count($brandMap),
+            'brand_map_hits' => (int) $brand_hits,
             'elapsed_ms' => number_format((microtime(true) - $tStart) * 1000.0, 2, '.', ''),
             'memory_start_kb' => $memStart > 0 ? (int) round($memStart / 1024) : 0,
         ]);
@@ -187,9 +197,10 @@ final class SportsSouthProductImporterService
 
     /**
      * @param string[] $columns
+     * @param array<string,array<string,mixed>> $brandMap
      * @return array<string,mixed>
      */
-    private function write_catalog_tsv(string $xmlFilePath, string $tsvPath, array $columns): array
+    private function write_catalog_tsv(string $xmlFilePath, string $tsvPath, array $columns, array $brandMap = []): array
     {
         $t_start = microtime(true);
         $handle = fopen($tsvPath, 'w');
@@ -203,9 +214,10 @@ final class SportsSouthProductImporterService
 
         $rows_written = 0;
         $skipped_dupes = 0;
+        $brand_hits = 0;
         $seen = [];
 
-        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use ($handle, $columns, &$rows_written, &$skipped_dupes, &$seen): void {
+        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use ($handle, $columns, &$rows_written, &$skipped_dupes, &$brand_hits, &$seen, $brandMap): void {
             $upc = trim((string) ($row['upc'] ?? ''));
             if ($upc === '') {
                 return;
@@ -216,6 +228,7 @@ final class SportsSouthProductImporterService
             }
             $seen[$upc] = true;
 
+            $row = $this->apply_brand_map($row, $brandMap, $brand_hits);
             $row = SigDropshipApproval::apply_to_row('sports_south', $row);
 
             $values = [];
@@ -235,6 +248,8 @@ final class SportsSouthProductImporterService
             'tsv_bytes' => file_exists($tsvPath) ? (int) filesize($tsvPath) : 0,
             'rows_written' => (int) $rows_written,
             'skipped_dupes' => (int) $skipped_dupes,
+            'brand_map_count' => count($brandMap),
+            'brand_map_hits' => (int) $brand_hits,
             'write_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
         ];
     }
@@ -256,6 +271,34 @@ final class SportsSouthProductImporterService
         }
 
         return $this->import_tsv_via_php($tsvPath, $columns);
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @param array<string,array<string,mixed>> $brandMap
+     * @return array<string,mixed>
+     */
+    private function apply_brand_map(array $row, array $brandMap, int &$brandHits): array
+    {
+        if (empty($brandMap)) {
+            return $row;
+        }
+
+        $brand_number = trim((string) ($row['brand_number'] ?? ''));
+        if ($brand_number === '' || !isset($brandMap[$brand_number])) {
+            return $row;
+        }
+
+        $brand = $brandMap[$brand_number];
+        $brand_name = trim((string) ($brand['brand_name'] ?? ''));
+        if ($brand_name === '') {
+            return $row;
+        }
+
+        $row['manufacturer'] = $brand_name;
+        $brandHits++;
+
+        return $row;
     }
 
     /**

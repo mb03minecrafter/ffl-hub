@@ -50,6 +50,24 @@ final class SportsSouthProductParser
     }
 
     /**
+     * @param callable(array<string,mixed>):void $callback
+     */
+    public function each_brand_row(string $filePath, callable $callback): int
+    {
+        return $this->each_xml_row(
+            $filePath,
+            ['Table', 'Brand'],
+            ['BRDNO'],
+            function (array $raw) use ($callback): void {
+                $row = $this->parse_brand($raw);
+                if (is_array($row)) {
+                    $callback($row);
+                }
+            }
+        );
+    }
+
+    /**
      * @param array<string,mixed> $raw
      * @return array<string,mixed>|null
      */
@@ -66,13 +84,13 @@ final class SportsSouthProductParser
         }
 
         $name = $this->clean_text($this->first($raw, ['ITDESC', 'DESC', 'DESCRIPTION', 'IDESC', 'ITEMDESC', 'NAME']));
-        $description = $this->clean_text($this->first($raw, ['LONGDESC', 'LONGDESCRIPTION', 'TEXT', 'DESCRIPTION', 'IDESC', 'ITDESC']));
+        $description = $this->clean_text($this->first($raw, ['SHDESC', 'LONGDESC', 'LONGDESCRIPTION', 'TEXT', 'DESCRIPTION', 'IDESC', 'ITDESC']));
         $category_id = $this->clean_text($this->first($raw, ['CATID', 'CATEGORYID', 'CAT']));
-        $item_type = $this->clean_text($this->first($raw, ['CATDESC', 'CATEGORY', 'TYPE', 'ITEMTYPE', 'DEPT']));
+        $item_type = $this->clean_text($this->first($raw, ['ITYPE', 'CATDESC', 'CATEGORY', 'TYPE', 'ITEMTYPE', 'DEPT']));
         $manufacturer = $this->clean_text($this->first($raw, ['BRAND', 'BRDNAM', 'MFG', 'MANUFACTURER', 'ITBRD']));
         $brand_number = $this->clean_text($this->first($raw, ['ITBRDNO', 'BRDNO', 'BRANDNO']));
-        $mfg_part = $this->clean_text($this->first($raw, ['MFGITEMNO', 'MFGNO', 'MFGITEM', 'ITMFGNO', 'M', 'MANUFACTURERPARTNUMBER']));
-        $model = $this->clean_text($this->first($raw, ['MODEL', 'ITMODEL']));
+        $mfg_part = $this->clean_text($this->first($raw, ['MFGINO', 'MFGITEMNO', 'MFGNO', 'MFGITEM', 'ITMFGNO', 'M', 'MANUFACTURERPARTNUMBER']));
+        $model = $this->clean_text($this->first($raw, ['IMODEL', 'MODEL', 'ITMODEL']));
         $image_ref = $this->clean_text($this->first($raw, ['PICREF', 'PICTURE', 'IMAGE']));
         if ($image_ref === '') {
             $image_ref = $item_number;
@@ -81,16 +99,17 @@ final class SportsSouthProductParser
         $image_urls = $this->image_urls($image_ref);
         $restricted_states = $this->clean_text($this->first($raw, ['RESTRICTEDSTATES', 'STATE_RESTRICTIONS', 'STATES']));
         $haystack = strtoupper(trim($name . ' ' . $description . ' ' . $item_type . ' ' . $category_id));
+        $quantity = $this->quantity_string($this->first($raw, ['QTYOH', 'ONHAND', 'QTY', 'QUANTITY']));
 
         $row = [
             'upc' => $upc,
             'sports_south_item_number' => $item_number,
             'remote_identifier' => $item_number,
 
-            'inventory_quantity' => '0',
-            'allocation_status' => 'out_of_stock',
-            'distributor_price' => $this->money_string($this->first($raw, ['C', 'CUSTOMERPRICE', 'CUSTOMER_PRICE', 'PRICE'])),
-            'catalog_price' => $this->money_string($this->first($raw, ['P', 'CATALOGPRICE', 'CATALOG_PRICE', 'LISTPRICE'])),
+            'inventory_quantity' => $quantity,
+            'allocation_status' => ((int) $quantity) > 0 ? 'in_stock' : 'out_of_stock',
+            'distributor_price' => $this->money_string($this->first($raw, ['CPRC', 'C', 'CUSTOMERPRICE', 'CUSTOMER_PRICE', 'PRICE'])),
+            'catalog_price' => $this->money_string($this->first($raw, ['PRC1', 'P', 'CATALOGPRICE', 'CATALOG_PRICE', 'LISTPRICE'])),
             'retail_map' => $this->money_string($this->first($raw, ['MAP', 'ITMAP', 'MINADVERTISEDPRICE'])),
             'retail_msrp' => $this->money_string($this->first($raw, ['MSRP', 'ITMSRP', 'RETAIL', 'MFPRC'])),
 
@@ -111,7 +130,7 @@ final class SportsSouthProductParser
             'dropship_block_reason' => $this->dropship_enabled($raw) ? '' : 'feed_flag',
             'restricted_states' => $restricted_states,
 
-            'shipping_weight' => $this->decimal_string($this->first($raw, ['WEIGHT', 'WT', 'SHPWT'])),
+            'shipping_weight' => $this->decimal_string($this->first($raw, ['WTPBX', 'WEIGHT', 'WT', 'SHPWT'])),
             'shipping_length_in' => $this->dimension_string($this->first($raw, ['LENGTH', 'LEN', 'SHPLEN'])),
             'shipping_width_in' => $this->dimension_string($this->first($raw, ['WIDTH', 'WID', 'SHPWID'])),
             'shipping_height_in' => $this->dimension_string($this->first($raw, ['HEIGHT', 'HGT', 'SHPHGT'])),
@@ -155,6 +174,25 @@ final class SportsSouthProductParser
             'quantity_delta' => (string) ((int) $quantity),
             'catalog_price' => $this->money_string($this->first($raw, ['P', 'CATALOGPRICE', 'CATALOG_PRICE'])),
             'customer_price' => $this->money_string($this->first($raw, ['C', 'CUSTOMERPRICE', 'CUSTOMER_PRICE'])),
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $raw
+     * @return array<string,mixed>|null
+     */
+    public function parse_brand(array $raw): ?array
+    {
+        $brand_number = $this->clean_text($this->first($raw, ['BRDNO', 'BRANDNO', 'ITBRDNO']));
+        if ($brand_number === '') {
+            return null;
+        }
+
+        return [
+            'brand_number' => $brand_number,
+            'brand_name' => $this->clean_text($this->first($raw, ['BRDNM', 'BRAND', 'BRANDNAME'])),
+            'brand_url' => $this->clean_text($this->first($raw, ['BRDURL', 'BRANDURL', 'URL'])),
+            'item_count' => (int) $this->first($raw, ['ITCOUNT', 'ITEMCOUNT', 'COUNT']),
         ];
     }
 
@@ -461,6 +499,16 @@ final class SportsSouthProductParser
         }
 
         return number_format($num, 2, '.', '');
+    }
+
+    private function quantity_string(string $value): string
+    {
+        $value = preg_replace('/[^0-9\-]/', '', trim($value));
+        if (!is_string($value) || $value === '' || !is_numeric($value)) {
+            return '0';
+        }
+
+        return (string) max(0, (int) $value);
     }
 
     private function dimension_string(string $value): string

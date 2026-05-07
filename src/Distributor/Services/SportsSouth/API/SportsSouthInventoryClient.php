@@ -71,6 +71,14 @@ final class SportsSouthInventoryClient
     }
 
     /**
+     * @return array{ok:bool,status:int,xml_path:string,raw_path:string,xml_bytes:int,body_bytes:int,error:string}
+     */
+    public function brand_update_to_file(string $xmlPath): array
+    {
+        return $this->post_operation_to_file('BrandUpdate', [], $xmlPath);
+    }
+
+    /**
      * @return array{ok:bool,status:int,xml:string,body:string,error:string}
      */
     public function incremental_onhand_update(string $sinceDateTime): array
