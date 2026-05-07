@@ -183,10 +183,10 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
     private function log(string $message, array $ctx = []): void
     {
         if (empty($ctx)) {
-            DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $message);
+            DebugLogUtil::log_if(true, self::LOG_PREFIX, $message, self::DEBUG_FLAG);
             return;
         }
 
-        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $message, $ctx);
+        DebugLogUtil::log_if_ctx(true, self::LOG_PREFIX, $message, $ctx, self::DEBUG_FLAG);
     }
 }

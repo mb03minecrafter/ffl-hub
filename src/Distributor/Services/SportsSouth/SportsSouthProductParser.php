@@ -321,11 +321,31 @@ final class SportsSouthProductParser
     private function decode_if_escaped_xml(string $xml): string
     {
         $trimmed = trim($xml);
+        if (preg_match('/<string\b[^>]*>(.*?)<\/string>/is', $trimmed, $m)) {
+            return $this->decode_xml_markup_entities(trim((string) $m[1]));
+        }
+
         if (strpos($trimmed, '&lt;') !== false && strpos($trimmed, '<') === false) {
-            return html_entity_decode($trimmed, ENT_QUOTES | ENT_XML1, 'UTF-8');
+            return $this->decode_xml_markup_entities($trimmed);
         }
 
         return $xml;
+    }
+
+    private function decode_xml_markup_entities(string $xml): string
+    {
+        return strtr($xml, [
+            '&lt;' => '<',
+            '&LT;' => '<',
+            '&#60;' => '<',
+            '&#x3c;' => '<',
+            '&#X3C;' => '<',
+            '&gt;' => '>',
+            '&GT;' => '>',
+            '&#62;' => '>',
+            '&#x3e;' => '>',
+            '&#X3E;' => '>',
+        ]);
     }
 
     /**

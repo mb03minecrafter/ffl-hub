@@ -89,7 +89,7 @@ final class SportsSouthInventoryClient
         $body = array_merge($this->credential_body(), $operationParams);
 
         $t_start = microtime(true);
-        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, 'POST start', [
+        DebugLogUtil::log_if_ctx(true, self::LOG_PREFIX, 'POST start', [
             'operation' => $operation,
             'url' => $url,
             'timeout_seconds' => $this->timeoutSeconds,
@@ -97,7 +97,7 @@ final class SportsSouthInventoryClient
             'customer_present' => $this->customerNumber !== '' ? 1 : 0,
             'username_present' => $this->username !== '' ? 1 : 0,
             'source_present' => $this->source !== '' ? 1 : 0,
-        ]);
+        ], self::DEBUG_FLAG);
 
         $response = wp_remote_post(
             $url,
@@ -111,7 +111,7 @@ final class SportsSouthInventoryClient
         );
 
         $parsed = $this->parse_response($response, $operation);
-        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, 'POST complete', [
+        DebugLogUtil::log_if_ctx(true, self::LOG_PREFIX, 'POST complete', [
             'operation' => $operation,
             'ok' => empty($parsed['ok']) ? 0 : 1,
             'status' => (int) ($parsed['status'] ?? 0),
@@ -119,7 +119,7 @@ final class SportsSouthInventoryClient
             'xml_bytes' => strlen((string) ($parsed['xml'] ?? '')),
             'body_bytes' => strlen((string) ($parsed['body'] ?? '')),
             'elapsed_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
-        ]);
+        ], self::DEBUG_FLAG);
 
         return $parsed;
     }
@@ -190,7 +190,7 @@ final class SportsSouthInventoryClient
         if ($xml instanceof \SimpleXMLElement) {
             $name = strtolower((string) $xml->getName());
             if ($name === 'string') {
-                return html_entity_decode(trim((string) $xml), ENT_QUOTES | ENT_XML1, 'UTF-8');
+                return $this->decode_wrapped_dataset_xml(trim((string) $xml));
             }
 
             $namespaces = $xml->getNamespaces(true);
@@ -200,15 +200,39 @@ final class SportsSouthInventoryClient
 
             $result_nodes = $xml->xpath('//*[local-name()="DailyItemUpdateResult" or local-name()="IncrementalOnhandUpdateResult"]');
             if (is_array($result_nodes) && isset($result_nodes[0])) {
-                return html_entity_decode(trim((string) $result_nodes[0]), ENT_QUOTES | ENT_XML1, 'UTF-8');
+                return $this->decode_wrapped_dataset_xml(trim((string) $result_nodes[0]));
             }
         }
 
         if (preg_match('/<string\b[^>]*>(.*?)<\/string>/is', $trimmed, $m)) {
-            return html_entity_decode(trim((string) $m[1]), ENT_QUOTES | ENT_XML1, 'UTF-8');
+            return $this->decode_wrapped_dataset_xml(trim((string) $m[1]));
         }
 
         return $trimmed;
+    }
+
+    private function decode_wrapped_dataset_xml(string $xml): string
+    {
+        $xml = trim($xml);
+        if ($xml === '') {
+            return '';
+        }
+
+        // Sports South returns the catalog as escaped XML inside an ASMX string.
+        // Decode only markup entities. Product text ampersands arrive as
+        // &amp;amp; and must remain valid XML as &amp; until the row parser reads them.
+        return strtr($xml, [
+            '&lt;' => '<',
+            '&LT;' => '<',
+            '&#60;' => '<',
+            '&#x3c;' => '<',
+            '&#X3C;' => '<',
+            '&gt;' => '>',
+            '&GT;' => '>',
+            '&#62;' => '>',
+            '&#x3e;' => '>',
+            '&#X3E;' => '>',
+        ]);
     }
 
     private function looks_like_auth_failure(string $text): bool
