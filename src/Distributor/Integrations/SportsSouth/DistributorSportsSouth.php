@@ -17,6 +17,7 @@ use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\DistributorShipTo;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
+use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInvoicesClient;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthOrdersClient;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthAccessoriesOnlyPolicy;
 use FFLHub\Settings\Options;
@@ -110,7 +111,100 @@ final class DistributorSportsSouth extends DistributorBase
 
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
     {
-        return null;
+        $po_number = trim((string) $po_number);
+        if ($po_number === '') {
+            return null;
+        }
+
+        $client = $this->make_invoices_client(60);
+        if (!$client->has_credentials()) {
+            return null;
+        }
+
+        $resp = $client->get_tracking_by_po($po_number);
+        if (empty($resp['ok'])) {
+            return null;
+        }
+
+        $rows = isset($resp['rows']) && is_array($resp['rows'])
+            ? (array) $resp['rows']
+            : [];
+
+        $tracking_numbers = [];
+        $invoice_numbers = [];
+        $ship_dates = [];
+        $weights = [];
+        $shipping_service = null;
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            foreach (self::split_tracking_numbers((string) ($row['TRACKNO'] ?? '')) as $tracking) {
+                $tracking_numbers[] = $tracking;
+            }
+
+            $invoice = trim((string) ($row['INVNO'] ?? ''));
+            if ($invoice !== '') {
+                $invoice_numbers[] = $invoice;
+            }
+
+            $ship_date = trim((string) ($row['SHPDTE'] ?? ''));
+            if ($ship_date !== '') {
+                $ship_dates[] = $ship_date;
+            }
+
+            $weight = trim((string) ($row['PKGWT'] ?? ''));
+            if ($weight !== '') {
+                $weights[] = $weight;
+            }
+
+            if ($shipping_service === null) {
+                $service = trim((string) ($row['SERVICE'] ?? ''));
+                if ($service !== '') {
+                    $shipping_service = $this->normalize_carrier($service) ?? $service;
+                }
+            }
+        }
+
+        $scalar = (string) ($resp['scalar'] ?? '');
+        if (empty($tracking_numbers) && strpos($scalar, '<') === false) {
+            foreach (self::split_tracking_numbers($scalar) as $tracking) {
+                $tracking_numbers[] = $tracking;
+            }
+        }
+
+        $tracking_numbers = array_values(array_unique(array_filter($tracking_numbers)));
+        $invoice_numbers = array_values(array_unique(array_filter($invoice_numbers)));
+        $ship_dates = array_values(array_unique(array_filter($ship_dates)));
+        $weights = array_values(array_unique(array_filter($weights)));
+        sort($tracking_numbers, SORT_STRING);
+        sort($invoice_numbers, SORT_STRING);
+        sort($ship_dates, SORT_STRING);
+        sort($weights, SORT_STRING);
+
+        if (empty($tracking_numbers)) {
+            return null;
+        }
+
+        if ($shipping_service === null) {
+            $shipping_service = $this->infer_carrier_from_tracking((string) ($tracking_numbers[0] ?? ''));
+        }
+
+        return new DistributorShipment(
+            $tracking_numbers,
+            $invoice_numbers,
+            $shipping_service,
+            !empty($weights) ? implode(', ', $weights) : null,
+            [
+                'po_number' => $po_number,
+                'rows' => $rows,
+                'row_count' => count($rows),
+                'ship_dates' => $ship_dates,
+                'http_status' => (int) ($resp['status'] ?? 0),
+            ]
+        );
     }
 
     private static function lookup_offers_enabled(): bool
@@ -512,6 +606,18 @@ final class DistributorSportsSouth extends DistributorBase
         );
     }
 
+    private function make_invoices_client(int $timeoutSeconds = 60): SportsSouthInvoicesClient
+    {
+        return new SportsSouthInvoicesClient(
+            $this->get_customer_number(),
+            $this->get_username(),
+            $this->get_password(),
+            $this->get_source(),
+            $this->get_invoices_api_base_url(),
+            $timeoutSeconds
+        );
+    }
+
     private function get_customer_number(): string
     {
         return trim((string) Options::get_distributor_option('sports_south', 'customer_number', ''));
@@ -543,6 +649,18 @@ final class DistributorSportsSouth extends DistributorBase
         $url = trim((string) apply_filters('fflhub_sports_south_orders_api_base_url', $url, $this));
 
         return $url !== '' ? $url : SportsSouthOrdersClient::DEFAULT_BASE_URL;
+    }
+
+    private function get_invoices_api_base_url(): string
+    {
+        $url = trim((string) Options::get_distributor_option(
+            'sports_south',
+            'invoices_api_base_url',
+            SportsSouthInvoicesClient::DEFAULT_BASE_URL
+        ));
+        $url = trim((string) apply_filters('fflhub_sports_south_invoices_api_base_url', $url, $this));
+
+        return $url !== '' ? $url : SportsSouthInvoicesClient::DEFAULT_BASE_URL;
     }
 
     private function get_order_ship_via(): string
@@ -581,6 +699,54 @@ final class DistributorSportsSouth extends DistributorBase
         }
 
         return 'order';
+    }
+
+    /**
+     * @return string[]
+     */
+    private static function split_tracking_numbers(string $raw): array
+    {
+        $raw = trim(html_entity_decode($raw, ENT_QUOTES | ENT_XML1, 'UTF-8'));
+        if ($raw === '') {
+            return [];
+        }
+
+        $tokens = preg_split('/[\s,;|]+/', $raw);
+        if (!is_array($tokens)) {
+            return [];
+        }
+
+        $bad = [
+            'pending' => true,
+            'tbd' => true,
+            'n/a' => true,
+            'na' => true,
+            'none' => true,
+            'null' => true,
+            'unknown' => true,
+            '-' => true,
+        ];
+
+        $out = [];
+        foreach ($tokens as $token) {
+            $tracking = trim((string) $token);
+            if ($tracking === '') {
+                continue;
+            }
+
+            $lower = strtolower($tracking);
+            if (isset($bad[$lower])) {
+                continue;
+            }
+
+            if (strlen($tracking) < 8 || preg_match('/^[a-z]+$/i', $tracking)) {
+                continue;
+            }
+
+            $out[] = $tracking;
+        }
+
+        return array_values(array_unique($out));
     }
 
     /**

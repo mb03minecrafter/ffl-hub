@@ -95,6 +95,13 @@ final class SportsSouthModule implements DistributorModuleInterface
                 'description' => 'Sports South orders ASMX endpoint.',
                 'default' => 'https://webservices.theshootingwarehouse.com/smart/orders.asmx',
             ],
+            'invoices_api_base_url' => [
+                'label' => 'Invoices API Base URL',
+                'type' => 'text',
+                'placeholder' => 'https://webservices.theshootingwarehouse.com/smart/invoices.asmx',
+                'description' => 'Sports South invoices/tracking ASMX endpoint.',
+                'default' => 'https://webservices.theshootingwarehouse.com/smart/invoices.asmx',
+            ],
             'order_ship_via' => [
                 'label' => 'Order ShipVIA',
                 'type' => 'select',
