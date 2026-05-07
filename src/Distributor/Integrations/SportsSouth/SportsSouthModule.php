@@ -239,12 +239,6 @@ final class SportsSouthModule implements DistributorModuleInterface
                 'description' => 'When enabled, Sports South FFL/SOT rows are excluded from catalog import, product creation, and product sync payloads.',
                 'default' => '0',
             ],
-            'product_sync_enabled' => [
-                'label' => 'Allow Product Sync Selection',
-                'type' => 'checkbox',
-                'description' => 'When disabled, Sports South can still provide UPC/product creation payloads, but managed product sync will not choose it as the source.',
-                'default' => '0',
-            ],
         ], SportsSouthFulfillmentPolicy::settings_schema_fields());
     }
 

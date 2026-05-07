@@ -1283,17 +1283,6 @@ final class Options
     }
 
     /**
-     * Whether Sports South may be selected by managed product sync.
-     *
-     * Sports South can still provide direct product/UPC payloads while this is
-     * disabled; this only controls automatic sync source selection.
-     */
-    public static function is_sports_south_product_sync_enabled(): bool
-    {
-        return self::get_distributor_option('sports_south', 'product_sync_enabled', '0') === '1';
-    }
-
-    /**
      * Write a distributor-scoped option.
      */
     public static function set_distributor_option(
