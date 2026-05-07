@@ -54,17 +54,19 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             @set_time_limit(0);
         }
 
-        update_option('fflhub_sports_south_fulfillment_last_run', current_time('mysql'), false);
-
         $this->log('---- RUN START ----', [
             'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
             'hook' => self::CRON_HOOK,
             'group' => $this->get_action_group(),
             'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
         ]);
+        update_option('fflhub_sports_south_fulfillment_last_stage', 'run_start', false);
+        update_option('fflhub_sports_south_fulfillment_last_run', current_time('mysql'), false);
 
+        update_option('fflhub_sports_south_fulfillment_last_stage', 'make_client', false);
         $client = $this->make_client();
         if (!$client->has_credentials()) {
+            update_option('fflhub_sports_south_fulfillment_last_stage', 'missing_credentials', false);
             update_option('fflhub_sports_south_fulfillment_last_error', current_time('mysql'), false);
             $this->log('Missing Sports South credentials; product import skipped.');
             $this->finalize_run($t_start, $mem_start, 'ERROR (missing credentials)');
@@ -78,6 +80,12 @@ final class SportsSouthProductCronService extends AbstractTableCronService
 
         $last_item = (int) Options::get_distributor_option('sports_south', 'daily_item_last_item', '-1');
 
+        update_option('fflhub_sports_south_fulfillment_last_stage', 'daily_item_update_request', false);
+        $this->log('DailyItemUpdate request starting.', [
+            'last_update' => $last_update,
+            'last_item' => $last_item,
+        ]);
+
         $t_api = microtime(true);
         $response = $client->daily_item_update($last_update, $last_item);
         $this->profile('DailyItemUpdate request', $t_api, [
@@ -88,6 +96,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         ]);
 
         if (empty($response['ok'])) {
+            update_option('fflhub_sports_south_fulfillment_last_stage', 'daily_item_update_failed', false);
             update_option('fflhub_sports_south_fulfillment_last_error', current_time('mysql'), false);
             $this->log('Sports South DailyItemUpdate failed.', [
                 'status' => (int) ($response['status'] ?? 0),
@@ -97,8 +106,10 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             return;
         }
 
+        update_option('fflhub_sports_south_fulfillment_last_stage', 'write_xml', false);
         $xml_path = $this->write_xml_file('daily_item_update', (string) ($response['xml'] ?? ''));
         if ($xml_path === '') {
+            update_option('fflhub_sports_south_fulfillment_last_stage', 'xml_write_failed', false);
             update_option('fflhub_sports_south_fulfillment_last_error', current_time('mysql'), false);
             $this->finalize_run($t_start, $mem_start, 'ERROR (xml write failed)');
             return;
@@ -109,6 +120,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         update_option('fflhub_sports_south_fulfillment_last_download_size', (string) (file_exists($xml_path) ? filesize($xml_path) : 0), false);
         delete_option('fflhub_sports_south_fulfillment_last_download_error');
 
+        update_option('fflhub_sports_south_fulfillment_last_stage', 'import_xml', false);
         $t_import = microtime(true);
         $importer = new SportsSouthProductImporterService($this->table);
         $count = $importer->import_catalog_file($xml_path);
@@ -118,12 +130,14 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         ]);
 
         if ($count <= 0) {
+            update_option('fflhub_sports_south_fulfillment_last_stage', 'zero_rows_imported', false);
             update_option('fflhub_sports_south_fulfillment_last_error', current_time('mysql'), false);
             $this->log('Sports South catalog import produced zero rows; not swapping.');
             $this->finalize_run($t_start, $mem_start, 'ERROR (0 imported)');
             return;
         }
 
+        update_option('fflhub_sports_south_fulfillment_last_stage', 'swap_live_table', false);
         $t_swap = microtime(true);
         $new_live = $this->table->swap_live_and_staging();
         $this->profile('Swap staging/live', $t_swap, [
@@ -133,6 +147,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         update_option('fflhub_sports_south_fulfillment_last_refresh', current_time('mysql'), false);
         update_option('fflhub_sports_south_fulfillment_last_refresh_count', (int) $count, false);
         update_option('fflhub_sports_south_fulfillment_last_swap', current_time('mysql'), false);
+        update_option('fflhub_sports_south_fulfillment_last_stage', 'success', false);
         delete_option('fflhub_sports_south_fulfillment_last_error');
 
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [

@@ -6,6 +6,8 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+use FFLHub\Util\DebugLogUtil;
+
 /**
  * Thin client for Sports South's ASMX inventory service.
  *
@@ -15,6 +17,8 @@ if (!defined('ABSPATH')) {
 final class SportsSouthInventoryClient
 {
     public const DEFAULT_BASE_URL = 'https://webservices.theshootingwarehouse.com/smart/inventory.asmx';
+    private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
+    private const LOG_PREFIX = '[FFLHub][SportsSouthAPI]';
 
     private string $customerNumber;
     private string $username;
@@ -84,6 +88,17 @@ final class SportsSouthInventoryClient
         $url = $this->baseUrl . '/' . rawurlencode($operation);
         $body = array_merge($this->credential_body(), $operationParams);
 
+        $t_start = microtime(true);
+        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, 'POST start', [
+            'operation' => $operation,
+            'url' => $url,
+            'timeout_seconds' => $this->timeoutSeconds,
+            'params' => $operationParams,
+            'customer_present' => $this->customerNumber !== '' ? 1 : 0,
+            'username_present' => $this->username !== '' ? 1 : 0,
+            'source_present' => $this->source !== '' ? 1 : 0,
+        ]);
+
         $response = wp_remote_post(
             $url,
             [
@@ -95,7 +110,18 @@ final class SportsSouthInventoryClient
             ]
         );
 
-        return $this->parse_response($response, $operation);
+        $parsed = $this->parse_response($response, $operation);
+        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, 'POST complete', [
+            'operation' => $operation,
+            'ok' => empty($parsed['ok']) ? 0 : 1,
+            'status' => (int) ($parsed['status'] ?? 0),
+            'error' => (string) ($parsed['error'] ?? ''),
+            'xml_bytes' => strlen((string) ($parsed['xml'] ?? '')),
+            'body_bytes' => strlen((string) ($parsed['body'] ?? '')),
+            'elapsed_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
+        ]);
+
+        return $parsed;
     }
 
     /**

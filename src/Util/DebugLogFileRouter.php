@@ -107,6 +107,12 @@ final class DebugLogFileRouter
             $distributor = 'davidsons';
         } elseif (strpos($haystack, 'rsr') !== false) {
             $distributor = 'rsr';
+        } elseif (
+            strpos($haystack, 'sportssouth') !== false
+            || strpos($haystack, 'sports south') !== false
+            || strpos($haystack, 'sports_south') !== false
+        ) {
+            $distributor = 'sports_south';
         }
 
         $component = 'general';
