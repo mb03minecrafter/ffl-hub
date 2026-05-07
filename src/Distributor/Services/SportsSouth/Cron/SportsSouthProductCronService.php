@@ -86,13 +86,26 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             'last_item' => $last_item,
         ]);
 
+        update_option('fflhub_sports_south_fulfillment_last_stage', 'download_xml', false);
+        $xml_path = $this->build_xml_file_path('daily_item_update');
+        if ($xml_path === '') {
+            update_option('fflhub_sports_south_fulfillment_last_stage', 'xml_path_failed', false);
+            update_option('fflhub_sports_south_fulfillment_last_error', current_time('mysql'), false);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (xml path failed)');
+            return;
+        }
+
         $t_api = microtime(true);
-        $response = $client->daily_item_update($last_update, $last_item);
+        $response = $client->daily_item_update_to_file($xml_path, $last_update, $last_item);
         $this->profile('DailyItemUpdate request', $t_api, [
             'ok' => empty($response['ok']) ? 0 : 1,
             'status' => (int) ($response['status'] ?? 0),
             'last_update' => $last_update,
             'last_item' => $last_item,
+            'xml_path' => $xml_path,
+            'xml_bytes' => (int) ($response['xml_bytes'] ?? 0),
+            'body_bytes' => (int) ($response['body_bytes'] ?? 0),
+            'raw_path' => (string) ($response['raw_path'] ?? ''),
         ]);
 
         if (empty($response['ok'])) {
@@ -103,15 +116,6 @@ final class SportsSouthProductCronService extends AbstractTableCronService
                 'error' => (string) ($response['error'] ?? ''),
             ]);
             $this->finalize_run($t_start, $mem_start, 'ERROR (DailyItemUpdate failed)');
-            return;
-        }
-
-        update_option('fflhub_sports_south_fulfillment_last_stage', 'write_xml', false);
-        $xml_path = $this->write_xml_file('daily_item_update', (string) ($response['xml'] ?? ''));
-        if ($xml_path === '') {
-            update_option('fflhub_sports_south_fulfillment_last_stage', 'xml_write_failed', false);
-            update_option('fflhub_sports_south_fulfillment_last_error', current_time('mysql'), false);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (xml write failed)');
             return;
         }
 
@@ -169,23 +173,14 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         return new SportsSouthInventoryClient($customer, $username, $password, $source, $base_url, 240);
     }
 
-    private function write_xml_file(string $prefix, string $xml): string
+    private function build_xml_file_path(string $prefix): string
     {
         $dir = $this->uploads_subdir();
         if ($dir === '') {
             return '';
         }
 
-        $path = $dir . '/' . $prefix . '_' . gmdate('Ymd_His') . '.xml';
-        $bytes = file_put_contents($path, $xml);
-        if ($bytes === false) {
-            $this->log('Failed to write Sports South XML file.', [
-                'path' => $path,
-            ]);
-            return '';
-        }
-
-        return $path;
+        return $dir . '/' . $prefix . '_' . gmdate('Ymd_His') . '.xml';
     }
 
     private function uploads_subdir(): string

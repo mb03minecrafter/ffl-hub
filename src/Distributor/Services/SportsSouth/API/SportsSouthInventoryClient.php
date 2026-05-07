@@ -60,6 +60,17 @@ final class SportsSouthInventoryClient
     }
 
     /**
+     * @return array{ok:bool,status:int,xml_path:string,raw_path:string,xml_bytes:int,body_bytes:int,error:string}
+     */
+    public function daily_item_update_to_file(string $xmlPath, string $lastUpdate = '1/1/1990', int $lastItem = -1): array
+    {
+        return $this->post_operation_to_file('DailyItemUpdate', [
+            'LastUpdate' => trim($lastUpdate) !== '' ? trim($lastUpdate) : '1/1/1990',
+            'LastItem' => (string) $lastItem,
+        ], $xmlPath);
+    }
+
+    /**
      * @return array{ok:bool,status:int,xml:string,body:string,error:string}
      */
     public function incremental_onhand_update(string $sinceDateTime): array
@@ -122,6 +133,130 @@ final class SportsSouthInventoryClient
         ], self::DEBUG_FLAG);
 
         return $parsed;
+    }
+
+    /**
+     * @param array<string,string> $operationParams
+     * @return array{ok:bool,status:int,xml_path:string,raw_path:string,xml_bytes:int,body_bytes:int,error:string}
+     */
+    private function post_operation_to_file(string $operation, array $operationParams, string $xmlPath): array
+    {
+        if (!$this->has_credentials()) {
+            return [
+                'ok' => false,
+                'status' => 0,
+                'xml_path' => $xmlPath,
+                'raw_path' => '',
+                'xml_bytes' => 0,
+                'body_bytes' => 0,
+                'error' => 'Missing Sports South credentials.',
+            ];
+        }
+
+        if (!function_exists('curl_init')) {
+            $response = $this->post_operation($operation, $operationParams);
+            $xml = (string) ($response['xml'] ?? '');
+            $bytes = $xml !== '' ? file_put_contents($xmlPath, $xml) : false;
+
+            return [
+                'ok' => !empty($response['ok']) && $bytes !== false && (int) $bytes > 0,
+                'status' => (int) ($response['status'] ?? 0),
+                'xml_path' => $xmlPath,
+                'raw_path' => '',
+                'xml_bytes' => $bytes !== false ? (int) $bytes : 0,
+                'body_bytes' => strlen((string) ($response['body'] ?? '')),
+                'error' => $bytes === false ? 'Failed to write Sports South XML file.' : (string) ($response['error'] ?? ''),
+            ];
+        }
+
+        $url = $this->baseUrl . '/' . rawurlencode($operation);
+        $body = array_merge($this->credential_body(), $operationParams);
+        $rawPath = $xmlPath . '.raw-response.xml';
+
+        $rawHandle = fopen($rawPath, 'wb');
+        if (!$rawHandle) {
+            return [
+                'ok' => false,
+                'status' => 0,
+                'xml_path' => $xmlPath,
+                'raw_path' => $rawPath,
+                'xml_bytes' => 0,
+                'body_bytes' => 0,
+                'error' => 'Failed to open Sports South raw response file.',
+            ];
+        }
+
+        $t_start = microtime(true);
+        DebugLogUtil::log_if_ctx(true, self::LOG_PREFIX, 'POST stream start', [
+            'operation' => $operation,
+            'url' => $url,
+            'timeout_seconds' => $this->timeoutSeconds,
+            'params' => $operationParams,
+            'xml_path' => $xmlPath,
+            'raw_path' => $rawPath,
+            'customer_present' => $this->customerNumber !== '' ? 1 : 0,
+            'username_present' => $this->username !== '' ? 1 : 0,
+            'source_present' => $this->source !== '' ? 1 : 0,
+        ], self::DEBUG_FLAG);
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => http_build_query($body, '', '&'),
+            CURLOPT_HTTPHEADER => [
+                'Accept: text/xml, application/xml, */*',
+                'Content-Type: application/x-www-form-urlencoded',
+            ],
+            CURLOPT_FILE => $rawHandle,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_CONNECTTIMEOUT => 20,
+            CURLOPT_TIMEOUT => $this->timeoutSeconds,
+            CURLOPT_FAILONERROR => false,
+        ]);
+
+        $ok = curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $curlError = $ok === false ? (string) curl_error($ch) : '';
+        curl_close($ch);
+        fclose($rawHandle);
+        clearstatcache(true, $rawPath);
+
+        $bodyBytes = file_exists($rawPath) ? (int) filesize($rawPath) : 0;
+        $xmlBytes = 0;
+        $error = '';
+
+        if ($ok === false) {
+            $error = $curlError !== '' ? $curlError : 'Sports South curl request failed.';
+        } elseif ($status < 200 || $status >= 300) {
+            $error = 'Sports South ' . $operation . ' failed with HTTP status ' . $status . '.';
+        } elseif ($bodyBytes <= 0) {
+            $error = 'Sports South ' . $operation . ' returned an empty response.';
+        } else {
+            $xmlBytes = $this->write_decoded_payload_file($rawPath, $xmlPath);
+            if ($xmlBytes <= 0) {
+                $error = 'Failed to decode Sports South ASMX response.';
+            }
+        }
+
+        DebugLogUtil::log_if_ctx(true, self::LOG_PREFIX, 'POST stream complete', [
+            'operation' => $operation,
+            'ok' => $error === '' ? 1 : 0,
+            'status' => $status,
+            'error' => $error,
+            'xml_bytes' => $xmlBytes,
+            'body_bytes' => $bodyBytes,
+            'elapsed_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
+        ], self::DEBUG_FLAG);
+
+        return [
+            'ok' => $error === '',
+            'status' => $status,
+            'xml_path' => $xmlPath,
+            'raw_path' => $rawPath,
+            'xml_bytes' => $xmlBytes,
+            'body_bytes' => $bodyBytes,
+            'error' => $error,
+        ];
     }
 
     /**
@@ -213,8 +348,7 @@ final class SportsSouthInventoryClient
 
     private function decode_wrapped_dataset_xml(string $xml): string
     {
-        $xml = trim($xml);
-        if ($xml === '') {
+        if (trim($xml) === '') {
             return '';
         }
 
@@ -235,6 +369,105 @@ final class SportsSouthInventoryClient
         ]);
 
         return $this->escape_bare_text_less_than($xml);
+    }
+
+    private function write_decoded_payload_file(string $rawPath, string $xmlPath): int
+    {
+        $in = fopen($rawPath, 'rb');
+        $out = fopen($xmlPath, 'wb');
+        if (!$in || !$out) {
+            if ($in) {
+                fclose($in);
+            }
+            if ($out) {
+                fclose($out);
+            }
+            return 0;
+        }
+
+        $state = 'before_payload';
+        $buffer = '';
+        $written = 0;
+        $tailLength = 512;
+
+        while (!feof($in)) {
+            $chunk = fread($in, 1048576);
+            if (!is_string($chunk) || $chunk === '') {
+                continue;
+            }
+
+            $buffer .= $chunk;
+
+            if ($state === 'before_payload') {
+                $stringPos = stripos($buffer, '<string');
+                if ($stringPos === false) {
+                    $buffer = substr($buffer, -$tailLength);
+                    continue;
+                }
+
+                $openEnd = strpos($buffer, '>', $stringPos);
+                if ($openEnd === false) {
+                    $buffer = substr($buffer, $stringPos);
+                    continue;
+                }
+
+                $buffer = substr($buffer, $openEnd + 1);
+                $state = 'in_payload';
+            }
+
+            if ($state !== 'in_payload') {
+                continue;
+            }
+
+            $closePos = stripos($buffer, '</string>');
+            if ($closePos !== false) {
+                $written += $this->write_decoded_payload_chunk($out, substr($buffer, 0, $closePos));
+                $buffer = '';
+                $state = 'done';
+                break;
+            }
+
+            if (strlen($buffer) > $tailLength) {
+                $limit = strlen($buffer) - $tailLength;
+                $cut = strrpos(substr($buffer, 0, $limit), "\n");
+                if ($cut === false || $cut <= 0) {
+                    $cut = $limit;
+                } else {
+                    $cut++;
+                }
+
+                $flush = substr($buffer, 0, $cut);
+                $buffer = substr($buffer, $cut);
+                $written += $this->write_decoded_payload_chunk($out, $flush);
+            }
+        }
+
+        if ($state === 'in_payload' && $buffer !== '') {
+            $closePos = stripos($buffer, '</string>');
+            $payload = $closePos !== false ? substr($buffer, 0, $closePos) : $buffer;
+            $written += $this->write_decoded_payload_chunk($out, $payload);
+        }
+
+        fclose($in);
+        fclose($out);
+        clearstatcache(true, $xmlPath);
+
+        return file_exists($xmlPath) ? (int) filesize($xmlPath) : (int) $written;
+    }
+
+    /**
+     * @param resource $handle
+     */
+    private function write_decoded_payload_chunk($handle, string $chunk): int
+    {
+        if ($chunk === '') {
+            return 0;
+        }
+
+        $chunk = $this->decode_wrapped_dataset_xml($chunk);
+        $bytes = fwrite($handle, $chunk);
+
+        return $bytes !== false ? (int) $bytes : 0;
     }
 
     private function escape_bare_text_less_than(string $xml): string
