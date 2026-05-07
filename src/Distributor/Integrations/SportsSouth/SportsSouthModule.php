@@ -10,6 +10,7 @@ use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Services\SportsSouth\Cron\SportsSouthInventoryCronService;
 use FFLHub\Distributor\Services\SportsSouth\Cron\SportsSouthProductCronService;
+use FFLHub\Distributor\Services\SportsSouth\SportsSouthFulfillmentPolicy;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthServices;
 use FFLHub\Distributor\Services\SportsSouth\Tables\SportsSouthProductTableSchema;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
@@ -51,7 +52,7 @@ final class SportsSouthModule implements DistributorModuleInterface
 
     public function settings_schema(): array
     {
-        return [
+        return array_merge([
             'customer_number' => [
                 'label' => 'Customer Number',
                 'type' => 'text',
@@ -108,7 +109,7 @@ final class SportsSouthModule implements DistributorModuleInterface
                 'description' => 'Optional first-run cursor. After the first run, FFLHub stores Sports South inventory cursor automatically.',
                 'default' => '',
             ],
-        ];
+        ], SportsSouthFulfillmentPolicy::settings_schema_fields());
     }
 
     public function build_distributor(): DistributorBase

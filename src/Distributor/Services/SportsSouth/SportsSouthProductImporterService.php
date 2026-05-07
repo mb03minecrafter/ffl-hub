@@ -158,8 +158,9 @@ final class SportsSouthProductImporterService
         $seen = [];
         $skipped_dupes = 0;
         $brand_hits = 0;
+        $fulfillment_policy_blocks = 0;
 
-        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use (&$batch, &$total, &$seen, &$skipped_dupes, &$brand_hits, $brandMap): void {
+        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use (&$batch, &$total, &$seen, &$skipped_dupes, &$brand_hits, &$fulfillment_policy_blocks, $brandMap): void {
             $upc = trim((string) ($row['upc'] ?? ''));
             if ($upc === '') {
                 return;
@@ -171,7 +172,13 @@ final class SportsSouthProductImporterService
             $seen[$upc] = true;
 
             $row = $this->apply_brand_map($row, $brandMap, $brand_hits);
-            $batch[] = SigDropshipApproval::apply_to_row('sports_south', $row);
+            $row = SportsSouthFulfillmentPolicy::apply_to_row($row);
+            $row = SigDropshipApproval::apply_to_row('sports_south', $row);
+            if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
+                $fulfillment_policy_blocks++;
+            }
+
+            $batch[] = $row;
             if (count($batch) >= 500) {
                 $total += $this->flush_staging_batch($batch);
                 $batch = [];
@@ -188,6 +195,7 @@ final class SportsSouthProductImporterService
             'skipped_dupes' => (int) $skipped_dupes,
             'brand_map_count' => count($brandMap),
             'brand_map_hits' => (int) $brand_hits,
+            'fulfillment_policy_blocks' => (int) $fulfillment_policy_blocks,
             'elapsed_ms' => number_format((microtime(true) - $tStart) * 1000.0, 2, '.', ''),
             'memory_start_kb' => $memStart > 0 ? (int) round($memStart / 1024) : 0,
         ]);
@@ -215,9 +223,10 @@ final class SportsSouthProductImporterService
         $rows_written = 0;
         $skipped_dupes = 0;
         $brand_hits = 0;
+        $fulfillment_policy_blocks = 0;
         $seen = [];
 
-        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use ($handle, $columns, &$rows_written, &$skipped_dupes, &$brand_hits, &$seen, $brandMap): void {
+        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use ($handle, $columns, &$rows_written, &$skipped_dupes, &$brand_hits, &$fulfillment_policy_blocks, &$seen, $brandMap): void {
             $upc = trim((string) ($row['upc'] ?? ''));
             if ($upc === '') {
                 return;
@@ -229,7 +238,11 @@ final class SportsSouthProductImporterService
             $seen[$upc] = true;
 
             $row = $this->apply_brand_map($row, $brandMap, $brand_hits);
+            $row = SportsSouthFulfillmentPolicy::apply_to_row($row);
             $row = SigDropshipApproval::apply_to_row('sports_south', $row);
+            if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
+                $fulfillment_policy_blocks++;
+            }
 
             $values = [];
             foreach ($columns as $column) {
@@ -250,6 +263,7 @@ final class SportsSouthProductImporterService
             'skipped_dupes' => (int) $skipped_dupes,
             'brand_map_count' => count($brandMap),
             'brand_map_hits' => (int) $brand_hits,
+            'fulfillment_policy_blocks' => (int) $fulfillment_policy_blocks,
             'write_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
         ];
     }
