@@ -127,8 +127,8 @@ final class SportsSouthProductParser
             'allocation_status' => ((int) $quantity) > 0 ? 'in_stock' : 'out_of_stock',
             'distributor_price' => $this->money_string($this->first($raw, ['CPRC', 'C', 'CUSTOMERPRICE', 'CUSTOMER_PRICE', 'PRICE'])),
             'catalog_price' => $this->money_string($this->first($raw, ['PRC1', 'P', 'CATALOGPRICE', 'CATALOG_PRICE', 'LISTPRICE'])),
-            'retail_map' => $this->money_string($this->first($raw, ['MAP', 'ITMAP', 'MINADVERTISEDPRICE'])),
-            'retail_msrp' => $this->money_string($this->first($raw, ['MSRP', 'ITMSRP', 'RETAIL', 'MFPRC'])),
+            'retail_map' => $this->map_price($raw),
+            'retail_msrp' => $this->msrp_price($raw),
 
             'product_name' => $name,
             'product_description' => $description !== '' ? $description : $name,
@@ -521,6 +521,50 @@ final class SportsSouthProductParser
         }
 
         return number_format($amount, 2, '.', '');
+    }
+
+    /**
+     * Sports South does not expose a plain MAP column in DailyItemUpdate.
+     * Verified rows use MFPRTYP=M with MFPRC as the official MAP value.
+     *
+     * @param array<string,mixed> $raw
+     */
+    private function map_price(array $raw): string
+    {
+        $explicit = $this->money_string($this->first($raw, ['MAP', 'ITMAP', 'MINADVERTISEDPRICE']));
+        if ($explicit !== '') {
+            return $explicit;
+        }
+
+        $price_type = strtoupper($this->clean_text($this->first($raw, ['MFPRTYP'])));
+        if ($price_type !== 'M') {
+            return '';
+        }
+
+        $manufacturer_price = $this->money_string($this->first($raw, ['MFPRC']));
+        if ($manufacturer_price === '' || (float) $manufacturer_price <= 0.0) {
+            return '';
+        }
+
+        return $manufacturer_price;
+    }
+
+    /**
+     * @param array<string,mixed> $raw
+     */
+    private function msrp_price(array $raw): string
+    {
+        $explicit = $this->money_string($this->first($raw, ['MSRP', 'ITMSRP', 'RETAIL']));
+        if ($explicit !== '') {
+            return $explicit;
+        }
+
+        $price_type = strtoupper($this->clean_text($this->first($raw, ['MFPRTYP'])));
+        if ($price_type === 'M') {
+            return '';
+        }
+
+        return $this->money_string($this->first($raw, ['MFPRC']));
     }
 
     private function decimal_string(string $value): string
