@@ -18,10 +18,11 @@ final class DealerBatchCronRegistry
     public static function hooks_by_distributor(): array
     {
         return [
-            'rsr'     => RSRDealerBatchCronService::CRON_HOOK,
-            'lipseys' => LipseysDealerBatchCronService::CRON_HOOK,
-            'orion'   => OrionDealerBatchCronService::CRON_HOOK,
-            'zanders' => ZandersDealerBatchCronService::CRON_HOOK,
+            'rsr'          => RSRDealerBatchCronService::CRON_HOOK,
+            'lipseys'      => LipseysDealerBatchCronService::CRON_HOOK,
+            'orion'        => OrionDealerBatchCronService::CRON_HOOK,
+            'sports_south' => SportsSouthDealerBatchCronService::CRON_HOOK,
+            'zanders'      => ZandersDealerBatchCronService::CRON_HOOK,
         ];
     }
 
@@ -29,9 +30,10 @@ final class DealerBatchCronRegistry
     public static function ca_relay_hooks_by_distributor(): array
     {
         return [
-            'lipseys' => LipseysCaRelayBatchCronService::CRON_HOOK,
-            'orion'   => OrionCaRelayBatchCronService::CRON_HOOK,
-            'zanders' => ZandersCaRelayBatchCronService::CRON_HOOK,
+            'lipseys'      => LipseysCaRelayBatchCronService::CRON_HOOK,
+            'orion'        => OrionCaRelayBatchCronService::CRON_HOOK,
+            'sports_south' => SportsSouthCaRelayBatchCronService::CRON_HOOK,
+            'zanders'      => ZandersCaRelayBatchCronService::CRON_HOOK,
         ];
     }
 

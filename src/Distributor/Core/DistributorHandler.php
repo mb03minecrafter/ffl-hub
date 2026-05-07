@@ -15,6 +15,8 @@ use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
 use FFLHub\Distributor\Services\Orders\Cron\OrionCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\OrionDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\RSRDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\SportsSouthCaRelayBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\SportsSouthDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\OrderingOrchestratorService;
@@ -77,9 +79,11 @@ class DistributorHandler
     private RSRDealerBatchCronService $rsrDealerBatchCronService;
     private LipseysDealerBatchCronService $lipseysDealerBatchCronService;
     private OrionDealerBatchCronService $orionDealerBatchCronService;
+    private SportsSouthDealerBatchCronService $sportsSouthDealerBatchCronService;
     private ZandersDealerBatchCronService $zandersDealerBatchCronService;
     private LipseysCaRelayBatchCronService $lipseysCaRelayBatchCronService;
     private OrionCaRelayBatchCronService $orionCaRelayBatchCronService;
+    private SportsSouthCaRelayBatchCronService $sportsSouthCaRelayBatchCronService;
     private ZandersCaRelayBatchCronService $zandersCaRelayBatchCronService;
 
     // ---------------------------------------------------------------------
@@ -157,6 +161,9 @@ class DistributorHandler
         $this->orionDealerBatchCronService = new OrionDealerBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
         $log_step('new OrionDealerBatchCronService');
 
+        $this->sportsSouthDealerBatchCronService = new SportsSouthDealerBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
+        $log_step('new SportsSouthDealerBatchCronService');
+
         $this->zandersDealerBatchCronService = new ZandersDealerBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
         $log_step('new ZandersDealerBatchCronService');
 
@@ -165,6 +172,9 @@ class DistributorHandler
 
         $this->orionCaRelayBatchCronService = new OrionCaRelayBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
         $log_step('new OrionCaRelayBatchCronService');
+
+        $this->sportsSouthCaRelayBatchCronService = new SportsSouthCaRelayBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
+        $log_step('new SportsSouthCaRelayBatchCronService');
 
         $this->zandersCaRelayBatchCronService = new ZandersCaRelayBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
         $log_step('new ZandersCaRelayBatchCronService');
@@ -287,9 +297,11 @@ class DistributorHandler
         $this->rsrDealerBatchCronService->on_activation();
         $this->lipseysDealerBatchCronService->on_activation();
         $this->orionDealerBatchCronService->on_activation();
+        $this->sportsSouthDealerBatchCronService->on_activation();
         $this->zandersDealerBatchCronService->on_activation();
         $this->lipseysCaRelayBatchCronService->on_activation();
         $this->orionCaRelayBatchCronService->on_activation();
+        $this->sportsSouthCaRelayBatchCronService->on_activation();
         $this->zandersCaRelayBatchCronService->on_activation();
 
         // OrderTrashJobsService is hook-based (not cron-based); no schedule lifecycle.
@@ -319,9 +331,11 @@ class DistributorHandler
         $this->rsrDealerBatchCronService->on_deactivation();
         $this->lipseysDealerBatchCronService->on_deactivation();
         $this->orionDealerBatchCronService->on_deactivation();
+        $this->sportsSouthDealerBatchCronService->on_deactivation();
         $this->zandersDealerBatchCronService->on_deactivation();
         $this->lipseysCaRelayBatchCronService->on_deactivation();
         $this->orionCaRelayBatchCronService->on_deactivation();
+        $this->sportsSouthCaRelayBatchCronService->on_deactivation();
         $this->zandersCaRelayBatchCronService->on_deactivation();
     }
 
@@ -354,9 +368,11 @@ class DistributorHandler
         $this->rsrDealerBatchCronService->register();
         $this->lipseysDealerBatchCronService->register();
         $this->orionDealerBatchCronService->register();
+        $this->sportsSouthDealerBatchCronService->register();
         $this->zandersDealerBatchCronService->register();
         $this->lipseysCaRelayBatchCronService->register();
         $this->orionCaRelayBatchCronService->register();
+        $this->sportsSouthCaRelayBatchCronService->register();
         $this->zandersCaRelayBatchCronService->register();
 
         $this->orderTrashJobsService->register();

@@ -38,6 +38,8 @@ use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Services\Cron\QuoteEmailJobsCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\SportsSouthCaRelayBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\SportsSouthDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersDealerBatchCronService;
 use FFLHub\FFL\API\FFLApi;
@@ -262,6 +264,19 @@ final class Plugin
                 'cron_hook' => ZandersDealerBatchCronService::CRON_HOOK,
             ],
             [
+                'page_slug' => 'fflhub-sports-south-dealer-batch-queue',
+                'menu_title' => 'Sports South Dealer Batch Queue',
+                'page_title' => 'Sports South Dealer Batch Queue',
+                'description' => 'Per-line-item UPC queue view for Sports South dealer-fulfilled rows on Processing orders.',
+                'dist_id' => 'sports_south',
+                'dist_label' => 'Sports South',
+                'mode' => 'dealer',
+                'mode_label' => 'Dealer Batch',
+                'option_prefix' => 'fflhub_sports_south_dealer_batch',
+                'field_prefix' => 'fflhub_sports_south_dealer_batch_page',
+                'cron_hook' => SportsSouthDealerBatchCronService::CRON_HOOK,
+            ],
+            [
                 'page_slug' => 'fflhub-lipseys-ca-relay-batch-queue',
                 'menu_title' => "Lipsey's CA Relay Batch Queue",
                 'page_title' => "Lipsey's CA Relay Batch Queue",
@@ -286,6 +301,19 @@ final class Plugin
                 'option_prefix' => 'fflhub_zanders_ca_relay_batch',
                 'field_prefix' => 'fflhub_zanders_ca_relay_batch_page',
                 'cron_hook' => ZandersCaRelayBatchCronService::CRON_HOOK,
+            ],
+            [
+                'page_slug' => 'fflhub-sports-south-ca-relay-batch-queue',
+                'menu_title' => 'Sports South CA Relay Batch Queue',
+                'page_title' => 'Sports South CA Relay Batch Queue',
+                'description' => 'Per-line-item UPC queue view for Sports South non-FFL CA relay rows on Processing orders.',
+                'dist_id' => 'sports_south',
+                'dist_label' => 'Sports South',
+                'mode' => 'ca_relay',
+                'mode_label' => 'CA Relay Batch',
+                'option_prefix' => 'fflhub_sports_south_ca_relay_batch',
+                'field_prefix' => 'fflhub_sports_south_ca_relay_batch_page',
+                'cron_hook' => SportsSouthCaRelayBatchCronService::CRON_HOOK,
             ],
         ];
     }
