@@ -30,8 +30,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     private const DEBUG_CONST = 'FFLHUB_DEBUG_QUOTE_EMAIL_CRON';
     private const LOG_PREFIX = '[FFLHub][QuoteEmailCron]';
     private const BUSINESS_HOURS_TZ = 'America/Chicago';
-    private const BUSINESS_HOUR_START = 7;  // 7:00 local
-    private const BUSINESS_HOUR_END = 18;   // 18:00 local (end-exclusive)
     private const REP_NAMES = [
         'Matthew Bickham',
         'Thomas Bickham',
@@ -212,14 +210,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
                 'is_due' => true,
                 'is_holosun' => false,
                 'reason' => 'non_holosun_instant',
-            ];
-        }
-
-        if (empty($hours_ctx['is_open'])) {
-            return [
-                'is_due' => false,
-                'is_holosun' => true,
-                'reason' => 'holosun_outside_business_hours',
             ];
         }
 
@@ -1372,10 +1362,11 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
         $now_local = new \DateTimeImmutable('now', $tz);
         $hour_local = (int) $now_local->format('G');
-        $is_open = ($hour_local >= self::BUSINESS_HOUR_START) && ($hour_local < self::BUSINESS_HOUR_END);
 
         return [
-            'is_open' => $is_open,
+            // Quote emails may send 24/7; customer-facing messaging still says
+            // requests are reviewed during business hours.
+            'is_open' => true,
             'now_local' => $now_local->format('Y-m-d H:i:s T'),
             'hour_local' => $hour_local,
         ];
