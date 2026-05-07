@@ -18,6 +18,7 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Checkout\Builders\CheckoutOrderRequestBuilder;
 
 use FFLHub\FFL\Tables\FFLTable;
+use FFLHub\Product\ProductMeta;
 use FFLHub\Util\DebugLogUtil;
 
 final class CartCompliance
@@ -27,6 +28,14 @@ final class CartCompliance
     private const CHECKOUT_FIELD_ID_RECEIVING_FFL = 'ffl-hub/receiving-ffl';
     private const NOTICE_DATA_KEY              = 'fflhub_code';
     private const NOTICE_DATA_VAL              = 'cart_compliance';
+    private const ORDER_META_COMPLIANCE_LAST_CHECKED_AT = 'fflhub_cart_compliance_last_checked_at';
+    private const ORDER_META_COMPLIANCE_BLOCKED         = 'fflhub_cart_compliance_blocked';
+    private const ORDER_META_COMPLIANCE_BLOCK_COUNT     = 'fflhub_cart_compliance_block_count';
+    private const ORDER_META_COMPLIANCE_BLOCKS_JSON     = 'fflhub_cart_compliance_blocks';
+    private const ORDER_META_COMPLIANCE_CONTEXT_JSON    = 'fflhub_cart_compliance_context';
+    private const ORDER_META_COMPLIANCE_HISTORY_JSON    = 'fflhub_cart_compliance_history';
+    private const ORDER_META_COMPLIANCE_EXCEPTION_JSON  = 'fflhub_cart_compliance_exception';
+    private const ORDER_META_COMPLIANCE_HISTORY_LIMIT   = 20;
 
     // -----------------------------
     // PROFILING (unchanged behavior)
@@ -347,7 +356,7 @@ final class CartCompliance
             }
         }
 
-        foreach (['local_only', 'quota_triggered', 'cache_ttl_seconds'] as $k) {
+        foreach (['local_only', 'quota_triggered', 'cache_ttl_seconds', 'failure_flags', 'label', 'lane'] as $k) {
             if (array_key_exists($k, $details)) {
                 $out[$k] = $details[$k];
             }
@@ -555,6 +564,7 @@ final class CartCompliance
             $this->validate_cart_for_compliance($order, $request);
         } catch (\Throwable $e) {
             $order->add_order_note('FFLHub: Checkout blocked by compliance validation: ' . $e->getMessage());
+            $this->persist_compliance_exception_to_order($order, $e);
             $order->save();
 
             $this->dbg('checkout_gate.exception', [
@@ -618,6 +628,14 @@ final class CartCompliance
                 }, $blocked) : [],
             ]);
 
+            $this->persist_compliance_result_to_order(
+                $order,
+                is_array($blocked) ? $blocked : [],
+                $ship_customer,
+                $ship_ffl,
+                $receiving_ffl_number
+            );
+
             self::prof(
                 'emit_blocked_notices(cart)',
                 function () use ($blocked) {
@@ -629,6 +647,224 @@ final class CartCompliance
         } finally {
             self::prof_end('validate_cart_for_compliance.total');
         }
+    }
+
+    /**
+     * Persist the latest compliance result on the draft/order so blocked checkouts are auditable later.
+     *
+     * @param array<int,array{id:string,label:string,message:string,codes:array,details:array,lane:string,pretty?:array}> $blocked
+     */
+    private function persist_compliance_result_to_order(
+        ?\WC_Order $order,
+        array $blocked,
+        DistributorShipTo $ship_customer,
+        ?DistributorShipTo $ship_ffl,
+        ?string $receiving_ffl_number
+    ): void {
+        if (!($order instanceof \WC_Order)) {
+            return;
+        }
+
+        try {
+            $now_utc = gmdate('Y-m-d H:i:s');
+            $blocks = $this->normalize_compliance_blocks_for_order_meta($blocked);
+            $blocked_count = count($blocks);
+
+            $context = [
+                'run_id' => $this->run_id,
+                'checked_at_utc' => $now_utc,
+                'order_id' => (int) $order->get_id(),
+                'order_status' => (string) $order->get_status(),
+                'customer_state' => (string) $ship_customer->state,
+                'customer_zip' => (string) $ship_customer->zip,
+                'ffl_state' => ($ship_ffl instanceof DistributorShipTo) ? (string) $ship_ffl->state : '',
+                'ffl_zip' => ($ship_ffl instanceof DistributorShipTo) ? (string) $ship_ffl->zip : '',
+                'receiving_ffl_present' => $receiving_ffl_number ? 1 : 0,
+                'receiving_ffl_tail4' => $receiving_ffl_number ? substr((string) $receiving_ffl_number, -4) : '',
+                'cart' => $this->summarize_current_cart_for_order_meta(),
+            ];
+
+            $order->update_meta_data(self::ORDER_META_COMPLIANCE_LAST_CHECKED_AT, $now_utc);
+            $order->update_meta_data(self::ORDER_META_COMPLIANCE_BLOCKED, $blocked_count > 0 ? '1' : '0');
+            $order->update_meta_data(self::ORDER_META_COMPLIANCE_BLOCK_COUNT, (string) $blocked_count);
+            $order->update_meta_data(self::ORDER_META_COMPLIANCE_CONTEXT_JSON, self::json_encode_for_meta($context));
+
+            if ($blocked_count > 0) {
+                $order->update_meta_data(self::ORDER_META_COMPLIANCE_BLOCKS_JSON, self::json_encode_for_meta($blocks));
+                $this->append_compliance_history_to_order($order, $now_utc, $context, $blocks);
+            } else {
+                $order->delete_meta_data(self::ORDER_META_COMPLIANCE_BLOCKS_JSON);
+                $order->delete_meta_data(self::ORDER_META_COMPLIANCE_EXCEPTION_JSON);
+            }
+
+            $order->save();
+        } catch (\Throwable $e) {
+            $this->dbg('persist_compliance_result_to_order.exception', [
+                'order_id' => (int) $order->get_id(),
+                'error' => $e->getMessage(),
+                'class' => get_class($e),
+            ]);
+        }
+    }
+
+    private function persist_compliance_exception_to_order(\WC_Order $order, \Throwable $e): void
+    {
+        try {
+            $now_utc = gmdate('Y-m-d H:i:s');
+            $payload = [
+                'run_id' => $this->run_id,
+                'checked_at_utc' => $now_utc,
+                'order_id' => (int) $order->get_id(),
+                'order_status' => (string) $order->get_status(),
+                'class' => get_class($e),
+                'message' => self::log_text($e->getMessage(), 500),
+                'file' => basename((string) $e->getFile()),
+                'line' => (int) $e->getLine(),
+                'cart' => $this->summarize_current_cart_for_order_meta(),
+            ];
+
+            $order->update_meta_data(self::ORDER_META_COMPLIANCE_LAST_CHECKED_AT, $now_utc);
+            $order->update_meta_data(self::ORDER_META_COMPLIANCE_BLOCKED, '1');
+            $order->update_meta_data(self::ORDER_META_COMPLIANCE_BLOCK_COUNT, '1');
+            $order->update_meta_data(self::ORDER_META_COMPLIANCE_EXCEPTION_JSON, self::json_encode_for_meta($payload));
+            $this->append_compliance_history_to_order($order, $now_utc, $payload, [[
+                'id' => 'exception',
+                'label' => 'Exception',
+                'lane' => 'exception',
+                'message' => $payload['message'],
+                'codes' => ['FFLHUB_CART_COMPLIANCE_EXCEPTION'],
+                'pretty' => [],
+                'details' => ['class' => $payload['class'], 'file' => $payload['file'], 'line' => $payload['line']],
+            ]]);
+        } catch (\Throwable $inner) {
+            $this->dbg('persist_compliance_exception_to_order.exception', [
+                'order_id' => (int) $order->get_id(),
+                'error' => $inner->getMessage(),
+                'class' => get_class($inner),
+            ]);
+        }
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $blocked
+     * @return array<int,array<string,mixed>>
+     */
+    private function normalize_compliance_blocks_for_order_meta(array $blocked): array
+    {
+        $out = [];
+
+        foreach ($blocked as $b) {
+            if (!is_array($b)) {
+                continue;
+            }
+
+            $details = isset($b['details']) && is_array($b['details']) ? $b['details'] : [];
+            $pretty = isset($b['pretty']) && is_array($b['pretty']) ? $b['pretty'] : [];
+            $pretty = array_values(array_filter(array_map(static function ($msg): string {
+                return self::log_text((string) $msg, 260);
+            }, $pretty)));
+
+            $out[] = [
+                'id' => self::log_text((string) ($b['id'] ?? ''), 80),
+                'label' => self::log_text((string) ($b['label'] ?? ''), 120),
+                'lane' => self::log_text((string) ($b['lane'] ?? ''), 80),
+                'message' => self::log_text((string) ($b['message'] ?? ''), 500),
+                'codes' => array_values(array_slice(array_map('strval', is_array($b['codes'] ?? null) ? $b['codes'] : []), 0, 12)),
+                'pretty' => array_slice($pretty, 0, 6),
+                'details' => $this->summarize_validation_details($details),
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    private function summarize_current_cart_for_order_meta(): array
+    {
+        if (!function_exists('WC') || !WC()->cart) {
+            return [];
+        }
+
+        $rows = [];
+
+        foreach (WC()->cart->get_cart() as $cart_item) {
+            if (!is_array($cart_item)) {
+                continue;
+            }
+
+            $product_id = isset($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
+            $variation_id = isset($cart_item['variation_id']) ? (int) $cart_item['variation_id'] : 0;
+            $qty = isset($cart_item['quantity']) ? max(0, (int) $cart_item['quantity']) : 0;
+            $product = $product_id > 0 ? wc_get_product($product_id) : null;
+
+            if (!($product instanceof \WC_Product)) {
+                continue;
+            }
+
+            $rows[] = [
+                'product_id' => $product_id,
+                'variation_id' => $variation_id,
+                'qty' => $qty,
+                'name' => self::log_text((string) $product->get_name(), 120),
+                'managed' => (int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true),
+                'dist' => strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true))),
+                'upc' => preg_replace('/\D+/', '', (string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true)),
+                'ffl_required' => (int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true),
+                'local_stock_override' => (int) $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true),
+                'local_stock_qty' => (string) $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true),
+                'stock_status' => (string) $product->get_stock_status(),
+                'stock_qty' => $product->get_stock_quantity(),
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @param array<string,mixed> $context
+     * @param array<int,array<string,mixed>> $blocks
+     */
+    private function append_compliance_history_to_order(\WC_Order $order, string $now_utc, array $context, array $blocks): void
+    {
+        $history = [];
+        $raw = $order->get_meta(self::ORDER_META_COMPLIANCE_HISTORY_JSON, true);
+
+        if (is_string($raw) && trim($raw) !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $history = $decoded;
+            }
+        } elseif (is_array($raw)) {
+            $history = $raw;
+        }
+
+        $history[] = [
+            'checked_at_utc' => $now_utc,
+            'run_id' => $this->run_id,
+            'block_count' => count($blocks),
+            'context' => $context,
+            'blocks' => $blocks,
+        ];
+
+        if (count($history) > self::ORDER_META_COMPLIANCE_HISTORY_LIMIT) {
+            $history = array_slice($history, -self::ORDER_META_COMPLIANCE_HISTORY_LIMIT);
+        }
+
+        $order->update_meta_data(self::ORDER_META_COMPLIANCE_HISTORY_JSON, self::json_encode_for_meta($history));
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function json_encode_for_meta($value): string
+    {
+        $json = function_exists('wp_json_encode')
+            ? wp_json_encode($value, JSON_UNESCAPED_SLASHES)
+            : json_encode($value, JSON_UNESCAPED_SLASHES);
+
+        return is_string($json) ? $json : '[]';
     }
 
     /**

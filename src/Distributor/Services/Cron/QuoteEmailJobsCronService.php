@@ -620,7 +620,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'recipient_email' => $email,
             'expires_ts' => $expires_ts,
             'customer_free_shipping_product_meta' => $customer_free_shipping ? 1 : 0,
-            'coupon_free_shipping' => 0,
+            'coupon_free_shipping' => $customer_free_shipping ? 1 : 0,
         ]);
 
         $coupon->set_code($coupon_code);
@@ -632,7 +632,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $coupon->set_usage_limit_per_user(1);
         $coupon->set_email_restrictions([]);
         $coupon->set_date_expires($expires_ts);
-        $coupon->set_free_shipping(false);
+        $coupon->set_free_shipping($customer_free_shipping);
         $coupon->set_description(
             sprintf(
                 'Quote coupon for %s',
