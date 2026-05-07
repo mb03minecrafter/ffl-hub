@@ -140,7 +140,7 @@ final class Plugin
         $this->distributor_handler = new DistributorHandler($this->ffl_table);
         $this->distributor_handler->register_runtime_services();
 
-        $this->upc_stock_alert_cron_service = new UpcStockAlertCronService($this->distributor_handler);
+        $this->upc_stock_alert_cron_service = new UpcStockAlertCronService();
         $this->upc_stock_alert_cron_service->register();
 
         ShippingRegistrar::init();
@@ -347,7 +347,7 @@ final class Plugin
         $handler = new DistributorHandler($ffl_table);
         $handler->on_activate();
 
-        $upc_stock_alert_cron = new UpcStockAlertCronService($handler);
+        $upc_stock_alert_cron = new UpcStockAlertCronService();
         $upc_stock_alert_cron->on_activation();
     }
 
@@ -362,7 +362,7 @@ final class Plugin
         $handler = new DistributorHandler($ffl_table);
         $handler->on_deactivate();
 
-        $upc_stock_alert_cron = new UpcStockAlertCronService($handler);
+        $upc_stock_alert_cron = new UpcStockAlertCronService();
         $upc_stock_alert_cron->on_deactivation();
     }
 

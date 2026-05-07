@@ -60,7 +60,7 @@ final class UpcStockAlertsPage
         <div class="wrap fflhub-upc-stock-alerts">
             <?php $this->render_styles(); ?>
             <h1><?php esc_html_e('UPC Stock Alerts', 'ffl-hub'); ?></h1>
-            <p><?php esc_html_e('Track UPCs across enabled distributors and email when they transition from out of stock or unknown to in stock.', 'ffl-hub'); ?></p>
+            <p><?php esc_html_e('Track UPCs against linked WooCommerce products and email when Woo stock transitions from out of stock or unknown to in stock.', 'ffl-hub'); ?></p>
             <?php $this->render_notice($notice); ?>
             <?php $this->render_settings_card($enabled, $recipients); ?>
             <?php $this->render_add_card(); ?>
@@ -220,11 +220,11 @@ final class UpcStockAlertsPage
                     <thead>
                         <tr>
                             <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Status', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Woo Product', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Alert State', 'ffl-hub'); ?></th>
                             <th><?php esc_html_e('Qty', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Distributors', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Product', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Best Price', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Woo Stock', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Woo Price', 'ffl-hub'); ?></th>
                             <th><?php esc_html_e('Last Checked', 'ffl-hub'); ?></th>
                             <th><?php esc_html_e('Last Alert', 'ffl-hub'); ?></th>
                             <th><?php esc_html_e('Actions', 'ffl-hub'); ?></th>
@@ -239,9 +239,36 @@ final class UpcStockAlertsPage
                             $qty = $row['last_quantity'];
                             $price = $row['last_price'];
                             $error = trim((string) ($row['last_error'] ?? ''));
+                            $product_context = UpcStockAlertStore::get_product_context_for_upc($upc);
+                            $product_name = trim((string) ($product_context['name'] ?? ''));
+                            if ($product_name === '') {
+                                $product_name = trim((string) ($row['last_product_name'] ?? ''));
+                            }
+                            $product_id = (int) ($product_context['product_id'] ?? 0);
+                            $edit_url = trim((string) ($product_context['edit_url'] ?? ''));
+                            $woo_qty = $product_context['stock_quantity'];
+                            if ($woo_qty !== null) {
+                                $qty = $woo_qty;
+                            }
+                            $woo_stock_status = trim((string) ($product_context['stock_status'] ?? ''));
+                            if ($woo_stock_status === '') {
+                                $woo_stock_status = trim((string) ($row['last_stock_status'] ?? ''));
+                            }
+                            $woo_price = $product_context['price'];
+                            if ($woo_price !== null) {
+                                $price = $woo_price;
+                            }
                             ?>
                             <tr>
                                 <td><code><?php echo esc_html($upc); ?></code></td>
+                                <td>
+                                    <?php if ($product_id > 0 && $edit_url !== '') : ?>
+                                        <a href="<?php echo esc_url($edit_url); ?>"><?php echo esc_html($product_name); ?></a>
+                                        <span class="description"><?php echo esc_html('#' . (string) $product_id); ?></span>
+                                    <?php else : ?>
+                                        <?php echo esc_html($product_name !== '' ? $product_name : __('No linked Woo product', 'ffl-hub')); ?>
+                                    <?php endif; ?>
+                                </td>
                                 <td>
                                     <span class="fflhub-stock-alert-pill <?php echo esc_attr($status_class); ?>"><?php echo esc_html($status); ?></span>
                                     <?php if ($error !== '') : ?>
@@ -249,8 +276,7 @@ final class UpcStockAlertsPage
                                     <?php endif; ?>
                                 </td>
                                 <td><?php echo esc_html($qty === null ? '-' : (string) ((int) $qty)); ?></td>
-                                <td><?php echo esc_html((string) (($row['last_distributors'] ?? '') !== '' ? $row['last_distributors'] : '-')); ?></td>
-                                <td><?php echo esc_html((string) (($row['last_product_name'] ?? '') !== '' ? $row['last_product_name'] : '-')); ?></td>
+                                <td><?php echo esc_html($woo_stock_status !== '' ? $woo_stock_status : '-'); ?></td>
                                 <td><?php echo esc_html($price === null ? '-' : '$' . number_format((float) $price, 2)); ?></td>
                                 <td><?php echo esc_html((string) (($row['last_checked_at'] ?? '') !== '' ? $row['last_checked_at'] . ' UTC' : '-')); ?></td>
                                 <td><?php echo esc_html((string) (($row['last_notified_at'] ?? '') !== '' ? $row['last_notified_at'] . ' UTC' : '-')); ?></td>

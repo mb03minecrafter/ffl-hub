@@ -2,11 +2,7 @@
 
 namespace FFLHub\Product\StockAlerts;
 
-use FFLHub\Distributor\Core\DistributorBase;
-use FFLHub\Distributor\Core\DistributorHandler;
-use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Services\Cron\AbstractCronService;
-use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
@@ -19,13 +15,6 @@ final class UpcStockAlertCronService extends AbstractCronService
 
     private const DEBUG_CONST = 'FFLHUB_UPC_STOCK_ALERT_DEBUG';
     private const LOG_PREFIX = '[FFLHub][UPCStockAlerts]';
-
-    private DistributorHandler $handler;
-
-    public function __construct(DistributorHandler $handler)
-    {
-        $this->handler = $handler;
-    }
 
     protected function get_interval_seconds(): int
     {
@@ -92,8 +81,9 @@ final class UpcStockAlertCronService extends AbstractCronService
 
             if ($reliable) {
                 $patch['last_quantity'] = (int) ($lookup['total_quantity'] ?? 0);
-                $patch['last_distributors'] = implode(', ', (array) ($lookup['in_stock_distributors'] ?? []));
                 $patch['last_product_name'] = (string) ($lookup['product_name'] ?? '');
+                $patch['last_product_id'] = (int) ($lookup['product_id'] ?? 0);
+                $patch['last_stock_status'] = (string) ($lookup['stock_status'] ?? '');
                 $patch['last_price'] = $lookup['min_price'];
 
                 if (!$should_alert) {
@@ -133,90 +123,29 @@ final class UpcStockAlertCronService extends AbstractCronService
      *   reliable:bool,
      *   in_stock:bool,
      *   total_quantity:int,
-     *   in_stock_distributors:string[],
      *   product_name:string,
+     *   product_id:int,
+     *   stock_status:string,
      *   min_price:?float,
-     *   offers:array<int,array<string,mixed>>,
      *   error:string
      * }
      */
     private function lookup_upc(string $upc): array
     {
-        $offers = [];
-        $errors = [];
-        $queried = 0;
-        $payloads_seen = 0;
-        $product_name = '';
-        $min_price = null;
-        $total_quantity = 0;
-        $in_stock_distributors = [];
-
-        foreach ($this->handler->get_distributors() as $dist_id => $distributor) {
-            if (!Options::is_distributor_enabled((string) $dist_id)) {
-                continue;
-            }
-            if (!($distributor instanceof DistributorBase)) {
-                continue;
-            }
-
-            $queried++;
-            try {
-                $payload = $distributor->get_pricing_payload_by_upc($upc);
-            } catch (\Throwable $e) {
-                $errors[] = sprintf('%s: %s', (string) $dist_id, $e->getMessage());
-                continue;
-            }
-
-            if (!($payload instanceof DistributorProductPayload)) {
-                continue;
-            }
-
-            $payloads_seen++;
-            $qty = max(0, (int) $payload->quantity);
-            $price = max(0.0, (float) $payload->price);
-            $name = trim((string) ($payload->name !== '' ? $payload->name : $payload->description));
-            if ($product_name === '' && $name !== '') {
-                $product_name = $name;
-            }
-            if ($price > 0.0 && ($min_price === null || $price < $min_price)) {
-                $min_price = $price;
-            }
-
-            if ($qty <= 0) {
-                continue;
-            }
-
-            $total_quantity += $qty;
-            $in_stock_distributors[] = (string) $dist_id;
-            $offers[] = [
-                'distributor' => (string) $dist_id,
-                'quantity' => $qty,
-                'price' => $price,
-                'name' => $name,
-                'sku' => (string) $payload->sku,
-            ];
-        }
-
-        $reliable = ($queried > 0 && count($errors) < $queried);
-        $error = '';
-        if ($queried <= 0) {
-            $error = 'No enabled distributors available for UPC stock checks.';
-        } elseif (!$reliable) {
-            $error = 'All enabled distributor lookups failed: ' . implode('; ', $errors);
-        } elseif (!empty($errors)) {
-            $error = 'Some distributor lookups failed: ' . implode('; ', $errors);
-        }
+        $context = UpcStockAlertStore::get_product_context_for_upc($upc);
+        $product_id = (int) ($context['product_id'] ?? 0);
+        $quantity = $context['stock_quantity'];
+        $is_in_stock = ($quantity !== null) ? ((int) $quantity > 0) : !empty($context['is_in_stock']);
 
         return [
-            'reliable' => $reliable,
-            'in_stock' => ($total_quantity > 0),
-            'total_quantity' => $total_quantity,
-            'in_stock_distributors' => array_values(array_unique($in_stock_distributors)),
-            'product_name' => $product_name,
-            'min_price' => $min_price,
-            'offers' => $offers,
-            'error' => $error,
-            'payloads_seen' => $payloads_seen,
+            'reliable' => true,
+            'in_stock' => $is_in_stock,
+            'total_quantity' => ($quantity !== null) ? (int) $quantity : ($is_in_stock ? 1 : 0),
+            'product_name' => (string) ($context['name'] ?? ''),
+            'product_id' => $product_id,
+            'stock_status' => (string) ($context['stock_status'] ?? ''),
+            'min_price' => $context['price'],
+            'error' => $product_id > 0 ? '' : 'No linked Woo product found for this UPC.',
         ];
     }
 
@@ -245,22 +174,14 @@ final class UpcStockAlertCronService extends AbstractCronService
             '',
             'UPC: ' . $upc,
             'Product: ' . $product_name,
-            'Total available quantity: ' . (string) ((int) ($lookup['total_quantity'] ?? 0)),
+            'Woo stock quantity: ' . (string) ((int) ($lookup['total_quantity'] ?? 0)),
+            'Woo stock status: ' . (string) (($lookup['stock_status'] ?? '') !== '' ? $lookup['stock_status'] : 'unknown'),
             'Checked at: ' . $now_utc . ' UTC',
-            '',
-            'Available distributor offers:',
         ];
 
-        foreach ((array) ($lookup['offers'] ?? []) as $offer) {
-            $price = isset($offer['price']) && is_numeric($offer['price']) ? '$' . number_format((float) $offer['price'], 2) : 'unknown';
-            $sku = trim((string) ($offer['sku'] ?? ''));
-            $lines[] = sprintf(
-                '- %s: qty %d, price %s%s',
-                (string) ($offer['distributor'] ?? 'unknown'),
-                (int) ($offer['quantity'] ?? 0),
-                $price,
-                $sku !== '' ? ', sku ' . $sku : ''
-            );
+        $product_id = (int) ($lookup['product_id'] ?? 0);
+        if ($product_id > 0) {
+            $lines[] = 'Woo product ID: ' . (string) $product_id;
         }
 
         $body = implode("\n", $lines);

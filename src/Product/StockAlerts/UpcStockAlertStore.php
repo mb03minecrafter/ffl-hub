@@ -2,6 +2,7 @@
 
 namespace FFLHub\Product\StockAlerts;
 
+use FFLHub\Product\ProductMeta;
 use FFLHub\Settings\Options;
 
 if (!defined('ABSPATH')) {
@@ -197,6 +198,65 @@ final class UpcStockAlertStore
     }
 
     /**
+     * @return array{
+     *   product_id:int,
+     *   edit_product_id:int,
+     *   edit_url:string,
+     *   name:string,
+     *   stock_quantity:?int,
+     *   stock_status:string,
+     *   is_in_stock:bool,
+     *   price:?float
+     * }
+     */
+    public static function get_product_context_for_upc(string $upc): array
+    {
+        $upc = self::normalize_upc($upc);
+        if ($upc === '' || !function_exists('wc_get_product')) {
+            return self::empty_product_context();
+        }
+
+        $product_id = self::find_product_id_by_upc($upc);
+        if ($product_id <= 0) {
+            return self::empty_product_context();
+        }
+
+        $product = wc_get_product($product_id);
+        if (!$product) {
+            return self::empty_product_context();
+        }
+
+        $edit_product_id = $product_id;
+        if (method_exists($product, 'get_parent_id')) {
+            $parent_id = (int) $product->get_parent_id();
+            if ($parent_id > 0) {
+                $edit_product_id = $parent_id;
+            }
+        }
+
+        $stock_quantity = $product->get_stock_quantity();
+        $stock_quantity = is_numeric($stock_quantity) ? max(0, (int) $stock_quantity) : null;
+        $stock_status = method_exists($product, 'get_stock_status') ? trim((string) $product->get_stock_status()) : '';
+        $price = $product->get_price();
+        $price = is_numeric($price) ? max(0.0, (float) $price) : null;
+        $name = trim((string) $product->get_name());
+        if ($name === '') {
+            $name = 'Woo product #' . (string) $product_id;
+        }
+
+        return [
+            'product_id' => $product_id,
+            'edit_product_id' => $edit_product_id,
+            'edit_url' => admin_url('post.php?post=' . $edit_product_id . '&action=edit'),
+            'name' => $name,
+            'stock_quantity' => $stock_quantity,
+            'stock_status' => $stock_status,
+            'is_in_stock' => (bool) $product->is_in_stock(),
+            'price' => $price,
+        ];
+    }
+
+    /**
      * @return string[]
      */
     private static function extract_upcs(string $text): array
@@ -265,6 +325,8 @@ final class UpcStockAlertStore
             'last_quantity' => $last_quantity,
             'last_distributors' => trim((string) ($row['last_distributors'] ?? '')),
             'last_product_name' => sanitize_text_field((string) ($row['last_product_name'] ?? '')),
+            'last_product_id' => max(0, (int) ($row['last_product_id'] ?? 0)),
+            'last_stock_status' => sanitize_text_field((string) ($row['last_stock_status'] ?? '')),
             'last_price' => $last_price,
             'last_notified_at' => trim((string) ($row['last_notified_at'] ?? '')),
             'last_error' => sanitize_text_field((string) ($row['last_error'] ?? '')),
@@ -285,6 +347,8 @@ final class UpcStockAlertStore
             'last_quantity' => null,
             'last_distributors' => '',
             'last_product_name' => '',
+            'last_product_id' => 0,
+            'last_stock_status' => '',
             'last_price' => null,
             'last_notified_at' => '',
             'last_error' => '',
@@ -322,5 +386,64 @@ final class UpcStockAlertStore
         }
 
         return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private static function find_product_id_by_upc(string $upc): int
+    {
+        global $wpdb;
+
+        $upc = self::normalize_upc($upc);
+        if ($upc === '') {
+            return 0;
+        }
+
+        $meta_keys = [
+            ProductMeta::FFLHUB_UPC_META,
+            '_global_unique_id',
+            '_upc',
+            'upc',
+            'UPC',
+            '_alg_ean',
+            '_wpm_gtin_code',
+        ];
+
+        foreach ($meta_keys as $meta_key) {
+            $sql = $wpdb->prepare(
+                "SELECT pm.post_id
+                 FROM {$wpdb->postmeta} pm
+                 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+                 WHERE pm.meta_key = %s
+                   AND REPLACE(REPLACE(pm.meta_value, ' ', ''), '-', '') = %s
+                   AND p.post_type IN ('product', 'product_variation')
+                   AND p.post_status IN ('publish', 'private')
+                 ORDER BY CASE WHEN p.post_type = 'product' THEN 0 ELSE 1 END ASC, pm.post_id DESC
+                 LIMIT 1",
+                $meta_key,
+                $upc
+            );
+            $found = (int) $wpdb->get_var($sql);
+            if ($found > 0) {
+                return $found;
+            }
+        }
+
+        return 0;
+    }
+
+    /**
+     * @return array{product_id:int,edit_product_id:int,edit_url:string,name:string,stock_quantity:?int,stock_status:string,is_in_stock:bool,price:?float}
+     */
+    private static function empty_product_context(): array
+    {
+        return [
+            'product_id' => 0,
+            'edit_product_id' => 0,
+            'edit_url' => '',
+            'name' => '',
+            'stock_quantity' => null,
+            'stock_status' => '',
+            'is_in_stock' => false,
+            'price' => null,
+        ];
     }
 }
