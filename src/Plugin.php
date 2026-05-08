@@ -31,6 +31,7 @@ use FFLHub\BOM\Tables\BOMTable;
 use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Fields\CheckoutFields;
+use FFLHub\Checkout\MailPoetAutoConfirmCronService;
 use FFLHub\Checkout\MailPoetDefaultOptIn;
 use FFLHub\Checkout\Map\CheckoutMap;
 use FFLHub\Checkout\Notice\CaliforniaRelayNotice;
@@ -105,6 +106,7 @@ final class Plugin
     public CartCompliance $cart_compliance;
     private QuoteEmailJobsCronService $quote_email_jobs_cron_service;
     private UpcStockAlertCronService $upc_stock_alert_cron_service;
+    private MailPoetAutoConfirmCronService $mailpoet_auto_confirm_cron_service;
 
     public static function instance(): self
     {
@@ -142,6 +144,9 @@ final class Plugin
 
         $this->upc_stock_alert_cron_service = new UpcStockAlertCronService();
         $this->upc_stock_alert_cron_service->register();
+
+        $this->mailpoet_auto_confirm_cron_service = new MailPoetAutoConfirmCronService();
+        $this->mailpoet_auto_confirm_cron_service->register();
 
         ShippingRegistrar::init();
 
@@ -349,6 +354,9 @@ final class Plugin
 
         $upc_stock_alert_cron = new UpcStockAlertCronService();
         $upc_stock_alert_cron->on_activation();
+
+        $mailpoet_auto_confirm_cron = new MailPoetAutoConfirmCronService();
+        $mailpoet_auto_confirm_cron->on_activation();
     }
 
     public static function deactivate(): void
@@ -364,6 +372,9 @@ final class Plugin
 
         $upc_stock_alert_cron = new UpcStockAlertCronService();
         $upc_stock_alert_cron->on_deactivation();
+
+        $mailpoet_auto_confirm_cron = new MailPoetAutoConfirmCronService();
+        $mailpoet_auto_confirm_cron->on_deactivation();
     }
 
     private static function ensure_quote_email_jobs_table(): void
