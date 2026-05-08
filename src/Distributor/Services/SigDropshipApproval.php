@@ -63,15 +63,22 @@ final class SigDropshipApproval
             return 0;
         }
 
-        $manufacturer_expr = self::sql_normalize_expr('manufacturer');
-        $where = self::sql_sig_sauer_where($manufacturer_expr);
+        $where_parts = [];
+        foreach (self::existing_sig_source_columns($table_name) as $column) {
+            $where_parts[] = '(' . self::sql_sig_sauer_where(self::sql_normalize_expr(self::quote_identifier($column))) . ')';
+        }
+
+        if (empty($where_parts)) {
+            return 0;
+        }
+
+        $where = implode(' OR ', $where_parts);
+        $quoted_table = self::quote_identifier($table_name);
         $sql = "
-            UPDATE {$table_name}
+            UPDATE {$quoted_table}
             SET dropship_enabled = '1',
                 dropship_block_reason = ''
-            WHERE manufacturer IS NOT NULL
-              AND TRIM(manufacturer) <> ''
-              AND ({$where})
+            WHERE {$where}
         ";
 
         $result = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -125,5 +132,38 @@ final class SigDropshipApproval
             . " OR {$expr} = 'SIGARMS'"
             . " OR {$expr} LIKE 'SIGSAUER%'"
             . " OR {$expr} LIKE 'SIGARMS%'";
+    }
+
+    /**
+     * @return string[]
+     */
+    private static function existing_sig_source_columns(string $table_name): array
+    {
+        global $wpdb;
+
+        $columns = $wpdb->get_col('SHOW COLUMNS FROM ' . self::quote_identifier($table_name), 0); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if (!is_array($columns)) {
+            return [];
+        }
+
+        $available = array_fill_keys(array_map('strtolower', array_map('strval', $columns)), true);
+        $candidates = [
+            'manufacturer',
+            'brand',
+            'bound_book_manufacturer',
+            'manufacturer_name',
+            'mfg',
+            'vendor',
+            'vendor_name',
+        ];
+
+        return array_values(array_filter($candidates, static function (string $column) use ($available): bool {
+            return isset($available[strtolower($column)]);
+        }));
+    }
+
+    private static function quote_identifier(string $identifier): string
+    {
+        return '`' . str_replace('`', '``', $identifier) . '`';
     }
 }
