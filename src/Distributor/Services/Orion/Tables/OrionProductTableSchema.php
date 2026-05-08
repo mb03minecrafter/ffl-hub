@@ -65,7 +65,7 @@ final class OrionProductTableSchema implements ProductSchemaInterface
             // Regulatory / fulfillment
             'ffl_required' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'sot_required' => 'TINYINT(1) NOT NULL DEFAULT 0',
-            'dropship_enabled' => 'TINYINT(1) NOT NULL DEFAULT 1',
+            'dropship_enabled' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'dropship_block_reason' => 'VARCHAR(255) NULL',
             'serializable' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'cannot_dropship' => 'TINYINT(1) NOT NULL DEFAULT 0',

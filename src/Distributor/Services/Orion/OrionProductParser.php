@@ -72,7 +72,7 @@ final class OrionProductParser
             'restricted_states' => $this->clean_text($this->string_value($product, 'restricted_states')),
             'facets_json' => $this->encode_json($facets),
 
-            'ffl_required' => $this->is_ffl_required($product_tags, $product_categories, $facets) ? '1' : '0',
+            'ffl_required' => $this->is_ffl_required($product_tags) ? '1' : '0',
             'sot_required' => $this->is_sot_required($product_tags, $product_categories, $facets) ? '1' : '0',
             'dropship_enabled' => $dropship_info['enabled'] ? '1' : '0',
             'dropship_block_reason' => $dropship_info['reason'],
@@ -186,26 +186,16 @@ final class OrionProductParser
             }
         }
 
+        if (!in_array('CAN_DROPSHIP', $tag_list, true)) {
+            return ['enabled' => false, 'reason' => 'missing_can_dropship_tag'];
+        }
+
         return ['enabled' => true, 'reason' => ''];
     }
 
-    /**
-     * @param array<string,mixed> $facets
-     */
-    private function is_ffl_required(string $tags, string $categories, array $facets): bool
+    private function is_ffl_required(string $tags): bool
     {
-        if (in_array('FFL_REQUIRED', $this->tokenize($tags), true)) {
-            return true;
-        }
-
-        $haystack = strtoupper($categories . ' ' . $this->flatten_scalar_text($facets));
-        foreach (['PISTOL', 'REVOLVER', 'RIFLE', 'SHOTGUN', 'FIREARM', 'FRAME', 'RECEIVER', 'LOWER'] as $needle) {
-            if (strpos($haystack, $needle) !== false) {
-                return true;
-            }
-        }
-
-        return false;
+        return in_array('FFL_REQUIRED', $this->tokenize($tags), true);
     }
 
     /**
