@@ -18,7 +18,7 @@ final class UpcStockAlertCronService extends AbstractCronService
 
     protected function get_interval_seconds(): int
     {
-        return 30 * 60;
+        return 5 * 60;
     }
 
     protected function get_initial_delay_seconds(): int
