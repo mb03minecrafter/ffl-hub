@@ -12,6 +12,7 @@ use FFLHub\Admin\Orders\OrderCartComplianceMetaBox;
 use FFLHub\Admin\Orders\OrderProfitAuditMetaBox;
 use FFLHub\Admin\Pages\AdminPage;
 use FFLHub\Admin\Pages\DavidsonsFailedJobsPage;
+use FFLHub\Admin\Pages\DealerBatchOptimizerPage;
 use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
 use FFLHub\Admin\Pages\DistributorBatchQueuePage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
@@ -44,6 +45,8 @@ use FFLHub\Distributor\Services\Orders\Cron\SportsSouthCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\SportsSouthDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerAuditTable;
+use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
@@ -84,6 +87,7 @@ final class Plugin
     public AdminPage $admin_page;
     public FFLImporterPage $ffl_importer_page;
     public DistributorProductsPage $distributor_products_page;
+    public DealerBatchOptimizerPage $dealer_batch_optimizer_page;
     public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
     public DavidsonsFailedJobsPage $davidsons_failed_jobs_page;
     public RSRBatchQueuePage $rsr_batch_queue_page;
@@ -176,6 +180,12 @@ final class Plugin
 
             $this->dealer_fulfilled_jobs_page = new DealerFulfilledJobsPage($this->distributor_handler->ordering_jobs_table);
             $this->dealer_fulfilled_jobs_page->register();
+
+            $this->dealer_batch_optimizer_page = new DealerBatchOptimizerPage(
+                $this->distributor_handler->ordering_jobs_table,
+                $this->distributor_handler
+            );
+            $this->dealer_batch_optimizer_page->register();
 
             $this->davidsons_failed_jobs_page = new DavidsonsFailedJobsPage($this->distributor_handler->ordering_jobs_table);
             $this->davidsons_failed_jobs_page->register();
@@ -336,6 +346,7 @@ final class Plugin
     public static function activate(): void
     {
         Options::init_defaults();
+        DealerBatchOptimizerConfig::init_defaults();
         CategoryInstaller::install_default_categories();
         self::ensure_quote_email_jobs_table();
         $quote_email_jobs_cron = new QuoteEmailJobsCronService();
@@ -351,6 +362,8 @@ final class Plugin
 
         $handler = new DistributorHandler($ffl_table);
         $handler->on_activate();
+
+        (new DealerBatchOptimizerAuditTable())->createTables();
 
         $upc_stock_alert_cron = new UpcStockAlertCronService();
         $upc_stock_alert_cron->on_activation();

@@ -7,6 +7,7 @@ use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
+use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
@@ -189,7 +190,11 @@ final class DistributorBatchQueuePage
         update_option($low_stock_threshold_field, (string) $low_stock_threshold, false);
         update_option($retry_delay_seconds_field, (string) $retry_delay_seconds, false);
         update_option($max_rows_per_run_field, (string) $max_rows_per_run, false);
-        update_option($force_flush_field, $force_flush, false);
+        if ($this->mode === self::MODE_DEALER && $force_flush === '1') {
+            DealerBatchOptimizerConfig::mark_force_flush_requested();
+        } else {
+            update_option($force_flush_field, $force_flush, false);
+        }
 
         $this->redirect_with_notice('success', sprintf(__('%s settings updated.', 'ffl-hub'), $this->page_title));
     }
@@ -200,7 +205,11 @@ final class DistributorBatchQueuePage
             $this->redirect_with_notice('error', __('Batch cron hook is not configured for this page.', 'ffl-hub'));
         }
 
-        update_option($this->option_name('force_flush'), '1', false);
+        if ($this->mode === self::MODE_DEALER) {
+            DealerBatchOptimizerConfig::mark_force_flush_requested();
+        } else {
+            update_option($this->option_name('force_flush'), '1', false);
+        }
 
         $scheduled = false;
         if (function_exists('as_schedule_single_action')) {
@@ -278,6 +287,10 @@ final class DistributorBatchQueuePage
 
     private function option_name(string $suffix): string
     {
+        if ($this->mode === self::MODE_DEALER) {
+            return DealerBatchOptimizerConfig::dealer_batch_option_name($suffix);
+        }
+
         return $this->option_prefix . '_' . trim($suffix);
     }
 
@@ -1012,7 +1025,7 @@ final class DistributorBatchQueuePage
             return $raw;
         }
         if (is_numeric($raw)) {
-            return ((int) $raw) === 1;
+            return ((int) $raw) > 0;
         }
         $v = strtolower(trim((string) $raw));
         return in_array($v, ['1', 'true', 'yes', 'on'], true);

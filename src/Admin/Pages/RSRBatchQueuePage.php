@@ -8,6 +8,7 @@ use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Services\Orders\Cron\RSRDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
@@ -33,12 +34,12 @@ final class RSRBatchQueuePage
     private const NONCE_ACTION = 'fflhub_rsr_batch_page_action';
     private const NONCE_FIELD = 'fflhub_rsr_batch_nonce';
 
-    private const OPT_BATCH_ENABLED = 'fflhub_rsr_dealer_batch_enabled';
-    private const OPT_DISPATCH_TIME = 'fflhub_rsr_dealer_batch_dispatch_time';
-    private const OPT_LOW_STOCK_THRESHOLD = 'fflhub_rsr_dealer_batch_low_stock_threshold';
-    private const OPT_RETRY_DELAY_SECONDS = 'fflhub_rsr_dealer_batch_retry_delay_seconds';
-    private const OPT_MAX_ROWS_PER_RUN = 'fflhub_rsr_dealer_batch_max_rows_per_run';
-    private const OPT_FORCE_FLUSH = 'fflhub_rsr_dealer_batch_force_flush';
+    private const OPT_BATCH_ENABLED = 'fflhub_dealer_batch_global_enabled';
+    private const OPT_DISPATCH_TIME = 'fflhub_dealer_batch_global_dispatch_time';
+    private const OPT_LOW_STOCK_THRESHOLD = 'fflhub_dealer_batch_global_low_stock_threshold';
+    private const OPT_RETRY_DELAY_SECONDS = 'fflhub_dealer_batch_global_retry_delay_seconds';
+    private const OPT_MAX_ROWS_PER_RUN = 'fflhub_dealer_batch_global_max_rows_per_run';
+    private const OPT_FORCE_FLUSH = 'fflhub_dealer_batch_global_force_flush';
 
     private const DEFAULT_DISPATCH_TIME = '17:00';
     private const DEFAULT_LOW_STOCK_THRESHOLD = 3;
@@ -149,18 +150,18 @@ final class RSRBatchQueuePage
     private function handle_save_settings_post(): void
     {
         $enabled = $this->to_checkbox_string(
-            isset($_POST['fflhub_rsr_dealer_batch_enabled']) ? wp_unslash((string) $_POST['fflhub_rsr_dealer_batch_enabled']) : '0'
+            isset($_POST[self::OPT_BATCH_ENABLED]) ? wp_unslash((string) $_POST[self::OPT_BATCH_ENABLED]) : '0'
         );
         $dispatch_time = $this->sanitize_dispatch_time(
-            isset($_POST['fflhub_rsr_dealer_batch_dispatch_time'])
-                ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_rsr_dealer_batch_dispatch_time']))
+            isset($_POST[self::OPT_DISPATCH_TIME])
+                ? sanitize_text_field(wp_unslash((string) $_POST[self::OPT_DISPATCH_TIME]))
                 : self::DEFAULT_DISPATCH_TIME
         );
-        $low_stock_threshold = max(0, (int) (isset($_POST['fflhub_rsr_dealer_batch_low_stock_threshold']) ? wp_unslash((string) $_POST['fflhub_rsr_dealer_batch_low_stock_threshold']) : self::DEFAULT_LOW_STOCK_THRESHOLD));
-        $retry_delay_seconds = max(30, (int) (isset($_POST['fflhub_rsr_dealer_batch_retry_delay_seconds']) ? wp_unslash((string) $_POST['fflhub_rsr_dealer_batch_retry_delay_seconds']) : self::DEFAULT_RETRY_DELAY_SECONDS));
-        $max_rows_per_run = max(1, (int) (isset($_POST['fflhub_rsr_dealer_batch_max_rows_per_run']) ? wp_unslash((string) $_POST['fflhub_rsr_dealer_batch_max_rows_per_run']) : self::DEFAULT_MAX_ROWS_PER_RUN));
+        $low_stock_threshold = max(0, (int) (isset($_POST[self::OPT_LOW_STOCK_THRESHOLD]) ? wp_unslash((string) $_POST[self::OPT_LOW_STOCK_THRESHOLD]) : self::DEFAULT_LOW_STOCK_THRESHOLD));
+        $retry_delay_seconds = max(30, (int) (isset($_POST[self::OPT_RETRY_DELAY_SECONDS]) ? wp_unslash((string) $_POST[self::OPT_RETRY_DELAY_SECONDS]) : self::DEFAULT_RETRY_DELAY_SECONDS));
+        $max_rows_per_run = max(1, (int) (isset($_POST[self::OPT_MAX_ROWS_PER_RUN]) ? wp_unslash((string) $_POST[self::OPT_MAX_ROWS_PER_RUN]) : self::DEFAULT_MAX_ROWS_PER_RUN));
         $force_flush = $this->to_checkbox_string(
-            isset($_POST['fflhub_rsr_dealer_batch_force_flush']) ? wp_unslash((string) $_POST['fflhub_rsr_dealer_batch_force_flush']) : '0'
+            isset($_POST[self::OPT_FORCE_FLUSH]) ? wp_unslash((string) $_POST[self::OPT_FORCE_FLUSH]) : '0'
         );
 
         update_option(self::OPT_BATCH_ENABLED, $enabled, false);
@@ -168,14 +169,18 @@ final class RSRBatchQueuePage
         update_option(self::OPT_LOW_STOCK_THRESHOLD, (string) $low_stock_threshold, false);
         update_option(self::OPT_RETRY_DELAY_SECONDS, (string) $retry_delay_seconds, false);
         update_option(self::OPT_MAX_ROWS_PER_RUN, (string) $max_rows_per_run, false);
-        update_option(self::OPT_FORCE_FLUSH, $force_flush, false);
+        if ($force_flush === '1') {
+            DealerBatchOptimizerConfig::mark_force_flush_requested();
+        } else {
+            update_option(self::OPT_FORCE_FLUSH, '0', false);
+        }
 
         $this->redirect_with_notice('success', __('RSR dealer batch settings updated.', 'ffl-hub'));
     }
 
     private function handle_force_run_post(): void
     {
-        update_option(self::OPT_FORCE_FLUSH, '1', false);
+        DealerBatchOptimizerConfig::mark_force_flush_requested();
 
         $scheduled = false;
         if (function_exists('as_schedule_single_action')) {
@@ -356,26 +361,26 @@ final class RSRBatchQueuePage
                 <input type="hidden" name="fflhub_rsr_batch_action" value="<?php echo esc_attr(self::FORM_ACTION_SAVE_SETTINGS); ?>" />
                 <table class="form-table" role="presentation"><tbody>
                     <tr><th scope="row"><?php esc_html_e('Enable Dealer Batch Queue', 'ffl-hub'); ?></th><td>
-                        <input type="hidden" name="fflhub_rsr_dealer_batch_enabled" value="0" />
-                        <label><input type="checkbox" name="fflhub_rsr_dealer_batch_enabled" value="1" <?php checked((bool) $settings['enabled']); ?> />
+                        <input type="hidden" name="<?php echo esc_attr(self::OPT_BATCH_ENABLED); ?>" value="0" />
+                        <label><input type="checkbox" name="<?php echo esc_attr(self::OPT_BATCH_ENABLED); ?>" value="1" <?php checked((bool) $settings['enabled']); ?> />
                             <?php esc_html_e('Queue dealer rows as batch_pending', 'ffl-hub'); ?></label>
                     </td></tr>
                     <tr><th scope="row"><?php esc_html_e('Dispatch Time (Local)', 'ffl-hub'); ?></th><td>
-                        <input type="text" class="regular-text" name="fflhub_rsr_dealer_batch_dispatch_time" value="<?php echo esc_attr((string) $settings['dispatch_time']); ?>" placeholder="17:00" />
+                        <input type="text" class="regular-text" name="<?php echo esc_attr(self::OPT_DISPATCH_TIME); ?>" value="<?php echo esc_attr((string) $settings['dispatch_time']); ?>" placeholder="17:00" />
                         <p class="description"><?php esc_html_e('RSR scheduled dealer batch placement is held on Saturdays and Sundays. Low-stock priority rows can still place immediately.', 'ffl-hub'); ?></p>
                     </td></tr>
                     <tr><th scope="row"><?php esc_html_e('Low Stock Threshold', 'ffl-hub'); ?></th><td>
-                        <input type="number" min="0" step="1" class="small-text" name="fflhub_rsr_dealer_batch_low_stock_threshold" value="<?php echo esc_attr((string) ((int) $settings['low_stock_threshold'])); ?>" />
+                        <input type="number" min="0" step="1" class="small-text" name="<?php echo esc_attr(self::OPT_LOW_STOCK_THRESHOLD); ?>" value="<?php echo esc_attr((string) ((int) $settings['low_stock_threshold'])); ?>" />
                     </td></tr>
                     <tr><th scope="row"><?php esc_html_e('Retry Delay (Seconds)', 'ffl-hub'); ?></th><td>
-                        <input type="number" min="30" step="1" class="small-text" name="fflhub_rsr_dealer_batch_retry_delay_seconds" value="<?php echo esc_attr((string) ((int) $settings['retry_delay_seconds'])); ?>" />
+                        <input type="number" min="30" step="1" class="small-text" name="<?php echo esc_attr(self::OPT_RETRY_DELAY_SECONDS); ?>" value="<?php echo esc_attr((string) ((int) $settings['retry_delay_seconds'])); ?>" />
                     </td></tr>
                     <tr><th scope="row"><?php esc_html_e('Max Rows Per Run', 'ffl-hub'); ?></th><td>
-                        <input type="number" min="1" step="1" class="small-text" name="fflhub_rsr_dealer_batch_max_rows_per_run" value="<?php echo esc_attr((string) ((int) $settings['max_rows_per_run'])); ?>" />
+                        <input type="number" min="1" step="1" class="small-text" name="<?php echo esc_attr(self::OPT_MAX_ROWS_PER_RUN); ?>" value="<?php echo esc_attr((string) ((int) $settings['max_rows_per_run'])); ?>" />
                     </td></tr>
                     <tr><th scope="row"><?php esc_html_e('Force Flush Next Run', 'ffl-hub'); ?></th><td>
-                        <input type="hidden" name="fflhub_rsr_dealer_batch_force_flush" value="0" />
-                        <label><input type="checkbox" name="fflhub_rsr_dealer_batch_force_flush" value="1" <?php checked(!empty($settings['force_flush'])); ?> />
+                        <input type="hidden" name="<?php echo esc_attr(self::OPT_FORCE_FLUSH); ?>" value="0" />
+                        <label><input type="checkbox" name="<?php echo esc_attr(self::OPT_FORCE_FLUSH); ?>" value="1" <?php checked(!empty($settings['force_flush'])); ?> />
                             <?php esc_html_e('Keep force flush enabled until the next eligible batch cron run consumes it', 'ffl-hub'); ?></label>
                     </td></tr>
                 </tbody></table>
@@ -1259,7 +1264,7 @@ final class RSRBatchQueuePage
             return $raw;
         }
         if (is_numeric($raw)) {
-            return ((int) $raw) === 1;
+            return ((int) $raw) > 0;
         }
         $v = strtolower(trim((string) $raw));
         return in_array($v, ['1', 'true', 'yes', 'on'], true);

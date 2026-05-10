@@ -77,6 +77,8 @@ fflhub_define_bool('FFLHUB_LIPSEYS_DEBUG', true);
 // Order orchestration / state machine.
 fflhub_define_bool('FFLHUB_PLACE_ORCH_DEBUG', true);
 fflhub_define_bool('FFLHUB_DEBUG_PLACE_DISPATCH', true);
+fflhub_define_bool('FFLHUB_DEBUG_ORDER_BATCH', true);
+fflhub_define_bool('FFLHUB_DEBUG_DEALER_BATCH_OPTIMIZER', true);
 fflhub_define_bool('FFLHUB_STATE_MACHINE_DEBUG', true);
 fflhub_define_bool('FFLHUB_PLACE_ORDER_JOB_RUNNER_DEBUG', true);
 fflhub_define_bool('FFLHUB_TRASH_ORDER_JOBS_DEBUG', true);

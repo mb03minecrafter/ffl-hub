@@ -28,6 +28,8 @@ use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementSnapshotUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 use FFLHub\Distributor\Services\Orders\Notifications\BatchOrderNotificationEmail;
+use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
+use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchShippingOptimizer;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Distributor\Services\Orders\Util\DealerShipToResolver;
 use FFLHub\FFL\Tables\FFLTable;
@@ -53,7 +55,6 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     /** Debug flag and lock TTL are common for all batch services. */
     private const DEBUG_CONST = 'FFLHUB_DEBUG_ORDER_BATCH';
     private const LOCK_TTL_SECONDS = 300;
-    private const DEALER_BATCH_FREE_INBOUND_THRESHOLD = 1000.0;
 
     /** Safe defaults used when options are missing/invalid. */
     private const DEFAULT_DISPATCH_TIME = '17:00';
@@ -151,6 +152,10 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         ];
 
         try {
+            if (!$this->is_ca_relay_mode()) {
+                (new DealerBatchShippingOptimizer($this->handler, $this->jobs_table))->run($dist_id);
+            }
+
             // Resolve runtime controls once per run for consistent behavior.
             $max_rows = $this->max_rows_per_run();
             $low_threshold = $this->low_stock_threshold();
@@ -876,14 +881,18 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         }
 
         $batch_total = $this->dealer_batch_distributor_cost_total($batch_candidates);
-        $free_inbound = $batch_total >= self::DEALER_BATCH_FREE_INBOUND_THRESHOLD;
+        $threshold = DealerBatchOptimizerConfig::free_shipping_threshold($this->get_distributor_id());
+        if ($threshold <= 0.0) {
+            return;
+        }
+        $free_inbound = $batch_total >= $threshold;
 
         $this->log_ctx('dealer_batch_inbound_shipping_rule', [
             'po' => $po,
             'batch_kind' => $batch_kind,
             'distributor' => $this->get_distributor_id(),
             'batch_total' => $batch_total,
-            'threshold' => self::DEALER_BATCH_FREE_INBOUND_THRESHOLD,
+            'threshold' => $threshold,
             'free_inbound' => $free_inbound ? 1 : 0,
             'rows' => count($batch_candidates),
         ]);
@@ -912,7 +921,8 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                 $order,
                 $po,
                 $batch_kind,
-                $batch_total
+                $batch_total,
+                $threshold
             );
 
             if ($waived <= 0.0) {
@@ -981,6 +991,31 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             return 0.0;
         }
 
+        $distributor = $this->handler->get_distributor_by_id($this->get_distributor_id());
+        if ($distributor instanceof DistributorBase) {
+            $direct_total = 0.0;
+            $all_priced = true;
+            foreach ($needed_by_upc as $upc => $qty) {
+                try {
+                    $unit_price = $distributor->get_distributor_price_by_upc((string) $upc);
+                } catch (\Throwable $e) {
+                    $unit_price = null;
+                }
+
+                $unit_price = is_numeric($unit_price) ? (float) $unit_price : 0.0;
+                if ($unit_price <= 0.0) {
+                    $all_priced = false;
+                    break;
+                }
+
+                $direct_total += $unit_price * (float) max(1, (int) $qty);
+            }
+
+            if ($all_priced) {
+                return max(0.0, $direct_total);
+            }
+        }
+
         $total = 0.0;
         foreach ($order->get_items('line_item') as $item) {
             if (!($item instanceof WC_Order_Item_Product)) {
@@ -1020,7 +1055,8 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         WC_Order $order,
         string $po,
         string $batch_kind,
-        float $batch_total
+        float $batch_total,
+        float $threshold
     ): float {
         $dist_id = $this->get_distributor_id();
         $waived_total = 0.0;
@@ -1054,7 +1090,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                     continue;
                 }
 
-                $waived = $this->waive_dealer_inbound_shipping_row($row, $po, $batch_kind, $batch_total);
+                $waived = $this->waive_dealer_inbound_shipping_row($row, $po, $batch_kind, $batch_total, $threshold);
                 if ($waived <= 0.0) {
                     continue;
                 }
@@ -1081,7 +1117,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             );
             $plan['dealer_batch_free_inbound_shipping_po'] = $po;
             $plan['dealer_batch_free_inbound_shipping_batch_total'] = $this->money4($batch_total);
-            $plan['dealer_batch_free_inbound_shipping_threshold'] = $this->money4(self::DEALER_BATCH_FREE_INBOUND_THRESHOLD);
+            $plan['dealer_batch_free_inbound_shipping_threshold'] = $this->money4($threshold);
             $plan['dealer_batch_free_inbound_shipping_updated_at_utc'] = gmdate('Y-m-d H:i:s');
 
             $shipping_item->update_meta_data('fflhub_shipping_plan', wp_json_encode($plan));
@@ -1094,7 +1130,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             $order->add_order_note(sprintf(
                 'FFLHub dealer batch %s exceeded $%s. Waived %s inbound distributor shipping for profit audit on PO %s.',
                 $batch_kind,
-                number_format(self::DEALER_BATCH_FREE_INBOUND_THRESHOLD, 2, '.', ''),
+                number_format($threshold, 2, '.', ''),
                 '$' . number_format($waived_total, 2, '.', ''),
                 $po
             ));
@@ -1107,8 +1143,13 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     /**
      * @param array<string,mixed> $row
      */
-    private function waive_dealer_inbound_shipping_row(array &$row, string $po, string $batch_kind, float $batch_total): float
-    {
+    private function waive_dealer_inbound_shipping_row(
+        array &$row,
+        string $po,
+        string $batch_kind,
+        float $batch_total,
+        float $threshold
+    ): float {
         if (empty($row['dealer_inbound'])) {
             return 0.0;
         }
@@ -1154,7 +1195,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         $row['dealer_batch_free_inbound_shipping_po'] = $po;
         $row['dealer_batch_free_inbound_shipping_batch_kind'] = $batch_kind;
         $row['dealer_batch_free_inbound_shipping_batch_total'] = $this->money4($batch_total);
-        $row['dealer_batch_free_inbound_shipping_threshold'] = $this->money4(self::DEALER_BATCH_FREE_INBOUND_THRESHOLD);
+        $row['dealer_batch_free_inbound_shipping_threshold'] = $this->money4($threshold);
         $row['dealer_batch_free_inbound_shipping_updated_at_utc'] = gmdate('Y-m-d H:i:s');
 
         return $waived;
@@ -1393,26 +1434,46 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
 
     private function is_enabled(): bool
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::dealer_batch_enabled();
+        }
+
         return $this->truthy_option($this->opt_enabled_name(), true);
     }
 
     private function low_stock_threshold(): int
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::low_stock_threshold();
+        }
+
         return max(0, (int) get_option($this->opt_low_stock_threshold_name(), self::DEFAULT_LOW_STOCK_THRESHOLD));
     }
 
     private function retry_delay_seconds(): int
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::retry_delay_seconds();
+        }
+
         return max(30, (int) get_option($this->opt_retry_delay_name(), self::DEFAULT_RETRY_DELAY_SECONDS));
     }
 
     private function max_rows_per_run(): int
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::max_rows_per_run();
+        }
+
         return max(1, (int) get_option($this->opt_max_rows_name(), self::DEFAULT_MAX_ROWS_PER_RUN));
     }
 
     private function consume_force_flush(): bool
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::consume_force_flush_for_option_prefix($this->get_option_prefix());
+        }
+
         // One-shot toggle: read and immediately clear so only one run consumes it.
         $enabled = $this->truthy_option($this->opt_force_flush_name(), false);
         if ($enabled) {
@@ -1818,31 +1879,55 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
 
     private function opt_enabled_name(): string
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::dealer_batch_option_name('enabled');
+        }
+
         return $this->get_option_prefix() . '_enabled';
     }
 
     private function opt_dispatch_time_name(): string
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::dealer_batch_option_name('dispatch_time');
+        }
+
         return $this->get_option_prefix() . '_dispatch_time';
     }
 
     private function opt_low_stock_threshold_name(): string
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::dealer_batch_option_name('low_stock_threshold');
+        }
+
         return $this->get_option_prefix() . '_low_stock_threshold';
     }
 
     private function opt_retry_delay_name(): string
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::dealer_batch_option_name('retry_delay_seconds');
+        }
+
         return $this->get_option_prefix() . '_retry_delay_seconds';
     }
 
     private function opt_max_rows_name(): string
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::dealer_batch_option_name('max_rows_per_run');
+        }
+
         return $this->get_option_prefix() . '_max_rows_per_run';
     }
 
     private function opt_force_flush_name(): string
     {
+        if (!$this->is_ca_relay_mode()) {
+            return DealerBatchOptimizerConfig::dealer_batch_option_name('force_flush');
+        }
+
         return $this->get_option_prefix() . '_force_flush';
     }
 
