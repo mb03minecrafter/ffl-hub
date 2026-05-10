@@ -316,6 +316,11 @@ final class DistributorBatchQueuePage
 
     private function render_settings_form(array $settings): void
     {
+        if ($this->mode === self::MODE_DEALER) {
+            $this->render_central_dealer_batch_settings_notice($settings);
+            return;
+        }
+
         ?>
         <section class="fflhub-rsr-batch-card">
             <h2><?php esc_html_e('Batch Settings', 'ffl-hub'); ?></h2>
@@ -328,7 +333,7 @@ final class DistributorBatchQueuePage
                         <label><input type="checkbox" name="<?php echo esc_attr($this->option_name('enabled')); ?>" value="1" <?php checked((bool) $settings['enabled']); ?> />
                             <?php echo esc_html(sprintf(__('Queue %s rows as batch_pending', 'ffl-hub'), strtolower($this->mode_label))); ?></label>
                     </td></tr>
-                    <tr><th scope="row"><?php esc_html_e('Dispatch Time (Local)', 'ffl-hub'); ?></th><td>
+                    <tr><th scope="row"><?php esc_html_e('Dispatch Time (Central)', 'ffl-hub'); ?></th><td>
                         <input type="text" class="regular-text" name="<?php echo esc_attr($this->option_name('dispatch_time')); ?>" value="<?php echo esc_attr((string) $settings['dispatch_time']); ?>" placeholder="17:00" />
                     </td></tr>
                     <tr><th scope="row"><?php esc_html_e('Low Stock Threshold', 'ffl-hub'); ?></th><td>
@@ -352,13 +357,45 @@ final class DistributorBatchQueuePage
         <?php
     }
 
+    private function render_central_dealer_batch_settings_notice(array $settings): void
+    {
+        $settings_url = add_query_arg(
+            ['page' => 'fflhub-dealer-batch-optimizer'],
+            admin_url('admin.php')
+        );
+        ?>
+        <section class="fflhub-rsr-batch-card">
+            <h2><?php esc_html_e('Central Dealer Batch Settings', 'ffl-hub'); ?></h2>
+            <p>
+                <?php esc_html_e('Dealer-batch timing is shared across RSR, Lipsey\'s, Orion, Sports South, and Zanders. Edit dispatch time, stock threshold, retry delay, row limits, and optimizer thresholds from the central optimizer page.', 'ffl-hub'); ?>
+            </p>
+            <p>
+                <strong><?php esc_html_e('Dispatch time:', 'ffl-hub'); ?></strong>
+                <?php echo esc_html((string) ($settings['dispatch_time'] ?? self::DEFAULT_DISPATCH_TIME)); ?>
+                <?php esc_html_e('Central time', 'ffl-hub'); ?>
+                &nbsp;|&nbsp;
+                <strong><?php esc_html_e('Low stock threshold:', 'ffl-hub'); ?></strong>
+                <?php echo esc_html((string) ((int) ($settings['low_stock_threshold'] ?? self::DEFAULT_LOW_STOCK_THRESHOLD))); ?>
+                &nbsp;|&nbsp;
+                <strong><?php esc_html_e('Max rows:', 'ffl-hub'); ?></strong>
+                <?php echo esc_html((string) ((int) ($settings['max_rows_per_run'] ?? self::DEFAULT_MAX_ROWS_PER_RUN))); ?>
+            </p>
+            <p>
+                <a class="button button-secondary" href="<?php echo esc_url($settings_url); ?>">
+                    <?php esc_html_e('Open Dealer Batch Optimizer Settings', 'ffl-hub'); ?>
+                </a>
+            </p>
+        </section>
+        <?php
+    }
+
     private function render_force_run_box(array $data, array $settings): void
     {
         ?>
         <section class="fflhub-rsr-batch-force-box">
             <h2><?php esc_html_e('Force Flush / Run', 'ffl-hub'); ?></h2>
             <p>
-                <?php echo esc_html(sprintf(__('Queued rows: %d | Dispatch-ready now: %d | Dispatch time: %s', 'ffl-hub'), (int) ($data['batch_pending_jobs'] ?? 0), (int) ($data['dispatch_ready_jobs'] ?? 0), (string) ($settings['dispatch_time'] ?? self::DEFAULT_DISPATCH_TIME))); ?>
+                <?php echo esc_html(sprintf(__('Queued rows: %d | Dispatch-ready now: %d | Dispatch time: %s Central', 'ffl-hub'), (int) ($data['batch_pending_jobs'] ?? 0), (int) ($data['dispatch_ready_jobs'] ?? 0), (string) ($settings['dispatch_time'] ?? self::DEFAULT_DISPATCH_TIME))); ?>
             </p>
             <?php if (!empty($settings['force_flush'])) : ?>
                 <p class="description"><?php esc_html_e('Force flush flag is ON and will be consumed by the next batch run.', 'ffl-hub'); ?></p>
@@ -684,7 +721,7 @@ final class DistributorBatchQueuePage
             <section class="fflhub-rsr-summary-card <?php echo !empty($settings['enabled']) ? 'is-ok' : 'is-danger'; ?>">
                 <h2><?php esc_html_e('Batch Mode', 'ffl-hub'); ?></h2>
                 <div class="fflhub-rsr-metric"><?php echo esc_html(!empty($settings['enabled']) ? __('Enabled', 'ffl-hub') : __('Disabled', 'ffl-hub')); ?></div>
-                <p><?php echo esc_html(sprintf(__('Dispatch: %s | Ready now: %d | Est. queue cost: %s', 'ffl-hub'), (string) ($settings['dispatch_time'] ?? self::DEFAULT_DISPATCH_TIME), (int) ($data['dispatch_ready_jobs'] ?? 0), $this->format_money($queue_total_cost))); ?></p>
+                <p><?php echo esc_html(sprintf(__('Dispatch: %s Central | Ready now: %d | Est. queue cost: %s', 'ffl-hub'), (string) ($settings['dispatch_time'] ?? self::DEFAULT_DISPATCH_TIME), (int) ($data['dispatch_ready_jobs'] ?? 0), $this->format_money($queue_total_cost))); ?></p>
             </section>
         </div>
         <?php
@@ -892,7 +929,7 @@ final class DistributorBatchQueuePage
             <h3><?php esc_html_e('Batch Flow', 'ffl-hub'); ?></h3>
             <ul style="list-style:disc;margin-left:18px;">
                 <li><?php echo esc_html(sprintf(__('Batch mode controls whether eligible %s %s rows are queued as batch_pending for grouped placement.', 'ffl-hub'), $this->dist_label, strtolower($this->mode_label))); ?></li>
-                <li><?php echo esc_html(sprintf(__('Dispatch time is %s (local site time). Rows wait until that window unless force flush is enabled.', 'ffl-hub'), $dispatch_time)); ?></li>
+                <li><?php echo esc_html(sprintf(__('Dispatch time is %s Central time. Rows wait until that window unless force flush is enabled.', 'ffl-hub'), $dispatch_time)); ?></li>
                 <li><?php esc_html_e('Force Flush + Run Now sets a one-time force flag and schedules the batch cron immediately.', 'ffl-hub'); ?></li>
                 <li><?php echo esc_html(sprintf(__('Retry Delay (%d sec) and Max Rows Per Run (%d) bound how aggressively each cron run processes queue entries.', 'ffl-hub'), $retry_delay, $max_rows)); ?></li>
                 <li><?php esc_html_e('The queue tables above show both aggregated UPC demand and raw per-line entries so you can audit exactly what will be sent.', 'ffl-hub'); ?></li>

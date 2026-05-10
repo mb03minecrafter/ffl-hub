@@ -65,10 +65,97 @@ final class DealerBatchOptimizerPage
             <h1><?php esc_html_e('Dealer Batch Optimizer', 'ffl-hub'); ?></h1>
             <p><?php esc_html_e('Central dealer-batch timing, equal-cost shipping optimization, and audit history.', 'ffl-hub'); ?></p>
             <?php $this->render_notice($notice); ?>
+            <?php $this->render_explainer(); ?>
             <?php $this->render_settings_form(); ?>
             <?php $this->render_actions(); ?>
             <?php $this->render_recent_runs($runs); ?>
             <?php $this->render_recent_moves($moves); ?>
+        </div>
+        <?php
+    }
+
+    private function render_explainer(): void
+    {
+        ?>
+        <div style="max-width:1100px;background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:16px 18px;margin:16px 0;">
+            <h2 style="margin-top:0;"><?php esc_html_e('How This Page Works', 'ffl-hub'); ?></h2>
+            <p>
+                <?php esc_html_e('Dealer-batch ordering is centralized here for the batch-enabled dealer-fulfilled distributors: RSR, Lipsey\'s, Orion, Sports South, and Zanders. CA relay batches keep their own timing because that is a different fulfillment flow.', 'ffl-hub'); ?>
+            </p>
+            <p>
+                <?php esc_html_e('The shipping optimizer runs before a dealer-batch cron builds its final distributor order. It looks across pending dealer-batch jobs and may move a whole job row from one eligible distributor batch to another only when the item cost stays the same and the move improves free-shipping coverage.', 'ffl-hub'); ?>
+            </p>
+
+            <h3><?php esc_html_e('Setting Reference', 'ffl-hub'); ?></h3>
+            <table class="widefat striped">
+                <thead>
+                    <tr>
+                        <th style="width:240px;"><?php esc_html_e('Setting', 'ffl-hub'); ?></th>
+                        <th><?php esc_html_e('What it does', 'ffl-hub'); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong><?php esc_html_e('Enable dealer batch processing', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('Turns the shared dealer-batch placement system on or off for the batch-enabled dealer-fulfilled distributors. When disabled, those dealer batch crons skip placement.', 'ffl-hub'); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php esc_html_e('Enable shipping optimizer', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('Allows pending dealer-batch rows to be reassigned across eligible batch distributors before placement. If disabled, rows stay with the distributor selected by the original routing flow.', 'ffl-hub'); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php esc_html_e('Dispatch time (Central)', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('The daily scheduled dispatch window in America/Chicago time. Normal dealer-batch rows wait until this time unless force flush is requested. Low-stock priority rows may still flush earlier according to the batch engine rules.', 'ffl-hub'); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php esc_html_e('Low stock threshold', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('Stock level used to identify risk. Rows involving low-stock source inventory are treated as priority by the batch engine and are skipped by optional shipping optimization so the optimizer does not add risk.', 'ffl-hub'); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php esc_html_e('Retry delay seconds', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('How long failed batch rows wait before they are eligible for another placement attempt.', 'ffl-hub'); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php esc_html_e('Max rows per run', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('Maximum number of pending rows a distributor batch cron pulls in one run after optimization has had a chance to move rows.', 'ffl-hub'); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php esc_html_e('Force flush token', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('Requests a one-pass force flush. Each dealer-batch distributor can consume the token once, which lets all batch distributors flush without needing separate per-distributor force flags.', 'ffl-hub'); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php esc_html_e('Free shipping threshold', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('Dealer-cost subtotal needed for that distributor to qualify for free inbound freight. A blank or zero value means the optimizer will not try to optimize toward free shipping for that distributor.', 'ffl-hub'); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php esc_html_e('Below-threshold penalty', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('Estimated shipping cost when that distributor batch is below its free-shipping threshold. If left at zero, the optimizer uses a deterministic fallback: prefer crossing thresholds, avoid breaking an existing free-shipping batch, move fewer rows, and minimize overfill.', 'ffl-hub'); ?></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3><?php esc_html_e('Shipping Optimization Rules', 'ffl-hub'); ?></h3>
+            <ol>
+                <li><?php esc_html_e('Only pending dealer-batch rows are considered. Direct customer drop-ship, CA relay, manual-only, failed, cancelled, already-submitted, and already-PO-stamped rows are not moved.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Only RSR, Lipsey\'s, Orion, Sports South, and Zanders are eligible. CSSI, MGE, Davidson\'s, and disabled distributors are not optimizer targets.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Product distributor locks are respected. If a product is locked, the target distributor must be in the product\'s allowed distributor lock list.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('The target distributor must carry the same UPC, have a distributor SKU available, and have enough stock for the whole moved job row.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Item cost cannot increase. The source and target distributor prices must match after normal two-decimal money rounding, and both must be tied for the lowest eligible dealer-batch cost for that UPC.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('The optimizer moves whole job rows only. It does not split a quantity across multiple distributors.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('The optimizer accounts for other planned moves in the same run so it does not over-allocate target stock.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Rows already optimized once are not bounced again by later optimizer runs.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Moves are written inside a database transaction and logged to the optimizer audit tables with before/after subtotals and per-row move details.', 'ffl-hub'); ?></li>
+            </ol>
+
+            <h3><?php esc_html_e('Manual Actions', 'ffl-hub'); ?></h3>
+            <p>
+                <strong><?php esc_html_e('Run Optimizer Now', 'ffl-hub'); ?></strong>
+                <?php esc_html_e('runs only the optimizer. It can move eligible pending rows, but it does not submit any distributor orders by itself.', 'ffl-hub'); ?>
+            </p>
+            <p>
+                <strong><?php esc_html_e('Force Flush All Dealer Batches', 'ffl-hub'); ?></strong>
+                <?php esc_html_e('sets the shared force-flush token and schedules each dealer-batch distributor cron. The optimizer may run first, then each distributor batch places whatever rows belong to that distributor after the final refetch.', 'ffl-hub'); ?>
+            </p>
         </div>
         <?php
     }
@@ -175,7 +262,7 @@ final class DealerBatchOptimizerPage
                     <input type="hidden" name="<?php echo esc_attr(DealerBatchOptimizerConfig::optimizer_option_name('enabled')); ?>" value="0" />
                     <label><input type="checkbox" name="<?php echo esc_attr(DealerBatchOptimizerConfig::optimizer_option_name('enabled')); ?>" value="1" <?php checked($optimizer_enabled); ?> /> <?php esc_html_e('Move equal-cost pending dealer-batch rows when it improves free-shipping coverage.', 'ffl-hub'); ?></label>
                 </td></tr>
-                <tr><th scope="row"><?php esc_html_e('Dispatch time', 'ffl-hub'); ?></th><td>
+                <tr><th scope="row"><?php esc_html_e('Dispatch time (Central)', 'ffl-hub'); ?></th><td>
                     <input type="text" class="regular-text" name="<?php echo esc_attr(DealerBatchOptimizerConfig::dealer_batch_option_name('dispatch_time')); ?>" value="<?php echo esc_attr($dispatch_time); ?>" placeholder="17:00" />
                     <p class="description"><?php esc_html_e('Central time used by RSR, Lipsey\'s, Orion, Sports South, and Zanders dealer batches.', 'ffl-hub'); ?></p>
                 </td></tr>
