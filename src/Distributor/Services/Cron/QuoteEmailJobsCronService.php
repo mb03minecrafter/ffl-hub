@@ -356,30 +356,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
                 : 'blocked_name_warning_failed';
         }
 
-        if ($this->is_holosun_domain_recipient($recipient)) {
-            $warning_sent = $this->send_quote_processing_block_warning_email(
-                $job_row,
-                $recipient,
-                'blocked_email_domain_holosun'
-            );
-            $marked = $this->mark_job_email_sent($job_id);
-
-            self::debug_ctx('blocked job: recipient domain disallowed', [
-                'job_id' => $job_id,
-                'recipient' => $recipient,
-                'warning_sent' => $warning_sent ? 1 : 0,
-                'marked_sent' => $marked ? 1 : 0,
-            ]);
-
-            if (!$marked) {
-                return 'blocked_holosun_domain_mark_failed';
-            }
-
-            return $warning_sent
-                ? 'blocked_holosun_domain'
-                : 'blocked_holosun_domain_warning_failed';
-        }
-
         $product = $this->resolve_product_from_job_row($job_row);
         if (!($product instanceof WC_Product)) {
             self::debug_ctx('skip job: product not resolved', [
@@ -771,14 +747,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $subject = (string) __('Email Quote Ready', 'ffl-hub');
         $rep_name = self::REP_NAMES[$rep_index] ?? self::REP_NAMES[0];
         $coupon_amount_display = wp_strip_all_tags(wc_price($coupon_amount));
-        $force_plain_text = !empty($job_row['_fflhub_quote_is_holosun'])
-            || HolosunProductDetector::is_holosun_product($product);
-        if (!$force_plain_text) {
-            $quote_upc = trim((string) ($job_row['quote_upc'] ?? ''));
-            $quote_product_name = trim((string) ($job_row['quote_product_name'] ?? ''));
-            $force_plain_text = ($quote_upc !== '' && HolosunProductDetector::is_holosun_upc($quote_upc))
-                || $this->quote_text_looks_holosun($quote_product_name);
-        }
+        $force_plain_text = false;
 
         self::debug_ctx('email context built', [
             'job_id' => isset($job_row['id']) ? (int) $job_row['id'] : 0,
@@ -1251,16 +1220,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         return true;
-    }
-
-    private function is_holosun_domain_recipient(string $recipient): bool
-    {
-        $recipient = strtolower(trim($recipient));
-        if ($recipient === '') {
-            return false;
-        }
-
-        return strpos($recipient, '@holosun.com') !== false;
     }
 
     /**
