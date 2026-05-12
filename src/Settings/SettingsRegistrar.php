@@ -162,6 +162,26 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_QUOTE_EMAIL_BUTTON_BACKGROUND_COLOR,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_hex_color_string'],
+                'default'           => Options::default_quote_email_button_background_color(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_QUOTE_EMAIL_BUTTON_TEXT_COLOR,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_hex_color_string'],
+                'default'           => Options::default_quote_email_button_text_color(),
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_BATCH_ORDER_NOTIFICATION_EMAIL,
             [
                 'type'              => 'string',
@@ -648,6 +668,16 @@ final class SettingsRegistrar
         }
 
         return implode("\n", array_values($names));
+    }
+
+    /**
+     * @param mixed $value
+     */
+    public static function sanitize_hex_color_string($value): string
+    {
+        $color = function_exists('sanitize_hex_color') ? sanitize_hex_color((string) $value) : null;
+
+        return (is_string($color) && $color !== '') ? strtolower($color) : '';
     }
 
     /**

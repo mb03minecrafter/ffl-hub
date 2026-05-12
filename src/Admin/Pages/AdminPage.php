@@ -178,6 +178,8 @@ class AdminPage
             'public_brand_name' => Options::get_public_brand_name(),
             'quote_email_rep_names' => Options::get_quote_email_rep_names_text(),
             'quote_email_team_signature' => Options::get_quote_email_team_signature(),
+            'quote_email_button_background_color' => Options::get_quote_email_button_background_color(),
+            'quote_email_button_text_color' => Options::get_quote_email_button_text_color(),
             'batch_order_notification_email' => Options::get_batch_order_notification_email(),
             'distributor_priority_list' => (string) Options::get_distributor_priority_csv(),
             'dealer_ship_to' => Options::get_dealer_ship_to_address(),
@@ -247,6 +249,14 @@ class AdminPage
         $public_brand_name = (string) ($settings['public_brand_name'] ?? Options::default_public_brand_name());
         $quote_email_rep_names = (string) ($settings['quote_email_rep_names'] ?? Options::default_quote_email_rep_names());
         $quote_email_team_signature = (string) ($settings['quote_email_team_signature'] ?? Options::default_quote_email_team_signature());
+        $quote_email_button_background_color = (string) (
+            $settings['quote_email_button_background_color']
+            ?? Options::default_quote_email_button_background_color()
+        );
+        $quote_email_button_text_color = (string) (
+            $settings['quote_email_button_text_color']
+            ?? Options::default_quote_email_button_text_color()
+        );
         $batch_order_notification_email = (string) ($settings['batch_order_notification_email'] ?? Options::default_batch_order_notification_email());
         $distributor_priority_list = (string) ($settings['distributor_priority_list'] ?? '');
         $dealer_ship_to = isset($settings['dealer_ship_to']) && is_array($settings['dealer_ship_to'])
@@ -597,6 +607,46 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'Footer line shown below the rep name in styled and plain quote emails.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_quote_email_button_background_color"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Quote email button color', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_quote_email_button_background_color"
+                        name="fflhub_quote_email_button_background_color"
+                        type="color"
+                        class="fflhub-field-input fflhub-color-input"
+                        value="<?php echo esc_attr($quote_email_button_background_color); ?>" />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Background color for the Add to cart button in styled quote emails.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_quote_email_button_text_color"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Quote email button text color', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_quote_email_button_text_color"
+                        name="fflhub_quote_email_button_text_color"
+                        type="color"
+                        class="fflhub-field-input fflhub-color-input"
+                        value="<?php echo esc_attr($quote_email_button_text_color); ?>" />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Text color for the Add to cart button in styled quote emails.',
                             'ffl-hub'
                         ); ?>
                     </p>

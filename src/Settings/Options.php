@@ -51,6 +51,8 @@ final class Options
     public const OPTION_PUBLIC_BRAND_NAME             = 'fflhub_public_brand_name';
     public const OPTION_QUOTE_EMAIL_REP_NAMES         = 'fflhub_quote_email_rep_names';
     public const OPTION_QUOTE_EMAIL_TEAM_SIGNATURE    = 'fflhub_quote_email_team_signature';
+    public const OPTION_QUOTE_EMAIL_BUTTON_BACKGROUND_COLOR = 'fflhub_quote_email_button_background_color';
+    public const OPTION_QUOTE_EMAIL_BUTTON_TEXT_COLOR  = 'fflhub_quote_email_button_text_color';
     public const OPTION_BATCH_ORDER_NOTIFICATION_EMAIL = 'fflhub_batch_order_notification_email';
     public const OPTION_DISTRIBUTOR_PRIORITY_LIST     = 'fflhub_distributor_priority_list';
     public const OPTION_MAP_BRAND_POLICIES            = 'fflhub_map_brand_policies';
@@ -105,6 +107,8 @@ final class Options
     private const DEFAULT_PUBLIC_BRAND_NAME             = '';
     private const DEFAULT_QUOTE_EMAIL_REP_NAMES         = '';
     private const DEFAULT_QUOTE_EMAIL_TEAM_SIGNATURE    = '';
+    private const DEFAULT_QUOTE_EMAIL_BUTTON_BACKGROUND_COLOR = '#384221';
+    private const DEFAULT_QUOTE_EMAIL_BUTTON_TEXT_COLOR  = '#ffffff';
     private const DEFAULT_BATCH_ORDER_NOTIFICATION_EMAIL = '';
     private const DEFAULT_MAP_BRAND_POLICIES            = [];
     private const DEFAULT_DEALER_SHIP_TO_NAME           = '';
@@ -280,6 +284,16 @@ final class Options
         return self::default_sales_team_signature();
     }
 
+    public static function default_quote_email_button_background_color(): string
+    {
+        return self::DEFAULT_QUOTE_EMAIL_BUTTON_BACKGROUND_COLOR;
+    }
+
+    public static function default_quote_email_button_text_color(): string
+    {
+        return self::DEFAULT_QUOTE_EMAIL_BUTTON_TEXT_COLOR;
+    }
+
     public static function default_batch_order_notification_email(): string
     {
         $email = function_exists('get_option') ? (string) get_option('admin_email', '') : '';
@@ -432,6 +446,17 @@ final class Options
 
         if (get_option(self::OPTION_QUOTE_EMAIL_TEAM_SIGNATURE, null) === null) {
             add_option(self::OPTION_QUOTE_EMAIL_TEAM_SIGNATURE, self::DEFAULT_QUOTE_EMAIL_TEAM_SIGNATURE);
+        }
+
+        if (get_option(self::OPTION_QUOTE_EMAIL_BUTTON_BACKGROUND_COLOR, null) === null) {
+            add_option(
+                self::OPTION_QUOTE_EMAIL_BUTTON_BACKGROUND_COLOR,
+                self::DEFAULT_QUOTE_EMAIL_BUTTON_BACKGROUND_COLOR
+            );
+        }
+
+        if (get_option(self::OPTION_QUOTE_EMAIL_BUTTON_TEXT_COLOR, null) === null) {
+            add_option(self::OPTION_QUOTE_EMAIL_BUTTON_TEXT_COLOR, self::DEFAULT_QUOTE_EMAIL_BUTTON_TEXT_COLOR);
         }
 
         if (get_option(self::OPTION_BATCH_ORDER_NOTIFICATION_EMAIL, null) === null) {
@@ -1049,6 +1074,22 @@ final class Options
         return $signature !== '' ? $signature : self::default_sales_team_signature();
     }
 
+    public static function get_quote_email_button_background_color(): string
+    {
+        return self::get_hex_color_option(
+            self::OPTION_QUOTE_EMAIL_BUTTON_BACKGROUND_COLOR,
+            self::DEFAULT_QUOTE_EMAIL_BUTTON_BACKGROUND_COLOR
+        );
+    }
+
+    public static function get_quote_email_button_text_color(): string
+    {
+        return self::get_hex_color_option(
+            self::OPTION_QUOTE_EMAIL_BUTTON_TEXT_COLOR,
+            self::DEFAULT_QUOTE_EMAIL_BUTTON_TEXT_COLOR
+        );
+    }
+
     public static function get_batch_order_notification_email(): string
     {
         $email = (string) get_option(
@@ -1391,6 +1432,18 @@ final class Options
         }
 
         return $v;
+    }
+
+    private static function get_hex_color_option(string $option_name, string $default): string
+    {
+        $raw = (string) get_option($option_name, $default);
+        $color = function_exists('sanitize_hex_color') ? sanitize_hex_color($raw) : null;
+
+        if (is_string($color) && $color !== '') {
+            return strtolower($color);
+        }
+
+        return $default;
     }
 
     private static function site_name_fallback(): string
