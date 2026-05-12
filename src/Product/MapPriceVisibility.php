@@ -696,13 +696,13 @@ class MapPriceVisibility
             $product
         );
 
-        self::render_quote_notice(self::quote_request_status());
-
         echo '<p class="fflhub-email-for-quote-wrap">';
         echo '<button type="button" class="button alt wp-element-button fflhub-email-for-quote-button" aria-label="' . esc_attr($label) . '" data-fflhub-quote-open="1">';
         echo esc_html($label);
         echo '</button>';
         echo '</p>';
+
+        self::render_quote_notice(self::quote_request_status());
     }
 
     public static function render_holosun_brand_notice_near_image(): void
