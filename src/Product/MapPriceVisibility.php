@@ -55,8 +55,8 @@ class MapPriceVisibility
         add_filter('woocommerce_product_add_to_cart_text', [self::class, 'filter_loop_add_to_cart_text'], 99, 2);
         add_filter('woocommerce_loop_add_to_cart_link', [self::class, 'filter_loop_add_to_cart_link'], 99, 3);
 
-        // Render single-product notices/CTAs in the product summary area.
-        add_action('woocommerce_single_product_summary', [self::class, 'render_email_for_quote_button'], 31);
+        // Render single-product notices/CTAs around the purchase controls.
+        add_action('woocommerce_after_add_to_cart_form', [self::class, 'render_email_for_quote_button'], 10);
         add_action('woocommerce_single_product_summary', [self::class, 'render_holosun_brand_notice_near_image'], 30);
         add_action('wp_footer', [self::class, 'render_email_for_quote_modal']);
         add_action('wp_footer', [self::class, 'render_holosun_loop_notice_modal']);

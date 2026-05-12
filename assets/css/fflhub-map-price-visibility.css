@@ -14,8 +14,8 @@
 .single-product div.product form.cart .single_add_to_cart_button,
 .single-product .fflhub-email-for-quote-wrap,
 .single-product .fflhub-email-for-quote-button {
-  width: 100%;
-  max-width: 320px;
+  width: 210px;
+  max-width: 100%;
 }
 
 .single-product div.product form.cart .single_add_to_cart_button {
@@ -232,8 +232,11 @@ body.fflhub-quote-modal-open {
 }
 
 @media (max-width: 781px) {
+  .single-product div.product form.cart .single_add_to_cart_button,
+  .single-product .fflhub-email-for-quote-wrap,
   .single-product .fflhub-email-for-quote-button {
-    width: 100%;
+    width: 210px;
+    max-width: 100%;
   }
 
   .fflhub-email-for-quote-modal__dialog {
