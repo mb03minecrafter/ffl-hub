@@ -23,6 +23,7 @@
 .single-product .fflhub-email-for-quote-wrap,
 .single-product .fflhub-email-for-quote-button {
   width: var(--fflhub-product-cta-width) !important;
+  min-width: var(--fflhub-product-cta-width) !important;
   max-width: 100% !important;
   box-sizing: border-box !important;
 }
@@ -39,6 +40,13 @@
 
 .single-product .fflhub-email-for-quote-wrap {
   margin: 6px 0 0 !important;
+}
+
+.single-product .fflhub-email-for-quote-wrap button.fflhub-email-for-quote-button {
+  display: flex !important;
+  width: var(--fflhub-product-cta-width) !important;
+  min-width: var(--fflhub-product-cta-width) !important;
+  max-width: 100% !important;
 }
 
 .single-product .fflhub-email-for-quote-notice {
