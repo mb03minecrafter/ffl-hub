@@ -1,3 +1,7 @@
+.single-product {
+  --fflhub-product-cta-width: 280px;
+}
+
 .single-product div.product form.cart:not(.grouped_form),
 .single-product div.product form.cart .woocommerce-variation-add-to-cart {
   display: flex;
@@ -18,8 +22,8 @@
 .single-product div.product form.cart .single_add_to_cart_button,
 .single-product .fflhub-email-for-quote-wrap,
 .single-product .fflhub-email-for-quote-button {
-  width: 210px;
-  max-width: 100%;
+  width: var(--fflhub-product-cta-width) !important;
+  max-width: 100% !important;
   box-sizing: border-box !important;
 }
 
@@ -30,6 +34,7 @@
   float: none !important;
   min-height: 48px;
   padding: 15px 30px !important;
+  text-transform: uppercase !important;
 }
 
 .single-product .fflhub-email-for-quote-wrap {
@@ -69,6 +74,7 @@
   font-weight: var(--wp--custom--font-weight--regular, 400) !important;
   line-height: var(--wp--custom--line-height--medium, 1.5) !important;
   text-decoration: none !important;
+  text-transform: uppercase !important;
   cursor: pointer;
 }
 
@@ -245,8 +251,8 @@ body.fflhub-quote-modal-open {
   .single-product div.product form.cart .single_add_to_cart_button,
   .single-product .fflhub-email-for-quote-wrap,
   .single-product .fflhub-email-for-quote-button {
-    width: 210px;
-    max-width: 100%;
+    width: var(--fflhub-product-cta-width) !important;
+    max-width: 100% !important;
   }
 
   .fflhub-email-for-quote-modal__dialog {
