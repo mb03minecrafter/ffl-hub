@@ -893,6 +893,8 @@ class MapPriceVisibility
             self::redirect_with_quote_status($redirect_url, 'invalid_request');
         }
 
+        self::maybe_send_quote_klaviyo_opt_in($first_name, $last_name, $email, $receive_deals_updates, $product);
+
         $submission_lock_key = self::quote_submission_lock_key($product_id, $first_name, $last_name, $email);
         if (self::is_quote_submission_locked($submission_lock_key)) {
             self::redirect_with_quote_status($redirect_url, 'success');
@@ -1527,6 +1529,84 @@ class MapPriceVisibility
         $phone = (string) get_option('woocommerce_store_phone', '');
         $phone = trim(sanitize_text_field($phone));
         return $phone;
+    }
+
+    private static function maybe_send_quote_klaviyo_opt_in(
+        string $first_name,
+        string $last_name,
+        string $email,
+        bool $receive_deals_updates,
+        WC_Product $product
+    ): void {
+        if (!$receive_deals_updates || !is_email($email)) {
+            return;
+        }
+
+        $settings = get_option('klaviyo_settings');
+        if (!is_array($settings)) {
+            return;
+        }
+
+        $public_key = trim((string) ($settings['klaviyo_public_api_key'] ?? ''));
+        $list_id = trim((string) ($settings['klaviyo_newsletter_list_id'] ?? ''));
+        if ($public_key === '' || $list_id === '') {
+            return;
+        }
+
+        $customer = [
+            'email' => $email,
+        ];
+
+        $first_name = trim($first_name);
+        if ($first_name !== '') {
+            $customer['first_name'] = $first_name;
+        }
+
+        $last_name = trim($last_name);
+        if ($last_name !== '') {
+            $customer['last_name'] = $last_name;
+        }
+
+        $body = [
+            'data' => [
+                [
+                    'customer' => $customer,
+                    'consent' => true,
+                    'updated_at' => gmdate(DATE_ATOM),
+                    'consent_type' => 'email',
+                    'group_id' => $list_id,
+                ],
+            ],
+        ];
+
+        $body = (array) apply_filters(
+            'fflhub_quote_klaviyo_opt_in_payload',
+            $body,
+            $product,
+            $email,
+            $first_name,
+            $last_name
+        );
+
+        $encoded_body = wp_json_encode($body);
+        if (!is_string($encoded_body) || $encoded_body === '') {
+            return;
+        }
+
+        wp_remote_post(
+            'https://a.klaviyo.com/api/webhook/integration/woocommerce?c=' . rawurlencode($public_key),
+            [
+                'method' => 'POST',
+                'httpversion' => '1.0',
+                'blocking' => false,
+                'headers' => [
+                    'X-WC-Webhook-Topic' => 'custom/consent',
+                    'Content-Type' => 'application/json',
+                ],
+                'body' => $encoded_body,
+                'data_format' => 'body',
+            ]
+        );
     }
 
     private static function insert_quote_email_job(
