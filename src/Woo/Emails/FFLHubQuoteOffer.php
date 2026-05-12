@@ -146,6 +146,18 @@ final class FFLHubQuoteOffer extends WC_Email
             $body .= "\n" . $product_url;
         }
 
+        $quoted_price = trim($context->final_price_display);
+        if ($quoted_price !== '') {
+            $body .= "\n\n" . sprintf(__('Quoted price: %s', 'ffl-hub'), $quoted_price);
+
+            $shipping_phrase = trim($context->shipping_phrase);
+            if ($shipping_phrase !== '') {
+                $body .= ' ' . $shipping_phrase;
+            }
+
+            $body .= ', ' . __('no tax', 'ffl-hub') . '.';
+        }
+
         $body .= "\n\n" . sprintf(__('Coupon code: %s', 'ffl-hub'), $code);
 
         $quote_cart_url = trim($context->quote_cart_url);
