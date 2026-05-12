@@ -6,6 +6,10 @@
   gap: 10px;
 }
 
+.single-product div.product form.cart:not(.grouped_form) {
+  margin-bottom: 0 !important;
+}
+
 .single-product div.product form.cart div.quantity {
   float: none !important;
   margin: 0 !important;
@@ -16,14 +20,20 @@
 .single-product .fflhub-email-for-quote-button {
   width: 210px;
   max-width: 100%;
+  box-sizing: border-box !important;
 }
 
 .single-product div.product form.cart .single_add_to_cart_button {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  float: none !important;
   min-height: 48px;
+  padding: 15px 30px !important;
 }
 
 .single-product .fflhub-email-for-quote-wrap {
-  margin: 10px 0 0;
+  margin: 6px 0 0 !important;
 }
 
 .single-product .fflhub-email-for-quote-notice {
