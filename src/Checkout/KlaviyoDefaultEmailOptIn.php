@@ -16,15 +16,11 @@ if (!defined('ABSPATH')) {
 final class KlaviyoDefaultEmailOptIn
 {
     private const SCRIPT_HANDLE = 'fflhub-klaviyo-default-email-opt-in';
-    private const KLAVIYO_BLOCK_SCRIPT_HANDLE = 'klaviyo-klaviyo-checkout-block-view-script';
-
-    private static bool $block_preload_script_added = false;
 
     public static function init(): void
     {
         add_filter('woocommerce_checkout_fields', [__CLASS__, 'default_classic_checkout_field'], 20);
         add_action('wp_enqueue_scripts', [__CLASS__, 'enqueue_script'], 25);
-        add_action('wp_print_footer_scripts', [__CLASS__, 'add_klaviyo_block_preload_script'], 1);
     }
 
     /**
@@ -51,37 +47,9 @@ final class KlaviyoDefaultEmailOptIn
             return;
         }
 
-        self::add_klaviyo_block_preload_script();
-
         wp_register_script(self::SCRIPT_HANDLE, false, [], FFLHUB_PLUGIN_VERSION, true);
         wp_enqueue_script(self::SCRIPT_HANDLE);
         wp_add_inline_script(self::SCRIPT_HANDLE, self::script());
-    }
-
-    public static function add_klaviyo_block_preload_script(): void
-    {
-        if (self::$block_preload_script_added) {
-            return;
-        }
-
-        if (!self::is_checkout_context() || !self::is_klaviyo_email_checkout_enabled()) {
-            return;
-        }
-
-        if (
-            !wp_script_is(self::KLAVIYO_BLOCK_SCRIPT_HANDLE, 'registered')
-            && !wp_script_is(self::KLAVIYO_BLOCK_SCRIPT_HANDLE, 'enqueued')
-        ) {
-            return;
-        }
-
-        wp_add_inline_script(
-            self::KLAVIYO_BLOCK_SCRIPT_HANDLE,
-            self::block_preload_script(),
-            'before'
-        );
-
-        self::$block_preload_script_added = true;
     }
 
     private static function is_checkout_context(): bool
@@ -119,139 +87,6 @@ final class KlaviyoDefaultEmailOptIn
         return !empty($value);
     }
 
-    private static function block_preload_script(): string
-    {
-        return <<<'JS'
-(function () {
-    function state() {
-        window.fflhubKlaviyoDefaultEmailOptIn = window.fflhubKlaviyoDefaultEmailOptIn || {};
-        return window.fflhubKlaviyoDefaultEmailOptIn;
-    }
-
-    function normalize(value) {
-        return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
-    }
-
-    function isTruthy(value) {
-        if (value === true || value === 1) {
-            return true;
-        }
-
-        if (typeof value === "string") {
-            const normalized = normalize(value);
-            return normalized !== "" && normalized !== "0" && normalized !== "false" && normalized !== "no";
-        }
-
-        return !!value;
-    }
-
-    function isNewsletterEnabled() {
-        try {
-            const settings = window.wc
-                && window.wc.wcSettings
-                && typeof window.wc.wcSettings.getSetting === "function"
-                    ? window.wc.wcSettings.getSetting("klaviyo_checkout_block_data", {})
-                    : {};
-
-            return !!(settings && isTruthy(settings.newsletterEnabled));
-        } catch (error) {
-            return false;
-        }
-    }
-
-    function shouldDefaultNewsletter() {
-        return isNewsletterEnabled() && !state().customerOptedOut;
-    }
-
-    function isKlaviyoCheckoutBlock(registration) {
-        if (!registration || typeof registration !== "object") {
-            return false;
-        }
-
-        const metadata = registration.metadata || {};
-        const name = metadata.name || registration.name || "";
-
-        return name === "klaviyo/klaviyo-checkout-block";
-    }
-
-    function patchRegisterCheckoutBlock() {
-        if (
-            !window.wc
-            || !window.wc.blocksCheckout
-            || typeof window.wc.blocksCheckout.registerCheckoutBlock !== "function"
-        ) {
-            return false;
-        }
-
-        const blocksCheckout = window.wc.blocksCheckout;
-        if (blocksCheckout.registerCheckoutBlock.fflhubKlaviyoDefaultEmailPatched) {
-            return true;
-        }
-
-        const originalRegisterCheckoutBlock = blocksCheckout.registerCheckoutBlock;
-
-        blocksCheckout.registerCheckoutBlock = function (registration) {
-            try {
-                if (isKlaviyoCheckoutBlock(registration) && typeof registration.component === "function") {
-                    const originalComponent = registration.component;
-
-                    registration = Object.assign({}, registration, {
-                        component: function FFLHubKlaviyoDefaultEmailOptIn(props) {
-                            const element = window.wp && window.wp.element;
-
-                            if (!shouldDefaultNewsletter() || !element || typeof element.useState !== "function") {
-                                return originalComponent(props);
-                            }
-
-                            const originalUseState = element.useState;
-                            let falseStateIndex = 0;
-
-                            element.useState = function (initialState) {
-                                if (initialState === false) {
-                                    falseStateIndex += 1;
-
-                                    if (falseStateIndex === 1) {
-                                        initialState = true;
-                                    }
-                                }
-
-                                return originalUseState.call(this, initialState);
-                            };
-
-                            try {
-                                return originalComponent(props);
-                            } finally {
-                                element.useState = originalUseState;
-                            }
-                        },
-                    });
-                }
-            } catch (error) {
-                return originalRegisterCheckoutBlock.call(this, registration);
-            }
-
-            return originalRegisterCheckoutBlock.call(this, registration);
-        };
-
-        blocksCheckout.registerCheckoutBlock.fflhubKlaviyoDefaultEmailPatched = true;
-        return true;
-    }
-
-    if (!patchRegisterCheckoutBlock()) {
-        const timer = window.setInterval(function () {
-            if (patchRegisterCheckoutBlock()) {
-                window.clearInterval(timer);
-            }
-        }, 10);
-
-        window.setTimeout(function () {
-            window.clearInterval(timer);
-        }, 3000);
-    }
-})();
-JS;
-    }
-
     private static function script(): string
     {
         $settings = get_option('klaviyo_settings');
@@ -264,8 +99,7 @@ JS;
         return <<<JS
 (function () {
     let programmatic = false;
-    const sharedState = window.fflhubKlaviyoDefaultEmailOptIn = window.fflhubKlaviyoDefaultEmailOptIn || {};
-    let customerOptedOut = !!sharedState.customerOptedOut;
+    let customerOptedOut = false;
     let klaviyoNewsletterDetected = false;
     let timer = 0;
     const configuredNewsletterText = normalize({$newsletter_text_json});
@@ -332,14 +166,17 @@ JS;
         }
 
         return (
-            text.indexOf("email") !== -1
-            || text.indexOf("newsletter") !== -1
-            || text.indexOf("email updates") !== -1
-        ) && (
             text.indexOf("subscribe") !== -1
             || text.indexOf("sign me up") !== -1
             || text.indexOf("sign up") !== -1
+            || text.indexOf("receive") !== -1
+        ) && (
+            text.indexOf("email") !== -1
+            || text.indexOf("newsletter") !== -1
+            || text.indexOf("email updates") !== -1
             || text.indexOf("updates") !== -1
+            || text.indexOf("deals") !== -1
+            || text.indexOf("restock") !== -1
             || text.indexOf("news") !== -1
         );
     }
@@ -422,7 +259,6 @@ JS;
 
     function setCustomerOptedOut(value) {
         customerOptedOut = !!value;
-        sharedState.customerOptedOut = customerOptedOut;
     }
 
     function setCheckedWithNativeEvents(checkbox) {
@@ -439,7 +275,7 @@ JS;
     }
 
     function defaultOptIn() {
-        if (customerOptedOut || sharedState.customerOptedOut) {
+        if (customerOptedOut) {
             return;
         }
 
@@ -471,7 +307,7 @@ JS;
     }
 
     function shouldOptInForRequest() {
-        return !customerOptedOut && !sharedState.customerOptedOut;
+        return !customerOptedOut;
     }
 
     function isCheckoutEndpoint(url) {
