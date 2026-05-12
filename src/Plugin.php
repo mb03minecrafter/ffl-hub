@@ -67,7 +67,7 @@ use FFLHub\Shipping\Wordpress\ShippingRegistrar;
 final class Plugin
 {
     private const QUOTE_EMAIL_JOBS_SCHEMA_OPTION = 'fflhub_customer_quote_email_jobs_schema_v1';
-    private const QUOTE_EMAIL_JOBS_SCHEMA_VERSION = '2';
+    private const QUOTE_EMAIL_JOBS_SCHEMA_VERSION = '3';
 
     /**
      * Singleton instance.

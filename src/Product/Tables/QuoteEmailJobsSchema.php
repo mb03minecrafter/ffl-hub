@@ -36,6 +36,7 @@ final class QuoteEmailJobsSchema
             'request_first_name',
             'request_last_name',
             'request_email',
+            'receive_deals_updates',
             'quote_upc',
             'quote_product_name',
             'random_delay_minutes',
@@ -54,12 +55,13 @@ final class QuoteEmailJobsSchema
             'id'                   => 'BIGINT UNSIGNED NOT NULL AUTO_INCREMENT',
             'request_first_name'   => "VARCHAR(100) NOT NULL DEFAULT ''",
             'request_last_name'    => "VARCHAR(100) NOT NULL DEFAULT ''",
-            'request_email'        => "VARCHAR(190) NOT NULL DEFAULT ''",
-            'quote_upc'            => "VARCHAR(64) NOT NULL DEFAULT ''",
-            'quote_product_name'   => "VARCHAR(255) NOT NULL DEFAULT ''",
-            'submitted_at'         => 'DATETIME NOT NULL',
-            'random_delay_minutes' => 'SMALLINT UNSIGNED NOT NULL',
-            'email_sent'           => 'TINYINT(1) UNSIGNED NOT NULL DEFAULT 0',
+            'request_email'         => "VARCHAR(190) NOT NULL DEFAULT ''",
+            'receive_deals_updates' => 'TINYINT(1) UNSIGNED NOT NULL DEFAULT 1',
+            'quote_upc'             => "VARCHAR(64) NOT NULL DEFAULT ''",
+            'quote_product_name'    => "VARCHAR(255) NOT NULL DEFAULT ''",
+            'submitted_at'          => 'DATETIME NOT NULL',
+            'random_delay_minutes'  => 'SMALLINT UNSIGNED NOT NULL',
+            'email_sent'            => 'TINYINT(1) UNSIGNED NOT NULL DEFAULT 0',
         ];
     }
 
@@ -74,6 +76,7 @@ final class QuoteEmailJobsSchema
             'PRIMARY KEY (id)',
             'KEY idx_quote_upc (quote_upc)',
             'KEY idx_request_email (request_email)',
+            'KEY idx_receive_deals_updates (receive_deals_updates)',
             'KEY idx_email_sent_submitted_at (email_sent, submitted_at)',
         ];
     }

@@ -560,19 +560,12 @@ final class QuoteEmailJobsCronService extends AbstractCronService
      */
     private function create_or_refresh_quote_coupon(array $job_row, WC_Product $product, float $coupon_amount): ?array
     {
-        $first_name = (string) ($job_row['request_first_name'] ?? '');
-        $last_name = (string) ($job_row['request_last_name'] ?? '');
         $email = sanitize_email((string) ($job_row['request_email'] ?? ''));
         if ($email === '' || !is_email($email)) {
             return null;
         }
 
-        $base_coupon_code = $this->build_coupon_code($first_name, $last_name, $email);
-        if ($base_coupon_code === '') {
-            return null;
-        }
-
-        $coupon_code = $this->next_available_coupon_code($base_coupon_code);
+        $coupon_code = $this->generate_available_quote_coupon_code();
         if ($coupon_code === '') {
             return null;
         }
@@ -587,7 +580,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'product_id' => (int) $product->get_id(),
             'product_name' => $product_name,
             'coupon_code' => $coupon_code,
-            'base_coupon_code' => $base_coupon_code,
             'coupon_amount' => $coupon_amount,
             'recipient_email' => $email,
             'expires_ts' => $expires_ts,
@@ -652,52 +644,39 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         ];
     }
 
-    private function build_coupon_code(string $first_name, string $last_name, string $email): string
+    private function generate_available_quote_coupon_code(): string
     {
-        $seed = strtolower(trim($first_name . $last_name));
-        $seed = preg_replace('/[^a-z0-9]+/', '', $seed);
-        if (!is_string($seed) || $seed === '') {
-            $email_local = strtolower((string) strstr($email, '@', true));
-            $seed = preg_replace('/[^a-z0-9]+/', '', $email_local);
-        }
-        if (!is_string($seed) || $seed === '') {
-            return '';
-        }
+        $max_attempts = 100;
 
-        return $seed;
-    }
-
-    private function next_available_coupon_code(string $base_code): string
-    {
-        $base_code = strtolower(trim($base_code));
-        if ($base_code === '') {
-            return '';
-        }
-
-        $candidate = $base_code;
-        $suffix = 2;
-        $max_attempts = 1000;
-        $attempt = 0;
-
-        while ($attempt < $max_attempts) {
-            $attempt++;
+        for ($attempt = 1; $attempt <= $max_attempts; $attempt++) {
+            $candidate = 'quote-' . $this->random_coupon_code_segment(4) . '-' . $this->random_coupon_code_segment(4);
             $existing_id = function_exists('wc_get_coupon_id_by_code')
                 ? (int) wc_get_coupon_id_by_code($candidate)
                 : 0;
             if ($existing_id <= 0) {
                 return $candidate;
             }
-
-            $candidate = $base_code . (string) $suffix;
-            $suffix++;
         }
 
         self::debug_ctx('coupon code allocation failed after max attempts', [
-            'base_coupon_code' => $base_code,
             'max_attempts' => $max_attempts,
         ]);
 
         return '';
+    }
+
+    private function random_coupon_code_segment(int $length): string
+    {
+        $length = max(1, $length);
+        $alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
+        $max_index = strlen($alphabet) - 1;
+        $segment = '';
+
+        for ($i = 0; $i < $length; $i++) {
+            $segment .= $alphabet[wp_rand(0, $max_index)];
+        }
+
+        return $segment;
     }
 
     /**
@@ -712,7 +691,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         $job_id = isset($job_row['id']) ? (int) $job_row['id'] : 0;
-        $variant_index = ($job_id > 0) ? ($job_id % 6) : 0;
+        $variant_index = 0;
         $rep_names = Options::get_quote_email_rep_names();
         $rep_count = max(1, count($rep_names));
         $rep_index = ($job_id > 0) ? ($job_id % $rep_count) : 0;
@@ -734,10 +713,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $quote_cart_url = QuoteCartLinkHandler::build_url((int) $product->get_id(), $coupon_code, 'checkout');
 
         $coupon_amount = (float) ($coupon_payload['amount'] ?? 0.0);
-        $expires_ts = (int) ($coupon_payload['expires_ts'] ?? 0);
-        $expires_display = ($expires_ts > 0)
-            ? wp_date('F j, Y g:i A', $expires_ts)
-            : __('48 hours from now', 'ffl-hub');
         $final_price_amount = $this->final_price_amount_for_product($product, $coupon_amount);
         $final_price_display = $this->final_price_display_for_amount($final_price_amount);
         $shipping_phrase = $this->shipping_phrase_for_quote_product($product, $final_price_amount);
@@ -778,7 +753,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             $coupon_amount_display,
             $final_price_display,
             $shipping_phrase,
-            $expires_display,
             $force_plain_text,
             $team_signature
         );

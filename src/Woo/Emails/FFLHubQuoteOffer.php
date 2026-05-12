@@ -119,30 +119,12 @@ final class FFLHubQuoteOffer extends WC_Email
 
     private function variant_html_template(int $variant_index): string
     {
-        $templates = [
-            'FFLHubQuoteOfferTemplateVariant1.php',
-            'FFLHubQuoteOfferTemplateVariant2.php',
-            'FFLHubQuoteOfferTemplateVariant3.php',
-            'FFLHubQuoteOfferTemplateVariant4.php',
-            'FFLHubQuoteOfferTemplateVariant5.php',
-            'FFLHubQuoteOfferTemplateVariant6.php',
-        ];
-
-        return $templates[$variant_index] ?? $templates[0];
+        return 'FFLHubQuoteOfferTemplateVariant1.php';
     }
 
     private function variant_plain_template(int $variant_index): string
     {
-        $templates = [
-            'Plain/FFLHubQuoteOfferTemplateVariant1.php',
-            'Plain/FFLHubQuoteOfferTemplateVariant2.php',
-            'Plain/FFLHubQuoteOfferTemplateVariant3.php',
-            'Plain/FFLHubQuoteOfferTemplateVariant4.php',
-            'Plain/FFLHubQuoteOfferTemplateVariant5.php',
-            'Plain/FFLHubQuoteOfferTemplateVariant6.php',
-        ];
-
-        return $templates[$variant_index] ?? $templates[0];
+        return 'Plain/FFLHubQuoteOfferTemplateVariant1.php';
     }
 
     private function send_code_only_plain_text(QuoteOfferEmailContext $context): bool
@@ -152,27 +134,24 @@ final class FFLHubQuoteOffer extends WC_Email
             return false;
         }
 
-        $first_name = trim($context->first_name);
-        if ($first_name === '') {
-            $first_name = (string) __('there', 'ffl-hub');
-        }
-
         $product_name = trim($context->product_name);
         if ($product_name === '') {
             $product_name = (string) __('requested product', 'ffl-hub');
         }
 
-        $body = sprintf(
-            __('Hi %1$s, your manual coupon code for %2$s is: %3$s', 'ffl-hub'),
-            $first_name,
-            $product_name,
-            $code
-        );
+        $body = sprintf(__('Product: %s', 'ffl-hub'), $product_name);
+
+        $product_url = trim($context->product_url);
+        if ($product_url !== '') {
+            $body .= "\n" . $product_url;
+        }
+
+        $body .= "\n\n" . sprintf(__('Coupon code: %s', 'ffl-hub'), $code);
 
         $quote_cart_url = trim($context->quote_cart_url);
         if ($quote_cart_url !== '') {
             $body .= "\n\n" . sprintf(
-                __('Use this link to add the item to cart and apply the quote code automatically: %s', 'ffl-hub'),
+                __('Add to cart with quoted price: %s', 'ffl-hub'),
                 $quote_cart_url
             );
         }

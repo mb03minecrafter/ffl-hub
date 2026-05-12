@@ -797,27 +797,13 @@ class MapPriceVisibility
         echo '<button type="button" class="fflhub-email-for-quote-modal__close" aria-label="' . esc_attr__('Close quote form', 'ffl-hub') . '" data-fflhub-quote-close="1">&times;</button>';
 
         echo '<h2 id="fflhub-email-for-quote-title" class="fflhub-email-for-quote-modal__title">' . esc_html__('Request a Custom Price Quote', 'ffl-hub') . '</h2>';
-        echo '<p>' . esc_html__('Thank you for your interest in a custom price quote!', 'ffl-hub') . '</p>';
-        echo '<p>' . esc_html__('Please enter your name and email address and we will send you a promo code.', 'ffl-hub') . '</p>';
-        echo '<p><strong>' . esc_html__('We do not store or sell customer email information. We sell firearms and accessories, not email lists.', 'ffl-hub') . '</strong></p>';
         echo '<p>' . esc_html__('This form will be sent to and reviewed by a store associate who will evaluate each request individually and then contact you concerning product info and pricing. Any discount or promo code you may receive is specific to your email address. It cannot be shared or used by anyone else. It will be a one time use only code for YOU only.', 'ffl-hub') . '</p>';
-        echo '<p>' . esc_html__('Requests are only reviewed during business hours.', 'ffl-hub') . '</p>';
-        echo '<p><strong>' . esc_html__('Business Hours:', 'ffl-hub') . '</strong> ' . esc_html__('7am-6pm CST every day', 'ffl-hub') . '</p>';
-        $sales_phone = self::store_phone_for_quote();
-        if ($sales_phone !== '') {
-            echo '<p>' . sprintf(
-                /* translators: %s = sales phone number */
-                esc_html__('You may also contact our Sales team with any questions at %s option 1 during business hours. Thank you!', 'ffl-hub'),
-                esc_html($sales_phone)
-            ) . '</p>';
-        }
 
         echo '<form class="fflhub-email-for-quote-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         echo '<input type="hidden" name="action" value="' . esc_attr(self::EMAIL_FOR_QUOTE_FORM_ACTION) . '">';
         echo '<input type="hidden" name="fflhub_product_id" value="' . esc_attr((string) $product->get_id()) . '">';
         echo '<input type="hidden" name="fflhub_redirect_url" value="' . esc_url($redirect_url) . '">';
         wp_nonce_field('fflhub_email_for_quote_submit_' . $product->get_id(), 'fflhub_email_for_quote_nonce');
-        echo '<p><strong>' . esc_html__('PLEASE DO NOT SHARE EMAIL QUOTE PRICES. THEY ARE PRIVATE. We want to remain MAP compliant.', 'ffl-hub') . '</strong></p>';
 
         echo '<label for="fflhub-quote-first-name">' . esc_html__('First Name', 'ffl-hub') . '</label>';
         echo '<input id="fflhub-quote-first-name" name="fflhub_first_name" type="text" required maxlength="100">';
@@ -827,6 +813,12 @@ class MapPriceVisibility
 
         echo '<label for="fflhub-quote-email">' . esc_html__('Email Address', 'ffl-hub') . '</label>';
         echo '<input id="fflhub-quote-email" name="fflhub_email" type="email" required maxlength="190">';
+
+        echo '<input type="hidden" name="fflhub_receive_deals_updates" value="0">';
+        echo '<label class="fflhub-email-for-quote-opt-in" for="fflhub-quote-receive-deals-updates">';
+        echo '<input id="fflhub-quote-receive-deals-updates" name="fflhub_receive_deals_updates" type="checkbox" value="1" checked>';
+        echo '<span>' . esc_html__('Yes, I wish to receive deals and updates.', 'ffl-hub') . '</span>';
+        echo '</label>';
 
         echo '<button type="submit" class="button alt wp-element-button fflhub-email-for-quote-submit" data-submitting-label="' . esc_attr__('Sending...', 'ffl-hub') . '">' . esc_html__('Send Request', 'ffl-hub') . '</button>';
         echo '</form>';
@@ -851,6 +843,7 @@ class MapPriceVisibility
         );
         $last_name = sanitize_text_field((string) wp_unslash($_POST['fflhub_last_name'] ?? ''));
         $email = sanitize_email((string) wp_unslash($_POST['fflhub_email'] ?? ''));
+        $receive_deals_updates = ((string) wp_unslash($_POST['fflhub_receive_deals_updates'] ?? '0') === '1');
 
         if ($first_name === '' || $last_name === '' || $email === '') {
             self::redirect_with_quote_status($redirect_url, 'missing_fields');
@@ -938,11 +931,10 @@ class MapPriceVisibility
             sprintf(__('First Name: %s', 'ffl-hub'), $first_name),
             sprintf(__('Last Name: %s', 'ffl-hub'), $last_name),
             sprintf(__('Email: %s', 'ffl-hub'), $email),
+            sprintf(__('Receive deals and updates: %s', 'ffl-hub'), $receive_deals_updates ? __('Yes', 'ffl-hub') : __('No', 'ffl-hub')),
             sprintf(__('Product: %s', 'ffl-hub'), $product->get_name()),
             sprintf(__('SKU: %s', 'ffl-hub'), (string) $product->get_sku()),
             sprintf(__('Product URL: %s', 'ffl-hub'), $product_url),
-            '',
-            __('Business Hours stated to customer: 7am-6pm CST every day.', 'ffl-hub'),
         ];
 
         $message = (string) apply_filters(
@@ -957,7 +949,7 @@ class MapPriceVisibility
         ];
 
         $sent = wp_mail($recipient, $subject, $message, $headers);
-        $saved_job = self::insert_quote_email_job($product, $first_name, $last_name, $email);
+        $saved_job = self::insert_quote_email_job($product, $first_name, $last_name, $email, $receive_deals_updates);
         if (!$saved_job) {
             self::clear_quote_submission_lock($submission_lock_key);
             self::redirect_with_quote_status($redirect_url, 'mail_error');
@@ -1541,7 +1533,8 @@ class MapPriceVisibility
         WC_Product $product,
         string $first_name,
         string $last_name,
-        string $email
+        string $email,
+        bool $receive_deals_updates
     ): bool {
         global $wpdb;
 
@@ -1565,19 +1558,21 @@ class MapPriceVisibility
             [
                 'request_first_name'   => self::truncate_quote_job_value($first_name, 100),
                 'request_last_name'    => self::truncate_quote_job_value($last_name, 100),
-                'request_email'        => self::truncate_quote_job_value($email, 190),
-                'quote_upc'            => self::truncate_quote_job_value($upc, 64),
-                'quote_product_name'   => $product_name,
-                'submitted_at'         => $submitted_at,
-                'random_delay_minutes' => $random_delay_minutes,
+                'request_email'         => self::truncate_quote_job_value($email, 190),
+                'receive_deals_updates' => $receive_deals_updates ? 1 : 0,
+                'quote_upc'             => self::truncate_quote_job_value($upc, 64),
+                'quote_product_name'    => $product_name,
+                'submitted_at'          => $submitted_at,
+                'random_delay_minutes'  => $random_delay_minutes,
                 // This flag tracks the delayed customer-facing quote email, not
                 // the immediate internal/store notification sent on form submit.
-                'email_sent'           => 0,
+                'email_sent'            => 0,
             ],
             [
                 '%s',
                 '%s',
                 '%s',
+                '%d',
                 '%s',
                 '%s',
                 '%s',

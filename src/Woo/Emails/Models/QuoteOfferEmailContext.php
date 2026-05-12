@@ -23,7 +23,6 @@ final class QuoteOfferEmailContext
     public string $coupon_amount_display;
     public string $final_price_display;
     public string $shipping_phrase;
-    public string $expires_display;
     public bool $force_plain_text;
     public string $team_signature;
 
@@ -40,7 +39,6 @@ final class QuoteOfferEmailContext
         string $coupon_amount_display,
         string $final_price_display,
         string $shipping_phrase,
-        string $expires_display,
         bool $force_plain_text = false,
         string $team_signature = ''
     ) {
@@ -56,7 +54,6 @@ final class QuoteOfferEmailContext
         $this->coupon_amount_display = trim($coupon_amount_display);
         $this->final_price_display = trim($final_price_display);
         $this->shipping_phrase = trim($shipping_phrase);
-        $this->expires_display = trim($expires_display);
         $this->force_plain_text = $force_plain_text;
         $this->team_signature = self::normalize_team_signature_for_display($team_signature);
     }

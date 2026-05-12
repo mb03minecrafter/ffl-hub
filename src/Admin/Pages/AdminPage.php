@@ -533,7 +533,7 @@ class AdminPage
                     <label
                         for="fflhub_pretty_random_email_quotes_enabled"
                         class="fflhub-field-label">
-                        <?php esc_html_e('Pretty and Random Email Quotes Enabled', 'ffl-hub'); ?>
+                        <?php esc_html_e('Styled quote emails enabled', 'ffl-hub'); ?>
                     </label>
                     <input type="hidden" name="fflhub_pretty_random_email_quotes_enabled" value="0" />
                     <input
@@ -544,7 +544,7 @@ class AdminPage
                         <?php checked($pretty_random_email_quotes_enabled); ?> />
                     <p class="description">
                         <?php esc_html_e(
-                            'Enabled: sends the current styled quote emails with rotating templates and rep names. Disabled: sends plain-text email containing only the customer\'s quote code.',
+                            'Enabled: sends the styled quote email with product link, coupon code, and checkout button. Disabled: sends the same essentials as plain text.',
                             'ffl-hub'
                         ); ?>
                     </p>

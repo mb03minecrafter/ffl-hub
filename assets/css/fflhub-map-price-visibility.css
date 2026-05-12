@@ -165,6 +165,22 @@ body.fflhub-quote-modal-open {
   font-weight: var(--wp--custom--font-weight--bold, 700);
 }
 
+.fflhub-email-for-quote-form .fflhub-email-for-quote-opt-in {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 14px 0 4px;
+  font-weight: var(--wp--custom--font-weight--regular, 400);
+  line-height: 1.4;
+}
+
+.fflhub-email-for-quote-form .fflhub-email-for-quote-opt-in input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+}
+
 .fflhub-email-for-quote-form input[type="text"],
 .fflhub-email-for-quote-form input[type="email"] {
   width: 100%;

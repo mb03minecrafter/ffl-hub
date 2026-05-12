@@ -11,12 +11,12 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Send a one-time plain-text email to unique recipients from the quote-email jobs table.
+ * Send a one-time plain-text email to unique opted-in recipients from the quote-email jobs table.
  */
 final class QuoteEmailBlastCommand
 {
     /**
-     * Send a one-time plain-text email to unique quote-request emails.
+     * Send a one-time plain-text email to unique opted-in quote-request emails.
      *
      * ## OPTIONS
      *
@@ -181,7 +181,7 @@ final class QuoteEmailBlastCommand
         $table = new QuoteEmailJobsTable($schema);
         $table_name = $table->get_table_name();
 
-        $where = ["request_email <> ''"];
+        $where = ["request_email <> ''", 'receive_deals_updates = 1'];
         $params = [];
 
         if ($since_days > 0) {
@@ -233,4 +233,3 @@ final class QuoteEmailBlastCommand
         return $emails;
     }
 }
-
