@@ -125,7 +125,6 @@ final class SportsSouthProductImporterService
         $live_table = $this->table->get_live_table_name();
         $updated_item = $this->update_live_inventory_by_item_number($live_table, $stage_table, $treatQuantityAsDelta);
         $updated_upc = $this->update_live_inventory_by_upc($live_table, $stage_table, $treatQuantityAsDelta);
-        $sig_approved_forced = SigDropshipApproval::apply_to_table('sports_south', $live_table);
 
         $stats = [
             'processed_rows' => (int) $rows_loaded,
@@ -134,7 +133,6 @@ final class SportsSouthProductImporterService
             'join_updated_item' => (int) max(0, $updated_item),
             'join_updated_upc' => (int) max(0, $updated_upc),
             'quantity_mode' => $treatQuantityAsDelta ? 'quantity_delta' : 'current_quantity',
-            'sig_approved_forced' => (int) $sig_approved_forced,
         ];
 
         $this->log('Sports South onhand update applied.', $stats);
@@ -400,7 +398,6 @@ final class SportsSouthProductImporterService
             }
 
             $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            SigDropshipApproval::apply_to_table('sports_south', $table_name);
         } catch (\Throwable $e) {
             $this->log('Sports South LOAD DATA exception.', [
                 'error' => $e->getMessage(),
