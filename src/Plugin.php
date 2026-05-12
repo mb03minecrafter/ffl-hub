@@ -32,6 +32,7 @@ use FFLHub\BOM\Tables\BOMTable;
 use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Fields\CheckoutFields;
+use FFLHub\Checkout\KlaviyoDefaultEmailOptIn;
 use FFLHub\Checkout\MailPoetAutoConfirmCronService;
 use FFLHub\Checkout\MailPoetDefaultOptIn;
 use FFLHub\Checkout\Map\CheckoutMap;
@@ -252,6 +253,7 @@ final class Plugin
 
         CheckoutMap::init();
         CaliforniaRelayNotice::init();
+        KlaviyoDefaultEmailOptIn::init();
         MailPoetDefaultOptIn::init();
 
     }
