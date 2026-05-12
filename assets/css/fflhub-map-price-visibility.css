@@ -1,5 +1,29 @@
+.single-product div.product form.cart:not(.grouped_form),
+.single-product div.product form.cart .woocommerce-variation-add-to-cart {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.single-product div.product form.cart div.quantity {
+  float: none !important;
+  margin: 0 !important;
+}
+
+.single-product div.product form.cart .single_add_to_cart_button,
+.single-product .fflhub-email-for-quote-wrap,
+.single-product .fflhub-email-for-quote-button {
+  width: 100%;
+  max-width: 320px;
+}
+
+.single-product div.product form.cart .single_add_to_cart_button {
+  min-height: 48px;
+}
+
 .single-product .fflhub-email-for-quote-wrap {
-  margin: 12px 0 0;
+  margin: 10px 0 0;
 }
 
 .single-product .fflhub-email-for-quote-notice {
@@ -27,7 +51,6 @@
   align-items: center;
   justify-content: center;
   min-height: 48px;
-  width: auto;
   padding: 15px 30px !important;
   border-width: 0 !important;
   border-radius: 5px !important;
