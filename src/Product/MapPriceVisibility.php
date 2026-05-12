@@ -1553,24 +1553,16 @@ class MapPriceVisibility
             return;
         }
 
-        $customer = [
-            'email' => $email,
-        ];
-
         $first_name = trim($first_name);
-        if ($first_name !== '') {
-            $customer['first_name'] = $first_name;
-        }
-
         $last_name = trim($last_name);
-        if ($last_name !== '') {
-            $customer['last_name'] = $last_name;
-        }
 
         $body = [
             'data' => [
                 [
-                    'customer' => $customer,
+                    'customer' => [
+                        'email' => $email,
+                        'phone' => '',
+                    ],
                     'consent' => true,
                     'updated_at' => gmdate(DATE_ATOM),
                     'consent_type' => 'email',
