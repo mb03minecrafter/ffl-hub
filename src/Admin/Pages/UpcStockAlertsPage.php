@@ -167,7 +167,7 @@ final class UpcStockAlertsPage
                                     type="text"
                                     class="large-text"
                                     value="<?php echo esc_attr($recipients); ?>"
-                                    placeholder="matthew@bickhamfirearms.com" />
+                                    placeholder="<?php echo esc_attr((string) get_option('admin_email', '')); ?>" />
                                 <p class="description"><?php esc_html_e('Comma, space, or newline separated email addresses.', 'ffl-hub'); ?></p>
                             </td>
                         </tr>

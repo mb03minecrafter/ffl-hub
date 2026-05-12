@@ -1,7 +1,7 @@
 param(
     [string] $HostName = "178.156.237.134",
     [string] $User = "root",
-    [string] $RemoteWpRoot = "/var/www/bickhamfirearms.com",
+    [string] $RemoteWpRoot = "/var/www/current-site",
     [string] $LocalThemeRoot = "pulled-vps-themes"
 )
 

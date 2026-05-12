@@ -26,8 +26,8 @@ if (!in_array($mode, ['test', 'dry-run', 'batch'], true)) {
     holosun_fail('Invalid --mode. Use test, dry-run, or batch.');
 }
 
-$test_email = sanitize_email((string) holosun_opt($opts, 'test-email', 'mattbick2003@gmail.com'));
-$test_first_name = trim((string) holosun_opt($opts, 'test-first-name', 'Matthew'));
+$test_email = sanitize_email((string) holosun_opt($opts, 'test-email', (string) get_option('admin_email', '')));
+$test_first_name = trim((string) holosun_opt($opts, 'test-first-name', 'there'));
 $subject = trim((string) holosun_opt($opts, 'subject', 'Removal from Quote Email System, Holosun Update'));
 $source = strtolower(trim((string) holosun_opt($opts, 'source', 'all')));
 $limit = max(0, (int) holosun_opt($opts, 'limit', 0));
@@ -35,7 +35,8 @@ $offset = max(0, (int) holosun_opt($opts, 'offset', 0));
 $sleep_ms = max(0, (int) holosun_opt($opts, 'sleep-ms', 250));
 $send_batch = holosun_truthy(holosun_opt($opts, 'send', '0'));
 $from_email = sanitize_email((string) holosun_opt($opts, 'from-email', (string) get_option('admin_email', '')));
-$from_name = trim((string) holosun_opt($opts, 'from-name', 'Bickham Firearms'));
+$from_name = trim((string) holosun_opt($opts, 'from-name', holosun_site_name()));
+$reply_to_name = trim((string) holosun_opt($opts, 'reply-to-name', $from_name));
 $reply_to = sanitize_email((string) holosun_opt($opts, 'reply-to', $from_email));
 $physical_address = trim((string) holosun_opt($opts, 'physical-address', ''));
 
@@ -87,7 +88,7 @@ $headers = [
     sprintf('From: %s <%s>', holosun_header_name($from_name), $from_email),
 ];
 if ($reply_to !== '') {
-    $headers[] = sprintf('Reply-To: %s <%s>', holosun_header_name('Matthew Bickham'), $reply_to);
+    $headers[] = sprintf('Reply-To: %s <%s>', holosun_header_name($reply_to_name), $reply_to);
 }
 
 $dry_run = ($mode === 'dry-run') || ($mode === 'batch' && !$send_batch);
@@ -113,7 +114,7 @@ foreach ($recipients as $recipient) {
     }
 
     $first_name = holosun_first_name((string) ($recipient['first_name'] ?? ''));
-    $html = holosun_build_email_html($first_name, $products, $physical_address);
+    $html = holosun_build_email_html($first_name, $products, $physical_address, $from_name);
 
     if ($dry_run) {
         if ($preview_count < 25) {
@@ -668,10 +669,11 @@ function holosun_first_name(string $name): string
 /**
  * @param array<int,array<string,mixed>> $products
  */
-function holosun_build_email_html(string $first_name, array $products, string $physical_address): string
+function holosun_build_email_html(string $first_name, array $products, string $physical_address, string $brand_name): string
 {
     $site_url = home_url('/');
     $cards = holosun_product_cards_html($products, $site_url);
+    $brand_name = holosun_header_name($brand_name);
 
     $footer_html = $physical_address !== ''
         ? '<tr><td style="background:#f7f7f7;color:#666666;padding:18px 26px;font-size:12px;line-height:1.5;border-top:1px solid #dddddd;">' . esc_html($physical_address) . '</td></tr>'
@@ -679,12 +681,12 @@ function holosun_build_email_html(string $first_name, array $products, string $p
 
     return '<!doctype html>'
         . '<html><body style="margin:0;padding:0;background:#ffffff;font-family:Arial,Helvetica,sans-serif;color:#111111;">'
-        . '<span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;">Holosun restock update and quote list notice from Bickham Firearms.</span>'
+        . '<span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;">Holosun restock update and quote list notice from ' . esc_html($brand_name) . '.</span>'
         . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;margin:0;padding:28px 12px;">'
         . '<tr><td align="center">'
         . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#ffffff;border:1px solid #dddddd;border-radius:0;overflow:hidden;">'
         . '<tr><td style="background:#ffffff;color:#111111;padding:24px 26px 18px;border-bottom:1px solid #dddddd;">'
-        . '<div style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#666666;">Bickham Firearms</div>'
+        . '<div style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#666666;">' . esc_html($brand_name) . '</div>'
         . '<div style="font-size:24px;font-weight:800;margin-top:6px;line-height:1.2;color:#111111;">Holosun restock update</div>'
         . '</td></tr>'
         . '<tr><td style="padding:26px;">'
@@ -693,7 +695,7 @@ function holosun_build_email_html(string $first_name, array $products, string $p
         . '<p style="margin:0 0 16px;font-size:16px;line-height:1.55;">We have started an email list if you would like to get updates on restocks and deals. That email list can be found at the bottom of <a href="' . esc_url($site_url) . '" style="color:#111111;font-weight:700;text-decoration:underline;">our site</a>.</p>'
         . '<p style="margin:0 0 18px;font-size:16px;line-height:1.55;">In addition, given our current Holosun dispute, we have now restocked these Holosun products at below MAP prices:</p>'
         . $cards
-        . '<p style="margin:24px 0 0;font-size:16px;line-height:1.55;">Best wishes,<br>Matthew Bickham<br>Bickham Firearms</p>'
+        . '<p style="margin:24px 0 0;font-size:16px;line-height:1.55;">Best wishes,<br>' . esc_html($brand_name) . '</p>'
         . '</td></tr>'
         . $footer_html
         . '</table>'
@@ -770,5 +772,13 @@ function holosun_header_name(string $name): string
 {
     $name = trim(wp_strip_all_tags($name));
     $name = str_replace(["\r", "\n"], '', $name);
-    return $name !== '' ? $name : 'Bickham Firearms';
+    return $name !== '' ? $name : holosun_site_name();
+}
+
+function holosun_site_name(): string
+{
+    $name = function_exists('get_bloginfo') ? trim((string) get_bloginfo('name')) : '';
+    $name = trim(wp_strip_all_tags($name));
+
+    return $name !== '' ? $name : 'Store';
 }

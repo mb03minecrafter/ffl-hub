@@ -17,8 +17,8 @@ final class SeedOrdersCommand
     private const DEFAULT_RECEIVING_FFL_NUMBER = '5-72-033-07-8C-08115';
 
     private const DEFAULT_BILLING_SHIPPING = [
-        'first_name' => 'Matthew',
-        'last_name'  => 'Bickham',
+        'first_name' => 'Test',
+        'last_name'  => 'Customer',
         'company'    => 'FFLHub QA',
         'email'      => 'mattbick2003@gmail.com',
         'phone'      => '2256781533',

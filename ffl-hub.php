@@ -3,7 +3,7 @@
  * Plugin Name: FFL Hub
  * Description: A WooCommerce extension for firearm-friendly dropshipping, starting with RSR and Lipsey's.
  * Version: 1.0.0
- * Author: Matthew Bickham
+ * Author: FFL Hub
  * Text Domain: ffl-hub
  */
 

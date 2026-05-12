@@ -2,6 +2,8 @@
 
 namespace FFLHub\Checkout;
 
+use FFLHub\Settings\Options;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -42,12 +44,19 @@ final class MailPoetDefaultOptIn
 
     private static function script(): string
     {
-        return <<<'JS'
+        $brand_name = Options::get_public_brand_name();
+        $brand_name_json = wp_json_encode($brand_name);
+        if (!is_string($brand_name_json)) {
+            $brand_name_json = '""';
+        }
+
+        return <<<JS
 (function () {
     let programmatic = false;
     let customerOptedOut = false;
     let mailPoetOptInDetected = false;
     let timer = 0;
+    const configuredBrandName = normalize({$brand_name_json});
 
     function normalize(value) {
         return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -70,7 +79,7 @@ final class MailPoetDefaultOptIn
                 || text.indexOf("new arrivals") !== -1
                 || text.indexOf("restock") !== -1
                 || text.indexOf("newsletter") !== -1
-                || text.indexOf("bickham firearms") !== -1
+                || (configuredBrandName && text.indexOf(configuredBrandName) !== -1)
             );
     }
 

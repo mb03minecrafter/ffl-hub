@@ -33,7 +33,7 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 class ValidateOrderAuditCommand
 {
     // ---- Customer Ship-To (non-FFL) dummy ----
-    private const DUMMY_CUSTOMER_NAME    = 'Matthew Bickham';
+    private const DUMMY_CUSTOMER_NAME    = 'Test Customer';
     private const DUMMY_CUSTOMER_COMPANY = 'FFLHub Test';
     private const DUMMY_CUSTOMER_ADDR1   = '1282 Felosa Drive';
     private const DUMMY_CUSTOMER_ADDR2   = '';
@@ -44,8 +44,8 @@ class ValidateOrderAuditCommand
     private const DUMMY_CUSTOMER_EMAIL   = 'mattbick2003@gmail.com';
 
     // ---- Receiving FFL Ship-To dummy ----
-    private const DUMMY_FFL_NAME    = 'Bickham Firearms LLC';
-    private const DUMMY_FFL_COMPANY = 'Bickham Firearms LLC';
+    private const DUMMY_FFL_NAME    = 'Test FFL LLC';
+    private const DUMMY_FFL_COMPANY = 'Test FFL LLC';
     private const DUMMY_FFL_ADDR1   = '10322 Black Road';
     private const DUMMY_FFL_ADDR2   = '';
     private const DUMMY_FFL_CITY    = 'Zachary';

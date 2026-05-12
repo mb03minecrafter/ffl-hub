@@ -175,6 +175,9 @@ class AdminPage
             'holosun_image_notice_enabled' => Options::get_holosun_image_notice_enabled() ? '1' : '0',
             'holosun_show_price_override_enabled' => Options::get_holosun_show_price_override_enabled() ? '1' : '0',
             'pretty_random_email_quotes_enabled' => Options::get_pretty_random_email_quotes_enabled() ? '1' : '0',
+            'public_brand_name' => Options::get_public_brand_name(),
+            'quote_email_rep_names' => Options::get_quote_email_rep_names_text(),
+            'quote_email_team_signature' => Options::get_quote_email_team_signature(),
             'batch_order_notification_email' => Options::get_batch_order_notification_email(),
             'distributor_priority_list' => (string) Options::get_distributor_priority_csv(),
             'dealer_ship_to' => Options::get_dealer_ship_to_address(),
@@ -241,6 +244,9 @@ class AdminPage
         $holosun_image_notice_enabled = ((string) ($settings['holosun_image_notice_enabled'] ?? '0') === '1');
         $holosun_show_price_override_enabled = ((string) ($settings['holosun_show_price_override_enabled'] ?? '0') === '1');
         $pretty_random_email_quotes_enabled = ((string) ($settings['pretty_random_email_quotes_enabled'] ?? '1') === '1');
+        $public_brand_name = (string) ($settings['public_brand_name'] ?? Options::default_public_brand_name());
+        $quote_email_rep_names = (string) ($settings['quote_email_rep_names'] ?? Options::default_quote_email_rep_names());
+        $quote_email_team_signature = (string) ($settings['quote_email_team_signature'] ?? Options::default_quote_email_team_signature());
         $batch_order_notification_email = (string) ($settings['batch_order_notification_email'] ?? Options::default_batch_order_notification_email());
         $distributor_priority_list = (string) ($settings['distributor_priority_list'] ?? '');
         $dealer_ship_to = isset($settings['dealer_ship_to']) && is_array($settings['dealer_ship_to'])
@@ -254,13 +260,13 @@ class AdminPage
                 'key' => 'name',
                 'option' => Options::OPTION_DEALER_SHIP_TO_NAME,
                 'label' => __('Ship-to name', 'ffl-hub'),
-                'placeholder' => __('BICKHAM FIREARMS LLC', 'ffl-hub'),
+                'placeholder' => Options::get_public_brand_name(),
             ],
             [
                 'key' => 'company',
                 'option' => Options::OPTION_DEALER_SHIP_TO_COMPANY,
                 'label' => __('Company', 'ffl-hub'),
-                'placeholder' => __('BICKHAM FIREARMS LLC', 'ffl-hub'),
+                'placeholder' => Options::get_public_brand_name(),
             ],
             [
                 'key' => 'address1',
@@ -310,7 +316,7 @@ class AdminPage
                 'key' => 'name',
                 'option' => Options::OPTION_RELAY_SHIP_TO_NAME,
                 'label' => __('Ship-to name', 'ffl-hub'),
-                'placeholder' => __('Matthew Bickham', 'ffl-hub'),
+                'placeholder' => __('Relay recipient name', 'ffl-hub'),
             ],
             [
                 'key' => 'company',
@@ -529,6 +535,68 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'Enabled: sends the current styled quote emails with rotating templates and rep names. Disabled: sends plain-text email containing only the customer\'s quote code.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_public_brand_name"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Public brand name', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_public_brand_name"
+                        name="fflhub_public_brand_name"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($public_brand_name); ?>"
+                        placeholder="<?php echo esc_attr(Options::default_public_brand_name()); ?>" />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Customer-facing fallback brand name used by quote emails, scripts, and small admin placeholders. Leave blank to use the WordPress site name.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_quote_email_rep_names"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Quote email rep names', 'ffl-hub'); ?>
+                    </label>
+                    <textarea
+                        id="fflhub_quote_email_rep_names"
+                        name="fflhub_quote_email_rep_names"
+                        class="fflhub-field-input"
+                        rows="3"
+                        placeholder="<?php echo esc_attr(Options::default_quote_email_rep_names()); ?>"><?php echo esc_textarea($quote_email_rep_names); ?></textarea>
+                    <p class="description">
+                        <?php esc_html_e(
+                            'One display name per line. Quote emails rotate through these names so customer emails are no longer tied to a hard-coded person.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_quote_email_team_signature"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Quote email team signature', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_quote_email_team_signature"
+                        name="fflhub_quote_email_team_signature"
+                        type="text"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($quote_email_team_signature); ?>"
+                        placeholder="<?php echo esc_attr(Options::default_quote_email_team_signature()); ?>" />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Footer line shown below the rep name in styled and plain quote emails.',
                             'ffl-hub'
                         ); ?>
                     </p>

@@ -27,7 +27,7 @@ do_action('woocommerce_email_header', $email_heading, $email);
 <p style="margin:0 0 10px;"><?php echo esc_html__('Your code:', 'ffl-hub'); ?> <strong><?php echo esc_html($context->coupon_code); ?></strong></p>
 <p style="margin:0 0 14px;"><?php echo esc_html__('Expires:', 'ffl-hub'); ?> <?php echo esc_html($context->expires_display); ?> <?php echo esc_html__('(48 hours)', 'ffl-hub'); ?></p>
 <p style="margin:0 0 14px;"><?php echo esc_html__('Quick heads up: this code is for your email only, this product only, and one-time use only.', 'ffl-hub'); ?></p>
-<p style="margin:0;"><?php echo esc_html__('If you have any questions at all, reply here and I will take care of you.', 'ffl-hub'); ?><br><br><?php echo esc_html__('Appreciate you,', 'ffl-hub'); ?><br><?php echo esc_html($context->rep_name); ?><br><?php echo esc_html__('Sales Team, Bickham Firearms', 'ffl-hub'); ?></p>
+<p style="margin:0;"><?php echo esc_html__('If you have any questions at all, reply here and I will take care of you.', 'ffl-hub'); ?><br><br><?php echo esc_html__('Appreciate you,', 'ffl-hub'); ?><br><?php echo esc_html($context->rep_name); ?><br><?php echo esc_html($context->team_signature); ?></p>
 
 <?php
 do_action('woocommerce_email_footer', $email);

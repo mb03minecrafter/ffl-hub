@@ -17,7 +17,7 @@ final class MailPoetAutoConfirmCronService extends AbstractCronService
     private const LOG_PREFIX = '[FFLHub][MailPoetAutoConfirm]';
 
     /**
-     * Production MailPoet list id for "Bickham Firearms Deals & Updates".
+     * Production MailPoet list id for the public deals and updates list.
      *
      * @var int[]
      */

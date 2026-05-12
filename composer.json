@@ -1,5 +1,5 @@
 {
-  "name" : "mtbickham/fflhub",
+  "name" : "fflhub/ffl-hub",
    "description": "FFL Hub WordPress plugin",
   "type": "project",
   "autoload": {

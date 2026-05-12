@@ -25,4 +25,4 @@ echo __('Just note this is tied to your email, valid for this product only, and 
 echo __('If anything else would help, reply here and I will get right back to you.', 'ffl-hub') . "\n\n";
 echo __('Best,', 'ffl-hub') . "\n";
 echo $context->rep_name . "\n";
-echo __('Sales Team, Bickham Firearms', 'ffl-hub') . "\n";
+echo $context->team_signature . "\n";

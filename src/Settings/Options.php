@@ -48,6 +48,9 @@ final class Options
     public const OPTION_HOLOSUN_IMAGE_NOTICE_ENABLED  = 'fflhub_holosun_image_notice_enabled';
     public const OPTION_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED = 'fflhub_holosun_show_price_override_enabled';
     public const OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = 'fflhub_pretty_random_email_quotes_enabled';
+    public const OPTION_PUBLIC_BRAND_NAME             = 'fflhub_public_brand_name';
+    public const OPTION_QUOTE_EMAIL_REP_NAMES         = 'fflhub_quote_email_rep_names';
+    public const OPTION_QUOTE_EMAIL_TEAM_SIGNATURE    = 'fflhub_quote_email_team_signature';
     public const OPTION_BATCH_ORDER_NOTIFICATION_EMAIL = 'fflhub_batch_order_notification_email';
     public const OPTION_DISTRIBUTOR_PRIORITY_LIST     = 'fflhub_distributor_priority_list';
     public const OPTION_MAP_BRAND_POLICIES            = 'fflhub_map_brand_policies';
@@ -99,7 +102,10 @@ final class Options
     private const DEFAULT_HOLOSUN_IMAGE_NOTICE_ENABLED  = false;
     private const DEFAULT_HOLOSUN_SHOW_PRICE_OVERRIDE_ENABLED = false;
     private const DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = true;
-    private const DEFAULT_BATCH_ORDER_NOTIFICATION_EMAIL = 'matthew@bickhamfirearms.com';
+    private const DEFAULT_PUBLIC_BRAND_NAME             = '';
+    private const DEFAULT_QUOTE_EMAIL_REP_NAMES         = '';
+    private const DEFAULT_QUOTE_EMAIL_TEAM_SIGNATURE    = '';
+    private const DEFAULT_BATCH_ORDER_NOTIFICATION_EMAIL = '';
     private const DEFAULT_MAP_BRAND_POLICIES            = [];
     private const DEFAULT_DEALER_SHIP_TO_NAME           = '';
     private const DEFAULT_DEALER_SHIP_TO_COMPANY        = '';
@@ -259,9 +265,27 @@ final class Options
         return self::DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED;
     }
 
+    public static function default_public_brand_name(): string
+    {
+        return self::site_name_fallback();
+    }
+
+    public static function default_quote_email_rep_names(): string
+    {
+        return 'Sales Team';
+    }
+
+    public static function default_quote_email_team_signature(): string
+    {
+        return self::default_sales_team_signature();
+    }
+
     public static function default_batch_order_notification_email(): string
     {
-        return self::DEFAULT_BATCH_ORDER_NOTIFICATION_EMAIL;
+        $email = function_exists('get_option') ? (string) get_option('admin_email', '') : '';
+        $email = sanitize_email($email);
+
+        return is_email($email) ? $email : self::DEFAULT_BATCH_ORDER_NOTIFICATION_EMAIL;
     }
 
     public static function default_usps_estimate_enabled(): bool
@@ -398,8 +422,20 @@ final class Options
             );
         }
 
+        if (get_option(self::OPTION_PUBLIC_BRAND_NAME, null) === null) {
+            add_option(self::OPTION_PUBLIC_BRAND_NAME, self::DEFAULT_PUBLIC_BRAND_NAME);
+        }
+
+        if (get_option(self::OPTION_QUOTE_EMAIL_REP_NAMES, null) === null) {
+            add_option(self::OPTION_QUOTE_EMAIL_REP_NAMES, self::DEFAULT_QUOTE_EMAIL_REP_NAMES);
+        }
+
+        if (get_option(self::OPTION_QUOTE_EMAIL_TEAM_SIGNATURE, null) === null) {
+            add_option(self::OPTION_QUOTE_EMAIL_TEAM_SIGNATURE, self::DEFAULT_QUOTE_EMAIL_TEAM_SIGNATURE);
+        }
+
         if (get_option(self::OPTION_BATCH_ORDER_NOTIFICATION_EMAIL, null) === null) {
-            add_option(self::OPTION_BATCH_ORDER_NOTIFICATION_EMAIL, self::DEFAULT_BATCH_ORDER_NOTIFICATION_EMAIL);
+            add_option(self::OPTION_BATCH_ORDER_NOTIFICATION_EMAIL, self::default_batch_order_notification_email());
         }
 
         if (get_option(self::OPTION_DISTRIBUTOR_PRIORITY_LIST, null) === null) {
@@ -978,12 +1014,49 @@ final class Options
         )) === '1';
     }
 
+    public static function get_public_brand_name(): string
+    {
+        $name = trim((string) get_option(self::OPTION_PUBLIC_BRAND_NAME, self::DEFAULT_PUBLIC_BRAND_NAME));
+        if ($name !== '') {
+            return $name;
+        }
+
+        return self::site_name_fallback();
+    }
+
+    /**
+     * @return string[]
+     */
+    public static function get_quote_email_rep_names(): array
+    {
+        return self::normalize_quote_email_rep_names(
+            get_option(self::OPTION_QUOTE_EMAIL_REP_NAMES, self::DEFAULT_QUOTE_EMAIL_REP_NAMES)
+        );
+    }
+
+    public static function get_quote_email_rep_names_text(): string
+    {
+        return implode("\n", self::get_quote_email_rep_names());
+    }
+
+    public static function get_quote_email_team_signature(): string
+    {
+        $signature = trim((string) get_option(
+            self::OPTION_QUOTE_EMAIL_TEAM_SIGNATURE,
+            self::DEFAULT_QUOTE_EMAIL_TEAM_SIGNATURE
+        ));
+
+        return $signature !== '' ? $signature : self::default_sales_team_signature();
+    }
+
     public static function get_batch_order_notification_email(): string
     {
-        return (string) get_option(
+        $email = (string) get_option(
             self::OPTION_BATCH_ORDER_NOTIFICATION_EMAIL,
-            self::DEFAULT_BATCH_ORDER_NOTIFICATION_EMAIL
+            self::default_batch_order_notification_email()
         );
+
+        return trim($email);
     }
 
     /**
@@ -1318,5 +1391,53 @@ final class Options
         }
 
         return $v;
+    }
+
+    private static function site_name_fallback(): string
+    {
+        $name = function_exists('get_bloginfo') ? (string) get_bloginfo('name') : '';
+        $name = trim(wp_strip_all_tags($name));
+
+        return $name !== '' ? $name : 'Store';
+    }
+
+    private static function default_sales_team_signature(): string
+    {
+        $brand = self::get_public_brand_name();
+
+        return $brand !== '' ? 'Sales Team, ' . $brand : 'Sales Team';
+    }
+
+    /**
+     * @param mixed $raw
+     * @return string[]
+     */
+    private static function normalize_quote_email_rep_names($raw): array
+    {
+        $parts = is_array($raw)
+            ? $raw
+            : preg_split('/[\r\n,]+/', (string) $raw);
+
+        if (!is_array($parts)) {
+            $parts = [];
+        }
+
+        $names = [];
+        foreach ($parts as $part) {
+            $name = trim(wp_strip_all_tags((string) $part));
+            $name = trim((string) preg_replace('/\s+/', ' ', $name));
+            if ($name !== '') {
+                $names[$name] = $name;
+            }
+        }
+
+        if (empty($names)) {
+            $default = trim(self::default_quote_email_rep_names());
+            if ($default !== '') {
+                $names[$default] = $default;
+            }
+        }
+
+        return array_values($names);
     }
 }

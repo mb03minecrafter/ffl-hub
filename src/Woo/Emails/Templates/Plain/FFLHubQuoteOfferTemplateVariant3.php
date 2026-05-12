@@ -25,4 +25,4 @@ echo __('This quote code is only for you, only for this item, and it works one t
 echo __('If anything is unclear, reply to this email and I can walk you through it.', 'ffl-hub') . "\n\n";
 echo __('Talk soon,', 'ffl-hub') . "\n";
 echo $context->rep_name . "\n";
-echo __('Sales Team, Bickham Firearms', 'ffl-hub') . "\n";
+echo $context->team_signature . "\n";

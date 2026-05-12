@@ -132,6 +132,36 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_PUBLIC_BRAND_NAME,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                'default'           => Options::default_public_brand_name(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_QUOTE_EMAIL_REP_NAMES,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_multiline_names'],
+                'default'           => Options::default_quote_email_rep_names(),
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_QUOTE_EMAIL_TEAM_SIGNATURE,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_text'],
+                'default'           => Options::default_quote_email_team_signature(),
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_BATCH_ORDER_NOTIFICATION_EMAIL,
             [
                 'type'              => 'string',
@@ -597,6 +627,27 @@ final class SettingsRegistrar
     public static function sanitize_text($value): string
     {
         return sanitize_text_field((string) $value);
+    }
+
+    /**
+     * Sanitize newline/comma separated display names and preserve line breaks.
+     *
+     * @param mixed $value
+     */
+    public static function sanitize_multiline_names($value): string
+    {
+        $parts = preg_split('/[\r\n,]+/', (string) $value);
+        $names = [];
+
+        foreach ((array) $parts as $part) {
+            $name = sanitize_text_field((string) $part);
+            $name = trim((string) preg_replace('/\s+/', ' ', $name));
+            if ($name !== '') {
+                $names[$name] = $name;
+            }
+        }
+
+        return implode("\n", array_values($names));
     }
 
     /**

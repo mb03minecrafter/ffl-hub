@@ -9,6 +9,7 @@ use FFLHub\Product\HolosunProductDetector;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
+use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 use FFLHub\Woo\Emails\FFLHubQuoteOffer;
 use FFLHub\Woo\Emails\Models\QuoteOfferEmailContext;
@@ -30,11 +31,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     private const DEBUG_CONST = 'FFLHUB_DEBUG_QUOTE_EMAIL_CRON';
     private const LOG_PREFIX = '[FFLHub][QuoteEmailCron]';
     private const BUSINESS_HOURS_TZ = 'America/Chicago';
-    private const REP_NAMES = [
-        'Matthew Bickham',
-        'Thomas Bickham',
-        'Michelle Bickham',
-    ];
 
     private QuoteEmailJobsTable $jobs_table;
 
@@ -717,7 +713,9 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
         $job_id = isset($job_row['id']) ? (int) $job_row['id'] : 0;
         $variant_index = ($job_id > 0) ? ($job_id % 6) : 0;
-        $rep_index = ($job_id > 0) ? ($job_id % count(self::REP_NAMES)) : 0;
+        $rep_names = Options::get_quote_email_rep_names();
+        $rep_count = max(1, count($rep_names));
+        $rep_index = ($job_id > 0) ? ($job_id % $rep_count) : 0;
 
         $first_name = trim((string) ($job_row['request_first_name'] ?? ''));
         $resolved_upc_product_name = $this->resolve_upc_validated_product_name_for_job($job_row, $product);
@@ -745,7 +743,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $shipping_phrase = $this->shipping_phrase_for_quote_product($product, $final_price_amount);
 
         $subject = (string) __('Email Quote Ready', 'ffl-hub');
-        $rep_name = self::REP_NAMES[$rep_index] ?? self::REP_NAMES[0];
+        $rep_name = $rep_names[$rep_index] ?? Options::default_quote_email_rep_names();
+        $team_signature = Options::get_quote_email_team_signature();
         $coupon_amount_display = wp_strip_all_tags(wc_price($coupon_amount));
         $force_plain_text = false;
 
@@ -758,6 +757,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'subject' => $subject,
             'variant_index' => $variant_index,
             'rep_name' => $rep_name,
+            'team_signature' => $team_signature,
             'coupon_code' => $coupon_code,
             'quote_cart_url' => $quote_cart_url,
             'final_price' => $final_price_display,
@@ -779,7 +779,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             $final_price_display,
             $shipping_phrase,
             $expires_display,
-            $force_plain_text
+            $force_plain_text,
+            $team_signature
         );
     }
 

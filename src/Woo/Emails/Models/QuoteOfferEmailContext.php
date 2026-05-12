@@ -25,6 +25,7 @@ final class QuoteOfferEmailContext
     public string $shipping_phrase;
     public string $expires_display;
     public bool $force_plain_text;
+    public string $team_signature;
 
     public function __construct(
         string $recipient_email,
@@ -40,7 +41,8 @@ final class QuoteOfferEmailContext
         string $final_price_display,
         string $shipping_phrase,
         string $expires_display,
-        bool $force_plain_text = false
+        bool $force_plain_text = false,
+        string $team_signature = ''
     ) {
         $this->recipient_email = trim($recipient_email);
         $this->subject = trim($subject);
@@ -56,6 +58,7 @@ final class QuoteOfferEmailContext
         $this->shipping_phrase = trim($shipping_phrase);
         $this->expires_display = trim($expires_display);
         $this->force_plain_text = $force_plain_text;
+        $this->team_signature = self::normalize_team_signature_for_display($team_signature);
     }
 
     private static function normalize_first_name_for_display(string $first_name): string
@@ -81,5 +84,20 @@ final class QuoteOfferEmailContext
         }
 
         return $normalized;
+    }
+
+    private static function normalize_team_signature_for_display(string $team_signature): string
+    {
+        $team_signature = trim($team_signature);
+        if ($team_signature !== '') {
+            return $team_signature;
+        }
+
+        $site_name = function_exists('get_bloginfo') ? trim((string) get_bloginfo('name')) : '';
+        if ($site_name !== '') {
+            return 'Sales Team, ' . $site_name;
+        }
+
+        return 'Sales Team';
     }
 }

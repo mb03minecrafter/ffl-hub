@@ -25,4 +25,4 @@ echo __('The code is specific to your email, this product only, and can be redee
 echo __('If you want to confirm anything before checkout, reply back and I will help.', 'ffl-hub') . "\n\n";
 echo __('Thank you,', 'ffl-hub') . "\n";
 echo $context->rep_name . "\n";
-echo __('Sales Team, Bickham Firearms', 'ffl-hub') . "\n";
+echo $context->team_signature . "\n";
