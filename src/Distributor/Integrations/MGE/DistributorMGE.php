@@ -41,6 +41,40 @@ final class DistributorMGE extends DistributorBase
         return $this->build_payload_from_local_row($upc, false);
     }
 
+    /**
+     * @param array<int,string> $upcs
+     * @return array<string,DistributorProductPayload>
+     */
+    public function get_pricing_payloads_by_upcs(array $upcs): array
+    {
+        return $this->get_local_pricing_payloads_by_upcs(
+            $upcs,
+            [
+                'sku'              => ['mge_item_number', 'vendor_item_number', 'sku'],
+                'upc'              => ['upc'],
+                'name'             => ['model'],
+                'description'      => ['product_description'],
+                'brand'            => ['manufacturer'],
+                'price'            => ['distributor_price'],
+                'map'              => ['retail_map'],
+                'msrp'             => ['retail_msrp'],
+                'quantity'         => ['inventory_quantity'],
+                'category'         => ['item_type', 'sub_category'],
+                'image'            => ['image_url'],
+                'ffl_required'     => ['ffl_required'],
+                'sot_required'     => ['sot_required'],
+                'dropship_enabled' => ['dropship_enabled'],
+            ],
+            static fn($raw): ?array => self::map_mge_category((string) $raw),
+            true,
+            function (DistributorProductPayload $payload, array $row, string $normalized_upc): DistributorProductPayload {
+                // Per MGE feed policy, keep this false unless SIG approval explicitly opts it into dropship treatment.
+                $payload->dropship_enabled = SigDropshipApproval::should_force_row($this->get_id(), $row);
+                return $payload;
+            }
+        );
+    }
+
     protected function supports_remote_validation(): bool
     {
         return false;

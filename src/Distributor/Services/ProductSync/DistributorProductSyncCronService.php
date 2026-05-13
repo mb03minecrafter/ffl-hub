@@ -52,6 +52,20 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
     private DistributorHandler $handler;
 
+    /**
+     * @var array<string,UpcLookupResult>|null
+     */
+    private ?array $preloadedLookupsByUpc = null;
+
+    /**
+     * Product IDs that only need LAST_SYNC bumped after the batch.
+     *
+     * @var array<int,int>
+     */
+    private array $pendingLastSyncBumpIds = [];
+
+    private ?string $batchSyncTimestamp = null;
+
     public function __construct(DistributorHandler $handler)
     {
         $this->handler = $handler;
@@ -98,6 +112,9 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $t_q   = microtime(true);
         $query = DistributorProductHelper::query_for_managed_products($limit);
         $posts = ($query && isset($query->posts) && is_array($query->posts)) ? count($query->posts) : 0;
+        $product_ids = ($query && isset($query->posts) && is_array($query->posts))
+            ? array_values(array_filter(array_map('intval', $query->posts)))
+            : [];
 
         $this->profile('query_for_managed_products', $t_q, array(
             'limit' => (int) $limit,
@@ -109,6 +126,34 @@ final class DistributorProductSyncCronService extends AbstractCronService
             $this->log_ctx('---- RUN END (NOOP) ----', array('elapsed_ms' => $this->ms_since($t_start)));
             return;
         }
+
+        $this->batchSyncTimestamp = current_time('mysql');
+        $this->pendingLastSyncBumpIds = [];
+
+        $t_meta = microtime(true);
+        if (!empty($product_ids) && function_exists('update_meta_cache')) {
+            update_meta_cache('post', $product_ids);
+        }
+
+        $upcs_for_lookup = [];
+        foreach ($product_ids as $product_id) {
+            $upc = trim((string) get_post_meta($product_id, ProductMeta::FFLHUB_UPC_META, true));
+            if ($upc !== '') {
+                $upcs_for_lookup[$upc] = $upc;
+            }
+        }
+
+        $this->profile('bulk_prime_product_meta', $t_meta, array(
+            'products' => count($product_ids),
+            'upcs'     => count($upcs_for_lookup),
+        ));
+
+        $t_bulk_lookup = microtime(true);
+        $this->preloadedLookupsByUpc = $this->handler->get_payloads_for_upcs(array_values($upcs_for_lookup), false);
+        $this->profile('bulk_distributor_lookup', $t_bulk_lookup, array(
+            'upcs'    => count($upcs_for_lookup),
+            'results' => is_array($this->preloadedLookupsByUpc) ? count($this->preloadedLookupsByUpc) : 0,
+        ));
 
         $processed = 0;
         $errors    = 0;
@@ -133,7 +178,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $write_ms_sum  = 0.0;
         $write_ms_max  = 0.0;
 
-        foreach ($query->posts as $product_id) {
+        foreach ($product_ids as $product_id) {
             $product_id = (int) $product_id;
             if ($product_id <= 0) {
                 continue;
@@ -204,6 +249,15 @@ final class DistributorProductSyncCronService extends AbstractCronService
             }
         }
 
+        $t_bump = microtime(true);
+        $bulk_bumped = $this->flush_pending_last_sync_bumps();
+        $this->profile('bulk_last_sync_bumps', $t_bump, array(
+            'products' => (int) $bulk_bumped,
+        ));
+
+        $this->preloadedLookupsByUpc = null;
+        $this->batchSyncTimestamp = null;
+
         $lookup_avg = ($processed > 0) ? ($lookup_ms_sum / (float) $processed) : 0.0;
         $write_avg  = ($processed > 0) ? ($write_ms_sum / (float) $processed) : 0.0;
 
@@ -247,7 +301,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $t_lookup = 0.0;
         $t_write  = 0.0;
 
-        $now_mysql = current_time('mysql');
+        $now_mysql = $this->batchSyncTimestamp ?: current_time('mysql');
 
         if ($product_id <= 0 || ! function_exists('wc_get_product')) {
             return array('outcome' => 'LOOKUP_INVALID', 'lookup_ms' => 0.0, 'write_ms' => 0.0);
@@ -267,7 +321,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $this->profile('get_post_status', $t0, array('product_id' => $product_id, 'status' => (string) $post_status));
 
         if ('trash' === $post_status) {
-            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            $this->bump_last_sync_meta($product_id, $now_mysql);
 
             $this->profile('TOTAL product', $t_start, array(
                 'product_id' => $product_id,
@@ -298,7 +352,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $this->profile('get_post_meta_upc', $t0, array('product_id' => $product_id, 'has_upc' => ($upc !== '')));
 
         if ($upc === '') {
-            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            $this->bump_last_sync_meta($product_id, $now_mysql);
 
             $this->profile('TOTAL product', $t_start, array(
                 'product_id' => $product_id,
@@ -313,7 +367,14 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $lookup = null;
 
         try {
-            $lookup = $this->handler->get_payloads_for_upc($upc, false); // returns UpcLookupResult, we dont need image to update pricing and quantity data so we exclude it by passing false into the optional argument
+            if ($this->preloadedLookupsByUpc !== null) {
+                $lookup_key = $this->normalize_upc_for_lookup($upc);
+                $lookup = ($lookup_key !== '' && isset($this->preloadedLookupsByUpc[$lookup_key]))
+                    ? $this->preloadedLookupsByUpc[$lookup_key]
+                    : new UpcLookupResult([]);
+            } else {
+                $lookup = $this->handler->get_payloads_for_upc($upc, false); // returns UpcLookupResult, we dont need image to update pricing and quantity data so we exclude it by passing false into the optional argument
+            }
         } catch (\Throwable $e) {
             $lookup = null;
             $this->log_ctx('distributor_lookup exception', array(
@@ -332,7 +393,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         ));
 
         if (! ($lookup instanceof UpcLookupResult)) {
-            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            $this->bump_last_sync_meta($product_id, $now_mysql);
 
             $this->profile('TOTAL product', $t_start, array(
                 'product_id' => $product_id,
@@ -386,7 +447,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
                 $product->save();
             } else {
-                update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+                $this->bump_last_sync_meta($product_id, $now_mysql);
             }
 
             $t_write = $this->ms_since($t0);
@@ -423,7 +484,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         ));
 
         if (! ($selected_offer instanceof DistributorOffer)) {
-            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            $this->bump_last_sync_meta($product_id, $now_mysql);
 
             $this->profile('TOTAL product', $t_start, array(
                 'product_id' => $product_id,
@@ -435,7 +496,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
         $selected_payload = $selected_offer->product;
         if (! ($selected_payload instanceof DistributorProductPayload)) {
-            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            $this->bump_last_sync_meta($product_id, $now_mysql);
 
             $this->profile('TOTAL product', $t_start, array(
                 'product_id' => $product_id,
@@ -488,7 +549,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
                 $product->save();
             } else {
-                update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+                $this->bump_last_sync_meta($product_id, $now_mysql);
             }
 
             $t_write = $this->ms_since($t0);
@@ -550,7 +611,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
                 $product->save();
             } else {
-                update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+                $this->bump_last_sync_meta($product_id, $now_mysql);
             }
 
             $t_write = $this->ms_since($t0);
@@ -625,7 +686,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
             $product->save();
         } else {
             // Keep rotation without heavy save().
-            update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            $this->bump_last_sync_meta($product_id, $now_mysql);
         }
 
         $t_write = $this->ms_since($t0);
@@ -853,6 +914,124 @@ final class DistributorProductSyncCronService extends AbstractCronService
         }
 
         return array_values(array_unique($normalized));
+    }
+
+    private function bump_last_sync_meta(int $product_id, string $now_mysql): void
+    {
+        if ($product_id <= 0) {
+            return;
+        }
+
+        if ($this->preloadedLookupsByUpc !== null) {
+            $this->pendingLastSyncBumpIds[$product_id] = $product_id;
+            return;
+        }
+
+        update_post_meta($product_id, ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+    }
+
+    private function flush_pending_last_sync_bumps(): int
+    {
+        if (empty($this->pendingLastSyncBumpIds)) {
+            return 0;
+        }
+
+        $product_ids = array_values(array_filter(array_map('intval', $this->pendingLastSyncBumpIds)));
+        $this->pendingLastSyncBumpIds = [];
+
+        if (empty($product_ids)) {
+            return 0;
+        }
+
+        $now_mysql = $this->batchSyncTimestamp ?: current_time('mysql');
+
+        return $this->bulk_update_post_meta_for_products(
+            $product_ids,
+            ProductMeta::FFLHUB_LAST_SYNC_META,
+            $now_mysql
+        );
+    }
+
+    /**
+     * Bulk update a single post meta key for many products.
+     *
+     * WordPress postmeta has no unique key on (post_id, meta_key), so this does
+     * an UPDATE for existing rows and an INSERT only for missing products.
+     *
+     * @param array<int,int> $product_ids
+     */
+    private function bulk_update_post_meta_for_products(array $product_ids, string $meta_key, string $meta_value): int
+    {
+        global $wpdb;
+
+        $product_ids = array_values(array_unique(array_filter(array_map('intval', $product_ids))));
+        if (empty($product_ids)) {
+            return 0;
+        }
+
+        $updated_products = 0;
+
+        foreach (array_chunk($product_ids, 500) as $chunk) {
+            $placeholders = implode(', ', array_fill(0, count($chunk), '%d'));
+
+            $update_sql = "UPDATE {$wpdb->postmeta} SET meta_value = %s WHERE meta_key = %s AND post_id IN ({$placeholders})";
+            $wpdb->query(
+                $wpdb->prepare(
+                    $update_sql,
+                    array_merge([$meta_value, $meta_key], $chunk)
+                )
+            );
+
+            $existing_sql = "SELECT DISTINCT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s AND post_id IN ({$placeholders})";
+            $existing = $wpdb->get_col(
+                $wpdb->prepare(
+                    $existing_sql,
+                    array_merge([$meta_key], $chunk)
+                )
+            );
+
+            $existing_lookup = [];
+            if (is_array($existing)) {
+                foreach ($existing as $existing_id) {
+                    $existing_lookup[(int) $existing_id] = true;
+                }
+            }
+
+            $missing = [];
+            foreach ($chunk as $product_id) {
+                if (!isset($existing_lookup[(int) $product_id])) {
+                    $missing[] = (int) $product_id;
+                }
+            }
+
+            if (!empty($missing)) {
+                $insert_placeholders = [];
+                $insert_values = [];
+                foreach ($missing as $product_id) {
+                    $insert_placeholders[] = '(%d, %s, %s)';
+                    $insert_values[] = $product_id;
+                    $insert_values[] = $meta_key;
+                    $insert_values[] = $meta_value;
+                }
+
+                $insert_sql = "INSERT INTO {$wpdb->postmeta} (post_id, meta_key, meta_value) VALUES " . implode(', ', $insert_placeholders);
+                $wpdb->query($wpdb->prepare($insert_sql, $insert_values));
+            }
+
+            foreach ($chunk as $product_id) {
+                wp_cache_delete((int) $product_id, 'post_meta');
+            }
+
+            $updated_products += count($chunk);
+        }
+
+        return $updated_products;
+    }
+
+    private function normalize_upc_for_lookup(string $upc): string
+    {
+        $normalized = preg_replace('/\D+/', '', $upc);
+        return is_string($normalized) ? trim($normalized) : '';
     }
 
     // ---------------------------------------------------------------------

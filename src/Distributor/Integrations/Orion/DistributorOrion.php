@@ -38,6 +38,47 @@ final class DistributorOrion extends DistributorBase
         return $this->build_payload_from_local_row($upc, false);
     }
 
+    /**
+     * @param array<int,string> $upcs
+     * @return array<string,DistributorProductPayload>
+     */
+    public function get_pricing_payloads_by_upcs(array $upcs): array
+    {
+        return $this->get_local_pricing_payloads_by_upcs(
+            $upcs,
+            [
+                'sku' => ['orion_product_code', 'orion_product_id'],
+                'upc' => ['upc'],
+                'name' => ['product_name', 'model'],
+                'description' => ['product_description', 'product_name'],
+                'brand' => ['manufacturer'],
+                'price' => ['distributor_price', 'sale_price', 'base_cost'],
+                'map' => ['retail_map'],
+                'msrp' => ['retail_msrp'],
+                'quantity' => ['inventory_quantity'],
+                'category' => ['product_categories', 'item_type'],
+                'shipping_weight' => ['shipping_weight'],
+                'shipping_length_in' => ['shipping_length_in'],
+                'shipping_width_in' => ['shipping_width_in'],
+                'shipping_height_in' => ['shipping_height_in'],
+                'image' => ['image_url'],
+                'ffl_required' => ['ffl_required'],
+                'sot_required' => ['sot_required'],
+                'dropship_enabled' => ['dropship_enabled'],
+            ],
+            static fn($raw_category): ?array => DistributorProductCategoryMapper::map_orion((string) $raw_category),
+            false,
+            static function (DistributorProductPayload $payload, array $row, string $normalized_upc): DistributorProductPayload {
+                $short_name = trim((string) ($row['product_name'] ?? ''));
+                if ($short_name !== '') {
+                    $payload->name = $short_name;
+                }
+
+                return $payload;
+            }
+        );
+    }
+
     public function place_order(DistributorOrderRequest $request): DistributorOrderResult
     {
         return parent::place_order($request);

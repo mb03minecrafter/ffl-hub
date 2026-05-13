@@ -47,6 +47,43 @@ final class DistributorSportsSouth extends DistributorBase
         return $this->build_payload_from_local_row($upc, false);
     }
 
+    /**
+     * @param array<int,string> $upcs
+     * @return array<string,DistributorProductPayload>
+     */
+    public function get_pricing_payloads_by_upcs(array $upcs): array
+    {
+        return $this->get_local_pricing_payloads_by_upcs(
+            $upcs,
+            [
+                'sku' => ['sports_south_item_number'],
+                'upc' => ['upc'],
+                'name' => ['product_name', 'model'],
+                'description' => ['product_description', 'product_name'],
+                'brand' => ['manufacturer'],
+                'price' => ['distributor_price', 'catalog_price'],
+                'map' => ['retail_map'],
+                'msrp' => ['retail_msrp'],
+                'quantity' => ['inventory_quantity'],
+                'category' => ['item_type', 'category_id', 'product_name'],
+                'shipping_weight' => ['shipping_weight'],
+                'shipping_length_in' => ['shipping_length_in'],
+                'shipping_width_in' => ['shipping_width_in'],
+                'shipping_height_in' => ['shipping_height_in'],
+                'image' => ['image_url', 'image_ref'],
+                'ffl_required' => ['ffl_required'],
+                'sot_required' => ['sot_required'],
+                'dropship_enabled' => ['dropship_enabled'],
+            ],
+            [DistributorProductCategoryMapper::class, 'map_sports_south'],
+            false,
+            null,
+            static function (array $row, string $normalized_upc): bool {
+                return !SportsSouthAccessoriesOnlyPolicy::should_skip_row($row);
+            }
+        );
+    }
+
     protected function supports_remote_validation(): bool
     {
         return false;

@@ -394,6 +394,61 @@ class DoubleBufferedProductTable implements DistributorTableInterface
         return $row;
     }
 
+    /**
+     * Fetch rows from the LIVE table for many UPCs in chunked IN queries.
+     *
+     * @param array<int,string> $upcs
+     * @return array<string,array<string,mixed>> Rows keyed by row UPC.
+     */
+    public function get_rows_by_upcs(array $upcs): array
+    {
+        $table = $this->get_live_table_name();
+        if (! $table) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($upcs as $upc) {
+            $upc = trim((string) $upc);
+            if ($upc === '') {
+                continue;
+            }
+
+            $normalized[$upc] = $upc;
+        }
+
+        if (empty($normalized)) {
+            return [];
+        }
+
+        global $wpdb;
+
+        $found = [];
+        foreach (array_chunk(array_values($normalized), 500) as $chunk) {
+            $placeholders = implode(', ', array_fill(0, count($chunk), '%s'));
+            $sql = "SELECT * FROM {$table} WHERE upc IN ({$placeholders})";
+
+            $rows = $wpdb->get_results(
+                $wpdb->prepare($sql, $chunk),
+                ARRAY_A
+            );
+
+            if (!is_array($rows)) {
+                continue;
+            }
+
+            foreach ($rows as $row) {
+                if (!is_array($row) || empty($row['upc'])) {
+                    continue;
+                }
+
+                $found[(string) $row['upc']] = $row;
+            }
+        }
+
+        return $found;
+    }
+
 
 
 

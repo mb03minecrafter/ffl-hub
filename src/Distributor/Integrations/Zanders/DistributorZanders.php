@@ -1120,6 +1120,28 @@ class DistributorZanders extends DistributorBase
     }
 
     /**
+     * @param array<int,string> $upcs
+     * @return array<string,DistributorProductPayload>
+     */
+    public function get_pricing_payloads_by_upcs(array $upcs): array
+    {
+        $rows = $this->get_fulfillment_rows_by_upcs($upcs, false);
+        if (empty($rows)) {
+            return [];
+        }
+
+        $payloads = [];
+        foreach ($rows as $normalized_upc => $row) {
+            $payload = $this->build_payload_from_row_zanders($row, (string) $normalized_upc, false);
+            if ($payload instanceof DistributorProductPayload) {
+                $payloads[(string) $normalized_upc] = $payload;
+            }
+        }
+
+        return $payloads;
+    }
+
+    /**
      * Zanders-specific payload builder.
      *
      * Updates for new schema:

@@ -141,6 +141,85 @@ class DistributorLipseys extends DistributorBase
         );
     }
 
+    public function get_pricing_payload_by_upc(string $upc): ?DistributorProductPayload
+    {
+        if (!$this->services) {
+            return null;
+        }
+
+        $normalized_upc = $this->normalize_upc($upc);
+        if ($normalized_upc === null) {
+            return null;
+        }
+
+        $row = $this->services->get_fulfillment_table()->get_row_by_upc($normalized_upc);
+        if (!$row) {
+            return null;
+        }
+        if (!is_array($row)) {
+            if (!is_object($row)) {
+                return null;
+            }
+            $row = get_object_vars($row);
+        }
+
+        return $this->build_lipseys_payload_from_row($row, $normalized_upc, false);
+    }
+
+    /**
+     * @param array<int,string> $upcs
+     * @return array<string,DistributorProductPayload>
+     */
+    public function get_pricing_payloads_by_upcs(array $upcs): array
+    {
+        return $this->get_local_pricing_payloads_by_upcs(
+            $upcs,
+            $this->lipseys_payload_map(),
+            [DistributorProductCategoryMapper::class, 'map_lipseys']
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    private function build_lipseys_payload_from_row(array $row, string $normalized_upc, bool $include_images): DistributorProductPayload
+    {
+        return $this->build_payload_from_row(
+            $row,
+            $this->lipseys_payload_map(),
+            [DistributorProductCategoryMapper::class, 'map_lipseys'],
+            $normalized_upc,
+            $include_images
+        );
+    }
+
+    /**
+     * @return array<string,array<int,string>>
+     */
+    private function lipseys_payload_map(): array
+    {
+        return [
+            'sku'          => ['lipseys_item_number'],
+            'upc'          => ['upc'],
+            'name'         => ['manufacturer', 'model', 'caliber_gauge'],
+            'description'  => ['product_description'],
+            'brand'        => ['manufacturer'],
+            'price'        => ['distributor_price'],
+            'map'          => ['retail_map'],
+            'msrp'         => ['retail_msrp'],
+            'quantity'     => ['inventory_quantity'],
+            'category'     => ['item_group'],
+            'image'        => ['image_name'],
+            'shipping_weight' => ['shipping_weight'],
+            'shipping_length_in' => ['shipping_length_in'],
+            'shipping_width_in'  => ['shipping_width_in'],
+            'shipping_height_in' => ['shipping_height_in'],
+            'ffl_required' => ['ffl_required'],
+            'sot_required' => ['sot_required'],
+            'dropship_enabled' => ['dropship_enabled'],
+        ];
+    }
+
     /**
      * Lipsey's prepaid dropship lane rates.
      *
@@ -169,6 +248,14 @@ class DistributorLipseys extends DistributorBase
         }
 
         return self::ACCESSORY_DROPSHIP_SHIPPING_COST;
+    }
+
+    protected function get_shipping_cost_from_row(array $row, string $normalized_upc): ?float
+    {
+        $ffl_required = $this->to_boolish($row['ffl_required'] ?? null, false);
+        return $ffl_required
+            ? self::FIREARM_DROPSHIP_SHIPPING_COST
+            : self::ACCESSORY_DROPSHIP_SHIPPING_COST;
     }
 
 

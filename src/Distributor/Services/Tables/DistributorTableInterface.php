@@ -20,6 +20,12 @@ interface DistributorTableInterface
      */
 
     public function get_row_by_upc($upc): ?array;
+
+    /**
+     * @param array<int,string> $upcs
+     * @return array<string,array<string,mixed>>
+     */
+    public function get_rows_by_upcs(array $upcs): array;
     
 
 

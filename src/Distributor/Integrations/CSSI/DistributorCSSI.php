@@ -50,6 +50,42 @@ final class DistributorCSSI extends DistributorBase
         return $this->build_payload_from_local_row($upc, false);
     }
 
+    /**
+     * @param array<int,string> $upcs
+     * @return array<string,DistributorProductPayload>
+     */
+    public function get_pricing_payloads_by_upcs(array $upcs): array
+    {
+        return $this->get_local_pricing_payloads_by_upcs(
+            $upcs,
+            [
+                'sku'              => ['cssi_item_number', 'sku'],
+                'upc'              => ['upc'],
+                'name'             => ['product_name', 'model', 'mfg_model_number'],
+                'brand'            => ['manufacturer'],
+                'price'            => ['distributor_price'],
+                'map'              => ['retail_map'],
+                'msrp'             => ['retail_msrp'],
+                'quantity'         => ['inventory_quantity'],
+                'category'         => ['item_type'],
+                'image'            => ['image_location'],
+                'shipping_weight'  => ['shipping_weight'],
+                'shipping_length_in' => ['shipping_length_in'],
+                'shipping_width_in'  => ['shipping_width_in'],
+                'shipping_height_in' => ['shipping_height_in'],
+                'ffl_required'     => ['ffl_required'],
+                'sot_required'     => ['sot_required'],
+                'dropship_enabled' => ['dropship_enabled'],
+            ],
+            static fn($raw_item_type): ?array => null,
+            true,
+            static function (DistributorProductPayload $payload, array $row, string $normalized_upc): DistributorProductPayload {
+                $payload->description = '';
+                return $payload;
+            }
+        );
+    }
+
     protected function supports_remote_validation(): bool
     {
         return false;
@@ -1406,60 +1442,70 @@ final class DistributorCSSI extends DistributorBase
             return null;
         }
 
-        $computed = self::DEFAULT_FLAT_SHIPPING_COST;
         $lookup = $this->get_fulfillment_row_for_upc($normalized);
         if ($lookup !== null && isset($lookup['row']) && is_array($lookup['row'])) {
-            $row = (array) $lookup['row'];
-
-            $ffl_required_raw = $this->get_string_field($row, ['ffl_required']);
-            $ffl_required = $this->to_boolish($ffl_required_raw ?? '0', false);
-
-            $item_type = strtoupper(trim((string) ($this->get_string_field($row, ['item_type']) ?? '')));
-            $product_name = strtoupper(trim((string) ($this->get_string_field($row, ['product_name']) ?? '')));
-
-            $shipping_weight_oz = $this->parse_non_negative_float(
-                $this->get_string_field($row, ['shipping_weight']) ?? ''
-            );
-            if ($shipping_weight_oz <= 0.0) {
-                // Ensure we still bill a single increment when weight is missing.
-                $shipping_weight_oz = 1.0;
-            }
-
-            $distributor_price = $this->parse_non_negative_money(
-                $this->get_string_field($row, ['distributor_price']) ?? ''
-            );
-
-            $service = $this->resolve_shipping_service_for_row(
-                $ffl_required,
-                $item_type,
-                $product_name
-            );
-
-            if ($service === self::SHIPPING_SERVICE_HANDGUN_SECOND_DAY) {
-                $increments = max(1, (int) ceil($shipping_weight_oz / self::SHIPPING_FIREARM_STEP_OZ));
-                $base_shipping = $increments * self::SHIPPING_HANDGUN_SECOND_DAY_RATE;
-            } elseif ($service === self::SHIPPING_SERVICE_LONG_GUN_GROUND_PREMIUM) {
-                $increments = max(1, (int) ceil($shipping_weight_oz / self::SHIPPING_FIREARM_STEP_OZ));
-                $base_shipping = $increments * self::SHIPPING_LONG_GUN_GROUND_PREMIUM_RATE;
-            } else {
-                $increments = max(1, (int) ceil($shipping_weight_oz / self::SHIPPING_GROUND_ECONOMY_STEP_OZ));
-                $base_shipping = $increments * self::SHIPPING_GROUND_ECONOMY_RATE;
-            }
-
-            $minimum_order_fee = ($distributor_price > 0.0 && $distributor_price < self::SHIPPING_MIN_ORDER_FEE_THRESHOLD)
-                ? self::SHIPPING_MIN_ORDER_FEE
-                : 0.0;
-            $insurance_fee = ($distributor_price > 0.0)
-                ? (float) ceil($distributor_price / 100.0) * self::SHIPPING_INSURANCE_PER_100
-                : 0.0;
-
-            $computed = max(0.0, round($base_shipping + $minimum_order_fee + $insurance_fee, 2));
+            return $this->get_shipping_cost_from_row((array) $lookup['row'], $normalized);
         }
 
         $cost = apply_filters(
             'fflhub_cssi_flat_shipping_cost',
-            $computed,
+            self::DEFAULT_FLAT_SHIPPING_COST,
             $normalized,
+            $this
+        );
+
+        return is_numeric($cost) ? (float) $cost : self::DEFAULT_FLAT_SHIPPING_COST;
+    }
+
+    protected function get_shipping_cost_from_row(array $row, string $normalized_upc): ?float
+    {
+        $ffl_required_raw = $this->get_string_field($row, ['ffl_required']);
+        $ffl_required = $this->to_boolish($ffl_required_raw ?? '0', false);
+
+        $item_type = strtoupper(trim((string) ($this->get_string_field($row, ['item_type']) ?? '')));
+        $product_name = strtoupper(trim((string) ($this->get_string_field($row, ['product_name']) ?? '')));
+
+        $shipping_weight_oz = $this->parse_non_negative_float(
+            $this->get_string_field($row, ['shipping_weight']) ?? ''
+        );
+        if ($shipping_weight_oz <= 0.0) {
+            // Ensure we still bill a single increment when weight is missing.
+            $shipping_weight_oz = 1.0;
+        }
+
+        $distributor_price = $this->parse_non_negative_money(
+            $this->get_string_field($row, ['distributor_price']) ?? ''
+        );
+
+        $service = $this->resolve_shipping_service_for_row(
+            $ffl_required,
+            $item_type,
+            $product_name
+        );
+
+        if ($service === self::SHIPPING_SERVICE_HANDGUN_SECOND_DAY) {
+            $increments = max(1, (int) ceil($shipping_weight_oz / self::SHIPPING_FIREARM_STEP_OZ));
+            $base_shipping = $increments * self::SHIPPING_HANDGUN_SECOND_DAY_RATE;
+        } elseif ($service === self::SHIPPING_SERVICE_LONG_GUN_GROUND_PREMIUM) {
+            $increments = max(1, (int) ceil($shipping_weight_oz / self::SHIPPING_FIREARM_STEP_OZ));
+            $base_shipping = $increments * self::SHIPPING_LONG_GUN_GROUND_PREMIUM_RATE;
+        } else {
+            $increments = max(1, (int) ceil($shipping_weight_oz / self::SHIPPING_GROUND_ECONOMY_STEP_OZ));
+            $base_shipping = $increments * self::SHIPPING_GROUND_ECONOMY_RATE;
+        }
+
+        $minimum_order_fee = ($distributor_price > 0.0 && $distributor_price < self::SHIPPING_MIN_ORDER_FEE_THRESHOLD)
+            ? self::SHIPPING_MIN_ORDER_FEE
+            : 0.0;
+        $insurance_fee = ($distributor_price > 0.0)
+            ? (float) ceil($distributor_price / 100.0) * self::SHIPPING_INSURANCE_PER_100
+            : 0.0;
+
+        $computed = max(0.0, round($base_shipping + $minimum_order_fee + $insurance_fee, 2));
+        $cost = apply_filters(
+            'fflhub_cssi_flat_shipping_cost',
+            $computed,
+            $normalized_upc,
             $this
         );
 

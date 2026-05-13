@@ -236,6 +236,30 @@ abstract class DistributorBase implements DistributorInterface
         return $this->get_product_by_upc($normalized);
     }
 
+    /**
+     * Bulk pricing payload lookup.
+     *
+     * The default keeps old behavior for distributors that have not implemented
+     * a table-backed fast path yet. Table-backed distributors override this via
+     * get_local_pricing_payloads_by_upcs().
+     *
+     * @param array<int,string> $upcs
+     * @return array<string,DistributorProductPayload> Payloads keyed by normalized UPC.
+     */
+    public function get_pricing_payloads_by_upcs(array $upcs): array
+    {
+        $payloads = [];
+
+        foreach ($this->normalize_upc_list($upcs) as $normalized) {
+            $payload = $this->get_pricing_payload_by_upc($normalized);
+            if ($payload instanceof DistributorProductPayload) {
+                $payloads[$normalized] = $payload;
+            }
+        }
+
+        return $payloads;
+    }
+
     public function get_stock_quantity_by_upc(string $upc): ?int
     {
         $normalized = $this->normalize_upc($upc);
@@ -304,6 +328,159 @@ abstract class DistributorBase implements DistributorInterface
         $normalized = trim($normalized);
 
         return $normalized !== '' ? $normalized : null;
+    }
+
+    /**
+     * @param array<int,string> $upcs
+     * @return array<int,string>
+     */
+    protected function normalize_upc_list(array $upcs): array
+    {
+        $normalized = [];
+
+        foreach ($upcs as $upc) {
+            $value = $this->normalize_upc((string) $upc);
+            if ($value === null) {
+                continue;
+            }
+
+            $normalized[$value] = $value;
+        }
+
+        return array_values($normalized);
+    }
+
+    /**
+     * Common leading-zero UPC alternates used by a few distributor feeds.
+     *
+     * @return array<int,string>
+     */
+    protected function build_common_upc_lookup_candidates(string $normalized_upc): array
+    {
+        $candidates = [];
+        $len = strlen($normalized_upc);
+
+        if ($len === 11) {
+            $candidates[] = '0' . $normalized_upc;
+        } elseif ($len === 12 && strpos($normalized_upc, '0') === 0) {
+            $candidates[] = substr($normalized_upc, 1);
+        }
+
+        return $candidates;
+    }
+
+    /**
+     * Bulk fetch fulfillment rows from this distributor's live table.
+     *
+     * @param array<int,string> $upcs
+     * @return array<string,array<string,mixed>> Rows keyed by requested normalized UPC.
+     */
+    protected function get_fulfillment_rows_by_upcs(array $upcs, bool $include_common_fallbacks = false): array
+    {
+        if (!$this->services) {
+            return [];
+        }
+
+        $table = $this->services->get_fulfillment_table();
+        if (!$table || !method_exists($table, 'get_rows_by_upcs')) {
+            return [];
+        }
+
+        $requested = $this->normalize_upc_list($upcs);
+        if (empty($requested)) {
+            return [];
+        }
+
+        $lookup_upcs = [];
+        $requested_lookup_order = [];
+        foreach ($requested as $normalized) {
+            $requested_lookup_order[$normalized] = [$normalized];
+            $lookup_upcs[$normalized] = $normalized;
+
+            if ($include_common_fallbacks) {
+                foreach ($this->build_common_upc_lookup_candidates($normalized) as $candidate) {
+                    $requested_lookup_order[$normalized][] = $candidate;
+                    $lookup_upcs[$candidate] = $candidate;
+                }
+            }
+        }
+
+        /** @var array<string,array<string,mixed>> $rows_by_lookup */
+        $rows_by_lookup = $table->get_rows_by_upcs(array_values($lookup_upcs));
+        if (empty($rows_by_lookup)) {
+            return [];
+        }
+
+        $rows_by_requested = [];
+        foreach ($requested_lookup_order as $requested_upc => $lookup_order) {
+            foreach ($lookup_order as $lookup_upc) {
+                if (!isset($rows_by_lookup[$lookup_upc])) {
+                    continue;
+                }
+
+                $row = $rows_by_lookup[$lookup_upc];
+                if (!is_array($row)) {
+                    if (!is_object($row)) {
+                        continue;
+                    }
+                    $row = get_object_vars($row);
+                }
+
+                $rows_by_requested[$requested_upc] = $row;
+                break;
+            }
+        }
+
+        return $rows_by_requested;
+    }
+
+    /**
+     * Build pricing payloads from local table rows in one distributor query.
+     *
+     * @param array<int,string>                $upcs
+     * @param array<string,array<int,string>>  $map
+     * @param callable                         $category_mapper
+     * @param callable|null                    $after_build fn(DistributorProductPayload,array,string): ?DistributorProductPayload
+     * @param callable|null                    $row_filter fn(array,string): bool
+     * @return array<string,DistributorProductPayload>
+     */
+    protected function get_local_pricing_payloads_by_upcs(
+        array $upcs,
+        array $map,
+        callable $category_mapper,
+        bool $include_common_fallbacks = false,
+        ?callable $after_build = null,
+        ?callable $row_filter = null
+    ): array {
+        $rows = $this->get_fulfillment_rows_by_upcs($upcs, $include_common_fallbacks);
+        if (empty($rows)) {
+            return [];
+        }
+
+        $payloads = [];
+        foreach ($rows as $normalized_upc => $row) {
+            if ($row_filter && !$row_filter($row, $normalized_upc)) {
+                continue;
+            }
+
+            $payload = $this->build_payload_from_row(
+                $row,
+                $map,
+                $category_mapper,
+                (string) $normalized_upc,
+                false
+            );
+
+            if ($after_build) {
+                $payload = $after_build($payload, $row, (string) $normalized_upc);
+            }
+
+            if ($payload instanceof DistributorProductPayload) {
+                $payloads[(string) $normalized_upc] = $payload;
+            }
+        }
+
+        return $payloads;
     }
 
     /* ---------------------------------------------------------------------
@@ -623,7 +800,7 @@ abstract class DistributorBase implements DistributorInterface
         $shipping_width_in  = $this->get_string_field($row, $map['shipping_width_in'] ?? ['shipping_width_in']);
         $shipping_height_in = $this->get_string_field($row, $map['shipping_height_in'] ?? ['shipping_height_in']);
 
-        $shipping = (float) ($this->get_shipping_cost_by_upc($normalized_upc) ?? 0.0);
+        $shipping = (float) ($this->get_shipping_cost_from_row($row, $normalized_upc) ?? 0.0);
 
         // True cost is distributor-defined; default returns distributor_cost.
         $true_cost = $this->get_true_cost_by_distributor_cost_shipping_cost($price, $shipping);
@@ -705,6 +882,19 @@ abstract class DistributorBase implements DistributorInterface
     protected function get_image_url_from_row(array $row, $field): string
     {
         return '';
+    }
+
+    /**
+     * Resolve shipping from an already-loaded fulfillment row.
+     *
+     * Subclasses can override this to avoid a second DB lookup during bulk
+     * payload building.
+     *
+     * @param array<string,mixed> $row
+     */
+    protected function get_shipping_cost_from_row(array $row, string $normalized_upc): ?float
+    {
+        return $this->get_shipping_cost_by_upc($normalized_upc);
     }
 
     /* ---------------------------------------------------------------------

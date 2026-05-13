@@ -162,6 +162,46 @@ class DistributorRSR extends DistributorBase
     }
 
     /**
+     * @param array<int,string> $upcs
+     * @return array<string,DistributorProductPayload>
+     */
+    public function get_pricing_payloads_by_upcs(array $upcs): array
+    {
+        return $this->get_local_pricing_payloads_by_upcs(
+            $upcs,
+            [
+                'sku'         => ['rsr_stock_number', 'sku'],
+                'upc'         => ['upc'],
+                'name'        => ['model'],
+                'description' => ['product_description'],
+                'brand'       => ['manufacturer'],
+                'price'       => ['distributor_price'],
+                'map'         => ['retail_map'],
+                'msrp'        => ['retail_msrp'],
+                'quantity'    => ['inventory_quantity'],
+                'category'    => ['dept_number'],
+                'shipping_weight' => ['shipping_weight'],
+                'shipping_length_in' => ['shipping_length_in'],
+                'shipping_width_in'  => ['shipping_width_in'],
+                'shipping_height_in' => ['shipping_height_in'],
+                'sot_required' => ['sot_required'],
+                'dropship_enabled' => ['dropship_enabled'],
+            ],
+            [DistributorProductCategoryMapper::class, 'map_rsr'],
+            false,
+            function (DistributorProductPayload $payload, array $row, string $normalized_upc): DistributorProductPayload {
+                $payload->name = (string) $payload->description;
+                $payload->ffl_required = false;
+                if (!$payload->sot_required && $this->is_sot_required_from_dept_number($row['dept_number'] ?? null)) {
+                    $payload->sot_required = true;
+                }
+
+                return $payload;
+            }
+        );
+    }
+
+    /**
      * RSR dept 6 indicates NFA/SOT-required products.
      *
      * @param mixed $dept_number
@@ -193,6 +233,11 @@ class DistributorRSR extends DistributorBase
             return null;
         }
 
+        return self::DROPSHIP_SHIPPING_COST;
+    }
+
+    protected function get_shipping_cost_from_row(array $row, string $normalized_upc): ?float
+    {
         return self::DROPSHIP_SHIPPING_COST;
     }
 

@@ -447,6 +447,157 @@ class DistributorHandler
     }
 
     /**
+     * Fetch normalized distributor offers for many UPCs.
+     *
+     * This preserves the same cheapest-distributor rules as get_payloads_for_upc(),
+     * but lets table-backed distributors satisfy the request in bulk.
+     *
+     * @param array<int,string> $upcs
+     * @return array<string,UpcLookupResult> Results keyed by normalized UPC.
+     */
+    public function get_payloads_for_upcs(array $upcs, bool $include_images = false): array
+    {
+        $normalized_upcs = [];
+        foreach ($upcs as $upc) {
+            $normalized = preg_replace('/\D+/', '', (string) $upc);
+            $normalized = is_string($normalized) ? trim($normalized) : '';
+            if ($normalized === '') {
+                continue;
+            }
+
+            $normalized_upcs[$normalized] = $normalized;
+        }
+
+        if (empty($normalized_upcs)) {
+            return [];
+        }
+
+        $offers_by_upc = [];
+        foreach ($normalized_upcs as $normalized) {
+            $offers_by_upc[$normalized] = [];
+        }
+
+        foreach ($this->distributors as $id => $distributor) {
+            if (!Options::is_distributor_enabled($id)) {
+                continue;
+            }
+
+            try {
+                if (!$include_images && method_exists($distributor, 'get_pricing_payloads_by_upcs')) {
+                    $payloads = $distributor->get_pricing_payloads_by_upcs(array_values($normalized_upcs));
+                } else {
+                    $payloads = $this->get_payloads_for_upcs_one_by_one($distributor, $normalized_upcs, $include_images);
+                }
+            } catch (\Throwable $e) {
+                DebugLogUtil::log_ctx(
+                    'FFLHUB_ADMIN_DEBUG',
+                    '[FFLHub][DistributorHandler]',
+                    'Bulk UPC lookup distributor exception',
+                    [
+                        'dist_id' => (string) $id,
+                        'include_images' => $include_images ? 1 : 0,
+                        'upc_count' => count($normalized_upcs),
+                        'exception_class' => get_class($e),
+                        'exception_message' => (string) $e->getMessage(),
+                    ]
+                );
+
+                $payloads = $this->get_payloads_for_upcs_one_by_one($distributor, $normalized_upcs, $include_images);
+            }
+
+            if (!is_array($payloads) || empty($payloads)) {
+                continue;
+            }
+
+            foreach ($payloads as $payload_upc => $payload) {
+                if (!$payload instanceof DistributorProductPayload) {
+                    continue;
+                }
+
+                $normalized = preg_replace('/\D+/', '', (string) $payload_upc);
+                $normalized = is_string($normalized) ? trim($normalized) : '';
+                if ($normalized === '' || !isset($offers_by_upc[$normalized])) {
+                    $normalized = preg_replace('/\D+/', '', (string) ($payload->upc ?? ''));
+                    $normalized = is_string($normalized) ? trim($normalized) : '';
+                }
+
+                if ($normalized === '' || !isset($offers_by_upc[$normalized])) {
+                    continue;
+                }
+
+                $offer = new DistributorOffer(
+                    (string) $id,
+                    $distributor->get_label(),
+                    $payload
+                );
+
+                $non_dropship_blocked = Options::is_distributor_non_dropship_blocked((string) $id);
+                $offer_dropship_enabled = !empty($offer->product->dropship_enabled);
+
+                if ($non_dropship_blocked && !$offer_dropship_enabled) {
+                    DebugLogUtil::log_ctx(
+                        'FFLHUB_ADMIN_DEBUG',
+                        '[FFLHub][DistributorHandler]',
+                        'Bulk UPC lookup offer skipped by non-dropship policy',
+                        [
+                            'upc' => $normalized,
+                            'dist_id' => (string) $id,
+                            'include_images' => $include_images ? 1 : 0,
+                            'non_dropship_blocked' => 1,
+                            'offer_dropship_enabled' => 0,
+                        ]
+                    );
+                    continue;
+                }
+
+                $offers_by_upc[$normalized][(string) $id] = $offer;
+            }
+        }
+
+        $results = [];
+        foreach ($offers_by_upc as $upc => $offers) {
+            $results[$upc] = new UpcLookupResult($offers);
+        }
+
+        return $results;
+    }
+
+    /**
+     * @param array<string,string> $normalized_upcs
+     * @return array<string,DistributorProductPayload>
+     */
+    private function get_payloads_for_upcs_one_by_one(DistributorBase $distributor, array $normalized_upcs, bool $include_images): array
+    {
+        $payloads = [];
+
+        foreach ($normalized_upcs as $normalized) {
+            try {
+                $offer = $distributor->get_offer_by_upc($normalized, $include_images);
+            } catch (\Throwable $e) {
+                DebugLogUtil::log_ctx(
+                    'FFLHUB_ADMIN_DEBUG',
+                    '[FFLHub][DistributorHandler]',
+                    'Individual UPC lookup fallback exception',
+                    [
+                        'upc' => $normalized,
+                        'dist_id' => (string) $distributor->get_id(),
+                        'include_images' => $include_images ? 1 : 0,
+                        'exception_class' => get_class($e),
+                        'exception_message' => (string) $e->getMessage(),
+                    ]
+                );
+                continue;
+            }
+
+            if ($offer instanceof DistributorOffer && $offer->product instanceof DistributorProductPayload) {
+                $payloads[$normalized] = $offer->product;
+            }
+        }
+
+        return $payloads;
+    }
+
+    /**
      * Return enabled distributors that participate in order request validation.
      *
      * This is used by cart/order compliance flows that need to:

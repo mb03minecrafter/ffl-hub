@@ -108,6 +108,14 @@ interface DistributorInterface
     public function get_pricing_payload_by_upc(string $upc): ?DistributorProductPayload;
 
     /**
+     * Fetch pricing-only payloads for many UPCs.
+     *
+     * @param array<int,string> $upcs
+     * @return array<string,DistributorProductPayload> Payloads keyed by normalized UPC.
+     */
+    public function get_pricing_payloads_by_upcs(array $upcs): array;
+
+    /**
      * Return available stock quantity for a UPC, if known.
      */
     public function get_stock_quantity_by_upc(string $upc): ?int;
