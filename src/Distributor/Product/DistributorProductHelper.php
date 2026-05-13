@@ -584,7 +584,7 @@ class DistributorProductHelper
      * - Avoids unnecessary writes when values are effectively identical.
      */
     public static function update_fflhub_meta_from_payload_for_sync(
-        WC_Product_Simple $product,
+        WC_Product $product,
         string $selected_dist_id,
         DistributorProductPayload $selected_product,
         float $computed_price_for_meta,
@@ -686,6 +686,121 @@ class DistributorProductHelper
         }
 
         return $changed;
+    }
+
+    /**
+     * Compare sync-time payload meta against a primed postmeta snapshot.
+     *
+     * This mirrors update_fflhub_meta_from_payload_for_sync() without hydrating a
+     * WC_Product. The cron uses it to skip Woo CRUD entirely for no-op rows.
+     *
+     * @param array<string,array<int,mixed>> $raw_meta
+     * @param array<string,DistributorOffer> $offers
+     * @return array{changed:bool,keys:array<int,string>}
+     */
+    public static function get_sync_payload_meta_changes_from_raw_meta(
+        array $raw_meta,
+        string $selected_dist_id,
+        DistributorProductPayload $selected_product,
+        float $computed_price_for_meta,
+        array $offers = []
+    ): array {
+        $changes = [];
+
+        $dealer_price = (float) ($selected_product->price ?? 0);
+        $true_cost    = (float) ($selected_product->true_cost ?? 0);
+        $map          = (float) ($selected_product->map ?? 0);
+        $msrp         = (float) ($selected_product->msrp ?? 0);
+        $ship_cost    = $selected_product->shipping_cost ?? null;
+        $dropship_enabled = ($selected_product->dropship_enabled ?? true) ? 1 : 0;
+        $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
+        $dims = self::resolve_shipping_dimensions_for_meta($selected_product, $offers);
+        $ffl_required = ($selected_product->ffl_required ?? false) ? 1 : 0;
+        $sot_required = ($selected_product->sot_required ?? false) ? 1 : 0;
+        $manual_shipping_override = self::is_truthy_meta_value(
+            self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META)
+        );
+
+        $diff_meta = function (string $key, $new_val, int $precision = 4) use ($raw_meta, &$changes): void {
+            $cur_norm = self::normalize_sync_meta_compare_value(
+                self::raw_meta_value_from_cache_array($raw_meta, $key),
+                $precision
+            );
+            $new_norm = self::normalize_sync_meta_compare_value($new_val, $precision);
+
+            if ($cur_norm !== $new_norm) {
+                $changes[] = $key;
+            }
+        };
+
+        $diff_woo_prop = function (string $key, ?string $expected) use ($raw_meta, &$changes): void {
+            if ($expected === null) {
+                return;
+            }
+
+            $current = self::normalized_product_prop(
+                self::raw_meta_value_from_cache_array($raw_meta, $key)
+            );
+
+            if ($current !== $expected) {
+                $changes[] = $key;
+            }
+        };
+
+        $diff_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, $true_cost, 4);
+        $diff_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price, 4);
+        $diff_meta(ProductMeta::FFLHUB_LAST_MAP_META, $map, 4);
+        $diff_meta(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp, 4);
+        $diff_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $computed_price_for_meta, 4);
+        $diff_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost, 4);
+        $diff_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id, 0);
+        $diff_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required, 0);
+        $diff_meta(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required, 0);
+        $diff_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled, 0);
+
+        if (!$manual_shipping_override) {
+            $diff_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight, 4);
+            $diff_meta(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length'], 4);
+            $diff_meta(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width'], 4);
+            $diff_meta(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height'], 4);
+
+            $diff_woo_prop('_weight', self::normalize_woo_weight_from_ounces($shipping_weight));
+            $diff_woo_prop('_length', self::normalize_woo_dimension_from_inches($dims['length']));
+            $diff_woo_prop('_width', self::normalize_woo_dimension_from_inches($dims['width']));
+            $diff_woo_prop('_height', self::normalize_woo_dimension_from_inches($dims['height']));
+        } else {
+            $diff_woo_prop(
+                '_weight',
+                self::normalize_woo_weight_from_ounces(
+                    self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_SHIPPING_WEIGHT_META)
+                )
+            );
+            $diff_woo_prop(
+                '_length',
+                self::normalize_woo_dimension_from_inches(
+                    self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META)
+                )
+            );
+            $diff_woo_prop(
+                '_width',
+                self::normalize_woo_dimension_from_inches(
+                    self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META)
+                )
+            );
+            $diff_woo_prop(
+                '_height',
+                self::normalize_woo_dimension_from_inches(
+                    self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META)
+                )
+            );
+        }
+
+        $changes = array_values(array_unique(array_filter(array_map('strval', $changes))));
+
+        return [
+            'changed' => !empty($changes),
+            'keys'    => $changes,
+        ];
     }
 
     /**
@@ -965,6 +1080,52 @@ class DistributorProductHelper
         }
 
         return is_numeric($raw) ? self::format_woo_decimal((float) $raw) : $raw;
+    }
+
+    /**
+     * @param array<string,array<int,mixed>> $raw_meta
+     * @return mixed
+     */
+    private static function raw_meta_value_from_cache_array(array $raw_meta, string $key)
+    {
+        if (!isset($raw_meta[$key]) || !is_array($raw_meta[$key]) || $raw_meta[$key] === []) {
+            return '';
+        }
+
+        $value = $raw_meta[$key][0] ?? '';
+        return function_exists('maybe_unserialize') ? maybe_unserialize($value) : $value;
+    }
+
+    /**
+     * Normalize metadata exactly like sync-time product CRUD comparison.
+     *
+     * @param mixed $value
+     */
+    private static function normalize_sync_meta_compare_value($value, int $precision = 4): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+
+        if (is_int($value) || is_float($value) || (is_string($value) && is_numeric($value))) {
+            return function_exists('wc_format_decimal')
+                ? (string) wc_format_decimal((float) $value, $precision)
+                : number_format((float) $value, max(0, $precision), '.', '');
+        }
+
+        return trim((string) $value);
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function is_truthy_meta_value($value): bool
+    {
+        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'y', 'on'], true);
     }
 
     private static function format_woo_decimal(float $value): string

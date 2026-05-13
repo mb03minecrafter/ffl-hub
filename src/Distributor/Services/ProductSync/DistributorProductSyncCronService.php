@@ -14,7 +14,6 @@ use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
 use WC_Product;
-use WC_Product_Simple;
 
 use function current_time;
 use function get_post_meta;
@@ -31,6 +30,7 @@ if (! defined('ABSPATH')) {
  *
  * Optimization:
  * - Always bump LAST_SYNC (rotation key) each run.
+ * - Use primed postmeta for no-op rows and hydrate WC_Product only for writes.
  * - Only call $product->save() (heavy) when stock/price/meta actually changed.
  *
  * PROFIT FLOOR RULE:
@@ -330,16 +330,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
         $now_mysql = $this->batchSyncTimestamp ?: current_time('mysql');
 
-        if ($product_id <= 0 || ! function_exists('wc_get_product')) {
-            return array('outcome' => 'LOOKUP_INVALID', 'lookup_ms' => 0.0, 'write_ms' => 0.0);
-        }
-
-        $t0 = microtime(true);
-        $product = wc_get_product($product_id);
-        $this->profile('wc_get_product', $t0, array('product_id' => $product_id));
-
-        if (! $product instanceof WC_Product) {
-            $this->log_ctx('wc_get_product returned non-product', array('product_id' => $product_id));
+        if ($product_id <= 0) {
             return array('outcome' => 'LOOKUP_INVALID', 'lookup_ms' => 0.0, 'write_ms' => 0.0);
         }
 
@@ -358,16 +349,20 @@ final class DistributorProductSyncCronService extends AbstractCronService
             return array('outcome' => 'SKIP_TRASH', 'lookup_ms' => 0.0, 'write_ms' => 0.0);
         }
 
+        $t0 = microtime(true);
+        $product_state = $this->get_product_meta_state($product_id);
+        $this->profile('load_product_meta_state', $t0, array('product_id' => $product_id));
+
         $this->log_ctx('Product START', array(
             'product_id'    => $product_id,
             'status'        => (string) $post_status,
-            'stock'         => $product->get_stock_quantity(),
-            'stock_status'  => (string) $product->get_stock_status(),
-            'regular_price' => (string) $product->get_regular_price(),
+            'stock'         => (int) ($product_state['stock_qty'] ?? 0),
+            'stock_status'  => (string) ($product_state['stock_status'] ?? ''),
+            'regular_price' => (string) ($product_state['regular_price'] ?? ''),
         ));
 
-        $stock_oos_override_enabled = $this->is_stock_oos_override_enabled($product);
-        $local_stock_override_qty = $this->get_local_stock_override_qty_for_sync($product);
+        $stock_oos_override_enabled = !empty($product_state['stock_oos_override_enabled']);
+        $local_stock_override_qty = (int) ($product_state['local_stock_override_qty'] ?? 0);
         $this->log_ctx('Stock override state', array(
             'product_id'                => $product_id,
             'stock_oos_override_enabled' => $stock_oos_override_enabled ? 1 : 0,
@@ -375,7 +370,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         ));
 
         $t0 = microtime(true);
-        $upc = trim((string) get_post_meta($product_id, ProductMeta::FFLHUB_UPC_META, true));
+        $upc = trim((string) ($product_state['upc'] ?? ''));
         $this->profile('get_post_meta_upc', $t0, array('product_id' => $product_id, 'has_upc' => ($upc !== '')));
 
         if ($upc === '') {
@@ -436,7 +431,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $offers = $this->filter_offers_by_enabled_distributors($offers);
         $offers_before_lock = is_array($offers) ? count($offers) : 0;
 
-        $dist_lock = $this->get_distributor_lock_for_product($product);
+        $dist_lock = $this->get_distributor_lock_from_meta_state($product_state);
         if (!empty($dist_lock['enabled'])) {
             $offers = $this->filter_offers_by_locked_distributors($offers, (array) ($dist_lock['ids'] ?? []));
         }
@@ -463,11 +458,17 @@ final class DistributorProductSyncCronService extends AbstractCronService
             $desired_qty = $this->resolve_desired_stock_qty(0, $stock_oos_override_enabled, $local_stock_override_qty);
             $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
 
-            $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
-            $cur_status = (string) $product->get_stock_status();
+            $cur_qty    = (int) ($product_state['stock_qty'] ?? 0);
+            $cur_status = (string) ($product_state['stock_status'] ?? '');
             $needs_save = (($cur_qty !== $desired_qty) || ($cur_status !== $desired_status));
 
             if ($needs_save) {
+                $product = $this->load_product_for_save($product_id);
+                if (!($product instanceof WC_Product)) {
+                    $this->bump_last_sync_meta($product_id, $now_mysql);
+                    return $this->product_load_failed_result($product_id, $upc, $t_lookup, $t_start);
+                }
+
                 $product->set_manage_stock(true);
                 $product->set_stock_quantity($desired_qty);
                 $product->set_stock_status($desired_status);
@@ -576,12 +577,18 @@ final class DistributorProductSyncCronService extends AbstractCronService
             $desired_qty    = $this->resolve_desired_stock_qty((int) $qty, $stock_oos_override_enabled, $local_stock_override_qty);
             $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
 
-            $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
-            $cur_status = (string) $product->get_stock_status();
+            $cur_qty    = (int) ($product_state['stock_qty'] ?? 0);
+            $cur_status = (string) ($product_state['stock_status'] ?? '');
 
             $needs_save = (($cur_qty !== (int) $desired_qty) || ($cur_status !== (string) $desired_status));
 
             if ($needs_save) {
+                $product = $this->load_product_for_save($product_id);
+                if (!($product instanceof WC_Product)) {
+                    $this->bump_last_sync_meta($product_id, $now_mysql);
+                    return $this->product_load_failed_result($product_id, $upc, $t_lookup, $t_start);
+                }
+
                 $product->set_manage_stock(true);
                 $product->set_stock_quantity($desired_qty);
                 $product->set_stock_status($desired_status);
@@ -629,8 +636,8 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'changes' => $changes,
                 'final_qty' => $desired_qty,
                 'final_status' => $desired_status,
-                'final_regular' => (string) $product->get_regular_price(),
-                'final_sale' => (string) $product->get_sale_price(),
+                'final_regular' => (string) ($product_state['regular_price'] ?? ''),
+                'final_sale' => (string) ($product_state['sale_price'] ?? ''),
             );
         }
 
@@ -661,11 +668,17 @@ final class DistributorProductSyncCronService extends AbstractCronService
             $desired_qty = $this->resolve_desired_stock_qty(0, $stock_oos_override_enabled, $local_stock_override_qty);
             $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
 
-            $cur_qty    = (int) ($product->get_stock_quantity() ?? 0);
-            $cur_status = (string) $product->get_stock_status();
+            $cur_qty    = (int) ($product_state['stock_qty'] ?? 0);
+            $cur_status = (string) ($product_state['stock_status'] ?? '');
             $needs_save = (($cur_qty !== $desired_qty) || ($cur_status !== $desired_status));
 
             if ($needs_save) {
+                $product = $this->load_product_for_save($product_id);
+                if (!($product instanceof WC_Product)) {
+                    $this->bump_last_sync_meta($product_id, $now_mysql);
+                    return $this->product_load_failed_result($product_id, $upc, $t_lookup, $t_start);
+                }
+
                 $product->set_manage_stock(true);
                 $product->set_stock_quantity($desired_qty);
                 $product->set_stock_status($desired_status);
@@ -716,8 +729,8 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'changes' => $changes,
                 'final_qty' => $desired_qty,
                 'final_status' => $desired_status,
-                'final_regular' => (string) $product->get_regular_price(),
-                'final_sale' => (string) $product->get_sale_price(),
+                'final_regular' => (string) ($product_state['regular_price'] ?? ''),
+                'final_sale' => (string) ($product_state['sale_price'] ?? ''),
                 'sell' => $sell_price,
                 'floor' => $min_profitable_price,
             );
@@ -735,35 +748,60 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $desired_regular_price = (string) ($price_pair['regular'] ?? '');
         $desired_sale_price    = (string) ($price_pair['sale'] ?? '');
 
-        $cur_qty           = (int) ($product->get_stock_quantity() ?? 0);
-        $cur_status        = (string) $product->get_stock_status();
-        $cur_regular_price = (string) $product->get_regular_price();
-        $cur_sale_price    = (string) $product->get_sale_price();
+        $cur_qty           = (int) ($product_state['stock_qty'] ?? 0);
+        $cur_status        = (string) ($product_state['stock_status'] ?? '');
+        $cur_regular_price = $this->normalize_price_for_compare((string) ($product_state['regular_price'] ?? ''));
+        $cur_sale_price    = $this->normalize_price_for_compare((string) ($product_state['sale_price'] ?? ''));
 
         $stock_changed = (($cur_qty !== $desired_qty) || ($cur_status !== $desired_status));
-        $price_changed = ($cur_regular_price !== $desired_regular_price) || ($cur_sale_price !== $desired_sale_price);
+        $price_changed = ($cur_regular_price !== $this->normalize_price_for_compare($desired_regular_price))
+            || ($cur_sale_price !== $this->normalize_price_for_compare($desired_sale_price));
 
-        if ($stock_changed) {
-            $product->set_manage_stock(true);
-            $product->set_stock_quantity($desired_qty);
-            $product->set_stock_status($desired_status);
-        }
-
-        if ($price_changed) {
-            $product->set_regular_price($desired_regular_price);
-            $product->set_sale_price($desired_sale_price);
-        }
-
-        // You said you updated this helper; it should now return bool $meta_changed.
-        $meta_changed = (bool) DistributorProductHelper::update_fflhub_meta_from_payload_for_sync(
-            ($product instanceof WC_Product_Simple) ? $product : $product,
+        $meta_changes = DistributorProductHelper::get_sync_payload_meta_changes_from_raw_meta(
+            (array) ($product_state['meta'] ?? []),
             $selected_dist_id,
             $selected_payload,
             (float) $computed_price_for_meta,
             $offers
         );
+        $meta_changed = !empty($meta_changes['changed']);
 
         $needs_save = ($stock_changed || $price_changed || $meta_changed);
+
+        if ($needs_save) {
+            $product = $this->load_product_for_save($product_id);
+            if (!($product instanceof WC_Product)) {
+                $this->bump_last_sync_meta($product_id, $now_mysql);
+                return $this->product_load_failed_result($product_id, $upc, $t_lookup, $t_start);
+            }
+
+            if ($stock_changed) {
+                $product->set_manage_stock(true);
+                $product->set_stock_quantity($desired_qty);
+                $product->set_stock_status($desired_status);
+            }
+
+            if ($price_changed) {
+                $product->set_regular_price($desired_regular_price);
+                $product->set_sale_price($desired_sale_price);
+            }
+
+            $meta_changed = $meta_changed || (bool) DistributorProductHelper::update_fflhub_meta_from_payload_for_sync(
+                $product,
+                $selected_dist_id,
+                $selected_payload,
+                (float) $computed_price_for_meta,
+                $offers
+            );
+
+            // Helper already sets LAST_SYNC meta, but we also set it here to guarantee rotation.
+            $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
+            $product->save();
+        } else {
+            // Keep rotation without heavy save().
+            $this->bump_last_sync_meta($product_id, $now_mysql);
+        }
+
         $changes = [];
         if ($stock_changed) {
             $changes[] = 'stock';
@@ -776,15 +814,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
         }
         if ($brand_changed) {
             $changes[] = 'brand';
-        }
-
-        if ($needs_save) {
-            // Helper already sets LAST_SYNC meta, but we also set it here to guarantee rotation.
-            $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
-            $product->save();
-        } else {
-            // Keep rotation without heavy save().
-            $this->bump_last_sync_meta($product_id, $now_mysql);
         }
 
         $t_write = $this->ms_since($t0);
@@ -841,29 +870,115 @@ final class DistributorProductSyncCronService extends AbstractCronService
     }
 
     /**
-     * Check whether stock out-of-stock override is enabled on a product.
+     * Load the product's primed meta into a cheap sync state.
+     *
+     * @return array<string,mixed>
      */
-    private function is_stock_oos_override_enabled(WC_Product $product): bool
+    private function get_product_meta_state(int $product_id): array
     {
-        $raw = $product->get_meta(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true);
-        $normalized = strtolower(trim((string) $raw));
-        return in_array($normalized, ['1', 'true', 'yes', 'y', 'on'], true);
+        $raw_meta = get_post_meta($product_id);
+        $raw_meta = is_array($raw_meta) ? $raw_meta : [];
+
+        $local_stock_override_qty = 0;
+        if ($this->is_truthy_meta_value($this->raw_meta_value($raw_meta, ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META))) {
+            $qty_raw = $this->raw_meta_value($raw_meta, ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META);
+            $local_stock_override_qty = is_numeric($qty_raw) ? max(0, (int) $qty_raw) : 0;
+        }
+
+        return [
+            'meta' => $raw_meta,
+            'upc' => trim((string) $this->raw_meta_value($raw_meta, ProductMeta::FFLHUB_UPC_META)),
+            'stock_qty' => $this->normalize_stock_qty($this->raw_meta_value($raw_meta, '_stock')),
+            'stock_status' => trim((string) $this->raw_meta_value($raw_meta, '_stock_status')),
+            'regular_price' => trim((string) $this->raw_meta_value($raw_meta, '_regular_price')),
+            'sale_price' => trim((string) $this->raw_meta_value($raw_meta, '_sale_price')),
+            'stock_oos_override_enabled' => $this->is_truthy_meta_value(
+                $this->raw_meta_value($raw_meta, ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META)
+            ),
+            'local_stock_override_qty' => $local_stock_override_qty,
+        ];
     }
 
-    private function get_local_stock_override_qty_for_sync(WC_Product $product): int
+    private function load_product_for_save(int $product_id): ?WC_Product
     {
-        $enabled_raw = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true);
-        $enabled = in_array(strtolower(trim((string) $enabled_raw)), ['1', 'true', 'yes', 'y', 'on'], true);
-        if (!$enabled) {
-            return 0;
+        if (!function_exists('wc_get_product')) {
+            return null;
         }
 
-        $qty_raw = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
-        if (!is_numeric($qty_raw)) {
-            return 0;
+        $t0 = microtime(true);
+        $product = wc_get_product($product_id);
+        $this->profile('wc_get_product_for_save', $t0, array('product_id' => $product_id));
+
+        if (!($product instanceof WC_Product)) {
+            $this->log_ctx('wc_get_product returned non-product', array('product_id' => $product_id));
+            return null;
         }
 
-        return max(0, (int) $qty_raw);
+        return $product;
+    }
+
+    /**
+     * @param array<string,array<int,mixed>> $raw_meta
+     * @return mixed
+     */
+    private function raw_meta_value(array $raw_meta, string $key)
+    {
+        if (!isset($raw_meta[$key]) || !is_array($raw_meta[$key]) || $raw_meta[$key] === []) {
+            return '';
+        }
+
+        $value = $raw_meta[$key][0] ?? '';
+        return function_exists('maybe_unserialize') ? maybe_unserialize($value) : $value;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function is_truthy_meta_value($value): bool
+    {
+        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'y', 'on'], true);
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function normalize_stock_qty($value): int
+    {
+        return is_numeric($value) ? max(0, (int) $value) : 0;
+    }
+
+    private function normalize_price_for_compare(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '' || !is_numeric($value)) {
+            return $value;
+        }
+
+        return function_exists('wc_format_decimal')
+            ? (string) wc_format_decimal((float) $value, 2)
+            : number_format((float) $value, 2, '.', '');
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function product_load_failed_result(int $product_id, string $upc, float $lookup_ms, float $t_start): array
+    {
+        $this->profile('TOTAL product', $t_start, array(
+            'product_id' => $product_id,
+            'outcome'    => 'LOOKUP_INVALID',
+        ));
+
+        return array(
+            'outcome' => 'LOOKUP_INVALID',
+            'lookup_ms' => $lookup_ms,
+            'write_ms' => 0.0,
+            'product_id' => $product_id,
+            'upc' => $upc,
+            'changed' => false,
+            'saved' => false,
+            'changes' => array(),
+        );
     }
 
     private function resolve_desired_stock_qty(int $distributor_qty, bool $stock_oos_override_enabled, int $local_stock_override_qty): int
@@ -885,17 +1000,18 @@ final class DistributorProductSyncCronService extends AbstractCronService
     /**
      * @return array{enabled:bool,ids:array<int,string>}
      */
-    private function get_distributor_lock_for_product(WC_Product $product): array
+    private function get_distributor_lock_from_meta_state(array $product_state): array
     {
-        $enabled_raw = $product->get_meta(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_ENABLED_META, true);
-        $enabled = in_array(
-            strtolower(trim((string) $enabled_raw)),
-            ['1', 'true', 'yes', 'y', 'on'],
-            true
-        );
+        $raw_meta = isset($product_state['meta']) && is_array($product_state['meta'])
+            ? $product_state['meta']
+            : [];
 
-        $ids_raw = $product->get_meta(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_IDS_META, true);
-        $ids = $this->normalize_distributor_lock_ids($ids_raw);
+        $enabled = $this->is_truthy_meta_value(
+            $this->raw_meta_value($raw_meta, ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_ENABLED_META)
+        );
+        $ids = $this->normalize_distributor_lock_ids(
+            $this->raw_meta_value($raw_meta, ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_IDS_META)
+        );
 
         return array(
             'enabled' => $enabled,
