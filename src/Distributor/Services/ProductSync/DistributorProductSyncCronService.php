@@ -40,6 +40,10 @@ if (! defined('ABSPATH')) {
 final class DistributorProductSyncCronService extends AbstractCronService
 {
     private const CRON_HOOK = 'fflhub_sync_managed_products';
+    private const DEFAULT_RUN_LIMIT = 0; // 0 means no cap.
+    private const RUN_LOCK_TRANSIENT = 'fflhub_product_sync_cron_running';
+    private const RUN_LOCK_TTL_SECONDS = 15 * MINUTE_IN_SECONDS;
+    private const CHANGED_PRODUCTS_LOG_CHUNK_SIZE = 50;
 
     /**
      * Debug constant + prefix for DebugLogUtil.
@@ -65,6 +69,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
     private array $pendingLastSyncBumpIds = [];
 
     private ?string $batchSyncTimestamp = null;
+    private string $runLockToken = '';
 
     public function __construct(DistributorHandler $handler)
     {
@@ -93,10 +98,22 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
     public function run(): void
     {
-        $this->sync_batch(1000);
+        if (!$this->acquire_run_lock()) {
+            $this->log_ctx('run skipped: product sync already running', array(
+                'lock' => self::RUN_LOCK_TRANSIENT,
+                'ttl_seconds' => self::RUN_LOCK_TTL_SECONDS,
+            ));
+            return;
+        }
+
+        try {
+            $this->sync_batch(self::DEFAULT_RUN_LIMIT);
+        } finally {
+            $this->release_run_lock();
+        }
     }
 
-    public function sync_batch(int $limit = 50): void
+    public function sync_batch(int $limit = self::DEFAULT_RUN_LIMIT): void
     {
         $t_start   = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
@@ -177,6 +194,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $lookup_ms_max = 0.0;
         $write_ms_sum  = 0.0;
         $write_ms_max  = 0.0;
+        $changed_products = [];
 
         foreach ($product_ids as $product_id) {
             $product_id = (int) $product_id;
@@ -237,6 +255,10 @@ final class DistributorProductSyncCronService extends AbstractCronService
                         $write_ms_sum += $wms;
                         $write_ms_max = max($write_ms_max, $wms);
                     }
+
+                    if (!empty($result['changed'])) {
+                        $changed_products[] = $this->normalize_changed_product_result($result);
+                    }
                 }
             } catch (\Throwable $e) {
                 $errors++;
@@ -260,10 +282,15 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
         $lookup_avg = ($processed > 0) ? ($lookup_ms_sum / (float) $processed) : 0.0;
         $write_avg  = ($processed > 0) ? ($write_ms_sum / (float) $processed) : 0.0;
+        $changed_count = count($changed_products);
+
+        $this->log_changed_products_summary($changed_products);
 
         $this->profile('Run summary', $t_start, array_merge(array(
             'limit'         => (int) $limit,
+            'queried'       => (int) count($product_ids),
             'processed'     => (int) $processed,
+            'changed'       => (int) $changed_count,
             'errors'        => (int) $errors,
             'lookup_avg_ms' => (float) $lookup_avg,
             'lookup_max_ms' => (float) $lookup_ms_max,
@@ -467,7 +494,19 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'outcome'    => 'NO_OFFERS_OOS',
             ));
 
-            return array('outcome' => 'NO_OFFERS_OOS', 'lookup_ms' => $t_lookup, 'write_ms' => $t_write);
+            return array(
+                'outcome' => 'NO_OFFERS_OOS',
+                'lookup_ms' => $t_lookup,
+                'write_ms' => $t_write,
+                'product_id' => $product_id,
+                'upc' => $upc,
+                'changed' => $needs_save,
+                'saved' => $needs_save,
+                'changes' => $needs_save ? array('stock') : array(),
+                'final_qty' => $desired_qty,
+                'final_status' => $desired_status,
+                'selected' => '',
+            );
         }
 
         // Select offer
@@ -570,7 +609,29 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'outcome'    => 'BAD_PRICE_STOCK_ONLY',
             ));
 
-            return array('outcome' => 'BAD_PRICE_STOCK_ONLY', 'lookup_ms' => $t_lookup, 'write_ms' => $t_write);
+            $changes = [];
+            if ($needs_save) {
+                $changes[] = 'stock';
+            }
+            if ($brand_changed) {
+                $changes[] = 'brand';
+            }
+
+            return array(
+                'outcome' => 'BAD_PRICE_STOCK_ONLY',
+                'lookup_ms' => $t_lookup,
+                'write_ms' => $t_write,
+                'product_id' => $product_id,
+                'upc' => $upc,
+                'selected' => $selected_dist_id,
+                'changed' => ($needs_save || $brand_changed),
+                'saved' => $needs_save,
+                'changes' => $changes,
+                'final_qty' => $desired_qty,
+                'final_status' => $desired_status,
+                'final_regular' => (string) $product->get_regular_price(),
+                'final_sale' => (string) $product->get_sale_price(),
+            );
         }
 
         $sell_price = (float) $sell_price;
@@ -635,7 +696,31 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 'outcome'    => 'FORCED_OOS_PROFIT_FLOOR',
             ));
 
-            return array('outcome' => 'FORCED_OOS_PROFIT_FLOOR', 'lookup_ms' => $t_lookup, 'write_ms' => $t_write);
+            $changes = [];
+            if ($needs_save) {
+                $changes[] = 'stock';
+            }
+            if ($brand_changed) {
+                $changes[] = 'brand';
+            }
+
+            return array(
+                'outcome' => 'FORCED_OOS_PROFIT_FLOOR',
+                'lookup_ms' => $t_lookup,
+                'write_ms' => $t_write,
+                'product_id' => $product_id,
+                'upc' => $upc,
+                'selected' => $selected_dist_id,
+                'changed' => ($needs_save || $brand_changed),
+                'saved' => $needs_save,
+                'changes' => $changes,
+                'final_qty' => $desired_qty,
+                'final_status' => $desired_status,
+                'final_regular' => (string) $product->get_regular_price(),
+                'final_sale' => (string) $product->get_sale_price(),
+                'sell' => $sell_price,
+                'floor' => $min_profitable_price,
+            );
         }
 
         // Normal diff-aware write
@@ -679,6 +764,19 @@ final class DistributorProductSyncCronService extends AbstractCronService
         );
 
         $needs_save = ($stock_changed || $price_changed || $meta_changed);
+        $changes = [];
+        if ($stock_changed) {
+            $changes[] = 'stock';
+        }
+        if ($price_changed) {
+            $changes[] = 'price';
+        }
+        if ($meta_changed) {
+            $changes[] = 'meta';
+        }
+        if ($brand_changed) {
+            $changes[] = 'brand';
+        }
 
         if ($needs_save) {
             // Helper already sets LAST_SYNC meta, but we also set it here to guarantee rotation.
@@ -727,6 +825,18 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'outcome'   => $needs_save ? 'UPDATED_NORMAL' : 'NOOP_BUMP_ONLY',
             'lookup_ms' => (float) $t_lookup,
             'write_ms'  => (float) $t_write,
+            'product_id' => $product_id,
+            'upc' => $upc,
+            'selected' => $selected_dist_id,
+            'changed' => ($needs_save || $brand_changed),
+            'saved' => $needs_save,
+            'changes' => $changes,
+            'final_qty' => $desired_qty,
+            'final_status' => $desired_status,
+            'final_regular' => $desired_regular_price,
+            'final_sale' => $desired_sale_price,
+            'sell' => $sell_price,
+            'computed_for_meta' => (float) $computed_price_for_meta,
         );
     }
 
@@ -914,6 +1024,99 @@ final class DistributorProductSyncCronService extends AbstractCronService
         }
 
         return array_values(array_unique($normalized));
+    }
+
+    /**
+     * @param array<string,mixed> $result
+     * @return array<string,mixed>
+     */
+    private function normalize_changed_product_result(array $result): array
+    {
+        $changes = isset($result['changes']) && is_array($result['changes'])
+            ? array_values(array_unique(array_filter(array_map('strval', $result['changes']))))
+            : [];
+
+        return array(
+            'product_id' => (int) ($result['product_id'] ?? 0),
+            'upc' => (string) ($result['upc'] ?? ''),
+            'outcome' => (string) ($result['outcome'] ?? ''),
+            'selected' => (string) ($result['selected'] ?? ''),
+            'changes' => $changes,
+            'saved' => !empty($result['saved']) ? 1 : 0,
+            'final_qty' => isset($result['final_qty']) ? (int) $result['final_qty'] : null,
+            'final_status' => (string) ($result['final_status'] ?? ''),
+            'final_regular' => (string) ($result['final_regular'] ?? ''),
+            'final_sale' => (string) ($result['final_sale'] ?? ''),
+            'sell' => isset($result['sell']) && is_numeric($result['sell']) ? (float) $result['sell'] : null,
+            'computed_for_meta' => isset($result['computed_for_meta']) && is_numeric($result['computed_for_meta'])
+                ? (float) $result['computed_for_meta']
+                : null,
+        );
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $changed_products
+     */
+    private function log_changed_products_summary(array $changed_products): void
+    {
+        $count = count($changed_products);
+        $ids = [];
+        foreach ($changed_products as $product) {
+            $product_id = (int) ($product['product_id'] ?? 0);
+            if ($product_id > 0) {
+                $ids[] = $product_id;
+            }
+        }
+
+        $this->log_ctx('Changed products summary', array(
+            'count' => $count,
+            'product_ids' => $ids,
+        ));
+
+        if ($count <= 0) {
+            return;
+        }
+
+        $chunk_index = 0;
+        foreach (array_chunk($changed_products, self::CHANGED_PRODUCTS_LOG_CHUNK_SIZE) as $chunk) {
+            $chunk_index++;
+            $this->log_ctx('Changed products detail', array(
+                'chunk' => $chunk_index,
+                'chunk_size' => count($chunk),
+                'products' => $chunk,
+            ));
+        }
+    }
+
+    private function acquire_run_lock(): bool
+    {
+        if (!function_exists('get_transient') || !function_exists('set_transient')) {
+            return true;
+        }
+
+        $existing = get_transient(self::RUN_LOCK_TRANSIENT);
+        if (!empty($existing)) {
+            return false;
+        }
+
+        $token_entropy = function_exists('wp_generate_uuid4') ? wp_generate_uuid4() : uniqid('', true);
+        $this->runLockToken = sprintf('%d:%s', getmypid() ?: 0, $token_entropy);
+        set_transient(self::RUN_LOCK_TRANSIENT, $this->runLockToken, self::RUN_LOCK_TTL_SECONDS);
+
+        return true;
+    }
+
+    private function release_run_lock(): void
+    {
+        if ($this->runLockToken === '' || !function_exists('get_transient') || !function_exists('delete_transient')) {
+            return;
+        }
+
+        if ((string) get_transient(self::RUN_LOCK_TRANSIENT) === $this->runLockToken) {
+            delete_transient(self::RUN_LOCK_TRANSIENT);
+        }
+
+        $this->runLockToken = '';
     }
 
     private function bump_last_sync_meta(int $product_id, string $now_mysql): void

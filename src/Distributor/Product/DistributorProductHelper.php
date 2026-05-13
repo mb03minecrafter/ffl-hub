@@ -1701,10 +1701,12 @@ class DistributorProductHelper
      */
     public static function query_for_managed_products(int $limit)
     {
+        $limit = (int) $limit;
+
         $args = [
             'post_type'      => 'product',
             'post_status'    => ['publish', 'draft', 'pending', 'private'],
-            'posts_per_page' => max(1, (int) $limit),
+            'posts_per_page' => $limit > 0 ? $limit : -1,
             'fields'         => 'ids',
             'meta_query'     => [
                 [
