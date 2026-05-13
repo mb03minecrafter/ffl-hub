@@ -51,6 +51,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
      */
     private const DEBUG_CONST = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX  = '[FFLHUB][ProductSync]';
+    private const VERBOSE_DEBUG_CONST = 'FFLHUB_PRODUCT_SYNC_VERBOSE';
 
 
 
@@ -124,6 +125,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'hook'         => self::CRON_HOOK,
             'group'        => $this->get_action_group(),
             'interval_sec' => $this->get_interval_seconds(),
+            'verbose_product_logging' => $this->is_verbose_product_logging_enabled() ? 1 : 0,
         ));
 
         $t_q   = microtime(true);
@@ -1365,14 +1367,49 @@ final class DistributorProductSyncCronService extends AbstractCronService
     /** @param array<string,mixed> $ctx */
     private function log_ctx(string $msg, array $ctx): void
     {
+        if ($this->is_product_detail_log_message($msg) && !$this->is_verbose_product_logging_enabled()) {
+            return;
+        }
+
         DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, $msg, $ctx);
     }
 
     /** @param array<string,mixed> $ctx */
     private function profile(string $label, float $t0, array $ctx = array()): void
     {
+        if (!$this->is_summary_profile_label($label) && !$this->is_verbose_product_logging_enabled()) {
+            return;
+        }
+
         $ctx['elapsed_ms'] = number_format($this->ms_since($t0), 2, '.', '');
         DebugLogUtil::log_ctx(self::DEBUG_CONST, self::LOG_PREFIX, 'PROFILE: ' . $label, $ctx);
+    }
+
+    private function is_summary_profile_label(string $label): bool
+    {
+        return in_array($label, [
+            'query_for_managed_products',
+            'bulk_prime_product_meta',
+            'bulk_distributor_lookup',
+            'bulk_last_sync_bumps',
+            'Run summary',
+            'Total cron run',
+        ], true);
+    }
+
+    private function is_product_detail_log_message(string $msg): bool
+    {
+        return in_array($msg, [
+            'Product START',
+            'Stock override state',
+            'Lookup summary',
+            'Product END',
+        ], true);
+    }
+
+    private function is_verbose_product_logging_enabled(): bool
+    {
+        return defined(self::VERBOSE_DEBUG_CONST) && (bool) constant(self::VERBOSE_DEBUG_CONST);
     }
 
     private function ms_since(float $t0): float
