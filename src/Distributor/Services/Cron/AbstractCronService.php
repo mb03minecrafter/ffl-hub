@@ -2,6 +2,8 @@
 
 namespace FFLHub\Distributor\Services\Cron;
 
+use FFLHub\Util\DebugLogUtil;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -37,21 +39,70 @@ if (!defined('ABSPATH')) {
  */
 abstract class AbstractCronService implements CronServiceInterface
 {
+    private const PROFILER_DEBUG_CONST = 'FFLHUB_CRON_DEBUG';
+    private const PROFILER_LOG_PREFIX = '[FFLHub][CronProfiler]';
+
     /**
      * Register this service with WordPress/Action Scheduler.
      *
      * This should be called during plugin bootstrap.
      *
-     * - Hooks `$this->get_cron_hook_name()` to `$this->run()`.
+     * - Hooks `$this->get_cron_hook_name()` to a lightweight profiler wrapper.
      * - Ensures a recurring AS action is scheduled (idempotent) via `init`.
      */
     final public function register(): void
     {
         // Action Scheduler runs actions by firing the WP hook name.
-        add_action($this->get_cron_hook_name(), [$this, 'run']);
+        add_action($this->get_cron_hook_name(), [$this, 'run_with_profile']);
 
         // Ensure the recurring action exists (idempotent).
         add_action('init', [$this, 'maybe_schedule_action']);
+    }
+
+    /**
+     * Run the cron and emit one start/end profiler line for cross-job timing.
+     *
+     * Individual cron services can still log their own internals; this wrapper
+     * gives us a consistent way to identify which scheduled hook was slow.
+     */
+    final public function run_with_profile(): void
+    {
+        $started = microtime(true);
+        $hook = (string) $this->get_cron_hook_name();
+        $group = (string) $this->get_action_group();
+        $class = static::class;
+        $status = 'SUCCESS';
+        $error = '';
+        $start_memory = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+
+        DebugLogUtil::log_ctx(self::PROFILER_DEBUG_CONST, self::PROFILER_LOG_PREFIX, 'START', [
+            'hook' => $hook,
+            'group' => $group,
+            'class' => $class,
+            'memory_kb' => $start_memory > 0 ? (int) round($start_memory / 1024) : 0,
+        ]);
+
+        try {
+            $this->run();
+        } catch (\Throwable $e) {
+            $status = 'ERROR';
+            $error = $e->getMessage();
+            throw $e;
+        } finally {
+            $end_memory = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+            DebugLogUtil::log_ctx(self::PROFILER_DEBUG_CONST, self::PROFILER_LOG_PREFIX, 'END', [
+                'hook' => $hook,
+                'group' => $group,
+                'class' => $class,
+                'status' => $status,
+                'elapsed_ms' => number_format((microtime(true) - $started) * 1000.0, 2, '.', ''),
+                'memory_kb' => $end_memory > 0 ? (int) round($end_memory / 1024) : 0,
+                'memory_delta_kb' => ($start_memory > 0 && $end_memory > 0)
+                    ? (int) round(($end_memory - $start_memory) / 1024)
+                    : 0,
+                'error' => $error,
+            ]);
+        }
     }
 
     /**
