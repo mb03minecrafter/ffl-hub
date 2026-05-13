@@ -19,6 +19,7 @@ final class OrionInventoryCronService extends AbstractTableCronService
 
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][OrionInventoryCron]';
+    private const DEFAULT_TIMEOUT_SECONDS = 20;
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -47,45 +48,96 @@ final class OrionInventoryCronService extends AbstractTableCronService
 
     public function run(): void
     {
+        $t_start = microtime(true);
+        $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $timeout_seconds = $this->get_timeout_seconds();
+
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
         update_option('fflhub_orion_inventory_last_run', current_time('mysql'), false);
 
-        $client = $this->make_client();
+        $this->log('---- RUN START ----', [
+            'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
+            'hook' => self::CRON_HOOK,
+            'group' => $this->get_action_group(),
+            'timeout_sec' => $timeout_seconds,
+            'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
+        ]);
+
+        $client = $this->make_client($timeout_seconds);
         if (!$client->has_credentials()) {
             update_option('fflhub_orion_inventory_last_error', current_time('mysql'), false);
             $this->log('Missing Orion connection key; inventory update skipped.');
+            $this->finalize_run($t_start, $mem_start, 'ERROR (missing connection key)');
             return;
         }
 
+        $t_inventory = microtime(true);
         $inventory = $client->get_catalog_inventory();
+        $inventory_data = (array) ($inventory['data'] ?? []);
+        $this->profile('get_catalog_inventory', $t_inventory, [
+            'ok' => empty($inventory['ok']) ? 0 : 1,
+            'status' => (int) ($inventory['status'] ?? 0),
+            'rows' => $this->count_inventory_rows($inventory_data),
+            'timeout_sec' => $timeout_seconds,
+        ]);
+
         if (empty($inventory['ok'])) {
             update_option('fflhub_orion_inventory_last_error', current_time('mysql'), false);
             $this->log('Orion get_catalog_inventory failed.', [
                 'status' => (int) ($inventory['status'] ?? 0),
                 'error' => (string) ($inventory['error'] ?? ''),
             ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (inventory request failed)', [
+                'status' => (int) ($inventory['status'] ?? 0),
+                'error' => (string) ($inventory['error'] ?? ''),
+            ]);
             return;
         }
 
+        $t_apply = microtime(true);
         $importer = new OrionProductImporterService($this->table);
-        $stats = $importer->apply_inventory_array_to_live((array) ($inventory['data'] ?? []));
+        $stats = $importer->apply_inventory_array_to_live($inventory_data);
+        $this->profile('apply_inventory_array_to_live', $t_apply, $stats);
 
         update_option('fflhub_orion_inventory_last_update', current_time('mysql'), false);
         update_option('fflhub_orion_inventory_last_update_count', (int) ($stats['rows_loaded'] ?? 0), false);
         delete_option('fflhub_orion_inventory_last_error');
 
         $this->log('Orion inventory update complete.', $stats);
+        $this->finalize_run($t_start, $mem_start, 'SUCCESS', $stats);
     }
 
-    private function make_client(): OrionApiClient
+    private function make_client(int $timeoutSeconds): OrionApiClient
     {
         $connection_key = Options::get_distributor_option('orion', 'connection_key', '');
         $base_url = (string) apply_filters('fflhub_orion_api_base_url', OrionApiClient::DEFAULT_BASE_URL);
 
-        return new OrionApiClient($connection_key, $base_url, 60);
+        return new OrionApiClient($connection_key, $base_url, $timeoutSeconds);
+    }
+
+    private function get_timeout_seconds(): int
+    {
+        $timeout_seconds = (int) apply_filters(
+            'fflhub_orion_inventory_timeout_seconds',
+            self::DEFAULT_TIMEOUT_SECONDS
+        );
+
+        return max(10, min(60, $timeout_seconds));
+    }
+
+    /**
+     * @param array<string,mixed> $inventoryData
+     */
+    private function count_inventory_rows(array $inventoryData): int
+    {
+        if (isset($inventoryData['product_inventory']) && is_array($inventoryData['product_inventory'])) {
+            return count($inventoryData['product_inventory']);
+        }
+
+        return count($inventoryData);
     }
 
     /**
@@ -99,5 +151,32 @@ final class OrionInventoryCronService extends AbstractTableCronService
         }
 
         DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $message, $ctx);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function profile(string $label, float $t0, array $ctx = []): void
+    {
+        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000.0, 2, '.', '');
+        $this->log('PROFILE: ' . $label, $ctx);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function finalize_run(float $t_start, int $mem_start, string $status, array $ctx = []): void
+    {
+        $ctx['status'] = $status;
+        $ctx['elapsed_ms'] = number_format((microtime(true) - $t_start) * 1000.0, 2, '.', '');
+
+        if ($mem_start > 0 && function_exists('memory_get_usage')) {
+            $mem_end = (int) memory_get_usage(true);
+            $ctx['memory_start_kb'] = (int) round($mem_start / 1024);
+            $ctx['memory_end_kb'] = (int) round($mem_end / 1024);
+            $ctx['memory_delta_kb'] = (int) round(($mem_end - $mem_start) / 1024);
+        }
+
+        $this->log('---- RUN END ----', $ctx);
     }
 }
