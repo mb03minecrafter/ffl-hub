@@ -35,6 +35,10 @@
         return getCredentialStatus($button, '.fflhub-rsr-test-status');
     }
 
+    function getLipseysStatus($button) {
+        return getCredentialStatus($button, '.fflhub-lipseys-test-status');
+    }
+
     function formatZandersCredentialResult(data) {
         var message = data && data.message ? data.message : 'Credential test finished.';
         var details = [];
@@ -164,6 +168,66 @@
             });
     }
 
+    function formatLipseysCredentialResult(data) {
+        var message = data && data.message ? data.message : 'Credential test finished.';
+        var details = [];
+
+        if (data && data.httpStatus) {
+            details.push('HTTP ' + data.httpStatus);
+        }
+        if (data && data.providerCode) {
+            details.push(data.providerCode);
+        }
+        if (data && data.likelyCause) {
+            details.push(data.likelyCause);
+        }
+
+        return details.length ? message + ' (' + details.join(', ') + ')' : message;
+    }
+
+    function testLipseysCredentials($button) {
+        var $status = getLipseysStatus($button);
+        var profile = $button.data('profile') || '';
+
+        if (!window.FFLHubAdmin || !window.FFLHubAdmin.ajaxUrl || !window.FFLHubAdmin.lipseysCredentialNonce) {
+            setCredentialStatus($status, 'error', 'Credential test is not configured on this page.');
+            return;
+        }
+
+        setCredentialStatus($status, 'pending', 'Testing Lipsey\'s login...');
+        $button.prop('disabled', true).addClass('is-busy');
+
+        $.post(window.FFLHubAdmin.ajaxUrl, {
+            action: 'fflhub_test_lipseys_credentials',
+            nonce: window.FFLHubAdmin.lipseysCredentialNonce,
+            profile: profile,
+            fields: collectDistributorFields($button)
+        })
+            .done(function (response) {
+                var data = response && response.data ? response.data : {};
+                if (!response || response.success !== true) {
+                    setCredentialStatus($status, 'error', data.message || 'Credential test failed.');
+                    return;
+                }
+
+                setCredentialStatus(
+                    $status,
+                    data.ok ? 'success' : 'error',
+                    formatLipseysCredentialResult(data)
+                );
+            })
+            .fail(function (xhr) {
+                var message = 'Credential test failed.';
+                if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                    message = xhr.responseJSON.data.message;
+                }
+                setCredentialStatus($status, 'error', message);
+            })
+            .always(function () {
+                $button.prop('disabled', false).removeClass('is-busy');
+            });
+    }
+
     function openModal(panelId) {
         var $modal = $('#fflhub-modal');
         var $panels = $modal.find('.fflhub-modal-panel');
@@ -229,6 +293,11 @@
         $(document).on('click', '.fflhub-rsr-test-credentials', function (e) {
             e.preventDefault();
             testRsrCredentials($(this));
+        });
+
+        $(document).on('click', '.fflhub-lipseys-test-credentials', function (e) {
+            e.preventDefault();
+            testLipseysCredentials($(this));
         });
     });
 })(jQuery);

@@ -14,6 +14,7 @@ class LipseysClient
 
     private $Account;
     private $Token;
+    private $LastLoginHttpCode = 0;
 
     public function __construct($email, $password)
     {
@@ -32,6 +33,27 @@ class LipseysClient
                 $this->Token = $_SESSION[$sessionKey];
             }
         }
+    }
+
+    /**
+     * Authenticate against Lipsey's without making a catalog, validation, or order call.
+     *
+     * @return array<string,mixed>
+     */
+    public function Authenticate(): array
+    {
+        $loginAttemptResult = $this->login();
+        if ($loginAttemptResult == 1) {
+            return array(
+                "authorized" => true,
+                "success" => true,
+                "errors" => array(),
+                "http_code" => (int) $this->LastLoginHttpCode,
+                "token_present" => (is_string($this->Token) && $this->Token !== '') ? 1 : 0,
+            );
+        }
+
+        return $this->InvalidLoginResponse($loginAttemptResult);
     }
 
     private function RequestBuilder($options)
@@ -1196,6 +1218,7 @@ class LipseysClient
         $errno = curl_errno($curl);
         $http = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
         curl_close($curl);
+        $this->LastLoginHttpCode = $http;
 
         $responseExcerpt = $this->sanitizeErrorValue(is_string($response) ? $response : '');
 

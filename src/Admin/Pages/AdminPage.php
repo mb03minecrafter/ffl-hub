@@ -10,6 +10,7 @@ use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Settings\Options;
 use FFLHub\Distributor\Core\DistributorRegistry;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
+use FFLHub\Distributor\Integrations\Lipseys\LipseysIntegrationAPI;
 use FFLHub\Distributor\Integrations\RSR\RSRDirectConnectAPI;
 use FFLHub\Distributor\Integrations\Zanders\ZandersDirectShipAPI;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
@@ -55,6 +56,7 @@ class AdminPage
 
         // Handle enable/disable distributor actions.
         add_action('admin_post_fflhub_toggle_distributor', [$this, 'handle_toggle_distributor']);
+        add_action('wp_ajax_fflhub_test_lipseys_credentials', [$this, 'handle_test_lipseys_credentials']);
         add_action('wp_ajax_fflhub_test_rsr_credentials', [$this, 'handle_test_rsr_credentials']);
         add_action('wp_ajax_fflhub_test_zanders_soap_credentials', [$this, 'handle_test_zanders_soap_credentials']);
     }
@@ -95,6 +97,7 @@ class AdminPage
             'FFLHubAdmin',
             [
                 'ajaxUrl' => admin_url('admin-ajax.php'),
+                'lipseysCredentialNonce' => wp_create_nonce('fflhub_test_lipseys_credentials'),
                 'rsrCredentialNonce' => wp_create_nonce('fflhub_test_rsr_credentials'),
                 'zandersSoapNonce' => wp_create_nonce('fflhub_test_zanders_soap_credentials'),
             ]
@@ -323,6 +326,28 @@ class AdminPage
         wp_send_json_success(self::test_rsr_directconnect_credentials($profile, $profile_config, $posted_fields));
     }
 
+    public function handle_test_lipseys_credentials(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('You do not have permission to perform this action.', 'ffl-hub')], 403);
+        }
+
+        check_ajax_referer('fflhub_test_lipseys_credentials', 'nonce');
+
+        $profile = isset($_POST['profile']) ? sanitize_key(wp_unslash((string) $_POST['profile'])) : '';
+        $profile_config = self::lipseys_credential_test_profile($profile);
+        if (empty($profile_config)) {
+            wp_send_json_success([
+                'ok' => false,
+                'message' => __('Unknown Lipsey\'s credential profile.', 'ffl-hub'),
+            ]);
+        }
+
+        $posted_fields = self::posted_distributor_settings_fields();
+
+        wp_send_json_success(self::test_lipseys_api_credentials($profile, $profile_config, $posted_fields));
+    }
+
     /**
      * @return array{label:string,username_key:string,password_key:string}|null
      */
@@ -428,6 +453,82 @@ class AdminPage
         ];
 
         return $profiles[$profile] ?? null;
+    }
+
+    /**
+     * @return array<string,string>|null
+     */
+    private static function lipseys_credential_test_profile(string $profile): ?array
+    {
+        $profiles = [
+            'main' => [
+                'label' => 'Main Account API',
+                'email_key' => 'main_account_email',
+                'password_key' => 'main_account_password',
+            ],
+            'dealer' => [
+                'label' => 'Dealer API',
+                'email_key' => 'dealer_email',
+                'password_key' => 'dealer_password',
+            ],
+        ];
+
+        return $profiles[$profile] ?? null;
+    }
+
+    /**
+     * @param array<string,string> $profile_config
+     * @param array<string,string> $posted_fields
+     * @return array<string,mixed>
+     */
+    private static function test_lipseys_api_credentials(string $profile, array $profile_config, array $posted_fields): array
+    {
+        $label = (string) $profile_config['label'];
+        $email = self::distributor_posted_or_saved_setting('lipseys', $posted_fields, (string) $profile_config['email_key']);
+        $password = self::distributor_posted_or_saved_setting('lipseys', $posted_fields, (string) $profile_config['password_key']);
+
+        if ($email === '' || $password === '') {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => sprintf(
+                    __('Missing email or password for %s.', 'ffl-hub'),
+                    $label
+                ),
+            ];
+        }
+
+        $res = LipseysIntegrationAPI::authenticate_credentials($email, $password);
+        $message = (string) ($res['message'] ?? __('Lipsey\'s authentication call failed.', 'ffl-hub'));
+        $provider_code = strtoupper(trim((string) ($res['provider_error_code'] ?? '')));
+        $http_status = (int) ($res['http_status'] ?? 0);
+        $likely_cause = trim((string) ($res['likely_cause'] ?? ''));
+
+        if (empty($res['ok'])) {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => $message,
+                'providerCode' => $provider_code,
+                'httpStatus' => $http_status,
+                'likelyCause' => $likely_cause,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'profile' => $profile,
+            'profileLabel' => $label,
+            'message' => sprintf(
+                __('Credentials accepted for %s. Lipsey\'s authentication/login endpoint returned a valid token.', 'ffl-hub'),
+                $label
+            ),
+            'providerCode' => $provider_code,
+            'httpStatus' => $http_status,
+            'likelyCause' => $likely_cause,
+        ];
     }
 
     /**
@@ -1916,6 +2017,24 @@ class AdminPage
         <?php
     }
 
+    private static function render_lipseys_credential_tools(): void
+    {
+        ?>
+        <section class="fflhub-credential-tools fflhub-lipseys-tools" aria-label="<?php esc_attr_e('Lipsey\'s credential tests', 'ffl-hub'); ?>">
+            <h3><?php esc_html_e('Credential Tests', 'ffl-hub'); ?></h3>
+            <div class="fflhub-credential-test-actions fflhub-lipseys-test-actions">
+                <button type="button" class="button button-secondary fflhub-lipseys-test-credentials" data-profile="main">
+                    <?php esc_html_e('Test Main Account Login', 'ffl-hub'); ?>
+                </button>
+                <button type="button" class="button button-secondary fflhub-lipseys-test-credentials" data-profile="dealer">
+                    <?php esc_html_e('Test Dealer Login', 'ffl-hub'); ?>
+                </button>
+            </div>
+            <div class="fflhub-credential-test-status fflhub-lipseys-test-status" aria-live="polite"></div>
+        </section>
+        <?php
+    }
+
     /**
      * Render a full distributor settings form inside the modal,
      * including the Enable/Disable button.
@@ -1984,6 +2103,9 @@ class AdminPage
             <?php endif; ?>
             <?php if ($id === 'rsr') : ?>
                 <?php self::render_rsr_credential_tools(); ?>
+            <?php endif; ?>
+            <?php if ($id === 'lipseys') : ?>
+                <?php self::render_lipseys_credential_tools(); ?>
             <?php endif; ?>
 
             <!-- Distributor settings form -->

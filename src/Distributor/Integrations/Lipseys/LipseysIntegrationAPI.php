@@ -79,6 +79,129 @@ final class LipseysIntegrationAPI
     }
 
     /**
+     * Authenticate credentials using Lipsey's dedicated login endpoint only.
+     *
+     * @return array{
+     *   ok:bool,
+     *   message:string,
+     *   raw:array|null,
+     *   http_status:int,
+     *   provider_error_code:string,
+     *   likely_cause:string
+     * }
+     */
+    public static function authenticate_credentials(string $email, string $password): array
+    {
+        $client_res = self::create_client($email, $password);
+        if (empty($client_res['ok']) || !is_object($client_res['client'] ?? null)) {
+            return [
+                'ok' => false,
+                'message' => (string) ($client_res['message'] ?? 'Failed to initialize Lipsey raw API client.'),
+                'raw' => null,
+                'http_status' => 0,
+                'provider_error_code' => '',
+                'likely_cause' => '',
+            ];
+        }
+
+        $client = $client_res['client'];
+        if (!method_exists($client, 'Authenticate')) {
+            return [
+                'ok' => false,
+                'message' => 'Lipseys raw API client does not expose an auth-only credential test.',
+                'raw' => null,
+                'http_status' => 0,
+                'provider_error_code' => '',
+                'likely_cause' => '',
+            ];
+        }
+
+        try {
+            $raw = $client->Authenticate();
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'message' => 'Lipsey authentication exception: ' . $e->getMessage(),
+                'raw' => null,
+                'http_status' => 0,
+                'provider_error_code' => self::infer_provider_error_code_from_message($e->getMessage()),
+                'likely_cause' => '',
+            ];
+        }
+
+        return self::normalize_authenticate_response($raw);
+    }
+
+    /**
+     * @param mixed $resp
+     * @return array{
+     *   ok:bool,
+     *   message:string,
+     *   raw:array|null,
+     *   http_status:int,
+     *   provider_error_code:string,
+     *   likely_cause:string
+     * }
+     */
+    private static function normalize_authenticate_response($resp): array
+    {
+        if (is_object($resp)) {
+            $resp = json_decode(wp_json_encode($resp), true);
+        }
+
+        if (!is_array($resp)) {
+            return [
+                'ok' => false,
+                'message' => 'Lipsey authentication returned an invalid response.',
+                'raw' => null,
+                'http_status' => 0,
+                'provider_error_code' => '',
+                'likely_cause' => '',
+            ];
+        }
+
+        $authorized = array_key_exists('authorized', $resp)
+            ? self::to_bool_default($resp['authorized'], false)
+            : false;
+        $success = array_key_exists('success', $resp)
+            ? self::to_bool_default($resp['success'], false)
+            : false;
+
+        $diagnostics = (isset($resp['login_diagnostics']) && is_array($resp['login_diagnostics']))
+            ? $resp['login_diagnostics']
+            : [];
+        $http_status = isset($resp['http_code'])
+            ? (int) $resp['http_code']
+            : (isset($diagnostics['http_code']) ? (int) $diagnostics['http_code'] : 0);
+        $likely_cause = isset($diagnostics['likely_cause']) ? (string) $diagnostics['likely_cause'] : '';
+
+        if ($authorized && $success) {
+            return [
+                'ok' => true,
+                'message' => 'OK',
+                'raw' => self::compact_raw_array($resp),
+                'http_status' => $http_status,
+                'provider_error_code' => '',
+                'likely_cause' => $likely_cause,
+            ];
+        }
+
+        $errors = self::implode_errors($resp);
+        if ($errors === '') {
+            $errors = 'Authentication was not accepted.';
+        }
+
+        return [
+            'ok' => false,
+            'message' => 'Lipsey authentication failed: ' . $errors,
+            'raw' => self::compact_raw_array($resp),
+            'http_status' => $http_status,
+            'provider_error_code' => self::infer_provider_error_code_from_message($errors),
+            'likely_cause' => $likely_cause,
+        ];
+    }
+
+    /**
      * ValidateItem wrapper.
      *
      * Lipsey's ValidateItem accepts multiple query types:
