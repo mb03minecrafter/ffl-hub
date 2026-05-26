@@ -248,7 +248,10 @@ class AdminPage
         $return_code = (int) ($norm['return_code'] ?? -1);
         $message = (string) ($norm['message'] ?? ($soap['message'] ?? ''));
 
-        if (self::zanders_message_looks_auth_failure($message)) {
+        if (
+            !self::zanders_message_looks_known_fake_order_response($return_code, $message)
+            && self::zanders_message_looks_auth_failure($message)
+        ) {
             wp_send_json_success([
                 'ok' => false,
                 'profile' => $profile,
@@ -272,16 +275,18 @@ class AdminPage
             ]);
         }
 
+        $success_message = self::zanders_credential_test_success_message(
+            (string) $profile_config['label'],
+            $fake_order,
+            $return_code,
+            $message
+        );
+
         wp_send_json_success([
             'ok' => true,
             'profile' => $profile,
             'profileLabel' => (string) $profile_config['label'],
-            'message' => sprintf(
-                __('SOAP endpoint accepted the %1$s fake tracking lookup. Fake order %2$s returned returnCode=%3$d, which is expected for a non-real order.', 'ffl-hub'),
-                (string) $profile_config['label'],
-                $fake_order,
-                $return_code
-            ),
+            'message' => $success_message,
             'httpStatus' => $http_status,
             'returnCode' => $return_code,
             'fakeOrder' => $fake_order,
@@ -346,6 +351,46 @@ class AdminPage
         }
 
         return trim((string) Options::get_distributor_option('zanders', $key, ''));
+    }
+
+    private static function zanders_message_looks_known_fake_order_response(int $return_code, string $message): bool
+    {
+        $message = strtolower(trim($message));
+
+        return $return_code === 21
+            || strpos($message, 'not connected to your customer number') !== false
+            || strpos($message, 'order number supplied') !== false;
+    }
+
+    private static function zanders_credential_test_success_message(
+        string $profile_label,
+        string $fake_order,
+        int $return_code,
+        string $raw_message
+    ): string {
+        if (self::zanders_message_looks_known_fake_order_response($return_code, $raw_message)) {
+            return sprintf(
+                __('Credentials accepted for %1$s. Zanders rejected fake order %2$s because it is not connected to your customer number (returnCode=%3$d), which means the SOAP login reached account-level validation.', 'ffl-hub'),
+                $profile_label,
+                $fake_order,
+                $return_code
+            );
+        }
+
+        if ($return_code === 0) {
+            return sprintf(
+                __('Credentials accepted for %1$s. The fake tracking lookup returned returnCode=0 for %2$s.', 'ffl-hub'),
+                $profile_label,
+                $fake_order
+            );
+        }
+
+        return sprintf(
+            __('SOAP endpoint accepted the %1$s fake tracking lookup. Fake order %2$s returned returnCode=%3$d, which is expected for a non-real order.', 'ffl-hub'),
+            $profile_label,
+            $fake_order,
+            $return_code
+        );
     }
 
     private static function zanders_message_looks_auth_failure(string $message): bool
