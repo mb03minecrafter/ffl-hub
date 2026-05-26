@@ -179,6 +179,17 @@ final class ZandersModule implements DistributorModuleInterface
                 'description' => 'Your Zanders Gun Account Password',
                 'default'     => '',
             ],
+            'dealer_fulfilled_mode' => [
+                'label'       => 'Zanders Dealer-Fulfilled Ordering Mode',
+                'type'        => 'select',
+                'options'     => [
+                    'manual' => 'Manual (Davidson\'s-style)',
+                    'auto'   => 'Auto SOAP ordering',
+                ],
+                'placeholder' => '',
+                'description' => 'Manual keeps Zanders dealer-fulfilled rows out of the SOAP order API until dealer-fulfilled credentials are ready.',
+                'default'     => 'manual',
+            ],
             'dealer_batch_enabled' => [
                 'label'       => 'Enable Zanders Dealer Batch Queue',
                 'type'        => 'checkbox',

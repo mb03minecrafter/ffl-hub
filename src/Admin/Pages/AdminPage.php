@@ -10,6 +10,8 @@ use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Settings\Options;
 use FFLHub\Distributor\Core\DistributorRegistry;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
+use FFLHub\Distributor\Integrations\Zanders\ZandersDirectShipAPI;
+use FFLHub\Distributor\Services\Zanders\API\ZandersSoapCurlClient;
 
 /**
  * Renders the main FFL Hub admin page and loads its assets.
@@ -51,6 +53,7 @@ class AdminPage
 
         // Handle enable/disable distributor actions.
         add_action('admin_post_fflhub_toggle_distributor', [$this, 'handle_toggle_distributor']);
+        add_action('wp_ajax_fflhub_test_zanders_soap_credentials', [$this, 'handle_test_zanders_soap_credentials']);
     }
 
 
@@ -82,6 +85,15 @@ class AdminPage
             ['jquery'],
             $js_ver,
             true
+        );
+
+        wp_localize_script(
+            'fflhub-admin',
+            'FFLHubAdmin',
+            [
+                'ajaxUrl' => admin_url('admin-ajax.php'),
+                'zandersSoapNonce' => wp_create_nonce('fflhub_test_zanders_soap_credentials'),
+            ]
         );
     }
 
@@ -154,6 +166,219 @@ class AdminPage
 
         wp_safe_redirect($redirect);
         exit;
+    }
+
+    public function handle_test_zanders_soap_credentials(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('You do not have permission to perform this action.', 'ffl-hub')], 403);
+        }
+
+        check_ajax_referer('fflhub_test_zanders_soap_credentials', 'nonce');
+
+        $profile = isset($_POST['profile']) ? sanitize_key(wp_unslash((string) $_POST['profile'])) : '';
+        $profile_config = self::zanders_credential_test_profile($profile);
+        if (empty($profile_config)) {
+            wp_send_json_success([
+                'ok' => false,
+                'message' => __('Unknown Zanders credential profile.', 'ffl-hub'),
+            ]);
+        }
+
+        $posted_fields = self::posted_zanders_settings_fields();
+        $username = self::zanders_posted_or_saved_setting($posted_fields, (string) $profile_config['username_key']);
+        $password = self::zanders_posted_or_saved_setting($posted_fields, (string) $profile_config['password_key']);
+
+        if ($username === '' || $password === '') {
+            wp_send_json_success([
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => (string) $profile_config['label'],
+                'message' => sprintf(
+                    __('Missing username or password for %s.', 'ffl-hub'),
+                    (string) $profile_config['label']
+                ),
+            ]);
+        }
+
+        $fake_order = 'FFLHUBTEST' . gmdate('YmdHis') . (string) wp_rand(100, 999);
+        $verify_tls = (bool) apply_filters('fflhub_zanders_verify_tls', true);
+        $timeout = (int) apply_filters('fflhub_zanders_credential_test_timeout_sec', 30);
+
+        try {
+            $client = new ZandersSoapCurlClient(
+                ZandersDirectShipAPI::ORDERS_WSDL,
+                max(10, $timeout),
+                $verify_tls,
+                'FFLHUB-Zanders-CredTest'
+            );
+
+            $soap = ZandersDirectShipAPI::get_tracking_info(
+                $client,
+                [
+                    'username' => $username,
+                    'password' => $password,
+                ],
+                $fake_order,
+                false
+            );
+        } catch (\Throwable $e) {
+            wp_send_json_success([
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => (string) $profile_config['label'],
+                'message' => 'Zanders SOAP credential test failed before a usable response: ' . $e->getMessage(),
+                'fakeOrder' => $fake_order,
+            ]);
+        }
+
+        $http_status = (int) ($soap['http_status'] ?? 0);
+        if (empty($soap['ok'])) {
+            wp_send_json_success([
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => (string) $profile_config['label'],
+                'message' => (string) ($soap['message'] ?? __('Zanders SOAP call failed.', 'ffl-hub')),
+                'httpStatus' => $http_status,
+                'fakeOrder' => $fake_order,
+            ]);
+        }
+
+        $norm = ZandersDirectShipAPI::normalize_tracking_response($soap, 'Zanders credential test');
+        $return_code = (int) ($norm['return_code'] ?? -1);
+        $message = (string) ($norm['message'] ?? ($soap['message'] ?? ''));
+
+        if (self::zanders_message_looks_auth_failure($message)) {
+            wp_send_json_success([
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => (string) $profile_config['label'],
+                'message' => $message !== '' ? $message : __('Zanders reported an authentication failure.', 'ffl-hub'),
+                'httpStatus' => $http_status,
+                'returnCode' => $return_code,
+                'fakeOrder' => $fake_order,
+            ]);
+        }
+
+        if ($return_code === -1) {
+            wp_send_json_success([
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => (string) $profile_config['label'],
+                'message' => __('SOAP endpoint responded, but FFLHub could not read a Zanders returnCode from the fake tracking lookup.', 'ffl-hub'),
+                'httpStatus' => $http_status,
+                'returnCode' => $return_code,
+                'fakeOrder' => $fake_order,
+            ]);
+        }
+
+        wp_send_json_success([
+            'ok' => true,
+            'profile' => $profile,
+            'profileLabel' => (string) $profile_config['label'],
+            'message' => sprintf(
+                __('SOAP endpoint accepted the %1$s fake tracking lookup. Fake order %2$s returned returnCode=%3$d, which is expected for a non-real order.', 'ffl-hub'),
+                (string) $profile_config['label'],
+                $fake_order,
+                $return_code
+            ),
+            'httpStatus' => $http_status,
+            'returnCode' => $return_code,
+            'fakeOrder' => $fake_order,
+        ]);
+    }
+
+    /**
+     * @return array{label:string,username_key:string,password_key:string}|null
+     */
+    private static function zanders_credential_test_profile(string $profile): ?array
+    {
+        $profiles = [
+            'main' => [
+                'label' => 'Main / Dealer SOAP',
+                'username_key' => 'main_username',
+                'password_key' => 'main_password',
+            ],
+            'accessory' => [
+                'label' => 'Accessory SOAP',
+                'username_key' => 'accessory_username',
+                'password_key' => 'accessory_password',
+            ],
+            'gun' => [
+                'label' => 'Gun SOAP',
+                'username_key' => 'gun_username',
+                'password_key' => 'gun_password',
+            ],
+        ];
+
+        return $profiles[$profile] ?? null;
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private static function posted_zanders_settings_fields(): array
+    {
+        $raw = (isset($_POST['fields']) && is_array($_POST['fields'])) ? wp_unslash($_POST['fields']) : [];
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $fields = [];
+        foreach ($raw as $key => $value) {
+            if (!is_scalar($value)) {
+                continue;
+            }
+            $fields[(string) $key] = trim((string) $value);
+        }
+
+        return $fields;
+    }
+
+    /**
+     * @param array<string,string> $posted_fields
+     */
+    private static function zanders_posted_or_saved_setting(array $posted_fields, string $key): string
+    {
+        $option_name = Options::distributor_option_name('zanders', $key);
+        if (array_key_exists($option_name, $posted_fields)) {
+            return trim((string) $posted_fields[$option_name]);
+        }
+
+        return trim((string) Options::get_distributor_option('zanders', $key, ''));
+    }
+
+    private static function zanders_message_looks_auth_failure(string $message): bool
+    {
+        $message = strtolower(trim($message));
+        if ($message === '') {
+            return false;
+        }
+
+        $needles = [
+            'auth',
+            'credential',
+            'login',
+            'password',
+            'username',
+            'unauthorized',
+            'not authorized',
+            'access denied',
+            'denied',
+            'invalid user',
+            'invalid pass',
+            'invalid account',
+            'forbidden',
+            'permission',
+        ];
+
+        foreach ($needles as $needle) {
+            if (strpos($message, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1204,6 +1429,27 @@ class AdminPage
     <?php
     }
 
+    private static function render_zanders_credential_tools(): void
+    {
+        ?>
+        <section class="fflhub-zanders-tools" aria-label="<?php esc_attr_e('Zanders SOAP credential tests', 'ffl-hub'); ?>">
+            <h3><?php esc_html_e('SOAP Credential Tests', 'ffl-hub'); ?></h3>
+            <div class="fflhub-zanders-test-actions">
+                <button type="button" class="button button-secondary fflhub-zanders-test-credentials" data-profile="main">
+                    <?php esc_html_e('Test Main / Dealer SOAP', 'ffl-hub'); ?>
+                </button>
+                <button type="button" class="button button-secondary fflhub-zanders-test-credentials" data-profile="accessory">
+                    <?php esc_html_e('Test Accessory SOAP', 'ffl-hub'); ?>
+                </button>
+                <button type="button" class="button button-secondary fflhub-zanders-test-credentials" data-profile="gun">
+                    <?php esc_html_e('Test Gun SOAP', 'ffl-hub'); ?>
+                </button>
+            </div>
+            <div class="fflhub-zanders-test-status" aria-live="polite"></div>
+        </section>
+        <?php
+    }
+
     /**
      * Render a full distributor settings form inside the modal,
      * including the Enable/Disable button.
@@ -1266,6 +1512,10 @@ class AdminPage
                     <?php endif; ?>
                 </form>
             </div>
+
+            <?php if ($id === 'zanders') : ?>
+                <?php self::render_zanders_credential_tools(); ?>
+            <?php endif; ?>
 
             <!-- Distributor settings form -->
             <form method="post" action="options.php" class="fflhub-distributor-settings-form">

@@ -5,9 +5,11 @@ namespace FFLHub\Admin\Pages;
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOrderLine;
+use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
@@ -29,6 +31,10 @@ final class DistributorBatchQueuePage
     private const DEFAULT_LOW_STOCK_THRESHOLD = 3;
     private const DEFAULT_RETRY_DELAY_SECONDS = 300;
     private const DEFAULT_MAX_ROWS_PER_RUN = 200;
+    private const MANUAL_COMPLETION_STATUSES = [
+        OrderPlacementKeys::JOB_STATUS_MANUAL,
+        OrderPlacementKeys::JOB_STATUS_SUCCESS,
+    ];
 
     private OrderPlacementJobsTable $jobs_table;
     private DistributorHandler $handler;
@@ -43,9 +49,10 @@ final class DistributorBatchQueuePage
     private string $option_prefix;
     private string $field_prefix;
     private string $cron_hook;
+    private bool $manual_completion_enabled;
 
     /**
-     * @param array<string,string> $config
+     * @param array<string,mixed> $config
      */
     public function __construct(OrderPlacementJobsTable $jobs_table, DistributorHandler $handler, array $config)
     {
@@ -63,6 +70,7 @@ final class DistributorBatchQueuePage
         $this->option_prefix = trim((string) ($config['option_prefix'] ?? ''));
         $this->field_prefix = trim((string) ($config['field_prefix'] ?? $this->option_prefix));
         $this->cron_hook = trim((string) ($config['cron_hook'] ?? ''));
+        $this->manual_completion_enabled = $this->to_boolish($config['manual_completion_enabled'] ?? false);
 
         if ($this->page_slug === '') {
             $this->page_slug = 'fflhub-' . $this->dist_id . '-' . str_replace('_', '-', $this->mode) . '-batch-queue';
@@ -136,7 +144,11 @@ final class DistributorBatchQueuePage
         $action = isset($_POST[$action_field])
             ? sanitize_text_field(wp_unslash((string) $_POST[$action_field]))
             : '';
-        if (!in_array($action, [$this->form_action_save_settings(), $this->form_action_force_run()], true)) {
+        $allowed_actions = [$this->form_action_save_settings(), $this->form_action_force_run()];
+        if ($this->manual_completion_enabled) {
+            $allowed_actions[] = $this->form_action_manual_po();
+        }
+        if (!in_array($action, $allowed_actions, true)) {
             return;
         }
 
@@ -158,6 +170,11 @@ final class DistributorBatchQueuePage
 
         if ($action === $this->form_action_force_run()) {
             $this->handle_force_run_post();
+            return;
+        }
+
+        if ($this->manual_completion_enabled && $action === $this->form_action_manual_po()) {
+            $this->handle_manual_po_post();
         }
     }
 
@@ -226,6 +243,86 @@ final class DistributorBatchQueuePage
             ? __('Force flush enabled and batch run scheduled.', 'ffl-hub')
             : __('Force flush enabled and batch run triggered.', 'ffl-hub');
         $this->redirect_with_notice('success', $msg);
+    }
+
+    private function handle_manual_po_post(): void
+    {
+        if (!$this->manual_completion_enabled || $this->mode !== self::MODE_DEALER) {
+            $this->redirect_with_notice('error', __('Manual completion is not enabled for this batch page.', 'ffl-hub'));
+        }
+
+        $order_id_field = $this->post_field('manual_order_id');
+        $job_key_field = $this->post_field('manual_job_key');
+        $merchant_po_field = $this->post_field('manual_merchant_po');
+
+        $order_id = isset($_POST[$order_id_field]) ? (int) $_POST[$order_id_field] : 0;
+        $job_key = isset($_POST[$job_key_field])
+            ? sanitize_text_field(wp_unslash((string) $_POST[$job_key_field]))
+            : '';
+        $merchant_po_raw = isset($_POST[$merchant_po_field])
+            ? sanitize_text_field(wp_unslash((string) $_POST[$merchant_po_field]))
+            : '';
+        $merchant_po = $this->sanitize_manual_po($merchant_po_raw);
+
+        if ($order_id <= 0 || trim($job_key) === '') {
+            $this->redirect_with_notice('error', __('Missing order or job key. Please try again.', 'ffl-hub'));
+        }
+        if ($merchant_po === '') {
+            $this->redirect_with_notice('error', __('Please enter a valid PO number.', 'ffl-hub'));
+        }
+
+        $order = wc_get_order($order_id);
+        if (!$order || !method_exists($order, 'get_status')) {
+            $this->redirect_with_notice('error', __('Order not found for this row.', 'ffl-hub'));
+        }
+
+        $order_status = strtolower(trim((string) $order->get_status()));
+        if ($order_status !== self::TARGET_WOO_ORDER_STATUS) {
+            $this->redirect_with_notice('error', __('This order is no longer in Processing status.', 'ffl-hub'));
+        }
+
+        $job = OrderPlacementJobsRepository::get_job_for_order($this->jobs_table, $order, $job_key);
+        if (!($job instanceof OrderPlacementJobRow)) {
+            $this->redirect_with_notice('error', __('Job row not found for this order/job key.', 'ffl-hub'));
+        }
+
+        $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) $job->dist_id);
+        if ($dist_id !== $this->dist_id) {
+            $this->redirect_with_notice('error', __('That row belongs to a different distributor.', 'ffl-hub'));
+        }
+
+        if (!OrderPlacementKeysUtil::is_dealer_fulfilled_lane((string) $job->lane_norm())) {
+            $this->redirect_with_notice('error', __('That row is not a dealer-fulfilled job.', 'ffl-hub'));
+        }
+
+        $job_status = strtolower(trim((string) $job->status));
+        if (!in_array($job_status, self::MANUAL_COMPLETION_STATUSES, true)) {
+            $this->redirect_with_notice('error', __('That row is not in a manual/success state.', 'ffl-hub'));
+        }
+
+        $patch = OrderPlacementJobPatch::empty()
+            ->with_status(OrderPlacementKeys::JOB_STATUS_SUCCESS)
+            ->with_field('done_at', gmdate('Y-m-d H:i:s'))
+            ->with_field('merchant_po', $merchant_po)
+            ->with_field('last_error', '')
+            ->with_last_codes([])
+            ->clear_action_and_schedule();
+
+        OrderPlacementJobWriter::apply_patch(
+            $this->jobs_table,
+            (int) $order->get_id(),
+            (string) $job->job_key,
+            $patch
+        );
+
+        $this->redirect_with_notice(
+            'success',
+            __('Updated job #', 'ffl-hub')
+                . (string) ((int) $job->id)
+                . __(' to success with PO ', 'ffl-hub')
+                . $merchant_po
+                . '.'
+        );
     }
 
     private function redirect_with_notice(string $type, string $message): void
@@ -312,6 +409,11 @@ final class DistributorBatchQueuePage
     private function form_action_force_run(): string
     {
         return $this->post_field('force_run');
+    }
+
+    private function form_action_manual_po(): string
+    {
+        return $this->post_field('manual_mark_success');
     }
 
     private function render_settings_form(array $settings): void
@@ -860,12 +962,28 @@ final class DistributorBatchQueuePage
             echo '<p>' . esc_html(sprintf(__('No %s line entries found for processing orders.', 'ffl-hub'), $this->mode_label)) . '</p>';
             return;
         }
+        $show_actions = $this->manual_completion_enabled && $this->mode === self::MODE_DEALER;
         ?>
         <h2><?php echo esc_html(sprintf(__('%s Line Entries (Per UPC)', 'ffl-hub'), $this->mode_label)); ?></h2>
         <table class="widefat fixed striped">
             <thead>
                 <tr>
-                    <th><?php esc_html_e('Job ID', 'ffl-hub'); ?></th><th><?php esc_html_e('Order', 'ffl-hub'); ?></th><th><?php esc_html_e('Job Key', 'ffl-hub'); ?></th><th><?php esc_html_e('Status', 'ffl-hub'); ?></th><th><?php esc_html_e('Attempts', 'ffl-hub'); ?></th><th><?php esc_html_e('Next Run (UTC)', 'ffl-hub'); ?></th><th><?php esc_html_e('Updated (UTC)', 'ffl-hub'); ?></th><th><?php esc_html_e('Merchant PO', 'ffl-hub'); ?></th><th><?php esc_html_e('UPC', 'ffl-hub'); ?></th><th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th><th><?php esc_html_e('Qty', 'ffl-hub'); ?></th><th><?php esc_html_e('Unit Cost', 'ffl-hub'); ?></th><th><?php esc_html_e('Line Cost', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Job ID', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Order', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Job Key', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Status', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Attempts', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Next Run (UTC)', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Updated (UTC)', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Merchant PO', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Qty', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Unit Cost', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Line Cost', 'ffl-hub'); ?></th>
+                    <?php if ($show_actions) : ?>
+                        <th><?php esc_html_e('Manual PO / Mark Success', 'ffl-hub'); ?></th>
+                    <?php endif; ?>
                 </tr>
             </thead>
             <tbody>
@@ -883,6 +1001,8 @@ final class DistributorBatchQueuePage
                         $status_class = 'fflhub-rsr-status-danger';
                     } elseif ($status === OrderPlacementKeys::JOB_STATUS_RUNNING) {
                         $status_class = 'fflhub-rsr-status-running';
+                    } elseif ($status === OrderPlacementKeys::JOB_STATUS_MANUAL) {
+                        $status_class = 'fflhub-rsr-status-manual';
                     }
                     ?>
                     <tr>
@@ -899,10 +1019,52 @@ final class DistributorBatchQueuePage
                         <td><?php echo esc_html((string) ((int) ($entry['qty'] ?? 0))); ?></td>
                         <td><?php echo esc_html($this->format_money((float) ($entry['unit_cost'] ?? 0.0))); ?></td>
                         <td><?php echo esc_html($this->format_money((float) ($entry['line_cost'] ?? 0.0))); ?></td>
+                        <?php if ($show_actions) : ?>
+                            <td><?php $this->render_manual_po_cell($entry); ?></td>
+                        <?php endif; ?>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
         </table>
+        <?php
+    }
+
+    /**
+     * @param array<string,mixed> $entry
+     */
+    private function render_manual_po_cell(array $entry): void
+    {
+        $status = strtolower(trim((string) ($entry['job_status'] ?? '')));
+        if (!in_array($status, self::MANUAL_COMPLETION_STATUSES, true)) {
+            echo esc_html('-');
+            return;
+        }
+
+        $order_id = (int) ($entry['order_id'] ?? 0);
+        $job_key = (string) ($entry['job_key'] ?? '');
+        $merchant_po = trim((string) ($entry['merchant_po'] ?? ''));
+        ?>
+        <form method="post" action="" class="fflhub-rsr-manual-po-form">
+            <?php wp_nonce_field($this->nonce_action(), $this->post_field('nonce')); ?>
+            <input type="hidden" name="<?php echo esc_attr($this->post_field('action')); ?>" value="<?php echo esc_attr($this->form_action_manual_po()); ?>" />
+            <input type="hidden" name="<?php echo esc_attr($this->post_field('manual_order_id')); ?>" value="<?php echo esc_attr((string) $order_id); ?>" />
+            <input type="hidden" name="<?php echo esc_attr($this->post_field('manual_job_key')); ?>" value="<?php echo esc_attr($job_key); ?>" />
+            <input
+                type="text"
+                name="<?php echo esc_attr($this->post_field('manual_merchant_po')); ?>"
+                value="<?php echo esc_attr($merchant_po); ?>"
+                maxlength="32"
+                placeholder="<?php esc_attr_e('Enter PO', 'ffl-hub'); ?>"
+                class="regular-text fflhub-rsr-manual-po-input" />
+            <button type="submit" class="button button-secondary button-small">
+                <?php esc_html_e('Save + Mark Success', 'ffl-hub'); ?>
+            </button>
+            <?php if ($status === OrderPlacementKeys::JOB_STATUS_SUCCESS) : ?>
+                <div class="fflhub-rsr-manual-po-note">
+                    <?php esc_html_e('Already marked success.', 'ffl-hub'); ?>
+                </div>
+            <?php endif; ?>
+        </form>
         <?php
     }
 
@@ -1038,6 +1200,30 @@ final class DistributorBatchQueuePage
         return sprintf('%02d:%02d', (int) ($m[1] ?? 17), (int) ($m[2] ?? 0));
     }
 
+    private function sanitize_manual_po(string $value): string
+    {
+        $value = strtoupper(trim($value));
+        if ($value === '') {
+            return '';
+        }
+
+        $value = preg_replace('/[^A-Z0-9._-]/', '', $value);
+        if (!is_string($value)) {
+            return '';
+        }
+
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        if (strlen($value) > 32) {
+            $value = substr($value, 0, 32);
+        }
+
+        return $value;
+    }
+
     private function to_non_negative_float($value): float
     {
         $raw = trim((string) $value);
@@ -1092,7 +1278,8 @@ final class DistributorBatchQueuePage
             .fflhub-rsr-summary-card p{margin:8px 0 0;color:#50575e}
             .fflhub-rsr-batch-status table code{word-break:break-all}
             .fflhub-rsr-status-pill{display:inline-block;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:700;text-transform:uppercase}
-            .fflhub-rsr-status-pending{background:#e0f2fe;color:#0c4a6e}.fflhub-rsr-status-running{background:#fef3c7;color:#92400e}.fflhub-rsr-status-success{background:#dcfce7;color:#166534}.fflhub-rsr-status-danger{background:#fee2e2;color:#991b1b}.fflhub-rsr-status-neutral{background:#f3f4f6;color:#374151}
+            .fflhub-rsr-status-pending{background:#e0f2fe;color:#0c4a6e}.fflhub-rsr-status-running{background:#fef3c7;color:#92400e}.fflhub-rsr-status-success{background:#dcfce7;color:#166534}.fflhub-rsr-status-danger{background:#fee2e2;color:#991b1b}.fflhub-rsr-status-manual{background:#fef9c3;color:#854d0e}.fflhub-rsr-status-neutral{background:#f3f4f6;color:#374151}
+            .fflhub-rsr-manual-po-form{display:flex;flex-direction:column;gap:6px;min-width:170px}.fflhub-rsr-manual-po-input{width:100%;min-width:140px}.fflhub-rsr-manual-po-note{font-size:11px;color:#166534}
         </style>
         <?php
     }

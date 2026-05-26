@@ -19,6 +19,7 @@ use FFLHub\Distributor\Services\Zanders\API\ZandersSoapCurlClient;
 use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
 use FFLHub\Distributor\Services\Zanders\ZandersServices;
 use FFLHub\FFL\Data\FFLRepository;
+use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
@@ -124,10 +125,16 @@ class DistributorZanders extends DistributorBase
     private function is_testing_mode(): bool
     {
         // Source of truth: global Admin setting ("Test order debug mode").
-        $testing = \FFLHub\Settings\Options::get_test_order_debug_enabled();
+        $testing = Options::get_test_order_debug_enabled();
 
         // Keep filter hook for emergency overrides/custom deployments.
         return (bool) apply_filters('fflhub_zanders_testing_mode', $testing);
+    }
+
+    private function is_dealer_fulfilled_manual_mode(): bool
+    {
+        $mode = strtolower(trim((string) Options::get_distributor_option('zanders', 'dealer_fulfilled_mode', 'manual')));
+        return $mode !== 'auto';
     }
 
 
@@ -158,8 +165,8 @@ class DistributorZanders extends DistributorBase
             $p_key = 'accessory_password';
         }
 
-        $u = trim((string) \FFLHub\Settings\Options::get_distributor_option('zanders', $u_key, ''));
-        $p = trim((string) \FFLHub\Settings\Options::get_distributor_option('zanders', $p_key, ''));
+        $u = trim((string) Options::get_distributor_option('zanders', $u_key, ''));
+        $p = trim((string) Options::get_distributor_option('zanders', $p_key, ''));
 
         if ($u === '' || $p === '') {
             return [
@@ -234,6 +241,21 @@ class DistributorZanders extends DistributorBase
             return DistributorOrderResult::block_fatal(
                 'Zanders: missing merchant PO (purchaseOrderNumber).',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
+            );
+        }
+
+        $lane = strtolower(trim((string) ($request->lane ?? '')));
+        if ($lane === 'dealer_fulfilled' && $this->is_dealer_fulfilled_manual_mode()) {
+            return DistributorOrderResult::manual(
+                'Zanders dealer-fulfilled ordering is set to manual mode. Enter the merchant PO on the Zanders Dealer Batch Queue page after placing the order manually.',
+                [
+                    DistributorOrderResult::REASON_MANUAL_REQUIRED,
+                    'ZANDERS_DEALER_FULFILLED_MANUAL_MODE',
+                ],
+                [
+                    'lane' => $lane,
+                    'dealer_fulfilled_mode' => 'manual',
+                ]
             );
         }
 

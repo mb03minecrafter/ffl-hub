@@ -235,6 +235,60 @@
     border: 1px solid #dcdcde;
 }
 
+.fflhub-zanders-tools {
+    margin: 16px 0;
+    padding: 12px;
+    border: 1px solid #dcdcde;
+    border-radius: 6px;
+    background: #f6f7f7;
+}
+
+.fflhub-zanders-tools h3 {
+    margin: 0 0 10px;
+    font-size: 14px;
+}
+
+.fflhub-zanders-test-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.fflhub-zanders-test-status {
+    min-height: 20px;
+    padding: 8px 10px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: #fff;
+    color: #50575e;
+}
+
+.fflhub-zanders-test-status:empty {
+    display: none;
+}
+
+.fflhub-zanders-test-status.is-pending {
+    display: block;
+    border-color: #bae6fd;
+    background: #f0f9ff;
+    color: #0c4a6e;
+}
+
+.fflhub-zanders-test-status.is-success {
+    display: block;
+    border-color: #bbf7d0;
+    background: #f0fdf4;
+    color: #166534;
+}
+
+.fflhub-zanders-test-status.is-error {
+    display: block;
+    border-color: #fecaca;
+    background: #fef2f2;
+    color: #991b1b;
+}
+
 
 
 

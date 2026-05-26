@@ -289,6 +289,7 @@ final class Plugin
                 'option_prefix' => 'fflhub_zanders_dealer_batch',
                 'field_prefix' => 'fflhub_zanders_dealer_batch_page',
                 'cron_hook' => ZandersDealerBatchCronService::CRON_HOOK,
+                'manual_completion_enabled' => '1',
             ],
             [
                 'page_slug' => 'fflhub-sports-south-dealer-batch-queue',
