@@ -522,59 +522,123 @@ final class OrionProductImporterService
             @set_time_limit(0);
         }
 
+        $t_start = microtime(true);
+        $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $phase_ms = [];
+
+        $t_phase = microtime(true);
         $rows = $this->parser->normalize_inventory_rows($inventoryResponseOrRows);
+        $phase_ms['normalize_inventory_rows'] = $this->elapsed_ms($t_phase);
+
         if (empty($rows)) {
-            return [
+            return $this->finish_apply_inventory_stats([
                 'processed_rows' => 0,
                 'rows_loaded' => 0,
                 'join_updated' => 0,
                 'sig_approved_forced' => 0,
-            ];
+            ], $t_start, $mem_start, $phase_ms);
         }
 
         global $wpdb;
 
+        $t_phase = microtime(true);
         $stage_table = $this->ensure_inventory_stage_table();
+        $phase_ms['ensure_inventory_stage_table'] = $this->elapsed_ms($t_phase);
         if ($stage_table === '') {
-            return [
+            return $this->finish_apply_inventory_stats([
                 'processed_rows' => 0,
                 'rows_loaded' => 0,
                 'join_updated' => 0,
                 'sig_approved_forced' => 0,
-            ];
+            ], $t_start, $mem_start, $phase_ms);
         }
 
+        $t_phase = microtime(true);
         $wpdb->query("TRUNCATE TABLE {$stage_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $phase_ms['truncate_inventory_stage'] = $this->elapsed_ms($t_phase);
 
+        $t_phase = microtime(true);
         $rows_loaded = $this->insert_inventory_stage_rows($stage_table, $rows);
+        $phase_ms['insert_inventory_stage_rows'] = $this->elapsed_ms($t_phase);
         if ($rows_loaded <= 0) {
-            return [
+            return $this->finish_apply_inventory_stats([
                 'processed_rows' => count($rows),
                 'rows_loaded' => 0,
                 'join_updated' => 0,
                 'sig_approved_forced' => 0,
-            ];
+            ], $t_start, $mem_start, $phase_ms, '', $stage_table);
         }
 
         $live_table = $this->table->get_live_table_name();
 
+        $t_phase = microtime(true);
         $join_updated_id = $this->update_live_inventory_by_product_id($live_table, $stage_table);
+        $phase_ms['update_live_inventory_by_product_id'] = $this->elapsed_ms($t_phase);
+
+        $t_phase = microtime(true);
         $join_updated_code = $this->update_live_inventory_by_product_code($live_table, $stage_table);
+        $phase_ms['update_live_inventory_by_product_code'] = $this->elapsed_ms($t_phase);
+
+        $t_phase = microtime(true);
         $sig_approved_forced = SigDropshipApproval::apply_to_table('orion', $live_table);
+        $phase_ms['apply_sig_dropship_approval'] = $this->elapsed_ms($t_phase);
 
         $join_updated = max(0, $join_updated_id) + max(0, $join_updated_code);
 
         update_option('fflhub_orion_inventory_last_update', current_time('mysql'), false);
         update_option('fflhub_orion_inventory_last_update_count', (int) $rows_loaded, false);
 
-        return [
+        return $this->finish_apply_inventory_stats([
             'processed_rows' => count($rows),
             'rows_loaded' => (int) $rows_loaded,
             'join_updated' => (int) $join_updated,
             'join_updated_id' => (int) max(0, $join_updated_id),
             'join_updated_code' => (int) max(0, $join_updated_code),
             'sig_approved_forced' => (int) $sig_approved_forced,
-        ];
+        ], $t_start, $mem_start, $phase_ms, $live_table, $stage_table);
+    }
+
+    /**
+     * @param array<string,mixed> $stats
+     * @param array<string,string> $phaseMs
+     * @return array<string,mixed>
+     */
+    private function finish_apply_inventory_stats(
+        array $stats,
+        float $tStart,
+        int $memStart,
+        array $phaseMs,
+        string $liveTable = '',
+        string $stageTable = ''
+    ): array {
+        $stats['phase_ms'] = $phaseMs;
+        $stats['elapsed_ms'] = $this->elapsed_ms($tStart);
+
+        if ($liveTable !== '') {
+            $stats['live_table'] = $liveTable;
+        }
+
+        if ($stageTable !== '') {
+            $stats['stage_table'] = $stageTable;
+        }
+
+        if ($memStart > 0 && function_exists('memory_get_usage')) {
+            $mem_end = (int) memory_get_usage(true);
+            $stats['memory_start_kb'] = (int) round($memStart / 1024);
+            $stats['memory_end_kb'] = (int) round($mem_end / 1024);
+            $stats['memory_delta_kb'] = (int) round(($mem_end - $memStart) / 1024);
+        }
+
+        if (function_exists('memory_get_peak_usage')) {
+            $stats['memory_peak_kb'] = (int) round(memory_get_peak_usage(true) / 1024);
+        }
+
+        return $stats;
+    }
+
+    private function elapsed_ms(float $tStart): string
+    {
+        return number_format((microtime(true) - $tStart) * 1000.0, 2, '.', '');
     }
 
     /**
