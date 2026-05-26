@@ -1,19 +1,19 @@
 (function ($) {
-    function getZandersStatus($button) {
+    function getCredentialStatus($button, selector) {
         return $button
             .closest('.fflhub-distributor-settings-wrapper')
-            .find('.fflhub-zanders-test-status')
+            .find(selector)
             .first();
     }
 
-    function setZandersStatus($status, state, message) {
+    function setCredentialStatus($status, state, message) {
         $status
             .removeClass('is-pending is-success is-error')
             .addClass('is-' + state)
             .text(message || '');
     }
 
-    function collectZandersFields($button) {
+    function collectDistributorFields($button) {
         var fields = {};
         var $form = $button
             .closest('.fflhub-distributor-settings-wrapper')
@@ -25,6 +25,14 @@
         });
 
         return fields;
+    }
+
+    function getZandersStatus($button) {
+        return getCredentialStatus($button, '.fflhub-zanders-test-status');
+    }
+
+    function getRsrStatus($button) {
+        return getCredentialStatus($button, '.fflhub-rsr-test-status');
     }
 
     function formatZandersCredentialResult(data) {
@@ -49,27 +57,27 @@
         var profile = $button.data('profile') || '';
 
         if (!window.FFLHubAdmin || !window.FFLHubAdmin.ajaxUrl || !window.FFLHubAdmin.zandersSoapNonce) {
-            setZandersStatus($status, 'error', 'Credential test is not configured on this page.');
+            setCredentialStatus($status, 'error', 'Credential test is not configured on this page.');
             return;
         }
 
-        setZandersStatus($status, 'pending', 'Testing Zanders SOAP credentials...');
+        setCredentialStatus($status, 'pending', 'Testing Zanders SOAP credentials...');
         $button.prop('disabled', true).addClass('is-busy');
 
         $.post(window.FFLHubAdmin.ajaxUrl, {
             action: 'fflhub_test_zanders_soap_credentials',
             nonce: window.FFLHubAdmin.zandersSoapNonce,
             profile: profile,
-            fields: collectZandersFields($button)
+            fields: collectDistributorFields($button)
         })
             .done(function (response) {
                 var data = response && response.data ? response.data : {};
                 if (!response || response.success !== true) {
-                    setZandersStatus($status, 'error', data.message || 'Credential test failed.');
+                    setCredentialStatus($status, 'error', data.message || 'Credential test failed.');
                     return;
                 }
 
-                setZandersStatus(
+                setCredentialStatus(
                     $status,
                     data.ok ? 'success' : 'error',
                     formatZandersCredentialResult(data)
@@ -80,7 +88,76 @@
                 if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
                     message = xhr.responseJSON.data.message;
                 }
-                setZandersStatus($status, 'error', message);
+                setCredentialStatus($status, 'error', message);
+            })
+            .always(function () {
+                $button.prop('disabled', false).removeClass('is-busy');
+            });
+    }
+
+    function formatRsrCredentialResult(data) {
+        var message = data && data.message ? data.message : 'Credential test finished.';
+        var details = [];
+
+        if (data && data.httpStatus) {
+            details.push('HTTP ' + data.httpStatus);
+        }
+        if (data && data.fakePo) {
+            details.push('fake PO ' + data.fakePo);
+        }
+        if (data && typeof data.itemsCount !== 'undefined') {
+            details.push('items ' + data.itemsCount);
+        }
+        if (data && typeof data.foundFiles !== 'undefined') {
+            details.push('feed files ' + data.foundFiles);
+        }
+        if (data && typeof data.useSsl !== 'undefined') {
+            details.push(data.useSsl ? 'FTPS' : 'FTP');
+        }
+
+        return details.length ? message + ' (' + details.join(', ') + ')' : message;
+    }
+
+    function testRsrCredentials($button) {
+        var $status = getRsrStatus($button);
+        var profile = $button.data('profile') || '';
+        var pendingMessage = profile === 'ftp'
+            ? 'Testing RSR FTP credentials...'
+            : 'Testing RSR DirectConnect credentials...';
+
+        if (!window.FFLHubAdmin || !window.FFLHubAdmin.ajaxUrl || !window.FFLHubAdmin.rsrCredentialNonce) {
+            setCredentialStatus($status, 'error', 'Credential test is not configured on this page.');
+            return;
+        }
+
+        setCredentialStatus($status, 'pending', pendingMessage);
+        $button.prop('disabled', true).addClass('is-busy');
+
+        $.post(window.FFLHubAdmin.ajaxUrl, {
+            action: 'fflhub_test_rsr_credentials',
+            nonce: window.FFLHubAdmin.rsrCredentialNonce,
+            profile: profile,
+            fields: collectDistributorFields($button)
+        })
+            .done(function (response) {
+                var data = response && response.data ? response.data : {};
+                if (!response || response.success !== true) {
+                    setCredentialStatus($status, 'error', data.message || 'Credential test failed.');
+                    return;
+                }
+
+                setCredentialStatus(
+                    $status,
+                    data.ok ? 'success' : 'error',
+                    formatRsrCredentialResult(data)
+                );
+            })
+            .fail(function (xhr) {
+                var message = 'Credential test failed.';
+                if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                    message = xhr.responseJSON.data.message;
+                }
+                setCredentialStatus($status, 'error', message);
             })
             .always(function () {
                 $button.prop('disabled', false).removeClass('is-busy');
@@ -147,6 +224,11 @@
         $(document).on('click', '.fflhub-zanders-test-credentials', function (e) {
             e.preventDefault();
             testZandersCredentials($(this));
+        });
+
+        $(document).on('click', '.fflhub-rsr-test-credentials', function (e) {
+            e.preventDefault();
+            testRsrCredentials($(this));
         });
     });
 })(jQuery);

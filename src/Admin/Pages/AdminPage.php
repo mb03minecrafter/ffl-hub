@@ -10,7 +10,9 @@ use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Settings\Options;
 use FFLHub\Distributor\Core\DistributorRegistry;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
+use FFLHub\Distributor\Integrations\RSR\RSRDirectConnectAPI;
 use FFLHub\Distributor\Integrations\Zanders\ZandersDirectShipAPI;
+use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\Zanders\API\ZandersSoapCurlClient;
 
 /**
@@ -53,6 +55,7 @@ class AdminPage
 
         // Handle enable/disable distributor actions.
         add_action('admin_post_fflhub_toggle_distributor', [$this, 'handle_toggle_distributor']);
+        add_action('wp_ajax_fflhub_test_rsr_credentials', [$this, 'handle_test_rsr_credentials']);
         add_action('wp_ajax_fflhub_test_zanders_soap_credentials', [$this, 'handle_test_zanders_soap_credentials']);
     }
 
@@ -92,6 +95,7 @@ class AdminPage
             'FFLHubAdmin',
             [
                 'ajaxUrl' => admin_url('admin-ajax.php'),
+                'rsrCredentialNonce' => wp_create_nonce('fflhub_test_rsr_credentials'),
                 'zandersSoapNonce' => wp_create_nonce('fflhub_test_zanders_soap_credentials'),
             ]
         );
@@ -293,6 +297,32 @@ class AdminPage
         ]);
     }
 
+    public function handle_test_rsr_credentials(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('You do not have permission to perform this action.', 'ffl-hub')], 403);
+        }
+
+        check_ajax_referer('fflhub_test_rsr_credentials', 'nonce');
+
+        $profile = isset($_POST['profile']) ? sanitize_key(wp_unslash((string) $_POST['profile'])) : '';
+        $profile_config = self::rsr_credential_test_profile($profile);
+        if (empty($profile_config)) {
+            wp_send_json_success([
+                'ok' => false,
+                'message' => __('Unknown RSR credential profile.', 'ffl-hub'),
+            ]);
+        }
+
+        $posted_fields = self::posted_distributor_settings_fields();
+
+        if ((string) $profile_config['mode'] === 'ftp') {
+            wp_send_json_success(self::test_rsr_ftp_credentials($profile, $profile_config, $posted_fields));
+        }
+
+        wp_send_json_success(self::test_rsr_directconnect_credentials($profile, $profile_config, $posted_fields));
+    }
+
     /**
      * @return array{label:string,username_key:string,password_key:string}|null
      */
@@ -324,6 +354,14 @@ class AdminPage
      */
     private static function posted_zanders_settings_fields(): array
     {
+        return self::posted_distributor_settings_fields();
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private static function posted_distributor_settings_fields(): array
+    {
         $raw = (isset($_POST['fields']) && is_array($_POST['fields'])) ? wp_unslash($_POST['fields']) : [];
         if (!is_array($raw)) {
             return [];
@@ -345,12 +383,374 @@ class AdminPage
      */
     private static function zanders_posted_or_saved_setting(array $posted_fields, string $key): string
     {
-        $option_name = Options::distributor_option_name('zanders', $key);
+        return self::distributor_posted_or_saved_setting('zanders', $posted_fields, $key);
+    }
+
+    /**
+     * @param array<string,string> $posted_fields
+     */
+    private static function distributor_posted_or_saved_setting(string $distributor_id, array $posted_fields, string $key): string
+    {
+        $option_name = Options::distributor_option_name($distributor_id, $key);
         if (array_key_exists($option_name, $posted_fields)) {
             return trim((string) $posted_fields[$option_name]);
         }
 
-        return trim((string) Options::get_distributor_option('zanders', $key, ''));
+        return trim((string) Options::get_distributor_option($distributor_id, $key, ''));
+    }
+
+    /**
+     * @return array<string,string>|null
+     */
+    private static function rsr_credential_test_profile(string $profile): ?array
+    {
+        $profiles = [
+            'main' => [
+                'label' => 'Main DirectConnect',
+                'mode' => 'directconnect',
+                'username_key' => 'main_account_number',
+                'password_key' => 'main_account_password',
+            ],
+            'dropship' => [
+                'label' => 'Drop-Ship DirectConnect',
+                'mode' => 'directconnect',
+                'username_key' => 'dropship_account_number',
+                'password_key' => 'dropship_account_password',
+            ],
+            'ftp' => [
+                'label' => 'FTP Feed',
+                'mode' => 'ftp',
+                'host_key' => 'ftp_host',
+                'username_key' => 'ftp_username',
+                'password_key' => 'ftp_password',
+                'ssl_key' => 'ftp_use_ssl',
+            ],
+        ];
+
+        return $profiles[$profile] ?? null;
+    }
+
+    /**
+     * @param array<string,string> $profile_config
+     * @param array<string,string> $posted_fields
+     * @return array<string,mixed>
+     */
+    private static function test_rsr_directconnect_credentials(string $profile, array $profile_config, array $posted_fields): array
+    {
+        $label = (string) $profile_config['label'];
+        $username = self::distributor_posted_or_saved_setting('rsr', $posted_fields, (string) $profile_config['username_key']);
+        $password = self::distributor_posted_or_saved_setting('rsr', $posted_fields, (string) $profile_config['password_key']);
+        $pos = self::distributor_posted_or_saved_setting('rsr', $posted_fields, 'pos_indicator');
+
+        if ($username === '' || $password === '' || $pos === '') {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => sprintf(
+                    __('Missing username, password, or POS indicator for %s.', 'ffl-hub'),
+                    $label
+                ),
+            ];
+        }
+
+        $fake_po = RSRDirectConnectAPI::sanitize_rsr_po('FFLHUB' . gmdate('ymdHis') . (string) wp_rand(100, 999));
+        if ($fake_po === '') {
+            $fake_po = 'FFLHUBTEST';
+        }
+
+        $timeout = max(10, (int) apply_filters('fflhub_rsr_credential_test_timeout_sec', 30));
+        $base_url = self::rsr_api_base_url();
+
+        try {
+            $res = RSRDirectConnectAPI::check_order_report_all(
+                [
+                    'Username' => $username,
+                    'Password' => $password,
+                    'POS' => $pos,
+                ],
+                $fake_po,
+                $base_url,
+                $timeout
+            );
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => 'RSR DirectConnect credential test failed before a usable response: ' . $e->getMessage(),
+                'fakePo' => $fake_po,
+            ];
+        }
+
+        $http_status = (int) ($res['http_status'] ?? 0);
+        $auth_failure = self::rsr_extract_auth_failure_message($res);
+        if ($auth_failure !== '') {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => $auth_failure,
+                'httpStatus' => $http_status,
+                'fakePo' => $fake_po,
+            ];
+        }
+
+        if (empty($res['ok'])) {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => (string) ($res['message'] ?? __('RSR DirectConnect call failed.', 'ffl-hub')),
+                'httpStatus' => $http_status,
+                'fakePo' => $fake_po,
+            ];
+        }
+
+        $items_count = (isset($res['items']) && is_array($res['items'])) ? count($res['items']) : 0;
+
+        return [
+            'ok' => true,
+            'profile' => $profile,
+            'profileLabel' => $label,
+            'message' => sprintf(
+                __('Credentials accepted for %1$s. RSR check-order responded to fake PO %2$s; zero matching order rows is expected for this test.', 'ffl-hub'),
+                $label,
+                $fake_po
+            ),
+            'httpStatus' => $http_status,
+            'fakePo' => $fake_po,
+            'itemsCount' => $items_count,
+        ];
+    }
+
+    /**
+     * @param array<string,string> $profile_config
+     * @param array<string,string> $posted_fields
+     * @return array<string,mixed>
+     */
+    private static function test_rsr_ftp_credentials(string $profile, array $profile_config, array $posted_fields): array
+    {
+        $label = (string) $profile_config['label'];
+        $host = self::distributor_posted_or_saved_setting('rsr', $posted_fields, (string) $profile_config['host_key']);
+        $username = self::distributor_posted_or_saved_setting('rsr', $posted_fields, (string) $profile_config['username_key']);
+        $password = self::distributor_posted_or_saved_setting('rsr', $posted_fields, (string) $profile_config['password_key']);
+        $use_ssl_raw = self::distributor_posted_or_saved_setting('rsr', $posted_fields, (string) $profile_config['ssl_key']);
+        $use_ssl = self::boolish_from_setting($use_ssl_raw);
+
+        if ($host === '' || $username === '' || $password === '') {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => __('Missing FTP host, username, or password for RSR.', 'ffl-hub'),
+            ];
+        }
+
+        $timeout = max(5, (int) apply_filters('fflhub_rsr_ftp_credential_test_timeout_sec', 15));
+        $port = max(1, (int) apply_filters('fflhub_rsr_ftp_credential_test_port', 2222));
+
+        try {
+            $client = new FTPClientService(
+                $host,
+                $username,
+                $password,
+                $use_ssl,
+                $port,
+                $timeout,
+                true,
+                '[FFLHub][RSR][FTP Credential Test]',
+                true
+            );
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => 'RSR FTP credential test failed before login completed: ' . $e->getMessage(),
+                'host' => $host,
+            ];
+        }
+
+        if (!$client->is_connected()) {
+            $last_error = (string) ($client->get_last_error() ?? '');
+
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => $last_error !== '' ? $last_error : __('RSR FTP login failed.', 'ffl-hub'),
+                'host' => $host,
+            ];
+        }
+
+        $probe_files = apply_filters(
+            'fflhub_rsr_ftp_credential_test_probe_files',
+            [
+                '/ftpdownloads/rsrinventory-new.zip',
+                '/ftpdownloads/IM-QTY-CSV.csv',
+            ]
+        );
+
+        $found_files = [];
+        if (is_array($probe_files)) {
+            foreach ($probe_files as $remote_path) {
+                $remote_path = is_scalar($remote_path) ? trim((string) $remote_path) : '';
+                if ($remote_path === '') {
+                    continue;
+                }
+
+                $mtime = $client->get_remote_mtime($remote_path);
+                $size = $client->get_remote_size($remote_path);
+                if ($mtime > 0 || $size >= 0) {
+                    $found_files[] = [
+                        'path' => $remote_path,
+                        'mtime' => $mtime,
+                        'size' => $size,
+                    ];
+                }
+            }
+        }
+
+        $client->close();
+
+        $message = empty($found_files)
+            ? __('RSR FTP login accepted. No known feed metadata was readable, but credentials reached a logged-in FTP session.', 'ffl-hub')
+            : sprintf(
+                __('RSR FTP login accepted. Found metadata for %d known feed file(s).', 'ffl-hub'),
+                count($found_files)
+            );
+
+        return [
+            'ok' => true,
+            'profile' => $profile,
+            'profileLabel' => $label,
+            'message' => $message,
+            'host' => $host,
+            'useSsl' => $use_ssl,
+            'foundFiles' => count($found_files),
+        ];
+    }
+
+    private static function boolish_from_setting(string $raw): bool
+    {
+        $raw = strtolower(trim($raw));
+
+        return in_array($raw, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private static function rsr_api_base_url(): string
+    {
+        $default = RSRDirectConnectAPI::DEFAULT_API_BASE_URL;
+        $base = apply_filters('fflhub_rsr_api_base_url', $default);
+        $base = is_string($base) ? trim($base) : '';
+
+        return $base !== '' ? $base : $default;
+    }
+
+    /**
+     * @param array<string,mixed> $result
+     */
+    private static function rsr_extract_auth_failure_message(array $result): string
+    {
+        $http_status = (int) ($result['http_status'] ?? 0);
+        $strings = [];
+
+        if (isset($result['message']) && is_scalar($result['message'])) {
+            $strings[] = trim((string) $result['message']);
+        }
+        if (isset($result['raw'])) {
+            self::collect_scalar_strings($result['raw'], $strings);
+        }
+
+        foreach ($strings as $candidate) {
+            $candidate = trim((string) $candidate);
+            if ($candidate === '') {
+                continue;
+            }
+
+            if (self::rsr_message_looks_auth_failure($candidate)) {
+                return sprintf(
+                    __('RSR reported an authentication failure: %s', 'ffl-hub'),
+                    $candidate
+                );
+            }
+        }
+
+        if ($http_status === 401 || $http_status === 403) {
+            return sprintf(
+                __('RSR rejected the credentials with HTTP %d.', 'ffl-hub'),
+                $http_status
+            );
+        }
+
+        return '';
+    }
+
+    /**
+     * @param mixed $value
+     * @param array<int,string> $strings
+     */
+    private static function collect_scalar_strings($value, array &$strings, int $depth = 0): void
+    {
+        if ($depth > 5 || count($strings) >= 40) {
+            return;
+        }
+
+        if (is_array($value)) {
+            foreach ($value as $child) {
+                self::collect_scalar_strings($child, $strings, $depth + 1);
+                if (count($strings) >= 40) {
+                    break;
+                }
+            }
+            return;
+        }
+
+        if (!is_scalar($value)) {
+            return;
+        }
+
+        $string = trim((string) $value);
+        if ($string === '') {
+            return;
+        }
+
+        $strings[] = strlen($string) > 300 ? substr($string, 0, 300) : $string;
+    }
+
+    private static function rsr_message_looks_auth_failure(string $message): bool
+    {
+        $message = strtolower(trim($message));
+        if ($message === '') {
+            return false;
+        }
+
+        $needles = [
+            'auth',
+            'credential',
+            'login',
+            'password',
+            'username',
+            'unauthorized',
+            'not authorized',
+            'access denied',
+            'invalid user',
+            'invalid pass',
+            'invalid account',
+            'invalid pos',
+            'pos indicator',
+            'forbidden',
+            'permission',
+        ];
+
+        foreach ($needles as $needle) {
+            if (strpos($message, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static function zanders_message_looks_known_fake_order_response(int $return_code, string $message): bool
@@ -1477,9 +1877,9 @@ class AdminPage
     private static function render_zanders_credential_tools(): void
     {
         ?>
-        <section class="fflhub-zanders-tools" aria-label="<?php esc_attr_e('Zanders SOAP credential tests', 'ffl-hub'); ?>">
+        <section class="fflhub-credential-tools fflhub-zanders-tools" aria-label="<?php esc_attr_e('Zanders SOAP credential tests', 'ffl-hub'); ?>">
             <h3><?php esc_html_e('SOAP Credential Tests', 'ffl-hub'); ?></h3>
-            <div class="fflhub-zanders-test-actions">
+            <div class="fflhub-credential-test-actions fflhub-zanders-test-actions">
                 <button type="button" class="button button-secondary fflhub-zanders-test-credentials" data-profile="main">
                     <?php esc_html_e('Test Main / Dealer SOAP', 'ffl-hub'); ?>
                 </button>
@@ -1490,7 +1890,28 @@ class AdminPage
                     <?php esc_html_e('Test Gun SOAP', 'ffl-hub'); ?>
                 </button>
             </div>
-            <div class="fflhub-zanders-test-status" aria-live="polite"></div>
+            <div class="fflhub-credential-test-status fflhub-zanders-test-status" aria-live="polite"></div>
+        </section>
+        <?php
+    }
+
+    private static function render_rsr_credential_tools(): void
+    {
+        ?>
+        <section class="fflhub-credential-tools fflhub-rsr-tools" aria-label="<?php esc_attr_e('RSR credential tests', 'ffl-hub'); ?>">
+            <h3><?php esc_html_e('Credential Tests', 'ffl-hub'); ?></h3>
+            <div class="fflhub-credential-test-actions fflhub-rsr-test-actions">
+                <button type="button" class="button button-secondary fflhub-rsr-test-credentials" data-profile="main">
+                    <?php esc_html_e('Test Main DirectConnect', 'ffl-hub'); ?>
+                </button>
+                <button type="button" class="button button-secondary fflhub-rsr-test-credentials" data-profile="dropship">
+                    <?php esc_html_e('Test Drop-Ship DirectConnect', 'ffl-hub'); ?>
+                </button>
+                <button type="button" class="button button-secondary fflhub-rsr-test-credentials" data-profile="ftp">
+                    <?php esc_html_e('Test FTP Feed', 'ffl-hub'); ?>
+                </button>
+            </div>
+            <div class="fflhub-credential-test-status fflhub-rsr-test-status" aria-live="polite"></div>
         </section>
         <?php
     }
@@ -1560,6 +1981,9 @@ class AdminPage
 
             <?php if ($id === 'zanders') : ?>
                 <?php self::render_zanders_credential_tools(); ?>
+            <?php endif; ?>
+            <?php if ($id === 'rsr') : ?>
+                <?php self::render_rsr_credential_tools(); ?>
             <?php endif; ?>
 
             <!-- Distributor settings form -->
