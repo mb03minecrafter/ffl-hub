@@ -54,6 +54,7 @@ final class OrionProductCronService extends AbstractTableCronService
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
         $catalog_timeout_seconds = $this->get_catalog_timeout_seconds();
         $inventory_timeout_seconds = $this->get_inventory_timeout_seconds();
+        $refresh_inventory_during_import = $this->should_refresh_inventory_during_import();
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
@@ -67,6 +68,7 @@ final class OrionProductCronService extends AbstractTableCronService
             'group' => $this->get_action_group(),
             'catalog_timeout_sec' => $catalog_timeout_seconds,
             'inventory_timeout_sec' => $inventory_timeout_seconds,
+            'refresh_inventory_during_import' => $refresh_inventory_during_import ? 1 : 0,
             'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
         ]);
 
@@ -113,49 +115,70 @@ final class OrionProductCronService extends AbstractTableCronService
             return;
         }
 
-        $t_inventory = microtime(true);
-        $inventory_client = $this->make_client($inventory_timeout_seconds);
-        $this->log('PHASE START: get_catalog_inventory', [
-            'timeout_sec' => $inventory_timeout_seconds,
-            'products_seen' => count($products),
-            'memory_kb' => $this->memory_kb(),
-            'memory_peak_kb' => $this->memory_peak_kb(),
-        ]);
-        $inventory = $inventory_client->get_catalog_inventory();
-        $inventory_data = (array) ($inventory['data'] ?? []);
-        $this->profile('get_catalog_inventory', $t_inventory, [
-            'ok' => empty($inventory['ok']) ? 0 : 1,
-            'status' => (int) ($inventory['status'] ?? 0),
-            'timeout_sec' => $inventory_timeout_seconds,
-            'response_bytes' => (int) ($inventory['response_bytes'] ?? 0),
-            'data_keys' => array_values(array_keys($inventory_data)),
-            'inventory_rows' => $this->count_inventory_rows($inventory_data),
-        ]);
+        $importer = new OrionProductImporterService($this->table);
+        $inventory_data = [];
 
-        if (empty($inventory['ok'])) {
-            update_option('fflhub_orion_fulfillment_last_error', current_time('mysql'), false);
-            $this->log('Orion get_catalog_inventory failed during product import; not swapping catalog.', [
-                'status' => (int) ($inventory['status'] ?? 0),
-                'error' => (string) ($inventory['error'] ?? ''),
+        if ($refresh_inventory_during_import) {
+            $t_inventory = microtime(true);
+            $inventory_client = $this->make_client($inventory_timeout_seconds);
+            $this->log('PHASE START: get_catalog_inventory', [
+                'timeout_sec' => $inventory_timeout_seconds,
+                'products_seen' => count($products),
+                'source' => 'orion_api',
+                'memory_kb' => $this->memory_kb(),
+                'memory_peak_kb' => $this->memory_peak_kb(),
             ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (inventory request failed)');
-            return;
-        }
+            $inventory = $inventory_client->get_catalog_inventory();
+            $inventory_data = (array) ($inventory['data'] ?? []);
+            $this->profile('get_catalog_inventory', $t_inventory, [
+                'ok' => empty($inventory['ok']) ? 0 : 1,
+                'status' => (int) ($inventory['status'] ?? 0),
+                'timeout_sec' => $inventory_timeout_seconds,
+                'response_bytes' => (int) ($inventory['response_bytes'] ?? 0),
+                'data_keys' => array_values(array_keys($inventory_data)),
+                'inventory_rows' => $this->count_inventory_rows($inventory_data),
+                'source' => 'orion_api',
+            ]);
 
-        $this->clear_inventory_failure_cooldown();
+            if (empty($inventory['ok'])) {
+                update_option('fflhub_orion_fulfillment_last_error', current_time('mysql'), false);
+                $this->log('Orion get_catalog_inventory failed during product import; not swapping catalog.', [
+                    'status' => (int) ($inventory['status'] ?? 0),
+                    'error' => (string) ($inventory['error'] ?? ''),
+                ]);
+                $this->finalize_run($t_start, $mem_start, 'ERROR (inventory request failed)');
+                return;
+            }
+
+            $this->clear_inventory_failure_cooldown();
+        } else {
+            $t_inventory_snapshot = microtime(true);
+            $this->log('PHASE START: load_live_inventory_snapshot', [
+                'products_seen' => count($products),
+                'source' => 'live_table',
+                'memory_kb' => $this->memory_kb(),
+                'memory_peak_kb' => $this->memory_peak_kb(),
+            ]);
+            $inventory_data = $importer->get_live_inventory_rows();
+            $this->profile('load_live_inventory_snapshot', $t_inventory_snapshot, [
+                'inventory_rows' => $this->count_inventory_rows($inventory_data),
+                'source' => 'live_table',
+            ]);
+        }
 
         $t_import = microtime(true);
         $this->log('PHASE START: import_products_array', [
             'products_seen' => count($products),
             'inventory_rows' => $this->count_inventory_rows($inventory_data),
+            'inventory_source' => $refresh_inventory_during_import ? 'orion_api' : 'live_table',
             'memory_kb' => $this->memory_kb(),
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
-        $importer = new OrionProductImporterService($this->table);
         $count = $importer->import_products_array($products, $inventory_data);
         $this->profile('import_products_array', $t_import, [
             'products_seen' => count($products),
             'inventory_rows' => $this->count_inventory_rows($inventory_data),
+            'inventory_source' => $refresh_inventory_during_import ? 'orion_api' : 'live_table',
             'rows_imported' => (int) $count,
         ]);
 
@@ -233,6 +256,11 @@ final class OrionProductCronService extends AbstractTableCronService
         );
 
         return max(10, min(180, $timeout_seconds));
+    }
+
+    private function should_refresh_inventory_during_import(): bool
+    {
+        return (bool) apply_filters('fflhub_orion_product_refresh_inventory_during_import', false);
     }
 
     private function clear_inventory_failure_cooldown(): void

@@ -94,6 +94,43 @@ final class OrionProductImporterService
     }
 
     /**
+     * Snapshot the current live inventory values so catalog imports can stay
+     * catalog-only while preserving the most recently refreshed stock state.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function get_live_inventory_rows(): array
+    {
+        global $wpdb;
+
+        $live_table = $this->table->get_live_table_name();
+        if ($live_table === '') {
+            return [];
+        }
+
+        $sql = "
+            SELECT
+                orion_product_id AS product_id,
+                orion_product_code AS product_code,
+                inventory_quantity AS quantity,
+                sale_price
+            FROM {$live_table}
+            WHERE
+                COALESCE(orion_product_id, '') <> ''
+                OR COALESCE(orion_product_code, '') <> ''
+        ";
+
+        $rows = $wpdb->get_results($sql, ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        return array_values(array_filter($rows, static function ($row): bool {
+            return is_array($row);
+        }));
+    }
+
+    /**
      * @param array<int,array<string,mixed>> $products
      * @param array<string,array<string,mixed>> $inventoryLookup
      */
