@@ -72,6 +72,24 @@ final class KinseysProductImporterService
         $skipped_dupe_upc = 0;
         $seen_upcs = [];
         $batch_flushes = 0;
+        $profile_detail = $this->profile_detail_enabled();
+        $parse_profile = [
+            'rows' => 0,
+            'total_ms' => 0.0,
+            'max_ms' => 0.0,
+        ];
+        $approval_profile = [
+            'rows' => 0,
+            'total_ms' => 0.0,
+            'max_ms' => 0.0,
+        ];
+        $flush_profile = [
+            'batches' => 0,
+            'rows' => 0,
+            'max_rows' => 0,
+            'total_ms' => 0.0,
+            'max_ms' => 0.0,
+        ];
 
         $t_phase = microtime(true);
         foreach ($products as $product) {
@@ -79,7 +97,12 @@ final class KinseysProductImporterService
                 continue;
             }
 
+            $t_parse = $profile_detail ? microtime(true) : 0.0;
             $row = $this->parser->parse_product($product, $inventory_lookup);
+            if ($profile_detail) {
+                $this->add_timing_profile($parse_profile, $t_parse, 'rows');
+            }
+
             if (!is_array($row)) {
                 $skipped_missing_upc++;
                 continue;
@@ -97,17 +120,35 @@ final class KinseysProductImporterService
             }
             $seen_upcs[$upc] = true;
 
+            $t_approval = $profile_detail ? microtime(true) : 0.0;
             $batch_rows[] = SigDropshipApproval::apply_to_row('kinseys', $row);
+            if ($profile_detail) {
+                $this->add_timing_profile($approval_profile, $t_approval, 'rows');
+            }
 
             if (count($batch_rows) >= $batch_size) {
+                $flush_rows = count($batch_rows);
+                $t_flush = $profile_detail ? microtime(true) : 0.0;
                 $total_inserted += $this->flush_staging_batch($batch_rows);
+                if ($profile_detail) {
+                    $this->add_timing_profile($flush_profile, $t_flush, 'batches');
+                    $flush_profile['rows'] += $flush_rows;
+                    $flush_profile['max_rows'] = max((int) $flush_profile['max_rows'], $flush_rows);
+                }
                 $batch_flushes++;
                 $batch_rows = [];
             }
         }
 
         if (!empty($batch_rows)) {
+            $flush_rows = count($batch_rows);
+            $t_flush = $profile_detail ? microtime(true) : 0.0;
             $total_inserted += $this->flush_staging_batch($batch_rows);
+            if ($profile_detail) {
+                $this->add_timing_profile($flush_profile, $t_flush, 'batches');
+                $flush_profile['rows'] += $flush_rows;
+                $flush_profile['max_rows'] = max((int) $flush_profile['max_rows'], $flush_rows);
+            }
             $batch_flushes++;
         }
         $phase_ms['parse_and_insert_rows'] = $this->elapsed_ms($t_phase);
@@ -133,6 +174,17 @@ final class KinseysProductImporterService
             $ctx['memory_start_kb'] = (int) round($mem_start / 1024);
             $ctx['memory_end_kb'] = (int) round($mem_end / 1024);
             $ctx['memory_delta_kb'] = (int) round(($mem_end - $mem_start) / 1024);
+        }
+
+        if ($profile_detail) {
+            $ctx['detail_profile'] = [
+                'parse_product' => $this->timing_profile_summary($parse_profile, 'rows'),
+                'sig_approval' => $this->timing_profile_summary($approval_profile, 'rows'),
+                'db_flush' => $this->timing_profile_summary($flush_profile, 'batches') + [
+                    'rows' => (int) $flush_profile['rows'],
+                    'max_rows' => (int) $flush_profile['max_rows'],
+                ],
+            ];
         }
 
         $this->log('Kinsey\'s product import complete.', $ctx);
@@ -543,6 +595,44 @@ final class KinseysProductImporterService
     private function elapsed_ms(float $tStart): string
     {
         return number_format((microtime(true) - $tStart) * 1000.0, 2, '.', '');
+    }
+
+    private function profile_detail_enabled(): bool
+    {
+        return defined(self::DEBUG_FLAG) && (bool) constant(self::DEBUG_FLAG);
+    }
+
+    /**
+     * @param array<string,int|float> $profile
+     */
+    private function add_timing_profile(array &$profile, float $tStart, string $countKey): void
+    {
+        $elapsed = (microtime(true) - $tStart) * 1000.0;
+        $profile[$countKey] = (int) $profile[$countKey] + 1;
+        $profile['total_ms'] = (float) $profile['total_ms'] + $elapsed;
+        $profile['max_ms'] = max((float) $profile['max_ms'], $elapsed);
+    }
+
+    /**
+     * @param array<string,int|float> $profile
+     * @return array<string,mixed>
+     */
+    private function timing_profile_summary(array $profile, string $countKey): array
+    {
+        $count = (int) ($profile[$countKey] ?? 0);
+        $total = (float) ($profile['total_ms'] ?? 0.0);
+
+        return [
+            $countKey => $count,
+            'total_ms' => $this->format_ms($total),
+            'avg_ms' => $count > 0 ? $this->format_ms($total / $count) : '0.00',
+            'max_ms' => $this->format_ms((float) ($profile['max_ms'] ?? 0.0)),
+        ];
+    }
+
+    private function format_ms(float $ms): string
+    {
+        return number_format($ms, 2, '.', '');
     }
 
     /**

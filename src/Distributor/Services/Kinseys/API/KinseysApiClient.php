@@ -122,6 +122,7 @@ final class KinseysApiClient
             $headers['Kinsey-Source'] = $this->source;
         }
 
+        $t_transport = microtime(true);
         $response = wp_remote_get(
             $url,
             [
@@ -129,9 +130,15 @@ final class KinseysApiClient
                 'headers' => $headers,
             ]
         );
+        $transport_ms = $this->elapsed_ms($t_transport);
 
+        $t_parse = microtime(true);
         $parsed = $this->parse_response($response);
-        $this->log('HTTP GET complete', $this->response_context($request_context, $parsed, $t_request));
+        $parse_ms = $this->elapsed_ms($t_parse);
+        $this->log('HTTP GET complete', $this->response_context($request_context, $parsed, $t_request, [
+            'transport_ms' => $transport_ms,
+            'parse_response_ms' => $parse_ms,
+        ]));
 
         return $parsed;
     }
@@ -314,7 +321,7 @@ final class KinseysApiClient
      * @param array<string,mixed> $parsed
      * @return array<string,mixed>
      */
-    private function response_context(array $requestContext, array $parsed, float $t0): array
+    private function response_context(array $requestContext, array $parsed, float $t0, array $timings = []): array
     {
         $ctx = $requestContext;
         $ctx['ok'] = empty($parsed['ok']) ? 0 : 1;
@@ -334,7 +341,16 @@ final class KinseysApiClient
             }
         }
 
+        foreach ($timings as $key => $value) {
+            $ctx[(string) $key] = $value;
+        }
+
         return $ctx;
+    }
+
+    private function elapsed_ms(float $tStart): string
+    {
+        return number_format((microtime(true) - $tStart) * 1000.0, 2, '.', '');
     }
 
     private static function excerpt_for_log(string $text, int $max = 1200): string
