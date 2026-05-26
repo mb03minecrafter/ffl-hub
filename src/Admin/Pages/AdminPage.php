@@ -504,6 +504,7 @@ class AdminPage
         $provider_code = strtoupper(trim((string) ($res['provider_error_code'] ?? '')));
         $http_status = (int) ($res['http_status'] ?? 0);
         $likely_cause = trim((string) ($res['likely_cause'] ?? ''));
+        $raw_response = self::lipseys_format_raw_response($res['raw'] ?? null);
 
         if (empty($res['ok'])) {
             return [
@@ -514,6 +515,7 @@ class AdminPage
                 'providerCode' => $provider_code,
                 'httpStatus' => $http_status,
                 'likelyCause' => $likely_cause,
+                'rawResponse' => $raw_response,
             ];
         }
 
@@ -528,7 +530,26 @@ class AdminPage
             'providerCode' => $provider_code,
             'httpStatus' => $http_status,
             'likelyCause' => $likely_cause,
+            'rawResponse' => $raw_response,
         ];
+    }
+
+    /**
+     * @param mixed $raw
+     */
+    private static function lipseys_format_raw_response($raw): string
+    {
+        if ($raw === null || $raw === '') {
+            return '';
+        }
+
+        if (is_scalar($raw)) {
+            return trim((string) $raw);
+        }
+
+        $encoded = wp_json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+        return is_string($encoded) ? $encoded : '';
     }
 
     /**
@@ -847,6 +868,18 @@ class AdminPage
             ];
         }
 
+        if (self::rsr_message_looks_webref_required_response($status_code, $status_message)) {
+            return [
+                'ok' => true,
+                'message' => sprintf(
+                    __('Credentials accepted for %1$s. RSR returned StatusCode=96 / WebRef required for fake PO %2$s, which means the check-order call reached account-level order validation.', 'ffl-hub'),
+                    $profile_label,
+                    $fake_po
+                ),
+                'rsrStatusCode' => $status_code,
+            ];
+        }
+
         if ($status_summary !== '' && self::rsr_message_looks_fake_order_response($status_summary)) {
             return [
                 'ok' => true,
@@ -1011,6 +1044,16 @@ class AdminPage
         }
 
         return null;
+    }
+
+    private static function rsr_message_looks_webref_required_response(string $status_code, string $status_message): bool
+    {
+        $status_code = trim($status_code);
+        $message = strtolower(trim($status_message));
+
+        return $status_code === '96'
+            && strpos($message, 'webref') !== false
+            && strpos($message, 'required') !== false;
     }
 
     private static function rsr_message_looks_fake_order_response(string $message): bool

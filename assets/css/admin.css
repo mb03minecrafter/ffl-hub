@@ -262,6 +262,8 @@
     border-radius: 4px;
     background: #fff;
     color: #50575e;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 .fflhub-credential-test-status:empty {

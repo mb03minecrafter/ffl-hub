@@ -185,7 +185,15 @@
             details.push(data.likelyCause);
         }
 
-        return details.length ? message + ' (' + details.join(', ') + ')' : message;
+        if (details.length) {
+            message += ' (' + details.join(', ') + ')';
+        }
+
+        if (data && data.rawResponse) {
+            message += '\n\nRaw response:\n' + data.rawResponse;
+        }
+
+        return message;
     }
 
     function testLipseysCredentials($button) {

@@ -1096,7 +1096,7 @@ final class LipseysIntegrationAPI
             '_keys' => array_slice(array_keys($resp), 0, 30),
         ];
 
-        foreach (['authorized', 'success', 'errors', 'data'] as $k) {
+        foreach (['authorized', 'success', 'errors', 'data', 'http_code', 'token_present', 'login_diagnostics'] as $k) {
             if (array_key_exists($k, $resp)) {
                 $out[$k] = $resp[$k];
             }
