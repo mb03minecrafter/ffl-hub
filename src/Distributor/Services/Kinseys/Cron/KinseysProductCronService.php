@@ -60,11 +60,14 @@ final class KinseysProductCronService extends AbstractTableCronService
 
         update_option('fflhub_kinseys_product_last_run', current_time('mysql'), false);
 
+        $table_ctx = $this->table_context();
         $this->log('---- RUN START ----', [
             'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
             'hook' => self::CRON_HOOK,
             'group' => $this->get_action_group(),
             'timeout_sec' => $timeout_seconds,
+            'live_table' => $table_ctx['live_table'],
+            'staging_table' => $table_ctx['staging_table'],
             'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
@@ -93,6 +96,7 @@ final class KinseysProductCronService extends AbstractTableCronService
             'status' => (int) ($products['status'] ?? 0),
             'timeout_sec' => $timeout_seconds,
             'response_bytes' => (int) ($products['response_bytes'] ?? 0),
+            'data_keys' => array_values(array_keys($product_data)),
             'products_seen' => count($product_rows),
         ]);
 
@@ -129,6 +133,7 @@ final class KinseysProductCronService extends AbstractTableCronService
         $this->profile('load_live_inventory_snapshot', $t_snapshot, [
             'inventory_rows' => count($inventory_rows),
             'source' => 'live_table',
+            'live_table' => $table_ctx['live_table'],
         ]);
 
         $t_import = microtime(true);
@@ -136,6 +141,7 @@ final class KinseysProductCronService extends AbstractTableCronService
             'products_seen' => count($product_rows),
             'inventory_rows' => count($inventory_rows),
             'inventory_source' => 'live_table',
+            'staging_table' => $table_ctx['staging_table'],
             'memory_kb' => $this->memory_kb(),
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
@@ -145,6 +151,7 @@ final class KinseysProductCronService extends AbstractTableCronService
             'inventory_rows' => count($inventory_rows),
             'inventory_source' => 'live_table',
             'rows_imported' => (int) $imported,
+            'staging_table' => $table_ctx['staging_table'],
         ]);
 
         if ($imported <= 0) {
@@ -157,6 +164,8 @@ final class KinseysProductCronService extends AbstractTableCronService
         $t_swap = microtime(true);
         $this->log('PHASE START: swap_live_and_staging', [
             'rows_imported' => (int) $imported,
+            'old_live' => $table_ctx['live_table'],
+            'old_staging' => $table_ctx['staging_table'],
             'memory_kb' => $this->memory_kb(),
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
@@ -177,6 +186,7 @@ final class KinseysProductCronService extends AbstractTableCronService
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
             'products_seen' => count($product_rows),
             'rows_imported' => (int) $imported,
+            'old_live' => $table_ctx['live_table'],
             'new_live' => $new_live,
         ]);
     }
@@ -233,6 +243,24 @@ final class KinseysProductCronService extends AbstractTableCronService
     private function memory_peak_kb(): int
     {
         return function_exists('memory_get_peak_usage') ? (int) round(memory_get_peak_usage(true) / 1024) : 0;
+    }
+
+    /**
+     * @return array{live_table:string,staging_table:string}
+     */
+    private function table_context(): array
+    {
+        try {
+            return [
+                'live_table' => (string) $this->table->get_live_table_name(),
+                'staging_table' => (string) $this->table->get_staging_table_name(),
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'live_table' => '',
+                'staging_table' => '',
+            ];
+        }
     }
 
     /**

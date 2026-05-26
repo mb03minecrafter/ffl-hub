@@ -62,11 +62,13 @@ final class KinseysInventoryCronService extends AbstractTableCronService
 
         update_option('fflhub_kinseys_inventory_last_run', current_time('mysql'), false);
 
+        $table_ctx = $this->table_context();
         $this->log('---- RUN START ----', [
             'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
             'hook' => self::CRON_HOOK,
             'group' => $this->get_action_group(),
             'timeout_sec' => $timeout_seconds,
+            'live_table' => $table_ctx['live_table'],
             'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
@@ -102,6 +104,7 @@ final class KinseysInventoryCronService extends AbstractTableCronService
             'status' => (int) ($inventory['status'] ?? 0),
             'timeout_sec' => $timeout_seconds,
             'response_bytes' => (int) ($inventory['response_bytes'] ?? 0),
+            'data_keys' => array_values(array_keys($inventory_data)),
             'inventory_rows' => count($inventory_rows),
         ]);
 
@@ -123,6 +126,7 @@ final class KinseysInventoryCronService extends AbstractTableCronService
         $importer = new KinseysProductImporterService($this->table, $parser);
         $this->log('PHASE START: apply_inventory_array_to_live', [
             'inventory_rows' => count($inventory_rows),
+            'live_table' => $table_ctx['live_table'],
             'memory_kb' => $this->memory_kb(),
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
@@ -281,6 +285,22 @@ final class KinseysInventoryCronService extends AbstractTableCronService
     private function memory_peak_kb(): int
     {
         return function_exists('memory_get_peak_usage') ? (int) round(memory_get_peak_usage(true) / 1024) : 0;
+    }
+
+    /**
+     * @return array{live_table:string}
+     */
+    private function table_context(): array
+    {
+        try {
+            return [
+                'live_table' => (string) $this->table->get_live_table_name(),
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'live_table' => '',
+            ];
+        }
     }
 
     /**

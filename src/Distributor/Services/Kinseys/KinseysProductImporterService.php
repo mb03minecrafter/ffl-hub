@@ -40,17 +40,24 @@ final class KinseysProductImporterService
 
         $t_start = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $phase_ms = [];
+
+        $t_phase = microtime(true);
         $inventory_lookup = $this->parser->build_inventory_lookup($inventoryResponseOrRows);
+        $phase_ms['build_inventory_lookup'] = $this->elapsed_ms($t_phase);
 
         $this->log('Kinsey\'s product import start.', [
             'products_in' => count($products),
             'inventory_lookup_rows' => count($inventory_lookup),
+            'phase_ms' => $phase_ms,
             'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
         ]);
 
         try {
+            $t_phase = microtime(true);
             $this->table->createTables();
             $this->table->truncate_staging();
+            $phase_ms['prepare_staging_table'] = $this->elapsed_ms($t_phase);
         } catch (\Throwable $e) {
             $this->log('ERROR: Kinsey\'s staging table preparation failed.', [
                 'error' => $e->getMessage(),
@@ -64,7 +71,9 @@ final class KinseysProductImporterService
         $skipped_missing_upc = 0;
         $skipped_dupe_upc = 0;
         $seen_upcs = [];
+        $batch_flushes = 0;
 
+        $t_phase = microtime(true);
         foreach ($products as $product) {
             if (!is_array($product)) {
                 continue;
@@ -92,13 +101,16 @@ final class KinseysProductImporterService
 
             if (count($batch_rows) >= $batch_size) {
                 $total_inserted += $this->flush_staging_batch($batch_rows);
+                $batch_flushes++;
                 $batch_rows = [];
             }
         }
 
         if (!empty($batch_rows)) {
             $total_inserted += $this->flush_staging_batch($batch_rows);
+            $batch_flushes++;
         }
+        $phase_ms['parse_and_insert_rows'] = $this->elapsed_ms($t_phase);
 
         if ($total_inserted > 0) {
             update_option('fflhub_kinseys_fulfillment_last_import', current_time('mysql'), false);
@@ -110,6 +122,9 @@ final class KinseysProductImporterService
             'rows_inserted' => (int) $total_inserted,
             'skipped_missing_upc' => (int) $skipped_missing_upc,
             'skipped_dupe_upc' => (int) $skipped_dupe_upc,
+            'batch_size' => (int) $batch_size,
+            'batch_flushes' => (int) $batch_flushes,
+            'phase_ms' => $phase_ms,
             'elapsed_ms' => $this->elapsed_ms($t_start),
         ];
 
