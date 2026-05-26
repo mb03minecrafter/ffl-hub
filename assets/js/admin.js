@@ -39,6 +39,10 @@
         return getCredentialStatus($button, '.fflhub-lipseys-test-status');
     }
 
+    function getCssiStatus($button) {
+        return getCredentialStatus($button, '.fflhub-cssi-test-status');
+    }
+
     function formatZandersCredentialResult(data) {
         var message = data && data.message ? data.message : 'Credential test finished.';
         var details = [];
@@ -239,6 +243,76 @@
             });
     }
 
+    function formatCssiCredentialResult(data) {
+        var message = data && data.message ? data.message : 'Credential test finished.';
+        var details = [];
+
+        if (data && data.httpStatus) {
+            details.push('HTTP ' + data.httpStatus);
+        }
+        if (data && data.providerCode) {
+            details.push(data.providerCode);
+        }
+        if (data && typeof data.itemsCount !== 'undefined' && data.itemsCount !== null) {
+            details.push('items ' + data.itemsCount);
+        }
+        if (data && typeof data.pageCount !== 'undefined' && data.pageCount !== null) {
+            details.push('pages ' + data.pageCount);
+        }
+
+        if (details.length) {
+            message += ' (' + details.join(', ') + ')';
+        }
+
+        if (data && data.rawResponse) {
+            message += '\n\nRaw response:\n' + data.rawResponse;
+        }
+
+        return message;
+    }
+
+    function testCssiCredentials($button) {
+        var $status = getCssiStatus($button);
+
+        if (!window.FFLHubAdmin || !window.FFLHubAdmin.ajaxUrl || !window.FFLHubAdmin.cssiCredentialNonce) {
+            setCredentialStatus($status, 'error', 'Credential test is not configured on this page.');
+            return;
+        }
+
+        setCredentialStatus($status, 'pending', 'Testing CSSI REST API credentials...');
+        $button.prop('disabled', true).addClass('is-busy');
+
+        $.post(window.FFLHubAdmin.ajaxUrl, {
+            action: 'fflhub_test_cssi_credentials',
+            nonce: window.FFLHubAdmin.cssiCredentialNonce,
+            profile: $button.data('profile') || '',
+            fields: collectDistributorFields($button)
+        })
+            .done(function (response) {
+                var data = response && response.data ? response.data : {};
+                if (!response || response.success !== true) {
+                    setCredentialStatus($status, 'error', data.message || 'Credential test failed.');
+                    return;
+                }
+
+                setCredentialStatus(
+                    $status,
+                    data.ok ? 'success' : 'error',
+                    formatCssiCredentialResult(data)
+                );
+            })
+            .fail(function (xhr) {
+                var message = 'Credential test failed.';
+                if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                    message = xhr.responseJSON.data.message;
+                }
+                setCredentialStatus($status, 'error', message);
+            })
+            .always(function () {
+                $button.prop('disabled', false).removeClass('is-busy');
+            });
+    }
+
     function openModal(panelId) {
         var $modal = $('#fflhub-modal');
         var $panels = $modal.find('.fflhub-modal-panel');
@@ -309,6 +383,11 @@
         $(document).on('click', '.fflhub-lipseys-test-credentials', function (e) {
             e.preventDefault();
             testLipseysCredentials($(this));
+        });
+
+        $(document).on('click', '.fflhub-cssi-test-credentials', function (e) {
+            e.preventDefault();
+            testCssiCredentials($(this));
         });
     });
 })(jQuery);

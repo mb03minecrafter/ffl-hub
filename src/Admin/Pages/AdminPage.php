@@ -13,6 +13,7 @@ use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Integrations\Lipseys\LipseysIntegrationAPI;
 use FFLHub\Distributor\Integrations\RSR\RSRDirectConnectAPI;
 use FFLHub\Distributor\Integrations\Zanders\ZandersDirectShipAPI;
+use FFLHub\Distributor\Services\CSSI\API\CSSIClient;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\Zanders\API\ZandersSoapCurlClient;
 
@@ -56,6 +57,7 @@ class AdminPage
 
         // Handle enable/disable distributor actions.
         add_action('admin_post_fflhub_toggle_distributor', [$this, 'handle_toggle_distributor']);
+        add_action('wp_ajax_fflhub_test_cssi_credentials', [$this, 'handle_test_cssi_credentials']);
         add_action('wp_ajax_fflhub_test_lipseys_credentials', [$this, 'handle_test_lipseys_credentials']);
         add_action('wp_ajax_fflhub_test_rsr_credentials', [$this, 'handle_test_rsr_credentials']);
         add_action('wp_ajax_fflhub_test_zanders_soap_credentials', [$this, 'handle_test_zanders_soap_credentials']);
@@ -97,6 +99,7 @@ class AdminPage
             'FFLHubAdmin',
             [
                 'ajaxUrl' => admin_url('admin-ajax.php'),
+                'cssiCredentialNonce' => wp_create_nonce('fflhub_test_cssi_credentials'),
                 'lipseysCredentialNonce' => wp_create_nonce('fflhub_test_lipseys_credentials'),
                 'rsrCredentialNonce' => wp_create_nonce('fflhub_test_rsr_credentials'),
                 'zandersSoapNonce' => wp_create_nonce('fflhub_test_zanders_soap_credentials'),
@@ -348,6 +351,19 @@ class AdminPage
         wp_send_json_success(self::test_lipseys_api_credentials($profile, $profile_config, $posted_fields));
     }
 
+    public function handle_test_cssi_credentials(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('You do not have permission to perform this action.', 'ffl-hub')], 403);
+        }
+
+        check_ajax_referer('fflhub_test_cssi_credentials', 'nonce');
+
+        $posted_fields = self::posted_distributor_settings_fields();
+
+        wp_send_json_success(self::test_cssi_api_credentials($posted_fields));
+    }
+
     /**
      * @return array{label:string,username_key:string,password_key:string}|null
      */
@@ -545,6 +561,134 @@ class AdminPage
 
         if (is_scalar($raw)) {
             return trim((string) $raw);
+        }
+
+        $encoded = wp_json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+        return is_string($encoded) ? $encoded : '';
+    }
+
+    /**
+     * @param array<string,string> $posted_fields
+     * @return array<string,mixed>
+     */
+    private static function test_cssi_api_credentials(array $posted_fields): array
+    {
+        $sid = self::distributor_posted_or_saved_setting('cssi', $posted_fields, 'sid');
+        $token = self::distributor_posted_or_saved_setting('cssi', $posted_fields, 'token');
+
+        if ($sid === '' || $token === '') {
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'CSSI REST API',
+                'message' => __('Missing SID or token for CSSI REST API.', 'ffl-hub'),
+            ];
+        }
+
+        try {
+            $client = new CSSIClient($sid, $token);
+            $res = $client->test_credentials((int) apply_filters('fflhub_cssi_credential_test_timeout_sec', 30));
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'CSSI REST API',
+                'message' => 'CSSI credential test failed before a usable response: ' . $e->getMessage(),
+                'httpStatus' => 0,
+            ];
+        }
+
+        $http_status = (int) ($res['status'] ?? 0);
+        $provider_code = self::cssi_provider_code_from_response($res);
+        $item_count = isset($res['items']) && is_array($res['items']) ? count($res['items']) : null;
+        $pagination = isset($res['pagination']) && is_array($res['pagination']) ? (array) $res['pagination'] : [];
+        $page_count = isset($pagination['page_count']) ? (int) $pagination['page_count'] : null;
+        $raw_response = self::cssi_format_raw_response($res);
+
+        if (empty($res['ok'])) {
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'CSSI REST API',
+                'message' => (string) ($res['error'] ?? __('CSSI REST API credential probe failed.', 'ffl-hub')),
+                'providerCode' => $provider_code,
+                'httpStatus' => $http_status,
+                'rawResponse' => $raw_response,
+            ];
+        }
+
+        if (empty($res['credentials_confirmed'])) {
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'CSSI REST API',
+                'message' => __('CSSI returned HTTP JSON, but the response did not include the expected items payload. Treating this credential test as inconclusive.', 'ffl-hub'),
+                'providerCode' => $provider_code,
+                'httpStatus' => $http_status,
+                'itemsCount' => $item_count,
+                'pageCount' => $page_count,
+                'rawResponse' => $raw_response,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'profile' => 'api',
+            'profileLabel' => 'CSSI REST API',
+            'message' => __('Credentials accepted for CSSI REST API. The read-only /items probe returned the expected items response shape.', 'ffl-hub'),
+            'providerCode' => $provider_code,
+            'httpStatus' => $http_status,
+            'itemsCount' => $item_count,
+            'pageCount' => $page_count,
+            'rawResponse' => $raw_response,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $res
+     */
+    private static function cssi_provider_code_from_response(array $res): string
+    {
+        $data = isset($res['data']) && is_array($res['data']) ? (array) $res['data'] : [];
+
+        return strtoupper(trim((string) ($data['error_code'] ?? '')));
+    }
+
+    /**
+     * @param array<string,mixed> $res
+     */
+    private static function cssi_format_raw_response(array $res): string
+    {
+        $data = isset($res['data']) && is_array($res['data']) ? (array) $res['data'] : [];
+        $pagination = isset($res['pagination']) && is_array($res['pagination']) ? (array) $res['pagination'] : [];
+        $raw = [
+            'ok' => !empty($res['ok']),
+            'status' => (int) ($res['status'] ?? 0),
+        ];
+
+        foreach (['error', 'content_type', 'curl_errno', 'curl_error', 'json_error', 'raw_body_excerpt'] as $key) {
+            if (array_key_exists($key, $res) && $res[$key] !== '' && $res[$key] !== null) {
+                $raw[$key] = $res[$key];
+            }
+        }
+
+        if (!empty($data)) {
+            $raw['data_keys'] = array_values(array_map('strval', array_slice(array_keys($data), 0, 30)));
+        }
+        if (isset($data['message'])) {
+            $raw['message'] = $data['message'];
+        }
+        if (isset($data['error_code'])) {
+            $raw['error_code'] = $data['error_code'];
+        }
+        if (array_key_exists('items', $data)) {
+            $raw['items_count'] = is_array($data['items']) ? count($data['items']) : null;
+        }
+        if (!empty($pagination)) {
+            $raw['pagination'] = $pagination;
+        } elseif (isset($data['pagination']) && is_array($data['pagination'])) {
+            $raw['pagination'] = $data['pagination'];
         }
 
         $encoded = wp_json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
@@ -2335,6 +2479,21 @@ class AdminPage
         <?php
     }
 
+    private static function render_cssi_credential_tools(): void
+    {
+        ?>
+        <section class="fflhub-credential-tools fflhub-cssi-tools" aria-label="<?php esc_attr_e('CSSI credential tests', 'ffl-hub'); ?>">
+            <h3><?php esc_html_e('Credential Tests', 'ffl-hub'); ?></h3>
+            <div class="fflhub-credential-test-actions fflhub-cssi-test-actions">
+                <button type="button" class="button button-secondary fflhub-cssi-test-credentials" data-profile="api">
+                    <?php esc_html_e('Test REST API', 'ffl-hub'); ?>
+                </button>
+            </div>
+            <div class="fflhub-credential-test-status fflhub-cssi-test-status" aria-live="polite"></div>
+        </section>
+        <?php
+    }
+
     /**
      * Render a full distributor settings form inside the modal,
      * including the Enable/Disable button.
@@ -2406,6 +2565,9 @@ class AdminPage
             <?php endif; ?>
             <?php if ($id === 'lipseys') : ?>
                 <?php self::render_lipseys_credential_tools(); ?>
+            <?php endif; ?>
+            <?php if ($id === 'cssi') : ?>
+                <?php self::render_cssi_credential_tools(); ?>
             <?php endif; ?>
 
             <!-- Distributor settings form -->

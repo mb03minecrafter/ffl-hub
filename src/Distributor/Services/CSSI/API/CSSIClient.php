@@ -37,6 +37,57 @@ final class CSSIClient
     }
 
     /**
+     * Read-only credential probe. A valid response must look like the expected
+     * CSSI items endpoint shape; a generic 2xx JSON payload is not enough.
+     *
+     * @return array<string,mixed>
+     */
+    public function test_credentials(int $timeout = 30): array
+    {
+        $t0 = microtime(true);
+        $timeout = max(10, min(60, (int) $timeout));
+
+        $this->log('Credential test request start', [
+            'endpoint' => 'items',
+            'per_page' => 1,
+        ]);
+
+        $res = $this->request_json('GET', 'items', [
+            'page' => 1,
+            'per_page' => 1,
+        ], null, $timeout);
+
+        if (!(bool) ($res['ok'] ?? false)) {
+            $this->profile('Credential test request failed', $t0, [
+                'status' => (int) ($res['status'] ?? 0),
+                'error' => (string) ($res['error'] ?? 'Unknown error'),
+            ]);
+            return $res;
+        }
+
+        $data = is_array($res['data'] ?? null) ? (array) $res['data'] : [];
+        $items = isset($data['items']) && is_array($data['items']) ? (array) $data['items'] : [];
+        $pagination = isset($data['pagination']) && is_array($data['pagination']) ? (array) $data['pagination'] : [];
+
+        $res['items'] = $items;
+        $res['pagination'] = [
+            'page' => (int) ($pagination['page'] ?? 1),
+            'per_page' => (int) ($pagination['per_page'] ?? 1),
+            'page_count' => (int) ($pagination['page_count'] ?? 1),
+        ];
+        $res['credentials_confirmed'] = array_key_exists('items', $data) && is_array($data['items']);
+
+        $this->profile('Credential test request complete', $t0, [
+            'status' => (int) ($res['status'] ?? 0),
+            'confirmed' => !empty($res['credentials_confirmed']) ? 1 : 0,
+            'item_count' => count($items),
+            'data_keys' => array_values(array_map('strval', array_slice(array_keys($data), 0, 12))),
+        ]);
+
+        return $res;
+    }
+
+    /**
      * @param array<string,mixed> $query
      * @return array<string,mixed>
      */
@@ -641,7 +692,7 @@ final class CSSIClient
      * @param array<string,mixed>|null $body
      * @return array<string,mixed>
      */
-    private function request_json(string $method, string $path, array $query = [], ?array $body = null): array
+    private function request_json(string $method, string $path, array $query = [], ?array $body = null, int $timeout = 90): array
     {
         $t0 = microtime(true);
 
@@ -688,7 +739,7 @@ final class CSSIClient
             'sid_prefix' => $this->mask_sid($this->sid),
         ]);
 
-        $exec = $this->execute_curl($method, $url, $headers, $encodedBody, null, 90);
+        $exec = $this->execute_curl($method, $url, $headers, $encodedBody, null, max(1, $timeout));
 
         if (!(bool) ($exec['transport_ok'] ?? false)) {
             $out = [
@@ -744,6 +795,7 @@ final class CSSIClient
                 'error' => $error,
                 'data' => is_array($decoded) ? $decoded : [],
                 'content_type' => $contentType,
+                'raw_body_excerpt' => $this->truncate($rawBody, 2000),
             ];
 
             $this->profile('HTTP response non-success', $t0, [
@@ -765,6 +817,7 @@ final class CSSIClient
                 'error' => 'Invalid JSON response from CSSI API.',
                 'content_type' => $contentType,
                 'json_error' => $jsonError,
+                'raw_body_excerpt' => $this->truncate($rawBody, 2000),
             ];
 
             $this->profile('HTTP response invalid JSON', $t0, [
