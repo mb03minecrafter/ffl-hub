@@ -46,18 +46,88 @@ final class KinseysProductImporterService
         $inventory_lookup = $this->parser->build_inventory_lookup($inventoryResponseOrRows);
         $phase_ms['build_inventory_lookup'] = $this->elapsed_ms($t_phase);
 
+        $t_phase = microtime(true);
+        $columns = $this->table->get_schema()->get_insert_columns();
+        $tsv_path = $this->resolve_catalog_tsv_path();
+        $phase_ms['resolve_import_inputs'] = $this->elapsed_ms($t_phase);
+
         $this->log('Kinsey\'s product import start.', [
             'products_in' => count($products),
             'inventory_lookup_rows' => count($inventory_lookup),
+            'column_count' => count($columns),
+            'tsv_path' => (string) $tsv_path,
             'phase_ms' => $phase_ms,
             'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
         ]);
 
+        if ($tsv_path === '' || empty($columns)) {
+            $this->log('Kinsey\'s product import falling back to batched inserts; TSV path or columns unavailable.', [
+                'tsv_path' => (string) $tsv_path,
+                'column_count' => count($columns),
+            ]);
+
+            return $this->import_products_array_via_batches($products, $inventory_lookup, $t_start, $mem_start, $phase_ms);
+        }
+
+        $t_phase = microtime(true);
+        $write_stats = $this->write_catalog_tsv($products, $inventory_lookup, $columns, $tsv_path);
+        $phase_ms['write_catalog_tsv'] = $this->elapsed_ms($t_phase);
+
+        if ((int) ($write_stats['rows_written'] ?? 0) <= 0) {
+            $write_stats['phase_ms'] = $phase_ms;
+            $this->log('Kinsey\'s product import wrote zero TSV rows; not loading.', $write_stats);
+            return 0;
+        }
+
+        $t_phase = microtime(true);
+        $count = $this->import_from_tsv_file($tsv_path, $columns);
+        $phase_ms['load_tsv_into_staging'] = $this->elapsed_ms($t_phase);
+
+        if ($count > 0) {
+            update_option('fflhub_kinseys_fulfillment_last_import', current_time('mysql'), false);
+            update_option('fflhub_kinseys_fulfillment_last_import_count', (int) $count, false);
+        }
+
+        $ctx = array_merge($write_stats, [
+            'mode' => 'tsv_load',
+            'rows_inserted' => (int) $count,
+            'phase_ms' => $phase_ms,
+            'elapsed_ms' => $this->elapsed_ms($t_start),
+        ]);
+
+        if ($mem_start > 0 && function_exists('memory_get_usage')) {
+            $mem_end = (int) memory_get_usage(true);
+            $ctx['memory_start_kb'] = (int) round($mem_start / 1024);
+            $ctx['memory_end_kb'] = (int) round($mem_end / 1024);
+            $ctx['memory_delta_kb'] = (int) round(($mem_end - $mem_start) / 1024);
+        }
+
+        if (function_exists('memory_get_peak_usage')) {
+            $ctx['memory_peak_kb'] = (int) round(memory_get_peak_usage(true) / 1024);
+        }
+
+        $this->log('Kinsey\'s product import complete.', $ctx);
+
+        return (int) $count;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $products
+     * @param array<string,array<string,mixed>> $inventoryLookup
+     * @param array<string,string> $phaseMs
+     */
+    private function import_products_array_via_batches(
+        array $products,
+        array $inventoryLookup,
+        float $t_start,
+        int $mem_start,
+        array $phaseMs
+    ): int {
         try {
             $t_phase = microtime(true);
             $this->table->createTables();
             $this->table->truncate_staging();
-            $phase_ms['prepare_staging_table'] = $this->elapsed_ms($t_phase);
+            $phaseMs['prepare_staging_table'] = $this->elapsed_ms($t_phase);
         } catch (\Throwable $e) {
             $this->log('ERROR: Kinsey\'s staging table preparation failed.', [
                 'error' => $e->getMessage(),
@@ -98,7 +168,7 @@ final class KinseysProductImporterService
             }
 
             $t_parse = $profile_detail ? microtime(true) : 0.0;
-            $row = $this->parser->parse_product($product, $inventory_lookup);
+            $row = $this->parser->parse_product($product, $inventoryLookup);
             if ($profile_detail) {
                 $this->add_timing_profile($parse_profile, $t_parse, 'rows');
             }
@@ -151,7 +221,7 @@ final class KinseysProductImporterService
             }
             $batch_flushes++;
         }
-        $phase_ms['parse_and_insert_rows'] = $this->elapsed_ms($t_phase);
+        $phaseMs['parse_and_insert_rows'] = $this->elapsed_ms($t_phase);
 
         if ($total_inserted > 0) {
             update_option('fflhub_kinseys_fulfillment_last_import', current_time('mysql'), false);
@@ -159,13 +229,14 @@ final class KinseysProductImporterService
         }
 
         $ctx = [
+            'mode' => 'batched_insert_fallback',
             'products_in' => count($products),
             'rows_inserted' => (int) $total_inserted,
             'skipped_missing_upc' => (int) $skipped_missing_upc,
             'skipped_dupe_upc' => (int) $skipped_dupe_upc,
             'batch_size' => (int) $batch_size,
             'batch_flushes' => (int) $batch_flushes,
-            'phase_ms' => $phase_ms,
+            'phase_ms' => $phaseMs,
             'elapsed_ms' => $this->elapsed_ms($t_start),
         ];
 
@@ -190,6 +261,347 @@ final class KinseysProductImporterService
         $this->log('Kinsey\'s product import complete.', $ctx);
 
         return (int) $total_inserted;
+    }
+
+    /**
+     * Import TSV into the staging table, preferring LOAD DATA LOCAL INFILE.
+     *
+     * @param string[] $columns
+     */
+    private function import_from_tsv_file(string $file_path, array $columns): int
+    {
+        if (!file_exists($file_path) || !is_readable($file_path)) {
+            $this->log('Kinsey\'s TSV import file missing/unreadable.', [
+                'file_path' => $file_path,
+            ]);
+            return 0;
+        }
+
+        if ($this->can_use_load_data_local_infile()) {
+            $rows = $this->import_tsv_via_load_data($file_path, $columns);
+            if ($rows >= 0) {
+                return $rows;
+            }
+
+            $this->log('Kinsey\'s LOAD DATA path failed; falling back to PHP TSV batching.', [
+                'file_path' => $file_path,
+            ]);
+        }
+
+        return $this->import_tsv_via_php($file_path, $columns);
+    }
+
+    /**
+     * @param string[] $columns
+     */
+    private function import_tsv_via_load_data(string $file_path, array $columns): int
+    {
+        global $wpdb;
+
+        $t_start = microtime(true);
+        $table_name = $this->table->get_staging_table_name();
+
+        $column_list = implode(
+            ', ',
+            array_map(
+                static fn(string $column): string => '`' . str_replace('`', '``', $column) . '`',
+                $columns
+            )
+        );
+
+        $sql = "
+            LOAD DATA LOCAL INFILE %s
+            INTO TABLE {$table_name}
+            CHARACTER SET utf8mb4
+            FIELDS TERMINATED BY '\\t' ENCLOSED BY '\"' ESCAPED BY '\\\\'
+            LINES TERMINATED BY '\\n'
+            ({$column_list})
+        ";
+
+        try {
+            $this->table->createTables();
+            $this->table->truncate_staging();
+
+            $prepared = $wpdb->prepare($sql, $file_path);
+            $result = $wpdb->query($prepared);
+            if ($result === false) {
+                $this->log('Kinsey\'s LOAD DATA query failed.', [
+                    'error' => (string) $wpdb->last_error,
+                    'file_path' => $file_path,
+                ]);
+                return -1;
+            }
+
+            $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $sig_approved_forced = SigDropshipApproval::apply_to_table('kinseys', $table_name);
+        } catch (\Throwable $e) {
+            $this->log('Kinsey\'s LOAD DATA exception.', [
+                'error' => $e->getMessage(),
+                'file_path' => $file_path,
+            ]);
+            return -1;
+        }
+
+        $rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $this->log('Kinsey\'s TSV loaded via LOAD DATA LOCAL INFILE.', [
+            'file_path' => $file_path,
+            'rows' => (int) $rows,
+            'sig_approved_forced' => (int) $sig_approved_forced,
+            'elapsed_ms' => $this->elapsed_ms($t_start),
+        ]);
+
+        return $rows;
+    }
+
+    /**
+     * @param string[] $columns
+     */
+    private function import_tsv_via_php(string $file_path, array $columns): int
+    {
+        $t_start = microtime(true);
+        $handle = fopen($file_path, 'r');
+        if (!$handle) {
+            $this->log('Kinsey\'s PHP TSV fallback fopen failed.', [
+                'file_path' => $file_path,
+            ]);
+            return 0;
+        }
+
+        try {
+            $this->table->createTables();
+            $this->table->truncate_staging();
+        } catch (\Throwable $e) {
+            fclose($handle);
+            $this->log('Kinsey\'s PHP TSV fallback staging preparation failed.', [
+                'error' => $e->getMessage(),
+            ]);
+            return 0;
+        }
+
+        $batch_size = 1000;
+        $batch_rows = [];
+        $inserted_total = 0;
+        $line_count = 0;
+
+        while (($values = fgetcsv($handle, 0, "\t", '"', '\\')) !== false) {
+            $line_count++;
+            if (!is_array($values) || empty($values)) {
+                continue;
+            }
+
+            $values = array_pad($values, count($columns), '');
+            if (count($values) > count($columns)) {
+                $values = array_slice($values, 0, count($columns));
+            }
+
+            $row = [];
+            foreach ($columns as $index => $column) {
+                $row[$column] = $values[$index] ?? '';
+            }
+
+            $upc = trim((string) ($row['upc'] ?? ''));
+            if ($upc === '' || strtolower($upc) === 'null') {
+                continue;
+            }
+
+            $batch_rows[] = $row;
+            if (count($batch_rows) >= $batch_size) {
+                $inserted_total += $this->flush_staging_batch($batch_rows);
+                $batch_rows = [];
+            }
+        }
+
+        fclose($handle);
+
+        if (!empty($batch_rows)) {
+            $inserted_total += $this->flush_staging_batch($batch_rows);
+        }
+
+        $this->log('Kinsey\'s TSV imported via PHP fallback.', [
+            'file_path' => $file_path,
+            'lines_seen' => (int) $line_count,
+            'rows_inserted' => (int) $inserted_total,
+            'elapsed_ms' => $this->elapsed_ms($t_start),
+        ]);
+
+        return (int) $inserted_total;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $products
+     * @param array<string,array<string,mixed>> $inventoryLookup
+     * @param string[] $columns
+     * @return array<string,mixed>
+     */
+    private function write_catalog_tsv(array $products, array $inventoryLookup, array $columns, string $tsvPath): array
+    {
+        $t_start = microtime(true);
+        $handle = fopen($tsvPath, 'w');
+        if (!$handle) {
+            return [
+                'tsv_path' => $tsvPath,
+                'products_in' => count($products),
+                'rows_written' => 0,
+                'skipped_missing_upc' => 0,
+                'skipped_dupe_upc' => 0,
+                'write_failures' => 0,
+                'write_error' => 'fopen failed',
+                'write_ms' => $this->elapsed_ms($t_start),
+            ];
+        }
+
+        $rows_written = 0;
+        $skipped_missing_upc = 0;
+        $skipped_dupe_upc = 0;
+        $write_failures = 0;
+        $seen_upcs = [];
+        $profile_detail = $this->profile_detail_enabled();
+        $parse_profile = [
+            'rows' => 0,
+            'total_ms' => 0.0,
+            'max_ms' => 0.0,
+        ];
+        $approval_profile = [
+            'rows' => 0,
+            'total_ms' => 0.0,
+            'max_ms' => 0.0,
+        ];
+
+        foreach ($products as $product) {
+            if (!is_array($product)) {
+                continue;
+            }
+
+            $t_parse = $profile_detail ? microtime(true) : 0.0;
+            $row = $this->parser->parse_product($product, $inventoryLookup);
+            if ($profile_detail) {
+                $this->add_timing_profile($parse_profile, $t_parse, 'rows');
+            }
+
+            if (!is_array($row)) {
+                $skipped_missing_upc++;
+                continue;
+            }
+
+            $upc = trim((string) ($row['upc'] ?? ''));
+            if ($upc === '') {
+                $skipped_missing_upc++;
+                continue;
+            }
+
+            if (isset($seen_upcs[$upc])) {
+                $skipped_dupe_upc++;
+                continue;
+            }
+            $seen_upcs[$upc] = true;
+
+            $t_approval = $profile_detail ? microtime(true) : 0.0;
+            $row = SigDropshipApproval::apply_to_row('kinseys', $row);
+            if ($profile_detail) {
+                $this->add_timing_profile($approval_profile, $t_approval, 'rows');
+            }
+
+            $values = [];
+            foreach ($columns as $column) {
+                $values[] = array_key_exists($column, $row) ? (string) $row[$column] : '';
+            }
+
+            $written = fputcsv($handle, $values, "\t", '"', '\\');
+            if ($written === false) {
+                $write_failures++;
+                continue;
+            }
+
+            $rows_written++;
+        }
+
+        fclose($handle);
+        clearstatcache(true, $tsvPath);
+
+        $stats = [
+            'tsv_path' => $tsvPath,
+            'tsv_bytes' => file_exists($tsvPath) ? (int) filesize($tsvPath) : 0,
+            'products_in' => count($products),
+            'rows_written' => (int) $rows_written,
+            'skipped_missing_upc' => (int) $skipped_missing_upc,
+            'skipped_dupe_upc' => (int) $skipped_dupe_upc,
+            'write_failures' => (int) $write_failures,
+            'write_ms' => $this->elapsed_ms($t_start),
+        ];
+
+        if ($profile_detail) {
+            $stats['detail_profile'] = [
+                'parse_product' => $this->timing_profile_summary($parse_profile, 'rows'),
+                'sig_approval' => $this->timing_profile_summary($approval_profile, 'rows'),
+            ];
+        }
+
+        return $stats;
+    }
+
+    private function resolve_catalog_tsv_path(): string
+    {
+        $uploads = wp_upload_dir();
+        $base_dir = rtrim((string) ($uploads['basedir'] ?? ''), '/\\');
+        if ($base_dir === '') {
+            return '';
+        }
+
+        $dir = $base_dir . '/fflhub/kinseys';
+        if (!is_dir($dir) && !wp_mkdir_p($dir)) {
+            $this->log('Failed to create Kinsey\'s catalog TSV directory.', [
+                'dir' => $dir,
+            ]);
+            return '';
+        }
+
+        if (!is_dir($dir) || !is_writable($dir)) {
+            $this->log('Kinsey\'s catalog TSV directory is not writable.', [
+                'dir' => $dir,
+            ]);
+            return '';
+        }
+
+        return $dir . '/catalog_' . gmdate('Ymd_His') . '.tsv';
+    }
+
+    private function can_use_load_data_local_infile(): bool
+    {
+        global $wpdb;
+
+        $row = $wpdb->get_row("SHOW VARIABLES LIKE 'local_infile'", ARRAY_A);
+        $mysql_value = is_array($row) ? strtolower((string) ($row['Value'] ?? $row['value'] ?? '')) : '';
+        $mysql_ok = in_array($mysql_value, ['on', '1', 'true'], true);
+
+        $mysqli = ini_get('mysqli.allow_local_infile');
+        $pdo = ini_get('pdo_mysql.allow_local_infile');
+
+        $php_ok = $this->ini_truthy($mysqli) || $this->ini_truthy($pdo);
+        $ok = $mysql_ok && $php_ok;
+
+        $this->log('Kinsey\'s LOAD DATA LOCAL INFILE capability check.', [
+            'mysql_local_infile' => $mysql_value,
+            'mysql_ok' => $mysql_ok ? 1 : 0,
+            'mysqli_allow_local_infile' => $mysqli !== false ? (string) $mysqli : '',
+            'pdo_mysql_allow_local_infile' => $pdo !== false ? (string) $pdo : '',
+            'php_ok' => $php_ok ? 1 : 0,
+            'result' => $ok ? 1 : 0,
+        ]);
+
+        return $ok;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function ini_truthy($value): bool
+    {
+        if ($value === false || $value === null) {
+            return false;
+        }
+
+        return in_array(strtolower(trim((string) $value)), ['1', 'on', 'true', 'yes'], true);
     }
 
     /**
