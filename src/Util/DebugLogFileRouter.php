@@ -113,6 +113,8 @@ final class DebugLogFileRouter
             || strpos($haystack, 'sports_south') !== false
         ) {
             $distributor = 'sports_south';
+        } elseif (strpos($haystack, 'orion') !== false) {
+            $distributor = 'orion';
         }
 
         $component = 'general';

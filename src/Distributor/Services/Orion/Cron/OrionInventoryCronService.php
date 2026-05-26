@@ -20,6 +20,8 @@ final class OrionInventoryCronService extends AbstractTableCronService
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][OrionInventoryCron]';
     private const DEFAULT_TIMEOUT_SECONDS = 20;
+    private const FAILURE_COOLDOWN_SECONDS = 900;
+    private const FAILURE_COOLDOWN_TRANSIENT = 'fflhub_orion_inventory_failure_cooldown';
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -74,6 +76,13 @@ final class OrionInventoryCronService extends AbstractTableCronService
             return;
         }
 
+        $cooldown = $this->active_failure_cooldown();
+        if ($cooldown !== null) {
+            $this->log('Skipping Orion inventory update due to recent API failure cooldown.', $cooldown);
+            $this->finalize_run($t_start, $mem_start, 'SUCCESS (failure cooldown)', $cooldown);
+            return;
+        }
+
         $t_inventory = microtime(true);
         $inventory = $client->get_catalog_inventory();
         $inventory_data = (array) ($inventory['data'] ?? []);
@@ -90,6 +99,7 @@ final class OrionInventoryCronService extends AbstractTableCronService
                 'status' => (int) ($inventory['status'] ?? 0),
                 'error' => (string) ($inventory['error'] ?? ''),
             ]);
+            $this->set_failure_cooldown($inventory);
             $this->finalize_run($t_start, $mem_start, 'ERROR (inventory request failed)', [
                 'status' => (int) ($inventory['status'] ?? 0),
                 'error' => (string) ($inventory['error'] ?? ''),
@@ -105,6 +115,7 @@ final class OrionInventoryCronService extends AbstractTableCronService
         update_option('fflhub_orion_inventory_last_update', current_time('mysql'), false);
         update_option('fflhub_orion_inventory_last_update_count', (int) ($stats['rows_loaded'] ?? 0), false);
         delete_option('fflhub_orion_inventory_last_error');
+        $this->clear_failure_cooldown();
 
         $this->log('Orion inventory update complete.', $stats);
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', $stats);
@@ -138,6 +149,96 @@ final class OrionInventoryCronService extends AbstractTableCronService
         }
 
         return count($inventoryData);
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    private function active_failure_cooldown(): ?array
+    {
+        if (!function_exists('get_transient')) {
+            return null;
+        }
+
+        $cooldown = get_transient(self::FAILURE_COOLDOWN_TRANSIENT);
+        if (!is_array($cooldown)) {
+            return null;
+        }
+
+        $until = (int) ($cooldown['until'] ?? 0);
+        $now = time();
+        if ($until <= $now) {
+            $this->clear_failure_cooldown();
+            return null;
+        }
+
+        return [
+            'skip_for_sec' => max(0, $until - $now),
+            'failed_at' => (string) ($cooldown['failed_at'] ?? ''),
+            'status' => (int) ($cooldown['status'] ?? 0),
+            'error' => (string) ($cooldown['error'] ?? ''),
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $inventory
+     */
+    private function set_failure_cooldown(array $inventory): void
+    {
+        if (!function_exists('set_transient') || !$this->is_cooldown_worthy_failure($inventory)) {
+            return;
+        }
+
+        $cooldown_seconds = $this->get_failure_cooldown_seconds();
+        if ($cooldown_seconds <= 0) {
+            return;
+        }
+
+        $payload = [
+            'until' => time() + $cooldown_seconds,
+            'failed_at' => current_time('mysql'),
+            'status' => (int) ($inventory['status'] ?? 0),
+            'error' => (string) ($inventory['error'] ?? ''),
+        ];
+
+        set_transient(self::FAILURE_COOLDOWN_TRANSIENT, $payload, $cooldown_seconds);
+        $this->log('Orion inventory API failure cooldown armed.', [
+            'cooldown_sec' => $cooldown_seconds,
+            'status' => $payload['status'],
+            'error' => $payload['error'],
+        ]);
+    }
+
+    private function clear_failure_cooldown(): void
+    {
+        if (function_exists('delete_transient')) {
+            delete_transient(self::FAILURE_COOLDOWN_TRANSIENT);
+        }
+    }
+
+    /**
+     * @param array<string,mixed> $inventory
+     */
+    private function is_cooldown_worthy_failure(array $inventory): bool
+    {
+        $status = (int) ($inventory['status'] ?? 0);
+        $error = strtolower((string) ($inventory['error'] ?? ''));
+
+        return $status === 0
+            || strpos($error, 'timed out') !== false
+            || strpos($error, 'timeout') !== false
+            || strpos($error, 'could not resolve') !== false
+            || strpos($error, 'couldn\'t connect') !== false;
+    }
+
+    private function get_failure_cooldown_seconds(): int
+    {
+        $cooldown_seconds = (int) apply_filters(
+            'fflhub_orion_inventory_failure_cooldown_seconds',
+            self::FAILURE_COOLDOWN_SECONDS
+        );
+
+        return max(0, min(3600, $cooldown_seconds));
     }
 
     /**
