@@ -109,6 +109,9 @@
         if (data && data.fakePo) {
             details.push('fake PO ' + data.fakePo);
         }
+        if (data && data.rsrStatusCode) {
+            details.push('RSR status ' + data.rsrStatusCode);
+        }
         if (data && typeof data.itemsCount !== 'undefined') {
             details.push('items ' + data.itemsCount);
         }

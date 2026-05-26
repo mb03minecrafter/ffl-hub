@@ -608,20 +608,34 @@ class AdminPage
             ];
         }
 
+        $confirmation = self::rsr_check_order_credential_confirmation($res, $label, $fake_po);
+        if (empty($confirmation['ok'])) {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => (string) ($confirmation['message'] ?? __('RSR DirectConnect responded, but FFLHub could not confirm that credentials were accepted.', 'ffl-hub')),
+                'httpStatus' => $http_status,
+                'fakePo' => $fake_po,
+                'rsrStatusCode' => (string) ($confirmation['rsrStatusCode'] ?? ''),
+            ];
+        }
+
         $items_count = (isset($res['items']) && is_array($res['items'])) ? count($res['items']) : 0;
 
         return [
             'ok' => true,
             'profile' => $profile,
             'profileLabel' => $label,
-            'message' => sprintf(
-                __('Credentials accepted for %1$s. RSR check-order responded to fake PO %2$s; zero matching order rows is expected for this test.', 'ffl-hub'),
+            'message' => (string) ($confirmation['message'] ?? sprintf(
+                __('Credentials accepted for %1$s. RSR check-order confirmed access using fake PO %2$s.', 'ffl-hub'),
                 $label,
                 $fake_po
-            ),
+            )),
             'httpStatus' => $http_status,
             'fakePo' => $fake_po,
             'itemsCount' => $items_count,
+            'rsrStatusCode' => (string) ($confirmation['rsrStatusCode'] ?? ''),
         ];
     }
 
@@ -786,6 +800,249 @@ class AdminPage
         }
 
         return '';
+    }
+
+    /**
+     * @param array<string,mixed> $result
+     * @return array{ok:bool,message:string,rsrStatusCode:string}
+     */
+    private static function rsr_check_order_credential_confirmation(array $result, string $profile_label, string $fake_po): array
+    {
+        $raw = $result['raw'] ?? null;
+        $http_status = (int) ($result['http_status'] ?? 0);
+
+        if (!is_array($raw)) {
+            return [
+                'ok' => false,
+                'message' => __('RSR DirectConnect did not return a JSON object that can confirm credentials.', 'ffl-hub'),
+                'rsrStatusCode' => '',
+            ];
+        }
+
+        $status = self::rsr_extract_status_fields($raw);
+        $status_code = (string) ($status['code'] ?? '');
+        $status_message = (string) ($status['message'] ?? '');
+        $status_summary = trim($status_code . ' ' . $status_message);
+
+        if ($status_code === '00') {
+            return [
+                'ok' => true,
+                'message' => sprintf(
+                    __('Credentials accepted for %1$s. RSR check-order returned StatusCode=00 for fake PO %2$s.', 'ffl-hub'),
+                    $profile_label,
+                    $fake_po
+                ),
+                'rsrStatusCode' => $status_code,
+            ];
+        }
+
+        if ($status_summary !== '' && self::rsr_message_looks_auth_failure($status_summary)) {
+            return [
+                'ok' => false,
+                'message' => sprintf(
+                    __('RSR reported an authentication failure: %s', 'ffl-hub'),
+                    $status_summary
+                ),
+                'rsrStatusCode' => $status_code,
+            ];
+        }
+
+        if ($status_summary !== '' && self::rsr_message_looks_fake_order_response($status_summary)) {
+            return [
+                'ok' => true,
+                'message' => sprintf(
+                    __('Credentials accepted for %1$s. RSR rejected fake PO %2$s as not found/no order data, which means the check-order call reached account-level validation.', 'ffl-hub'),
+                    $profile_label,
+                    $fake_po
+                ),
+                'rsrStatusCode' => $status_code,
+            ];
+        }
+
+        if (self::rsr_raw_has_order_items_container($raw)) {
+            return [
+                'ok' => true,
+                'message' => sprintf(
+                    __('Credentials accepted for %1$s. RSR check-order returned an order/items response container for fake PO %2$s.', 'ffl-hub'),
+                    $profile_label,
+                    $fake_po
+                ),
+                'rsrStatusCode' => $status_code,
+            ];
+        }
+
+        $success_flag = self::rsr_extract_bool_field($raw, ['authorized', 'Authorized', 'success', 'Success']);
+        if ($success_flag === true) {
+            return [
+                'ok' => true,
+                'message' => sprintf(
+                    __('Credentials accepted for %1$s. RSR returned an explicit success/authorized flag for fake PO %2$s.', 'ffl-hub'),
+                    $profile_label,
+                    $fake_po
+                ),
+                'rsrStatusCode' => $status_code,
+            ];
+        }
+        if ($success_flag === false) {
+            return [
+                'ok' => false,
+                'message' => __('RSR returned an explicit failed success/authorized flag for the credential test.', 'ffl-hub'),
+                'rsrStatusCode' => $status_code,
+            ];
+        }
+
+        if ($status_summary !== '') {
+            return [
+                'ok' => false,
+                'message' => sprintf(
+                    __('RSR responded with StatusCode=%1$s, but it was not a known fake-order/no-order success signal. Message: %2$s', 'ffl-hub'),
+                    $status_code !== '' ? $status_code : '(missing)',
+                    $status_message !== '' ? $status_message : '(empty)'
+                ),
+                'rsrStatusCode' => $status_code,
+            ];
+        }
+
+        return [
+            'ok' => false,
+            'message' => sprintf(
+                __('RSR returned HTTP %d JSON, but no StatusCode, order/items container, or explicit success/authorized flag was present. Treating this credential test as inconclusive.', 'ffl-hub'),
+                $http_status
+            ),
+            'rsrStatusCode' => '',
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $raw
+     * @return array{code:string,message:string}
+     */
+    private static function rsr_extract_status_fields(array $raw): array
+    {
+        $code = self::rsr_first_scalar_field($raw, ['StatusCode', 'statusCode', 'status_code', 'Code', 'code']);
+        $message = self::rsr_first_scalar_field($raw, ['StatusMssg', 'StatusMsg', 'statusMessage', 'status_message', 'Message', 'message', 'Error', 'error']);
+
+        if (isset($raw['Response']) && is_array($raw['Response'])) {
+            $response = $raw['Response'];
+            if ($code === '') {
+                $code = self::rsr_first_scalar_field($response, ['StatusCode', 'statusCode', 'status_code', 'Code', 'code']);
+            }
+            if ($message === '') {
+                $message = self::rsr_first_scalar_field($response, ['StatusMssg', 'StatusMsg', 'statusMessage', 'status_message', 'Message', 'message', 'Error', 'error']);
+            }
+        }
+
+        return [
+            'code' => $code,
+            'message' => $message,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $raw
+     * @param array<int,string> $keys
+     */
+    private static function rsr_first_scalar_field(array $raw, array $keys): string
+    {
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $raw) && is_scalar($raw[$key])) {
+                return trim((string) $raw[$key]);
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param array<string,mixed> $raw
+     */
+    private static function rsr_raw_has_order_items_container(array $raw): bool
+    {
+        if (array_key_exists('Items', $raw) && is_array($raw['Items'])) {
+            return true;
+        }
+        if (array_key_exists('Orders', $raw) && is_array($raw['Orders'])) {
+            return true;
+        }
+        if (array_key_exists('Order', $raw) && (is_array($raw['Order']) || is_scalar($raw['Order']))) {
+            return true;
+        }
+        if (isset($raw['Response']) && is_array($raw['Response'])) {
+            $response = $raw['Response'];
+            return (array_key_exists('Items', $response) && is_array($response['Items']))
+                || (array_key_exists('Orders', $response) && is_array($response['Orders']))
+                || (array_key_exists('Order', $response) && (is_array($response['Order']) || is_scalar($response['Order'])));
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string,mixed> $raw
+     * @param array<int,string> $keys
+     */
+    private static function rsr_extract_bool_field(array $raw, array $keys): ?bool
+    {
+        foreach ($keys as $key) {
+            if (!array_key_exists($key, $raw)) {
+                continue;
+            }
+
+            $value = $raw[$key];
+            if (is_bool($value)) {
+                return $value;
+            }
+            if (is_numeric($value)) {
+                return ((int) $value) === 1;
+            }
+            if (is_string($value)) {
+                $value = strtolower(trim($value));
+                if (in_array($value, ['1', 'true', 'yes', 'y', 'ok', 'success'], true)) {
+                    return true;
+                }
+                if (in_array($value, ['0', 'false', 'no', 'n', 'fail', 'failed'], true)) {
+                    return false;
+                }
+            }
+        }
+
+        if (isset($raw['Response']) && is_array($raw['Response'])) {
+            return self::rsr_extract_bool_field($raw['Response'], $keys);
+        }
+
+        return null;
+    }
+
+    private static function rsr_message_looks_fake_order_response(string $message): bool
+    {
+        $message = strtolower(trim($message));
+        if ($message === '') {
+            return false;
+        }
+
+        $needles = [
+            'no order',
+            'no orders',
+            'order not found',
+            'po not found',
+            'purchase order not found',
+            'no record',
+            'no records',
+            'no data',
+            'not found',
+            'invalid po',
+            'invalid purchase order',
+            'not connected',
+            'not associated',
+        ];
+
+        foreach ($needles as $needle) {
+            if (strpos($message, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
