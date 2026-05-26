@@ -18,6 +18,10 @@ final class KinseysProductParser
      */
     public function parse_product(array $product, array $inventoryLookup = []): ?array
     {
+        if (!$this->can_drop_ship($product)) {
+            return null;
+        }
+
         $upc = $this->normalize_upc($this->string_value($product, 'BarCode'));
         if ($upc === '') {
             return null;
@@ -155,6 +159,14 @@ final class KinseysProductParser
             'last_seen_utc' => gmdate('Y-m-d H:i:s'),
             'raw_item_json' => $this->encode_json($product),
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $product
+     */
+    public function can_drop_ship(array $product): bool
+    {
+        return $this->boolish($product['CanBeDropShipped'] ?? null);
     }
 
     /**

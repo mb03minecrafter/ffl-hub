@@ -139,6 +139,7 @@ final class KinseysProductImporterService
         $batch_rows = [];
         $total_inserted = 0;
         $skipped_missing_upc = 0;
+        $skipped_non_dropship = 0;
         $skipped_dupe_upc = 0;
         $seen_upcs = [];
         $batch_flushes = 0;
@@ -164,6 +165,11 @@ final class KinseysProductImporterService
         $t_phase = microtime(true);
         foreach ($products as $product) {
             if (!is_array($product)) {
+                continue;
+            }
+
+            if (!$this->parser->can_drop_ship($product)) {
+                $skipped_non_dropship++;
                 continue;
             }
 
@@ -233,6 +239,7 @@ final class KinseysProductImporterService
             'products_in' => count($products),
             'rows_inserted' => (int) $total_inserted,
             'skipped_missing_upc' => (int) $skipped_missing_upc,
+            'skipped_non_dropship' => (int) $skipped_non_dropship,
             'skipped_dupe_upc' => (int) $skipped_dupe_upc,
             'batch_size' => (int) $batch_size,
             'batch_flushes' => (int) $batch_flushes,
@@ -444,6 +451,7 @@ final class KinseysProductImporterService
                 'products_in' => count($products),
                 'rows_written' => 0,
                 'skipped_missing_upc' => 0,
+                'skipped_non_dropship' => 0,
                 'skipped_dupe_upc' => 0,
                 'write_failures' => 0,
                 'write_error' => 'fopen failed',
@@ -453,6 +461,7 @@ final class KinseysProductImporterService
 
         $rows_written = 0;
         $skipped_missing_upc = 0;
+        $skipped_non_dropship = 0;
         $skipped_dupe_upc = 0;
         $write_failures = 0;
         $seen_upcs = [];
@@ -470,6 +479,11 @@ final class KinseysProductImporterService
 
         foreach ($products as $product) {
             if (!is_array($product)) {
+                continue;
+            }
+
+            if (!$this->parser->can_drop_ship($product)) {
+                $skipped_non_dropship++;
                 continue;
             }
 
@@ -525,6 +539,7 @@ final class KinseysProductImporterService
             'products_in' => count($products),
             'rows_written' => (int) $rows_written,
             'skipped_missing_upc' => (int) $skipped_missing_upc,
+            'skipped_non_dropship' => (int) $skipped_non_dropship,
             'skipped_dupe_upc' => (int) $skipped_dupe_upc,
             'write_failures' => (int) $write_failures,
             'write_ms' => $this->elapsed_ms($t_start),
