@@ -70,6 +70,21 @@ final class KinseysApiClient
      * @param string[]|int[] $productIds
      * @return array<string,mixed>
      */
+    public function get_allowed_products(array $productIds = []): array
+    {
+        $params = [];
+        $ids = $this->normalize_product_ids($productIds);
+        if ($ids !== '') {
+            $params['products'] = $ids;
+        }
+
+        return $this->get('Products/Allowed', $params);
+    }
+
+    /**
+     * @param string[]|int[] $productIds
+     * @return array<string,mixed>
+     */
     public function get_products_by_id(array $productIds): array
     {
         $ids = $this->normalize_product_ids($productIds);

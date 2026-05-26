@@ -82,40 +82,81 @@ final class KinseysProductCronService extends AbstractTableCronService
 
         $parser = new KinseysProductParser();
 
-        $t_products = microtime(true);
-        $this->log('PHASE START: get_products', [
+        $t_allowed = microtime(true);
+        $this->log('PHASE START: get_allowed_products', [
             'timeout_sec' => $timeout_seconds,
             'memory_kb' => $this->memory_kb(),
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
-        $products = $client->get_products();
-        $product_data = (array) ($products['data'] ?? []);
-        $product_rows = $parser->normalize_product_rows($product_data);
-        $this->profile('get_products', $t_products, array_merge([
-            'ok' => empty($products['ok']) ? 0 : 1,
-            'status' => (int) ($products['status'] ?? 0),
+        $allowed = $client->get_allowed_products();
+        $allowed_data = (array) ($allowed['data'] ?? []);
+        $allowed_product_ids = $this->normalize_allowed_product_ids($allowed_data);
+        $this->profile('get_allowed_products', $t_allowed, array_merge([
+            'ok' => empty($allowed['ok']) ? 0 : 1,
+            'status' => (int) ($allowed['status'] ?? 0),
             'timeout_sec' => $timeout_seconds,
-            'response_bytes' => (int) ($products['response_bytes'] ?? 0),
-        ], DebugLogUtil::summarize_array_keys($product_data), [
-            'products_seen' => count($product_rows),
+            'response_bytes' => (int) ($allowed['response_bytes'] ?? 0),
+        ], DebugLogUtil::summarize_array_keys($allowed_data), [
+            'allowed_product_ids' => count($allowed_product_ids),
+            'records_count' => (int) ($allowed_data['recordsCount'] ?? 0),
         ]));
 
-        if (empty($products['ok'])) {
+        if (empty($allowed['ok'])) {
             update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Kinsey\'s product request failed.', [
-                'status' => (int) ($products['status'] ?? 0),
-                'error' => (string) ($products['error'] ?? ''),
+            $this->log('Kinsey\'s allowed products request failed.', [
+                'status' => (int) ($allowed['status'] ?? 0),
+                'error' => (string) ($allowed['error'] ?? ''),
             ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (product request failed)', [
-                'status' => (int) ($products['status'] ?? 0),
-                'error' => (string) ($products['error'] ?? ''),
+            $this->finalize_run($t_start, $mem_start, 'ERROR (allowed products request failed)', [
+                'status' => (int) ($allowed['status'] ?? 0),
+                'error' => (string) ($allowed['error'] ?? ''),
+            ]);
+            return;
+        }
+
+        if (empty($allowed_product_ids)) {
+            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+            $this->log('Kinsey\'s allowed products request returned zero product IDs; swap skipped.');
+            $this->finalize_run($t_start, $mem_start, 'ERROR (0 allowed product IDs)');
+            return;
+        }
+
+        $product_id_chunks = $this->chunk_product_ids_for_query($allowed_product_ids);
+        $t_products = microtime(true);
+        $this->log('PHASE START: get_products_by_allowed_ids', [
+            'allowed_product_ids' => count($allowed_product_ids),
+            'chunk_count' => count($product_id_chunks),
+            'query_max_bytes' => $this->product_id_query_max_bytes(),
+            'timeout_sec' => $timeout_seconds,
+            'memory_kb' => $this->memory_kb(),
+            'memory_peak_kb' => $this->memory_peak_kb(),
+        ]);
+        $product_fetch = $this->fetch_products_by_allowed_ids($client, $parser, $product_id_chunks);
+        $product_rows = is_array($product_fetch['rows'] ?? null) ? $product_fetch['rows'] : [];
+        $product_profile = is_array($product_fetch['profile'] ?? null) ? $product_fetch['profile'] : [];
+        $this->profile('get_products_by_allowed_ids', $t_products, $product_profile + [
+            'ok' => empty($product_fetch['ok']) ? 0 : 1,
+            'products_seen' => count($product_rows),
+        ]);
+
+        if (empty($product_fetch['ok'])) {
+            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+            $this->log('Kinsey\'s allowed product detail request failed.', [
+                'status' => (int) ($product_fetch['status'] ?? 0),
+                'error' => (string) ($product_fetch['error'] ?? ''),
+                'failed_chunk' => (int) ($product_fetch['failed_chunk'] ?? 0),
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (product detail request failed)', [
+                'status' => (int) ($product_fetch['status'] ?? 0),
+                'error' => (string) ($product_fetch['error'] ?? ''),
+                'failed_chunk' => (int) ($product_fetch['failed_chunk'] ?? 0),
             ]);
             return;
         }
 
         if (empty($product_rows)) {
             update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Kinsey\'s product request returned zero rows; swap skipped.');
+            $this->log('Kinsey\'s allowed product detail requests returned zero rows; swap skipped.');
             $this->finalize_run($t_start, $mem_start, 'ERROR (0 products)');
             return;
         }
@@ -280,5 +321,126 @@ final class KinseysProductCronService extends AbstractTableCronService
         }
 
         $this->log('---- RUN END ----', $ctx);
+    }
+
+    /**
+     * @param array<string,mixed> $allowedData
+     * @return string[]
+     */
+    private function normalize_allowed_product_ids(array $allowedData): array
+    {
+        $raw_ids = [];
+        if (isset($allowedData['products']) && is_array($allowedData['products'])) {
+            $raw_ids = $allowedData['products'];
+        } elseif (isset($allowedData['Products']) && is_array($allowedData['Products'])) {
+            $raw_ids = $allowedData['Products'];
+        }
+
+        $ids = [];
+        foreach ($raw_ids as $id) {
+            $id = trim((string) $id);
+            if ($id !== '') {
+                $ids[$id] = $id;
+            }
+        }
+
+        return array_values($ids);
+    }
+
+    /**
+     * @param string[] $productIds
+     * @return array<int,array<int,string>>
+     */
+    private function chunk_product_ids_for_query(array $productIds): array
+    {
+        $max_bytes = $this->product_id_query_max_bytes();
+        $chunks = [];
+        $chunk = [];
+        $chunk_bytes = 0;
+
+        foreach ($productIds as $id) {
+            $id = trim((string) $id);
+            if ($id === '') {
+                continue;
+            }
+
+            $id_bytes = strlen($id);
+            $next_bytes = $chunk_bytes === 0 ? $id_bytes : $chunk_bytes + 1 + $id_bytes;
+            if (!empty($chunk) && $next_bytes > $max_bytes) {
+                $chunks[] = $chunk;
+                $chunk = [];
+                $chunk_bytes = 0;
+                $next_bytes = $id_bytes;
+            }
+
+            $chunk[] = $id;
+            $chunk_bytes = $next_bytes;
+        }
+
+        if (!empty($chunk)) {
+            $chunks[] = $chunk;
+        }
+
+        return $chunks;
+    }
+
+    private function product_id_query_max_bytes(): int
+    {
+        $max_bytes = (int) apply_filters('fflhub_kinseys_product_id_query_max_bytes', 1800);
+        return max(100, min(8000, $max_bytes));
+    }
+
+    /**
+     * @param array<int,array<int,string>> $productIdChunks
+     * @return array<string,mixed>
+     */
+    private function fetch_products_by_allowed_ids(
+        KinseysApiClient $client,
+        KinseysProductParser $parser,
+        array $productIdChunks
+    ): array {
+        $rows = [];
+        $profile = [
+            'chunk_count' => count($productIdChunks),
+            'chunks_ok' => 0,
+            'requested_product_ids' => 0,
+            'response_bytes' => 0,
+            'products_seen' => 0,
+        ];
+
+        foreach ($productIdChunks as $index => $chunk) {
+            $profile['requested_product_ids'] += count($chunk);
+
+            $products = $client->get_products_by_id($chunk);
+            $profile['response_bytes'] += (int) ($products['response_bytes'] ?? 0);
+
+            if (empty($products['ok'])) {
+                return [
+                    'ok' => false,
+                    'rows' => [],
+                    'profile' => $profile,
+                    'failed_chunk' => $index + 1,
+                    'error' => (string) ($products['error'] ?? ''),
+                    'status' => (int) ($products['status'] ?? 0),
+                ];
+            }
+
+            $product_data = (array) ($products['data'] ?? []);
+            $chunk_rows = $parser->normalize_product_rows($product_data);
+            foreach ($chunk_rows as $row) {
+                if (is_array($row)) {
+                    $rows[] = $row;
+                }
+            }
+
+            $profile['chunks_ok']++;
+            $profile['products_seen'] += count($chunk_rows);
+        }
+
+        return [
+            'ok' => true,
+            'rows' => $rows,
+            'profile' => $profile,
+        ];
     }
 }
