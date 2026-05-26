@@ -484,7 +484,9 @@ final class RSRBatchQueuePage
             $job_status = strtolower(trim((string) $job->status));
             $status_counts[$job_status] = (int) ($status_counts[$job_status] ?? 0) + 1;
             $job_contains_holosun = $this->job_contains_holosun_line($job);
-            $include_in_queue_totals = ($job_status === OrderPlacementKeys::JOB_STATUS_BATCH_PENDING && !$job_contains_holosun);
+            $is_holosun_manual_row = $job_contains_holosun
+                && in_array($job_status, [OrderPlacementKeys::JOB_STATUS_MANUAL, OrderPlacementKeys::JOB_STATUS_SUCCESS], true);
+            $include_in_queue_totals = ($job_status === OrderPlacementKeys::JOB_STATUS_BATCH_PENDING);
             if ($include_in_queue_totals) {
                 $batch_pending_jobs++;
                 if ($this->is_job_dispatch_ready((string) ($job->next_run_at ?? ''), $now_utc_ts)) {
@@ -519,12 +521,12 @@ final class RSRBatchQueuePage
                     'product_name' => $name,
                     'unit_cost' => $unit_cost,
                     'line_cost' => $line_cost,
-                    'is_holosun_manual_row' => $job_contains_holosun,
+                    'is_holosun_manual_row' => $is_holosun_manual_row,
                     'last_error' => (string) ($job->last_error ?? ''),
                 ];
                 $entries[] = $entry;
 
-                if ($job_contains_holosun) {
+                if ($is_holosun_manual_row) {
                     $holosun_manual_entries[] = $entry;
                     if (!isset($holosun_manual_totals_by_upc[$upc])) {
                         $holosun_manual_totals_by_upc[$upc] = ['upc' => $upc, 'product_name' => $name, 'total_qty' => 0, 'line_count' => 0, 'total_estimated_cost' => 0.0];
@@ -769,10 +771,10 @@ final class RSRBatchQueuePage
                 <p><?php echo esc_html(sprintf(__('pending=%d, manual=%d, running=%d, scheduled=%d, retry=%d, failed=%d', 'ffl-hub'), $batch_pending, $manual, $running, $scheduled, $retry, $failed)); ?></p>
             </section>
             <section class="fflhub-rsr-summary-card is-danger">
-                <h2><?php esc_html_e('Holosun Manual Rows', 'ffl-hub'); ?></h2>
+                <h2><?php esc_html_e('Legacy Holosun Manual Rows', 'ffl-hub'); ?></h2>
                 <div class="fflhub-rsr-metric"><?php echo esc_html((string) count($holosun_manual_entries)); ?></div>
                 <p><?php echo esc_html(sprintf(__('Qty: %d | Distinct UPCs: %d | Est. cost: %s', 'ffl-hub'), $holosun_manual_total_quantity, $holosun_manual_distinct_upc_count, $this->format_money($holosun_manual_total_cost))); ?></p>
-                <p><?php esc_html_e('Excluded from automatic RSR batch ordering.', 'ffl-hub'); ?></p>
+                <p><?php esc_html_e('New Holosun rows now use automatic RSR batch ordering.', 'ffl-hub'); ?></p>
             </section>
             <section class="fflhub-rsr-summary-card is-ok">
                 <h2><?php esc_html_e('Queue Totals by UPC', 'ffl-hub'); ?></h2>
@@ -821,7 +823,7 @@ final class RSRBatchQueuePage
             return;
         }
         ?>
-        <h2><?php esc_html_e('Holosun Manual Totals by UPC', 'ffl-hub'); ?></h2>
+        <h2><?php esc_html_e('Legacy Holosun Manual Totals by UPC', 'ffl-hub'); ?></h2>
         <table class="widefat fixed striped">
             <thead><tr><th><?php esc_html_e('UPC', 'ffl-hub'); ?></th><th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th><th><?php esc_html_e('Total Qty', 'ffl-hub'); ?></th><th><?php esc_html_e('Line Entries', 'ffl-hub'); ?></th><th><?php esc_html_e('Est. Distributor Cost', 'ffl-hub'); ?></th></tr></thead>
             <tbody>
@@ -844,12 +846,12 @@ final class RSRBatchQueuePage
         $entries = (array) ($data['holosun_manual_entries'] ?? []);
         ?>
         <section class="fflhub-rsr-holosun-manual-box">
-            <h2><?php esc_html_e('RSR Holosun Manual Order Rows', 'ffl-hub'); ?></h2>
+            <h2><?php esc_html_e('Legacy RSR Holosun Manual Order Rows', 'ffl-hub'); ?></h2>
             <p class="description">
-                <?php esc_html_e('Holosun dealer-fulfilled RSR rows are held out of automatic RSR batch placement. Manually place them with RSR, enter the PO here, then mark the row successful.', 'ffl-hub'); ?>
+                <?php esc_html_e('New Holosun dealer-fulfilled RSR rows use automatic RSR batch placement. This section only helps finish older rows already marked manual.', 'ffl-hub'); ?>
             </p>
             <?php if (empty($entries)) : ?>
-                <p><?php esc_html_e('No Holosun RSR manual rows found for processing orders.', 'ffl-hub'); ?></p>
+                <p><?php esc_html_e('No legacy Holosun RSR manual rows found for processing orders.', 'ffl-hub'); ?></p>
             <?php else : ?>
                 <table class="widefat fixed striped">
                     <thead>
