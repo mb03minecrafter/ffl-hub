@@ -51,6 +51,10 @@
         return getCredentialStatus($button, '.fflhub-orion-test-status');
     }
 
+    function getKinseysStatus($button) {
+        return getCredentialStatus($button, '.fflhub-kinseys-test-status');
+    }
+
     function formatZandersCredentialResult(data) {
         var message = data && data.message ? data.message : 'Credential test finished.';
         var details = [];
@@ -465,6 +469,70 @@
             });
     }
 
+    function formatKinseysCredentialResult(data) {
+        var message = data && data.message ? data.message : 'Credential test finished.';
+        var details = [];
+
+        if (data && data.httpStatus) {
+            details.push('HTTP ' + data.httpStatus);
+        }
+        if (data && typeof data.recordsCount !== 'undefined' && data.recordsCount !== null) {
+            details.push('records ' + data.recordsCount);
+        }
+
+        if (details.length) {
+            message += ' (' + details.join(', ') + ')';
+        }
+
+        if (data && data.rawResponse) {
+            message += '\n\nRaw response:\n' + data.rawResponse;
+        }
+
+        return message;
+    }
+
+    function testKinseysCredentials($button) {
+        var $status = getKinseysStatus($button);
+
+        if (!window.FFLHubAdmin || !window.FFLHubAdmin.ajaxUrl || !window.FFLHubAdmin.kinseysCredentialNonce) {
+            setCredentialStatus($status, 'error', 'Credential test is not configured on this page.');
+            return;
+        }
+
+        setCredentialStatus($status, 'pending', 'Testing Kinsey\'s Customer API credentials...');
+        $button.prop('disabled', true).addClass('is-busy');
+
+        $.post(window.FFLHubAdmin.ajaxUrl, {
+            action: 'fflhub_test_kinseys_credentials',
+            nonce: window.FFLHubAdmin.kinseysCredentialNonce,
+            profile: $button.data('profile') || '',
+            fields: collectDistributorFields($button)
+        })
+            .done(function (response) {
+                var data = response && response.data ? response.data : {};
+                if (!response || response.success !== true) {
+                    setCredentialStatus($status, 'error', data.message || 'Credential test failed.');
+                    return;
+                }
+
+                setCredentialStatus(
+                    $status,
+                    data.ok ? 'success' : 'error',
+                    formatKinseysCredentialResult(data)
+                );
+            })
+            .fail(function (xhr) {
+                var message = 'Credential test failed.';
+                if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                    message = xhr.responseJSON.data.message;
+                }
+                setCredentialStatus($status, 'error', message);
+            })
+            .always(function () {
+                $button.prop('disabled', false).removeClass('is-busy');
+            });
+    }
+
     function openModal(panelId) {
         var $modal = $('#fflhub-modal');
         var $panels = $modal.find('.fflhub-modal-panel');
@@ -550,6 +618,11 @@
         $(document).on('click', '.fflhub-orion-test-credentials', function (e) {
             e.preventDefault();
             testOrionCredentials($(this));
+        });
+
+        $(document).on('click', '.fflhub-kinseys-test-credentials', function (e) {
+            e.preventDefault();
+            testKinseysCredentials($(this));
         });
     });
 })(jQuery);

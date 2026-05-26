@@ -15,6 +15,7 @@ use FFLHub\Distributor\Integrations\RSR\RSRDirectConnectAPI;
 use FFLHub\Distributor\Integrations\Zanders\ZandersDirectShipAPI;
 use FFLHub\Distributor\Services\CSSI\API\CSSIClient;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
+use FFLHub\Distributor\Services\Kinseys\API\KinseysApiClient;
 use FFLHub\Distributor\Services\Orion\API\OrionApiClient;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInvoicesClient;
@@ -62,6 +63,7 @@ class AdminPage
         // Handle enable/disable distributor actions.
         add_action('admin_post_fflhub_toggle_distributor', [$this, 'handle_toggle_distributor']);
         add_action('wp_ajax_fflhub_test_cssi_credentials', [$this, 'handle_test_cssi_credentials']);
+        add_action('wp_ajax_fflhub_test_kinseys_credentials', [$this, 'handle_test_kinseys_credentials']);
         add_action('wp_ajax_fflhub_test_lipseys_credentials', [$this, 'handle_test_lipseys_credentials']);
         add_action('wp_ajax_fflhub_test_orion_credentials', [$this, 'handle_test_orion_credentials']);
         add_action('wp_ajax_fflhub_test_rsr_credentials', [$this, 'handle_test_rsr_credentials']);
@@ -106,6 +108,7 @@ class AdminPage
             [
                 'ajaxUrl' => admin_url('admin-ajax.php'),
                 'cssiCredentialNonce' => wp_create_nonce('fflhub_test_cssi_credentials'),
+                'kinseysCredentialNonce' => wp_create_nonce('fflhub_test_kinseys_credentials'),
                 'lipseysCredentialNonce' => wp_create_nonce('fflhub_test_lipseys_credentials'),
                 'orionCredentialNonce' => wp_create_nonce('fflhub_test_orion_credentials'),
                 'rsrCredentialNonce' => wp_create_nonce('fflhub_test_rsr_credentials'),
@@ -370,6 +373,19 @@ class AdminPage
         $posted_fields = self::posted_distributor_settings_fields();
 
         wp_send_json_success(self::test_cssi_api_credentials($posted_fields));
+    }
+
+    public function handle_test_kinseys_credentials(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('You do not have permission to perform this action.', 'ffl-hub')], 403);
+        }
+
+        check_ajax_referer('fflhub_test_kinseys_credentials', 'nonce');
+
+        $posted_fields = self::posted_distributor_settings_fields();
+
+        wp_send_json_success(self::test_kinseys_api_credentials($posted_fields));
     }
 
     public function handle_test_orion_credentials(): void
@@ -1037,6 +1053,129 @@ class AdminPage
      * @param array<string,mixed> $res
      */
     private static function orion_format_raw_response(array $res): string
+    {
+        $data = isset($res['data']) && is_array($res['data']) ? (array) $res['data'] : [];
+        $raw = [
+            'ok' => !empty($res['ok']),
+            'status' => (int) ($res['status'] ?? 0),
+        ];
+
+        foreach (['error', 'body_excerpt', 'response_bytes'] as $key) {
+            if (array_key_exists($key, $res) && $res[$key] !== '' && $res[$key] !== null) {
+                $raw[$key] = $res[$key];
+            }
+        }
+
+        if (!empty($data)) {
+            $raw['data'] = $data;
+        }
+
+        $encoded = wp_json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+        return is_string($encoded) ? $encoded : '';
+    }
+
+    /**
+     * @param array<string,string> $posted_fields
+     * @return array<string,mixed>
+     */
+    private static function test_kinseys_api_credentials(array $posted_fields): array
+    {
+        $api_identifier = self::distributor_posted_or_saved_setting('kinseys', $posted_fields, 'api_identifier');
+        $api_key = self::distributor_posted_or_saved_setting('kinseys', $posted_fields, 'api_key');
+        $source = self::distributor_posted_or_saved_setting('kinseys', $posted_fields, 'source');
+        if ($source === '') {
+            $source = 'FFLHub';
+        }
+
+        if ($api_identifier === '' || $api_key === '') {
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'Kinsey\'s API',
+                'message' => __('Missing Kinsey\'s API Identifier or API key.', 'ffl-hub'),
+            ];
+        }
+
+        $base_url = trim((string) apply_filters('fflhub_kinseys_api_base_url', KinseysApiClient::DEFAULT_BASE_URL));
+        if ($base_url === '') {
+            $base_url = KinseysApiClient::DEFAULT_BASE_URL;
+        }
+
+        $probe_product_id = trim((string) apply_filters('fflhub_kinseys_credential_test_product_id', '10113'));
+        if ($probe_product_id === '') {
+            $probe_product_id = '10113';
+        }
+
+        try {
+            $client = new KinseysApiClient(
+                $api_identifier,
+                $api_key,
+                $source,
+                $base_url,
+                (int) apply_filters('fflhub_kinseys_credential_test_timeout_sec', 30)
+            );
+            $res = $client->test_credentials($probe_product_id);
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'Kinsey\'s API',
+                'message' => 'Kinsey\'s credential test failed before a usable response: ' . $e->getMessage(),
+                'httpStatus' => 0,
+            ];
+        }
+
+        $http_status = (int) ($res['status'] ?? 0);
+        $data = isset($res['data']) && is_array($res['data']) ? (array) $res['data'] : [];
+        $raw_response = self::kinseys_format_raw_response($res);
+
+        if (empty($res['ok']) || $http_status < 200 || $http_status >= 300) {
+            $message = trim((string) ($res['error'] ?? ''));
+            if ($message === '') {
+                $message = __('Kinsey\'s inventory probe failed.', 'ffl-hub');
+            }
+
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'Kinsey\'s API',
+                'message' => $message,
+                'httpStatus' => $http_status,
+                'rawResponse' => $raw_response,
+            ];
+        }
+
+        $has_expected_shape = array_key_exists('recordsCount', $data)
+            || (isset($data['Products']) && is_array($data['Products']))
+            || (isset($data['products']) && is_array($data['products']));
+
+        if (!$has_expected_shape) {
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'Kinsey\'s API',
+                'message' => __('Kinsey\'s endpoint responded, but the inventory probe did not return the expected response shape.', 'ffl-hub'),
+                'httpStatus' => $http_status,
+                'rawResponse' => $raw_response,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'profile' => 'api',
+            'profileLabel' => 'Kinsey\'s API',
+            'message' => __('Credentials accepted for Kinsey\'s API. The inventory probe returned an expected response.', 'ffl-hub'),
+            'httpStatus' => $http_status,
+            'recordsCount' => isset($data['recordsCount']) ? (int) $data['recordsCount'] : null,
+            'rawResponse' => $raw_response,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $res
+     */
+    private static function kinseys_format_raw_response(array $res): string
     {
         $data = isset($res['data']) && is_array($res['data']) ? (array) $res['data'] : [];
         $raw = [
@@ -2893,6 +3032,21 @@ class AdminPage
         <?php
     }
 
+    private static function render_kinseys_credential_tools(): void
+    {
+        ?>
+        <section class="fflhub-credential-tools fflhub-kinseys-tools" aria-label="<?php esc_attr_e('Kinsey\'s credential tests', 'ffl-hub'); ?>">
+            <h3><?php esc_html_e('Credential Tests', 'ffl-hub'); ?></h3>
+            <div class="fflhub-credential-test-actions fflhub-kinseys-test-actions">
+                <button type="button" class="button button-secondary fflhub-kinseys-test-credentials" data-profile="api">
+                    <?php esc_html_e('Test Customer API', 'ffl-hub'); ?>
+                </button>
+            </div>
+            <div class="fflhub-credential-test-status fflhub-kinseys-test-status" aria-live="polite"></div>
+        </section>
+        <?php
+    }
+
     /**
      * Render a full distributor settings form inside the modal,
      * including the Enable/Disable button.
@@ -2973,6 +3127,9 @@ class AdminPage
             <?php endif; ?>
             <?php if ($id === 'orion') : ?>
                 <?php self::render_orion_credential_tools(); ?>
+            <?php endif; ?>
+            <?php if ($id === 'kinseys') : ?>
+                <?php self::render_kinseys_credential_tools(); ?>
             <?php endif; ?>
 
             <!-- Distributor settings form -->

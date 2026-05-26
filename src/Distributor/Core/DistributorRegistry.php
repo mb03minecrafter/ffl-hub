@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Integrations\CSSI\CSSIModule;
 use FFLHub\Distributor\Integrations\Davidsons\DavidsonsModule;
+use FFLHub\Distributor\Integrations\Kinseys\KinseysModule;
 use FFLHub\Distributor\Integrations\Lipseys\LipseysModule;
 use FFLHub\Distributor\Integrations\MGE\MGEModule;
 use FFLHub\Distributor\Integrations\Orion\OrionModule;
@@ -42,6 +43,7 @@ final class DistributorRegistry
             new LipseysModule(),
             new ZandersModule(),
             new OrionModule(),
+            new KinseysModule(),
             new SportsSouthModule(),
             new MGEModule(),
             new CSSIModule(),
