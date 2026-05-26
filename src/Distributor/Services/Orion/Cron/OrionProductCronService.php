@@ -19,6 +19,8 @@ final class OrionProductCronService extends AbstractTableCronService
 
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][OrionProductCron]';
+    private const DEFAULT_CATALOG_TIMEOUT_SECONDS = 120;
+    private const DEFAULT_INVENTORY_TIMEOUT_SECONDS = 20;
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -49,6 +51,8 @@ final class OrionProductCronService extends AbstractTableCronService
     {
         $t_start = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $catalog_timeout_seconds = $this->get_catalog_timeout_seconds();
+        $inventory_timeout_seconds = $this->get_inventory_timeout_seconds();
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
@@ -60,11 +64,13 @@ final class OrionProductCronService extends AbstractTableCronService
             'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
             'hook' => self::CRON_HOOK,
             'group' => $this->get_action_group(),
+            'catalog_timeout_sec' => $catalog_timeout_seconds,
+            'inventory_timeout_sec' => $inventory_timeout_seconds,
             'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
         ]);
 
-        $client = $this->make_client();
-        if (!$client->has_credentials()) {
+        $catalog_client = $this->make_client($catalog_timeout_seconds);
+        if (!$catalog_client->has_credentials()) {
             update_option('fflhub_orion_fulfillment_last_error', current_time('mysql'), false);
             $this->log('Missing Orion connection key; product import skipped.');
             $this->finalize_run($t_start, $mem_start, 'ERROR (missing connection key)');
@@ -72,10 +78,11 @@ final class OrionProductCronService extends AbstractTableCronService
         }
 
         $t_catalog = microtime(true);
-        $catalog = $client->get_catalog();
+        $catalog = $catalog_client->get_catalog();
         $this->profile('get_catalog', $t_catalog, [
             'ok' => empty($catalog['ok']) ? 0 : 1,
             'status' => (int) ($catalog['status'] ?? 0),
+            'timeout_sec' => $catalog_timeout_seconds,
         ]);
 
         if (empty($catalog['ok'])) {
@@ -97,10 +104,12 @@ final class OrionProductCronService extends AbstractTableCronService
         }
 
         $t_inventory = microtime(true);
-        $inventory = $client->get_catalog_inventory();
+        $inventory_client = $this->make_client($inventory_timeout_seconds);
+        $inventory = $inventory_client->get_catalog_inventory();
         $this->profile('get_catalog_inventory', $t_inventory, [
             'ok' => empty($inventory['ok']) ? 0 : 1,
             'status' => (int) ($inventory['status'] ?? 0),
+            'timeout_sec' => $inventory_timeout_seconds,
         ]);
 
         if (empty($inventory['ok'])) {
@@ -152,12 +161,32 @@ final class OrionProductCronService extends AbstractTableCronService
         ]);
     }
 
-    private function make_client(): OrionApiClient
+    private function make_client(int $timeoutSeconds): OrionApiClient
     {
         $connection_key = Options::get_distributor_option('orion', 'connection_key', '');
         $base_url = (string) apply_filters('fflhub_orion_api_base_url', OrionApiClient::DEFAULT_BASE_URL);
 
-        return new OrionApiClient($connection_key, $base_url, 120);
+        return new OrionApiClient($connection_key, $base_url, $timeoutSeconds);
+    }
+
+    private function get_catalog_timeout_seconds(): int
+    {
+        $timeout_seconds = (int) apply_filters(
+            'fflhub_orion_product_catalog_timeout_seconds',
+            self::DEFAULT_CATALOG_TIMEOUT_SECONDS
+        );
+
+        return max(10, min(180, $timeout_seconds));
+    }
+
+    private function get_inventory_timeout_seconds(): int
+    {
+        $timeout_seconds = (int) apply_filters(
+            'fflhub_orion_product_inventory_timeout_seconds',
+            self::DEFAULT_INVENTORY_TIMEOUT_SECONDS
+        );
+
+        return max(10, min(60, $timeout_seconds));
     }
 
     /**

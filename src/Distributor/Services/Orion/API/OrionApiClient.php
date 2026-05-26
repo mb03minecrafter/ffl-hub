@@ -6,12 +6,17 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+use FFLHub\Util\DebugLogUtil;
+
 /**
  * Thin WordPress HTTP client for the Orion Wholesale API.
  */
 final class OrionApiClient
 {
     public const DEFAULT_BASE_URL = 'https://orionfflsales.com/api.php';
+
+    private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
+    private const LOG_PREFIX = '[FFLHub][OrionHttpCron]';
 
     private string $connectionKey;
     private string $baseUrl;
@@ -101,7 +106,11 @@ final class OrionApiClient
      */
     private function get(string $method, array $params = []): array
     {
+        $request_context = $this->request_context('GET', $method, $params);
+
         if (!$this->has_credentials()) {
+            $this->log('HTTP GET skipped: missing credentials', $request_context);
+
             return [
                 'ok'             => false,
                 'status'         => 0,
@@ -113,6 +122,9 @@ final class OrionApiClient
         }
 
         $url = add_query_arg(array_merge(['method' => $method], $params), $this->baseUrl);
+        $t_request = microtime(true);
+
+        $this->log('HTTP GET start', $request_context);
 
         $response = wp_remote_get(
             $url,
@@ -125,7 +137,10 @@ final class OrionApiClient
             ]
         );
 
-        return $this->parse_response($response);
+        $parsed = $this->parse_response($response);
+        $this->log('HTTP GET complete', $this->response_context($request_context, $parsed, $t_request));
+
+        return $parsed;
     }
 
     /**
@@ -134,7 +149,11 @@ final class OrionApiClient
      */
     private function post(string $method, array $params = []): array
     {
+        $request_context = $this->request_context('POST', $method, $params);
+
         if (!$this->has_credentials()) {
+            $this->log('HTTP POST skipped: missing credentials', $request_context);
+
             return [
                 'ok'             => false,
                 'status'         => 0,
@@ -146,6 +165,9 @@ final class OrionApiClient
         }
 
         $url = add_query_arg(array_merge(['method' => $method], $params), $this->baseUrl);
+        $t_request = microtime(true);
+
+        $this->log('HTTP POST start', $request_context);
 
         $response = wp_remote_post(
             $url,
@@ -159,7 +181,10 @@ final class OrionApiClient
             ]
         );
 
-        return $this->parse_response($response);
+        $parsed = $this->parse_response($response);
+        $this->log('HTTP POST complete', $this->response_context($request_context, $parsed, $t_request));
+
+        return $parsed;
     }
 
     /**
@@ -217,6 +242,119 @@ final class OrionApiClient
         }
 
         return strlen($text) <= $max ? $text : substr($text, 0, $max) . '...';
+    }
+
+    /**
+     * @param array<string,string> $params
+     * @return array<string,mixed>
+     */
+    private function request_context(string $verb, string $method, array $params): array
+    {
+        $endpoint = $this->endpoint_context();
+
+        return [
+            'verb' => $verb,
+            'method' => $method,
+            'timeout_sec' => $this->timeoutSeconds,
+            'endpoint_host' => $endpoint['host'],
+            'endpoint_path' => $endpoint['path'],
+            'params' => $this->summarize_params($params),
+        ];
+    }
+
+    /**
+     * @return array{host:string,path:string}
+     */
+    private function endpoint_context(): array
+    {
+        $parts = parse_url($this->baseUrl);
+        if (!is_array($parts)) {
+            return [
+                'host' => '',
+                'path' => '',
+            ];
+        }
+
+        return [
+            'host' => (string) ($parts['host'] ?? ''),
+            'path' => (string) ($parts['path'] ?? ''),
+        ];
+    }
+
+    /**
+     * @param array<string,string> $params
+     * @return array<string,mixed>
+     */
+    private function summarize_params(array $params): array
+    {
+        if (empty($params)) {
+            return [
+                'keys' => [],
+            ];
+        }
+
+        $summary = [
+            'keys' => array_values(array_keys($params)),
+        ];
+
+        foreach ($params as $key => $value) {
+            $key = (string) $key;
+            $value = (string) $value;
+
+            if ($key === 'product_ids') {
+                $ids = array_values(array_filter(array_map('trim', explode(',', $value)), static function ($id): bool {
+                    return $id !== '';
+                }));
+                $summary['product_ids_count'] = count($ids);
+                $summary['product_ids_sample'] = array_slice($ids, 0, 5);
+                continue;
+            }
+
+            $summary[$key . '_bytes'] = strlen($value);
+        }
+
+        return $summary;
+    }
+
+    /**
+     * @param array<string,mixed> $requestContext
+     * @param array<string,mixed> $parsed
+     * @return array<string,mixed>
+     */
+    private function response_context(array $requestContext, array $parsed, float $t0): array
+    {
+        $ctx = $requestContext;
+        $ctx['ok'] = empty($parsed['ok']) ? 0 : 1;
+        $ctx['status'] = (int) ($parsed['status'] ?? 0);
+        $ctx['response_bytes'] = (int) ($parsed['response_bytes'] ?? 0);
+        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000.0, 2, '.', '');
+
+        $error = self::excerpt_for_log((string) ($parsed['error'] ?? ''), 500);
+        if ($error !== '') {
+            $ctx['error'] = $error;
+        }
+
+        if (empty($parsed['ok'])) {
+            $body_excerpt = self::excerpt_for_log((string) ($parsed['body_excerpt'] ?? ''), 500);
+            if ($body_excerpt !== '') {
+                $ctx['body_excerpt'] = $body_excerpt;
+            }
+        }
+
+        return $ctx;
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function log(string $message, array $ctx = []): void
+    {
+        if (empty($ctx)) {
+            DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $message);
+            return;
+        }
+
+        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $message, $ctx);
     }
 
     /**
