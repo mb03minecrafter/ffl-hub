@@ -20,7 +20,8 @@ final class OrionProductCronService extends AbstractTableCronService
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][OrionProductCron]';
     private const DEFAULT_CATALOG_TIMEOUT_SECONDS = 120;
-    private const DEFAULT_INVENTORY_TIMEOUT_SECONDS = 20;
+    private const DEFAULT_INVENTORY_TIMEOUT_SECONDS = 120;
+    private const INVENTORY_FAILURE_COOLDOWN_TRANSIENT = 'fflhub_orion_inventory_failure_cooldown';
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -78,11 +79,21 @@ final class OrionProductCronService extends AbstractTableCronService
         }
 
         $t_catalog = microtime(true);
+        $this->log('PHASE START: get_catalog', [
+            'timeout_sec' => $catalog_timeout_seconds,
+            'memory_kb' => $this->memory_kb(),
+            'memory_peak_kb' => $this->memory_peak_kb(),
+        ]);
         $catalog = $catalog_client->get_catalog();
+        $catalog_data = (array) ($catalog['data'] ?? []);
+        $products = $catalog_data['products'] ?? null;
         $this->profile('get_catalog', $t_catalog, [
             'ok' => empty($catalog['ok']) ? 0 : 1,
             'status' => (int) ($catalog['status'] ?? 0),
             'timeout_sec' => $catalog_timeout_seconds,
+            'response_bytes' => (int) ($catalog['response_bytes'] ?? 0),
+            'data_keys' => array_values(array_keys($catalog_data)),
+            'products_seen' => is_array($products) ? count($products) : 0,
         ]);
 
         if (empty($catalog['ok'])) {
@@ -95,7 +106,6 @@ final class OrionProductCronService extends AbstractTableCronService
             return;
         }
 
-        $products = $catalog['data']['products'] ?? null;
         if (!is_array($products) || empty($products)) {
             update_option('fflhub_orion_fulfillment_last_error', current_time('mysql'), false);
             $this->log('Orion get_catalog returned no products.');
@@ -105,11 +115,21 @@ final class OrionProductCronService extends AbstractTableCronService
 
         $t_inventory = microtime(true);
         $inventory_client = $this->make_client($inventory_timeout_seconds);
+        $this->log('PHASE START: get_catalog_inventory', [
+            'timeout_sec' => $inventory_timeout_seconds,
+            'products_seen' => count($products),
+            'memory_kb' => $this->memory_kb(),
+            'memory_peak_kb' => $this->memory_peak_kb(),
+        ]);
         $inventory = $inventory_client->get_catalog_inventory();
+        $inventory_data = (array) ($inventory['data'] ?? []);
         $this->profile('get_catalog_inventory', $t_inventory, [
             'ok' => empty($inventory['ok']) ? 0 : 1,
             'status' => (int) ($inventory['status'] ?? 0),
             'timeout_sec' => $inventory_timeout_seconds,
+            'response_bytes' => (int) ($inventory['response_bytes'] ?? 0),
+            'data_keys' => array_values(array_keys($inventory_data)),
+            'inventory_rows' => $this->count_inventory_rows($inventory_data),
         ]);
 
         if (empty($inventory['ok'])) {
@@ -122,11 +142,20 @@ final class OrionProductCronService extends AbstractTableCronService
             return;
         }
 
+        $this->clear_inventory_failure_cooldown();
+
         $t_import = microtime(true);
+        $this->log('PHASE START: import_products_array', [
+            'products_seen' => count($products),
+            'inventory_rows' => $this->count_inventory_rows($inventory_data),
+            'memory_kb' => $this->memory_kb(),
+            'memory_peak_kb' => $this->memory_peak_kb(),
+        ]);
         $importer = new OrionProductImporterService($this->table);
-        $count = $importer->import_products_array($products, (array) ($inventory['data'] ?? []));
+        $count = $importer->import_products_array($products, $inventory_data);
         $this->profile('import_products_array', $t_import, [
             'products_seen' => count($products),
+            'inventory_rows' => $this->count_inventory_rows($inventory_data),
             'rows_imported' => (int) $count,
         ]);
 
@@ -138,6 +167,11 @@ final class OrionProductCronService extends AbstractTableCronService
         }
 
         $t_swap = microtime(true);
+        $this->log('PHASE START: swap_live_and_staging', [
+            'rows_imported' => (int) $count,
+            'memory_kb' => $this->memory_kb(),
+            'memory_peak_kb' => $this->memory_peak_kb(),
+        ]);
         $new_live = $this->table->swap_live_and_staging();
         $this->profile('swap_live_and_staging', $t_swap, [
             'new_live' => (string) $new_live,
@@ -169,6 +203,18 @@ final class OrionProductCronService extends AbstractTableCronService
         return new OrionApiClient($connection_key, $base_url, $timeoutSeconds);
     }
 
+    /**
+     * @param array<string,mixed> $inventoryData
+     */
+    private function count_inventory_rows(array $inventoryData): int
+    {
+        if (isset($inventoryData['product_inventory']) && is_array($inventoryData['product_inventory'])) {
+            return count($inventoryData['product_inventory']);
+        }
+
+        return count($inventoryData);
+    }
+
     private function get_catalog_timeout_seconds(): int
     {
         $timeout_seconds = (int) apply_filters(
@@ -186,7 +232,23 @@ final class OrionProductCronService extends AbstractTableCronService
             self::DEFAULT_INVENTORY_TIMEOUT_SECONDS
         );
 
-        return max(10, min(60, $timeout_seconds));
+        return max(10, min(180, $timeout_seconds));
+    }
+
+    private function clear_inventory_failure_cooldown(): void
+    {
+        if (!function_exists('delete_transient')) {
+            return;
+        }
+
+        $had_cooldown = function_exists('get_transient')
+            && is_array(get_transient(self::INVENTORY_FAILURE_COOLDOWN_TRANSIENT));
+
+        delete_transient(self::INVENTORY_FAILURE_COOLDOWN_TRANSIENT);
+
+        if ($had_cooldown) {
+            $this->log('Cleared Orion inventory API failure cooldown after product inventory request succeeded.');
+        }
     }
 
     /**
@@ -208,7 +270,19 @@ final class OrionProductCronService extends AbstractTableCronService
     private function profile(string $label, float $t0, array $ctx = []): void
     {
         $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000.0, 2, '.', '');
+        $ctx['memory_kb'] = $this->memory_kb();
+        $ctx['memory_peak_kb'] = $this->memory_peak_kb();
         $this->log('PROFILE: ' . $label, $ctx);
+    }
+
+    private function memory_kb(): int
+    {
+        return function_exists('memory_get_usage') ? (int) round(memory_get_usage(true) / 1024) : 0;
+    }
+
+    private function memory_peak_kb(): int
+    {
+        return function_exists('memory_get_peak_usage') ? (int) round(memory_get_peak_usage(true) / 1024) : 0;
     }
 
     /**

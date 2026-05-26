@@ -19,7 +19,7 @@ final class OrionInventoryCronService extends AbstractTableCronService
 
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][OrionInventoryCron]';
-    private const DEFAULT_TIMEOUT_SECONDS = 20;
+    private const DEFAULT_TIMEOUT_SECONDS = 120;
     private const FAILURE_COOLDOWN_SECONDS = 900;
     private const FAILURE_COOLDOWN_TRANSIENT = 'fflhub_orion_inventory_failure_cooldown';
 
@@ -136,7 +136,7 @@ final class OrionInventoryCronService extends AbstractTableCronService
             self::DEFAULT_TIMEOUT_SECONDS
         );
 
-        return max(10, min(60, $timeout_seconds));
+        return max(10, min(180, $timeout_seconds));
     }
 
     /**
