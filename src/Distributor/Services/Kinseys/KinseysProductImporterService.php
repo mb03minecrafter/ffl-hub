@@ -112,6 +112,248 @@ final class KinseysProductImporterService
     }
 
     /**
+     * @param string[]|int[] $allowedProductIds
+     * @return array<string,mixed>
+     */
+    public function prune_staging_to_allowed_product_ids(array $allowedProductIds): array
+    {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+
+        $t_start = microtime(true);
+        $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $phase_ms = [];
+
+        $t_phase = microtime(true);
+        $ids = [];
+        foreach ($allowedProductIds as $id) {
+            $id = trim((string) $id);
+            if ($id !== '') {
+                $ids[$id] = $id;
+            }
+        }
+        $ids = array_values($ids);
+        $phase_ms['normalize_allowed_ids'] = $this->elapsed_ms($t_phase);
+
+        if (empty($ids)) {
+            return $this->finish_allowed_product_prune_stats([
+                'ok' => false,
+                'error' => 'No allowed product IDs provided.',
+                'allowed_product_ids' => 0,
+                'allowed_ids_loaded' => 0,
+                'staging_rows_before' => 0,
+                'rows_deleted' => 0,
+                'staging_rows_after' => 0,
+            ], $t_start, $mem_start, $phase_ms);
+        }
+
+        global $wpdb;
+
+        $staging_table = $this->table->get_staging_table_name();
+        $temp_table = $wpdb->prefix . 'fflhub_kinseys_allowed_product_ids_tmp';
+
+        try {
+            $t_phase = microtime(true);
+            $this->table->createTables();
+            $phase_ms['ensure_product_tables'] = $this->elapsed_ms($t_phase);
+
+            $t_phase = microtime(true);
+            $before = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$staging_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $phase_ms['count_staging_before'] = $this->elapsed_ms($t_phase);
+
+            $t_phase = microtime(true);
+            $charset = $wpdb->get_charset_collate();
+            $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$temp_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $created = $wpdb->query("
+                CREATE TEMPORARY TABLE {$temp_table} (
+                    product_id VARCHAR(128) NOT NULL,
+                    PRIMARY KEY (product_id)
+                ) {$charset}
+            "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $phase_ms['create_allowed_temp_table'] = $this->elapsed_ms($t_phase);
+            if ($created === false) {
+                return $this->finish_allowed_product_prune_stats([
+                    'ok' => false,
+                    'error' => 'Failed to create allowed product temp table: ' . (string) $wpdb->last_error,
+                    'allowed_product_ids' => count($ids),
+                    'allowed_ids_loaded' => 0,
+                    'staging_rows_before' => $before,
+                    'rows_deleted' => 0,
+                    'staging_rows_after' => $before,
+                    'staging_table' => $staging_table,
+                    'temp_table' => $temp_table,
+                ], $t_start, $mem_start, $phase_ms);
+            }
+
+            $t_phase = microtime(true);
+            $loaded = $this->insert_allowed_product_id_rows($temp_table, $ids);
+            $phase_ms['insert_allowed_temp_rows'] = $this->elapsed_ms($t_phase);
+            if ($loaded <= 0) {
+                return $this->finish_allowed_product_prune_stats([
+                    'ok' => false,
+                    'error' => 'Failed to load allowed product IDs into temp table.',
+                    'allowed_product_ids' => count($ids),
+                    'allowed_ids_loaded' => 0,
+                    'staging_rows_before' => $before,
+                    'rows_deleted' => 0,
+                    'staging_rows_after' => $before,
+                    'staging_table' => $staging_table,
+                    'temp_table' => $temp_table,
+                ], $t_start, $mem_start, $phase_ms);
+            }
+
+            $t_phase = microtime(true);
+            $deleted = $wpdb->query("
+                DELETE S
+                FROM {$staging_table} S
+                LEFT JOIN {$temp_table} A1
+                    ON S.kinseys_product_id <> '' AND A1.product_id = S.kinseys_product_id
+                LEFT JOIN {$temp_table} A2
+                    ON S.remote_identifier <> '' AND A2.product_id = S.remote_identifier
+                LEFT JOIN {$temp_table} A3
+                    ON S.north_item_number <> '' AND A3.product_id = S.north_item_number
+                LEFT JOIN {$temp_table} A4
+                    ON S.south_item_number <> '' AND A4.product_id = S.south_item_number
+                LEFT JOIN {$temp_table} A5
+                    ON S.vendor_item_number <> '' AND A5.product_id = S.vendor_item_number
+                WHERE
+                    A1.product_id IS NULL
+                    AND A2.product_id IS NULL
+                    AND A3.product_id IS NULL
+                    AND A4.product_id IS NULL
+                    AND A5.product_id IS NULL
+            "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $phase_ms['delete_not_allowed_rows'] = $this->elapsed_ms($t_phase);
+            if ($deleted === false) {
+                return $this->finish_allowed_product_prune_stats([
+                    'ok' => false,
+                    'error' => 'Failed to prune staging rows: ' . (string) $wpdb->last_error,
+                    'allowed_product_ids' => count($ids),
+                    'allowed_ids_loaded' => (int) $loaded,
+                    'staging_rows_before' => $before,
+                    'rows_deleted' => 0,
+                    'staging_rows_after' => $before,
+                    'staging_table' => $staging_table,
+                    'temp_table' => $temp_table,
+                ], $t_start, $mem_start, $phase_ms);
+            }
+
+            $t_phase = microtime(true);
+            $after = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$staging_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $phase_ms['count_staging_after'] = $this->elapsed_ms($t_phase);
+
+            $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$temp_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        } catch (\Throwable $e) {
+            return $this->finish_allowed_product_prune_stats([
+                'ok' => false,
+                'error' => $e->getMessage(),
+                'allowed_product_ids' => count($ids),
+                'allowed_ids_loaded' => 0,
+                'staging_rows_before' => 0,
+                'rows_deleted' => 0,
+                'staging_rows_after' => 0,
+                'staging_table' => $staging_table,
+                'temp_table' => $temp_table,
+            ], $t_start, $mem_start, $phase_ms);
+        }
+
+        return $this->finish_allowed_product_prune_stats([
+            'ok' => true,
+            'allowed_product_ids' => count($ids),
+            'allowed_ids_loaded' => (int) $loaded,
+            'staging_rows_before' => $before,
+            'rows_deleted' => (int) $deleted,
+            'staging_rows_after' => $after,
+            'staging_table' => $staging_table,
+            'temp_table' => $temp_table,
+        ], $t_start, $mem_start, $phase_ms);
+    }
+
+    /**
+     * @param string[] $ids
+     */
+    private function insert_allowed_product_id_rows(string $tempTable, array $ids): int
+    {
+        global $wpdb;
+
+        $batch_size = 1000;
+        $values = [];
+        $placeholders = [];
+        $loaded = 0;
+
+        $flush = function () use (&$values, &$placeholders, &$loaded, $tempTable, $wpdb): void {
+            if (empty($placeholders)) {
+                return;
+            }
+
+            $sql = "INSERT IGNORE INTO {$tempTable} (product_id) VALUES " . implode(', ', $placeholders);
+            $result = $wpdb->query($wpdb->prepare($sql, $values));
+            if ($result !== false) {
+                $loaded += (int) $result;
+            } else {
+                $this->log('ERROR: Kinsey\'s allowed product temp insert failed: ' . (string) $wpdb->last_error);
+            }
+
+            $values = [];
+            $placeholders = [];
+        };
+
+        foreach ($ids as $id) {
+            $id = trim((string) $id);
+            if ($id === '') {
+                continue;
+            }
+
+            $placeholders[] = '(%s)';
+            $values[] = $id;
+
+            if (count($placeholders) >= $batch_size) {
+                $flush();
+            }
+        }
+
+        $flush();
+
+        return (int) $loaded;
+    }
+
+    /**
+     * @param array<string,mixed> $stats
+     * @param array<string,string> $phaseMs
+     * @return array<string,mixed>
+     */
+    private function finish_allowed_product_prune_stats(
+        array $stats,
+        float $tStart,
+        int $memStart,
+        array $phaseMs
+    ): array {
+        $stats['phase_ms'] = $phaseMs;
+        $stats['elapsed_ms'] = $this->elapsed_ms($tStart);
+
+        if ($memStart > 0 && function_exists('memory_get_usage')) {
+            $mem_end = (int) memory_get_usage(true);
+            $stats['memory_start_kb'] = (int) round($memStart / 1024);
+            $stats['memory_end_kb'] = (int) round($mem_end / 1024);
+            $stats['memory_delta_kb'] = (int) round(($mem_end - $memStart) / 1024);
+        }
+
+        if (function_exists('memory_get_peak_usage')) {
+            $stats['memory_peak_kb'] = (int) round(memory_get_peak_usage(true) / 1024);
+        }
+
+        $this->log(
+            empty($stats['ok'])
+                ? 'Kinsey\'s allowed product staging prune failed.'
+                : 'Kinsey\'s allowed product staging prune complete.',
+            $stats
+        );
+
+        return $stats;
+    }
+
+    /**
      * @param array<int,array<string,mixed>> $products
      * @param array<string,array<string,mixed>> $inventoryLookup
      * @param array<string,string> $phaseMs
