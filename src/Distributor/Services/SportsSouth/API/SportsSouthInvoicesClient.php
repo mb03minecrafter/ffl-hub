@@ -69,6 +69,34 @@ final class SportsSouthInvoicesClient
     }
 
     /**
+     * Read-only credential probe using a fake PO tracking lookup.
+     *
+     * @return array<string,mixed>
+     */
+    public function test_credentials(string $fakePo): array
+    {
+        $fakePo = trim($fakePo) !== '' ? trim($fakePo) : 'FFLHUBTEST' . gmdate('YmdHis');
+        $resp = $this->post_operation('GetTrackingByPo', [
+            'PONumber' => $fakePo,
+        ]);
+
+        $body = (string) ($resp['body'] ?? '');
+        $scalar = (string) ($resp['scalar'] ?? '');
+        $rows = !empty($resp['ok']) ? $this->parse_dataset_rows($scalar) : [];
+
+        return array_merge($resp, [
+            'operation' => 'GetTrackingByPo',
+            'fake_po' => $fakePo,
+            'rows' => $rows,
+            'rows_count' => count($rows),
+            'body_excerpt' => $this->excerpt_for_log($body, 2000),
+            'response_bytes' => strlen($body),
+            'credentials_confirmed' => !empty($resp['ok'])
+                && $this->looks_like_tracking_probe_response($body, $scalar),
+        ]);
+    }
+
+    /**
      * @param array<string,string> $operationParams
      * @return array{ok:bool,status:int,scalar:string,body:string,error:string}
      */
@@ -168,6 +196,8 @@ final class SportsSouthInvoicesClient
             'status' => $status,
             'scalar' => $scalar,
             'body' => $body,
+            'body_excerpt' => $this->excerpt_for_log($body),
+            'response_bytes' => strlen($body),
             'error' => $error,
         ];
     }
@@ -268,5 +298,32 @@ final class SportsSouthInvoicesClient
             || strpos($needle, 'not authorized') !== false
             || strpos($needle, 'invalid password') !== false
             || strpos($needle, 'invalid username') !== false;
+    }
+
+    private function looks_like_tracking_probe_response(string $body, string $scalar): bool
+    {
+        $haystack = strtolower($body . "\n" . $scalar);
+
+        return strpos($haystack, 'gettrackingbyporesult') !== false
+            || strpos($haystack, '<string') !== false
+            || strpos($haystack, '<newdataset') !== false
+            || strpos($haystack, '<table') !== false;
+    }
+
+    private function excerpt_for_log(string $text, int $max = 1200): string
+    {
+        $text = trim((string) preg_replace('/\s+/', ' ', $text));
+        if ($text === '') {
+            return '';
+        }
+
+        $text = (string) preg_replace('/(<Password>).*?(<\/Password>)/i', '$1[redacted]$2', $text);
+        $text = (string) preg_replace('/(Password=)[^&\s]+/i', '$1[redacted]', $text);
+
+        if (strlen($text) <= $max) {
+            return $text;
+        }
+
+        return substr($text, 0, $max) . '...';
     }
 }

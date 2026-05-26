@@ -43,6 +43,10 @@
         return getCredentialStatus($button, '.fflhub-cssi-test-status');
     }
 
+    function getSportsSouthStatus($button) {
+        return getCredentialStatus($button, '.fflhub-sports-south-test-status');
+    }
+
     function formatZandersCredentialResult(data) {
         var message = data && data.message ? data.message : 'Credential test finished.';
         var details = [];
@@ -313,6 +317,86 @@
             });
     }
 
+    function formatSportsSouthCredentialResult(data) {
+        var message = data && data.message ? data.message : 'Credential test finished.';
+        var details = [];
+
+        if (data && data.httpStatus) {
+            details.push('HTTP ' + data.httpStatus);
+        }
+        if (data && data.operation) {
+            details.push(data.operation);
+        }
+        if (data && data.fakePo) {
+            details.push('fake PO ' + data.fakePo);
+        }
+        if (data && data.fakeOrderNumber) {
+            details.push('fake order ' + data.fakeOrderNumber);
+        }
+        if (data && typeof data.rowsCount !== 'undefined' && data.rowsCount !== null) {
+            details.push('rows ' + data.rowsCount);
+        }
+        if (data && typeof data.responseBytes !== 'undefined' && data.responseBytes !== null) {
+            details.push('bytes ' + data.responseBytes);
+        }
+        if (data && typeof data.xmlBytes !== 'undefined' && data.xmlBytes !== null) {
+            details.push('xml bytes ' + data.xmlBytes);
+        }
+
+        if (details.length) {
+            message += ' (' + details.join(', ') + ')';
+        }
+
+        if (data && data.rawResponse) {
+            message += '\n\nRaw response:\n' + data.rawResponse;
+        }
+
+        return message;
+    }
+
+    function testSportsSouthCredentials($button) {
+        var $status = getSportsSouthStatus($button);
+        var profile = $button.data('profile') || '';
+
+        if (!window.FFLHubAdmin || !window.FFLHubAdmin.ajaxUrl || !window.FFLHubAdmin.sportsSouthCredentialNonce) {
+            setCredentialStatus($status, 'error', 'Credential test is not configured on this page.');
+            return;
+        }
+
+        setCredentialStatus($status, 'pending', 'Testing Sports South credentials...');
+        $button.prop('disabled', true).addClass('is-busy');
+
+        $.post(window.FFLHubAdmin.ajaxUrl, {
+            action: 'fflhub_test_sports_south_credentials',
+            nonce: window.FFLHubAdmin.sportsSouthCredentialNonce,
+            profile: profile,
+            fields: collectDistributorFields($button)
+        })
+            .done(function (response) {
+                var data = response && response.data ? response.data : {};
+                if (!response || response.success !== true) {
+                    setCredentialStatus($status, 'error', data.message || 'Credential test failed.');
+                    return;
+                }
+
+                setCredentialStatus(
+                    $status,
+                    data.ok ? 'success' : 'error',
+                    formatSportsSouthCredentialResult(data)
+                );
+            })
+            .fail(function (xhr) {
+                var message = 'Credential test failed.';
+                if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                    message = xhr.responseJSON.data.message;
+                }
+                setCredentialStatus($status, 'error', message);
+            })
+            .always(function () {
+                $button.prop('disabled', false).removeClass('is-busy');
+            });
+    }
+
     function openModal(panelId) {
         var $modal = $('#fflhub-modal');
         var $panels = $modal.find('.fflhub-modal-panel');
@@ -388,6 +472,11 @@
         $(document).on('click', '.fflhub-cssi-test-credentials', function (e) {
             e.preventDefault();
             testCssiCredentials($(this));
+        });
+
+        $(document).on('click', '.fflhub-sports-south-test-credentials', function (e) {
+            e.preventDefault();
+            testSportsSouthCredentials($(this));
         });
     });
 })(jQuery);

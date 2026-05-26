@@ -15,6 +15,9 @@ use FFLHub\Distributor\Integrations\RSR\RSRDirectConnectAPI;
 use FFLHub\Distributor\Integrations\Zanders\ZandersDirectShipAPI;
 use FFLHub\Distributor\Services\CSSI\API\CSSIClient;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
+use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient;
+use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInvoicesClient;
+use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthOrdersClient;
 use FFLHub\Distributor\Services\Zanders\API\ZandersSoapCurlClient;
 
 /**
@@ -60,6 +63,7 @@ class AdminPage
         add_action('wp_ajax_fflhub_test_cssi_credentials', [$this, 'handle_test_cssi_credentials']);
         add_action('wp_ajax_fflhub_test_lipseys_credentials', [$this, 'handle_test_lipseys_credentials']);
         add_action('wp_ajax_fflhub_test_rsr_credentials', [$this, 'handle_test_rsr_credentials']);
+        add_action('wp_ajax_fflhub_test_sports_south_credentials', [$this, 'handle_test_sports_south_credentials']);
         add_action('wp_ajax_fflhub_test_zanders_soap_credentials', [$this, 'handle_test_zanders_soap_credentials']);
     }
 
@@ -102,6 +106,7 @@ class AdminPage
                 'cssiCredentialNonce' => wp_create_nonce('fflhub_test_cssi_credentials'),
                 'lipseysCredentialNonce' => wp_create_nonce('fflhub_test_lipseys_credentials'),
                 'rsrCredentialNonce' => wp_create_nonce('fflhub_test_rsr_credentials'),
+                'sportsSouthCredentialNonce' => wp_create_nonce('fflhub_test_sports_south_credentials'),
                 'zandersSoapNonce' => wp_create_nonce('fflhub_test_zanders_soap_credentials'),
             ]
         );
@@ -364,6 +369,28 @@ class AdminPage
         wp_send_json_success(self::test_cssi_api_credentials($posted_fields));
     }
 
+    public function handle_test_sports_south_credentials(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('You do not have permission to perform this action.', 'ffl-hub')], 403);
+        }
+
+        check_ajax_referer('fflhub_test_sports_south_credentials', 'nonce');
+
+        $profile = isset($_POST['profile']) ? sanitize_key(wp_unslash((string) $_POST['profile'])) : '';
+        $profile_config = self::sports_south_credential_test_profile($profile);
+        if (empty($profile_config)) {
+            wp_send_json_success([
+                'ok' => false,
+                'message' => __('Unknown Sports South credential profile.', 'ffl-hub'),
+            ]);
+        }
+
+        $posted_fields = self::posted_distributor_settings_fields();
+
+        wp_send_json_success(self::test_sports_south_api_credentials($profile, $profile_config, $posted_fields));
+    }
+
     /**
      * @return array{label:string,username_key:string,password_key:string}|null
      */
@@ -486,6 +513,29 @@ class AdminPage
                 'label' => 'Dealer API',
                 'email_key' => 'dealer_email',
                 'password_key' => 'dealer_password',
+            ],
+        ];
+
+        return $profiles[$profile] ?? null;
+    }
+
+    /**
+     * @return array<string,string>|null
+     */
+    private static function sports_south_credential_test_profile(string $profile): ?array
+    {
+        $profiles = [
+            'inventory' => [
+                'label' => 'Inventory API',
+                'mode' => 'inventory',
+            ],
+            'orders' => [
+                'label' => 'Orders API',
+                'mode' => 'orders',
+            ],
+            'invoices' => [
+                'label' => 'Invoices / Tracking API',
+                'mode' => 'invoices',
             ],
         ];
 
@@ -689,6 +739,174 @@ class AdminPage
             $raw['pagination'] = $pagination;
         } elseif (isset($data['pagination']) && is_array($data['pagination'])) {
             $raw['pagination'] = $data['pagination'];
+        }
+
+        $encoded = wp_json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+        return is_string($encoded) ? $encoded : '';
+    }
+
+    /**
+     * @param array<string,string> $profile_config
+     * @param array<string,string> $posted_fields
+     * @return array<string,mixed>
+     */
+    private static function test_sports_south_api_credentials(string $profile, array $profile_config, array $posted_fields): array
+    {
+        $label = (string) $profile_config['label'];
+        $mode = (string) $profile_config['mode'];
+        $customer = self::distributor_posted_or_saved_setting('sports_south', $posted_fields, 'customer_number');
+        $username = self::distributor_posted_or_saved_setting('sports_south', $posted_fields, 'username');
+        $password = self::distributor_posted_or_saved_setting('sports_south', $posted_fields, 'password');
+        $source = self::distributor_posted_or_saved_setting('sports_south', $posted_fields, 'source');
+
+        if ($customer === '' || $username === '' || $password === '') {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => sprintf(
+                    __('Missing customer number, username, or password for Sports South %s.', 'ffl-hub'),
+                    $label
+                ),
+            ];
+        }
+
+        $source = $source !== '' ? $source : $customer;
+
+        try {
+            if ($mode === 'inventory') {
+                $client = new SportsSouthInventoryClient(
+                    $customer,
+                    $username,
+                    $password,
+                    $source,
+                    self::sports_south_posted_or_saved_base_url($posted_fields, 'inventory_api_base_url', SportsSouthInventoryClient::DEFAULT_BASE_URL),
+                    (int) apply_filters('fflhub_sports_south_credential_test_timeout_sec', 30)
+                );
+                $res = $client->test_credentials();
+            } elseif ($mode === 'orders') {
+                $fake_order_number = (string) (2147483000 + wp_rand(0, 499));
+                $client = new SportsSouthOrdersClient(
+                    $customer,
+                    $username,
+                    $password,
+                    $source,
+                    self::sports_south_posted_or_saved_base_url($posted_fields, 'orders_api_base_url', SportsSouthOrdersClient::DEFAULT_BASE_URL),
+                    (int) apply_filters('fflhub_sports_south_credential_test_timeout_sec', 30)
+                );
+                $res = $client->test_credentials($fake_order_number);
+            } else {
+                $fake_po = 'FFLHUBSS' . gmdate('ymdHis') . (string) wp_rand(100, 999);
+                $client = new SportsSouthInvoicesClient(
+                    $customer,
+                    $username,
+                    $password,
+                    $source,
+                    self::sports_south_posted_or_saved_base_url($posted_fields, 'invoices_api_base_url', SportsSouthInvoicesClient::DEFAULT_BASE_URL),
+                    (int) apply_filters('fflhub_sports_south_credential_test_timeout_sec', 30)
+                );
+                $res = $client->test_credentials($fake_po);
+            }
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => 'Sports South ' . $label . ' credential test failed before a usable response: ' . $e->getMessage(),
+                'httpStatus' => 0,
+            ];
+        }
+
+        $http_status = (int) ($res['status'] ?? 0);
+        $raw_response = self::sports_south_format_raw_response($res);
+        $fake_po = (string) ($res['fake_po'] ?? '');
+        $fake_order_number = (string) ($res['fake_order_number'] ?? '');
+        $operation = (string) ($res['operation'] ?? '');
+        $rows_count = isset($res['rows_count']) ? (int) $res['rows_count'] : null;
+        $response_bytes = isset($res['response_bytes']) ? (int) $res['response_bytes'] : null;
+        $xml_bytes = isset($res['xml_bytes']) ? (int) $res['xml_bytes'] : null;
+
+        if (empty($res['credentials_confirmed'])) {
+            $message = (string) ($res['error'] ?? '');
+            if ($message === '') {
+                $message = __('Sports South endpoint responded, but the response did not match a known credential-confirming shape.', 'ffl-hub');
+            }
+
+            return [
+                'ok' => false,
+                'profile' => $profile,
+                'profileLabel' => $label,
+                'message' => $message,
+                'httpStatus' => $http_status,
+                'operation' => $operation,
+                'fakePo' => $fake_po,
+                'fakeOrderNumber' => $fake_order_number,
+                'rowsCount' => $rows_count,
+                'responseBytes' => $response_bytes,
+                'xmlBytes' => $xml_bytes,
+                'rawResponse' => $raw_response,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'profile' => $profile,
+            'profileLabel' => $label,
+            'message' => sprintf(
+                __('Credentials accepted for Sports South %s. The probe reached a credential-protected endpoint and returned the expected response shape.', 'ffl-hub'),
+                $label
+            ),
+            'httpStatus' => $http_status,
+            'operation' => $operation,
+            'fakePo' => $fake_po,
+            'fakeOrderNumber' => $fake_order_number,
+            'rowsCount' => $rows_count,
+            'responseBytes' => $response_bytes,
+            'xmlBytes' => $xml_bytes,
+            'rawResponse' => $raw_response,
+        ];
+    }
+
+    /**
+     * @param array<string,string> $posted_fields
+     */
+    private static function sports_south_posted_or_saved_base_url(array $posted_fields, string $key, string $default): string
+    {
+        $url = self::distributor_posted_or_saved_setting('sports_south', $posted_fields, $key);
+
+        return $url !== '' ? $url : $default;
+    }
+
+    /**
+     * @param array<string,mixed> $res
+     */
+    private static function sports_south_format_raw_response(array $res): string
+    {
+        $raw = [
+            'ok' => !empty($res['ok']),
+            'credentials_confirmed' => !empty($res['credentials_confirmed']),
+            'status' => (int) ($res['status'] ?? 0),
+        ];
+
+        foreach ([
+            'operation',
+            'error',
+            'scalar',
+            'fake_po',
+            'fake_order_number',
+            'since_datetime',
+            'body_excerpt',
+            'xml_excerpt',
+            'response_bytes',
+            'body_bytes',
+            'xml_bytes',
+            'rows_count',
+            'wp_error_code',
+        ] as $key) {
+            if (array_key_exists($key, $res) && $res[$key] !== '' && $res[$key] !== null) {
+                $raw[$key] = $res[$key];
+            }
         }
 
         $encoded = wp_json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
@@ -2494,6 +2712,27 @@ class AdminPage
         <?php
     }
 
+    private static function render_sports_south_credential_tools(): void
+    {
+        ?>
+        <section class="fflhub-credential-tools fflhub-sports-south-tools" aria-label="<?php esc_attr_e('Sports South credential tests', 'ffl-hub'); ?>">
+            <h3><?php esc_html_e('Credential Tests', 'ffl-hub'); ?></h3>
+            <div class="fflhub-credential-test-actions fflhub-sports-south-test-actions">
+                <button type="button" class="button button-secondary fflhub-sports-south-test-credentials" data-profile="inventory">
+                    <?php esc_html_e('Test Inventory API', 'ffl-hub'); ?>
+                </button>
+                <button type="button" class="button button-secondary fflhub-sports-south-test-credentials" data-profile="orders">
+                    <?php esc_html_e('Test Orders API', 'ffl-hub'); ?>
+                </button>
+                <button type="button" class="button button-secondary fflhub-sports-south-test-credentials" data-profile="invoices">
+                    <?php esc_html_e('Test Invoices / Tracking API', 'ffl-hub'); ?>
+                </button>
+            </div>
+            <div class="fflhub-credential-test-status fflhub-sports-south-test-status" aria-live="polite"></div>
+        </section>
+        <?php
+    }
+
     /**
      * Render a full distributor settings form inside the modal,
      * including the Enable/Disable button.
@@ -2568,6 +2807,9 @@ class AdminPage
             <?php endif; ?>
             <?php if ($id === 'cssi') : ?>
                 <?php self::render_cssi_credential_tools(); ?>
+            <?php endif; ?>
+            <?php if ($id === 'sports_south') : ?>
+                <?php self::render_sports_south_credential_tools(); ?>
             <?php endif; ?>
 
             <!-- Distributor settings form -->

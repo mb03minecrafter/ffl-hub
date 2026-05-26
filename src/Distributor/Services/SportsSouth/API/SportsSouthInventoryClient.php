@@ -49,6 +49,31 @@ final class SportsSouthInventoryClient
     }
 
     /**
+     * Read-only credential probe using a future incremental inventory cursor to
+     * keep the response small while still exercising Sports South authentication.
+     *
+     * @return array<string,mixed>
+     */
+    public function test_credentials(string $sinceDateTime = '2099-01-01T00:00:00.00+00.00'): array
+    {
+        $sinceDateTime = trim($sinceDateTime) !== '' ? trim($sinceDateTime) : '2099-01-01T00:00:00.00+00.00';
+        $res = $this->incremental_onhand_update($sinceDateTime);
+        $body = (string) ($res['body'] ?? '');
+        $xml = (string) ($res['xml'] ?? '');
+
+        $res['operation'] = 'IncrementalOnhandUpdate';
+        $res['since_datetime'] = $sinceDateTime;
+        $res['body_bytes'] = strlen($body);
+        $res['xml_bytes'] = strlen($xml);
+        $res['body_excerpt'] = $this->excerpt_for_log($body, 2000);
+        $res['xml_excerpt'] = $this->excerpt_for_log($xml, 2000);
+        $res['credentials_confirmed'] = !empty($res['ok'])
+            && $this->looks_like_inventory_probe_response($body, $xml);
+
+        return $res;
+    }
+
+    /**
      * @return array{ok:bool,status:int,xml:string,body:string,error:string}
      */
     public function daily_item_update(string $lastUpdate = '1/1/1990', int $lastItem = -1): array
@@ -503,5 +528,33 @@ final class SportsSouthInventoryClient
             || strpos($needle, 'not authorized') !== false
             || strpos($needle, 'invalid password') !== false
             || strpos($needle, 'invalid username') !== false;
+    }
+
+    private function looks_like_inventory_probe_response(string $body, string $xml): bool
+    {
+        $haystack = strtolower($body . "\n" . $xml);
+
+        return strpos($haystack, 'incrementalonhandupdateresult') !== false
+            || strpos($haystack, '<string') !== false
+            || strpos($haystack, '<newdataset') !== false
+            || strpos($haystack, '<onhand') !== false
+            || strpos($haystack, '<serverdatetime') !== false;
+    }
+
+    private function excerpt_for_log(string $text, int $max = 1200): string
+    {
+        $text = trim((string) preg_replace('/\s+/', ' ', $text));
+        if ($text === '') {
+            return '';
+        }
+
+        $text = (string) preg_replace('/(<Password>).*?(<\/Password>)/i', '$1[redacted]$2', $text);
+        $text = (string) preg_replace('/(Password=)[^&\s]+/i', '$1[redacted]', $text);
+
+        if (strlen($text) <= $max) {
+            return $text;
+        }
+
+        return substr($text, 0, $max) . '...';
     }
 }

@@ -54,6 +54,45 @@ final class SportsSouthOrdersClient
     }
 
     /**
+     * Credential probe for the orders endpoint. Uses a high fake order number
+     * with Submit so the call should reach order-service validation without
+     * creating a header/detail row.
+     *
+     * @return array<string,mixed>
+     */
+    public function test_credentials(string $fakeOrderNumber): array
+    {
+        $fakeOrderNumber = preg_replace('/\D+/', '', trim($fakeOrderNumber));
+        if (!is_string($fakeOrderNumber) || $fakeOrderNumber === '') {
+            $fakeOrderNumber = '2147483000';
+        }
+
+        $resp = $this->post_operation('Submit', [
+            'OrderNumber' => $fakeOrderNumber,
+        ]);
+
+        $body = (string) ($resp['body'] ?? '');
+        $scalar = strtolower(trim((string) ($resp['scalar'] ?? '')));
+        $error = strtolower(trim((string) ($resp['error'] ?? '')));
+
+        $credentialsConfirmed = (int) ($resp['status'] ?? 0) >= 200
+            && (int) ($resp['status'] ?? 0) < 300
+            && trim($body) !== ''
+            && !$this->looks_like_auth_failure($body . "\n" . $error)
+            && (
+                in_array($scalar, ['false', '0', 'true', '1'], true)
+                || stripos($body, 'SubmitResult') !== false
+                || stripos($body, '<faultstring') !== false
+            );
+
+        return array_merge($resp, [
+            'operation' => 'Submit',
+            'fake_order_number' => $fakeOrderNumber,
+            'credentials_confirmed' => $credentialsConfirmed,
+        ]);
+    }
+
+    /**
      * @param array<string,string> $params
      * @return array<string,mixed>
      */
