@@ -26,6 +26,8 @@ final class OrionInventoryCronService extends AbstractTableCronService
     public function __construct(DoubleBufferedProductTable $table)
     {
         parent::__construct($table);
+
+        add_action('init', [$this, 'maybe_reschedule_hourly_inventory_action'], 9);
     }
 
     public function get_cron_hook_name(): string
@@ -35,12 +37,89 @@ final class OrionInventoryCronService extends AbstractTableCronService
 
     protected function get_interval_seconds(): int
     {
-        return 5 * MINUTE_IN_SECONDS;
+        return HOUR_IN_SECONDS;
     }
 
     public function get_action_group(): string
     {
         return 'fflhub_catalog';
+    }
+
+    public function maybe_reschedule_hourly_inventory_action(): void
+    {
+        if (!function_exists('as_unschedule_all_actions') || !class_exists('\ActionScheduler_Store')) {
+            return;
+        }
+
+        $expected_interval = (int) $this->get_interval_seconds();
+        if ($expected_interval <= 0) {
+            return;
+        }
+
+        $hook = $this->get_cron_hook_name();
+        $args = $this->get_action_args();
+        $group = $this->get_action_group();
+
+        try {
+            $store = \ActionScheduler_Store::instance();
+            if (!method_exists($store, 'query_actions') || !method_exists($store, 'fetch_action')) {
+                return;
+            }
+
+            $ids = $store->query_actions([
+                'hook' => $hook,
+                'group' => $group,
+                'args' => $args,
+                'status' => \ActionScheduler_Store::STATUS_PENDING,
+                'claimed' => false,
+                'per_page' => 20,
+            ]);
+
+            if (!is_array($ids) || empty($ids)) {
+                return;
+            }
+
+            foreach ($ids as $id) {
+                $current_interval = $this->scheduled_action_recurrence_seconds($store, (int) $id);
+                if ($current_interval !== null && $current_interval !== $expected_interval) {
+                    as_unschedule_all_actions($hook, $args, $group);
+                    $this->log('Rescheduled Orion inventory cron interval.', [
+                        'old_interval_sec' => $current_interval,
+                        'new_interval_sec' => $expected_interval,
+                        'pending_actions_found' => count($ids),
+                    ]);
+                    return;
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->log('Unable to inspect Orion inventory cron schedule interval.', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function scheduled_action_recurrence_seconds(object $store, int $actionId): ?int
+    {
+        $action = $store->fetch_action($actionId);
+        if (!is_object($action) || !method_exists($action, 'get_schedule')) {
+            return null;
+        }
+
+        $schedule = $action->get_schedule();
+        if (!is_object($schedule)) {
+            return null;
+        }
+
+        if (method_exists($schedule, 'get_recurrence')) {
+            $recurrence = $schedule->get_recurrence();
+            return is_numeric($recurrence) ? (int) $recurrence : null;
+        }
+
+        if (method_exists($schedule, 'interval_in_seconds')) {
+            return (int) $schedule->interval_in_seconds();
+        }
+
+        return null;
     }
 
     protected function get_initial_delay_seconds(): int
