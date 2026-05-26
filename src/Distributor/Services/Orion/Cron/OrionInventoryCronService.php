@@ -171,14 +171,14 @@ final class OrionInventoryCronService extends AbstractTableCronService
         ]);
         $inventory = $client->get_catalog_inventory();
         $inventory_data = (array) ($inventory['data'] ?? []);
-        $this->profile('get_catalog_inventory', $t_inventory, [
+        $this->profile('get_catalog_inventory', $t_inventory, array_merge([
             'ok' => empty($inventory['ok']) ? 0 : 1,
             'status' => (int) ($inventory['status'] ?? 0),
             'timeout_sec' => $timeout_seconds,
             'response_bytes' => (int) ($inventory['response_bytes'] ?? 0),
-            'data_keys' => array_values(array_keys($inventory_data)),
+        ], DebugLogUtil::summarize_array_keys($inventory_data), [
             'inventory_rows' => $this->count_inventory_rows($inventory_data),
-        ]);
+        ]));
 
         if (empty($inventory['ok'])) {
             update_option('fflhub_orion_inventory_last_error', current_time('mysql'), false);

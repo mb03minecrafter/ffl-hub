@@ -69,6 +69,37 @@ final class DebugLogUtil
         self::emit($prefix, $msg . ' ' . $ctx_json, $debug_constant);
     }
 
+    /**
+     * Summarize array shape for logs without dumping huge numeric key lists.
+     *
+     * @param array<mixed> $data
+     * @return array<string,mixed>
+     */
+    public static function summarize_array_keys(array $data, string $prefix = 'data', int $sample_size = 12): array
+    {
+        $sample_size = max(0, $sample_size);
+        $key_count = count($data);
+        $is_list = self::array_is_list_compat($data);
+
+        $summary = [
+            $prefix . '_key_count' => $key_count,
+            $prefix . '_is_list' => $is_list ? 1 : 0,
+        ];
+
+        if (!$is_list && $sample_size > 0) {
+            $summary[$prefix . '_keys'] = array_values(array_map(
+                'strval',
+                array_slice(array_keys($data), 0, $sample_size)
+            ));
+
+            if ($key_count > $sample_size) {
+                $summary[$prefix . '_keys_truncated'] = 1;
+            }
+        }
+
+        return $summary;
+    }
+
     // --------------------------------------------------
     // Internals
     // --------------------------------------------------
@@ -80,6 +111,20 @@ final class DebugLogUtil
         }
 
         return (bool) constant($debug_constant);
+    }
+
+    /** @param array<mixed> $data */
+    private static function array_is_list_compat(array $data): bool
+    {
+        $expected = 0;
+        foreach (array_keys($data) as $key) {
+            if ($key !== $expected) {
+                return false;
+            }
+            $expected++;
+        }
+
+        return true;
     }
 
     private static function format_line(string $prefix, string $msg): string

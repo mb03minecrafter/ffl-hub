@@ -91,14 +91,14 @@ final class KinseysProductCronService extends AbstractTableCronService
         $products = $client->get_products();
         $product_data = (array) ($products['data'] ?? []);
         $product_rows = $parser->normalize_product_rows($product_data);
-        $this->profile('get_products', $t_products, [
+        $this->profile('get_products', $t_products, array_merge([
             'ok' => empty($products['ok']) ? 0 : 1,
             'status' => (int) ($products['status'] ?? 0),
             'timeout_sec' => $timeout_seconds,
             'response_bytes' => (int) ($products['response_bytes'] ?? 0),
-            'data_keys' => array_values(array_keys($product_data)),
+        ], DebugLogUtil::summarize_array_keys($product_data), [
             'products_seen' => count($product_rows),
-        ]);
+        ]));
 
         if (empty($products['ok'])) {
             update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);

@@ -89,14 +89,14 @@ final class OrionProductCronService extends AbstractTableCronService
         $catalog = $catalog_client->get_catalog();
         $catalog_data = (array) ($catalog['data'] ?? []);
         $products = $catalog_data['products'] ?? null;
-        $this->profile('get_catalog', $t_catalog, [
+        $this->profile('get_catalog', $t_catalog, array_merge([
             'ok' => empty($catalog['ok']) ? 0 : 1,
             'status' => (int) ($catalog['status'] ?? 0),
             'timeout_sec' => $catalog_timeout_seconds,
             'response_bytes' => (int) ($catalog['response_bytes'] ?? 0),
-            'data_keys' => array_values(array_keys($catalog_data)),
+        ], DebugLogUtil::summarize_array_keys($catalog_data), [
             'products_seen' => is_array($products) ? count($products) : 0,
-        ]);
+        ]));
 
         if (empty($catalog['ok'])) {
             update_option('fflhub_orion_fulfillment_last_error', current_time('mysql'), false);
@@ -130,15 +130,15 @@ final class OrionProductCronService extends AbstractTableCronService
             ]);
             $inventory = $inventory_client->get_catalog_inventory();
             $inventory_data = (array) ($inventory['data'] ?? []);
-            $this->profile('get_catalog_inventory', $t_inventory, [
+            $this->profile('get_catalog_inventory', $t_inventory, array_merge([
                 'ok' => empty($inventory['ok']) ? 0 : 1,
                 'status' => (int) ($inventory['status'] ?? 0),
                 'timeout_sec' => $inventory_timeout_seconds,
                 'response_bytes' => (int) ($inventory['response_bytes'] ?? 0),
-                'data_keys' => array_values(array_keys($inventory_data)),
+            ], DebugLogUtil::summarize_array_keys($inventory_data), [
                 'inventory_rows' => $this->count_inventory_rows($inventory_data),
                 'source' => 'orion_api',
-            ]);
+            ]));
 
             if (empty($inventory['ok'])) {
                 update_option('fflhub_orion_fulfillment_last_error', current_time('mysql'), false);

@@ -99,14 +99,14 @@ final class KinseysInventoryCronService extends AbstractTableCronService
         $inventory = $client->get_inventory();
         $inventory_data = (array) ($inventory['data'] ?? []);
         $inventory_rows = $parser->normalize_inventory_rows($inventory_data);
-        $this->profile('get_inventory', $t_inventory, [
+        $this->profile('get_inventory', $t_inventory, array_merge([
             'ok' => empty($inventory['ok']) ? 0 : 1,
             'status' => (int) ($inventory['status'] ?? 0),
             'timeout_sec' => $timeout_seconds,
             'response_bytes' => (int) ($inventory['response_bytes'] ?? 0),
-            'data_keys' => array_values(array_keys($inventory_data)),
+        ], DebugLogUtil::summarize_array_keys($inventory_data), [
             'inventory_rows' => count($inventory_rows),
-        ]);
+        ]));
 
         if (empty($inventory['ok'])) {
             update_option('fflhub_kinseys_inventory_last_error', current_time('mysql'), false);
