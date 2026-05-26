@@ -329,7 +329,7 @@ final class KinseysProductImporterService
         }
     }
 
-    private function ensure_inventory_stage_table(): string
+    public function ensure_inventory_stage_table(): string
     {
         global $wpdb;
 
@@ -337,7 +337,7 @@ final class KinseysProductImporterService
         $charset = $wpdb->get_charset_collate();
 
         $sql = "
-            CREATE TABLE IF NOT EXISTS {$stage_table} (
+            CREATE TABLE {$stage_table} (
                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
                 product_id VARCHAR(64) NOT NULL DEFAULT '',
                 manufacturer_id VARCHAR(128) NOT NULL DEFAULT '',
@@ -354,8 +354,11 @@ final class KinseysProductImporterService
             ) {$charset};
         ";
 
-        $created = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        if ($created === false) {
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        dbDelta($sql);
+
+        $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $stage_table));
+        if ($exists !== $stage_table) {
             $this->log('ERROR: failed to ensure Kinsey\'s inventory stage table: ' . (string) $wpdb->last_error);
             return '';
         }

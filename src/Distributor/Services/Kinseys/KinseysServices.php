@@ -14,7 +14,8 @@ use FFLHub\Util\DebugLogUtil;
 
 final class KinseysServices extends DistributorServicesBase
 {
-    private const SCHEMA_BOOTSTRAP_OPTION = 'fflhub_kinseys_schema_bootstrap_v1';
+    private const SCHEMA_VERSION_OPTION = 'fflhub_kinseys_schema_version';
+    private const SCHEMA_VERSION = '2';
 
     public function __construct(
         DoubleBufferedProductTable $fulfillmentTable,
@@ -31,31 +32,41 @@ final class KinseysServices extends DistributorServicesBase
     public function on_activate(): void
     {
         parent::on_activate();
-        update_option(self::SCHEMA_BOOTSTRAP_OPTION, '1', false);
+        $this->ensure_schema_current();
     }
 
     public function register_runtime_services(): void
     {
-        $this->ensure_tables_after_plugin_update();
+        $this->ensure_schema_current();
         parent::register_runtime_services();
     }
 
-    private function ensure_tables_after_plugin_update(): void
+    private function ensure_schema_current(): void
     {
-        if ((string) get_option(self::SCHEMA_BOOTSTRAP_OPTION, '') === '1') {
+        if ((string) get_option(self::SCHEMA_VERSION_OPTION, '') === self::SCHEMA_VERSION) {
             return;
         }
 
         if (!$this->fulfillmentTable instanceof DoubleBufferedProductTable) {
-            update_option(self::SCHEMA_BOOTSTRAP_OPTION, '1', false);
+            update_option(self::SCHEMA_VERSION_OPTION, self::SCHEMA_VERSION, false);
             return;
         }
 
         try {
             $this->fulfillmentTable->createTables();
-            update_option(self::SCHEMA_BOOTSTRAP_OPTION, '1', false);
+
+            $stage_table = (new KinseysProductImporterService($this->fulfillmentTable))->ensure_inventory_stage_table();
+            if ($stage_table === '') {
+                DebugLogUtil::log_ctx('FFLHUB_CRON_DEBUG', '[FFLHub][KinseysServices]', 'Failed to bootstrap Kinsey\'s inventory stage table during schema check.', [
+                    'schema_version' => self::SCHEMA_VERSION,
+                ]);
+                return;
+            }
+
+            update_option(self::SCHEMA_VERSION_OPTION, self::SCHEMA_VERSION, false);
         } catch (\Throwable $e) {
-            DebugLogUtil::log_ctx('FFLHUB_CRON_DEBUG', '[FFLHub][KinseysServices]', 'Failed to bootstrap Kinsey\'s tables during runtime registration.', [
+            DebugLogUtil::log_ctx('FFLHUB_CRON_DEBUG', '[FFLHub][KinseysServices]', 'Failed to bootstrap Kinsey\'s tables during schema check.', [
+                'schema_version' => self::SCHEMA_VERSION,
                 'error' => $e->getMessage(),
             ]);
         }

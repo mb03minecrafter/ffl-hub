@@ -9,7 +9,11 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Tables\ProductSchemaInterface;
 
 /**
- * Kinsey's fulfillment table schema.
+ * Kinsey's fulfillment schema.
+ *
+ * Keeps the same normalized columns used by the other distributor tables, plus
+ * Kinsey's identifiers and raw catalog fields needed for catalog imports,
+ * inventory refreshes, drop-ship checks, and future ordering work.
  */
 final class KinseysProductTableSchema implements ProductSchemaInterface
 {
@@ -32,6 +36,7 @@ final class KinseysProductTableSchema implements ProductSchemaInterface
             // Core identifiers
             'upc' => 'VARCHAR(32) NOT NULL',
             'kinseys_product_id' => 'VARCHAR(64) NOT NULL',
+            'remote_identifier' => 'VARCHAR(128) NULL',
             'north_item_number' => 'VARCHAR(64) NULL',
             'south_item_number' => 'VARCHAR(64) NULL',
             'vendor_item_number' => 'VARCHAR(128) NULL',
@@ -46,14 +51,18 @@ final class KinseysProductTableSchema implements ProductSchemaInterface
             'restock_eta' => 'VARCHAR(255) NULL',
             'warehouses_json' => 'LONGTEXT NULL',
 
-            // Catalog fields
+            // Catalog data
             'product_name' => 'VARCHAR(255) NULL',
             'product_description' => 'LONGTEXT NULL',
             'manufacturer' => 'VARCHAR(255) NULL',
             'model' => 'VARCHAR(255) NULL',
+            'mfg_model_number' => 'VARCHAR(128) NULL',
+            'item_type' => 'VARCHAR(128) NULL',
+            'caliber_gauge' => 'VARCHAR(128) NULL',
             'description_1' => 'VARCHAR(255) NULL',
             'description_2' => 'VARCHAR(255) NULL',
             'bullet_features' => 'LONGTEXT NULL',
+            'product_categories' => 'VARCHAR(512) NULL',
             'country_of_origin' => 'VARCHAR(128) NULL',
             'item_category_code' => 'VARCHAR(64) NULL',
             'product_group_code' => 'VARCHAR(64) NULL',
@@ -62,6 +71,7 @@ final class KinseysProductTableSchema implements ProductSchemaInterface
             'pack_size' => 'VARCHAR(64) NULL',
             'include_exclude_group' => 'VARCHAR(128) NULL',
             'prohibited_states' => 'VARCHAR(255) NULL',
+            'restricted_states' => 'VARCHAR(255) NULL',
             'nav_inventory_posting_group' => 'VARCHAR(128) NULL',
 
             // Regulatory / fulfillment
@@ -69,6 +79,8 @@ final class KinseysProductTableSchema implements ProductSchemaInterface
             'sot_required' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'dropship_enabled' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'dropship_block_reason' => 'VARCHAR(255) NULL',
+            'serializable' => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'cannot_dropship' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'can_be_dropshipped' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'blocked_flag' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'inactive_flag' => 'TINYINT(1) NOT NULL DEFAULT 0',
@@ -79,11 +91,13 @@ final class KinseysProductTableSchema implements ProductSchemaInterface
             'prop65_reproductive_harm' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'prop65_chemical' => 'VARCHAR(255) NULL',
 
-            // Shipping / variants
+            // Shipping / dimensions / media / variants
             'shipping_weight' => 'DECIMAL(10,2) NULL',
             'shipping_length_in' => 'VARCHAR(32) NULL',
             'shipping_width_in' => 'VARCHAR(32) NULL',
             'shipping_height_in' => 'VARCHAR(32) NULL',
+            'image_url' => 'VARCHAR(1024) NULL',
+            'image_urls_json' => 'LONGTEXT NULL',
             'color_1' => 'VARCHAR(128) NULL',
             'color_2' => 'VARCHAR(128) NULL',
             'size' => 'VARCHAR(128) NULL',
@@ -97,6 +111,7 @@ final class KinseysProductTableSchema implements ProductSchemaInterface
             // Feed metadata
             'date_created' => 'VARCHAR(64) NULL',
             'last_seen_utc' => 'VARCHAR(64) NULL',
+            'raw_item_json' => 'LONGTEXT NULL',
         ];
     }
 
@@ -105,13 +120,17 @@ final class KinseysProductTableSchema implements ProductSchemaInterface
         return [
             'PRIMARY KEY (upc)',
             'KEY kinseys_product_id (kinseys_product_id)',
+            'KEY remote_identifier (remote_identifier)',
             'KEY north_item_number (north_item_number)',
             'KEY south_item_number (south_item_number)',
             'KEY vendor_item_number (vendor_item_number)',
             'KEY manufacturer (manufacturer)',
+            'KEY mfg_model_number (mfg_model_number)',
+            'KEY item_type (item_type)',
             'KEY product_group_code (product_group_code)',
             'KEY item_category_code (item_category_code)',
             'KEY ffl_required (ffl_required)',
+            'KEY sot_required (sot_required)',
             'KEY dropship_enabled (dropship_enabled)',
         ];
     }

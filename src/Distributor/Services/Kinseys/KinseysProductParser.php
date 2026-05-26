@@ -65,10 +65,26 @@ final class KinseysProductParser
         }
 
         $haystack = $this->classification_haystack($product);
+        $ffl_required = $this->is_ffl_required($haystack);
+        $sot_required = $this->is_sot_required($haystack);
+
+        $item_category_code = $this->clean_text($this->string_value($product, 'ItemCategoryCode'));
+        $product_group_code = $this->clean_text($this->string_value($product, 'ProductGroupCode'));
+        $product_sub_group_1 = $this->clean_text($this->string_value($product, 'ProductSubGroup1'));
+        $product_sub_group_2 = $this->clean_text($this->string_value($product, 'ProductSubGroup2'));
+        $nav_inventory_posting_group = $this->clean_text($this->string_value($product, 'NAVInventoryPostingGroup'));
+        $product_categories = $this->product_categories([
+            $item_category_code,
+            $product_group_code,
+            $product_sub_group_1,
+            $product_sub_group_2,
+        ]);
+        $restricted_states = $this->clean_text($this->string_value($product, 'ProhibitedStates'));
 
         return [
             'upc' => $upc,
             'kinseys_product_id' => $product_id,
+            'remote_identifier' => $product_id,
             'north_item_number' => $north_item_number,
             'south_item_number' => $south_item_number,
             'vendor_item_number' => $vendor_item_number,
@@ -86,23 +102,30 @@ final class KinseysProductParser
             'product_description' => $description,
             'manufacturer' => $this->clean_text($this->string_value($product, 'Brand')),
             'model' => $this->clean_text($vendor_item_number),
+            'mfg_model_number' => $this->clean_text($vendor_item_number),
+            'item_type' => $nav_inventory_posting_group !== '' ? $nav_inventory_posting_group : ($product_group_code !== '' ? $product_group_code : $item_category_code),
+            'caliber_gauge' => '',
             'description_1' => $this->clean_text($this->string_value($product, 'Description1')),
             'description_2' => $this->clean_text($this->string_value($product, 'Description2')),
             'bullet_features' => $this->clean_text($this->string_value($product, 'BulletFeatures')),
+            'product_categories' => $product_categories,
             'country_of_origin' => $this->clean_text($this->string_value($product, 'CountryOfOrigin')),
-            'item_category_code' => $this->clean_text($this->string_value($product, 'ItemCategoryCode')),
-            'product_group_code' => $this->clean_text($this->string_value($product, 'ProductGroupCode')),
-            'product_sub_group_1' => $this->clean_text($this->string_value($product, 'ProductSubGroup1')),
-            'product_sub_group_2' => $this->clean_text($this->string_value($product, 'ProductSubGroup2')),
+            'item_category_code' => $item_category_code,
+            'product_group_code' => $product_group_code,
+            'product_sub_group_1' => $product_sub_group_1,
+            'product_sub_group_2' => $product_sub_group_2,
             'pack_size' => $this->clean_text($this->string_value($product, 'PackSize')),
             'include_exclude_group' => $this->clean_text($this->string_value($product, 'IncludeExcludeGroup')),
-            'prohibited_states' => $this->clean_text($this->string_value($product, 'ProhibitedStates')),
-            'nav_inventory_posting_group' => $this->clean_text($this->string_value($product, 'NAVInventoryPostingGroup')),
+            'prohibited_states' => $restricted_states,
+            'restricted_states' => $restricted_states,
+            'nav_inventory_posting_group' => $nav_inventory_posting_group,
 
-            'ffl_required' => $this->is_ffl_required($haystack) ? '1' : '0',
-            'sot_required' => $this->is_sot_required($haystack) ? '1' : '0',
+            'ffl_required' => $ffl_required ? '1' : '0',
+            'sot_required' => $sot_required ? '1' : '0',
             'dropship_enabled' => $dropship ? '1' : '0',
             'dropship_block_reason' => $dropship_block_reason,
+            'serializable' => $ffl_required ? '1' : '0',
+            'cannot_dropship' => $dropship ? '0' : '1',
             'can_be_dropshipped' => $this->boolish($product['CanBeDropShipped'] ?? null) ? '1' : '0',
             'blocked_flag' => $blocked ? '1' : '0',
             'inactive_flag' => $inactive ? '1' : '0',
@@ -117,6 +140,8 @@ final class KinseysProductParser
             'shipping_length_in' => $this->dimension_string($this->string_value($product, 'ProductLength')),
             'shipping_width_in' => $this->dimension_string($this->string_value($product, 'ProductWidth')),
             'shipping_height_in' => $this->dimension_string($this->string_value($product, 'ProductHeight')),
+            'image_url' => '',
+            'image_urls_json' => '[]',
             'color_1' => $this->clean_text($this->string_value($product, 'Color1')),
             'color_2' => $this->clean_text($this->string_value($product, 'Color2')),
             'size' => $this->clean_text($this->string_value($product, 'Size')),
@@ -128,6 +153,7 @@ final class KinseysProductParser
             'parent_child_option_4' => $this->clean_text($this->string_value($product, 'ParentChildOption4')),
             'date_created' => $this->clean_text($this->string_value($product, 'DateCreated')),
             'last_seen_utc' => gmdate('Y-m-d H:i:s'),
+            'raw_item_json' => $this->encode_json($product),
         ];
     }
 
@@ -281,6 +307,22 @@ final class KinseysProductParser
         }
 
         return strtoupper(implode(' ', $parts));
+    }
+
+    /**
+     * @param string[] $parts
+     */
+    private function product_categories(array $parts): string
+    {
+        $categories = [];
+        foreach ($parts as $part) {
+            $part = trim((string) $part);
+            if ($part !== '') {
+                $categories[$part] = $part;
+            }
+        }
+
+        return implode(' > ', array_values($categories));
     }
 
     private function is_ffl_required(string $haystack): bool
