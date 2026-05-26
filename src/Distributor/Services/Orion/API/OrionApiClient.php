@@ -103,10 +103,12 @@ final class OrionApiClient
     {
         if (!$this->has_credentials()) {
             return [
-                'ok'     => false,
-                'status' => 0,
-                'data'   => [],
-                'error'  => 'Missing Orion connection key.',
+                'ok'             => false,
+                'status'         => 0,
+                'data'           => [],
+                'error'          => 'Missing Orion connection key.',
+                'body_excerpt'   => '',
+                'response_bytes' => 0,
             ];
         }
 
@@ -134,10 +136,12 @@ final class OrionApiClient
     {
         if (!$this->has_credentials()) {
             return [
-                'ok'     => false,
-                'status' => 0,
-                'data'   => [],
-                'error'  => 'Missing Orion connection key.',
+                'ok'             => false,
+                'status'         => 0,
+                'data'           => [],
+                'error'          => 'Missing Orion connection key.',
+                'body_excerpt'   => '',
+                'response_bytes' => 0,
             ];
         }
 
@@ -160,29 +164,35 @@ final class OrionApiClient
 
     /**
      * @param mixed $response
-     * @return array{ok:bool,status:int,data:array<string,mixed>,error:string}
+     * @return array<string,mixed>
      */
     private function parse_response($response): array
     {
         if (is_wp_error($response)) {
             return [
-                'ok'     => false,
-                'status' => 0,
-                'data'   => [],
-                'error'  => $response->get_error_message(),
+                'ok'             => false,
+                'status'         => 0,
+                'data'           => [],
+                'error'          => $response->get_error_message(),
+                'body_excerpt'   => '',
+                'response_bytes' => 0,
             ];
         }
 
         $status = (int) wp_remote_retrieve_response_code($response);
         $body = (string) wp_remote_retrieve_body($response);
+        $body_excerpt = self::excerpt_for_log($body, 2000);
+        $response_bytes = strlen($body);
         $decoded = json_decode($body, true);
 
         if (!is_array($decoded)) {
             return [
-                'ok'     => false,
-                'status' => $status,
-                'data'   => [],
-                'error'  => 'Orion returned an invalid JSON response.',
+                'ok'             => false,
+                'status'         => $status,
+                'data'           => [],
+                'error'          => 'Orion returned an invalid JSON response.',
+                'body_excerpt'   => $body_excerpt,
+                'response_bytes' => $response_bytes,
             ];
         }
 
@@ -190,11 +200,23 @@ final class OrionApiClient
         $ok = ($status >= 200 && $status < 300 && $result === 'OK');
 
         return [
-            'ok'     => $ok,
-            'status' => $status,
-            'data'   => $decoded,
-            'error'  => $ok ? '' : $this->extract_error_message($decoded, $status),
+            'ok'             => $ok,
+            'status'         => $status,
+            'data'           => $decoded,
+            'error'          => $ok ? '' : $this->extract_error_message($decoded, $status),
+            'body_excerpt'   => $body_excerpt,
+            'response_bytes' => $response_bytes,
         ];
+    }
+
+    private static function excerpt_for_log(string $text, int $max = 1200): string
+    {
+        $text = trim((string) preg_replace('/\s+/', ' ', $text));
+        if ($text === '') {
+            return '';
+        }
+
+        return strlen($text) <= $max ? $text : substr($text, 0, $max) . '...';
     }
 
     /**

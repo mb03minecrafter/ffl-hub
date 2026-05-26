@@ -47,6 +47,10 @@
         return getCredentialStatus($button, '.fflhub-sports-south-test-status');
     }
 
+    function getOrionStatus($button) {
+        return getCredentialStatus($button, '.fflhub-orion-test-status');
+    }
+
     function formatZandersCredentialResult(data) {
         var message = data && data.message ? data.message : 'Credential test finished.';
         var details = [];
@@ -397,6 +401,70 @@
             });
     }
 
+    function formatOrionCredentialResult(data) {
+        var message = data && data.message ? data.message : 'Credential test finished.';
+        var details = [];
+
+        if (data && data.httpStatus) {
+            details.push('HTTP ' + data.httpStatus);
+        }
+        if (data && data.apiResult) {
+            details.push('result ' + data.apiResult);
+        }
+
+        if (details.length) {
+            message += ' (' + details.join(', ') + ')';
+        }
+
+        if (data && data.rawResponse) {
+            message += '\n\nRaw response:\n' + data.rawResponse;
+        }
+
+        return message;
+    }
+
+    function testOrionCredentials($button) {
+        var $status = getOrionStatus($button);
+
+        if (!window.FFLHubAdmin || !window.FFLHubAdmin.ajaxUrl || !window.FFLHubAdmin.orionCredentialNonce) {
+            setCredentialStatus($status, 'error', 'Credential test is not configured on this page.');
+            return;
+        }
+
+        setCredentialStatus($status, 'pending', 'Testing Orion connection key...');
+        $button.prop('disabled', true).addClass('is-busy');
+
+        $.post(window.FFLHubAdmin.ajaxUrl, {
+            action: 'fflhub_test_orion_credentials',
+            nonce: window.FFLHubAdmin.orionCredentialNonce,
+            profile: $button.data('profile') || '',
+            fields: collectDistributorFields($button)
+        })
+            .done(function (response) {
+                var data = response && response.data ? response.data : {};
+                if (!response || response.success !== true) {
+                    setCredentialStatus($status, 'error', data.message || 'Credential test failed.');
+                    return;
+                }
+
+                setCredentialStatus(
+                    $status,
+                    data.ok ? 'success' : 'error',
+                    formatOrionCredentialResult(data)
+                );
+            })
+            .fail(function (xhr) {
+                var message = 'Credential test failed.';
+                if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                    message = xhr.responseJSON.data.message;
+                }
+                setCredentialStatus($status, 'error', message);
+            })
+            .always(function () {
+                $button.prop('disabled', false).removeClass('is-busy');
+            });
+    }
+
     function openModal(panelId) {
         var $modal = $('#fflhub-modal');
         var $panels = $modal.find('.fflhub-modal-panel');
@@ -477,6 +545,11 @@
         $(document).on('click', '.fflhub-sports-south-test-credentials', function (e) {
             e.preventDefault();
             testSportsSouthCredentials($(this));
+        });
+
+        $(document).on('click', '.fflhub-orion-test-credentials', function (e) {
+            e.preventDefault();
+            testOrionCredentials($(this));
         });
     });
 })(jQuery);

@@ -15,6 +15,7 @@ use FFLHub\Distributor\Integrations\RSR\RSRDirectConnectAPI;
 use FFLHub\Distributor\Integrations\Zanders\ZandersDirectShipAPI;
 use FFLHub\Distributor\Services\CSSI\API\CSSIClient;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
+use FFLHub\Distributor\Services\Orion\API\OrionApiClient;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInvoicesClient;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthOrdersClient;
@@ -62,6 +63,7 @@ class AdminPage
         add_action('admin_post_fflhub_toggle_distributor', [$this, 'handle_toggle_distributor']);
         add_action('wp_ajax_fflhub_test_cssi_credentials', [$this, 'handle_test_cssi_credentials']);
         add_action('wp_ajax_fflhub_test_lipseys_credentials', [$this, 'handle_test_lipseys_credentials']);
+        add_action('wp_ajax_fflhub_test_orion_credentials', [$this, 'handle_test_orion_credentials']);
         add_action('wp_ajax_fflhub_test_rsr_credentials', [$this, 'handle_test_rsr_credentials']);
         add_action('wp_ajax_fflhub_test_sports_south_credentials', [$this, 'handle_test_sports_south_credentials']);
         add_action('wp_ajax_fflhub_test_zanders_soap_credentials', [$this, 'handle_test_zanders_soap_credentials']);
@@ -105,6 +107,7 @@ class AdminPage
                 'ajaxUrl' => admin_url('admin-ajax.php'),
                 'cssiCredentialNonce' => wp_create_nonce('fflhub_test_cssi_credentials'),
                 'lipseysCredentialNonce' => wp_create_nonce('fflhub_test_lipseys_credentials'),
+                'orionCredentialNonce' => wp_create_nonce('fflhub_test_orion_credentials'),
                 'rsrCredentialNonce' => wp_create_nonce('fflhub_test_rsr_credentials'),
                 'sportsSouthCredentialNonce' => wp_create_nonce('fflhub_test_sports_south_credentials'),
                 'zandersSoapNonce' => wp_create_nonce('fflhub_test_zanders_soap_credentials'),
@@ -367,6 +370,19 @@ class AdminPage
         $posted_fields = self::posted_distributor_settings_fields();
 
         wp_send_json_success(self::test_cssi_api_credentials($posted_fields));
+    }
+
+    public function handle_test_orion_credentials(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('You do not have permission to perform this action.', 'ffl-hub')], 403);
+        }
+
+        check_ajax_referer('fflhub_test_orion_credentials', 'nonce');
+
+        $posted_fields = self::posted_distributor_settings_fields();
+
+        wp_send_json_success(self::test_orion_api_credentials($posted_fields));
     }
 
     public function handle_test_sports_south_credentials(): void
@@ -907,6 +923,135 @@ class AdminPage
             if (array_key_exists($key, $res) && $res[$key] !== '' && $res[$key] !== null) {
                 $raw[$key] = $res[$key];
             }
+        }
+
+        $encoded = wp_json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+        return is_string($encoded) ? $encoded : '';
+    }
+
+    /**
+     * @param array<string,string> $posted_fields
+     * @return array<string,mixed>
+     */
+    private static function test_orion_api_credentials(array $posted_fields): array
+    {
+        $connection_key = self::distributor_posted_or_saved_setting('orion', $posted_fields, 'connection_key');
+
+        if ($connection_key === '') {
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'Orion API',
+                'message' => __('Missing Orion connection key.', 'ffl-hub'),
+            ];
+        }
+
+        $base_url = trim((string) apply_filters('fflhub_orion_api_base_url', OrionApiClient::DEFAULT_BASE_URL));
+        if ($base_url === '') {
+            $base_url = OrionApiClient::DEFAULT_BASE_URL;
+        }
+
+        try {
+            $client = new OrionApiClient(
+                $connection_key,
+                $base_url,
+                (int) apply_filters('fflhub_orion_credential_test_timeout_sec', 30)
+            );
+            $res = $client->test_credentials();
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'Orion API',
+                'message' => 'Orion credential test failed before a usable response: ' . $e->getMessage(),
+                'httpStatus' => 0,
+            ];
+        }
+
+        $http_status = (int) ($res['status'] ?? 0);
+        $data = isset($res['data']) && is_array($res['data']) ? (array) $res['data'] : [];
+        $api_result = strtoupper(trim((string) ($data['result'] ?? '')));
+        $raw_response = self::orion_format_raw_response($res);
+
+        if (empty($res['ok']) || $http_status < 200 || $http_status >= 300) {
+            $message = trim((string) ($res['error'] ?? ''));
+            if ($message === '') {
+                $message = __('Orion test_credentials request failed.', 'ffl-hub');
+            }
+
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'Orion API',
+                'message' => $message,
+                'httpStatus' => $http_status,
+                'apiResult' => $api_result,
+                'rawResponse' => $raw_response,
+            ];
+        }
+
+        if ($api_result !== 'OK') {
+            $message = self::orion_response_message($data);
+            if ($message === '' || $message === $api_result) {
+                $message = __('Orion endpoint responded, but test_credentials did not return result=OK. Treating this credential test as inconclusive.', 'ffl-hub');
+            }
+
+            return [
+                'ok' => false,
+                'profile' => 'api',
+                'profileLabel' => 'Orion API',
+                'message' => $message,
+                'httpStatus' => $http_status,
+                'apiResult' => $api_result,
+                'rawResponse' => $raw_response,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'profile' => 'api',
+            'profileLabel' => 'Orion API',
+            'message' => __('Credentials accepted for Orion API. The test_credentials endpoint returned result=OK.', 'ffl-hub'),
+            'httpStatus' => $http_status,
+            'apiResult' => $api_result,
+            'rawResponse' => $raw_response,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     */
+    private static function orion_response_message(array $data): string
+    {
+        foreach (['error_message', 'message', 'error', 'result'] as $key) {
+            if (isset($data[$key]) && trim((string) $data[$key]) !== '') {
+                return trim((string) $data[$key]);
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param array<string,mixed> $res
+     */
+    private static function orion_format_raw_response(array $res): string
+    {
+        $data = isset($res['data']) && is_array($res['data']) ? (array) $res['data'] : [];
+        $raw = [
+            'ok' => !empty($res['ok']),
+            'status' => (int) ($res['status'] ?? 0),
+        ];
+
+        foreach (['error', 'body_excerpt', 'response_bytes'] as $key) {
+            if (array_key_exists($key, $res) && $res[$key] !== '' && $res[$key] !== null) {
+                $raw[$key] = $res[$key];
+            }
+        }
+
+        if (!empty($data)) {
+            $raw['data'] = $data;
         }
 
         $encoded = wp_json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
@@ -2733,6 +2878,21 @@ class AdminPage
         <?php
     }
 
+    private static function render_orion_credential_tools(): void
+    {
+        ?>
+        <section class="fflhub-credential-tools fflhub-orion-tools" aria-label="<?php esc_attr_e('Orion credential tests', 'ffl-hub'); ?>">
+            <h3><?php esc_html_e('Credential Tests', 'ffl-hub'); ?></h3>
+            <div class="fflhub-credential-test-actions fflhub-orion-test-actions">
+                <button type="button" class="button button-secondary fflhub-orion-test-credentials" data-profile="api">
+                    <?php esc_html_e('Test Connection Key', 'ffl-hub'); ?>
+                </button>
+            </div>
+            <div class="fflhub-credential-test-status fflhub-orion-test-status" aria-live="polite"></div>
+        </section>
+        <?php
+    }
+
     /**
      * Render a full distributor settings form inside the modal,
      * including the Enable/Disable button.
@@ -2810,6 +2970,9 @@ class AdminPage
             <?php endif; ?>
             <?php if ($id === 'sports_south') : ?>
                 <?php self::render_sports_south_credential_tools(); ?>
+            <?php endif; ?>
+            <?php if ($id === 'orion') : ?>
+                <?php self::render_orion_credential_tools(); ?>
             <?php endif; ?>
 
             <!-- Distributor settings form -->
