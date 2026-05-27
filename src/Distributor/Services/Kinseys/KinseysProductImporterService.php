@@ -967,7 +967,8 @@ final class KinseysProductImporterService
         $phase_ms['truncate_inventory_stage'] = $this->elapsed_ms($t_phase);
 
         $t_phase = microtime(true);
-        $rows_loaded = $this->insert_inventory_stage_rows($stage_table, $rows);
+        $stage_insert_profile = [];
+        $rows_loaded = $this->insert_inventory_stage_rows($stage_table, $rows, $stage_insert_profile);
         $phase_ms['insert_inventory_stage_rows'] = $this->elapsed_ms($t_phase);
         if ($rows_loaded <= 0) {
             return $this->finish_apply_inventory_stats([
@@ -975,6 +976,7 @@ final class KinseysProductImporterService
                 'rows_loaded' => 0,
                 'join_updated' => 0,
                 'sig_approved_forced' => 0,
+                'stage_insert_profile' => $stage_insert_profile,
             ], $t_start, $mem_start, $phase_ms, '', $stage_table);
         }
 
@@ -1009,6 +1011,7 @@ final class KinseysProductImporterService
             'join_updated_id' => (int) max(0, $join_updated_id),
             'join_updated_manufacturer' => (int) max(0, $join_updated_manufacturer),
             'sig_approved_forced' => (int) $sig_approved_forced,
+            'stage_insert_profile' => $stage_insert_profile,
         ], $t_start, $mem_start, $phase_ms, $live_table, $stage_table);
     }
 
@@ -1104,8 +1107,9 @@ final class KinseysProductImporterService
 
     /**
      * @param array<int,array<string,mixed>> $rows
+     * @param array<string,mixed> $profile
      */
-    private function insert_inventory_stage_rows(string $stageTable, array $rows): int
+    private function insert_inventory_stage_rows(string $stageTable, array $rows, array &$profile = []): int
     {
         global $wpdb;
 
@@ -1113,31 +1117,60 @@ final class KinseysProductImporterService
         $values = [];
         $placeholders = [];
         $loaded = 0;
+        $batch_rows = 0;
+        $profile = [
+            'rows_seen' => 0,
+            'rows_skipped_empty_ids' => 0,
+            'batches' => 0,
+            'rows_loaded' => 0,
+            'max_batch_rows' => 0,
+            'insert_failures' => 0,
+            'insert_total_ms' => '0.00',
+            'insert_max_ms' => '0.00',
+        ];
+        $insert_total_ms = 0.0;
+        $insert_max_ms = 0.0;
 
-        $flush = function () use (&$values, &$placeholders, &$loaded, $stageTable, $wpdb): void {
+        $flush = function () use (&$values, &$placeholders, &$loaded, &$batch_rows, &$profile, &$insert_total_ms, &$insert_max_ms, $stageTable, $wpdb): void {
             if (empty($placeholders)) {
                 return;
             }
 
+            $profile['batches'] = (int) $profile['batches'] + 1;
+            $profile['max_batch_rows'] = max((int) $profile['max_batch_rows'], $batch_rows);
+
+            $t_insert = microtime(true);
             $sql = "INSERT INTO {$stageTable} (product_id, manufacturer_id, upc, price, map_price, quantity_on_hand, restock_eta, warehouses_json) VALUES " . implode(', ', $placeholders);
             $result = $wpdb->query($wpdb->prepare($sql, $values));
+            $elapsed_ms = (microtime(true) - $t_insert) * 1000.0;
+            $insert_total_ms += $elapsed_ms;
+            $insert_max_ms = max($insert_max_ms, $elapsed_ms);
+
             if ($result !== false) {
                 $loaded += (int) $result;
             } else {
+                $profile['insert_failures'] = (int) $profile['insert_failures'] + 1;
                 $this->log('ERROR: Kinsey\'s inventory stage insert failed: ' . (string) $wpdb->last_error);
             }
 
+            $profile['rows_loaded'] = (int) $loaded;
+            $profile['insert_total_ms'] = $this->format_ms($insert_total_ms);
+            $profile['insert_max_ms'] = $this->format_ms($insert_max_ms);
             $values = [];
             $placeholders = [];
+            $batch_rows = 0;
         };
 
         foreach ($rows as $row) {
+            $profile['rows_seen'] = (int) $profile['rows_seen'] + 1;
+
             $product_id = trim((string) ($row['productId'] ?? ''));
             $manufacturer_id = trim((string) ($row['manufacturerId'] ?? ''));
             $upc = preg_replace('/\D+/', '', (string) ($row['upc'] ?? ''));
             $upc = is_string($upc) ? trim($upc) : '';
 
             if ($product_id === '' && $manufacturer_id === '' && $upc === '') {
+                $profile['rows_skipped_empty_ids'] = (int) $profile['rows_skipped_empty_ids'] + 1;
                 continue;
             }
 
@@ -1154,6 +1187,7 @@ final class KinseysProductImporterService
             $values[] = $quantity;
             $values[] = trim((string) ($row['RestockETA'] ?? ''));
             $values[] = $this->encode_json($row['Warehouses'] ?? []);
+            ++$batch_rows;
 
             if (count($placeholders) >= $batch_size) {
                 $flush();
