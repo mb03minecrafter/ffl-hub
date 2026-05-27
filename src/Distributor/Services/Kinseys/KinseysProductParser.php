@@ -68,15 +68,20 @@ final class KinseysProductParser
             $description = $this->clean_text(str_replace(';', '. ', $this->string_value($product, 'BulletFeatures')));
         }
 
-        $haystack = $this->classification_haystack($product);
-        $ffl_required = $this->is_ffl_required($haystack);
-        $sot_required = $this->is_sot_required($haystack);
-
         $item_category_code = $this->clean_text($this->string_value($product, 'ItemCategoryCode'));
         $product_group_code = $this->clean_text($this->string_value($product, 'ProductGroupCode'));
         $product_sub_group_1 = $this->clean_text($this->string_value($product, 'ProductSubGroup1'));
         $product_sub_group_2 = $this->clean_text($this->string_value($product, 'ProductSubGroup2'));
+        $include_exclude_group = $this->clean_text($this->string_value($product, 'IncludeExcludeGroup'));
         $nav_inventory_posting_group = $this->clean_text($this->string_value($product, 'NAVInventoryPostingGroup'));
+        $category_codes = [
+            $item_category_code,
+            $product_group_code,
+            $product_sub_group_1,
+            $product_sub_group_2,
+        ];
+        $sot_required = $this->is_sot_required_by_category($category_codes, $include_exclude_group);
+        $ffl_required = $sot_required || $this->is_ffl_required_by_category($category_codes);
         $product_categories = $this->product_categories([
             $item_category_code,
             $product_group_code,
@@ -119,7 +124,7 @@ final class KinseysProductParser
             'product_sub_group_1' => $product_sub_group_1,
             'product_sub_group_2' => $product_sub_group_2,
             'pack_size' => $this->clean_text($this->string_value($product, 'PackSize')),
-            'include_exclude_group' => $this->clean_text($this->string_value($product, 'IncludeExcludeGroup')),
+            'include_exclude_group' => $include_exclude_group,
             'prohibited_states' => $restricted_states,
             'restricted_states' => $restricted_states,
             'nav_inventory_posting_group' => $nav_inventory_posting_group,
@@ -296,32 +301,6 @@ final class KinseysProductParser
     }
 
     /**
-     * @param array<string,mixed> $product
-     */
-    private function classification_haystack(array $product): string
-    {
-        $parts = [];
-        foreach ([
-            'Name',
-            'Description1',
-            'Description2',
-            'Brand',
-            'ItemCategoryCode',
-            'ProductGroupCode',
-            'ProductSubGroup1',
-            'ProductSubGroup2',
-            'NAVInventoryPostingGroup',
-        ] as $field) {
-            $value = $this->string_value($product, $field);
-            if ($value !== '') {
-                $parts[] = $value;
-            }
-        }
-
-        return strtoupper(implode(' ', $parts));
-    }
-
-    /**
      * @param string[] $parts
      */
     private function product_categories(array $parts): string
@@ -337,23 +316,13 @@ final class KinseysProductParser
         return implode(' > ', array_values($categories));
     }
 
-    private function is_ffl_required(string $haystack): bool
+    /**
+     * @param string[] $categoryCodes
+     */
+    private function is_ffl_required_by_category(array $categoryCodes): bool
     {
-        foreach ([
-            'FIREARM',
-            'FIREARMS',
-            'HANDGUN',
-            'PISTOL',
-            'REVOLVER',
-            'RIFLE',
-            'SHOTGUN',
-            'RECEIVER',
-            'LOWER RECEIVER',
-            'SUPPRESSOR',
-            'SILENCER',
-            'NFA',
-        ] as $needle) {
-            if (preg_match('/\b' . preg_quote($needle, '/') . '\b/', $haystack) === 1) {
+        foreach ($categoryCodes as $code) {
+            if ($this->category_code_starts_with($code, '7400')) {
                 return true;
             }
         }
@@ -361,15 +330,29 @@ final class KinseysProductParser
         return false;
     }
 
-    private function is_sot_required(string $haystack): bool
+    /**
+     * @param string[] $categoryCodes
+     */
+    private function is_sot_required_by_category(array $categoryCodes, string $includeExcludeGroup): bool
     {
-        foreach (['SUPPRESSOR', 'SUPPRESSORS', 'SILENCER', 'SILENCERS', 'NFA', 'CLASS III', 'CLASS 3'] as $needle) {
-            if (preg_match('/\b' . preg_quote($needle, '/') . '\b/', $haystack) === 1) {
+        if (preg_match('/\bSOT\b/i', $includeExcludeGroup) === 1) {
+            return true;
+        }
+
+        foreach ($categoryCodes as $code) {
+            if ($this->category_code_starts_with($code, '7400H')) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    private function category_code_starts_with(string $code, string $prefix): bool
+    {
+        $code = strtoupper(trim($code));
+        $prefix = strtoupper(trim($prefix));
+        return $code !== '' && $prefix !== '' && strpos($code, $prefix) === 0;
     }
 
     /**
