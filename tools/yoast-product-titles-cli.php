@@ -201,7 +201,11 @@ final class FFLHub_Yoast_Product_Titles_CLI_Command
     }
 
     /**
-     * Generate reviewable SEO title suggestions from an export CSV.
+     * Prepare a review CSV from an export CSV.
+     *
+     * This intentionally does not generate SEO title text. Send the export/review
+     * data for human or AI-assisted title writing, then fill approved_yoast_title
+     * and approved=yes before running the update command.
      *
      * ## OPTIONS
      *
@@ -209,12 +213,12 @@ final class FFLHub_Yoast_Product_Titles_CLI_Command
      * : Export CSV. Default: /tmp/product-yoast-title-export.csv
      *
      * [--output=<path>]
-     * : Suggestions CSV. Default: /tmp/product-yoast-title-suggestions.csv
+     * : Review CSV. Default: /tmp/product-yoast-title-suggestions.csv
      *
      * [--limit=<number>]
      * : Optional first N rows for testing.
      */
-    public function suggest(array $args, array $assoc_args): void
+    public function prepare_review(array $args, array $assoc_args): void
     {
         $input = (string) ($assoc_args['input'] ?? '/tmp/product-yoast-title-export.csv');
         $output = (string) ($assoc_args['output'] ?? '/tmp/product-yoast-title-suggestions.csv');
@@ -232,12 +236,11 @@ final class FFLHub_Yoast_Product_Titles_CLI_Command
 
         $count = 0;
         foreach ($this->read_csv_assoc($input, $limit) as $row) {
-            $suggested = $this->suggest_title($row);
             fputcsv($fh, [
                 (string) ($row['product_id'] ?? ''),
                 (string) ($row['product_title'] ?? ''),
                 (string) ($row['current_yoast_title'] ?? ''),
-                $suggested,
+                '',
                 '',
                 '',
             ]);
@@ -245,8 +248,28 @@ final class FFLHub_Yoast_Product_Titles_CLI_Command
         }
 
         fclose($fh);
-        WP_CLI::success("Wrote {$count} suggestions to {$output}");
-        WP_CLI::line('Manual review required: fill approved_yoast_title and set approved to yes.');
+        WP_CLI::success("Wrote {$count} review rows to {$output}");
+        WP_CLI::line('Send the export/review CSV for title generation, then fill approved_yoast_title and set approved to yes.');
+    }
+
+    /**
+     * Deprecated alias for prepare-review. It creates a blank review CSV.
+     *
+     * ## OPTIONS
+     *
+     * [--input=<path>]
+     * : Export CSV. Default: /tmp/product-yoast-title-export.csv
+     *
+     * [--output=<path>]
+     * : Review CSV. Default: /tmp/product-yoast-title-suggestions.csv
+     *
+     * [--limit=<number>]
+     * : Optional first N rows for testing.
+     */
+    public function suggest(array $args, array $assoc_args): void
+    {
+        WP_CLI::warning('The suggest command no longer generates SEO titles. Creating a blank review CSV instead.');
+        $this->prepare_review($args, $assoc_args);
     }
 
     /**
@@ -539,56 +562,12 @@ final class FFLHub_Yoast_Product_Titles_CLI_Command
         return trim($brand);
     }
 
-    /**
-     * @param array<string,string> $row
-     */
-    private function suggest_title(array $row): string
-    {
-        $product_title = $this->clean_title((string) ($row['product_title'] ?? ''));
-        $brand = $this->clean_title((string) ($row['brand'] ?? ''));
-        $brand_source = (string) ($row['brand_source'] ?? '');
-        $base = $product_title;
-
-        if ($brand !== '' && $brand_source === 'taxonomy' && !$this->starts_with_ci($base, $brand)) {
-            $base = $brand . ' ' . $base;
-        }
-
-        $base = $this->compact_variant_text($base);
-        $standard = $base . ' | Deerford Defense';
-        $for_sale = $base . ' for Sale | Deerford Defense';
-
-        if ($this->looks_specific($base) && $this->title_length($for_sale) <= 65) {
-            return $for_sale;
-        }
-
-        return $standard;
-    }
-
     private function clean_title(string $title): string
     {
         $title = wp_strip_all_tags(html_entity_decode($title, ENT_QUOTES, 'UTF-8'));
         $title = preg_replace('/\s*[\|\-]\s*Deerford Defense\s*$/i', '', $title);
         $title = preg_replace('/\s+/', ' ', (string) $title);
         return trim((string) $title);
-    }
-
-    private function compact_variant_text(string $title): string
-    {
-        $title = preg_replace('/\bwith\b/i', 'w/', $title);
-        $title = preg_replace('/\band\b/i', '&', (string) $title);
-        $title = preg_replace('/\s+/', ' ', (string) $title);
-        return trim((string) $title);
-    }
-
-    private function starts_with_ci(string $haystack, string $needle): bool
-    {
-        return strcasecmp(substr($haystack, 0, strlen($needle)), $needle) === 0;
-    }
-
-    private function looks_specific(string $title): bool
-    {
-        return (bool) preg_match('/\d/', $title)
-            && (bool) preg_match('/\b(rifle|pistol|shotgun|revolver|scope|sight|optic|ammo|ammunition|barrel|upper|lower)\b/i', $title);
     }
 
     /**
