@@ -11,11 +11,16 @@ if (!defined('ABSPATH')) {
 final class GunDealsClickColumns
 {
     private const COL_GUNDEALS_CLICKS = 'fflhub_gundeals_clicks';
+    private const SORT_GUNDEALS_CLICKS = 'fflhub_gundeals_clicks';
+    private const SORT_QUERY_FLAG = 'fflhub_gundeals_click_sort';
+    private const SORT_META_ALIAS = 'fflhub_gundeals_click_sort_meta';
 
     public function register(): void
     {
         add_filter('manage_edit-product_columns', [$this, 'inject_columns'], 30);
+        add_filter('manage_edit-product_sortable_columns', [$this, 'register_sortable_columns']);
         add_action('manage_product_posts_custom_column', [$this, 'render_column'], 30, 2);
+        add_action('pre_get_posts', [$this, 'apply_sorting']);
         add_action('admin_head', [$this, 'render_admin_styles']);
     }
 
@@ -46,6 +51,16 @@ final class GunDealsClickColumns
         }
 
         return $new_columns;
+    }
+
+    /**
+     * @param array<string,string> $columns
+     * @return array<string,string>
+     */
+    public function register_sortable_columns(array $columns): array
+    {
+        $columns[self::COL_GUNDEALS_CLICKS] = self::SORT_GUNDEALS_CLICKS;
+        return $columns;
     }
 
     public function render_column(string $column_name, int $post_id): void
@@ -102,5 +117,63 @@ final class GunDealsClickColumns
                 line-height: 1.3;
             }
         </style>';
+    }
+
+    public function apply_sorting(\WP_Query $query): void
+    {
+        if (!$this->is_product_list_query($query)) {
+            return;
+        }
+
+        if ((string) $query->get('orderby') !== self::SORT_GUNDEALS_CLICKS) {
+            return;
+        }
+
+        $query->set(self::SORT_QUERY_FLAG, '1');
+        add_filter('posts_clauses', [$this, 'apply_click_sort_clauses'], 20, 2);
+    }
+
+    /**
+     * Sort by raw Gun.deals clicks without hiding products that have no click meta yet.
+     *
+     * @param array<string,string> $clauses
+     * @return array<string,string>
+     */
+    public function apply_click_sort_clauses(array $clauses, \WP_Query $query): array
+    {
+        if ((string) $query->get(self::SORT_QUERY_FLAG) !== '1') {
+            return $clauses;
+        }
+
+        global $wpdb;
+
+        $alias = self::SORT_META_ALIAS;
+        $meta_key = esc_sql(GunDealsClickTracker::META_RAW_CLICKS);
+        $join = " LEFT JOIN {$wpdb->postmeta} AS {$alias}"
+            . " ON ({$wpdb->posts}.ID = {$alias}.post_id AND {$alias}.meta_key = '{$meta_key}') ";
+
+        if (strpos((string) ($clauses['join'] ?? ''), " AS {$alias}") === false) {
+            $clauses['join'] = (string) ($clauses['join'] ?? '') . $join;
+        }
+
+        $order = strtoupper((string) $query->get('order')) === 'ASC' ? 'ASC' : 'DESC';
+        $clicks_expr = "CAST(COALESCE({$alias}.meta_value, '0') AS UNSIGNED)";
+        $clauses['orderby'] = "{$clicks_expr} {$order}, {$wpdb->posts}.post_title ASC";
+
+        return $clauses;
+    }
+
+    private function is_product_list_query(\WP_Query $query): bool
+    {
+        if (!is_admin() || !$query->is_main_query()) {
+            return false;
+        }
+
+        global $pagenow;
+        if ($pagenow !== 'edit.php') {
+            return false;
+        }
+
+        return (string) $query->get('post_type') === 'product';
     }
 }

@@ -23,6 +23,7 @@ use FFLHub\Settings\Options;
  */
 final class DistributorKinseys extends DistributorBase
 {
+    private const FLAT_SHIPPING_COST = 14.0;
     private const ORDER_TIMEOUT_SECONDS = 120;
     private const PURCHASE_ORDER_MAX_LEN = 20;
     private const VALIDATE_MAX_UNIQUE_ITEMS = 75;
@@ -57,6 +58,33 @@ final class DistributorKinseys extends DistributorBase
                 return $payload;
             }
         );
+    }
+
+    public function get_shipping_cost_by_upc(string $upc): ?float
+    {
+        $normalized = $this->normalize_upc($upc);
+        if ($normalized === null) {
+            return null;
+        }
+
+        return $this->resolve_flat_shipping_cost($normalized);
+    }
+
+    protected function get_shipping_cost_from_row(array $row, string $normalized_upc): ?float
+    {
+        return $this->resolve_flat_shipping_cost($normalized_upc);
+    }
+
+    protected function get_true_cost_by_distributor_cost_shipping_cost(float $distributor_cost, float $shipping_cost): ?float
+    {
+        return max(0.0, $distributor_cost) + max(0.0, $shipping_cost);
+    }
+
+    private function resolve_flat_shipping_cost(string $normalized_upc): float
+    {
+        $cost = apply_filters('fflhub_kinseys_flat_shipping_cost', self::FLAT_SHIPPING_COST, $normalized_upc, $this);
+
+        return is_numeric($cost) ? max(0.0, (float) $cost) : self::FLAT_SHIPPING_COST;
     }
 
     protected function validation_max_unique_items(DistributorOrderRequest $request, bool $local_only): int
