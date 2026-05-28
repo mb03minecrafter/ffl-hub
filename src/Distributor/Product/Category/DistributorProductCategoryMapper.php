@@ -721,6 +721,116 @@ class DistributorProductCategoryMapper
         return null;
     }
 
+    /**
+     * Map Kinsey's catalog category codes to the unified category path.
+     *
+     * Kinsey's rows usually carry a compact code path such as:
+     * - 7400 > 7400A  (firearm, handgun/pistol family)
+     * - 7400 > 7400C  (firearm, rifle family)
+     * - 7400 > 7400H  (NFA/SOT family)
+     * - 4000 > 4000L  (optic/sight family)
+     *
+     * The code mappings below are intentionally conservative. Unknown codes
+     * fall through to broad keyword checks, then to null.
+     *
+     * @param string $category Kinsey's product_categories/item_type/code value
+     * @return array<int,string>|null
+     */
+    public static function map_kinseys(string $category): ?array
+    {
+        $raw = strtoupper(trim((string) preg_replace('/\s+/', ' ', $category)));
+        if ($raw === '') {
+            return null;
+        }
+
+        $tokens = preg_split('/[>,|;]+/', $raw);
+        $tokens = array_values(array_filter(array_map(
+            static fn($token): string => strtoupper(trim((string) $token)),
+            (array) $tokens
+        )));
+
+        foreach ($tokens as $token) {
+            if ($token === '') {
+                continue;
+            }
+
+            if (strpos($token, '7400H') === 0) {
+                return [CategorySchema::CAT_NFA];
+            }
+
+            if (strpos($token, '7400A') === 0) {
+                return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'];
+            }
+
+            if (strpos($token, '7400C') === 0) {
+                return [CategorySchema::CAT_FIREARMS, 'Rifles'];
+            }
+
+            if (strpos($token, '4000L') === 0) {
+                return [CategorySchema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'];
+            }
+        }
+
+        foreach ($tokens as $token) {
+            if (strpos($token, '4000') === 0) {
+                return [CategorySchema::CAT_OPTICS];
+            }
+        }
+
+        if (strpos($raw, 'SUPPRESS') !== false || strpos($raw, 'SILENC') !== false || strpos($raw, 'NFA') !== false || strpos($raw, 'SOT') !== false) {
+            return [CategorySchema::CAT_NFA];
+        }
+        if (strpos($raw, 'MAGAZ') !== false) {
+            return [CategorySchema::CAT_MAGAZINES];
+        }
+        if (strpos($raw, 'AMMO') !== false || strpos($raw, 'AMMUNITION') !== false || strpos($raw, 'CARTRIDGE') !== false) {
+            return [CategorySchema::CAT_AMMO];
+        }
+        if (strpos($raw, 'OPTIC') !== false || strpos($raw, 'SCOPE') !== false || strpos($raw, 'SIGHT') !== false || strpos($raw, 'HOLO') !== false || strpos($raw, 'RED DOT') !== false) {
+            if (strpos($raw, 'MOUNT') !== false || strpos($raw, 'RING') !== false || strpos($raw, 'BASE') !== false) {
+                return [CategorySchema::CAT_OPTICS, 'Optic Mounts & Rings'];
+            }
+
+            if (strpos($raw, 'SCOPE') !== false) {
+                return [CategorySchema::CAT_OPTICS, 'Scopes / Magnified Optics'];
+            }
+
+            return [CategorySchema::CAT_OPTICS, 'Red Dots / Non-Magnified Optics'];
+        }
+        if (strpos($raw, 'LIGHT') !== false || strpos($raw, 'LASER') !== false) {
+            return [CategorySchema::CAT_LIGHTS];
+        }
+        if (strpos($raw, 'BLACK POWDER') !== false || strpos($raw, 'MUZZLE') !== false) {
+            return [CategorySchema::CAT_BLACK_POWDER];
+        }
+        if (strpos($raw, 'REVOLVER') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Revolvers'];
+        }
+        if (strpos($raw, 'PISTOL') !== false || strpos($raw, 'HANDGUN') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Handguns', 'Pistols'];
+        }
+        if (strpos($raw, 'SHOTGUN') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Shotguns'];
+        }
+        if (strpos($raw, 'RIFLE') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Rifles'];
+        }
+        if (strpos($raw, 'RECEIVER') !== false || strpos($raw, 'FRAME') !== false || strpos($raw, 'LOWER') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Other / Specialty'];
+        }
+        if (strpos($raw, 'BARREL') !== false || strpos($raw, 'CHOKE') !== false || strpos($raw, 'STOCK') !== false || strpos($raw, 'FOREND') !== false || strpos($raw, 'GRIP') !== false || strpos($raw, 'PART') !== false) {
+            return [CategorySchema::CAT_FIREARMS, 'Parts'];
+        }
+
+        foreach ($tokens as $token) {
+            if (strpos($token, '7400') === 0) {
+                return [CategorySchema::CAT_FIREARMS, 'Other / Specialty'];
+            }
+        }
+
+        return null;
+    }
+
 
 
 

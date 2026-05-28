@@ -92,6 +92,43 @@ final class KinseysApiClient
     }
 
     /**
+     * Create a Kinsey's sales order.
+     *
+     * Spec endpoint: POST /SalesOrder
+     *
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>
+     */
+    public function create_sales_order(array $payload): array
+    {
+        return $this->post('SalesOrder', $payload);
+    }
+
+    /**
+     * Retrieve package / tracking details by dealer purchase order number.
+     *
+     * Spec endpoint: GET /Shipments/{purchaseOrderNo}
+     *
+     * @return array<string,mixed>
+     */
+    public function get_shipments_by_purchase_order(string $purchaseOrderNo): array
+    {
+        $purchaseOrderNo = trim($purchaseOrderNo);
+        if ($purchaseOrderNo === '') {
+            return [
+                'ok' => false,
+                'status' => 0,
+                'data' => [],
+                'error' => 'Missing Kinsey\'s purchase order number.',
+                'body_excerpt' => '',
+                'response_bytes' => 0,
+            ];
+        }
+
+        return $this->get('Shipments/' . rawurlencode($purchaseOrderNo));
+    }
+
+    /**
      * @return array<string,mixed>
      */
     public function test_credentials(string $probeProductId = '10113'): array
@@ -127,22 +164,12 @@ final class KinseysApiClient
 
         $this->log('HTTP GET start', $request_context);
 
-        $headers = [
-            'Accept' => 'application/json',
-            'Content-Type' => 'application/json',
-            'X-API-KEY' => $this->apiKey,
-        ];
-
-        if ($this->source !== '') {
-            $headers['Kinsey-Source'] = $this->source;
-        }
-
         $t_transport = microtime(true);
         $response = wp_remote_get(
             $url,
             [
                 'timeout' => $this->timeoutSeconds,
-                'headers' => $headers,
+                'headers' => $this->request_headers(),
             ]
         );
         $transport_ms = $this->elapsed_ms($t_transport);
@@ -156,6 +183,86 @@ final class KinseysApiClient
         ]));
 
         return $parsed;
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>
+     */
+    private function post(string $path, array $payload): array
+    {
+        $params = $this->with_api_identifier([]);
+        $request_context = $this->request_context('POST', $path, $params);
+        $request_context['body'] = $this->summarize_body($payload);
+
+        if (!$this->has_credentials()) {
+            $this->log('HTTP POST skipped: missing credentials', $request_context);
+
+            return [
+                'ok' => false,
+                'status' => 0,
+                'data' => [],
+                'error' => 'Missing Kinsey\'s API Identifier or API key.',
+                'body_excerpt' => '',
+                'response_bytes' => 0,
+            ];
+        }
+
+        $body = wp_json_encode($payload);
+        if (!is_string($body) || $body === '') {
+            return [
+                'ok' => false,
+                'status' => 0,
+                'data' => [],
+                'error' => 'Failed to JSON-encode Kinsey\'s request payload.',
+                'body_excerpt' => '',
+                'response_bytes' => 0,
+            ];
+        }
+
+        $url = add_query_arg($params, $this->endpoint_url($path));
+        $t_request = microtime(true);
+
+        $this->log('HTTP POST start', $request_context);
+
+        $t_transport = microtime(true);
+        $response = wp_remote_post(
+            $url,
+            [
+                'timeout' => $this->timeoutSeconds,
+                'headers' => $this->request_headers(),
+                'body' => $body,
+            ]
+        );
+        $transport_ms = $this->elapsed_ms($t_transport);
+
+        $t_parse = microtime(true);
+        $parsed = $this->parse_response($response);
+        $parse_ms = $this->elapsed_ms($t_parse);
+        $this->log('HTTP POST complete', $this->response_context($request_context, $parsed, $t_request, [
+            'transport_ms' => $transport_ms,
+            'parse_response_ms' => $parse_ms,
+        ]));
+
+        return $parsed;
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function request_headers(): array
+    {
+        $headers = [
+            'Accept' => 'application/json',
+            'Content-Type' => 'application/json',
+            'X-API-KEY' => $this->apiKey,
+        ];
+
+        if ($this->source !== '') {
+            $headers['Kinsey-Source'] = $this->source;
+        }
+
+        return $headers;
     }
 
     /**
@@ -326,6 +433,45 @@ final class KinseysApiClient
             $summary['products_count'] = count($ids);
             $summary['products_sample'] = array_slice($ids, 0, 5);
             $summary['products_bytes'] = strlen((string) $params['products']);
+        }
+
+        return $summary;
+    }
+
+    /**
+     * Keep POST logs compact and free of full customer address payloads.
+     *
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>
+     */
+    private function summarize_body(array $payload): array
+    {
+        $summary = [
+            'keys' => array_values(array_keys($payload)),
+        ];
+
+        $po = isset($payload['purchaseOrderNo']) ? trim((string) $payload['purchaseOrderNo']) : '';
+        if ($po !== '') {
+            $summary['purchaseOrderNo'] = $po;
+        }
+
+        if (isset($payload['salesLines']) && is_array($payload['salesLines'])) {
+            $summary['sales_lines_count'] = count($payload['salesLines']);
+        }
+
+        if (isset($payload['options']) && is_array($payload['options'])) {
+            $summary['options'] = [
+                'backOrdersAllowed' => !empty($payload['options']['backOrdersAllowed']) ? 1 : 0,
+                'splitOrdersAllowed' => !empty($payload['options']['splitOrdersAllowed']) ? 1 : 0,
+            ];
+        }
+
+        if (isset($payload['fflInfo']) && is_array($payload['fflInfo'])) {
+            $summary['has_fflInfo'] = 1;
+            $license = isset($payload['fflInfo']['licenseNumber']) ? trim((string) $payload['fflInfo']['licenseNumber']) : '';
+            if ($license !== '') {
+                $summary['ffl_license_tail5'] = strlen($license) >= 5 ? substr($license, -5) : $license;
+            }
         }
 
         return $summary;
