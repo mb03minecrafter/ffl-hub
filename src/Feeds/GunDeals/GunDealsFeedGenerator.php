@@ -426,8 +426,6 @@ final class GunDealsFeedGenerator
 
         return add_query_arg([
             'utm_source' => 'gundeals',
-            'utm_medium' => 'referral',
-            'utm_campaign' => 'gundeals_feed',
         ], $url);
     }
 
