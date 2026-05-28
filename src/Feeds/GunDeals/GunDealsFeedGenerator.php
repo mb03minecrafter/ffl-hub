@@ -409,12 +409,26 @@ final class GunDealsFeedGenerator
             return '';
         }
 
+        $url = $this->append_tracking_params($url);
         $url = esc_url_raw($url);
         if (!is_string($url) || !preg_match('#^https?://#i', $url)) {
             return '';
         }
 
         return $url;
+    }
+
+    private function append_tracking_params(string $url): string
+    {
+        if (!function_exists('add_query_arg')) {
+            return $url;
+        }
+
+        return add_query_arg([
+            'utm_source' => 'gundeals',
+            'utm_medium' => 'referral',
+            'utm_campaign' => 'gundeals_feed',
+        ], $url);
     }
 
     private function resolve_image_url(WC_Product $product): string
