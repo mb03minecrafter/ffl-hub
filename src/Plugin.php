@@ -48,6 +48,7 @@ use FFLHub\Distributor\Services\Orders\Cron\ZandersCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerAuditTable;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
+use FFLHub\Feeds\GunDeals\GunDealsFeedCronService;
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
@@ -112,6 +113,7 @@ final class Plugin
     private QuoteEmailJobsCronService $quote_email_jobs_cron_service;
     private UpcStockAlertCronService $upc_stock_alert_cron_service;
     private MailPoetAutoConfirmCronService $mailpoet_auto_confirm_cron_service;
+    private GunDealsFeedCronService $gundeals_feed_cron_service;
 
     public static function instance(): self
     {
@@ -152,6 +154,9 @@ final class Plugin
 
         $this->mailpoet_auto_confirm_cron_service = new MailPoetAutoConfirmCronService();
         $this->mailpoet_auto_confirm_cron_service->register();
+
+        $this->gundeals_feed_cron_service = new GunDealsFeedCronService();
+        $this->gundeals_feed_cron_service->register();
 
         ShippingRegistrar::init();
 
@@ -373,6 +378,9 @@ final class Plugin
 
         $mailpoet_auto_confirm_cron = new MailPoetAutoConfirmCronService();
         $mailpoet_auto_confirm_cron->on_activation();
+
+        $gundeals_feed_cron = new GunDealsFeedCronService();
+        $gundeals_feed_cron->on_activation();
     }
 
     public static function deactivate(): void
@@ -391,6 +399,9 @@ final class Plugin
 
         $mailpoet_auto_confirm_cron = new MailPoetAutoConfirmCronService();
         $mailpoet_auto_confirm_cron->on_deactivation();
+
+        $gundeals_feed_cron = new GunDealsFeedCronService();
+        $gundeals_feed_cron->on_deactivation();
     }
 
     private static function ensure_quote_email_jobs_table(): void

@@ -103,6 +103,7 @@ fflhub_define_bool('FFLHUB_QUOTE_EMAIL_FORCE_NO_DELAY', false);
 fflhub_define_bool('FFLHUB_DEBUG_QUOTE_EMAIL_CRON', true);
 fflhub_define_bool('FFLHUB_UPC_STOCK_ALERT_DEBUG', true);
 fflhub_define_bool('FFLHUB_MAILPOET_AUTO_CONFIRM_DEBUG', true);
+fflhub_define_bool('FFLHUB_GUNDEALS_FEED_DEBUG', true);
 
 /**
  * -------------------------------------------------------------------------
