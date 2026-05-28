@@ -568,6 +568,7 @@ final class GunDealsFeedGenerator
     {
         $value = wp_strip_all_tags($value);
         $value = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $value = str_replace('&', ' and ', $value);
         $value = preg_replace('/\s+/', ' ', $value);
         return trim(is_string($value) ? $value : '');
     }
