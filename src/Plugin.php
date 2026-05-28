@@ -23,6 +23,7 @@ use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
 use FFLHub\Admin\Pages\UpcStockAlertsPage;
 use FFLHub\Admin\Pages\ZandersCreditLimitPage;
+use FFLHub\Admin\Products\GunDealsClickColumns;
 use FFLHub\Admin\ProductMeta\BOMMetaBox;
 use FFLHub\Admin\ProductMeta\OrderFFLPanel;
 use FFLHub\Admin\ProductMeta\ProductMetaBox;
@@ -48,6 +49,7 @@ use FFLHub\Distributor\Services\Orders\Cron\ZandersCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerAuditTable;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
+use FFLHub\Feeds\GunDeals\GunDealsClickTracker;
 use FFLHub\Feeds\GunDeals\GunDealsFeedCronService;
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
@@ -104,6 +106,7 @@ final class Plugin
     public OrderProfitAuditMetaBox $order_profit_audit_metabox;
     public OrderFulfillmentModeBadge $order_fulfillment_mode_badge;
     public ProductDistributorColumns $product_distributor_columns;
+    public GunDealsClickColumns $gundeals_click_columns;
 
     // Frontend-only
     public CheckoutFields $checkout_fields;
@@ -164,6 +167,7 @@ final class Plugin
         WooShippingLabelCostSync::init();
 
         MapPriceVisibility::init();
+        GunDealsClickTracker::init();
         QuoteCartLinkHandler::init();
 
         $this->cart_compliance = new CartCompliance($this->ffl_table, $this->distributor_handler);
@@ -238,6 +242,9 @@ final class Plugin
 
             $this->product_distributor_columns = new ProductDistributorColumns();
             $this->product_distributor_columns->register();
+
+            $this->gundeals_click_columns = new GunDealsClickColumns();
+            $this->gundeals_click_columns->register();
 
             $this->ffl_importer_page = new FFLImporterPage($this->ffl_table);
             $this->ffl_importer_page->register();
