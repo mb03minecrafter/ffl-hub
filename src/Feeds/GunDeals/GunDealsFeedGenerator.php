@@ -256,6 +256,9 @@ final class GunDealsFeedGenerator
                 MAX(CASE WHEN pm.meta_key = '_fflhub_map_real_price_free_shipping_override' THEN pm.meta_value END) AS map_real_price_free_shipping_override,
                 MAX(CASE WHEN pm.meta_key = '_fflhub_last_shipping_cost' THEN pm.meta_value END) AS shipping_cost,
                 MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_weight' THEN pm.meta_value END) AS shipping_weight_oz,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_length_in' THEN pm.meta_value END) AS shipping_length_in,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_width_in' THEN pm.meta_value END) AS shipping_width_in,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_height_in' THEN pm.meta_value END) AS shipping_height_in,
                 MAX(CASE WHEN pm.meta_key = '_fflhub_ffl_required' THEN pm.meta_value END) AS ffl_required,
                 MAX(CASE WHEN pm.meta_key = '_fflhub_dropship_enabled' THEN pm.meta_value END) AS dropship_enabled
             FROM {$posts} p
@@ -341,6 +344,9 @@ final class GunDealsFeedGenerator
             ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META,
             ProductMeta::FFLHUB_LAST_SHIPPING_COST_META,
             ProductMeta::FFLHUB_SHIPPING_WEIGHT_META,
+            ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META,
+            ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META,
+            ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META,
             ProductMeta::FFLHUB_FFL_REQUIRED_META,
             ProductMeta::FFLHUB_DROPSHIP_ENABLED_META,
         ];
@@ -688,17 +694,23 @@ final class GunDealsFeedGenerator
             return '';
         }
 
-        if ($this->markup_mode_from_row($row) !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            return '';
-        }
-
         $map = $this->to_positive_float($row['map_price'] ?? null);
         if ($map === null) {
             return '';
         }
 
-        $policy = $this->normalize_map_policy((string) ($row['map_policy'] ?? ''));
+        $raw_policy = strtolower(trim((string) ($row['map_policy'] ?? '')));
+        if ($raw_policy === '') {
+            return '';
+        }
+
+        $policy = $this->normalize_map_policy($raw_policy);
         if ($policy === Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE) {
+            $price = $this->resolve_price_from_row($row);
+            if ($price <= 0.0 || $price >= ($map - 0.0001)) {
+                return '';
+            }
+
             return self::PRICE_HIDE_ADD_TO_CART;
         }
 
@@ -792,7 +804,7 @@ final class GunDealsFeedGenerator
 
         $fee_fraction = $this->payment_fee_fraction();
         $true_cost = $this->to_non_negative_float($row['true_cost'] ?? null, 0.0);
-        $profit_net_total = ($line_revenue - $true_cost) * (1.0 - $fee_fraction);
+        $profit_net_total = ($line_revenue * (1.0 - $fee_fraction)) - $true_cost;
         $free_threshold = $this->free_shipping_cost_threshold(
             $profit_net_total,
             Options::get_free_shipping_max_profit_spend_percent()
@@ -837,6 +849,9 @@ final class GunDealsFeedGenerator
         }
 
         $weight_oz = $this->to_non_negative_float($row['shipping_weight_oz'] ?? null, 0.0);
+        $length_in = $this->to_non_negative_float($row['shipping_length_in'] ?? null, 0.0);
+        $width_in = $this->to_non_negative_float($row['shipping_width_in'] ?? null, 0.0);
+        $height_in = $this->to_non_negative_float($row['shipping_height_in'] ?? null, 0.0);
         $ffl_required = $this->to_boolish($row['ffl_required'] ?? null, false);
         $dropship_enabled = $this->to_boolish($row['dropship_enabled'] ?? null, true);
 
@@ -849,6 +864,9 @@ final class GunDealsFeedGenerator
                 'ffl_required' => $ffl_required ? 1 : 0,
                 'dropship_enabled' => $dropship_enabled ? 1 : 0,
                 'dist_lane_fee' => $dist_lane_fee,
+                'length_in' => $length_in,
+                'width_in' => $width_in,
+                'height_in' => $height_in,
             ],
         ]);
 

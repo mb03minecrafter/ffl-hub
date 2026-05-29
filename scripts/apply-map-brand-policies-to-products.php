@@ -110,6 +110,46 @@ function fflhub_map_policy_fix_brand_policy(array $brand_names): string
     return $resolved;
 }
 
+function fflhub_map_policy_fix_configured_brand_policy(array $brand_names, array $policy_lookup): ?string
+{
+    $resolved = null;
+
+    foreach ($brand_names as $brand_name) {
+        $brand_name = trim((string)$brand_name);
+        if ($brand_name === '') {
+            continue;
+        }
+
+        $variants = [
+            $brand_name,
+            str_replace('&', ' and ', $brand_name),
+            str_replace('&', ' ', $brand_name),
+            (string)preg_replace('/\band\b/i', ' ', str_replace('&', ' and ', $brand_name)),
+        ];
+
+        foreach ($variants as $variant) {
+            $key = Options::normalize_brand_policy_key((string)$variant);
+            if ($key === '' || !isset($policy_lookup[$key])) {
+                continue;
+            }
+
+            $policy = (string)$policy_lookup[$key];
+            if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+                return Options::MAP_POLICY_EMAIL_FOR_QUOTE;
+            }
+            if ($policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+                $resolved = Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
+                continue;
+            }
+            if ($resolved === null) {
+                $resolved = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+            }
+        }
+    }
+
+    return $resolved;
+}
+
 function fflhub_map_policy_fix_recommended_price(int $product_id): ?float
 {
     $true_cost = fflhub_map_policy_fix_positive_float(get_post_meta($product_id, ProductMeta::FFLHUB_LAST_TRUE_COST_META, true));
@@ -197,6 +237,7 @@ if ($commit) {
 $stats = [
     'scanned' => 0,
     'changed' => 0,
+    'apply_add_to_cart_for_price' => 0,
     'apply_email_for_quote' => 0,
     'apply_no_email_no_add_to_cart' => 0,
     'cleared_no_map' => 0,
@@ -229,7 +270,7 @@ do {
         $stats['scanned']++;
 
         $brand_names = fflhub_map_policy_fix_brand_names($product_id);
-        $brand_policy = fflhub_map_policy_fix_brand_policy($brand_names);
+        $brand_policy = fflhub_map_policy_fix_configured_brand_policy($brand_names, $policy_lookup);
         $old_policy = strtolower(trim((string)get_post_meta($product_id, ProductMeta::FFLHUB_MAP_POLICY_META, true)));
         $old_mode = (string)get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_MODE_META, true);
         $old_real_mode = (string)get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true);
@@ -245,20 +286,40 @@ do {
 
         if (
             $map !== null
-            && ($brand_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $brand_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART)
+            && $brand_policy !== null
         ) {
-            $action = ($brand_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE)
-                ? 'apply_email_for_quote'
-                : 'apply_no_email_no_add_to_cart';
+            if ($brand_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+                $action = 'apply_email_for_quote';
+            } elseif ($brand_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+                $action = 'apply_no_email_no_add_to_cart';
+            } else {
+                $action = 'apply_add_to_cart_for_price';
+            }
+
             fflhub_map_policy_fix_update_meta($product_id, ProductMeta::FFLHUB_MAP_POLICY_META, $brand_policy, $commit, $changes);
-            fflhub_map_policy_fix_update_meta($product_id, ProductMeta::FFLHUB_MARKUP_MODE_META, (string)ProductMeta::MARKUP_MODE_MAP_PRICE, $commit, $changes);
-            fflhub_map_policy_fix_update_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, (string)ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED, $commit, $changes);
             fflhub_map_policy_fix_update_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, '0', $commit, $changes);
 
-            $prices = fflhub_map_policy_fix_price_pair($map, $msrp);
-            fflhub_map_policy_fix_update_meta($product_id, '_regular_price', $prices['regular'], $commit, $changes);
-            fflhub_map_policy_fix_update_meta($product_id, '_sale_price', $prices['sale'], $commit, $changes);
-            fflhub_map_policy_fix_update_meta($product_id, '_price', $prices['price'], $commit, $changes);
+            if ($brand_policy === Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE) {
+                fflhub_map_policy_fix_update_meta($product_id, ProductMeta::FFLHUB_MARKUP_MODE_META, (string)ProductMeta::MARKUP_MODE_GLOBAL, $commit, $changes);
+
+                if ((int)$old_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
+                    $recommended = fflhub_map_policy_fix_recommended_price($product_id);
+                    if ($recommended !== null) {
+                        $prices = fflhub_map_policy_fix_price_pair($recommended, $msrp);
+                        fflhub_map_policy_fix_update_meta($product_id, '_regular_price', $prices['regular'], $commit, $changes);
+                        fflhub_map_policy_fix_update_meta($product_id, '_sale_price', $prices['sale'], $commit, $changes);
+                        fflhub_map_policy_fix_update_meta($product_id, '_price', $prices['price'], $commit, $changes);
+                    }
+                }
+            } else {
+                fflhub_map_policy_fix_update_meta($product_id, ProductMeta::FFLHUB_MARKUP_MODE_META, (string)ProductMeta::MARKUP_MODE_MAP_PRICE, $commit, $changes);
+                fflhub_map_policy_fix_update_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, (string)ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED, $commit, $changes);
+
+                $prices = fflhub_map_policy_fix_price_pair($map, $msrp);
+                fflhub_map_policy_fix_update_meta($product_id, '_regular_price', $prices['regular'], $commit, $changes);
+                fflhub_map_policy_fix_update_meta($product_id, '_sale_price', $prices['sale'], $commit, $changes);
+                fflhub_map_policy_fix_update_meta($product_id, '_price', $prices['price'], $commit, $changes);
+            }
         } else {
             $special_policy_is_stale = (
                 $old_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE
@@ -345,10 +406,11 @@ if ($backup) {
 }
 
 $summary = sprintf(
-    "Mode: %s\nScanned: %d\nChanged: %d\nEmail for Quote applied: %d\nNo Email/No Cart applied: %d\nCleared no-MAP products: %d\nCleared stale policy: %d\nPrice updates: %d\n",
+    "Mode: %s\nScanned: %d\nChanged: %d\nAdd to Cart for Price applied: %d\nEmail for Quote applied: %d\nNo Email/No Cart applied: %d\nCleared no-MAP products: %d\nCleared stale policy: %d\nPrice updates: %d\n",
     $commit ? 'commit' : 'dry-run',
     $stats['scanned'],
     $stats['changed'],
+    $stats['apply_add_to_cart_for_price'],
     $stats['apply_email_for_quote'],
     $stats['apply_no_email_no_add_to_cart'],
     $stats['cleared_no_map'],
