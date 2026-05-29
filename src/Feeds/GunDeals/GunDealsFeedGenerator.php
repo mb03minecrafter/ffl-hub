@@ -674,9 +674,11 @@ final class GunDealsFeedGenerator
      */
     private function resolve_price_from_row(array $row): float
     {
-        $map_real_price = $this->resolve_map_real_price_from_row($row);
-        if ($map_real_price !== null) {
-            return $map_real_price;
+        if (!$this->is_no_email_no_add_to_cart_policy_row($row)) {
+            $map_real_price = $this->resolve_map_real_price_from_row($row);
+            if ($map_real_price !== null) {
+                return $map_real_price;
+            }
         }
 
         return $this->first_positive_float([
@@ -735,6 +737,19 @@ final class GunDealsFeedGenerator
         }
 
         return '';
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    private function is_no_email_no_add_to_cart_policy_row(array $row): bool
+    {
+        $raw_policy = strtolower(trim((string) ($row['map_policy'] ?? '')));
+        if ($raw_policy === '') {
+            return false;
+        }
+
+        return $this->normalize_map_policy($raw_policy) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
     }
 
     /**
