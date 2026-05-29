@@ -16,15 +16,13 @@ use FFLHub\Settings\Options;
  * Responsibilities:
  * - Hold the set of offers keyed by distributor_id.
  * - Precompute (once) the best offer overall and best in-stock offer.
- *   Priority: drop-ship enabled first, then landed-cost comparison.
+ *   Priority: landed-cost comparison, then configured distributor priority for ties.
  * - Provide a deterministic "best default" selection for UI/business logic.
  *
  * Notes / invariants:
  * - Offers are expected to be a map of distributor_id => DistributorOffer.
- * - Computation compares DistributorOffer::get_selection_cost() only after
- *   drop-ship-enabled preference has been applied.
- * - Special tie window: when RSR is within $1.00 of another distributor,
- *   RSR is preferred.
+ * - Computation compares DistributorOffer::get_selection_cost(), which is
+ *   distributor price + shipping when distributor price is available.
  * - Offers with missing/invalid selection cost are ignored for "cheapest" computations.
  * - "In stock" is defined by DistributorOffer::is_in_stock().
  * - No sorting or mutation of the offers map is performed.
@@ -32,8 +30,6 @@ use FFLHub\Settings\Options;
 final class UpcLookupResult
 {
     private const FLOAT_EPSILON = 0.000001;
-    private const RSR_WITHIN_DELTA = 1.00;
-    private const DIST_ID_RSR = 'rsr';
 
     /**
      * Map of distributor_id => offer.
@@ -129,9 +125,9 @@ final class UpcLookupResult
      * Compute cheapest offers once.
      *
      * Comparison key:
-     * - First: DistributorProductPayload::dropship_enabled (true preferred)
-     * - Then: RSR preference within a $1.00 landed-cost window
-     * - Then: DistributorOffer::get_selection_cost() (null => not comparable)
+     * - First: DistributorOffer::get_selection_cost() (null => not comparable)
+     * - Then: configured distributor priority for equal landed costs
+     * - Then: distributor id for deterministic fallback
      *
      * In-stock determination:
      * - DistributorOffer::is_in_stock()
@@ -181,53 +177,35 @@ final class UpcLookupResult
             return true;
         }
 
-        // Product creation + sync policy:
-        // Always prefer drop-ship eligible offers over non-drop-ship offers.
-        $candidate_dropship = $this->offer_dropship_enabled($candidate_offer);
-        $current_dropship   = $this->offer_dropship_enabled($current_offer);
+        if ($candidate_cost < ((float) $current_cost - self::FLOAT_EPSILON)) {
+            return true;
+        }
 
-        if ($candidate_dropship !== $current_dropship) {
-            return $candidate_dropship;
+        if ($candidate_cost > ((float) $current_cost + self::FLOAT_EPSILON)) {
+            return false;
         }
 
         $candidate_id = $this->offer_dist_id($candidate_offer);
         $current_id = $this->offer_dist_id($current_offer);
 
-        // If RSR is within $1.00 of a competing offer, prefer RSR.
-        $delta = abs($candidate_cost - (float) $current_cost);
-        if ($delta <= (self::RSR_WITHIN_DELTA + self::FLOAT_EPSILON)) {
-            $candidate_is_rsr = ($candidate_id === self::DIST_ID_RSR);
-            $current_is_rsr = ($current_id === self::DIST_ID_RSR);
-            if ($candidate_is_rsr !== $current_is_rsr) {
-                return $candidate_is_rsr;
-            }
+        $candidate_rank = Options::get_distributor_priority_rank($candidate_id);
+        $current_rank = Options::get_distributor_priority_rank($current_id);
+
+        if ($candidate_rank !== $current_rank) {
+            return $candidate_rank < $current_rank;
         }
 
-        if ($delta <= self::FLOAT_EPSILON) {
-            $candidate_rank = Options::get_distributor_priority_rank($candidate_id);
-            $current_rank = Options::get_distributor_priority_rank($current_id);
-
-            if ($candidate_rank !== $current_rank) {
-                return $candidate_rank < $current_rank;
-            }
-
-            // Stable fallback if both are same rank/missing from priority list.
-            $cmp = strcmp($candidate_id, $current_id);
-            if ($cmp !== 0) {
-                return $cmp < 0;
-            }
+        // Stable fallback if both are same rank/missing from priority list.
+        $cmp = strcmp($candidate_id, $current_id);
+        if ($cmp !== 0) {
+            return $cmp < 0;
         }
 
-        return $candidate_cost < ((float) $current_cost - self::FLOAT_EPSILON);
+        return false;
     }
 
     private function offer_dist_id(DistributorOffer $offer): string
     {
         return strtolower(trim((string) $offer->distributor_id));
-    }
-
-    private function offer_dropship_enabled(DistributorOffer $offer): bool
-    {
-        return (bool) ($offer->product->dropship_enabled ?? false);
     }
 }
