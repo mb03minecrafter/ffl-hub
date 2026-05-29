@@ -345,6 +345,12 @@ class ProductMetaBox
             ? ProductMeta::MARKUP_MODE_GLOBAL
             : (int) $mode_raw;
 
+        $map_policy_options = self::map_policy_options();
+        $map_policy = strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_MAP_POLICY_META, true)));
+        if (!isset($map_policy_options[$map_policy])) {
+            $map_policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        }
+
         $pct_raw   = $product->get_meta(ProductMeta::FFLHUB_MARKUP_PERCENT_META, true);
         $pct_value = is_numeric($pct_raw) ? (string) $pct_raw : '';
 
@@ -386,7 +392,6 @@ class ProductMetaBox
         $preview_dealer_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
         $preview_shipping_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
         $preview_map_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
-        $preview_msrp_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true);
         $preview_recommended_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true);
 
         $preview_true_cost = (is_numeric($preview_true_cost_raw) && (float) $preview_true_cost_raw > 0.0)
@@ -402,10 +407,10 @@ class ProductMetaBox
         $preview_map = (is_numeric($preview_map_raw) && (float) $preview_map_raw > 0.0)
             ? (float) $preview_map_raw
             : 0.0;
-        $preview_msrp = (is_numeric($preview_msrp_raw) && (float) $preview_msrp_raw > 0.0)
-            ? (float) $preview_msrp_raw
-            : 0.0;
-        $preview_map_base = ($preview_map > 0.0) ? $preview_map : $preview_msrp;
+        $preview_map_base = $preview_map;
+        if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE || $preview_map_base <= 0.0) {
+            $map_policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        }
         $preview_recommended = (is_numeric($preview_recommended_raw) && (float) $preview_recommended_raw > 0.0)
             ? (float) $preview_recommended_raw
             : 0.0;
@@ -464,6 +469,23 @@ class ProductMetaBox
             '</option>';
 
         echo '</select>';
+        echo '</p>';
+
+        echo '<p style="margin:0 0 6px;">';
+        echo '<label style="display:block;font-size:11px;font-weight:600;margin-bottom:3px;">' .
+            esc_html__('Product MAP Policy', 'ffl-hub') .
+            '</label>';
+        echo '<select id="fflhub_map_policy" name="fflhub_map_policy" style="width:100%;font-size:11px;">';
+        foreach ($map_policy_options as $policy_value => $policy_label) {
+            echo '<option value="' . esc_attr($policy_value) . '" ' .
+                selected($map_policy, $policy_value, false) . '>' .
+                esc_html($policy_label) .
+                '</option>';
+        }
+        echo '</select>';
+        echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
+            esc_html__('Controls storefront MAP behavior for this product only. Requires MAP Price mode and a positive Last MAP value.', 'ffl-hub') .
+            '</span>';
         echo '</p>';
 
         // Percent input
@@ -539,7 +561,7 @@ class ProductMetaBox
             'name="fflhub_map_real_price_percent" value="' . esc_attr($map_real_percent_value) . '" ' .
             'style="width:100%;font-size:11px;" />';
         echo '<span style="display:block;margin-top:3px;font-size:11px;color:#6b7280;">' .
-            esc_html__('Used only in Percentage mode (enter 10 for 10% below MAP/MSRP).', 'ffl-hub') .
+            esc_html__('Used only in Percentage mode (enter 10 for 10% below MAP).', 'ffl-hub') .
             '</span>';
         echo '</p>';
 
@@ -595,6 +617,7 @@ class ProductMetaBox
             (function() {
                 function applyMode() {
                     var modeEl = document.getElementById('fflhub_markup_mode');
+                    var mapPolicyEl = document.getElementById('fflhub_map_policy');
                     var pctEl = document.getElementById('fflhub_markup_percent');
                     var fixedEl = document.getElementById('fflhub_fixed_price');
                     var mapRealModeEl = document.getElementById('fflhub_map_real_price_mode');
@@ -607,7 +630,7 @@ class ProductMetaBox
                     var mapPreviewTrueCostEl = document.getElementById('fflhub_map_real_price_preview_true_cost');
                     var mapPreviewShippingEl = document.getElementById('fflhub_map_real_price_preview_shipping_cost');
                     var mapPreviewProcessorFeeEl = document.getElementById('fflhub_map_real_price_preview_processor_fee');
-                    if (!modeEl || !pctEl || !fixedEl || !mapRealModeEl || !mapOffsetEl || !mapPercentEl || !mapProfitEl || !mapFreeShipOverrideEl || !mapPreviewWrapEl || !mapPreviewValueEl || !mapPreviewTrueCostEl || !mapPreviewShippingEl || !mapPreviewProcessorFeeEl) return;
+                    if (!modeEl || !mapPolicyEl || !pctEl || !fixedEl || !mapRealModeEl || !mapOffsetEl || !mapPercentEl || !mapProfitEl || !mapFreeShipOverrideEl || !mapPreviewWrapEl || !mapPreviewValueEl || !mapPreviewTrueCostEl || !mapPreviewShippingEl || !mapPreviewProcessorFeeEl) return;
 
                     var mode = parseInt(modeEl.value, 10);
                     var MODE_FIXED_PCT = <?php echo (int) ProductMeta::MARKUP_MODE_FIXED_PCT; ?>;
@@ -694,6 +717,7 @@ class ProductMetaBox
                     fixedEl.disabled = (mode !== MODE_FIXED_PRICE);
 
                     var mapModeActive = (mode === MODE_MAP_PRICE);
+                    mapPolicyEl.disabled = !mapModeActive || previewMapBase <= 0;
                     mapRealModeEl.disabled = !mapModeActive;
                     mapOffsetEl.disabled = !mapModeActive || mapRealMode !== MAP_REAL_MODE_FIXED_OFFSET;
                     mapPercentEl.disabled = !mapModeActive || mapRealMode !== MAP_REAL_MODE_PERCENTAGE;
@@ -747,6 +771,7 @@ class ProductMetaBox
                     applyLocalStockOverride();
                     applyDistributorLock();
                     var modeEl = document.getElementById('fflhub_markup_mode');
+                    var mapPolicyEl = document.getElementById('fflhub_map_policy');
                     var mapRealModeEl = document.getElementById('fflhub_map_real_price_mode');
                     var mapOffsetEl = document.getElementById('fflhub_map_real_price_offset');
                     var mapPercentEl = document.getElementById('fflhub_map_real_price_percent');
@@ -756,6 +781,9 @@ class ProductMetaBox
                     var distributorLockEnabledEl = document.getElementById('fflhub_distributor_lock_enabled');
                     if (modeEl) {
                         modeEl.addEventListener('change', applyMode);
+                    }
+                    if (mapPolicyEl) {
+                        mapPolicyEl.addEventListener('change', applyMode);
                     }
                     if (mapRealModeEl) {
                         mapRealModeEl.addEventListener('change', applyMode);
@@ -915,6 +943,21 @@ class ProductMetaBox
 
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, $mode);
 
+        $map_policy = isset($_POST['fflhub_map_policy'])
+            ? strtolower(trim(sanitize_text_field(wp_unslash($_POST['fflhub_map_policy']))))
+            : Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        $map_policy_options = self::map_policy_options();
+        if (!isset($map_policy_options[$map_policy])) {
+            $map_policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        }
+        $has_positive_map = self::positive_float_or_null(
+            $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true)
+        ) !== null;
+        if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE || !$has_positive_map) {
+            $map_policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        }
+        $product->update_meta_data(ProductMeta::FFLHUB_MAP_POLICY_META, $map_policy);
+
         // Fixed Percent value
         if ($mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
             $pct_raw = isset($_POST['fflhub_markup_percent'])
@@ -1061,6 +1104,31 @@ class ProductMetaBox
         }
 
         return (string) wc_format_decimal($value, 4);
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private static function map_policy_options(): array
+    {
+        return [
+            Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE => __('Add to Cart for Price', 'ffl-hub'),
+            Options::MAP_POLICY_EMAIL_FOR_QUOTE => __('Email for Quote', 'ffl-hub'),
+            Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART => __('No Email, No Add to Cart', 'ffl-hub'),
+        ];
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function positive_float_or_null($value): ?float
+    {
+        if (!is_numeric($value)) {
+            return null;
+        }
+
+        $float = (float) $value;
+        return ($float > 0.0) ? $float : null;
     }
 
     /**

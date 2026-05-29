@@ -18,9 +18,6 @@ class MapPriceVisibility
     private const QUOTE_SUBMISSION_DEDUPE_TTL_SECONDS = 180;
     private const HOLOSUN_BRAND_DEFAULT_ALIAS = 'holosun';
 
-    /** @var array<string,string>|null */
-    private static ?array $policy_lookup_cache = null;
-
     /** @var array<int,array<int,string>> */
     private static array $brand_names_by_product_id = [];
     private static bool $holosun_notice_rendered = false;
@@ -295,12 +292,12 @@ class MapPriceVisibility
             return false;
         }
 
-        // "No Email, No Add to Cart" brands should show MAP price.
+        // "No Email, No Add to Cart" products should show MAP price.
         if (self::is_no_email_no_add_to_cart_policy($product, $parent)) {
             return false;
         }
 
-        // "Email for Quote" brands should still show an explicit price (MSRP).
+        // "Email for Quote" products should still show an explicit MAP price.
         if (self::is_email_for_quote_policy($product, $parent)) {
             return false;
         }
@@ -322,10 +319,10 @@ class MapPriceVisibility
             return self::stored_visible_price_html($product, null) ?? $price_html;
         }
 
-        if (self::should_force_email_quote_msrp_price($product, null)) {
-            $msrp_html = self::msrp_price_html($product, null);
-            if ($msrp_html !== null) {
-                return $msrp_html;
+        if (self::should_force_email_quote_map_price($product, null)) {
+            $map_html = self::map_price_html($product, null);
+            if ($map_html !== null) {
+                return $map_html;
             }
         }
 
@@ -343,7 +340,7 @@ class MapPriceVisibility
             }
         }
 
-        // Fallback: if MSRP is unavailable, keep Woo regular/sale rendering unchanged.
+        // Fallback: if MAP is unavailable, keep Woo regular/sale rendering unchanged.
         if (self::is_email_for_quote_policy($product, null)) {
             return $price_html;
         }
@@ -400,23 +397,23 @@ class MapPriceVisibility
             return self::apply_stored_visible_variation_price_data($data, $variation, $parent_product);
         }
 
-        if (self::should_force_email_quote_msrp_price($variation, $parent_product)) {
-            $msrp = self::msrp_price_for_product($variation, $parent_product);
-            $msrp_html = self::msrp_price_html($variation, $parent_product);
+        if (self::should_force_email_quote_map_price($variation, $parent_product)) {
+            $map = self::map_price_for_product($variation, $parent_product);
+            $map_html = self::map_price_html($variation, $parent_product);
 
-            if ($msrp_html !== null) {
-                $data['price_html'] = $msrp_html;
+            if ($map_html !== null) {
+                $data['price_html'] = $map_html;
             }
 
-            if (is_numeric($msrp) && (float) $msrp > 0.0) {
-                $msrp_value = (float) $msrp;
-                $msrp_decimal = function_exists('wc_format_decimal')
-                    ? wc_format_decimal($msrp_value, wc_get_price_decimals())
-                    : (string) $msrp_value;
-                $data['display_price'] = $msrp_value;
-                $data['display_regular_price'] = $msrp_value;
-                $data['price'] = $msrp_decimal;
-                $data['regular_price'] = $msrp_decimal;
+            if (is_numeric($map) && (float) $map > 0.0) {
+                $map_value = (float) $map;
+                $map_decimal = function_exists('wc_format_decimal')
+                    ? wc_format_decimal($map_value, wc_get_price_decimals())
+                    : (string) $map_value;
+                $data['display_price'] = $map_value;
+                $data['display_regular_price'] = $map_value;
+                $data['price'] = $map_decimal;
+                $data['regular_price'] = $map_decimal;
                 $data['sale_price'] = '';
             }
 
@@ -469,7 +466,7 @@ class MapPriceVisibility
             return $data;
         }
 
-        // Fallback: if MSRP is unavailable, keep Woo variation pricing data unchanged.
+        // Fallback: if MAP is unavailable, keep Woo variation pricing data unchanged.
         if (self::is_email_for_quote_policy($variation, $parent_product)) {
             return $data;
         }
@@ -500,26 +497,26 @@ class MapPriceVisibility
             return self::apply_stored_visible_structured_offer($offer, $product, null);
         }
 
-        if (self::should_force_email_quote_msrp_price($product, null)) {
-            $msrp = self::msrp_price_for_product($product, null);
-            if (!is_numeric($msrp) || (float) $msrp <= 0.0 || !is_array($offer)) {
+        if (self::should_force_email_quote_map_price($product, null)) {
+            $map = self::map_price_for_product($product, null);
+            if (!is_numeric($map) || (float) $map <= 0.0 || !is_array($offer)) {
                 return $offer;
             }
 
-            $msrp_decimal = function_exists('wc_format_decimal')
-                ? wc_format_decimal((float) $msrp, wc_get_price_decimals())
-                : (string) $msrp;
+            $map_decimal = function_exists('wc_format_decimal')
+                ? wc_format_decimal((float) $map, wc_get_price_decimals())
+                : (string) $map;
 
             foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
                 if (isset($offer[$price_key])) {
-                    $offer[$price_key] = $msrp_decimal;
+                    $offer[$price_key] = $map_decimal;
                 }
             }
 
             if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
                 foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
                     if (isset($offer['priceSpecification'][$price_spec_key])) {
-                        $offer['priceSpecification'][$price_spec_key] = $msrp_decimal;
+                        $offer['priceSpecification'][$price_spec_key] = $map_decimal;
                     }
                 }
             }
@@ -581,7 +578,7 @@ class MapPriceVisibility
             return $offer;
         }
 
-        // Fallback: if MSRP is unavailable, keep Woo structured offer untouched.
+        // Fallback: if MAP is unavailable, keep Woo structured offer untouched.
         if (self::is_email_for_quote_policy($product, null)) {
             return $offer;
         }
@@ -859,6 +856,9 @@ class MapPriceVisibility
         if (self::is_out_of_stock_for_quote($product)) {
             self::redirect_with_quote_status($redirect_url, 'invalid_request');
         }
+        if (!self::is_email_for_quote_policy($product, null)) {
+            self::redirect_with_quote_status($redirect_url, 'invalid_request');
+        }
         if (self::is_blocked_quote_name($first_name, $last_name)) {
             self::send_quote_block_warning_email(
                 'blocked_name_dennis_joe',
@@ -974,6 +974,10 @@ class MapPriceVisibility
             return false;
         }
 
+        if (!self::has_product_level_map_policy_requirements($product, $parent)) {
+            return false;
+        }
+
         return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_EMAIL_FOR_QUOTE;
     }
 
@@ -983,7 +987,24 @@ class MapPriceVisibility
             return false;
         }
 
+        if (!self::has_product_level_map_policy_requirements($product, $parent)) {
+            return false;
+        }
+
         return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
+    }
+
+    private static function has_product_level_map_policy_requirements(WC_Product $product, ?WC_Product $parent = null): bool
+    {
+        if (!self::is_fflhub_managed($product, $parent)) {
+            return false;
+        }
+
+        if (!self::is_map_price_mode($product, $parent)) {
+            return false;
+        }
+
+        return self::map_price_for_product($product, $parent) !== null;
     }
 
     private static function should_show_holosun_price_override(WC_Product $product, ?WC_Product $parent = null): bool
@@ -1088,13 +1109,13 @@ class MapPriceVisibility
         return self::msrp_price_for_product($product, $parent) !== null;
     }
 
-    private static function should_force_email_quote_msrp_price(WC_Product $product, ?WC_Product $parent = null): bool
+    private static function should_force_email_quote_map_price(WC_Product $product, ?WC_Product $parent = null): bool
     {
         if (!self::is_email_for_quote_policy($product, $parent)) {
             return false;
         }
 
-        return self::msrp_price_for_product($product, $parent) !== null;
+        return self::map_price_for_product($product, $parent) !== null;
     }
 
     private static function stored_visible_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
@@ -1973,42 +1994,45 @@ class MapPriceVisibility
 
     private static function map_policy_for_product(WC_Product $product, ?WC_Product $parent = null): string
     {
-        $policy_lookup = self::map_policy_lookup();
-        if (empty($policy_lookup)) {
-            return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        $policy = self::normalize_product_map_policy(
+            $product->get_meta(ProductMeta::FFLHUB_MAP_POLICY_META, true)
+        );
+        if ($policy !== Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE) {
+            return $policy;
         }
 
-        $brand_names = self::brand_names_for_product($product);
-        if (empty($brand_names) && $parent instanceof WC_Product) {
-            $brand_names = self::brand_names_for_product($parent);
-        }
-
-        foreach ($brand_names as $brand_name) {
-            $policy = Options::get_map_policy_for_brand($brand_name);
-            $policy = strtolower(trim((string) $policy));
-            if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
-                return Options::MAP_POLICY_EMAIL_FOR_QUOTE;
-            }
-
-            if ($policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
-                return Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
-            }
+        if ($parent instanceof WC_Product) {
+            return self::normalize_product_map_policy(
+                $parent->get_meta(ProductMeta::FFLHUB_MAP_POLICY_META, true)
+            );
         }
 
         return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
     }
 
-    /**
-     * @return array<string,string>
-     */
-    private static function map_policy_lookup(): array
+    private static function normalize_product_map_policy($raw): string
     {
-        if (self::$policy_lookup_cache === null) {
-            $lookup = Options::get_map_brand_policy_lookup();
-            self::$policy_lookup_cache = is_array($lookup) ? $lookup : [];
+        $policy = strtolower(trim((string) $raw));
+
+        if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+            return Options::MAP_POLICY_EMAIL_FOR_QUOTE;
         }
 
-        return self::$policy_lookup_cache;
+        if ($policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+            return Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
+        }
+
+        return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+    }
+
+    private static function is_map_price_mode(WC_Product $product, ?WC_Product $parent = null): bool
+    {
+        $mode_raw = $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
+        if (($mode_raw === '' || $mode_raw === null) && $parent instanceof WC_Product) {
+            $mode_raw = $parent->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
+        }
+
+        return (int) $mode_raw === ProductMeta::MARKUP_MODE_MAP_PRICE;
     }
 
     /**

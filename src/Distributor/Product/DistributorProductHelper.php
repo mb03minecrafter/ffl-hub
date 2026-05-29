@@ -146,7 +146,7 @@ class DistributorProductHelper
         if ($sell_price === null || $sell_price <= 0) {
             $error_message = __('Could not compute a valid retail price for this product.', 'ffl-hub');
             if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-                $error_message = __('MAP Price Quote Required mode requires a valid MAP or MSRP value for this product.', 'ffl-hub');
+                $error_message = __('MAP Price Quote Required mode requires a valid MAP value for this product.', 'ffl-hub');
             }
 
             return new WP_Error(
@@ -546,27 +546,20 @@ class DistributorProductHelper
         );
         $product->update_meta_data(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required ? 1 : 0);
 
+        $default_map_policy = self::default_map_policy_for_payload($selected_product);
         $default_markup_mode = self::default_markup_mode_for_payload($selected_product);
+        $product->update_meta_data(ProductMeta::FFLHUB_MAP_POLICY_META, $default_map_policy);
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, $default_markup_mode);
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, 0);
         $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
         $product->update_meta_data(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, 0);
 
         if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            $map_value = self::to_positive_float($selected_product->map ?? null);
-            if ($map_value !== null) {
-                $profit_target = self::default_map_fixed_profit_target_from_global_markup($selected_product);
-                if ($profit_target !== null) {
-                    $product->update_meta_data(
-                        ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META,
-                        ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT
-                    );
-                    $product->update_meta_data(
-                        ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META,
-                        $profit_target
-                    );
-                }
-            }
+            $product->update_meta_data(
+                ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META,
+                ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED
+            );
+            $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, 0);
         }
 
         $product->update_meta_data(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost);
@@ -1637,7 +1630,7 @@ class DistributorProductHelper
     /**
      * Resolve MAP quote real price from product-level MAP real-price settings.
      *
-     * Returns null when the product is not in MAP quote-required mode, has no MAP/MSRP base,
+     * Returns null when the product is not in MAP quote-required mode, has no MAP base,
      * or computes to a non-positive value.
      */
     public static function get_map_real_price_for_product(WC_Product $product): ?float
@@ -1647,6 +1640,11 @@ class DistributorProductHelper
             ? ProductMeta::MARKUP_MODE_GLOBAL
             : (int) $mode_raw;
         if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            return null;
+        }
+
+        $map_base_for_mode = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true));
+        if ($map_base_for_mode === null) {
             return null;
         }
 
@@ -1713,20 +1711,9 @@ class DistributorProductHelper
             return ($real_price > 0.0) ? $real_price : null;
         }
 
-        $map_base = self::resolve_map_mode_sell_price(
-            $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true),
-            $product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true)
-        );
-        if ($map_base === null) {
-            $map_base = self::to_positive_float($product->get_price());
-        }
-        if ($map_base === null) {
-            return null;
-        }
-
         $pct = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, true)) ?? 0.0;
-        $discount = $map_base * ($pct / 100.0);
-        $real_price = round($map_base - $discount, 2);
+        $discount = $map_base_for_mode * ($pct / 100.0);
+        $real_price = round($map_base_for_mode - $discount, 2);
         return ($real_price > 0.0) ? $real_price : null;
     }
 
@@ -1744,37 +1731,43 @@ class DistributorProductHelper
      * Determine default pricing mode for a payload at product creation.
      *
      * MAP policy behavior:
-     * - "Email for Quote" defaults to MAP Price mode only when payload MAP exists.
-     * - "No Email, No Add to Cart" always defaults to MAP Price mode.
+     * - Brand MAP policies are creation defaults only.
+     * - Email/No-cart policies default to MAP Price mode only when payload MAP exists.
      * - Otherwise defaults to regular global pricing mode.
      */
     public static function default_markup_mode_for_payload(DistributorProductPayload $payload): int
     {
+        $map_policy = self::default_map_policy_for_payload($payload);
+        return ($map_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $map_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART)
+            ? ProductMeta::MARKUP_MODE_MAP_PRICE
+            : ProductMeta::MARKUP_MODE_GLOBAL;
+    }
+
+    public static function default_map_policy_for_payload(DistributorProductPayload $payload): string
+    {
         $brand = self::normalize_brand_name((string) ($payload->brand ?? ''));
         if ($brand !== '' && self::should_bypass_map_policy_pricing_for_brand($brand)) {
-            return ProductMeta::MARKUP_MODE_GLOBAL;
+            return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        }
+
+        $map_value = self::to_positive_float($payload->map ?? null);
+        if ($map_value === null) {
+            return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
         }
 
         $map_policy = ($brand !== '') ? Options::get_map_policy_for_brand($brand) : '';
-
-        if ($map_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
-            return ProductMeta::MARKUP_MODE_MAP_PRICE;
+        if ($map_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $map_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+            return $map_policy;
         }
 
-        if ($map_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
-            $map_value = self::to_positive_float($payload->map ?? null);
-            if ($map_value !== null) {
-                return ProductMeta::MARKUP_MODE_MAP_PRICE;
-            }
-        }
-
-        return ProductMeta::MARKUP_MODE_GLOBAL;
+        return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
     }
 
     /**
      * Resolve initial creation-time sell price for a payload.
      *
-     * - MAP Price mode: sell price equals payload MAP (fallback to payload MSRP)
+     * - MAP Price mode: sell price equals payload MAP.
+     * - MAP Price mode without MAP: fall back to the regular recommended price.
      * - Other modes: use global recommended price
      */
     private static function get_creation_sell_price_from_payload(
@@ -1782,10 +1775,8 @@ class DistributorProductHelper
         int $default_markup_mode
     ): ?float {
         if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            return self::resolve_map_mode_sell_price(
-                $selected_product->map ?? null,
-                $selected_product->msrp ?? null
-            );
+            return self::resolve_map_mode_sell_price($selected_product->map ?? null, null)
+                ?? self::get_recommended_price_from_payload($selected_product);
         }
 
         return self::get_recommended_price_from_payload($selected_product);
@@ -1847,18 +1838,6 @@ class DistributorProductHelper
      */
     public static function compute_sell_price_for_product(int $product_id, DistributorProductPayload $payload): ?float
     {
-        // "No Email, No Add to Cart" policy enforces MAP/MSRP pricing
-        // unless Holosun's explicit show-price override says to honor the
-        // product's stored Woo/FFLHub pricing mode.
-        $brand = self::normalize_brand_name((string) ($payload->brand ?? ''));
-        if (
-            $brand !== ''
-            && Options::get_map_policy_for_brand($brand) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART
-            && !self::should_bypass_map_policy_pricing_for_brand($brand)
-        ) {
-            return self::resolve_map_mode_sell_price($payload->map ?? null, $payload->msrp ?? null);
-        }
-
         $settings = self::get_pricing_settings_for_product($product_id);
 
         if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
@@ -1866,7 +1845,8 @@ class DistributorProductHelper
         }
 
         if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            return self::resolve_map_mode_sell_price($payload->map ?? null, $payload->msrp ?? null);
+            return self::resolve_map_mode_sell_price($payload->map ?? null, null)
+                ?? self::get_recommended_price_from_payload($payload);
         }
 
         $pct = $settings['effective_percent'] ?? null;
@@ -1979,7 +1959,7 @@ class DistributorProductHelper
      * Apply the stored admin pricing settings to the WooCommerce product price.
      *
       * - Fixed price mode: set that value directly
-      * - MAP price mode: set to LAST_MAP meta (fallback to LAST_MSRP)
+      * - MAP price mode: set to LAST_MAP meta, otherwise fall through to calculated pricing
       * - Percent modes: base cost comes from LAST_TRUE_COST else LAST_DEALER_PRICE
       */
     public static function apply_admin_pricing_to_woo_product(int $product_id): void
@@ -2003,16 +1983,17 @@ class DistributorProductHelper
         }
 
         if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            $map_or_msrp = self::resolve_map_mode_sell_price(
+            $map_price = self::resolve_map_mode_sell_price(
                 $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true),
-                $msrp
+                null
             );
-            if ($map_or_msrp === null) {
+            if ($map_price !== null) {
+                self::set_sell_price_and_save($product, $map_price, $msrp);
                 return;
             }
 
-            self::set_sell_price_and_save($product, $map_or_msrp, $msrp);
-            return;
+            $global = (float) Options::get_global_markup();
+            $settings['effective_percent'] = ($global > 1.0) ? ($global / 100.0) : $global;
         }
 
         $pct = $settings['effective_percent'] ?? null;
@@ -2070,14 +2051,15 @@ class DistributorProductHelper
     /**
      * Resolve MAP mode sell price.
      *
-     * MAP has priority. MSRP is used only when MAP is unavailable.
+     * MAP is the only enforced MAP-mode price. Missing MAP means callers should
+     * fall back to the normal calculated/recommended price.
      *
      * @param mixed $map_raw
      * @param mixed $msrp_raw
      */
     private static function resolve_map_mode_sell_price($map_raw, $msrp_raw): ?float
     {
-        return self::to_positive_float($map_raw) ?? self::to_positive_float($msrp_raw);
+        return self::to_positive_float($map_raw);
     }
 
     /**

@@ -42,10 +42,13 @@ class ProductMeta
     public const FFLHUB_LAST_MAP_META = '_fflhub_last_map'; //last MAP price of product : float
     public const FFLHUB_LAST_MSRP_META = '_fflhub_last_msrp'; //last MSRP price of product : float
     public const FFLHUB_LAST_COMPUTED_PRICE_META = '_fflhub_last_computed_price'; //last computed price (using our markup) of product : float
-   
+
+    // Runtime product-level MAP policy. Brand MAP policies only choose defaults during creation/migration.
+    public const FFLHUB_MAP_POLICY_META = '_fflhub_map_policy';
+
     public const FFLHUB_MAP_REAL_PRICE_MODE_META = '_fflhub_map_real_price_mode'; // 0=fixed offset, 1=percentage, 2=default recommended, 3=fixed profit
     public const FFLHUB_MAP_REAL_PRICE_OFFSET_META = '_fflhub_map_real_price_offset'; // float, add to true cost (dealer fallback) when fixed-offset mode is selected
-    public const FFLHUB_MAP_REAL_PRICE_PERCENT_META = '_fflhub_map_real_price_percent'; // float percent, subtract from MAP/MSRP base
+    public const FFLHUB_MAP_REAL_PRICE_PERCENT_META = '_fflhub_map_real_price_percent'; // float percent, subtract from MAP base
     public const FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META = '_fflhub_map_real_price_fixed_profit'; // float dollars of desired net profit after shipping + processor fee
     public const FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META = '_fflhub_map_real_price_free_shipping_override'; // 0/1 MAP quote customer-facing free-shipping flag
 
