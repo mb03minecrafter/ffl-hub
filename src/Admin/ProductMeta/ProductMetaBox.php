@@ -348,7 +348,7 @@ class ProductMetaBox
         $map_policy_options = self::map_policy_options();
         $map_policy = strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_MAP_POLICY_META, true)));
         if (!isset($map_policy_options[$map_policy])) {
-            $map_policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+            $map_policy = '';
         }
 
         $pct_raw   = $product->get_meta(ProductMeta::FFLHUB_MARKUP_PERCENT_META, true);
@@ -409,6 +409,8 @@ class ProductMetaBox
             : 0.0;
         $preview_map_base = $preview_map;
         if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE || $preview_map_base <= 0.0) {
+            $map_policy = '';
+        } elseif (!isset($map_policy_options[$map_policy])) {
             $map_policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
         }
         $preview_recommended = (is_numeric($preview_recommended_raw) && (float) $preview_recommended_raw > 0.0)
@@ -476,6 +478,11 @@ class ProductMetaBox
             esc_html__('Product MAP Policy', 'ffl-hub') .
             '</label>';
         echo '<select id="fflhub_map_policy" name="fflhub_map_policy" style="width:100%;font-size:11px;">';
+        if ($map_policy === '') {
+            echo '<option value="" selected="selected">' .
+                esc_html__('None', 'ffl-hub') .
+                '</option>';
+        }
         foreach ($map_policy_options as $policy_value => $policy_label) {
             echo '<option value="' . esc_attr($policy_value) . '" ' .
                 selected($map_policy, $policy_value, false) . '>' .
@@ -943,20 +950,21 @@ class ProductMetaBox
 
         $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, $mode);
 
-        $map_policy = isset($_POST['fflhub_map_policy'])
-            ? strtolower(trim(sanitize_text_field(wp_unslash($_POST['fflhub_map_policy']))))
-            : Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
-        $map_policy_options = self::map_policy_options();
-        if (!isset($map_policy_options[$map_policy])) {
-            $map_policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
-        }
         $has_positive_map = self::positive_float_or_null(
             $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true)
         ) !== null;
-        if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE || !$has_positive_map) {
-            $map_policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        if ($mode === ProductMeta::MARKUP_MODE_MAP_PRICE && $has_positive_map) {
+            $map_policy = isset($_POST['fflhub_map_policy'])
+                ? strtolower(trim(sanitize_text_field(wp_unslash($_POST['fflhub_map_policy']))))
+                : Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+            $map_policy_options = self::map_policy_options();
+            if (!isset($map_policy_options[$map_policy])) {
+                $map_policy = Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+            }
+            $product->update_meta_data(ProductMeta::FFLHUB_MAP_POLICY_META, $map_policy);
+        } else {
+            $product->delete_meta_data(ProductMeta::FFLHUB_MAP_POLICY_META);
         }
-        $product->update_meta_data(ProductMeta::FFLHUB_MAP_POLICY_META, $map_policy);
 
         // Fixed Percent value
         if ($mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
