@@ -702,7 +702,7 @@ final class GunDealsFeedGenerator
             return self::PRICE_HIDE_ADD_TO_CART;
         }
 
-        if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+        if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
             return self::PRICE_HIDE_MAP;
         }
 
