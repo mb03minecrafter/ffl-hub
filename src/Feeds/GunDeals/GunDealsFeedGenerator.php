@@ -20,6 +20,7 @@ final class GunDealsFeedGenerator
     private const COMPETITOR_FEE_LABEL = '🚨People Above Us? Taxes / Fees, NOT US!';
     private const PRICE_HIDE_EMAIL_FOR_QUOTE = 'Email Form for Best Price';
     private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price';
+    private const HIDDEN_PRICE_FEED_MULTIPLIER = 0.75;
     private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;
     private const BATCH_SIZE = 250;
 
@@ -516,7 +517,7 @@ final class GunDealsFeedGenerator
         $product_id = (int) ($source_row['product_id'] ?? 0);
         $actual_price = $this->resolve_price_from_row($source_row);
         $price_hide = $this->resolve_price_hide_from_row($source_row);
-        $feed_price = $this->resolve_feed_price($actual_price);
+        $feed_price = $this->resolve_feed_price($actual_price, $price_hide);
         $shipping_charge = $actual_price > 0.0 ? $this->customer_shipping_charge_for_row($source_row, $actual_price) : 0.0;
 
         $row = [
@@ -689,13 +690,17 @@ final class GunDealsFeedGenerator
         ]) ?? 0.0;
     }
 
-    private function resolve_feed_price(float $actual_price): float
+    private function resolve_feed_price(float $actual_price, string $price_hide): float
     {
         if ($actual_price <= 0.0) {
             return 0.0;
         }
 
-        return $actual_price;
+        if (trim($price_hide) === '') {
+            return $actual_price;
+        }
+
+        return round($actual_price * self::HIDDEN_PRICE_FEED_MULTIPLIER, 2);
     }
 
     /**
