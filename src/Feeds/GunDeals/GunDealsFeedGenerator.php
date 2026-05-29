@@ -19,7 +19,7 @@ final class GunDealsFeedGenerator
     private const NO_SALES_TAX_LABEL = 'No Sales Tax';
     private const FREE_SHIPPING_LABEL = 'Free Shipping';
     private const PRICE_HIDE_MAP = 'MAP';
-    private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price:';
+    private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price';
     private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;
     private const BATCH_SIZE = 250;
 
