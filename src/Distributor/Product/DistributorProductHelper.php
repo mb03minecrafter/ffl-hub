@@ -689,6 +689,98 @@ class DistributorProductHelper
     }
 
     /**
+     * Sync-time update of FFLHub-only snapshot meta without WC_Product::save().
+     *
+     * Product sync can touch cost/source bookkeeping on every distributor source
+     * switch. Writing those internal fields through Woo CRUD fires product.updated
+     * webhooks, which can flood Action Scheduler for integrations like Klaviyo and
+     * Printful. Use this only when the caller has already determined that no
+     * storefront-facing Woo product fields need a product save.
+     *
+     * @param array<string,array<int,mixed>> $raw_meta
+     * @param array<string,DistributorOffer> $offers
+     * @param string[] $changed_keys
+     */
+    public static function update_fflhub_meta_direct_from_payload_for_sync(
+        int $product_id,
+        array $raw_meta,
+        string $selected_dist_id,
+        DistributorProductPayload $selected_product,
+        float $computed_price_for_meta,
+        array $offers = [],
+        array $changed_keys = []
+    ): bool {
+        if ($product_id <= 0) {
+            return false;
+        }
+
+        $changed = false;
+        $changed_lookup = [];
+        foreach ($changed_keys as $key) {
+            $key = trim((string) $key);
+            if ($key !== '') {
+                $changed_lookup[$key] = true;
+            }
+        }
+
+        $set_meta_if_diff = function (string $key, $new_val, int $precision = 4) use (
+            $product_id,
+            $raw_meta,
+            $changed_lookup,
+            &$changed
+        ): void {
+            if (!empty($changed_lookup) && !isset($changed_lookup[$key])) {
+                return;
+            }
+
+            $new_norm = self::normalize_sync_meta_compare_value($new_val, $precision);
+            $cur_norm = self::normalize_sync_meta_compare_value(
+                self::raw_meta_value_from_cache_array($raw_meta, $key),
+                $precision
+            );
+
+            if ($cur_norm !== $new_norm) {
+                update_post_meta($product_id, $key, $new_norm);
+                $changed = true;
+            }
+        };
+
+        $dealer_price = (float) ($selected_product->price ?? 0);
+        $true_cost    = (float) ($selected_product->true_cost ?? 0);
+        $map          = (float) ($selected_product->map ?? 0);
+        $msrp         = (float) ($selected_product->msrp ?? 0);
+        $ship_cost    = $selected_product->shipping_cost ?? null;
+        $dropship_enabled = ($selected_product->dropship_enabled ?? true) ? 1 : 0;
+        $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
+        $dims = self::resolve_shipping_dimensions_for_meta($selected_product, $offers);
+        $ffl_required = ($selected_product->ffl_required ?? false) ? 1 : 0;
+        $sot_required = ($selected_product->sot_required ?? false) ? 1 : 0;
+        $manual_shipping_override = self::is_truthy_meta_value(
+            self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META)
+        );
+
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_TRUE_COST_META, $true_cost, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_MAP_META, $map, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $computed_price_for_meta, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost, 4);
+        $set_meta_if_diff(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id, 0);
+        $set_meta_if_diff(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required, 0);
+        $set_meta_if_diff(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required, 0);
+        $set_meta_if_diff(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled, 0);
+
+        if (!$manual_shipping_override) {
+            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight, 4);
+            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length'], 4);
+            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width'], 4);
+            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height'], 4);
+        }
+
+        return $changed;
+    }
+
+    /**
      * Compare sync-time payload meta against a primed postmeta snapshot.
      *
      * This mirrors update_fflhub_meta_from_payload_for_sync() without hydrating a

@@ -767,10 +767,15 @@ final class DistributorProductSyncCronService extends AbstractCronService
             $offers
         );
         $meta_changed = !empty($meta_changes['changed']);
+        $meta_change_keys = isset($meta_changes['keys']) && is_array($meta_changes['keys'])
+            ? array_values(array_filter(array_map('strval', $meta_changes['keys'])))
+            : [];
+        $meta_requires_product_save = $this->meta_changes_require_product_save($meta_change_keys);
 
-        $needs_save = ($stock_changed || $price_changed || $meta_changed);
+        $needs_product_save = ($stock_changed || $price_changed || $meta_requires_product_save);
+        $changed_any = ($stock_changed || $price_changed || $meta_changed || $brand_changed);
 
-        if ($needs_save) {
+        if ($needs_product_save) {
             $product = $this->load_product_for_save($product_id);
             if (!($product instanceof WC_Product)) {
                 $this->bump_last_sync_meta($product_id, $now_mysql);
@@ -800,7 +805,19 @@ final class DistributorProductSyncCronService extends AbstractCronService
             $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
             $product->save();
         } else {
-            // Keep rotation without heavy save().
+            if ($meta_changed) {
+                DistributorProductHelper::update_fflhub_meta_direct_from_payload_for_sync(
+                    $product_id,
+                    (array) ($product_state['meta'] ?? []),
+                    $selected_dist_id,
+                    $selected_payload,
+                    (float) $computed_price_for_meta,
+                    $offers,
+                    $meta_change_keys
+                );
+            }
+
+            // Keep rotation without heavy save() so product.updated webhooks do not fire for internal bookkeeping.
             $this->bump_last_sync_meta($product_id, $now_mysql);
         }
 
@@ -832,8 +849,9 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'stock_changed' => $stock_changed ? 1 : 0,
             'price_changed' => $price_changed ? 1 : 0,
             'meta_changed'  => $meta_changed ? 1 : 0,
+            'meta_requires_product_save' => $meta_requires_product_save ? 1 : 0,
             'brand_changed' => $brand_changed ? 1 : 0,
-            'saved'         => $needs_save ? 1 : 0,
+            'saved'         => $needs_product_save ? 1 : 0,
         ));
 
         $this->log_ctx('Product END', array(
@@ -844,23 +862,23 @@ final class DistributorProductSyncCronService extends AbstractCronService
             'final_status' => $desired_status,
             'final_regular' => $desired_regular_price,
             'final_sale'   => $desired_sale_price,
-            'saved'        => $needs_save ? 1 : 0,
+            'saved'        => $needs_product_save ? 1 : 0,
         ));
 
         $this->profile('TOTAL product', $t_start, array(
             'product_id' => $product_id,
-            'outcome'    => $needs_save ? 'UPDATED_NORMAL' : 'NOOP_BUMP_ONLY',
+            'outcome'    => $changed_any ? 'UPDATED_NORMAL' : 'NOOP_BUMP_ONLY',
         ));
 
         return array(
-            'outcome'   => $needs_save ? 'UPDATED_NORMAL' : 'NOOP_BUMP_ONLY',
+            'outcome'   => $changed_any ? 'UPDATED_NORMAL' : 'NOOP_BUMP_ONLY',
             'lookup_ms' => (float) $t_lookup,
             'write_ms'  => (float) $t_write,
             'product_id' => $product_id,
             'upc' => $upc,
             'selected' => $selected_dist_id,
-            'changed' => ($needs_save || $brand_changed),
-            'saved' => $needs_save,
+            'changed' => $changed_any,
+            'saved' => $needs_product_save,
             'changes' => $changes,
             'final_qty' => $desired_qty,
             'final_status' => $desired_status,
@@ -1347,6 +1365,52 @@ final class DistributorProductSyncCronService extends AbstractCronService
         }
 
         return $updated_products;
+    }
+
+    /**
+     * Decide whether sync meta changes must go through WC_Product::save().
+     *
+     * Internal FFLHub bookkeeping can be written directly to postmeta. Native
+     * Woo product fields still require a product save so product lookup tables,
+     * caches, and storefront-facing data stay correct.
+     *
+     * @param string[] $changed_keys
+     */
+    private function meta_changes_require_product_save(array $changed_keys): bool
+    {
+        if (empty($changed_keys)) {
+            return false;
+        }
+
+        $direct_meta_keys = array_fill_keys([
+            ProductMeta::FFLHUB_LAST_TRUE_COST_META,
+            ProductMeta::FFLHUB_LAST_DEALER_PRICE_META,
+            ProductMeta::FFLHUB_LAST_MAP_META,
+            ProductMeta::FFLHUB_LAST_MSRP_META,
+            ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META,
+            ProductMeta::FFLHUB_LAST_SHIPPING_COST_META,
+            ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META,
+            ProductMeta::FFLHUB_FFL_REQUIRED_META,
+            ProductMeta::FFLHUB_SOT_REQUIRED_META,
+            ProductMeta::FFLHUB_DROPSHIP_ENABLED_META,
+            ProductMeta::FFLHUB_SHIPPING_WEIGHT_META,
+            ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META,
+            ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META,
+            ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META,
+        ], true);
+
+        foreach ($changed_keys as $key) {
+            $key = trim((string) $key);
+            if ($key === '') {
+                continue;
+            }
+
+            if (!isset($direct_meta_keys[$key])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function normalize_upc_for_lookup(string $upc): string
