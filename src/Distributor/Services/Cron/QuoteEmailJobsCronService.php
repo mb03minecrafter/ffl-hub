@@ -31,6 +31,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     private const DEBUG_CONST = 'FFLHUB_DEBUG_QUOTE_EMAIL_CRON';
     private const LOG_PREFIX = '[FFLHub][QuoteEmailCron]';
     private const BUSINESS_HOURS_TZ = 'America/Chicago';
+    private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;
 
     private QuoteEmailJobsTable $jobs_table;
 
@@ -908,7 +909,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return true;
         }
 
-        $fee_percent = (float) get_option('fflhub_payment_processor_fee_percent', '2.9');
+        $fee_percent = Options::get_payment_processor_fee_percent();
         $f = $fee_percent / 100.0;
         if ($f < 0.0) {
             $f = 0.0;
@@ -924,8 +925,11 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $profit_net_total = ($line_revenue - $true_cost) * (1.0 - $f);
 
         $customer_charge = 0.0;
-        $free_threshold = 0.5 * (float) $profit_net_total;
-        if ($profit_net_total > 0.0 && $shipping_cost_total < $free_threshold) {
+        $free_threshold = $this->free_shipping_cost_threshold(
+            $profit_net_total,
+            Options::get_free_shipping_max_profit_spend_percent()
+        );
+        if ($free_threshold > 0.0 && $shipping_cost_total <= ($free_threshold + 0.0001)) {
             $customer_charge = 0.0;
         } else {
             $customer_charge = ($f >= 0.99)
@@ -943,6 +947,19 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         return $customer_charge <= 0.0001;
+    }
+
+    private function free_shipping_cost_threshold(float $profit_net_total, float $max_profit_spend_percent): float
+    {
+        if ($profit_net_total <= self::MIN_PROFIT_AFTER_FREE_SHIPPING) {
+            return 0.0;
+        }
+
+        $max_profit_spend_percent = max(0.0, min(100.0, $max_profit_spend_percent));
+        $percent_threshold = $profit_net_total * ($max_profit_spend_percent / 100.0);
+        $penny_profit_threshold = $profit_net_total - self::MIN_PROFIT_AFTER_FREE_SHIPPING;
+
+        return max(0.0, min($percent_threshold, $penny_profit_threshold));
     }
 
     private function map_real_price_free_shipping_override_enabled(WC_Product $product): bool

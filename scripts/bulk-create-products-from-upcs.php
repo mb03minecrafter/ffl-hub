@@ -32,7 +32,7 @@ if (!in_array($mode, $valid_modes, true) || $input_file === '' || ($mode !== 'ex
     fwrite(STDERR, "Usage:\n");
     fwrite(STDERR, "  wp eval-file bulk-create-products-from-upcs.php -- export /path/to/upcs.txt /path/to/source-export.csv\n");
     fwrite(STDERR, "  wp eval-file bulk-create-products-from-upcs.php -- [dry-run|commit] /path/to/upcs-or-copy.csv [draft|publish]\n");
-    fwrite(STDERR, "Input can be plain UPCs, one per line, or CSV with headers: upc,title,short_description,description,seo_keyword,seo_meta_description,image_alt\n");
+    fwrite(STDERR, "Input can be plain UPCs, one per line, or CSV with headers: upc,title,short_description,description,seo_title,seo_keyword,seo_meta_description,image_alt\n");
     exit(1);
 }
 
@@ -339,6 +339,7 @@ function fflhub_bulk_apply_copy_to_product(WC_Product $product, array $row, stri
     $title = fflhub_bulk_clean_plain_text($row['title'] ?? '');
     $short = fflhub_bulk_clean_html($row['short_description'] ?? ($row['short_desc'] ?? ''));
     $description = fflhub_bulk_clean_html($row['description'] ?? '');
+    $seo_title = fflhub_bulk_clean_plain_text($row['seo_title'] ?? ($row['yoast_title'] ?? ''));
     $seo_keyword = fflhub_bulk_clean_plain_text($row['seo_keyword'] ?? ($row['focus_keyword'] ?? ''));
     $seo_meta = fflhub_bulk_clean_plain_text($row['seo_meta_description'] ?? ($row['meta_description'] ?? ''));
     $image_alt = fflhub_bulk_clean_plain_text($row['image_alt'] ?? '');
@@ -379,6 +380,13 @@ function fflhub_bulk_apply_copy_to_product(WC_Product $product, array $row, stri
     }
 
     $product_id = (int)$product->get_id();
+    if ($seo_title !== '' && get_post_meta($product_id, '_yoast_wpseo_title', true) !== $seo_title) {
+        $changed[] = 'seo_title';
+        if ($commit) {
+            update_post_meta($product_id, '_yoast_wpseo_title', $seo_title);
+        }
+    }
+
     if ($seo_keyword !== '' && get_post_meta($product_id, '_yoast_wpseo_focuskw', true) !== $seo_keyword) {
         $changed[] = 'seo_keyword';
         if ($commit) {
