@@ -162,7 +162,9 @@ final class KinseysProductParser
             'parent_child_option_4' => $this->clean_text($this->string_value($product, 'ParentChildOption4')),
             'date_created' => $this->clean_text($this->string_value($product, 'DateCreated')),
             'last_seen_utc' => gmdate('Y-m-d H:i:s'),
-            'raw_item_json' => $this->encode_json($product),
+            'raw_item_json' => apply_filters('fflhub_kinseys_store_raw_item_json', false)
+                ? $this->encode_json($product)
+                : '',
         ];
     }
 
@@ -171,7 +173,19 @@ final class KinseysProductParser
      */
     public function can_drop_ship(array $product): bool
     {
-        return $this->boolish($product['CanBeDropShipped'] ?? null);
+        if (!$this->boolish($product['CanBeDropShipped'] ?? null)) {
+            return false;
+        }
+
+        if ($this->boolish($product['Blocked'] ?? null)) {
+            return false;
+        }
+
+        if ($this->boolish($product['Inactive'] ?? null)) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -243,11 +257,9 @@ final class KinseysProductParser
     private function inventory_keys(array $row): array
     {
         $keys = [];
-        foreach (['productId' => 'id:', 'manufacturerId' => 'manufacturer:', 'upc' => 'upc:'] as $field => $prefix) {
-            $value = $field === 'upc' ? $this->normalize_upc($this->string_value($row, $field)) : $this->string_value($row, $field);
-            if ($value !== '') {
-                $keys[$prefix . strtoupper($value)] = $prefix . strtoupper($value);
-            }
+        $upc = $this->normalize_upc($this->string_value($row, 'upc'));
+        if ($upc !== '') {
+            $keys['upc:' . strtoupper($upc)] = 'upc:' . strtoupper($upc);
         }
 
         return array_values($keys);
@@ -266,15 +278,6 @@ final class KinseysProductParser
         array $inventoryLookup
     ): array {
         $candidates = [];
-        foreach ([$productId, $northItemNumber, $southItemNumber] as $id) {
-            $id = trim($id);
-            if ($id !== '') {
-                $candidates[] = 'id:' . strtoupper($id);
-            }
-        }
-        if ($vendorItemNumber !== '') {
-            $candidates[] = 'manufacturer:' . strtoupper($vendorItemNumber);
-        }
         if ($upc !== '') {
             $candidates[] = 'upc:' . strtoupper($upc);
         }

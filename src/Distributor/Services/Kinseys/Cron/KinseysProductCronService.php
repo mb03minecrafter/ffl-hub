@@ -223,16 +223,39 @@ final class KinseysProductCronService extends AbstractTableCronService
             return;
         }
 
-        $publish_count = (int) ($prune_stats['staging_rows_after'] ?? 0);
+        $t_ineligible_prune = microtime(true);
+        $this->log('PHASE START: prune_staging_ineligible_rows', [
+            'staging_rows_before' => (int) ($prune_stats['staging_rows_after'] ?? 0),
+            'staging_table' => $table_ctx['staging_table'],
+            'memory_kb' => $this->memory_kb(),
+            'memory_peak_kb' => $this->memory_peak_kb(),
+        ]);
+        $ineligible_prune_stats = $importer->prune_staging_ineligible_rows();
+        $this->profile('prune_staging_ineligible_rows', $t_ineligible_prune, $ineligible_prune_stats);
+
+        if (empty($ineligible_prune_stats['ok'])) {
+            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+            $this->log('Kinsey\'s inactive/blocked product pruning failed; swap skipped.', [
+                'error' => (string) ($ineligible_prune_stats['error'] ?? ''),
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (inactive product prune failed)', [
+                'error' => (string) ($ineligible_prune_stats['error'] ?? ''),
+            ]);
+            return;
+        }
+
+        $publish_count = (int) ($ineligible_prune_stats['rows_after'] ?? 0);
         if ($publish_count <= 0) {
             update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
             $this->log('Kinsey\'s allowed product pruning removed all staging rows; swap skipped.', [
                 'rows_imported_before_prune' => (int) $imported,
                 'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
+                'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
             ]);
             $this->finalize_run($t_start, $mem_start, 'ERROR (0 allowed imported)', [
                 'rows_imported_before_prune' => (int) $imported,
                 'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
+                'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
             ]);
             return;
         }
@@ -242,6 +265,7 @@ final class KinseysProductCronService extends AbstractTableCronService
             'rows_imported' => $publish_count,
             'rows_imported_before_prune' => (int) $imported,
             'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
+            'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
             'old_live' => $table_ctx['live_table'],
             'old_staging' => $table_ctx['staging_table'],
             'memory_kb' => $this->memory_kb(),
@@ -264,6 +288,7 @@ final class KinseysProductCronService extends AbstractTableCronService
             'rows_imported' => $publish_count,
             'rows_imported_before_prune' => (int) $imported,
             'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
+            'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
             'new_live' => $new_live,
             'deleted_artifacts' => (int) $deleted_artifacts,
             'deleted_old_artifacts' => (int) $deleted_old_artifacts,
@@ -273,6 +298,7 @@ final class KinseysProductCronService extends AbstractTableCronService
             'rows_imported' => $publish_count,
             'rows_imported_before_prune' => (int) $imported,
             'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
+            'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
             'old_live' => $table_ctx['live_table'],
             'new_live' => $new_live,
             'deleted_artifacts' => (int) $deleted_artifacts,

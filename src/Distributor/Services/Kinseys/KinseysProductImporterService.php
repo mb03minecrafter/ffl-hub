@@ -18,6 +18,15 @@ final class KinseysProductImporterService
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][KinseysImporter]';
     private const INVENTORY_STAGE_TABLE_SUFFIX = 'fflhub_kinseys_inventory_stage';
+    private const INVENTORY_STAGE_COLUMNS = [
+        'product_id',
+        'manufacturer_id',
+        'upc',
+        'price',
+        'map_price',
+        'quantity_on_hand',
+        'restock_eta',
+    ];
 
     private DoubleBufferedProductTable $table;
     private KinseysProductParser $parser;
@@ -123,6 +132,22 @@ final class KinseysProductImporterService
         }
 
         return @unlink($path);
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    public function prune_staging_ineligible_rows(): array
+    {
+        return $this->prune_ineligible_rows_from_table($this->table->get_staging_table_name(), 'staging');
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    public function prune_live_ineligible_rows(): array
+    {
+        return $this->prune_ineligible_rows_from_table($this->table->get_live_table_name(), 'live');
     }
 
     /**
@@ -282,6 +307,77 @@ final class KinseysProductImporterService
             'staging_table' => $staging_table,
             'temp_table' => $temp_table,
         ], $t_start, $mem_start, $phase_ms);
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function prune_ineligible_rows_from_table(string $tableName, string $scope): array
+    {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+
+        $t_start = microtime(true);
+        global $wpdb;
+
+        $tableName = trim($tableName);
+        if ($tableName === '') {
+            return [
+                'ok' => false,
+                'scope' => $scope,
+                'error' => 'Missing table name.',
+                'rows_before' => 0,
+                'rows_deleted' => 0,
+                'rows_after' => 0,
+                'elapsed_ms' => $this->elapsed_ms($t_start),
+            ];
+        }
+
+        try {
+            $before = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$tableName}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $deleted = $wpdb->query("
+                DELETE FROM {$tableName}
+                WHERE COALESCE(inactive_flag, 0) <> 0
+                   OR COALESCE(blocked_flag, 0) <> 0
+            "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+            if ($deleted === false) {
+                return [
+                    'ok' => false,
+                    'scope' => $scope,
+                    'table' => $tableName,
+                    'error' => (string) $wpdb->last_error,
+                    'rows_before' => $before,
+                    'rows_deleted' => 0,
+                    'rows_after' => $before,
+                    'elapsed_ms' => $this->elapsed_ms($t_start),
+                ];
+            }
+
+            $after = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$tableName}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'scope' => $scope,
+                'table' => $tableName,
+                'error' => $e->getMessage(),
+                'rows_before' => 0,
+                'rows_deleted' => 0,
+                'rows_after' => 0,
+                'elapsed_ms' => $this->elapsed_ms($t_start),
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'scope' => $scope,
+            'table' => $tableName,
+            'rows_before' => $before,
+            'rows_deleted' => (int) $deleted,
+            'rows_after' => $after,
+            'elapsed_ms' => $this->elapsed_ms($t_start),
+        ];
     }
 
     /**
@@ -977,19 +1073,34 @@ final class KinseysProductImporterService
         }
 
         $t_phase = microtime(true);
-        $wpdb->query("TRUNCATE TABLE {$stage_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $phase_ms['truncate_inventory_stage'] = $this->elapsed_ms($t_phase);
+        $stage_insert_profile = [];
+        $inventory_tsv_path = $this->resolve_inventory_tsv_path();
+        $write_stats = $inventory_tsv_path !== ''
+            ? $this->write_inventory_stage_tsv($rows, $inventory_tsv_path)
+            : [
+                'rows_seen' => count($rows),
+                'rows_written' => 0,
+                'rows_skipped_empty_upc' => 0,
+                'rows_skipped_dupe_upc' => 0,
+                'write_failures' => 0,
+                'write_error' => 'inventory TSV path unavailable',
+            ];
+        $phase_ms['write_inventory_stage_tsv'] = $this->elapsed_ms($t_phase);
 
         $t_phase = microtime(true);
-        $stage_insert_profile = [];
-        $rows_loaded = $this->insert_inventory_stage_rows($stage_table, $rows, $stage_insert_profile);
-        $phase_ms['insert_inventory_stage_rows'] = $this->elapsed_ms($t_phase);
+        $rows_loaded = $this->load_inventory_stage_rows($stage_table, $rows, $inventory_tsv_path, $write_stats, $stage_insert_profile);
+        $phase_ms['load_inventory_stage_rows'] = $this->elapsed_ms($t_phase);
+        if ($inventory_tsv_path !== '' && is_file($inventory_tsv_path)) {
+            @unlink($inventory_tsv_path);
+        }
+
         if ($rows_loaded <= 0) {
             return $this->finish_apply_inventory_stats([
                 'processed_rows' => count($rows),
                 'rows_loaded' => 0,
                 'join_updated' => 0,
                 'sig_approved_forced' => 0,
+                'write_stats' => $write_stats,
                 'stage_insert_profile' => $stage_insert_profile,
             ], $t_start, $mem_start, $phase_ms, '', $stage_table);
         }
@@ -997,16 +1108,21 @@ final class KinseysProductImporterService
         $live_table = $this->table->get_live_table_name();
 
         $t_phase = microtime(true);
+        $live_prune_stats = $this->prune_live_ineligible_rows();
+        $phase_ms['prune_live_ineligible_rows'] = $this->elapsed_ms($t_phase);
+
+        $t_phase = microtime(true);
+        $stage_prune_stats = $this->prune_inventory_stage_to_live_upcs($stage_table, $live_table);
+        $phase_ms['prune_inventory_stage_to_live_upcs'] = $this->elapsed_ms($t_phase);
+
+        $t_phase = microtime(true);
         $join_updated_upc = $this->update_live_inventory_by_upc($live_table, $stage_table);
         $phase_ms['update_live_inventory_by_upc'] = $this->elapsed_ms($t_phase);
 
-        $t_phase = microtime(true);
-        $join_updated_id = $this->update_live_inventory_by_product_id($live_table, $stage_table);
-        $phase_ms['update_live_inventory_by_product_id'] = $this->elapsed_ms($t_phase);
-
-        $t_phase = microtime(true);
-        $join_updated_manufacturer = $this->update_live_inventory_by_manufacturer_id($live_table, $stage_table);
-        $phase_ms['update_live_inventory_by_manufacturer_id'] = $this->elapsed_ms($t_phase);
+        $join_updated_id = 0;
+        $phase_ms['update_live_inventory_by_product_id'] = '0.00';
+        $join_updated_manufacturer = 0;
+        $phase_ms['update_live_inventory_by_manufacturer_id'] = '0.00';
 
         $t_phase = microtime(true);
         $sig_approved_forced = SigDropshipApproval::apply_to_table('kinseys', $live_table);
@@ -1025,6 +1141,11 @@ final class KinseysProductImporterService
             'join_updated_id' => (int) max(0, $join_updated_id),
             'join_updated_manufacturer' => (int) max(0, $join_updated_manufacturer),
             'sig_approved_forced' => (int) $sig_approved_forced,
+            'live_ineligible_pruned' => (int) ($live_prune_stats['rows_deleted'] ?? 0),
+            'live_prune_stats' => $live_prune_stats,
+            'inventory_stage_pruned' => (int) ($stage_prune_stats['rows_deleted'] ?? 0),
+            'inventory_stage_prune_stats' => $stage_prune_stats,
+            'write_stats' => $write_stats,
             'stage_insert_profile' => $stage_insert_profile,
         ], $t_start, $mem_start, $phase_ms, $live_table, $stage_table);
     }
@@ -1091,7 +1212,6 @@ final class KinseysProductImporterService
 
         $sql = "
             CREATE TABLE {$stage_table} (
-                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
                 product_id VARCHAR(64) NOT NULL DEFAULT '',
                 manufacturer_id VARCHAR(128) NOT NULL DEFAULT '',
                 upc VARCHAR(32) NOT NULL DEFAULT '',
@@ -1100,15 +1220,15 @@ final class KinseysProductImporterService
                 quantity_on_hand INT UNSIGNED NOT NULL DEFAULT 0,
                 restock_eta VARCHAR(255) NULL,
                 warehouses_json LONGTEXT NULL,
-                PRIMARY KEY (id),
+                PRIMARY KEY (upc),
                 KEY product_id (product_id),
-                KEY manufacturer_id (manufacturer_id),
-                KEY upc (upc)
+                KEY manufacturer_id (manufacturer_id)
             ) {$charset};
         ";
 
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($sql);
+        $this->maybe_optimize_inventory_stage_table($stage_table);
 
         $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $stage_table));
         if ($exists !== $stage_table) {
@@ -1117,6 +1237,382 @@ final class KinseysProductImporterService
         }
 
         return $stage_table;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function prune_inventory_stage_to_live_upcs(string $stageTable, string $liveTable): array
+    {
+        $t_start = microtime(true);
+        global $wpdb;
+
+        try {
+            $before = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $deleted = $wpdb->query("
+                DELETE S
+                FROM {$stageTable} S
+                LEFT JOIN {$liveTable} L
+                    ON S.upc <> '' AND L.upc = S.upc
+                WHERE L.upc IS NULL
+            "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+            if ($deleted === false) {
+                return [
+                    'ok' => false,
+                    'error' => (string) $wpdb->last_error,
+                    'stage_table' => $stageTable,
+                    'live_table' => $liveTable,
+                    'rows_before' => $before,
+                    'rows_deleted' => 0,
+                    'rows_after' => $before,
+                    'elapsed_ms' => $this->elapsed_ms($t_start),
+                ];
+            }
+
+            $after = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'error' => $e->getMessage(),
+                'stage_table' => $stageTable,
+                'live_table' => $liveTable,
+                'rows_before' => 0,
+                'rows_deleted' => 0,
+                'rows_after' => 0,
+                'elapsed_ms' => $this->elapsed_ms($t_start),
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'stage_table' => $stageTable,
+            'live_table' => $liveTable,
+            'rows_before' => $before,
+            'rows_deleted' => (int) $deleted,
+            'rows_after' => $after,
+            'elapsed_ms' => $this->elapsed_ms($t_start),
+        ];
+    }
+
+    private function maybe_optimize_inventory_stage_table(string $stageTable): void
+    {
+        global $wpdb;
+
+        $primary_columns = $wpdb->get_col("SHOW INDEX FROM {$stageTable} WHERE Key_name = 'PRIMARY' ORDER BY Seq_in_index", 4); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($primary_columns === ['upc']) {
+            return;
+        }
+
+        $columns = $wpdb->get_results("SHOW COLUMNS FROM {$stageTable}", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if (!is_array($columns)) {
+            return;
+        }
+
+        $has_id = false;
+        $has_upc = false;
+        foreach ($columns as $column) {
+            $field = (string) ($column['Field'] ?? '');
+            if ($field === 'id') {
+                $has_id = true;
+            } elseif ($field === 'upc') {
+                $has_upc = true;
+            }
+        }
+
+        if (!$has_upc) {
+            return;
+        }
+
+        $wpdb->query("TRUNCATE TABLE {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $secondary_indexes = $wpdb->get_col("SHOW INDEX FROM {$stageTable} WHERE Key_name = 'upc'", 2); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if (!empty($secondary_indexes)) {
+            $wpdb->query("ALTER TABLE {$stageTable} DROP INDEX upc"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
+
+        $alter_parts = ['DROP PRIMARY KEY'];
+        if ($has_id) {
+            $alter_parts[] = 'DROP COLUMN id';
+        }
+        $alter_parts[] = 'ADD PRIMARY KEY (upc)';
+
+        $result = $wpdb->query("ALTER TABLE {$stageTable} " . implode(', ', $alter_parts)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($result === false) {
+            $this->log('Kinsey\'s inventory stage table UPC primary-key optimization failed.', [
+                'stage_table' => $stageTable,
+                'error' => (string) $wpdb->last_error,
+            ]);
+        }
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $rows
+     * @param array<string,mixed> $writeStats
+     * @param array<string,mixed> $profile
+     */
+    private function load_inventory_stage_rows(
+        string $stageTable,
+        array $rows,
+        string $tsvPath,
+        array $writeStats,
+        array &$profile
+    ): int {
+        global $wpdb;
+
+        $profile = [
+            'mode' => 'none',
+            'rows_loaded' => 0,
+        ];
+
+        $wpdb->query("TRUNCATE TABLE {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if ($tsvPath !== '' && (int) ($writeStats['rows_written'] ?? 0) > 0 && is_readable($tsvPath)) {
+            if ($this->can_use_load_data_local_infile()) {
+                $loaded = $this->load_inventory_stage_tsv_via_load_data($stageTable, $tsvPath, $profile);
+                if ($loaded >= 0) {
+                    return $loaded;
+                }
+
+                $this->log('Kinsey\'s inventory LOAD DATA path failed; falling back to PHP inventory batching.', [
+                    'file_path' => $tsvPath,
+                ]);
+                $wpdb->query("TRUNCATE TABLE {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            }
+
+            $loaded = $this->load_inventory_stage_tsv_via_php($stageTable, $tsvPath, $profile);
+            if ($loaded >= 0) {
+                return $loaded;
+            }
+
+            $this->log('Kinsey\'s inventory PHP TSV fallback failed; falling back to source-row batching.', [
+                'file_path' => $tsvPath,
+            ]);
+            $wpdb->query("TRUNCATE TABLE {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
+
+        $profile = [];
+        return $this->insert_inventory_stage_rows($stageTable, $rows, $profile);
+    }
+
+    private function load_inventory_stage_tsv_via_load_data(string $stageTable, string $filePath, array &$profile): int
+    {
+        global $wpdb;
+
+        $t_start = microtime(true);
+        $column_list = implode(
+            ', ',
+            array_map(
+                static fn(string $column): string => '`' . str_replace('`', '``', $column) . '`',
+                self::INVENTORY_STAGE_COLUMNS
+            )
+        );
+
+        $sql = "
+            LOAD DATA LOCAL INFILE %s
+            INTO TABLE {$stageTable}
+            CHARACTER SET utf8mb4
+            FIELDS TERMINATED BY '\\t' ENCLOSED BY '\"' ESCAPED BY '\\\\'
+            LINES TERMINATED BY '\\n'
+            ({$column_list})
+        ";
+
+        try {
+            $prepared = $wpdb->prepare($sql, $filePath);
+            $result = $wpdb->query($prepared);
+            if ($result === false) {
+                $profile = [
+                    'mode' => 'load_data',
+                    'rows_loaded' => 0,
+                    'error' => (string) $wpdb->last_error,
+                    'elapsed_ms' => $this->elapsed_ms($t_start),
+                ];
+                $this->log('Kinsey\'s inventory LOAD DATA query failed.', [
+                    'error' => (string) $wpdb->last_error,
+                    'file_path' => $filePath,
+                ]);
+                return -1;
+            }
+        } catch (\Throwable $e) {
+            $profile = [
+                'mode' => 'load_data',
+                'rows_loaded' => 0,
+                'error' => $e->getMessage(),
+                'elapsed_ms' => $this->elapsed_ms($t_start),
+            ];
+            $this->log('Kinsey\'s inventory LOAD DATA exception.', [
+                'error' => $e->getMessage(),
+                'file_path' => $filePath,
+            ]);
+            return -1;
+        }
+
+        $wpdb->query("DELETE FROM {$stageTable} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $profile = [
+            'mode' => 'load_data',
+            'rows_loaded' => $rows,
+            'elapsed_ms' => $this->elapsed_ms($t_start),
+        ];
+
+        return $rows;
+    }
+
+    private function load_inventory_stage_tsv_via_php(string $stageTable, string $filePath, array &$profile): int
+    {
+        $t_start = microtime(true);
+        $handle = fopen($filePath, 'r');
+        if (!$handle) {
+            $profile = [
+                'mode' => 'php_tsv',
+                'rows_loaded' => 0,
+                'error' => 'fopen failed',
+                'elapsed_ms' => $this->elapsed_ms($t_start),
+            ];
+            return -1;
+        }
+
+        $rows = [];
+        $lines_seen = 0;
+        while (($values = fgetcsv($handle, 0, "\t", '"', '\\')) !== false) {
+            $lines_seen++;
+            if (!is_array($values) || empty($values)) {
+                continue;
+            }
+
+            $values = array_pad($values, count(self::INVENTORY_STAGE_COLUMNS), '');
+            if (count($values) > count(self::INVENTORY_STAGE_COLUMNS)) {
+                $values = array_slice($values, 0, count(self::INVENTORY_STAGE_COLUMNS));
+            }
+
+            $row = [];
+            foreach (self::INVENTORY_STAGE_COLUMNS as $index => $column) {
+                $row[$column] = $values[$index] ?? '';
+            }
+            $rows[] = $row;
+        }
+        fclose($handle);
+
+        $insert_profile = [];
+        $loaded = $this->insert_inventory_stage_rows($stageTable, $rows, $insert_profile);
+        $profile = array_merge($insert_profile, [
+            'mode' => 'php_tsv',
+            'lines_seen' => $lines_seen,
+            'rows_loaded' => $loaded,
+            'elapsed_ms' => $this->elapsed_ms($t_start),
+        ]);
+
+        return $loaded;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $rows
+     * @return array<string,mixed>
+     */
+    private function write_inventory_stage_tsv(array $rows, string $tsvPath): array
+    {
+        $t_start = microtime(true);
+        $handle = fopen($tsvPath, 'w');
+        if (!$handle) {
+            return [
+                'tsv_path' => $tsvPath,
+                'rows_seen' => count($rows),
+                'rows_written' => 0,
+                'rows_skipped_empty_upc' => 0,
+                'rows_skipped_dupe_upc' => 0,
+                'write_failures' => 0,
+                'write_error' => 'fopen failed',
+                'write_ms' => $this->elapsed_ms($t_start),
+            ];
+        }
+
+        $rows_written = 0;
+        $skipped_empty_upc = 0;
+        $skipped_dupe_upc = 0;
+        $write_failures = 0;
+        $seen_upcs = [];
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $upc = preg_replace('/\D+/', '', (string) ($row['upc'] ?? ''));
+            $upc = is_string($upc) ? trim($upc) : '';
+            if ($upc === '') {
+                $skipped_empty_upc++;
+                continue;
+            }
+
+            if (isset($seen_upcs[$upc])) {
+                $skipped_dupe_upc++;
+                continue;
+            }
+            $seen_upcs[$upc] = true;
+
+            $quantity = isset($row['quantityOnHand']) && is_numeric($row['quantityOnHand'])
+                ? max(0, (int) floor((float) $row['quantityOnHand']))
+                : 0;
+
+            $values = [
+                trim((string) ($row['productId'] ?? '')),
+                trim((string) ($row['manufacturerId'] ?? '')),
+                $upc,
+                $this->money_string((string) ($row['price'] ?? '')),
+                $this->money_string((string) ($row['map'] ?? '')),
+                (string) $quantity,
+                trim((string) ($row['RestockETA'] ?? '')),
+            ];
+
+            $written = fputcsv($handle, $values, "\t", '"', '\\');
+            if ($written === false) {
+                $write_failures++;
+                continue;
+            }
+
+            $rows_written++;
+        }
+
+        fclose($handle);
+        clearstatcache(true, $tsvPath);
+
+        return [
+            'tsv_path' => $tsvPath,
+            'tsv_bytes' => file_exists($tsvPath) ? (int) filesize($tsvPath) : 0,
+            'rows_seen' => count($rows),
+            'rows_written' => $rows_written,
+            'rows_skipped_empty_upc' => $skipped_empty_upc,
+            'rows_skipped_dupe_upc' => $skipped_dupe_upc,
+            'write_failures' => $write_failures,
+            'write_ms' => $this->elapsed_ms($t_start),
+        ];
+    }
+
+    private function resolve_inventory_tsv_path(): string
+    {
+        $uploads = wp_upload_dir();
+        $base_dir = rtrim((string) ($uploads['basedir'] ?? ''), '/\\');
+        if ($base_dir === '') {
+            return '';
+        }
+
+        $dir = $base_dir . '/fflhub/kinseys';
+        if (!is_dir($dir) && !wp_mkdir_p($dir)) {
+            $this->log('Failed to create Kinsey\'s inventory TSV directory.', [
+                'dir' => $dir,
+            ]);
+            return '';
+        }
+
+        if (!is_dir($dir) || !is_writable($dir)) {
+            $this->log('Kinsey\'s inventory TSV directory is not writable.', [
+                'dir' => $dir,
+            ]);
+            return '';
+        }
+
+        return $dir . '/inventory_' . gmdate('Ymd_His') . '.tsv';
     }
 
     /**
@@ -1132,9 +1628,11 @@ final class KinseysProductImporterService
         $placeholders = [];
         $loaded = 0;
         $batch_rows = 0;
+        $seen_upcs = [];
         $profile = [
             'rows_seen' => 0,
             'rows_skipped_empty_ids' => 0,
+            'rows_skipped_dupe_upc' => 0,
             'batches' => 0,
             'rows_loaded' => 0,
             'max_batch_rows' => 0,
@@ -1154,7 +1652,7 @@ final class KinseysProductImporterService
             $profile['max_batch_rows'] = max((int) $profile['max_batch_rows'], $batch_rows);
 
             $t_insert = microtime(true);
-            $sql = "INSERT INTO {$stageTable} (product_id, manufacturer_id, upc, price, map_price, quantity_on_hand, restock_eta, warehouses_json) VALUES " . implode(', ', $placeholders);
+            $sql = "INSERT INTO {$stageTable} (product_id, manufacturer_id, upc, price, map_price, quantity_on_hand, restock_eta) VALUES " . implode(', ', $placeholders);
             $result = $wpdb->query($wpdb->prepare($sql, $values));
             $elapsed_ms = (microtime(true) - $t_insert) * 1000.0;
             $insert_total_ms += $elapsed_ms;
@@ -1178,29 +1676,35 @@ final class KinseysProductImporterService
         foreach ($rows as $row) {
             $profile['rows_seen'] = (int) $profile['rows_seen'] + 1;
 
-            $product_id = trim((string) ($row['productId'] ?? ''));
-            $manufacturer_id = trim((string) ($row['manufacturerId'] ?? ''));
+            $product_id = trim((string) ($row['productId'] ?? $row['product_id'] ?? ''));
+            $manufacturer_id = trim((string) ($row['manufacturerId'] ?? $row['manufacturer_id'] ?? ''));
             $upc = preg_replace('/\D+/', '', (string) ($row['upc'] ?? ''));
             $upc = is_string($upc) ? trim($upc) : '';
 
-            if ($product_id === '' && $manufacturer_id === '' && $upc === '') {
+            if ($upc === '') {
                 $profile['rows_skipped_empty_ids'] = (int) $profile['rows_skipped_empty_ids'] + 1;
                 continue;
             }
 
-            $quantity = isset($row['quantityOnHand']) && is_numeric($row['quantityOnHand'])
-                ? max(0, (int) floor((float) $row['quantityOnHand']))
+            if (isset($seen_upcs[$upc])) {
+                $profile['rows_skipped_dupe_upc'] = (int) $profile['rows_skipped_dupe_upc'] + 1;
+                continue;
+            }
+            $seen_upcs[$upc] = true;
+
+            $raw_quantity = $row['quantityOnHand'] ?? $row['quantity_on_hand'] ?? null;
+            $quantity = is_numeric($raw_quantity)
+                ? max(0, (int) floor((float) $raw_quantity))
                 : 0;
 
-            $placeholders[] = '(%s, %s, %s, %s, %s, %d, %s, %s)';
+            $placeholders[] = '(%s, %s, %s, %s, %s, %d, %s)';
             $values[] = $product_id;
             $values[] = $manufacturer_id;
             $values[] = $upc;
             $values[] = $this->money_string((string) ($row['price'] ?? ''));
-            $values[] = $this->money_string((string) ($row['map'] ?? ''));
+            $values[] = $this->money_string((string) ($row['map'] ?? $row['map_price'] ?? ''));
             $values[] = $quantity;
-            $values[] = trim((string) ($row['RestockETA'] ?? ''));
-            $values[] = $this->encode_json($row['Warehouses'] ?? []);
+            $values[] = trim((string) ($row['RestockETA'] ?? $row['restock_eta'] ?? ''));
             ++$batch_rows;
 
             if (count($placeholders) >= $batch_size) {
@@ -1236,10 +1740,10 @@ final class KinseysProductImporterService
             $liveTable,
             $stageTable,
             "S.product_id <> '' AND L.kinseys_product_id = S.product_id",
-            "LEFT JOIN {$stageTable} SU ON SU.upc <> '' AND L.upc = SU.upc"
+            "LEFT JOIN {$stageTable} SU ON SU.upc <> '' AND L.upc = SU.upc",
+            "SU.upc IS NULL"
         );
 
-        $sql = str_replace('WHERE', 'WHERE SU.id IS NULL AND', $sql);
         $result = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         return is_numeric($result) ? (int) $result : 0;
     }
@@ -1253,16 +1757,25 @@ final class KinseysProductImporterService
             $stageTable,
             "S.manufacturer_id <> '' AND L.vendor_item_number = S.manufacturer_id",
             "LEFT JOIN {$stageTable} SU ON SU.upc <> '' AND L.upc = SU.upc
-             LEFT JOIN {$stageTable} SI ON SI.product_id <> '' AND L.kinseys_product_id = SI.product_id"
+             LEFT JOIN {$stageTable} SI ON SI.product_id <> '' AND L.kinseys_product_id = SI.product_id",
+            "SU.upc IS NULL AND SI.product_id IS NULL"
         );
 
-        $sql = str_replace('WHERE', 'WHERE SU.id IS NULL AND SI.id IS NULL AND', $sql);
         $result = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         return is_numeric($result) ? (int) $result : 0;
     }
 
-    private function live_update_sql(string $liveTable, string $stageTable, string $joinCondition, string $extraJoin): string
+    private function live_update_sql(
+        string $liveTable,
+        string $stageTable,
+        string $joinCondition,
+        string $extraJoin,
+        string $guardCondition = ''
+    ): string
     {
+        $guard = trim($guardCondition);
+        $guard_sql = $guard !== '' ? "({$guard}) AND" : '';
+
         return "
             UPDATE {$liveTable} L
             INNER JOIN {$stageTable} S
@@ -1273,15 +1786,19 @@ final class KinseysProductImporterService
                 L.allocation_status = CASE WHEN S.quantity_on_hand > 0 THEN 'in_stock' ELSE 'out_of_stock' END,
                 L.distributor_price = CASE WHEN COALESCE(S.price, '') <> '' THEN S.price ELSE L.distributor_price END,
                 L.retail_map = CASE WHEN COALESCE(S.map_price, '') <> '' THEN S.map_price ELSE L.retail_map END,
-                L.restock_eta = S.restock_eta,
-                L.warehouses_json = S.warehouses_json
+                L.restock_eta = S.restock_eta
             WHERE
-                COALESCE(L.inventory_quantity, '') <> CAST(S.quantity_on_hand AS CHAR)
-                OR COALESCE(L.allocation_status, '') <> CASE WHEN S.quantity_on_hand > 0 THEN 'in_stock' ELSE 'out_of_stock' END
-                OR (COALESCE(S.price, '') <> '' AND COALESCE(L.distributor_price, '') <> S.price)
-                OR (COALESCE(S.map_price, '') <> '' AND COALESCE(L.retail_map, '') <> S.map_price)
-                OR COALESCE(L.restock_eta, '') <> COALESCE(S.restock_eta, '')
-                OR COALESCE(L.warehouses_json, '') <> COALESCE(S.warehouses_json, '')
+                {$guard_sql}
+                L.inactive_flag = 0
+                AND L.blocked_flag = 0
+                AND
+                (
+                    COALESCE(L.inventory_quantity, '') <> CAST(S.quantity_on_hand AS CHAR)
+                    OR COALESCE(L.allocation_status, '') <> CASE WHEN S.quantity_on_hand > 0 THEN 'in_stock' ELSE 'out_of_stock' END
+                    OR (COALESCE(S.price, '') <> '' AND COALESCE(L.distributor_price, '') <> S.price)
+                    OR (COALESCE(S.map_price, '') <> '' AND COALESCE(L.retail_map, '') <> S.map_price)
+                    OR COALESCE(L.restock_eta, '') <> COALESCE(S.restock_eta, '')
+                )
         ";
     }
 
