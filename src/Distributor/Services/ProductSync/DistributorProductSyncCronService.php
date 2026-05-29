@@ -341,8 +341,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $this->profile('get_post_status', $t0, array('product_id' => $product_id, 'status' => (string) $post_status));
 
         if ('trash' === $post_status) {
-            $this->bump_last_sync_meta($product_id, $now_mysql);
-
             $this->profile('TOTAL product', $t_start, array(
                 'product_id' => $product_id,
                 'outcome'    => 'SKIP_TRASH',
@@ -376,8 +374,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $this->profile('get_post_meta_upc', $t0, array('product_id' => $product_id, 'has_upc' => ($upc !== '')));
 
         if ($upc === '') {
-            $this->bump_last_sync_meta($product_id, $now_mysql);
-
             $this->profile('TOTAL product', $t_start, array(
                 'product_id' => $product_id,
                 'outcome'    => 'MISSING_UPC',
@@ -417,8 +413,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
         ));
 
         if (! ($lookup instanceof UpcLookupResult)) {
-            $this->bump_last_sync_meta($product_id, $now_mysql);
-
             $this->profile('TOTAL product', $t_start, array(
                 'product_id' => $product_id,
                 'outcome'    => 'LOOKUP_INVALID',
@@ -467,7 +461,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
             if ($needs_save) {
                 $product = $this->load_product_for_save($product_id);
                 if (!($product instanceof WC_Product)) {
-                    $this->bump_last_sync_meta($product_id, $now_mysql);
                     return $this->product_load_failed_result($product_id, $upc, $t_lookup, $t_start);
                 }
 
@@ -476,8 +469,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 $product->set_stock_status($desired_status);
                 $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
                 $product->save();
-            } else {
-                $this->bump_last_sync_meta($product_id, $now_mysql);
             }
 
             $t_write = $this->ms_since($t0);
@@ -526,8 +517,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
         ));
 
         if (! ($selected_offer instanceof DistributorOffer)) {
-            $this->bump_last_sync_meta($product_id, $now_mysql);
-
             $this->profile('TOTAL product', $t_start, array(
                 'product_id' => $product_id,
                 'outcome'    => 'NO_SELECTED_OFFER',
@@ -538,8 +527,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
 
         $selected_payload = $selected_offer->product;
         if (! ($selected_payload instanceof DistributorProductPayload)) {
-            $this->bump_last_sync_meta($product_id, $now_mysql);
-
             $this->profile('TOTAL product', $t_start, array(
                 'product_id' => $product_id,
                 'outcome'    => 'BAD_PAYLOAD',
@@ -587,7 +574,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
             if ($needs_save) {
                 $product = $this->load_product_for_save($product_id);
                 if (!($product instanceof WC_Product)) {
-                    $this->bump_last_sync_meta($product_id, $now_mysql);
                     return $this->product_load_failed_result($product_id, $upc, $t_lookup, $t_start);
                 }
 
@@ -596,7 +582,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 $product->set_stock_status($desired_status);
                 $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
                 $product->save();
-            } else {
+            } elseif ($brand_changed) {
                 $this->bump_last_sync_meta($product_id, $now_mysql);
             }
 
@@ -677,7 +663,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
             if ($needs_save) {
                 $product = $this->load_product_for_save($product_id);
                 if (!($product instanceof WC_Product)) {
-                    $this->bump_last_sync_meta($product_id, $now_mysql);
                     return $this->product_load_failed_result($product_id, $upc, $t_lookup, $t_start);
                 }
 
@@ -686,7 +671,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 $product->set_stock_status($desired_status);
                 $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
                 $product->save();
-            } else {
+            } elseif ($brand_changed) {
                 $this->bump_last_sync_meta($product_id, $now_mysql);
             }
 
@@ -778,7 +763,6 @@ final class DistributorProductSyncCronService extends AbstractCronService
         if ($needs_product_save) {
             $product = $this->load_product_for_save($product_id);
             if (!($product instanceof WC_Product)) {
-                $this->bump_last_sync_meta($product_id, $now_mysql);
                 return $this->product_load_failed_result($product_id, $upc, $t_lookup, $t_start);
             }
 
@@ -803,7 +787,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 );
             }
 
-            // Helper already sets LAST_SYNC meta, but we also set it here to guarantee rotation.
+            // LAST_SYNC should move only when something actually changed.
             $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
             $product->save();
         } else {
@@ -819,8 +803,9 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 );
             }
 
-            // Keep rotation without heavy save() so product.updated webhooks do not fire for internal bookkeeping.
-            $this->bump_last_sync_meta($product_id, $now_mysql);
+            if ($meta_changed || $brand_changed) {
+                $this->bump_last_sync_meta($product_id, $now_mysql);
+            }
         }
 
         $changes = [];
