@@ -20,6 +20,7 @@ final class GunDealsFeedGenerator
     private const FREE_SHIPPING_LABEL = 'Free Shipping';
     private const PRICE_HIDE_EMAIL_FOR_QUOTE = 'Email Form for Best Price';
     private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price';
+    private const HIDDEN_PRICE_FEED_MULTIPLIER = 0.75;
     private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;
     private const BATCH_SIZE = 250;
 
@@ -514,8 +515,10 @@ final class GunDealsFeedGenerator
     private function build_offer_row(array $source_row, array $term_maps, array $image_url_map): array
     {
         $product_id = (int) ($source_row['product_id'] ?? 0);
-        $price = $this->resolve_price_from_row($source_row);
-        $shipping_charge = $price > 0.0 ? $this->customer_shipping_charge_for_row($source_row, $price) : 0.0;
+        $actual_price = $this->resolve_price_from_row($source_row);
+        $price_hide = $this->resolve_price_hide_from_row($source_row);
+        $feed_price = $this->resolve_feed_price($actual_price, $price_hide);
+        $shipping_charge = $actual_price > 0.0 ? $this->customer_shipping_charge_for_row($source_row, $actual_price) : 0.0;
 
         $row = [
             'product_id' => $product_id,
@@ -524,8 +527,8 @@ final class GunDealsFeedGenerator
             'upc' => $this->resolve_upc_from_row($source_row),
             'brand' => $this->resolve_brand_from_maps($product_id, $term_maps),
             'category' => implode(', ', $term_maps['categories'][$product_id] ?? []),
-            'price' => $price > 0.0 ? number_format($price, 2, '.', '') : '',
-            'price_hide' => $this->resolve_price_hide_from_row($source_row),
+            'price' => $feed_price > 0.0 ? number_format($feed_price, 2, '.', '') : '',
+            'price_hide' => $price_hide,
             'stock_status' => $this->clean_text((string) ($source_row['stock_status'] ?? '')),
             'shipping_info' => $this->format_shipping_info($shipping_charge),
             'shipping_charge' => number_format(max(0.0, $shipping_charge), 2, '.', ''),
@@ -683,6 +686,19 @@ final class GunDealsFeedGenerator
             $row['lookup_min_price'] ?? null,
             $row['lookup_max_price'] ?? null,
         ]) ?? 0.0;
+    }
+
+    private function resolve_feed_price(float $actual_price, string $price_hide): float
+    {
+        if ($actual_price <= 0.0) {
+            return 0.0;
+        }
+
+        if (trim($price_hide) === '') {
+            return $actual_price;
+        }
+
+        return round($actual_price * self::HIDDEN_PRICE_FEED_MULTIPLIER, 2);
     }
 
     /**
