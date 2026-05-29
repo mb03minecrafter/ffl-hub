@@ -21,6 +21,7 @@ final class KinseysProductImporterService
 
     private DoubleBufferedProductTable $table;
     private KinseysProductParser $parser;
+    private string $last_catalog_tsv_path = '';
 
     public function __construct(DoubleBufferedProductTable $table, ?KinseysProductParser $parser = null)
     {
@@ -49,6 +50,7 @@ final class KinseysProductImporterService
         $t_phase = microtime(true);
         $columns = $this->table->get_schema()->get_insert_columns();
         $tsv_path = $this->resolve_catalog_tsv_path();
+        $this->last_catalog_tsv_path = $tsv_path;
         $phase_ms['resolve_import_inputs'] = $this->elapsed_ms($t_phase);
 
         $this->log('Kinsey\'s product import start.', [
@@ -109,6 +111,18 @@ final class KinseysProductImporterService
         $this->log('Kinsey\'s product import complete.', $ctx);
 
         return (int) $count;
+    }
+
+    public function cleanup_last_catalog_tsv(): bool
+    {
+        $path = $this->last_catalog_tsv_path;
+        $this->last_catalog_tsv_path = '';
+
+        if ($path === '' || !is_file($path)) {
+            return false;
+        }
+
+        return @unlink($path);
     }
 
     /**

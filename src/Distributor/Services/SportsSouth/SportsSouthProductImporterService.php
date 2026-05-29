@@ -22,6 +22,8 @@ final class SportsSouthProductImporterService
 
     private DoubleBufferedProductTable $table;
     private SportsSouthProductParser $parser;
+    /** @var string[] */
+    private array $last_artifact_paths = [];
 
     public function __construct(DoubleBufferedProductTable $table, ?SportsSouthProductParser $parser = null)
     {
@@ -37,6 +39,7 @@ final class SportsSouthProductImporterService
     {
         $t_start = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $this->last_artifact_paths = [];
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
@@ -51,6 +54,9 @@ final class SportsSouthProductImporterService
 
         $columns = $this->table->get_schema()->get_insert_columns();
         $tsv_path = $this->catalog_tsv_path();
+        if ($tsv_path !== '') {
+            $this->last_artifact_paths[] = $tsv_path;
+        }
         if ($tsv_path === '' || empty($columns)) {
             return $this->import_catalog_file_via_batches($xmlFilePath, $t_start, $mem_start, $brandMap, $categoryMap);
         }
@@ -83,6 +89,23 @@ final class SportsSouthProductImporterService
         $this->log('Sports South catalog import complete.', $ctx);
 
         return (int) $count;
+    }
+
+    public function cleanup_last_artifacts(): int
+    {
+        $deleted = 0;
+        foreach (array_values(array_unique($this->last_artifact_paths)) as $path) {
+            if (!is_string($path) || $path === '' || !is_file($path)) {
+                continue;
+            }
+
+            if (@unlink($path)) {
+                $deleted++;
+            }
+        }
+
+        $this->last_artifact_paths = [];
+        return $deleted;
     }
 
     public function apply_onhand_delta_file_to_live(string $xmlFilePath, bool $treatQuantityAsDelta = true): array

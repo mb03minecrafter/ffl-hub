@@ -256,12 +256,17 @@ final class KinseysProductCronService extends AbstractTableCronService
         update_option('fflhub_kinseys_product_last_update_count', $publish_count, false);
         delete_option('fflhub_kinseys_product_last_error');
 
+        $deleted_artifacts = $importer->cleanup_last_catalog_tsv() ? 1 : 0;
+        $deleted_old_artifacts = $this->cleanup_old_catalog_tsvs();
+
         $this->log('Kinsey\'s product import complete.', [
             'products_seen' => count($product_rows),
             'rows_imported' => $publish_count,
             'rows_imported_before_prune' => (int) $imported,
             'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
             'new_live' => $new_live,
+            'deleted_artifacts' => (int) $deleted_artifacts,
+            'deleted_old_artifacts' => (int) $deleted_old_artifacts,
         ]);
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
             'products_seen' => count($product_rows),
@@ -270,6 +275,8 @@ final class KinseysProductCronService extends AbstractTableCronService
             'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
             'old_live' => $table_ctx['live_table'],
             'new_live' => $new_live,
+            'deleted_artifacts' => (int) $deleted_artifacts,
+            'deleted_old_artifacts' => (int) $deleted_old_artifacts,
         ]);
     }
 
@@ -343,6 +350,48 @@ final class KinseysProductCronService extends AbstractTableCronService
                 'staging_table' => '',
             ];
         }
+    }
+
+    private function cleanup_old_catalog_tsvs(): int
+    {
+        $uploads = wp_upload_dir();
+        $base_dir = rtrim((string) ($uploads['basedir'] ?? ''), '/\\');
+        if ($base_dir === '') {
+            return 0;
+        }
+
+        $dir = $base_dir . '/fflhub/kinseys';
+        if (!is_dir($dir)) {
+            return 0;
+        }
+
+        $retention = (int) apply_filters(
+            'fflhub_kinseys_success_artifact_retention_seconds',
+            DAY_IN_SECONDS
+        );
+        $cutoff = time() - max(HOUR_IN_SECONDS, $retention);
+        $matches = glob($dir . '/catalog_*.tsv');
+        if (!is_array($matches)) {
+            return 0;
+        }
+
+        $deleted = 0;
+        foreach ($matches as $path) {
+            if (!is_file($path)) {
+                continue;
+            }
+
+            $mtime = (int) @filemtime($path);
+            if ($mtime > 0 && $mtime > $cutoff) {
+                continue;
+            }
+
+            if (@unlink($path)) {
+                $deleted++;
+            }
+        }
+
+        return $deleted;
     }
 
     /**

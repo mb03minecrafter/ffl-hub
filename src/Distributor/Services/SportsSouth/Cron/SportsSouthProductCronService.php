@@ -21,6 +21,9 @@ final class SportsSouthProductCronService extends AbstractTableCronService
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][SportsSouthProductCron]';
 
+    /** @var string[] */
+    private array $artifact_paths = [];
+
     public function __construct(DoubleBufferedProductTable $table)
     {
         parent::__construct($table);
@@ -50,6 +53,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
     {
         $t_start = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $this->artifact_paths = [];
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
@@ -123,6 +127,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             $this->finalize_run($t_start, $mem_start, 'ERROR (DailyItemUpdate failed)');
             return;
         }
+        $this->remember_artifact_paths($xml_path, (string) ($response['raw_path'] ?? ''));
 
         update_option('fflhub_sports_south_fulfillment_last_download', current_time('mysql'), false);
         update_option('fflhub_sports_south_fulfillment_last_download_path', $xml_path, false);
@@ -161,9 +166,15 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         update_option('fflhub_sports_south_fulfillment_last_stage', 'success', false);
         delete_option('fflhub_sports_south_fulfillment_last_error');
 
+        $deleted_artifacts = $importer->cleanup_last_artifacts();
+        $deleted_artifacts += $this->cleanup_artifact_paths($this->artifact_paths);
+        $deleted_old_artifacts = $this->cleanup_old_generated_artifacts($this->uploads_subdir());
+
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
             'rows_imported' => (int) $count,
             'new_live' => (string) $new_live,
+            'deleted_artifacts' => (int) $deleted_artifacts,
+            'deleted_old_artifacts' => (int) $deleted_old_artifacts,
         ]);
     }
 
@@ -210,6 +221,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             ]);
             return [];
         }
+        $this->remember_artifact_paths($brand_path, (string) ($response['raw_path'] ?? ''));
 
         update_option('fflhub_sports_south_fulfillment_last_brand_download', current_time('mysql'), false);
         update_option('fflhub_sports_south_fulfillment_last_brand_download_path', $brand_path, false);
@@ -265,6 +277,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             ]);
             return [];
         }
+        $this->remember_artifact_paths($category_path, (string) ($response['raw_path'] ?? ''));
 
         update_option('fflhub_sports_south_fulfillment_last_category_download', current_time('mysql'), false);
         update_option('fflhub_sports_south_fulfillment_last_category_download_path', $category_path, false);
@@ -316,6 +329,83 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         }
 
         return $dir;
+    }
+
+    private function remember_artifact_paths(string ...$paths): void
+    {
+        foreach ($paths as $path) {
+            $path = trim($path);
+            if ($path !== '') {
+                $this->artifact_paths[] = $path;
+            }
+        }
+    }
+
+    /**
+     * @param string[] $paths
+     */
+    private function cleanup_artifact_paths(array $paths): int
+    {
+        $deleted = 0;
+        foreach (array_values(array_unique($paths)) as $path) {
+            if (!is_string($path) || $path === '' || !is_file($path)) {
+                continue;
+            }
+
+            if (@unlink($path)) {
+                $deleted++;
+            }
+        }
+
+        return $deleted;
+    }
+
+    private function cleanup_old_generated_artifacts(string $dir): int
+    {
+        if ($dir === '' || !is_dir($dir)) {
+            return 0;
+        }
+
+        $retention = (int) apply_filters(
+            'fflhub_sports_south_success_artifact_retention_seconds',
+            DAY_IN_SECONDS
+        );
+        $cutoff = time() - max(HOUR_IN_SECONDS, $retention);
+        $deleted = 0;
+
+        $patterns = [
+            'daily_item_update_*.xml',
+            'daily_item_update_*.xml.raw-response.xml',
+            'daily_item_update_catalog_*.tsv',
+            'brand_update_*.xml',
+            'brand_update_*.xml.raw-response.xml',
+            'category_update_*.xml',
+            'category_update_*.xml.raw-response.xml',
+        ];
+
+        foreach ($patterns as $pattern) {
+            $matches = glob(rtrim($dir, '/\\') . '/' . $pattern);
+            if (!is_array($matches)) {
+                continue;
+            }
+
+            foreach ($matches as $path) {
+                if (!is_file($path)) {
+                    continue;
+                }
+
+                $mtime = (int) @filemtime($path);
+                if ($mtime > 0 && $mtime > $cutoff) {
+                    continue;
+                }
+
+                if (@unlink($path)) {
+                    $deleted++;
+                }
+            }
+        }
+
+        return $deleted;
     }
 
     /**
