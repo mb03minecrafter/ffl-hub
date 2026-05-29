@@ -16,8 +16,8 @@ final class GunDealsFeedGenerator
     private const DEBUG_CONST = 'FFLHUB_GUNDEALS_FEED_DEBUG';
     private const LOG_PREFIX = '[FFLHub][GunDealsFeed]';
     private const XML_NAMESPACE = 'https://api.gunengine.com/ingest/XMLSchema/feed/v2/offers';
-    private const NO_SALES_TAX_LABEL = 'No Sales Tax';
-    private const FREE_SHIPPING_LABEL = 'Free Shipping';
+    private const FREE_SHIPPING_LABEL = 'Free Shipping 🚚';
+    private const COMPETITOR_FEE_LABEL = '🚨People Above Us? Taxes & Fees, NOT US!';
     private const PRICE_HIDE_EMAIL_FOR_QUOTE = 'Email Form for Best Price';
     private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price';
     private const HIDDEN_PRICE_FEED_MULTIPLIER = 0.75;
@@ -908,9 +908,9 @@ final class GunDealsFeedGenerator
     {
         $shipping = $shipping_charge <= 0.0001
             ? self::FREE_SHIPPING_LABEL
-            : '$' . number_format($shipping_charge, 2, '.', '') . ' Shipping';
+            : '$' . number_format($shipping_charge, 2, '.', '') . ' Shipping 🚚';
 
-        return $shipping . ' | ' . self::NO_SALES_TAX_LABEL;
+        return $shipping . '|' . self::COMPETITOR_FEE_LABEL;
     }
 
     private function free_shipping_cost_threshold(float $profit_net_total, float $max_profit_spend_percent): float
