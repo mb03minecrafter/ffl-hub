@@ -223,10 +223,10 @@ do {
             continue;
         }
 
-        $stats['scanned']++;
-        if ($limit > 0 && $stats['scanned'] > $limit) {
+        if ($limit > 0 && $stats['scanned'] >= $limit) {
             break 2;
         }
+        $stats['scanned']++;
 
         $brand_names = fflhub_map_policy_fix_brand_names($product_id);
         $brand_policy = fflhub_map_policy_fix_brand_policy($brand_names);
@@ -291,7 +291,8 @@ do {
         if (isset($stats[$action])) {
             $stats[$action]++;
         }
-        if (isset($changes['_price']) || isset($changes['_regular_price']) || isset($changes['_sale_price'])) {
+        $price_changed = isset($changes['_price']) || isset($changes['_regular_price']) || isset($changes['_sale_price']);
+        if ($price_changed) {
             $stats['price_updates']++;
         }
 
@@ -318,6 +319,9 @@ do {
             clean_post_cache($product_id);
             if (function_exists('wc_delete_product_transients')) {
                 wc_delete_product_transients($product_id);
+            }
+            if ($price_changed && function_exists('wc_update_product_lookup_tables')) {
+                wc_update_product_lookup_tables($product_id);
             }
         }
 
