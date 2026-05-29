@@ -793,13 +793,15 @@ final class DistributorProductSyncCronService extends AbstractCronService
                 $product->set_sale_price($desired_sale_price);
             }
 
-            $meta_changed = $meta_changed || (bool) DistributorProductHelper::update_fflhub_meta_from_payload_for_sync(
-                $product,
-                $selected_dist_id,
-                $selected_payload,
-                (float) $computed_price_for_meta,
-                $offers
-            );
+            if ($meta_changed) {
+                DistributorProductHelper::update_fflhub_meta_from_payload_for_sync(
+                    $product,
+                    $selected_dist_id,
+                    $selected_payload,
+                    (float) $computed_price_for_meta,
+                    $offers
+                );
+            }
 
             // Helper already sets LAST_SYNC meta, but we also set it here to guarantee rotation.
             $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, $now_mysql);
