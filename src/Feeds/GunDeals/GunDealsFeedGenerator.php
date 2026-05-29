@@ -18,7 +18,7 @@ final class GunDealsFeedGenerator
     private const XML_NAMESPACE = 'https://api.gunengine.com/ingest/XMLSchema/feed/v2/offers';
     private const NO_SALES_TAX_LABEL = 'No Sales Tax';
     private const FREE_SHIPPING_LABEL = 'Free Shipping';
-    private const PRICE_HIDE_MAP = 'MAP';
+    private const PRICE_HIDE_EMAIL_FOR_QUOTE = 'Email Form for Best Price';
     private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price';
     private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;
     private const BATCH_SIZE = 250;
@@ -703,7 +703,7 @@ final class GunDealsFeedGenerator
         }
 
         if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
-            return self::PRICE_HIDE_MAP;
+            return self::PRICE_HIDE_EMAIL_FOR_QUOTE;
         }
 
         return '';
