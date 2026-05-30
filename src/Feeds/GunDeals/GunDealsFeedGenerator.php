@@ -516,7 +516,7 @@ final class GunDealsFeedGenerator
         $product_id = (int) ($source_row['product_id'] ?? 0);
         $actual_price = $this->resolve_price_from_row($source_row);
         $price_hide = $this->resolve_price_hide_from_row($source_row);
-        $feed_price = $this->resolve_feed_price($actual_price);
+        $feed_price = $this->resolve_feed_price($actual_price, $source_row);
         $shipping_charge = $actual_price > 0.0 ? $this->customer_shipping_charge_for_row($source_row, $actual_price) : 0.0;
 
         $row = [
@@ -689,10 +689,17 @@ final class GunDealsFeedGenerator
         ]) ?? 0.0;
     }
 
-    private function resolve_feed_price(float $actual_price): float
+    /**
+     * @param array<string,mixed> $row
+     */
+    private function resolve_feed_price(float $actual_price, array $row): float
     {
         if ($actual_price <= 0.0) {
             return 0.0;
+        }
+
+        if ($this->is_no_email_no_add_to_cart_policy_row($row)) {
+            return max(0.01, $actual_price - 0.01);
         }
 
         return $actual_price;
