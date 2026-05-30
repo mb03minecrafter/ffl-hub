@@ -147,7 +147,7 @@ final class SportsSouthProductParser
             'dropship_block_reason' => $this->dropship_enabled($raw) ? '' : 'feed_flag',
             'restricted_states' => $restricted_states,
 
-            'shipping_weight' => $this->decimal_string($this->first($raw, ['WTPBX', 'WEIGHT', 'WT', 'SHPWT'])),
+            'shipping_weight' => $this->weight_ounces($this->first($raw, ['WTPBX', 'WEIGHT', 'WT', 'SHPWT'])),
             'shipping_length_in' => $this->dimension_string($this->first($raw, ['LENGTH', 'LEN', 'SHPLEN'])),
             'shipping_width_in' => $this->dimension_string($this->first($raw, ['WIDTH', 'WID', 'SHPWID'])),
             'shipping_height_in' => $this->dimension_string($this->first($raw, ['HEIGHT', 'HGT', 'SHPHGT'])),
@@ -587,6 +587,21 @@ final class SportsSouthProductParser
         }
 
         return number_format($num, 2, '.', '');
+    }
+
+    private function weight_ounces(string $value): string
+    {
+        $value = preg_replace('/[^0-9.\-]/', '', trim($value));
+        if (!is_string($value) || $value === '' || !is_numeric($value)) {
+            return '';
+        }
+
+        $pounds = (float) $value;
+        if (!is_finite($pounds) || $pounds <= 0.0) {
+            return '';
+        }
+
+        return number_format($pounds * 16.0, 2, '.', '');
     }
 
     private function quantity_string(string $value): string
