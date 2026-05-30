@@ -730,6 +730,7 @@ final class DistributorProductSyncCronService extends AbstractCronService
         $desired_status = ($desired_qty > 0 ? 'instock' : 'outofstock');
         $price_pair = DistributorProductHelper::resolve_regular_and_sale_prices(
             (float) $sell_price,
+            $selected_payload->map ?? null,
             $selected_payload->msrp ?? null
         );
         $desired_regular_price = (string) ($price_pair['regular'] ?? '');

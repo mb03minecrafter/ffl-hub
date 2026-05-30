@@ -299,7 +299,11 @@ class DistributorProductHelper
 
         self::assign_unique_sku_for_new_product($product, $sku, $upc);
 
-        $prices = self::resolve_regular_and_sale_prices($recommended_price, $selected_product->msrp ?? null);
+        $prices = self::resolve_regular_and_sale_prices(
+            $recommended_price,
+            $selected_product->map ?? null,
+            $selected_product->msrp ?? null
+        );
         $product->set_regular_price($prices['regular']);
         $product->set_sale_price($prices['sale']);
 
@@ -1970,6 +1974,7 @@ class DistributorProductHelper
         }
 
         $settings = self::get_pricing_settings_for_product($product_id);
+        $map = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true));
         $msrp = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true));
 
         if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
@@ -1978,7 +1983,7 @@ class DistributorProductHelper
                 return;
             }
 
-            self::set_sell_price_and_save($product, $fixed, $msrp);
+            self::set_sell_price_and_save($product, $fixed, $map, $msrp);
             return;
         }
 
@@ -1988,7 +1993,7 @@ class DistributorProductHelper
                 null
             );
             if ($map_price !== null) {
-                self::set_sell_price_and_save($product, $map_price, $msrp);
+                self::set_sell_price_and_save($product, $map_price, $map, $msrp);
                 return;
             }
 
@@ -2017,7 +2022,7 @@ class DistributorProductHelper
             return;
         }
 
-        self::set_sell_price_and_save($product, (float) $sell, $msrp);
+        self::set_sell_price_and_save($product, (float) $sell, $map, $msrp);
     }
 
     /**
@@ -2073,45 +2078,49 @@ class DistributorProductHelper
     }
 
     /**
-     * Resolve Woo regular/sale price pair from computed sell price and optional MSRP.
+     * Resolve Woo regular/sale price pair from computed sell price and optional MAP/MSRP.
      *
      * Rules:
-     * - MSRP > 0 => regular price uses MSRP, sell price becomes sale price when lower than MSRP.
-     * - No valid MSRP => regular price uses sell price and sale price is cleared.
+     * - MAP is preferred as the regular/list anchor when it is above computed sell price.
+     * - MSRP is a fallback regular/list anchor only when it is above computed sell price.
+     * - If neither MAP nor MSRP is above computed sell price, regular price uses computed sell and sale price is cleared.
      *
+     * @param mixed $map_raw
      * @param mixed $msrp_raw
      * @return array{regular:string,sale:string}
      */
-    public static function resolve_regular_and_sale_prices(float $sell_price, $msrp_raw): array
+    public static function resolve_regular_and_sale_prices(float $sell_price, $map_raw = null, $msrp_raw = null): array
     {
         $sell = wc_format_decimal($sell_price, 2);
+        $map = self::to_positive_float($map_raw);
         $msrp = self::to_positive_float($msrp_raw);
 
-        if ($msrp === null || (float) $msrp <= (float) $sell) {
-            return ['regular' => $sell, 'sale' => ''];
+        if ($map !== null && (float) $map > (float) $sell) {
+            return [
+                'regular' => wc_format_decimal($map, 2),
+                'sale' => $sell,
+            ];
         }
 
-        $regular = wc_format_decimal($msrp, 2);
-        $sale = '';
-
-        if ((float) $sell < (float) $regular) {
-            $sale = $sell;
+        if ($msrp !== null && (float) $msrp > (float) $sell) {
+            return [
+                'regular' => wc_format_decimal($msrp, 2),
+                'sale' => $sell,
+            ];
         }
 
-        return [
-            'regular' => $regular,
-            'sale'    => $sale,
-        ];
+        return ['regular' => $sell, 'sale' => ''];
     }
 
     /**
      * Update regular/sale price pair then persist.
      *
+     * @param mixed $map_raw
      * @param mixed $msrp_raw
      */
-    private static function set_sell_price_and_save(WC_Product $product, float $sell_price, $msrp_raw): void
+    private static function set_sell_price_and_save(WC_Product $product, float $sell_price, $map_raw, $msrp_raw = null): void
     {
-        $prices = self::resolve_regular_and_sale_prices($sell_price, $msrp_raw);
+        $prices = self::resolve_regular_and_sale_prices($sell_price, $map_raw, $msrp_raw);
         $product->set_regular_price($prices['regular']);
         $product->set_sale_price($prices['sale']);
         $product->save();
