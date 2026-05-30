@@ -17,7 +17,7 @@ final class GunDealsFeedGenerator
     private const LOG_PREFIX = '[FFLHub][GunDealsFeed]';
     private const XML_NAMESPACE = 'https://api.gunengine.com/ingest/XMLSchema/feed/v2/offers';
     private const FREE_SHIPPING_LABEL = 'FREE SHIPPING';
-    private const COMPETITOR_FEE_LABEL = 'ZERO SALES TAX!';
+    private const COMPETITOR_FEE_LABEL = 'NO SALES TAX/FEES (UNLIKE LISTINGS ABOVE)';
     private const PRICE_HIDE_EMAIL_FOR_QUOTE = 'Email Form for Best Price';
     private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price';
     private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;

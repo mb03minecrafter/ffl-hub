@@ -23,7 +23,12 @@ use FFLHub\Settings\Options;
  */
 final class DistributorKinseys extends DistributorBase
 {
-    private const FLAT_SHIPPING_COST = 14.0;
+    private const HANDLING_FEE = 3.50;
+    private const SMALL_ORDER_FREIGHT_COST = 4.99;
+    private const STANDARD_FREIGHT_COST = 13.99;
+    private const FIREARM_FREIGHT_COST = 15.85;
+    private const SMALL_ORDER_MAX_WEIGHT_OZ = 8.0;
+    private const SMALL_ORDER_MAX_LENGTH_IN = 22.0;
     private const ORDER_TIMEOUT_SECONDS = 120;
     private const PURCHASE_ORDER_MAX_LEN = 20;
     private const VALIDATE_MAX_UNIQUE_ITEMS = 75;
@@ -67,12 +72,18 @@ final class DistributorKinseys extends DistributorBase
             return null;
         }
 
-        return $this->resolve_flat_shipping_cost($normalized);
+        $rows = $this->get_fulfillment_rows_by_upcs([$normalized], true);
+        $row = $rows[$normalized] ?? null;
+        if (!is_array($row)) {
+            return $this->resolve_default_shipping_cost($normalized);
+        }
+
+        return $this->resolve_shipping_cost_from_row($row, $normalized);
     }
 
     protected function get_shipping_cost_from_row(array $row, string $normalized_upc): ?float
     {
-        return $this->resolve_flat_shipping_cost($normalized_upc);
+        return $this->resolve_shipping_cost_from_row($row, $normalized_upc);
     }
 
     protected function get_true_cost_by_distributor_cost_shipping_cost(float $distributor_cost, float $shipping_cost): ?float
@@ -80,11 +91,124 @@ final class DistributorKinseys extends DistributorBase
         return max(0.0, $distributor_cost) + max(0.0, $shipping_cost);
     }
 
-    private function resolve_flat_shipping_cost(string $normalized_upc): float
+    private function resolve_shipping_cost_from_row(array $row, string $normalized_upc): float
     {
-        $cost = apply_filters('fflhub_kinseys_flat_shipping_cost', self::FLAT_SHIPPING_COST, $normalized_upc, $this);
+        if ($this->is_firearm_shipping_row($row)) {
+            return $this->resolve_shipping_total(self::FIREARM_FREIGHT_COST, $normalized_upc, 'firearm', $row);
+        }
 
-        return is_numeric($cost) ? max(0.0, (float) $cost) : self::FLAT_SHIPPING_COST;
+        if ($this->is_ammo_shipping_row($row)) {
+            return $this->resolve_shipping_total(self::STANDARD_FREIGHT_COST, $normalized_upc, 'ammo', $row);
+        }
+
+        $weight_oz = $this->non_negative_float($row['shipping_weight'] ?? null);
+        $length_in = $this->non_negative_float($row['shipping_length_in'] ?? null);
+
+        if (
+            $weight_oz > 0.0
+            && $length_in > 0.0
+            && $weight_oz < self::SMALL_ORDER_MAX_WEIGHT_OZ
+            && $length_in < self::SMALL_ORDER_MAX_LENGTH_IN
+        ) {
+            return $this->resolve_shipping_total(self::SMALL_ORDER_FREIGHT_COST, $normalized_upc, 'small', $row);
+        }
+
+        return $this->resolve_shipping_total(self::STANDARD_FREIGHT_COST, $normalized_upc, 'standard', $row);
+    }
+
+    private function resolve_default_shipping_cost(string $normalized_upc): float
+    {
+        return $this->resolve_shipping_total(self::STANDARD_FREIGHT_COST, $normalized_upc, 'default', []);
+    }
+
+    private function resolve_shipping_total(float $freight_cost, string $normalized_upc, string $tier, array $row): float
+    {
+        $handling_fee = apply_filters('fflhub_kinseys_handling_fee', self::HANDLING_FEE, $normalized_upc, $tier, $row, $this);
+        $freight_cost = apply_filters('fflhub_kinseys_freight_cost', $freight_cost, $normalized_upc, $tier, $row, $this);
+
+        $handling_fee = is_numeric($handling_fee) ? max(0.0, (float) $handling_fee) : self::HANDLING_FEE;
+        $freight_cost = is_numeric($freight_cost) ? max(0.0, (float) $freight_cost) : max(0.0, $freight_cost);
+
+        return round($handling_fee + $freight_cost, 2);
+    }
+
+    private function is_firearm_shipping_row(array $row): bool
+    {
+        if ($this->to_boolish($row['ffl_required'] ?? false, false)) {
+            return true;
+        }
+
+        return $this->row_has_category_prefix($row, '7400');
+    }
+
+    private function is_ammo_shipping_row(array $row): bool
+    {
+        if ($this->row_has_category_prefix($row, '7800')) {
+            return true;
+        }
+
+        $haystack = strtoupper(trim(implode(' ', [
+            (string) ($row['product_categories'] ?? ''),
+            (string) ($row['item_type'] ?? ''),
+            (string) ($row['product_name'] ?? ''),
+            (string) ($row['description_1'] ?? ''),
+            (string) ($row['description_2'] ?? ''),
+        ])));
+
+        return $haystack !== ''
+            && (
+                strpos($haystack, 'AMMO') !== false
+                || strpos($haystack, 'AMMUNITION') !== false
+                || strpos($haystack, 'CARTRIDGE') !== false
+            );
+    }
+
+    private function row_has_category_prefix(array $row, string $prefix): bool
+    {
+        $prefix = strtoupper(trim($prefix));
+        if ($prefix === '') {
+            return false;
+        }
+
+        foreach ([
+            'item_category_code',
+            'product_group_code',
+            'product_sub_group_1',
+            'product_sub_group_2',
+        ] as $key) {
+            $value = strtoupper(trim((string) ($row[$key] ?? '')));
+            if ($value !== '' && strpos($value, $prefix) === 0) {
+                return true;
+            }
+        }
+
+        $categories = strtoupper(trim((string) ($row['product_categories'] ?? '')));
+        if ($categories === '') {
+            return false;
+        }
+
+        foreach (preg_split('/[>,|;\s]+/', $categories) ?: [] as $token) {
+            $token = strtoupper(trim((string) $token));
+            if ($token !== '' && strpos($token, $prefix) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function non_negative_float($value): float
+    {
+        if (!is_numeric($value)) {
+            return 0.0;
+        }
+
+        $num = (float) $value;
+        if (!is_finite($num) || $num < 0.0) {
+            return 0.0;
+        }
+
+        return $num;
     }
 
     protected function validation_max_unique_items(DistributorOrderRequest $request, bool $local_only): int
