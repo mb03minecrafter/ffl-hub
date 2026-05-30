@@ -2087,7 +2087,7 @@ class DistributorProductHelper
         $sell = wc_format_decimal($sell_price, 2);
         $msrp = self::to_positive_float($msrp_raw);
 
-        if ($msrp === null) {
+        if ($msrp === null || (float) $msrp <= (float) $sell) {
             return ['regular' => $sell, 'sale' => ''];
         }
 
