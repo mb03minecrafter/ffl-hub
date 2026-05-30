@@ -699,7 +699,7 @@ final class GunDealsFeedGenerator
         }
 
         if ($this->is_no_email_no_add_to_cart_policy_row($row)) {
-            return max(0.01, $actual_price - 0.01);
+            return max(0.01, $actual_price - 1.00);
         }
 
         return $actual_price;
