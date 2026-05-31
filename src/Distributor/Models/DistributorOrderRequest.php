@@ -57,8 +57,8 @@ final class DistributorOrderRequest
         $this->notes              = $notes;
         $this->lane               = strtolower(trim($lane));
 
-        $this->dest_state          = strtoupper(trim($dest_state));
-        $this->receiving_ffl_number = strtoupper(trim($receiving_ffl_number));
+        $this->dest_state            = strtoupper(trim($dest_state));
+        $this->receiving_ffl_number  = self::normalize_ffl_number_for_ordering($receiving_ffl_number);
 
         $has_ffl = false;
         $has_non = false;
@@ -75,6 +75,17 @@ final class DistributorOrderRequest
 
         $this->contains_ffl_lines     = $has_ffl;
         $this->contains_non_ffl_lines = $has_non;
+    }
+
+    /**
+     * Distributor order APIs generally want the 15-character FFL license number
+     * without display punctuation such as dashes.
+     */
+    public static function normalize_ffl_number_for_ordering(string $ffl_number): string
+    {
+        $normalized = preg_replace('/[^A-Z0-9]/', '', strtoupper(trim($ffl_number)));
+
+        return is_string($normalized) ? $normalized : '';
     }
 
     public function ship_to_for(bool $ffl_required): DistributorShipTo
