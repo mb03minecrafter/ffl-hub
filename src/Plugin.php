@@ -64,6 +64,7 @@ use FFLHub\Product\Tables\QuoteEmailJobsTable;
 use FFLHub\Settings\Options;
 use FFLHub\Settings\SettingsRegistrar;
 use FFLHub\Shipping\Wordpress\ShippingRegistrar;
+use FFLHub\Util\ActionSchedulerWebRunnerGuard;
 
 /**
  * Main plugin bootstrapper for FFL Hub.
@@ -135,6 +136,7 @@ final class Plugin
         // Always-on bootstrap
         // -----------------------------------------------------------------
         SettingsRegistrar::init();
+        ActionSchedulerWebRunnerGuard::init();
 
         $this->ffl_table_schema = new FFLSchema();
 
