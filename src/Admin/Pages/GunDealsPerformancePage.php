@@ -47,9 +47,10 @@ final class GunDealsPerformancePage
         GunDealsAnalyticsStore::ensure_schema();
 
         $filters = $this->read_filters();
-        $report = $this->build_report($filters);
+        $is_export = !empty($_GET['fflhub_gundeals_export']);
+        $report = $this->build_report($filters, !$is_export);
 
-        if (!empty($_GET['fflhub_gundeals_export'])) {
+        if ($is_export) {
             $this->maybe_export_csv($report, $filters);
             return;
         }
@@ -97,6 +98,8 @@ final class GunDealsPerformancePage
             'advanced' => !empty($_GET['advanced']) ? 1 : 0,
             'sort' => sanitize_key((string) ($_GET['sort'] ?? 'attention')),
             'order' => strtolower(sanitize_key((string) ($_GET['order'] ?? ''))),
+            'paged' => max(1, (int) ($_GET['paged'] ?? 1)),
+            'per_page' => $this->clamp_per_page((int) ($_GET['per_page'] ?? 50)),
         ];
 
         if (!isset($this->sortable_columns()[$filters['sort']])) {
@@ -124,6 +127,12 @@ final class GunDealsPerformancePage
         }
 
         return max(0, (int) $value);
+    }
+
+    private function clamp_per_page(int $per_page): int
+    {
+        $allowed = [25, 50, 100, 250];
+        return in_array($per_page, $allowed, true) ? $per_page : 50;
     }
 
     /**
@@ -174,7 +183,7 @@ final class GunDealsPerformancePage
      * @param array<string,mixed> $filters
      * @return array<string,mixed>
      */
-    private function build_report(array $filters): array
+    private function build_report(array $filters, bool $paginate = true): array
     {
         $start_day = (string) $filters['start_date'];
         $end_day = (string) $filters['end_date'];
@@ -187,7 +196,7 @@ final class GunDealsPerformancePage
 
         $product_ids = [];
         $upcs = [];
-        foreach ([$clicks, $feed_rows, $orders['items']] as $collection) {
+        foreach ([$clicks, $orders['items']] as $collection) {
             foreach ($collection as $row) {
                 $pid = (int) ($row['product_id'] ?? 0);
                 $upc = GunDealsAnalyticsStore::normalize_upc((string) ($row['upc'] ?? ''));
@@ -203,7 +212,9 @@ final class GunDealsPerformancePage
         $products = $this->query_products(array_values($product_ids), array_values($upcs));
         $term_maps = $this->query_product_terms(array_keys($products['by_id']));
 
-        $keys = array_unique(array_merge(array_keys($clicks), array_keys($feed_rows), array_keys($orders['items'])));
+        // Do not hydrate/render the entire feed catalog. This report is about performance,
+        // so rows are products with period clicks and/or strictly attributed orders.
+        $keys = array_unique(array_merge(array_keys($clicks), array_keys($orders['items'])));
         sort($keys, SORT_NATURAL);
 
         $period_total_clicks = 0;
@@ -315,9 +326,13 @@ final class GunDealsPerformancePage
         $summary['attributed_orders'] = (int) $orders['order_count'];
         $summary['clicked_out_of_stock'] = $this->count_clicked_out_of_stock($rows);
 
+        $pagination = $this->pagination_for_rows($rows, (int) $filters['paged'], (int) $filters['per_page']);
+        $visible_rows = $paginate ? $this->paginate_rows($rows, $pagination) : $rows;
+
         return [
             'filters' => $filters,
-            'rows' => array_values($rows),
+            'rows' => array_values($visible_rows),
+            'pagination' => $pagination,
             'summary' => $summary,
             'brands' => $this->unique_column($rows, 'brand'),
             'categories' => $this->unique_column($rows, 'category'),
@@ -1046,6 +1061,39 @@ final class GunDealsPerformancePage
     }
 
     /**
+     * @param array<string,array<string,mixed>> $rows
+     * @return array{total:int,per_page:int,current_page:int,total_pages:int,offset:int,from:int,to:int}
+     */
+    private function pagination_for_rows(array $rows, int $paged, int $per_page): array
+    {
+        $total = count($rows);
+        $per_page = $this->clamp_per_page($per_page);
+        $total_pages = max(1, (int) ceil($total / $per_page));
+        $current_page = min(max(1, $paged), $total_pages);
+        $offset = ($current_page - 1) * $per_page;
+
+        return [
+            'total' => $total,
+            'per_page' => $per_page,
+            'current_page' => $current_page,
+            'total_pages' => $total_pages,
+            'offset' => $offset,
+            'from' => $total > 0 ? $offset + 1 : 0,
+            'to' => min($total, $offset + $per_page),
+        ];
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $rows
+     * @param array{total:int,per_page:int,current_page:int,total_pages:int,offset:int,from:int,to:int} $pagination
+     * @return array<string,array<string,mixed>>
+     */
+    private function paginate_rows(array $rows, array $pagination): array
+    {
+        return array_slice($rows, (int) $pagination['offset'], (int) $pagination['per_page'], true);
+    }
+
+    /**
      * @param mixed $a
      * @param mixed $b
      */
@@ -1311,6 +1359,7 @@ final class GunDealsPerformancePage
             <label>Missing Audit <?php $this->select('missing_profit', (string) $filters['missing_profit'], ['' => 'Any', 'yes' => 'Yes', 'no' => 'No']); ?></label>
             <label>Sort <?php $this->select('sort', (string) $filters['sort'], $sort_options); ?></label>
             <label>Order <?php $this->select('order', (string) $filters['order'], ['desc' => 'Descending', 'asc' => 'Ascending']); ?></label>
+            <label>Rows <?php $this->select('per_page', (string) $filters['per_page'], ['25' => '25', '50' => '50', '100' => '100', '250' => '250']); ?></label>
             <label><input type="checkbox" name="advanced" value="1" <?php checked(!empty($filters['advanced'])); ?> /> Advanced columns</label>
             <button class="button button-primary" type="submit">Apply</button>
             <a class="button" href="<?php echo esc_url($export_url); ?>">Export CSV</a>
@@ -1350,6 +1399,7 @@ final class GunDealsPerformancePage
         $args['page'] = self::PAGE_SLUG;
         $args['sort'] = $sort;
         $args['order'] = $next_order;
+        unset($args['paged']);
 
         $suffix = $active ? ' (' . $current_order . ')' : '';
         echo '<a href="' . esc_url(add_query_arg($args, admin_url('admin.php'))) . '">'
@@ -1415,6 +1465,7 @@ final class GunDealsPerformancePage
     private function render_table(array $report, array $filters): void
     {
         $show_advanced = !empty($filters['advanced']);
+        $this->render_pagination($report, 'top');
         ?>
         <table class="widefat striped fflhub-gd-table">
             <thead>
@@ -1513,7 +1564,102 @@ final class GunDealsPerformancePage
             <?php endforeach; ?>
             </tbody>
         </table>
+        <?php $this->render_pagination($report, 'bottom'); ?>
         <?php
+    }
+
+    /**
+     * @param array<string,mixed> $report
+     */
+    private function render_pagination(array $report, string $position): void
+    {
+        $pagination = $report['pagination'] ?? null;
+        if (!is_array($pagination)) {
+            return;
+        }
+
+        $total = (int) ($pagination['total'] ?? 0);
+        $current = (int) ($pagination['current_page'] ?? 1);
+        $total_pages = (int) ($pagination['total_pages'] ?? 1);
+        $from = (int) ($pagination['from'] ?? 0);
+        $to = (int) ($pagination['to'] ?? 0);
+
+        $classes = 'fflhub-gd-pagination fflhub-gd-pagination-' . sanitize_html_class($position);
+        ?>
+        <div class="<?php echo esc_attr($classes); ?>">
+            <span>
+                <?php
+                echo esc_html(sprintf(
+                    'Showing %s-%s of %s products',
+                    number_format_i18n($from),
+                    number_format_i18n($to),
+                    number_format_i18n($total)
+                ));
+                ?>
+            </span>
+            <?php if ($total_pages > 1) : ?>
+                <span class="fflhub-gd-page-links">
+                    <?php if ($current > 1) : ?>
+                        <a class="button" href="<?php echo esc_url($this->pagination_url($current - 1)); ?>">Prev</a>
+                    <?php endif; ?>
+
+                    <?php foreach ($this->pagination_page_numbers($current, $total_pages) as $page_number) : ?>
+                        <?php if ($page_number === 0) : ?>
+                            <span class="fflhub-gd-page-gap">...</span>
+                        <?php elseif ($page_number === $current) : ?>
+                            <span class="button button-primary disabled"><?php echo esc_html((string) $page_number); ?></span>
+                        <?php else : ?>
+                            <a class="button" href="<?php echo esc_url($this->pagination_url($page_number)); ?>"><?php echo esc_html((string) $page_number); ?></a>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+
+                    <?php if ($current < $total_pages) : ?>
+                        <a class="button" href="<?php echo esc_url($this->pagination_url($current + 1)); ?>">Next</a>
+                    <?php endif; ?>
+                </span>
+            <?php endif; ?>
+        </div>
+        <?php
+    }
+
+    private function pagination_url(int $page_number): string
+    {
+        $args = $_GET;
+        unset($args['fflhub_gundeals_export'], $args['_wpnonce']);
+        $args['page'] = self::PAGE_SLUG;
+        $args['paged'] = max(1, $page_number);
+
+        return add_query_arg($args, admin_url('admin.php'));
+    }
+
+    /**
+     * @return int[]
+     */
+    private function pagination_page_numbers(int $current, int $total_pages): array
+    {
+        if ($total_pages <= 7) {
+            return range(1, $total_pages);
+        }
+
+        $pages = [1];
+        $start = max(2, $current - 2);
+        $end = min($total_pages - 1, $current + 2);
+
+        if ($start > 2) {
+            $pages[] = 0;
+        }
+
+        for ($i = $start; $i <= $end; $i++) {
+            $pages[] = $i;
+        }
+
+        if ($end < $total_pages - 1) {
+            $pages[] = 0;
+        }
+
+        $pages[] = $total_pages;
+
+        return $pages;
     }
 
     /**
@@ -1677,6 +1823,23 @@ final class GunDealsPerformancePage
             }
             .fflhub-gd-table {
                 margin-top: 12px;
+            }
+            .fflhub-gd-pagination {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                margin: 12px 0;
+            }
+            .fflhub-gd-page-links {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 4px;
+            }
+            .fflhub-gd-page-gap {
+                padding: 0 4px;
+                color: #646970;
             }
             .fflhub-gd-table th,
             .fflhub-gd-table td {
