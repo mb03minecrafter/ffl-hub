@@ -19,6 +19,9 @@ final class GunDealsPerformancePage
     private const OVERAGE_CPC = 0.25;
     private const LEGACY_CLICK_FALLBACK_END_DAY = '2026-06-02';
 
+    /** @var array<string,bool> */
+    private array $table_exists_cache = [];
+
     public function register(): void
     {
         add_action('admin_menu', [$this, 'register_menu_page']);
@@ -862,7 +865,12 @@ final class GunDealsPerformancePage
             return false;
         }
 
-        return (string) $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) === $table;
+        if (array_key_exists($table, $this->table_exists_cache)) {
+            return $this->table_exists_cache[$table];
+        }
+
+        $this->table_exists_cache[$table] = (string) $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) === $table;
+        return $this->table_exists_cache[$table];
     }
 
     /**
