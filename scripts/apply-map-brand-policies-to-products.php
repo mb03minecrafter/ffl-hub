@@ -297,7 +297,6 @@ do {
             }
 
             fflhub_map_policy_fix_update_meta($product_id, ProductMeta::FFLHUB_MAP_POLICY_META, $brand_policy, $commit, $changes);
-            fflhub_map_policy_fix_update_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, '0', $commit, $changes);
 
             if ($brand_policy === Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE) {
                 fflhub_map_policy_fix_update_meta($product_id, ProductMeta::FFLHUB_MARKUP_MODE_META, (string)ProductMeta::MARKUP_MODE_GLOBAL, $commit, $changes);
