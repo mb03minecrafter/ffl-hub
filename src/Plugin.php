@@ -17,6 +17,7 @@ use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
 use FFLHub\Admin\Pages\DistributorBatchQueuePage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
+use FFLHub\Admin\Pages\GunDealsPerformancePage;
 use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
@@ -49,6 +50,7 @@ use FFLHub\Distributor\Services\Orders\Cron\ZandersCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerAuditTable;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
+use FFLHub\Feeds\GunDeals\GunDealsAnalyticsStore;
 use FFLHub\Feeds\GunDeals\GunDealsClickTracker;
 use FFLHub\Feeds\GunDeals\GunDealsFeedCronService;
 use FFLHub\FFL\API\FFLApi;
@@ -101,6 +103,7 @@ final class Plugin
     public ZandersCreditLimitPage $zanders_credit_limit_page;
     public LipseysCreditLimitPage $lipseys_credit_limit_page;
     public MapPolicyPage $map_policy_page;
+    public GunDealsPerformancePage $gundeals_performance_page;
     public UpcStockAlertsPage $upc_stock_alerts_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public OrderCartComplianceMetaBox $order_cart_compliance_metabox;
@@ -162,6 +165,7 @@ final class Plugin
 
         $this->gundeals_feed_cron_service = new GunDealsFeedCronService();
         $this->gundeals_feed_cron_service->register();
+        GunDealsAnalyticsStore::ensure_schema();
 
         ShippingRegistrar::init();
 
@@ -226,6 +230,9 @@ final class Plugin
 
             $this->map_policy_page = new MapPolicyPage();
             $this->map_policy_page->register();
+
+            $this->gundeals_performance_page = new GunDealsPerformancePage();
+            $this->gundeals_performance_page->register();
 
             $this->upc_stock_alerts_page = new UpcStockAlertsPage($this->upc_stock_alert_cron_service);
             $this->upc_stock_alerts_page->register();
@@ -390,6 +397,7 @@ final class Plugin
 
         $gundeals_feed_cron = new GunDealsFeedCronService();
         $gundeals_feed_cron->on_activation();
+        GunDealsAnalyticsStore::ensure_schema();
     }
 
     public static function deactivate(): void

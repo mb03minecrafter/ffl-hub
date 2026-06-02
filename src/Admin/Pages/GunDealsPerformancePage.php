@@ -1,0 +1,1511 @@
+<?php
+
+namespace FFLHub\Admin\Pages;
+
+use FFLHub\Feeds\GunDeals\GunDealsAnalyticsStore;
+use FFLHub\Feeds\GunDeals\GunDealsClickTracker;
+use FFLHub\Product\ProductMeta;
+use FFLHub\Settings\Options;
+use WC_Order;
+use WC_Order_Item_Product;
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+final class GunDealsPerformancePage
+{
+    private const PAGE_SLUG = 'fflhub-gundeals-performance';
+    private const PERIOD_ANCHOR = '2026-05-28';
+    private const BASE_FEE = 500.0;
+    private const INCLUDED_CLICKS = 2000;
+    private const OVERAGE_CPC = 0.25;
+
+    public function register(): void
+    {
+        add_action('admin_menu', [$this, 'register_menu_page']);
+    }
+
+    public function register_menu_page(): void
+    {
+        add_submenu_page(
+            AdminPage::get_page_slug(),
+            __('Gun.deals Performance', 'ffl-hub'),
+            __('Gun.deals Performance', 'ffl-hub'),
+            'manage_options',
+            self::PAGE_SLUG,
+            [$this, 'render_page']
+        );
+    }
+
+    public function render_page(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('You do not have permission to access this page.', 'ffl-hub'));
+        }
+
+        GunDealsAnalyticsStore::ensure_schema();
+
+        $filters = $this->read_filters();
+        $report = $this->build_report($filters);
+
+        if (!empty($_GET['fflhub_gundeals_export'])) {
+            $this->maybe_export_csv($report, $filters);
+            return;
+        }
+
+        $this->render_styles();
+        ?>
+        <div class="wrap fflhub-gundeals-performance">
+            <h1><?php esc_html_e('Gun.deals Performance', 'ffl-hub'); ?></h1>
+            <p class="description">
+                <?php esc_html_e('Strict Gun.deals attribution only. Profit comes from the frozen FFLHub order audit snapshot, not current distributor costs.', 'ffl-hub'); ?>
+            </p>
+
+            <?php $this->render_filter_form($filters, $report); ?>
+            <?php $this->render_cards($report); ?>
+            <?php $this->render_table($report, $filters); ?>
+        </div>
+        <?php
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function read_filters(): array
+    {
+        $defaults = $this->default_period_dates();
+        $filters = [
+            'start_date' => $this->clean_date((string) ($_GET['start_date'] ?? $defaults['start_date']), $defaults['start_date']),
+            'end_date' => $this->clean_date((string) ($_GET['end_date'] ?? $defaults['end_date']), $defaults['end_date']),
+            'view' => sanitize_key((string) ($_GET['view'] ?? 'all')),
+            'feed' => sanitize_key((string) ($_GET['feed'] ?? '')),
+            'stock' => sanitize_key((string) ($_GET['stock'] ?? '')),
+            'brand' => sanitize_text_field((string) ($_GET['brand'] ?? '')),
+            'category' => sanitize_text_field((string) ($_GET['category'] ?? '')),
+            'ffl' => sanitize_key((string) ($_GET['ffl'] ?? '')),
+            'map' => sanitize_key((string) ($_GET['map'] ?? '')),
+            'min_clicks' => max(0, (int) ($_GET['min_clicks'] ?? 0)),
+            'max_clicks' => $this->nullable_int($_GET['max_clicks'] ?? null),
+            'min_orders' => max(0, (int) ($_GET['min_orders'] ?? 0)),
+            'max_orders' => $this->nullable_int($_GET['max_orders'] ?? null),
+            'min_conversion' => $this->nullable_float($_GET['min_conversion'] ?? null),
+            'max_conversion' => $this->nullable_float($_GET['max_conversion'] ?? null),
+            'min_profit' => $this->nullable_float($_GET['min_profit'] ?? null),
+            'max_profit' => $this->nullable_float($_GET['max_profit'] ?? null),
+            'missing_profit' => sanitize_key((string) ($_GET['missing_profit'] ?? '')),
+            'advanced' => !empty($_GET['advanced']) ? 1 : 0,
+        ];
+
+        if (strcmp((string) $filters['end_date'], (string) $filters['start_date']) < 0) {
+            $filters['end_date'] = $filters['start_date'];
+        }
+
+        return $filters;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function nullable_int($value): ?int
+    {
+        if ($value === null || trim((string) $value) === '' || !is_numeric($value)) {
+            return null;
+        }
+
+        return max(0, (int) $value);
+    }
+
+    /**
+     * @return array{start_date:string,end_date:string}
+     */
+    private function default_period_dates(): array
+    {
+        $today = gmdate('Y-m-d');
+        $day = (int) gmdate('d');
+        $start_ts = $day >= 28
+            ? strtotime(gmdate('Y-m-28 00:00:00'))
+            : strtotime(gmdate('Y-m-28 00:00:00', strtotime('-1 month')));
+
+        $anchor_ts = strtotime(self::PERIOD_ANCHOR . ' 00:00:00');
+        if (!$start_ts || ($anchor_ts && $start_ts < $anchor_ts)) {
+            $start_ts = $anchor_ts ?: time();
+        }
+
+        return [
+            'start_date' => gmdate('Y-m-d', $start_ts),
+            'end_date' => $today,
+        ];
+    }
+
+    private function clean_date(string $value, string $default): string
+    {
+        $value = trim($value);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+            return $default;
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function nullable_float($value): ?float
+    {
+        if ($value === null || trim((string) $value) === '' || !is_numeric($value)) {
+            return null;
+        }
+
+        return (float) $value;
+    }
+
+    /**
+     * @param array<string,mixed> $filters
+     * @return array<string,mixed>
+     */
+    private function build_report(array $filters): array
+    {
+        $start_day = (string) $filters['start_date'];
+        $end_day = (string) $filters['end_date'];
+        $start_gmt = $start_day . ' 00:00:00';
+        $end_gmt = $end_day . ' 23:59:59';
+
+        $clicks = $this->query_click_rollups($start_day, $end_day);
+        $feed_rows = $this->query_latest_feed_rows();
+        $orders = $this->query_attributed_order_metrics($start_gmt, $end_gmt);
+
+        $product_ids = [];
+        $upcs = [];
+        foreach ([$clicks, $feed_rows, $orders['items']] as $collection) {
+            foreach ($collection as $row) {
+                $pid = (int) ($row['product_id'] ?? 0);
+                $upc = GunDealsAnalyticsStore::normalize_upc((string) ($row['upc'] ?? ''));
+                if ($pid > 0) {
+                    $product_ids[$pid] = $pid;
+                }
+                if ($upc !== '') {
+                    $upcs[$upc] = $upc;
+                }
+            }
+        }
+
+        $products = $this->query_products(array_values($product_ids), array_values($upcs));
+        $term_maps = $this->query_product_terms(array_keys($products['by_id']));
+
+        $keys = array_unique(array_merge(array_keys($clicks), array_keys($feed_rows), array_keys($orders['items'])));
+        sort($keys, SORT_NATURAL);
+
+        $period_total_clicks = 0;
+        foreach ($clicks as $click_row) {
+            $period_total_clicks += (int) ($click_row['clicks'] ?? 0);
+        }
+        $period_cost = $this->gun_deals_cost($period_total_clicks);
+
+        $rows = [];
+        foreach ($keys as $key) {
+            $click_row = $clicks[$key] ?? [];
+            $feed_row = $feed_rows[$key] ?? [];
+            $order_row = $orders['items'][$key] ?? [];
+
+            $product_id = (int) ($click_row['product_id'] ?? ($feed_row['product_id'] ?? ($order_row['product_id'] ?? 0)));
+            $upc = GunDealsAnalyticsStore::normalize_upc((string) ($click_row['upc'] ?? ($feed_row['upc'] ?? ($order_row['upc'] ?? ''))));
+
+            $product = $product_id > 0 && isset($products['by_id'][$product_id])
+                ? $products['by_id'][$product_id]
+                : ($upc !== '' && isset($products['by_upc'][$upc]) ? $products['by_upc'][$upc] : []);
+
+            if ($product_id <= 0) {
+                $product_id = (int) ($product['product_id'] ?? 0);
+            }
+            if ($upc === '') {
+                $upc = GunDealsAnalyticsStore::normalize_upc((string) ($product['upc'] ?? ''));
+            }
+
+            $click_count = (int) ($click_row['clicks'] ?? 0);
+            $orders_count = (int) ($order_row['orders'] ?? 0);
+            $units = (int) ($order_row['units'] ?? 0);
+            $revenue = (float) ($order_row['revenue'] ?? 0.0);
+            $gross_profit = (float) ($order_row['gross_profit'] ?? 0.0);
+            $allocated_cost = $period_total_clicks > 0 ? $period_cost * ($click_count / $period_total_clicks) : 0.0;
+            $conversion = $click_count > 0 ? ($orders_count / $click_count) * 100.0 : 0.0;
+            $margin = $revenue > 0.0 ? ($gross_profit / $revenue) * 100.0 : 0.0;
+
+            $brand = $term_maps['brands'][$product_id] ?? '';
+            $category = $term_maps['categories'][$product_id] ?? '';
+            $stock_status = (string) ($product['stock_status'] ?? ($feed_row['stock_status'] ?? ''));
+            $map_policy = $this->normalize_map_policy((string) ($product['map_policy'] ?? ''));
+            $map_status = $this->map_status_label($map_policy);
+
+            $row = [
+                'key' => $key,
+                'product_id' => $product_id,
+                'upc' => $upc,
+                'title' => (string) ($product['title'] ?? ($feed_row['title'] ?? 'Unknown product')),
+                'edit_url' => $product_id > 0 ? get_edit_post_link($product_id, '') : '',
+                'feed_included' => isset($feed_rows[$key]),
+                'stock_status' => $stock_status !== '' ? $stock_status : 'unknown',
+                'stock_quantity' => (string) ($product['stock_quantity'] ?? ''),
+                'clicks' => $click_count,
+                'raw_cumulative_clicks' => (int) ($product['raw_cumulative_clicks'] ?? 0),
+                'deduped_clicks' => (int) ($click_row['deduped_clicks'] ?? 0),
+                'orders' => $orders_count,
+                'units' => $units,
+                'conversion_rate' => $conversion,
+                'revenue' => $revenue,
+                'dealer_cost' => (float) ($order_row['dealer_cost'] ?? 0.0),
+                'true_cost' => (float) ($order_row['true_cost'] ?? 0.0),
+                'gross_profit' => $gross_profit,
+                'allocated_cost' => $allocated_cost,
+                'marginal_click_cost' => $click_count * self::OVERAGE_CPC,
+                'net_profit' => $gross_profit - $allocated_cost,
+                'margin' => $margin,
+                'fees_adjustments' => (float) ($order_row['fees_adjustments'] ?? 0.0),
+                'ffl_required' => $this->boolish($product['ffl_required'] ?? ''),
+                'sot_required' => $this->boolish($product['sot_required'] ?? ''),
+                'map_policy' => $map_policy,
+                'map_status' => $map_status,
+                'customer_price' => $this->money_float($product['price'] ?? 0),
+                'brand' => $brand,
+                'category' => $category,
+                'last_order_date' => (string) ($order_row['last_order_date'] ?? ''),
+                'missing_profit_audit' => !empty($order_row['missing_profit_audit']),
+                'source_attribution' => implode('; ', array_slice(array_unique($order_row['attribution'] ?? []), 0, 3)),
+                'page_views' => '',
+                'add_to_cart_count' => '',
+                'email_quote_count' => '',
+                'cost_per_order' => $orders_count > 0 ? $allocated_cost / $orders_count : 0.0,
+                'cost_per_revenue_dollar' => $revenue > 0.0 ? $allocated_cost / $revenue : 0.0,
+                'click_cost_profit_percent' => $gross_profit > 0.0 ? ($allocated_cost / $gross_profit) * 100.0 : 0.0,
+                'recent_stock_window_risk' => $click_count > 0 && strtolower($stock_status) !== 'instock' && !isset($feed_rows[$key]),
+                'created_at' => (string) ($product['created_at'] ?? ''),
+            ];
+
+            $rows[$key] = $row;
+        }
+
+        $medians = $this->conversion_medians($rows);
+        foreach ($rows as $key => $row) {
+            $rows[$key]['badges'] = $this->recommendation_badges($row, $medians);
+        }
+
+        $rows = $this->apply_saved_view($rows, (string) $filters['view']);
+        $rows = $this->apply_filters($rows, $filters);
+        uasort($rows, static function (array $a, array $b): int {
+            return ((int) $b['clicks'] <=> (int) $a['clicks'])
+                ?: ((float) $a['net_profit'] <=> (float) $b['net_profit'])
+                ?: strcasecmp((string) $a['title'], (string) $b['title']);
+        });
+
+        $summary = $this->summary_from_rows($rows);
+        $summary['period_cost'] = $this->gun_deals_cost((int) $summary['clicks']);
+        $summary['included_clicks_remaining'] = max(0, self::INCLUDED_CLICKS - (int) $summary['clicks']);
+        $summary['overage_clicks'] = max(0, (int) $summary['clicks'] - self::INCLUDED_CLICKS);
+        $summary['overage_cost'] = $summary['overage_clicks'] * self::OVERAGE_CPC;
+        $summary['effective_cpc'] = (int) $summary['clicks'] > 0 ? $summary['period_cost'] / (int) $summary['clicks'] : 0.0;
+        $summary['net_after_period_cost'] = (float) $summary['gross_profit'] - (float) $summary['period_cost'];
+        $summary['break_even_gap'] = max(0.0, (float) $summary['period_cost'] - (float) $summary['gross_profit']);
+        $summary['feed_upc_count'] = count($feed_rows);
+        $summary['attributed_orders'] = (int) $orders['order_count'];
+        $summary['clicked_out_of_stock'] = $this->count_clicked_out_of_stock($rows);
+
+        return [
+            'filters' => $filters,
+            'rows' => array_values($rows),
+            'summary' => $summary,
+            'brands' => $this->unique_column($rows, 'brand'),
+            'categories' => $this->unique_column($rows, 'category'),
+            'latest_feed_snapshot' => GunDealsAnalyticsStore::latest_snapshot_time(),
+            'period_start_gmt' => $start_gmt,
+            'period_end_gmt' => $end_gmt,
+        ];
+    }
+
+    /**
+     * @return array<string,array<string,mixed>>
+     */
+    private function query_click_rollups(string $start_day, string $end_day): array
+    {
+        global $wpdb;
+        if (!$wpdb) {
+            return [];
+        }
+
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                'SELECT upc, product_id, SUM(raw_clicks) AS clicks, SUM(deduped_clicks) AS deduped_clicks
+                 FROM ' . GunDealsAnalyticsStore::click_rollups_table() . '
+                 WHERE day BETWEEN %s AND %s
+                 GROUP BY upc, product_id',
+                $start_day,
+                $end_day
+            ),
+            ARRAY_A
+        );
+
+        $out = [];
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            $key = $this->row_key((string) ($row['upc'] ?? ''), (int) ($row['product_id'] ?? 0));
+            if ($key === '') {
+                continue;
+            }
+
+            if (!isset($out[$key])) {
+                $out[$key] = [
+                    'upc' => GunDealsAnalyticsStore::normalize_upc((string) ($row['upc'] ?? '')),
+                    'product_id' => (int) ($row['product_id'] ?? 0),
+                    'clicks' => 0,
+                    'deduped_clicks' => 0,
+                ];
+            }
+
+            $out[$key]['clicks'] += (int) ($row['clicks'] ?? 0);
+            $out[$key]['deduped_clicks'] += (int) ($row['deduped_clicks'] ?? 0);
+        }
+
+        return $out;
+    }
+
+    /**
+     * @return array<string,array<string,mixed>>
+     */
+    private function query_latest_feed_rows(): array
+    {
+        $out = [];
+        foreach (GunDealsAnalyticsStore::latest_feed_rows() as $row) {
+            $key = $this->row_key((string) ($row['upc'] ?? ''), (int) ($row['product_id'] ?? 0));
+            if ($key === '') {
+                continue;
+            }
+
+            $out[$key] = $row;
+        }
+
+        return $out;
+    }
+
+    /**
+     * @return array{items:array<string,array<string,mixed>>,order_count:int}
+     */
+    private function query_attributed_order_metrics(string $start_gmt, string $end_gmt): array
+    {
+        if (!function_exists('wc_get_orders')) {
+            return ['items' => [], 'order_count' => 0];
+        }
+
+        $items = [];
+        $order_count = 0;
+        $page = 1;
+
+        do {
+            $orders = wc_get_orders([
+                'status' => ['processing', 'completed'],
+                'limit' => 100,
+                'page' => $page,
+                'paginate' => false,
+                'date_created' => $start_gmt . '...' . $end_gmt,
+                'orderby' => 'date',
+                'order' => 'ASC',
+            ]);
+
+            if (!is_array($orders) || empty($orders)) {
+                break;
+            }
+
+            foreach ($orders as $order) {
+                if (!($order instanceof WC_Order)) {
+                    continue;
+                }
+
+                $attribution = $this->gun_deals_attribution($order);
+                if ($attribution === []) {
+                    continue;
+                }
+
+                $order_count++;
+                $this->merge_order_items($items, $order, $attribution);
+            }
+
+            $page++;
+        } while (count($orders) === 100);
+
+        return [
+            'items' => $items,
+            'order_count' => $order_count,
+        ];
+    }
+
+    /**
+     * @return string[]
+     */
+    private function gun_deals_attribution(WC_Order $order): array
+    {
+        $matches = [];
+        foreach ($order->get_meta_data() as $meta) {
+            $key = method_exists($meta, 'get_data') ? (string) (($meta->get_data()['key'] ?? '')) : '';
+            $value = method_exists($meta, 'get_data') ? ($meta->get_data()['value'] ?? '') : '';
+            $key_lc = strtolower($key);
+
+            if (
+                strpos($key_lc, 'utm') === false
+                && strpos($key_lc, 'source') === false
+                && strpos($key_lc, 'referrer') === false
+                && strpos($key_lc, 'session') === false
+                && strpos($key_lc, 'attribution') === false
+            ) {
+                continue;
+            }
+
+            $encoded_raw = wp_json_encode($value);
+            $encoded = strtolower(is_string($encoded_raw) ? $encoded_raw : '');
+            if (strpos($encoded, 'gundeals') !== false || strpos($encoded, 'gun.deals') !== false || strpos($encoded, 'gun deals') !== false) {
+                $matches[] = $key . '=' . $this->short_value($encoded, 90);
+            }
+        }
+
+        return array_values(array_unique($matches));
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $items
+     * @param string[] $attribution
+     */
+    private function merge_order_items(array &$items, WC_Order $order, array $attribution): void
+    {
+        $audit_lines = $this->audit_lines_by_item_id($order);
+        $audit_missing = empty($audit_lines);
+        $order_date = $order->get_date_created();
+        $order_date_gmt = $order_date ? $order_date->date('Y-m-d H:i:s') : '';
+        $order_fee_adjustments = $this->order_fee_adjustments($order);
+        $order_revenue_total = max(0.01, (float) $order->get_meta('fflhub_order_revenue_total', true));
+
+        foreach ($order->get_items('line_item') as $item_id => $item) {
+            if (!($item instanceof WC_Order_Item_Product)) {
+                continue;
+            }
+
+            $product_id = (int) $item->get_product_id();
+            $upc = GunDealsAnalyticsStore::normalize_upc((string) get_post_meta($product_id, ProductMeta::FFLHUB_UPC_META, true));
+            $key = $this->row_key($upc, $product_id);
+            if ($key === '') {
+                continue;
+            }
+
+            $line = $audit_lines[(int) $item_id] ?? null;
+            $line_missing = $audit_missing || !is_array($line);
+            $qty = $line_missing ? max(0, (int) $item->get_quantity()) : max(0, (int) ($line['qty'] ?? $item->get_quantity()));
+            $line_revenue = $line_missing ? 0.0 : $this->money_float($line['line_revenue'] ?? 0);
+            $dealer_cost = $line_missing ? 0.0 : $this->money_float($line['distributor_line_cost'] ?? 0);
+            $unit_cost = $line_missing ? 0.0 : $this->money_float($line['distributor_unit_cost'] ?? 0);
+            $fee_share = $line_revenue > 0.0 ? $order_fee_adjustments * ($line_revenue / $order_revenue_total) : 0.0;
+
+            if (!isset($items[$key])) {
+                $items[$key] = [
+                    'upc' => $upc,
+                    'product_id' => $product_id,
+                    'orders' => 0,
+                    'order_ids' => [],
+                    'units' => 0,
+                    'revenue' => 0.0,
+                    'dealer_cost' => 0.0,
+                    'true_cost' => 0.0,
+                    'gross_profit' => 0.0,
+                    'fees_adjustments' => 0.0,
+                    'last_order_date' => '',
+                    'missing_profit_audit' => false,
+                    'attribution' => [],
+                ];
+            }
+
+            if (empty($items[$key]['order_ids'][(int) $order->get_id()])) {
+                $items[$key]['order_ids'][(int) $order->get_id()] = true;
+                $items[$key]['orders']++;
+            }
+
+            $items[$key]['units'] += $qty;
+            $items[$key]['revenue'] += $line_revenue;
+            $items[$key]['dealer_cost'] += $dealer_cost;
+            $items[$key]['true_cost'] += $unit_cost * $qty;
+            $items[$key]['gross_profit'] += $line_revenue - $dealer_cost;
+            $items[$key]['fees_adjustments'] += $fee_share;
+            $items[$key]['missing_profit_audit'] = !empty($items[$key]['missing_profit_audit']) || $line_missing;
+            $items[$key]['attribution'] = array_values(array_unique(array_merge($items[$key]['attribution'], $attribution)));
+            if ($order_date_gmt !== '' && strcmp($order_date_gmt, (string) $items[$key]['last_order_date']) > 0) {
+                $items[$key]['last_order_date'] = $order_date_gmt;
+            }
+        }
+
+        foreach ($items as &$item_row) {
+            unset($item_row['order_ids']);
+        }
+        unset($item_row);
+    }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    private function audit_lines_by_item_id(WC_Order $order): array
+    {
+        $raw = $order->get_meta('fflhub_order_profit_lines', true);
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+        } elseif (is_array($raw)) {
+            $decoded = $raw;
+        } else {
+            $decoded = [];
+        }
+
+        $lines = [];
+        foreach (is_array($decoded) ? $decoded : [] as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+            $item_id = (int) ($line['item_id'] ?? 0);
+            if ($item_id > 0) {
+                $lines[$item_id] = $line;
+            }
+        }
+
+        return $lines;
+    }
+
+    private function order_fee_adjustments(WC_Order $order): float
+    {
+        $shipping_cost = $this->money_float($order->get_meta('fflhub_order_shipping_cost_total', true));
+        $processor_fee = $this->money_float($order->get_meta('fflhub_order_processor_fee_amount', true));
+        $customer_shipping = $this->money_float($order->get_meta('fflhub_order_customer_shipping_charge', true));
+
+        return $shipping_cost + $processor_fee - $customer_shipping;
+    }
+
+    /**
+     * @param int[] $product_ids
+     * @param string[] $upcs
+     * @return array{by_id:array<int,array<string,mixed>>,by_upc:array<string,array<string,mixed>>}
+     */
+    private function query_products(array $product_ids, array $upcs): array
+    {
+        global $wpdb;
+        if (!$wpdb) {
+            return ['by_id' => [], 'by_upc' => []];
+        }
+
+        $product_ids = array_values(array_unique(array_filter(array_map('intval', $product_ids))));
+        $upcs = array_values(array_unique(array_filter(array_map([GunDealsAnalyticsStore::class, 'normalize_upc'], $upcs))));
+        if (empty($product_ids) && empty($upcs)) {
+            return ['by_id' => [], 'by_upc' => []];
+        }
+
+        $where = [];
+        if (!empty($product_ids)) {
+            $where[] = 'p.ID IN (' . implode(',', $product_ids) . ')';
+        }
+        if (!empty($upcs)) {
+            $upc_sql = implode(',', array_map(static function (string $upc): string {
+                return "'" . esc_sql($upc) . "'";
+            }, $upcs));
+            $where[] = "EXISTS (
+                SELECT 1 FROM {$wpdb->postmeta} upc_pm
+                WHERE upc_pm.post_id = p.ID
+                  AND upc_pm.meta_key = '" . esc_sql(ProductMeta::FFLHUB_UPC_META) . "'
+                  AND upc_pm.meta_value IN ({$upc_sql})
+            )";
+        }
+
+        $meta_keys = [
+            ProductMeta::FFLHUB_UPC_META,
+            ProductMeta::FFLHUB_FFL_REQUIRED_META,
+            ProductMeta::FFLHUB_SOT_REQUIRED_META,
+            ProductMeta::FFLHUB_MAP_POLICY_META,
+            '_price',
+            '_stock',
+            '_stock_status',
+            GunDealsClickTracker::META_RAW_CLICKS,
+        ];
+        $meta_sql = implode(',', array_map(static function (string $key): string {
+            return "'" . esc_sql($key) . "'";
+        }, $meta_keys));
+
+        $rows = $wpdb->get_results("
+            SELECT
+                p.ID AS product_id,
+                p.post_title AS title,
+                p.post_status AS post_status,
+                p.post_date_gmt AS created_at,
+                lookup.stock_status AS lookup_stock_status,
+                lookup.stock_quantity AS lookup_stock_quantity,
+                MAX(CASE WHEN pm.meta_key = '" . esc_sql(ProductMeta::FFLHUB_UPC_META) . "' THEN pm.meta_value END) AS upc,
+                MAX(CASE WHEN pm.meta_key = '" . esc_sql(ProductMeta::FFLHUB_FFL_REQUIRED_META) . "' THEN pm.meta_value END) AS ffl_required,
+                MAX(CASE WHEN pm.meta_key = '" . esc_sql(ProductMeta::FFLHUB_SOT_REQUIRED_META) . "' THEN pm.meta_value END) AS sot_required,
+                MAX(CASE WHEN pm.meta_key = '" . esc_sql(ProductMeta::FFLHUB_MAP_POLICY_META) . "' THEN pm.meta_value END) AS map_policy,
+                MAX(CASE WHEN pm.meta_key = '_price' THEN pm.meta_value END) AS price,
+                MAX(CASE WHEN pm.meta_key = '_stock' THEN pm.meta_value END) AS stock_quantity,
+                MAX(CASE WHEN pm.meta_key = '_stock_status' THEN pm.meta_value END) AS stock_status,
+                MAX(CASE WHEN pm.meta_key = '" . esc_sql(GunDealsClickTracker::META_RAW_CLICKS) . "' THEN pm.meta_value END) AS raw_cumulative_clicks
+            FROM {$wpdb->posts} p
+            LEFT JOIN {$wpdb->prefix}wc_product_meta_lookup lookup ON lookup.product_id = p.ID
+            LEFT JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID AND pm.meta_key IN ({$meta_sql})
+            WHERE p.post_type = 'product'
+              AND (" . implode(' OR ', $where) . ")
+            GROUP BY p.ID, p.post_title, p.post_status, p.post_date_gmt, lookup.stock_status, lookup.stock_quantity
+        ", ARRAY_A);
+
+        $by_id = [];
+        $by_upc = [];
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            $pid = (int) ($row['product_id'] ?? 0);
+            $upc = GunDealsAnalyticsStore::normalize_upc((string) ($row['upc'] ?? ''));
+            $row['stock_status'] = (string) (($row['lookup_stock_status'] ?? '') !== '' ? $row['lookup_stock_status'] : ($row['stock_status'] ?? ''));
+            $row['stock_quantity'] = (string) (($row['lookup_stock_quantity'] ?? '') !== '' ? $row['lookup_stock_quantity'] : ($row['stock_quantity'] ?? ''));
+            $row['upc'] = $upc;
+            if ($pid > 0) {
+                $by_id[$pid] = $row;
+            }
+            if ($upc !== '') {
+                $by_upc[$upc] = $row;
+            }
+        }
+
+        return ['by_id' => $by_id, 'by_upc' => $by_upc];
+    }
+
+    /**
+     * @param int[] $product_ids
+     * @return array{brands:array<int,string>,categories:array<int,string>}
+     */
+    private function query_product_terms(array $product_ids): array
+    {
+        global $wpdb;
+        $ids = array_values(array_unique(array_filter(array_map('intval', $product_ids))));
+        if (!$wpdb || empty($ids)) {
+            return ['brands' => [], 'categories' => []];
+        }
+
+        $taxonomy_sql = "'product_cat','product_brand','pwb-brand','yith_product_brand','woocommerce_brand','product_brands','pa_brand'";
+        $rows = $wpdb->get_results("
+            SELECT tr.object_id AS product_id, tt.taxonomy, t.name
+            FROM {$wpdb->term_relationships} tr
+            INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+            INNER JOIN {$wpdb->terms} t ON t.term_id = tt.term_id
+            WHERE tr.object_id IN (" . implode(',', $ids) . ")
+              AND tt.taxonomy IN ({$taxonomy_sql})
+            ORDER BY t.name ASC
+        ", ARRAY_A);
+
+        $brands = [];
+        $categories = [];
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            $pid = (int) ($row['product_id'] ?? 0);
+            $taxonomy = (string) ($row['taxonomy'] ?? '');
+            $name = trim(wp_strip_all_tags((string) ($row['name'] ?? '')));
+            if ($pid <= 0 || $name === '') {
+                continue;
+            }
+
+            if ($taxonomy === 'product_cat') {
+                $categories[$pid][] = $name;
+            } elseif (!isset($brands[$pid])) {
+                $brands[$pid] = $name;
+            }
+        }
+
+        return [
+            'brands' => $brands,
+            'categories' => array_map(static function (array $names): string {
+                return implode(', ', array_values(array_unique($names)));
+            }, $categories),
+        ];
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $rows
+     * @return array{direct:float,non_ffl:float}
+     */
+    private function conversion_medians(array $rows): array
+    {
+        $direct = [];
+        $non_ffl = [];
+        foreach ($rows as $row) {
+            if ((int) $row['clicks'] <= 0) {
+                continue;
+            }
+
+            $conversion = (float) $row['conversion_rate'];
+            if ((string) $row['map_policy'] === '') {
+                $direct[] = $conversion;
+            }
+            if (empty($row['ffl_required'])) {
+                $non_ffl[] = $conversion;
+            }
+        }
+
+        return [
+            'direct' => $this->median($direct),
+            'non_ffl' => $this->median($non_ffl),
+        ];
+    }
+
+    /**
+     * @param float[] $values
+     */
+    private function median(array $values): float
+    {
+        $values = array_values(array_filter($values, static fn($value): bool => is_numeric($value)));
+        if (empty($values)) {
+            return 0.0;
+        }
+
+        sort($values, SORT_NUMERIC);
+        $count = count($values);
+        $middle = (int) floor($count / 2);
+        if ($count % 2) {
+            return (float) $values[$middle];
+        }
+
+        return ((float) $values[$middle - 1] + (float) $values[$middle]) / 2.0;
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @param array{direct:float,non_ffl:float} $medians
+     * @return string[]
+     */
+    private function recommendation_badges(array $row, array $medians): array
+    {
+        $badges = [];
+        $clicks = (int) $row['clicks'];
+        $orders = (int) $row['orders'];
+        $conversion = (float) $row['conversion_rate'];
+        $gross = (float) $row['gross_profit'];
+        $net = (float) $row['net_profit'];
+        $margin = (float) $row['margin'];
+        $map_policy = (string) $row['map_policy'];
+
+        if (($clicks >= 10 && $conversion >= 5.0) || ($orders >= 2 && $net > 0.0)) {
+            $badges[] = 'Good Converter';
+        }
+        if ($clicks >= 25 && $orders === 0) {
+            $badges[] = 'High Demand / No Orders';
+        }
+        if ($clicks >= 25 && $conversion < 1.0) {
+            $badges[] = 'Leaky Clicks';
+        }
+        if (!empty($row['recent_stock_window_risk'])) {
+            $badges[] = 'Recent Stock-Window Risk';
+        }
+        if (in_array($map_policy, [Options::MAP_POLICY_EMAIL_FOR_QUOTE, Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE], true)
+            && $clicks >= 25
+            && $medians['direct'] > 0.0
+            && $conversion < ($medians['direct'] * 0.5)
+        ) {
+            $badges[] = 'MAP Friction';
+        }
+        if (!empty($row['ffl_required'])
+            && $clicks >= 25
+            && $medians['non_ffl'] > 0.0
+            && $conversion < ($medians['non_ffl'] * 0.5)
+        ) {
+            $badges[] = 'Firearm Checkout Friction';
+        }
+        if ($clicks >= 25 && strtolower((string) $row['stock_status']) === 'instock' && ($conversion < 1.0 || $orders === 0) && ($gross <= 0.0 || $margin < 5.0)) {
+            $badges[] = 'Review Price';
+        }
+        if ($gross > 0.0 && (float) $row['allocated_cost'] >= ($gross * 0.5)) {
+            $badges[] = 'Click Cost Eating Margin';
+        }
+        if ($net > 0.0) {
+            $badges[] = 'Profitable After Click Cost';
+        }
+        if ($clicks >= 10 && $net < 0.0) {
+            $badges[] = 'Unprofitable After Click Cost';
+        }
+        if ($clicks >= 50 && $orders === 0 && strtolower((string) $row['stock_status']) === 'instock' && $this->days_since((string) $row['created_at']) > 7 && $net <= 0.0) {
+            $badges[] = 'Consider Excluding From Feed';
+        }
+        if (!empty($row['missing_profit_audit'])) {
+            $badges[] = 'Missing Profit Audit';
+        }
+
+        $serious = [
+            'High Demand / No Orders',
+            'Leaky Clicks',
+            'Recent Stock-Window Risk',
+            'MAP Friction',
+            'Firearm Checkout Friction',
+            'Review Price',
+            'Click Cost Eating Margin',
+            'Unprofitable After Click Cost',
+            'Consider Excluding From Feed',
+            'Missing Profit Audit',
+        ];
+        if (array_intersect($serious, $badges)) {
+            array_unshift($badges, 'Needs Attention');
+        }
+
+        return array_values(array_unique($badges));
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $rows
+     * @return array<string,array<string,mixed>>
+     */
+    private function apply_saved_view(array $rows, string $view): array
+    {
+        if ($view === '' || $view === 'all') {
+            return $rows;
+        }
+
+        return array_filter($rows, function (array $row) use ($view): bool {
+            $badges = $row['badges'] ?? [];
+            switch ($view) {
+                case 'needs_attention':
+                    return in_array('Needs Attention', $badges, true);
+                case 'high_clicks_zero_orders':
+                    return (int) $row['clicks'] >= 25 && (int) $row['orders'] === 0;
+                case 'high_clicks_low_conversion':
+                    return (int) $row['clicks'] >= 25 && (float) $row['conversion_rate'] < 1.0;
+                case 'profitable_winners':
+                    return (int) $row['orders'] > 0 && (float) $row['net_profit'] > 0.0;
+                case 'losing_money':
+                    return (int) $row['clicks'] > 0 && (float) $row['net_profit'] < 0.0;
+                case 'map_quote_review':
+                    return in_array((string) $row['map_policy'], [Options::MAP_POLICY_EMAIL_FOR_QUOTE, Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE], true);
+                case 'ffl_product_review':
+                    return !empty($row['ffl_required']);
+                case 'recent_stock_window_risk':
+                    return in_array('Recent Stock-Window Risk', $badges, true);
+                case 'feed_exclusion_candidates':
+                    return in_array('Consider Excluding From Feed', $badges, true);
+                case 'missing_profit_audit':
+                    return !empty($row['missing_profit_audit']);
+            }
+
+            return true;
+        });
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $rows
+     * @param array<string,mixed> $filters
+     * @return array<string,array<string,mixed>>
+     */
+    private function apply_filters(array $rows, array $filters): array
+    {
+        return array_filter($rows, function (array $row) use ($filters): bool {
+            if ($filters['feed'] === 'yes' && empty($row['feed_included'])) {
+                return false;
+            }
+            if ($filters['feed'] === 'no' && !empty($row['feed_included'])) {
+                return false;
+            }
+            if ($filters['stock'] !== '' && strtolower((string) $row['stock_status']) !== strtolower((string) $filters['stock'])) {
+                return false;
+            }
+            if ($filters['brand'] !== '' && strcasecmp((string) $row['brand'], (string) $filters['brand']) !== 0) {
+                return false;
+            }
+            if ($filters['category'] !== '' && stripos((string) $row['category'], (string) $filters['category']) === false) {
+                return false;
+            }
+            if ($filters['ffl'] === 'yes' && empty($row['ffl_required'])) {
+                return false;
+            }
+            if ($filters['ffl'] === 'no' && !empty($row['ffl_required'])) {
+                return false;
+            }
+            if ($filters['map'] === 'quote' && !in_array((string) $row['map_policy'], [Options::MAP_POLICY_EMAIL_FOR_QUOTE, Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE], true)) {
+                return false;
+            }
+            if ($filters['map'] === 'direct' && (string) $row['map_policy'] !== '') {
+                return false;
+            }
+            if ((int) $row['clicks'] < (int) $filters['min_clicks']) {
+                return false;
+            }
+            if ($filters['max_clicks'] !== null && (int) $row['clicks'] > (int) $filters['max_clicks']) {
+                return false;
+            }
+            if ((int) $row['orders'] < (int) $filters['min_orders']) {
+                return false;
+            }
+            if ($filters['max_orders'] !== null && (int) $row['orders'] > (int) $filters['max_orders']) {
+                return false;
+            }
+            if ($filters['min_conversion'] !== null && (float) $row['conversion_rate'] < (float) $filters['min_conversion']) {
+                return false;
+            }
+            if ($filters['max_conversion'] !== null && (float) $row['conversion_rate'] > (float) $filters['max_conversion']) {
+                return false;
+            }
+            if ($filters['min_profit'] !== null && (float) $row['net_profit'] < (float) $filters['min_profit']) {
+                return false;
+            }
+            if ($filters['max_profit'] !== null && (float) $row['net_profit'] > (float) $filters['max_profit']) {
+                return false;
+            }
+            if ($filters['missing_profit'] === 'yes' && empty($row['missing_profit_audit'])) {
+                return false;
+            }
+            if ($filters['missing_profit'] === 'no' && !empty($row['missing_profit_audit'])) {
+                return false;
+            }
+
+            return true;
+        });
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $rows
+     * @return array<string,mixed>
+     */
+    private function summary_from_rows(array $rows): array
+    {
+        $summary = [
+            'clicks' => 0,
+            'orders' => 0,
+            'units' => 0,
+            'revenue' => 0.0,
+            'gross_profit' => 0.0,
+            'zero_order_clicked' => 0,
+            'high_click_poor_converters' => 0,
+        ];
+
+        foreach ($rows as $row) {
+            $summary['clicks'] += (int) $row['clicks'];
+            $summary['orders'] += (int) $row['orders'];
+            $summary['units'] += (int) $row['units'];
+            $summary['revenue'] += (float) $row['revenue'];
+            $summary['gross_profit'] += (float) $row['gross_profit'];
+            if ((int) $row['clicks'] > 0 && (int) $row['orders'] === 0) {
+                $summary['zero_order_clicked']++;
+            }
+            if ((int) $row['clicks'] >= 25 && (float) $row['conversion_rate'] < 1.0) {
+                $summary['high_click_poor_converters']++;
+            }
+        }
+
+        $summary['conversion_rate'] = (int) $summary['clicks'] > 0 ? ((int) $summary['orders'] / (int) $summary['clicks']) * 100.0 : 0.0;
+
+        return $summary;
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $rows
+     */
+    private function count_clicked_out_of_stock(array $rows): int
+    {
+        $count = 0;
+        foreach ($rows as $row) {
+            if ((int) $row['clicks'] > 0 && strtolower((string) $row['stock_status']) !== 'instock') {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    private function gun_deals_cost(int $clicks): float
+    {
+        return self::BASE_FEE + max(0, $clicks - self::INCLUDED_CLICKS) * self::OVERAGE_CPC;
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $rows
+     * @return string[]
+     */
+    private function unique_column(array $rows, string $column): array
+    {
+        $values = [];
+        foreach ($rows as $row) {
+            $value = trim((string) ($row[$column] ?? ''));
+            if ($value !== '') {
+                $values[$value] = $value;
+            }
+        }
+        ksort($values, SORT_NATURAL | SORT_FLAG_CASE);
+        return array_values($values);
+    }
+
+    private function row_key(string $upc, int $product_id): string
+    {
+        $upc = GunDealsAnalyticsStore::normalize_upc($upc);
+        if ($upc !== '') {
+            return $upc;
+        }
+
+        return $product_id > 0 ? 'pid:' . $product_id : '';
+    }
+
+    private function normalize_map_policy(string $policy): string
+    {
+        $policy = strtolower(trim($policy));
+        if (in_array($policy, [Options::MAP_POLICY_EMAIL_FOR_QUOTE, Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE, Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART], true)) {
+            return $policy;
+        }
+
+        return '';
+    }
+
+    private function map_status_label(string $policy): string
+    {
+        if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
+            return 'Email quote';
+        }
+        if ($policy === Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE) {
+            return 'Add to cart for price';
+        }
+        if ($policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+            return 'MAP visible / no quote';
+        }
+
+        return 'Direct add to cart';
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function boolish($value): bool
+    {
+        $raw = strtolower(trim((string) $value));
+        return in_array($raw, ['1', 'yes', 'true', 'on'], true);
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function money_float($value): float
+    {
+        if (!is_numeric($value)) {
+            return 0.0;
+        }
+
+        $value = (float) $value;
+        return is_finite($value) ? $value : 0.0;
+    }
+
+    private function days_since(string $date_gmt): int
+    {
+        $ts = strtotime($date_gmt);
+        if (!$ts) {
+            return 9999;
+        }
+
+        return max(0, (int) floor((time() - $ts) / DAY_IN_SECONDS));
+    }
+
+    private function short_value(string $value, int $limit): string
+    {
+        return strlen($value) > $limit ? substr($value, 0, $limit - 3) . '...' : $value;
+    }
+
+    /**
+     * @param array<string,mixed> $filters
+     * @param array<string,mixed> $report
+     */
+    private function render_filter_form(array $filters, array $report): void
+    {
+        $views = [
+            'all' => 'All',
+            'needs_attention' => 'Needs Attention',
+            'high_clicks_zero_orders' => 'High Clicks / Zero Orders',
+            'high_clicks_low_conversion' => 'High Clicks / Low Conversion',
+            'profitable_winners' => 'Profitable Winners',
+            'losing_money' => 'Losing Money',
+            'map_quote_review' => 'MAP / Quote Review',
+            'ffl_product_review' => 'FFL Product Review',
+            'recent_stock_window_risk' => 'Recent Stock Window Risk',
+            'feed_exclusion_candidates' => 'Feed Exclusion Candidates',
+            'missing_profit_audit' => 'Missing Profit Audit',
+        ];
+
+        $export_url = add_query_arg(array_merge($_GET, [
+            'page' => self::PAGE_SLUG,
+            'fflhub_gundeals_export' => '1',
+            '_wpnonce' => wp_create_nonce('fflhub_gundeals_export'),
+        ]), admin_url('admin.php'));
+        ?>
+        <form method="get" class="fflhub-gd-filters">
+            <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>" />
+            <label>Start <input type="date" name="start_date" value="<?php echo esc_attr((string) $filters['start_date']); ?>" /></label>
+            <label>End <input type="date" name="end_date" value="<?php echo esc_attr((string) $filters['end_date']); ?>" /></label>
+            <label>View <?php $this->select('view', (string) $filters['view'], $views); ?></label>
+            <label>Feed <?php $this->select('feed', (string) $filters['feed'], ['' => 'Any', 'yes' => 'Included', 'no' => 'Not Included']); ?></label>
+            <label>Stock <?php $this->select('stock', (string) $filters['stock'], ['' => 'Any', 'instock' => 'In Stock', 'outofstock' => 'Out of Stock', 'unknown' => 'Unknown']); ?></label>
+            <label>Brand <?php $this->select_from_values('brand', (string) $filters['brand'], $report['brands'] ?? []); ?></label>
+            <label>Category <?php $this->select_from_values('category', (string) $filters['category'], $report['categories'] ?? []); ?></label>
+            <label>FFL <?php $this->select('ffl', (string) $filters['ffl'], ['' => 'Any', 'yes' => 'FFL', 'no' => 'Non-FFL']); ?></label>
+            <label>MAP <?php $this->select('map', (string) $filters['map'], ['' => 'Any', 'quote' => 'Quote/MAP', 'direct' => 'Direct Cart']); ?></label>
+            <label>Min Clicks <input type="number" min="0" name="min_clicks" value="<?php echo esc_attr((string) $filters['min_clicks']); ?>" /></label>
+            <label>Max Clicks <input type="number" min="0" name="max_clicks" value="<?php echo esc_attr($filters['max_clicks'] !== null ? (string) $filters['max_clicks'] : ''); ?>" /></label>
+            <label>Min Orders <input type="number" min="0" name="min_orders" value="<?php echo esc_attr((string) $filters['min_orders']); ?>" /></label>
+            <label>Max Orders <input type="number" min="0" name="max_orders" value="<?php echo esc_attr($filters['max_orders'] !== null ? (string) $filters['max_orders'] : ''); ?>" /></label>
+            <label>Min Conv % <input type="number" step="0.01" name="min_conversion" value="<?php echo esc_attr($filters['min_conversion'] !== null ? (string) $filters['min_conversion'] : ''); ?>" /></label>
+            <label>Max Conv % <input type="number" step="0.01" name="max_conversion" value="<?php echo esc_attr($filters['max_conversion'] !== null ? (string) $filters['max_conversion'] : ''); ?>" /></label>
+            <label>Min Net $ <input type="number" step="0.01" name="min_profit" value="<?php echo esc_attr($filters['min_profit'] !== null ? (string) $filters['min_profit'] : ''); ?>" /></label>
+            <label>Max Net $ <input type="number" step="0.01" name="max_profit" value="<?php echo esc_attr($filters['max_profit'] !== null ? (string) $filters['max_profit'] : ''); ?>" /></label>
+            <label>Missing Audit <?php $this->select('missing_profit', (string) $filters['missing_profit'], ['' => 'Any', 'yes' => 'Yes', 'no' => 'No']); ?></label>
+            <label><input type="checkbox" name="advanced" value="1" <?php checked(!empty($filters['advanced'])); ?> /> Advanced columns</label>
+            <button class="button button-primary" type="submit">Apply</button>
+            <a class="button" href="<?php echo esc_url($export_url); ?>">Export CSV</a>
+            <?php if ((string) ($report['latest_feed_snapshot'] ?? '') !== '') : ?>
+                <span class="fflhub-gd-snapshot">Latest feed snapshot: <?php echo esc_html((string) $report['latest_feed_snapshot']); ?> GMT</span>
+            <?php endif; ?>
+        </form>
+        <?php
+    }
+
+    /**
+     * @param array<string,string> $options
+     */
+    private function select(string $name, string $selected, array $options): void
+    {
+        echo '<select name="' . esc_attr($name) . '">';
+        foreach ($options as $value => $label) {
+            echo '<option value="' . esc_attr((string) $value) . '"' . selected($selected, (string) $value, false) . '>' . esc_html((string) $label) . '</option>';
+        }
+        echo '</select>';
+    }
+
+    /**
+     * @param string[] $values
+     */
+    private function select_from_values(string $name, string $selected, array $values): void
+    {
+        echo '<select name="' . esc_attr($name) . '"><option value="">Any</option>';
+        foreach ($values as $value) {
+            echo '<option value="' . esc_attr($value) . '"' . selected($selected, $value, false) . '>' . esc_html($value) . '</option>';
+        }
+        echo '</select>';
+    }
+
+    /**
+     * @param array<string,mixed> $report
+     */
+    private function render_cards(array $report): void
+    {
+        $s = $report['summary'];
+        $cards = [
+            'Reporting period' => esc_html((string) $report['period_start_gmt'] . ' to ' . (string) $report['period_end_gmt']),
+            'Feed UPC count' => number_format_i18n((int) $s['feed_upc_count']),
+            'Total Gun.deals clicks' => number_format_i18n((int) $s['clicks']),
+            'Included clicks remaining' => number_format_i18n((int) $s['included_clicks_remaining']),
+            'Overage clicks' => number_format_i18n((int) $s['overage_clicks']),
+            'Overage cost' => $this->money((float) $s['overage_cost']),
+            'Total estimated Gun.deals cost' => $this->money((float) $s['period_cost']),
+            'Effective CPC' => $this->money((float) $s['effective_cpc']),
+            'Gun.deals-attributed orders' => number_format_i18n((int) $s['attributed_orders']),
+            'Units sold' => number_format_i18n((int) $s['units']),
+            'Revenue' => $this->money((float) $s['revenue']),
+            'Gross profit' => $this->money((float) $s['gross_profit']),
+            'Net after Gun.deals cost' => $this->money((float) $s['net_after_period_cost']),
+            'Break-even status' => ((float) $s['break_even_gap'] <= 0.0 ? 'Profitable' : 'Short'),
+            'Break-even gap' => $this->money((float) $s['break_even_gap']),
+            'Conversion rate' => number_format_i18n((float) $s['conversion_rate'], 2) . '%',
+            'Clicks / zero orders' => number_format_i18n((int) $s['zero_order_clicked']),
+            'High-click poor converters' => number_format_i18n((int) $s['high_click_poor_converters']),
+            'Clicked and out of stock' => number_format_i18n((int) $s['clicked_out_of_stock']),
+        ];
+        ?>
+        <div class="fflhub-gd-cards">
+            <?php foreach ($cards as $label => $value) : ?>
+                <div class="fflhub-gd-card">
+                    <span><?php echo esc_html($label); ?></span>
+                    <strong><?php echo esc_html((string) $value); ?></strong>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        <?php
+    }
+
+    /**
+     * @param array<string,mixed> $report
+     * @param array<string,mixed> $filters
+     */
+    private function render_table(array $report, array $filters): void
+    {
+        $show_advanced = !empty($filters['advanced']);
+        ?>
+        <table class="widefat striped fflhub-gd-table">
+            <thead>
+                <tr>
+                    <th>Recommendation</th>
+                    <th>UPC</th>
+                    <th>Product</th>
+                    <th>Feed</th>
+                    <th>Stock</th>
+                    <th>Clicks</th>
+                    <th>Orders</th>
+                    <th>Units</th>
+                    <th>Conv.</th>
+                    <th>Revenue</th>
+                    <th>Gross Profit</th>
+                    <th>Allocated Cost</th>
+                    <th>Net</th>
+                    <th>FFL</th>
+                    <th>MAP/Quote</th>
+                    <th>Visible Price</th>
+                    <?php if ($show_advanced) : ?>
+                        <th>Product ID</th>
+                        <th>Raw Cumulative</th>
+                        <th>Deduped</th>
+                        <th>Stock Qty</th>
+                        <th>Brand</th>
+                        <th>Category</th>
+                        <th>Dealer Cost</th>
+                        <th>True Cost</th>
+                        <th>Margin</th>
+                        <th>Fees/Adjustments</th>
+                        <th>SOT</th>
+                        <th>Last Order</th>
+                        <th>Views</th>
+                        <th>Add to Cart</th>
+                        <th>Email Quotes</th>
+                        <th>Attribution</th>
+                        <th>Cost / Order</th>
+                        <th>Cost / Revenue $</th>
+                        <th>Click Cost % Profit</th>
+                        <th>Marginal Click Cost</th>
+                    <?php endif; ?>
+                </tr>
+            </thead>
+            <tbody>
+            <?php if (empty($report['rows'])) : ?>
+                <tr><td colspan="<?php echo esc_attr($show_advanced ? '36' : '16'); ?>">No products match the current filters.</td></tr>
+            <?php endif; ?>
+            <?php foreach ($report['rows'] as $row) : ?>
+                <tr>
+                    <td><?php $this->render_badges($row['badges'] ?? []); ?></td>
+                    <td><code><?php echo esc_html((string) $row['upc']); ?></code></td>
+                    <td>
+                        <?php if ((string) $row['edit_url'] !== '') : ?>
+                            <a href="<?php echo esc_url((string) $row['edit_url']); ?>"><?php echo esc_html((string) $row['title']); ?></a>
+                        <?php else : ?>
+                            <?php echo esc_html((string) $row['title']); ?>
+                        <?php endif; ?>
+                    </td>
+                    <td><?php echo !empty($row['feed_included']) ? 'Yes' : 'No'; ?></td>
+                    <td><?php echo esc_html((string) $row['stock_status']); ?></td>
+                    <td><?php echo number_format_i18n((int) $row['clicks']); ?></td>
+                    <td><?php echo number_format_i18n((int) $row['orders']); ?></td>
+                    <td><?php echo number_format_i18n((int) $row['units']); ?></td>
+                    <td><?php echo esc_html(number_format_i18n((float) $row['conversion_rate'], 2) . '%'); ?></td>
+                    <td><?php echo esc_html($this->money((float) $row['revenue'])); ?></td>
+                    <td><?php echo esc_html($this->money((float) $row['gross_profit'])); ?></td>
+                    <td><?php echo esc_html($this->money((float) $row['allocated_cost'])); ?></td>
+                    <td><?php echo esc_html($this->money((float) $row['net_profit'])); ?></td>
+                    <td><?php echo !empty($row['ffl_required']) ? 'Yes' : 'No'; ?></td>
+                    <td><?php echo esc_html((string) $row['map_status']); ?></td>
+                    <td><?php echo esc_html($this->money((float) $row['customer_price'])); ?></td>
+                    <?php if ($show_advanced) : ?>
+                        <td><?php echo esc_html((string) $row['product_id']); ?></td>
+                        <td><?php echo number_format_i18n((int) $row['raw_cumulative_clicks']); ?></td>
+                        <td><?php echo number_format_i18n((int) $row['deduped_clicks']); ?></td>
+                        <td><?php echo esc_html((string) $row['stock_quantity']); ?></td>
+                        <td><?php echo esc_html((string) $row['brand']); ?></td>
+                        <td><?php echo esc_html((string) $row['category']); ?></td>
+                        <td><?php echo esc_html($this->money((float) $row['dealer_cost'])); ?></td>
+                        <td><?php echo esc_html($this->money((float) $row['true_cost'])); ?></td>
+                        <td><?php echo esc_html(number_format_i18n((float) $row['margin'], 2) . '%'); ?></td>
+                        <td><?php echo esc_html($this->money((float) $row['fees_adjustments'])); ?></td>
+                        <td><?php echo !empty($row['sot_required']) ? 'Yes' : 'No'; ?></td>
+                        <td><?php echo esc_html((string) $row['last_order_date']); ?></td>
+                        <td><?php echo esc_html((string) $row['page_views']); ?></td>
+                        <td><?php echo esc_html((string) $row['add_to_cart_count']); ?></td>
+                        <td><?php echo esc_html((string) $row['email_quote_count']); ?></td>
+                        <td><?php echo esc_html((string) $row['source_attribution']); ?></td>
+                        <td><?php echo esc_html($this->money((float) $row['cost_per_order'])); ?></td>
+                        <td><?php echo esc_html(number_format_i18n((float) $row['cost_per_revenue_dollar'], 4)); ?></td>
+                        <td><?php echo esc_html(number_format_i18n((float) $row['click_cost_profit_percent'], 2) . '%'); ?></td>
+                        <td><?php echo esc_html($this->money((float) $row['marginal_click_cost'])); ?></td>
+                    <?php endif; ?>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php
+    }
+
+    /**
+     * @param string[] $badges
+     */
+    private function render_badges(array $badges): void
+    {
+        if (empty($badges)) {
+            echo '<span class="fflhub-gd-badge">No action</span>';
+            return;
+        }
+
+        foreach ($badges as $badge) {
+            $class = $badge === 'Needs Attention' || $badge === 'Unprofitable After Click Cost' || $badge === 'Missing Profit Audit'
+                ? ' is-warning'
+                : '';
+            echo '<span class="fflhub-gd-badge' . esc_attr($class) . '">' . esc_html($badge) . '</span> ';
+        }
+    }
+
+    private function money(float $amount): string
+    {
+        return '$' . number_format_i18n($amount, 2);
+    }
+
+    /**
+     * @param array<string,mixed> $report
+     * @param array<string,mixed> $filters
+     */
+    private function maybe_export_csv(array $report, array $filters): void
+    {
+        if (!check_admin_referer('fflhub_gundeals_export')) {
+            wp_die(esc_html__('Invalid export request.', 'ffl-hub'));
+        }
+
+        $advanced = !empty($filters['advanced']);
+        $filename = 'gundeals-performance-' . gmdate('Ymd_His') . '.csv';
+
+        nocache_headers();
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename=' . $filename);
+
+        $fh = fopen('php://output', 'wb');
+        if (!is_resource($fh)) {
+            exit;
+        }
+
+        $columns = $this->csv_columns($advanced);
+        fputcsv($fh, array_values($columns));
+        foreach ($report['rows'] as $row) {
+            $out = [];
+            foreach ($columns as $key => $label) {
+                if ($key === 'badges') {
+                    $out[] = implode('; ', $row['badges'] ?? []);
+                } elseif (in_array($key, ['feed_included', 'ffl_required', 'sot_required', 'missing_profit_audit'], true)) {
+                    $out[] = !empty($row[$key]) ? 'yes' : 'no';
+                } else {
+                    $out[] = $row[$key] ?? '';
+                }
+            }
+            fputcsv($fh, $out);
+        }
+        fclose($fh);
+        exit;
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function csv_columns(bool $advanced): array
+    {
+        $columns = [
+            'badges' => 'recommendation_badge',
+            'upc' => 'upc',
+            'title' => 'product_title',
+            'feed_included' => 'feed_included',
+            'stock_status' => 'stock_status',
+            'clicks' => 'clicks',
+            'orders' => 'orders',
+            'units' => 'units_sold',
+            'conversion_rate' => 'conversion_rate',
+            'revenue' => 'revenue',
+            'gross_profit' => 'gross_profit',
+            'allocated_cost' => 'allocated_gundeals_cost',
+            'net_profit' => 'net_profit_after_allocated_cost',
+            'ffl_required' => 'ffl_required',
+            'map_status' => 'map_quote_status',
+            'customer_price' => 'customer_visible_price',
+        ];
+
+        if (!$advanced) {
+            return $columns;
+        }
+
+        return array_merge($columns, [
+            'product_id' => 'product_id',
+            'raw_cumulative_clicks' => 'raw_cumulative_clicks',
+            'deduped_clicks' => 'deduped_clicks',
+            'stock_quantity' => 'stock_quantity',
+            'brand' => 'brand',
+            'category' => 'category',
+            'dealer_cost' => 'dealer_cost_from_profit_audit',
+            'true_cost' => 'true_cost_from_profit_audit',
+            'margin' => 'margin_from_profit_audit',
+            'fees_adjustments' => 'fees_cost_adjustments_from_profit_audit',
+            'sot_required' => 'sot_required',
+            'last_order_date' => 'last_order_date',
+            'page_views' => 'product_page_views',
+            'add_to_cart_count' => 'add_to_cart_count',
+            'email_quote_count' => 'email_quote_count',
+            'source_attribution' => 'checkout_source_attribution',
+            'cost_per_order' => 'cost_per_order',
+            'cost_per_revenue_dollar' => 'cost_per_revenue_dollar',
+            'click_cost_profit_percent' => 'click_cost_percent_of_gross_profit',
+            'marginal_click_cost' => 'marginal_click_cost',
+            'missing_profit_audit' => 'missing_profit_audit',
+        ]);
+    }
+
+    private function render_styles(): void
+    {
+        ?>
+        <style>
+            .fflhub-gd-filters {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px 14px;
+                align-items: end;
+                padding: 12px;
+                margin: 14px 0;
+                background: #fff;
+                border: 1px solid #dcdcde;
+            }
+            .fflhub-gd-filters label {
+                display: flex;
+                flex-direction: column;
+                gap: 3px;
+                font-size: 12px;
+            }
+            .fflhub-gd-filters input[type="number"] { width: 92px; }
+            .fflhub-gd-snapshot { align-self: center; color: #646970; }
+            .fflhub-gd-cards {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+                gap: 10px;
+                margin: 14px 0;
+            }
+            .fflhub-gd-card {
+                background: #fff;
+                border: 1px solid #dcdcde;
+                padding: 10px 12px;
+            }
+            .fflhub-gd-card span {
+                display: block;
+                color: #646970;
+                font-size: 12px;
+                margin-bottom: 4px;
+            }
+            .fflhub-gd-card strong {
+                font-size: 18px;
+            }
+            .fflhub-gd-table {
+                margin-top: 12px;
+            }
+            .fflhub-gd-table th,
+            .fflhub-gd-table td {
+                vertical-align: top;
+            }
+            .fflhub-gd-badge {
+                display: inline-block;
+                margin: 0 3px 3px 0;
+                padding: 2px 6px;
+                border-radius: 3px;
+                background: #edf7ed;
+                color: #1b5e20;
+                font-size: 11px;
+                white-space: nowrap;
+            }
+            .fflhub-gd-badge.is-warning {
+                background: #fcf0f1;
+                color: #8a2424;
+            }
+        </style>
+        <?php
+    }
+}

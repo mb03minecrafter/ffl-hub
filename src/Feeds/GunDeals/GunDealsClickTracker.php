@@ -2,6 +2,8 @@
 
 namespace FFLHub\Feeds\GunDeals;
 
+use FFLHub\Product\ProductMeta;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -51,13 +53,17 @@ final class GunDealsClickTracker
             return;
         }
 
+        $cookie_name = self::COOKIE_PREFIX . $product_id;
+        $is_deduped_click = empty($_COOKIE[$cookie_name]);
+        $upc = GunDealsAnalyticsStore::normalize_upc((string) get_post_meta($product_id, ProductMeta::FFLHUB_UPC_META, true));
+
         self::increment_post_counter($product_id, self::META_RAW_CLICKS);
         self::increment_option_counter(self::OPTION_RAW_TOTAL);
         self::increment_daily_counter(self::OPTION_RAW_DAILY);
         update_post_meta($product_id, self::META_LAST_CLICK_AT, gmdate('Y-m-d H:i:s'));
+        GunDealsAnalyticsStore::record_click($product_id, $upc, $is_deduped_click, self::request_context());
 
-        $cookie_name = self::COOKIE_PREFIX . $product_id;
-        if (!empty($_COOKIE[$cookie_name])) {
+        if (!$is_deduped_click) {
             return;
         }
 
@@ -65,6 +71,25 @@ final class GunDealsClickTracker
         self::increment_option_counter(self::OPTION_DEDUPED_TOTAL);
         self::increment_daily_counter(self::OPTION_DEDUPED_DAILY);
         self::set_dedupe_cookie($cookie_name);
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private static function request_context(): array
+    {
+        $host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
+        $uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+        $scheme = (function_exists('is_ssl') && is_ssl()) ? 'https://' : 'http://';
+
+        return [
+            'source' => 'gundeals',
+            'request_url' => $host !== '' ? $scheme . $host . $uri : $uri,
+            'referrer' => isset($_SERVER['HTTP_REFERER']) ? (string) $_SERVER['HTTP_REFERER'] : '',
+            'user_agent' => isset($_SERVER['HTTP_USER_AGENT']) ? (string) $_SERVER['HTTP_USER_AGENT'] : '',
+            'ip' => isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '',
+            'session' => isset($_COOKIE[LOGGED_IN_COOKIE]) ? (string) $_COOKIE[LOGGED_IN_COOKIE] : '',
+        ];
     }
 
     private static function request_source(): string
