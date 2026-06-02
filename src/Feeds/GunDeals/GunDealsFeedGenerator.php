@@ -933,7 +933,8 @@ final class GunDealsFeedGenerator
      */
     private function map_real_price_free_shipping_override_enabled(array $row): bool
     {
-        if ($this->markup_mode_from_row($row) !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
+        $raw_policy = strtolower(trim((string) ($row['map_policy'] ?? '')));
+        if ($this->normalize_map_policy($raw_policy) !== Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
             return false;
         }
 
