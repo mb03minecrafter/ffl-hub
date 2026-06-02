@@ -205,8 +205,7 @@ final class GunDealsPerformancePage
                 $upc = GunDealsAnalyticsStore::normalize_upc((string) ($row['upc'] ?? ''));
                 if ($pid > 0) {
                     $product_ids[$pid] = $pid;
-                }
-                if ($upc !== '') {
+                } elseif ($upc !== '') {
                     $upcs[$upc] = $upc;
                 }
             }
