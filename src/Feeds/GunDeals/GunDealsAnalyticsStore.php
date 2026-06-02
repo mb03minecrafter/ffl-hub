@@ -2,6 +2,8 @@
 
 namespace FFLHub\Feeds\GunDeals;
 
+use FFLHub\Product\ProductMeta;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -9,12 +11,14 @@ if (!defined('ABSPATH')) {
 final class GunDealsAnalyticsStore
 {
     private const SCHEMA_OPTION = 'fflhub_gundeals_analytics_schema_version';
-    private const SCHEMA_VERSION = '1';
+    private const SCHEMA_VERSION = '2';
+    private const LEGACY_META_BACKFILL_OPTION = 'fflhub_gundeals_legacy_click_meta_backfilled_at';
 
     public static function ensure_schema(): void
     {
         $installed = (string) get_option(self::SCHEMA_OPTION, '');
         if ($installed === self::SCHEMA_VERSION) {
+            self::backfill_legacy_click_meta_once();
             return;
         }
 
@@ -66,6 +70,21 @@ final class GunDealsAnalyticsStore
         ");
 
         dbDelta("
+            CREATE TABLE " . self::click_totals_table() . " (
+                product_id bigint(20) unsigned NOT NULL,
+                upc varchar(32) NOT NULL DEFAULT '',
+                raw_clicks int(10) unsigned NOT NULL DEFAULT 0,
+                deduped_clicks int(10) unsigned NOT NULL DEFAULT 0,
+                last_click_at_gmt datetime NULL,
+                updated_at_gmt datetime NOT NULL,
+                PRIMARY KEY  (product_id),
+                KEY upc (upc),
+                KEY raw_clicks (raw_clicks),
+                KEY last_click_at_gmt (last_click_at_gmt)
+            ) {$charset_collate};
+        ");
+
+        dbDelta("
             CREATE TABLE " . self::feed_snapshots_table() . " (
                 id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
                 generated_at_gmt datetime NOT NULL,
@@ -89,6 +108,7 @@ final class GunDealsAnalyticsStore
         ");
 
         update_option(self::SCHEMA_OPTION, self::SCHEMA_VERSION, false);
+        self::backfill_legacy_click_meta_once();
     }
 
     public static function click_events_table(): string
@@ -103,10 +123,84 @@ final class GunDealsAnalyticsStore
         return $wpdb->prefix . 'fflhub_gundeals_click_rollups';
     }
 
+    public static function click_totals_table(): string
+    {
+        global $wpdb;
+        return $wpdb->prefix . 'fflhub_gundeals_click_totals';
+    }
+
     public static function feed_snapshots_table(): string
     {
         global $wpdb;
         return $wpdb->prefix . 'fflhub_gundeals_feed_snapshots';
+    }
+
+    public static function backfill_legacy_click_meta_once(): void
+    {
+        if ((string) get_option(self::LEGACY_META_BACKFILL_OPTION, '') !== '') {
+            return;
+        }
+
+        self::backfill_legacy_click_meta();
+        update_option(self::LEGACY_META_BACKFILL_OPTION, gmdate('Y-m-d H:i:s'), false);
+    }
+
+    public static function backfill_legacy_click_meta(): int
+    {
+        global $wpdb;
+        if (!$wpdb) {
+            return 0;
+        }
+
+        $raw_key = esc_sql(GunDealsClickTracker::META_RAW_CLICKS);
+        $deduped_key = esc_sql(GunDealsClickTracker::META_DEDUPED_CLICKS);
+        $last_key = esc_sql(GunDealsClickTracker::META_LAST_CLICK_AT);
+        $upc_key = esc_sql(ProductMeta::FFLHUB_UPC_META);
+        $now = esc_sql(gmdate('Y-m-d H:i:s'));
+
+        $result = $wpdb->query("
+            INSERT INTO " . self::click_totals_table() . "
+                (product_id, upc, raw_clicks, deduped_clicks, last_click_at_gmt, updated_at_gmt)
+            SELECT
+                p.ID AS product_id,
+                COALESCE(NULLIF(TRIM(upc_pm.meta_value), ''), '') AS upc,
+                CAST(raw_pm.meta_value AS UNSIGNED) AS raw_clicks,
+                CAST(COALESCE(deduped_pm.meta_value, 0) AS UNSIGNED) AS deduped_clicks,
+                CASE
+                    WHEN last_pm.meta_value REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$'
+                    THEN last_pm.meta_value
+                    ELSE NULL
+                END AS last_click_at_gmt,
+                '{$now}' AS updated_at_gmt
+            FROM {$wpdb->postmeta} raw_pm
+            INNER JOIN {$wpdb->posts} p
+                ON p.ID = raw_pm.post_id
+               AND p.post_type = 'product'
+            LEFT JOIN {$wpdb->postmeta} upc_pm
+                ON upc_pm.post_id = p.ID
+               AND upc_pm.meta_key = '{$upc_key}'
+            LEFT JOIN {$wpdb->postmeta} deduped_pm
+                ON deduped_pm.post_id = p.ID
+               AND deduped_pm.meta_key = '{$deduped_key}'
+            LEFT JOIN {$wpdb->postmeta} last_pm
+                ON last_pm.post_id = p.ID
+               AND last_pm.meta_key = '{$last_key}'
+            WHERE raw_pm.meta_key = '{$raw_key}'
+              AND CAST(raw_pm.meta_value AS UNSIGNED) > 0
+            ON DUPLICATE KEY UPDATE
+                upc = IF(VALUES(upc) <> '', VALUES(upc), upc),
+                raw_clicks = GREATEST(raw_clicks, VALUES(raw_clicks)),
+                deduped_clicks = GREATEST(deduped_clicks, VALUES(deduped_clicks)),
+                last_click_at_gmt = CASE
+                    WHEN last_click_at_gmt IS NULL THEN VALUES(last_click_at_gmt)
+                    WHEN VALUES(last_click_at_gmt) IS NULL THEN last_click_at_gmt
+                    WHEN VALUES(last_click_at_gmt) > last_click_at_gmt THEN VALUES(last_click_at_gmt)
+                    ELSE last_click_at_gmt
+                END,
+                updated_at_gmt = VALUES(updated_at_gmt)
+        ");
+
+        return is_numeric($result) ? (int) $result : 0;
     }
 
     /**
@@ -156,6 +250,25 @@ final class GunDealsAnalyticsStore
                 $upc,
                 $product_id,
                 $deduped ? 1 : 0,
+                $now
+            )
+        );
+
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . self::click_totals_table() . '
+                    (product_id, upc, raw_clicks, deduped_clicks, last_click_at_gmt, updated_at_gmt)
+                 VALUES (%d, %s, 1, %d, %s, %s)
+                 ON DUPLICATE KEY UPDATE
+                    upc = IF(VALUES(upc) <> \'\', VALUES(upc), upc),
+                    raw_clicks = raw_clicks + 1,
+                    deduped_clicks = deduped_clicks + VALUES(deduped_clicks),
+                    last_click_at_gmt = VALUES(last_click_at_gmt),
+                    updated_at_gmt = VALUES(updated_at_gmt)',
+                $product_id,
+                $upc,
+                $deduped ? 1 : 0,
+                $now,
                 $now
             )
         );

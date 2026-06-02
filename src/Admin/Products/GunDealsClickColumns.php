@@ -2,7 +2,7 @@
 
 namespace FFLHub\Admin\Products;
 
-use FFLHub\Feeds\GunDeals\GunDealsClickTracker;
+use FFLHub\Feeds\GunDeals\GunDealsAnalyticsStore;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -13,7 +13,10 @@ final class GunDealsClickColumns
     private const COL_GUNDEALS_CLICKS = 'fflhub_gundeals_clicks';
     private const SORT_GUNDEALS_CLICKS = 'fflhub_gundeals_clicks';
     private const SORT_QUERY_FLAG = 'fflhub_gundeals_click_sort';
-    private const SORT_META_ALIAS = 'fflhub_gundeals_click_sort_meta';
+    private const SORT_TABLE_ALIAS = 'fflhub_gundeals_click_sort_totals';
+
+    /** @var array<int,array<string,mixed>>|null */
+    private ?array $click_totals_cache = null;
 
     public function register(): void
     {
@@ -69,21 +72,20 @@ final class GunDealsClickColumns
             return;
         }
 
-        $raw = max(0, (int) get_post_meta($post_id, GunDealsClickTracker::META_RAW_CLICKS, true));
-        $deduped = max(0, (int) get_post_meta($post_id, GunDealsClickTracker::META_DEDUPED_CLICKS, true));
-        $last_click = trim((string) get_post_meta($post_id, GunDealsClickTracker::META_LAST_CLICK_AT, true));
+        $totals = $this->click_totals_for_current_page();
+        $row = $totals[$post_id] ?? [];
+        $raw = max(0, (int) ($row['raw_clicks'] ?? 0));
+        $last_click = trim((string) ($row['last_click_at_gmt'] ?? ''));
 
-        if ($raw <= 0 && $deduped <= 0) {
+        if ($raw <= 0) {
             echo '<span class="fflhub-product-empty">&mdash;</span>';
             return;
         }
 
         echo '<span class="fflhub-product-pill is-gundeals-clicks" title="'
-            . esc_attr__('Raw clicks / deduped clicks in a 30 minute window.', 'ffl-hub')
+            . esc_attr__('Raw Gun.deals clicks.', 'ffl-hub')
             . '">'
             . esc_html((string) $raw)
-            . ' / '
-            . esc_html((string) $deduped)
             . '</span>';
 
         if ($last_click !== '') {
@@ -134,7 +136,7 @@ final class GunDealsClickColumns
     }
 
     /**
-     * Sort by raw Gun.deals clicks without hiding products that have no click meta yet.
+     * Sort by raw Gun.deals clicks without hiding products that have no clicks yet.
      *
      * @param array<string,string> $clauses
      * @return array<string,string>
@@ -147,20 +149,66 @@ final class GunDealsClickColumns
 
         global $wpdb;
 
-        $alias = self::SORT_META_ALIAS;
-        $meta_key = esc_sql(GunDealsClickTracker::META_RAW_CLICKS);
-        $join = " LEFT JOIN {$wpdb->postmeta} AS {$alias}"
-            . " ON ({$wpdb->posts}.ID = {$alias}.post_id AND {$alias}.meta_key = '{$meta_key}') ";
+        GunDealsAnalyticsStore::ensure_schema();
+
+        $alias = self::SORT_TABLE_ALIAS;
+        $join = " LEFT JOIN " . GunDealsAnalyticsStore::click_totals_table() . " AS {$alias}"
+            . " ON ({$wpdb->posts}.ID = {$alias}.product_id) ";
 
         if (strpos((string) ($clauses['join'] ?? ''), " AS {$alias}") === false) {
             $clauses['join'] = (string) ($clauses['join'] ?? '') . $join;
         }
 
         $order = strtoupper((string) $query->get('order')) === 'ASC' ? 'ASC' : 'DESC';
-        $clicks_expr = "CAST(COALESCE({$alias}.meta_value, '0') AS UNSIGNED)";
+        $clicks_expr = "COALESCE({$alias}.raw_clicks, 0)";
         $clauses['orderby'] = "{$clicks_expr} {$order}, {$wpdb->posts}.post_title ASC";
 
         return $clauses;
+    }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    private function click_totals_for_current_page(): array
+    {
+        if (is_array($this->click_totals_cache)) {
+            return $this->click_totals_cache;
+        }
+
+        global $wpdb, $wp_query;
+        $this->click_totals_cache = [];
+        if (!$wpdb || !($wp_query instanceof \WP_Query) || empty($wp_query->posts)) {
+            return $this->click_totals_cache;
+        }
+
+        $ids = [];
+        foreach ($wp_query->posts as $post) {
+            $post_id = is_object($post) && isset($post->ID) ? (int) $post->ID : (int) $post;
+            if ($post_id > 0) {
+                $ids[$post_id] = $post_id;
+            }
+        }
+
+        if (empty($ids)) {
+            return $this->click_totals_cache;
+        }
+
+        GunDealsAnalyticsStore::ensure_schema();
+        $rows = $wpdb->get_results(
+            'SELECT product_id, raw_clicks, deduped_clicks, last_click_at_gmt
+             FROM ' . GunDealsAnalyticsStore::click_totals_table() . '
+             WHERE product_id IN (' . implode(',', array_values($ids)) . ')',
+            ARRAY_A
+        );
+
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            $product_id = (int) ($row['product_id'] ?? 0);
+            if ($product_id > 0) {
+                $this->click_totals_cache[$product_id] = $row;
+            }
+        }
+
+        return $this->click_totals_cache;
     }
 
     private function is_product_list_query(\WP_Query $query): bool

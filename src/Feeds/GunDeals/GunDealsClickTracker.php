@@ -57,19 +57,12 @@ final class GunDealsClickTracker
         $is_deduped_click = empty($_COOKIE[$cookie_name]);
         $upc = GunDealsAnalyticsStore::normalize_upc((string) get_post_meta($product_id, ProductMeta::FFLHUB_UPC_META, true));
 
-        self::increment_post_counter($product_id, self::META_RAW_CLICKS);
-        self::increment_option_counter(self::OPTION_RAW_TOTAL);
-        self::increment_daily_counter(self::OPTION_RAW_DAILY);
-        update_post_meta($product_id, self::META_LAST_CLICK_AT, gmdate('Y-m-d H:i:s'));
         GunDealsAnalyticsStore::record_click($product_id, $upc, $is_deduped_click, self::request_context());
 
         if (!$is_deduped_click) {
             return;
         }
 
-        self::increment_post_counter($product_id, self::META_DEDUPED_CLICKS);
-        self::increment_option_counter(self::OPTION_DEDUPED_TOTAL);
-        self::increment_daily_counter(self::OPTION_DEDUPED_DAILY);
         self::set_dedupe_cookie($cookie_name);
     }
 
@@ -103,42 +96,6 @@ final class GunDealsClickTracker
         $raw = function_exists('sanitize_key') ? sanitize_key($raw) : strtolower(preg_replace('/[^a-z0-9_\-]/', '', $raw));
 
         return strtolower(trim((string) $raw));
-    }
-
-    private static function increment_post_counter(int $product_id, string $meta_key): int
-    {
-        $current = max(0, (int) get_post_meta($product_id, $meta_key, true));
-        $next = $current + 1;
-        update_post_meta($product_id, $meta_key, $next);
-
-        return $next;
-    }
-
-    private static function increment_option_counter(string $option_key): int
-    {
-        $current = max(0, (int) get_option($option_key, 0));
-        $next = $current + 1;
-        update_option($option_key, $next, false);
-
-        return $next;
-    }
-
-    private static function increment_daily_counter(string $option_key): void
-    {
-        $day = gmdate('Y-m-d');
-        $counts = get_option($option_key, []);
-        if (!is_array($counts)) {
-            $counts = [];
-        }
-
-        $counts[$day] = max(0, (int) ($counts[$day] ?? 0)) + 1;
-        ksort($counts);
-
-        if (count($counts) > self::DAILY_RETENTION_DAYS) {
-            $counts = array_slice($counts, -self::DAILY_RETENTION_DAYS, null, true);
-        }
-
-        update_option($option_key, $counts, false);
     }
 
     private static function set_dedupe_cookie(string $cookie_name): void

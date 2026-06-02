@@ -3,7 +3,6 @@
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Feeds\GunDeals\GunDealsAnalyticsStore;
-use FFLHub\Feeds\GunDeals\GunDealsClickTracker;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Settings\Options;
 use WC_Order;
@@ -192,8 +191,8 @@ final class GunDealsPerformancePage
         $end_gmt = $end_day . ' 23:59:59';
 
         $period_clicks = $this->query_click_rollups($start_day, $end_day);
-        $legacy_clicks = $this->query_legacy_cumulative_clicks($this->use_legacy_click_fallback($start_day, $end_day));
-        $clicks = $this->merge_click_sources($period_clicks, $legacy_clicks, $this->use_legacy_click_fallback($start_day, $end_day));
+        $cumulative_clicks = $this->query_cumulative_click_totals($this->use_legacy_click_fallback($start_day, $end_day));
+        $clicks = $this->merge_click_sources($period_clicks, $cumulative_clicks, $this->use_legacy_click_fallback($start_day, $end_day));
         $feed_rows = $this->query_latest_feed_rows();
         $orders = $this->query_attributed_order_metrics($start_gmt, $end_gmt);
 
@@ -399,7 +398,7 @@ final class GunDealsPerformancePage
     /**
      * @return array<string,array<string,mixed>>
      */
-    private function query_legacy_cumulative_clicks(bool $enabled): array
+    private function query_cumulative_click_totals(bool $enabled): array
     {
         if (!$enabled) {
             return [];
@@ -410,29 +409,16 @@ final class GunDealsPerformancePage
             return [];
         }
 
-        $raw_key = esc_sql(GunDealsClickTracker::META_RAW_CLICKS);
-        $upc_key = esc_sql(ProductMeta::FFLHUB_UPC_META);
-        $deduped_key = esc_sql(GunDealsClickTracker::META_DEDUPED_CLICKS);
-
+        GunDealsAnalyticsStore::ensure_schema();
         $rows = $wpdb->get_results("
             SELECT
-                p.ID AS product_id,
-                upc_pm.meta_value AS upc,
-                CAST(raw_pm.meta_value AS UNSIGNED) AS raw_cumulative_clicks,
-                CAST(COALESCE(deduped_pm.meta_value, 0) AS UNSIGNED) AS deduped_clicks
-            FROM {$wpdb->postmeta} raw_pm
-            INNER JOIN {$wpdb->posts} p
-                ON p.ID = raw_pm.post_id
-               AND p.post_type = 'product'
-            LEFT JOIN {$wpdb->postmeta} upc_pm
-                ON upc_pm.post_id = p.ID
-               AND upc_pm.meta_key = '{$upc_key}'
-            LEFT JOIN {$wpdb->postmeta} deduped_pm
-                ON deduped_pm.post_id = p.ID
-               AND deduped_pm.meta_key = '{$deduped_key}'
-            WHERE raw_pm.meta_key = '{$raw_key}'
-              AND CAST(raw_pm.meta_value AS UNSIGNED) > 0
-            ORDER BY CAST(raw_pm.meta_value AS UNSIGNED) DESC
+                product_id,
+                upc,
+                raw_clicks AS raw_cumulative_clicks,
+                deduped_clicks
+            FROM " . GunDealsAnalyticsStore::click_totals_table() . "
+            WHERE raw_clicks > 0
+            ORDER BY raw_clicks DESC
         ", ARRAY_A);
 
         $out = [];
@@ -449,7 +435,7 @@ final class GunDealsPerformancePage
                 'period_clicks' => 0,
                 'raw_cumulative_clicks' => (int) ($row['raw_cumulative_clicks'] ?? 0),
                 'deduped_clicks' => (int) ($row['deduped_clicks'] ?? 0),
-                'click_source' => 'legacy_cumulative_fallback',
+                'click_source' => 'cumulative_total_fallback',
             ];
         }
 
@@ -458,28 +444,28 @@ final class GunDealsPerformancePage
 
     /**
      * @param array<string,array<string,mixed>> $period_clicks
-     * @param array<string,array<string,mixed>> $legacy_clicks
+     * @param array<string,array<string,mixed>> $cumulative_clicks
      * @return array<string,array<string,mixed>>
      */
-    private function merge_click_sources(array $period_clicks, array $legacy_clicks, bool $use_legacy_fallback): array
+    private function merge_click_sources(array $period_clicks, array $cumulative_clicks, bool $use_legacy_fallback): array
     {
-        if (!$use_legacy_fallback || empty($legacy_clicks)) {
+        if (!$use_legacy_fallback || empty($cumulative_clicks)) {
             return $period_clicks;
         }
 
         $merged = $period_clicks;
-        foreach ($legacy_clicks as $key => $legacy_row) {
+        foreach ($cumulative_clicks as $key => $cumulative_row) {
             if (!isset($merged[$key])) {
-                $merged[$key] = $legacy_row;
+                $merged[$key] = $cumulative_row;
                 continue;
             }
 
             $period_raw = (int) ($merged[$key]['period_clicks'] ?? $merged[$key]['clicks'] ?? 0);
-            $legacy_raw = (int) ($legacy_row['raw_cumulative_clicks'] ?? $legacy_row['clicks'] ?? 0);
+            $cumulative_raw = (int) ($cumulative_row['raw_cumulative_clicks'] ?? $cumulative_row['clicks'] ?? 0);
 
-            $merged[$key]['raw_cumulative_clicks'] = $legacy_raw;
-            $merged[$key]['clicks'] = max($period_raw, $legacy_raw);
-            $merged[$key]['click_source'] = $legacy_raw > $period_raw ? 'legacy_cumulative_fallback' : 'period';
+            $merged[$key]['raw_cumulative_clicks'] = $cumulative_raw;
+            $merged[$key]['clicks'] = max($period_raw, $cumulative_raw);
+            $merged[$key]['click_source'] = $cumulative_raw > $period_raw ? 'cumulative_total_fallback' : 'period';
             $merged[$key]['deduped_clicks'] = (int) ($merged[$key]['deduped_clicks'] ?? 0);
         }
 
@@ -746,7 +732,6 @@ final class GunDealsPerformancePage
             '_price',
             '_stock',
             '_stock_status',
-            GunDealsClickTracker::META_RAW_CLICKS,
         ];
         $meta_sql = implode(',', array_map(static function (string $key): string {
             return "'" . esc_sql($key) . "'";
@@ -766,8 +751,7 @@ final class GunDealsPerformancePage
                 MAX(CASE WHEN pm.meta_key = '" . esc_sql(ProductMeta::FFLHUB_MAP_POLICY_META) . "' THEN pm.meta_value END) AS map_policy,
                 MAX(CASE WHEN pm.meta_key = '_price' THEN pm.meta_value END) AS price,
                 MAX(CASE WHEN pm.meta_key = '_stock' THEN pm.meta_value END) AS stock_quantity,
-                MAX(CASE WHEN pm.meta_key = '_stock_status' THEN pm.meta_value END) AS stock_status,
-                MAX(CASE WHEN pm.meta_key = '" . esc_sql(GunDealsClickTracker::META_RAW_CLICKS) . "' THEN pm.meta_value END) AS raw_cumulative_clicks
+                MAX(CASE WHEN pm.meta_key = '_stock_status' THEN pm.meta_value END) AS stock_status
             FROM {$wpdb->posts} p
             LEFT JOIN {$wpdb->prefix}wc_product_meta_lookup lookup ON lookup.product_id = p.ID
             LEFT JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID AND pm.meta_key IN ({$meta_sql})
@@ -1097,8 +1081,8 @@ final class GunDealsPerformancePage
             'conversion_rate' => ['label' => 'Conversion Rate', 'type' => 'number', 'default_order' => 'desc'],
             'revenue' => ['label' => 'Revenue', 'type' => 'number', 'default_order' => 'desc'],
             'gross_profit' => ['label' => 'Gross Profit', 'type' => 'number', 'default_order' => 'desc'],
-            'allocated_cost' => ['label' => 'Allocated Cost', 'type' => 'number', 'default_order' => 'desc'],
-            'net_profit' => ['label' => 'Net Profit', 'type' => 'number', 'default_order' => 'asc'],
+            'allocated_cost' => ['label' => 'Allocated Gun.deals Cost', 'type' => 'number', 'default_order' => 'desc'],
+            'net_profit' => ['label' => 'Channel Net', 'type' => 'number', 'default_order' => 'asc'],
             'ffl_required' => ['label' => 'FFL Required', 'type' => 'number', 'default_order' => 'desc'],
             'map_status' => ['label' => 'MAP/Quote Status', 'type' => 'string', 'default_order' => 'asc'],
             'customer_price' => ['label' => 'Customer Price', 'type' => 'number', 'default_order' => 'desc'],
@@ -1588,8 +1572,8 @@ final class GunDealsPerformancePage
                     <th><?php $this->sortable_header('conversion_rate', 'Conv.', $filters); ?></th>
                     <th><?php $this->sortable_header('revenue', 'Revenue', $filters); ?></th>
                     <th><?php $this->sortable_header('gross_profit', 'Gross Profit', $filters); ?></th>
-                    <th><?php $this->sortable_header('allocated_cost', 'Allocated Cost', $filters); ?></th>
-                    <th><?php $this->sortable_header('net_profit', 'Net', $filters); ?></th>
+                    <th><?php $this->sortable_header('allocated_cost', 'Allocated GD Cost', $filters); ?></th>
+                    <th><?php $this->sortable_header('net_profit', 'Channel Net', $filters); ?></th>
                     <th><?php $this->sortable_header('ffl_required', 'FFL', $filters); ?></th>
                     <th><?php $this->sortable_header('map_status', 'MAP/Quote', $filters); ?></th>
                     <th><?php $this->sortable_header('customer_price', 'Visible Price', $filters); ?></th>
@@ -1855,7 +1839,7 @@ final class GunDealsPerformancePage
             'revenue' => 'revenue',
             'gross_profit' => 'gross_profit',
             'allocated_cost' => 'allocated_gundeals_cost',
-            'net_profit' => 'net_profit_after_allocated_cost',
+            'net_profit' => 'channel_net_after_allocated_gundeals_cost',
             'ffl_required' => 'ffl_required',
             'map_status' => 'map_quote_status',
             'customer_price' => 'customer_visible_price',
