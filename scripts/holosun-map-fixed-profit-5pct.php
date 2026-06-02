@@ -279,11 +279,17 @@ do {
         'orderby' => 'ID',
         'order' => 'ASC',
         'meta_query' => [
+            'relation' => 'AND',
             [
                 'key' => ProductMeta::FFLHUB_LAST_MAP_META,
                 'value' => 0,
                 'compare' => '>',
                 'type' => 'NUMERIC',
+            ],
+            [
+                'key' => ProductMeta::FFLHUB_MAP_POLICY_META,
+                'value' => Options::MAP_POLICY_EMAIL_FOR_QUOTE,
+                'compare' => '=',
             ],
         ],
     ];
