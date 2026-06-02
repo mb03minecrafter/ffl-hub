@@ -5,8 +5,6 @@ namespace FFLHub\Admin\Pages;
 use FFLHub\Feeds\GunDeals\GunDealsAnalyticsStore;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Settings\Options;
-use WC_Order;
-use WC_Order_Item_Product;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -501,114 +499,54 @@ final class GunDealsPerformancePage
      */
     private function query_attributed_order_metrics(string $start_gmt, string $end_gmt): array
     {
-        if (!function_exists('wc_get_orders')) {
+        global $wpdb;
+        if (!$wpdb) {
             return ['items' => [], 'order_count' => 0];
         }
 
         $items = [];
-        $order_count = 0;
-        $page = 1;
-
-        do {
-            $orders = wc_get_orders([
-                'status' => ['processing', 'completed'],
-                'limit' => 100,
-                'page' => $page,
-                'paginate' => false,
-                'date_created' => $start_gmt . '...' . $end_gmt,
-                'orderby' => 'date',
-                'order' => 'ASC',
-            ]);
-
-            if (!is_array($orders) || empty($orders)) {
-                break;
-            }
-
-            foreach ($orders as $order) {
-                if (!($order instanceof WC_Order)) {
-                    continue;
-                }
-
-                $attribution = $this->gun_deals_attribution($order);
-                if ($attribution === []) {
-                    continue;
-                }
-
-                $order_count++;
-                $this->merge_order_items($items, $order, $attribution);
-            }
-
-            $page++;
-        } while (count($orders) === 100);
-
-        return [
-            'items' => $items,
-            'order_count' => $order_count,
-        ];
-    }
-
-    /**
-     * @return string[]
-     */
-    private function gun_deals_attribution(WC_Order $order): array
-    {
-        $matches = [];
-        foreach ($order->get_meta_data() as $meta) {
-            $key = method_exists($meta, 'get_data') ? (string) (($meta->get_data()['key'] ?? '')) : '';
-            $value = method_exists($meta, 'get_data') ? ($meta->get_data()['value'] ?? '') : '';
-            $key_lc = strtolower($key);
-
-            if (
-                strpos($key_lc, 'utm') === false
-                && strpos($key_lc, 'source') === false
-                && strpos($key_lc, 'referrer') === false
-                && strpos($key_lc, 'session') === false
-                && strpos($key_lc, 'attribution') === false
-            ) {
-                continue;
-            }
-
-            $encoded_raw = wp_json_encode($value);
-            $encoded = strtolower(is_string($encoded_raw) ? $encoded_raw : '');
-            if (strpos($encoded, 'gundeals') !== false || strpos($encoded, 'gun.deals') !== false || strpos($encoded, 'gun deals') !== false) {
-                $matches[] = $key . '=' . $this->short_value($encoded, 90);
-            }
+        $orders = $this->query_gundeals_attributed_orders_sql($start_gmt, $end_gmt);
+        if (empty($orders)) {
+            return ['items' => [], 'order_count' => 0];
         }
 
-        return array_values(array_unique($matches));
-    }
+        $order_ids = array_keys($orders);
+        $order_meta = $this->query_order_profit_meta_sql($order_ids);
+        $line_items = $this->query_order_line_items_sql($order_ids);
 
-    /**
-     * @param array<string,array<string,mixed>> $items
-     * @param string[] $attribution
-     */
-    private function merge_order_items(array &$items, WC_Order $order, array $attribution): void
-    {
-        $audit_lines = $this->audit_lines_by_item_id($order);
-        $audit_missing = empty($audit_lines);
-        $order_date = $order->get_date_created();
-        $order_date_gmt = $order_date ? $order_date->date('Y-m-d H:i:s') : '';
-        $order_fee_adjustments = $this->order_fee_adjustments($order);
-        $order_revenue_total = max(0.01, (float) $order->get_meta('fflhub_order_revenue_total', true));
-
-        foreach ($order->get_items('line_item') as $item_id => $item) {
-            if (!($item instanceof WC_Order_Item_Product)) {
+        foreach ($line_items as $line_item) {
+            $order_id = (int) ($line_item['order_id'] ?? 0);
+            $item_id = (int) ($line_item['order_item_id'] ?? 0);
+            if ($order_id <= 0 || $item_id <= 0 || !isset($orders[$order_id])) {
                 continue;
             }
 
-            $product_id = (int) $item->get_product_id();
-            $upc = GunDealsAnalyticsStore::normalize_upc((string) get_post_meta($product_id, ProductMeta::FFLHUB_UPC_META, true));
+            $attribution = $orders[$order_id]['attribution'] ?? [];
+            if (!is_array($attribution) || $attribution === []) {
+                continue;
+            }
+
+            $meta = $order_meta[$order_id] ?? [];
+            $audit_lines = $this->audit_lines_by_item_id_from_raw($meta['fflhub_order_profit_lines'] ?? '');
+            $audit_missing = empty($audit_lines);
+            $line = $audit_lines[$item_id] ?? null;
+            $line_missing = $audit_missing || !is_array($line);
+
+            $product_id = max(0, (int) ($line_item['product_id'] ?? 0));
+            $upc = GunDealsAnalyticsStore::normalize_upc((string) ($line_item['upc'] ?? ''));
             $key = $this->row_key($upc, $product_id);
             if ($key === '') {
                 continue;
             }
 
-            $line = $audit_lines[(int) $item_id] ?? null;
-            $line_missing = $audit_missing || !is_array($line);
-            $qty = $line_missing ? max(0, (int) $item->get_quantity()) : max(0, (int) ($line['qty'] ?? $item->get_quantity()));
+            $qty = $line_missing
+                ? max(0, (int) round($this->money_float($line_item['qty'] ?? 0)))
+                : max(0, (int) ($line['qty'] ?? round($this->money_float($line_item['qty'] ?? 0))));
             $line_revenue = $line_missing ? 0.0 : $this->money_float($line['line_revenue'] ?? 0);
             $dealer_cost = $line_missing ? 0.0 : $this->money_float($line['distributor_line_cost'] ?? 0);
             $unit_cost = $line_missing ? 0.0 : $this->money_float($line['distributor_unit_cost'] ?? 0);
+            $order_fee_adjustments = $this->order_fee_adjustments_from_meta($meta);
+            $order_revenue_total = max(0.01, $this->money_float($meta['fflhub_order_revenue_total'] ?? 0));
             $fee_share = $line_revenue > 0.0 ? $order_fee_adjustments * ($line_revenue / $order_revenue_total) : 0.0;
 
             if (!isset($items[$key])) {
@@ -629,8 +567,8 @@ final class GunDealsPerformancePage
                 ];
             }
 
-            if (empty($items[$key]['order_ids'][(int) $order->get_id()])) {
-                $items[$key]['order_ids'][(int) $order->get_id()] = true;
+            if (empty($items[$key]['order_ids'][$order_id])) {
+                $items[$key]['order_ids'][$order_id] = true;
                 $items[$key]['orders']++;
             }
 
@@ -642,6 +580,8 @@ final class GunDealsPerformancePage
             $items[$key]['fees_adjustments'] += $fee_share;
             $items[$key]['missing_profit_audit'] = !empty($items[$key]['missing_profit_audit']) || $line_missing;
             $items[$key]['attribution'] = array_values(array_unique(array_merge($items[$key]['attribution'], $attribution)));
+
+            $order_date_gmt = (string) ($orders[$order_id]['order_date_gmt'] ?? '');
             if ($order_date_gmt !== '' && strcmp($order_date_gmt, (string) $items[$key]['last_order_date']) > 0) {
                 $items[$key]['last_order_date'] = $order_date_gmt;
             }
@@ -651,21 +591,243 @@ final class GunDealsPerformancePage
             unset($item_row['order_ids']);
         }
         unset($item_row);
+
+        return [
+            'items' => $items,
+            'order_count' => count($orders),
+        ];
+    }
+
+    /**
+     * @return array<int,array{order_id:int,order_date_gmt:string,attribution:string[]}>
+     */
+    private function query_gundeals_attributed_orders_sql(string $start_gmt, string $end_gmt): array
+    {
+        global $wpdb;
+        if (!$wpdb) {
+            return [];
+        }
+
+        $selects = [];
+        $date_status_where = "
+            AND (
+                LOWER(om.meta_key) LIKE '%%utm%%'
+                OR LOWER(om.meta_key) LIKE '%%source%%'
+                OR LOWER(om.meta_key) LIKE '%%referrer%%'
+                OR LOWER(om.meta_key) LIKE '%%session%%'
+                OR LOWER(om.meta_key) LIKE '%%attribution%%'
+            )
+            AND (
+                LOWER(CAST(om.meta_value AS CHAR)) LIKE '%%gundeals%%'
+                OR LOWER(CAST(om.meta_value AS CHAR)) LIKE '%%gun.deals%%'
+                OR LOWER(CAST(om.meta_value AS CHAR)) LIKE '%%gun deals%%'
+            )
+        ";
+
+        $wc_orders = $wpdb->prefix . 'wc_orders';
+        $wc_orders_meta = $wpdb->prefix . 'wc_orders_meta';
+        if ($this->table_exists($wc_orders) && $this->table_exists($wc_orders_meta)) {
+            $selects[] = $wpdb->prepare(
+                "SELECT
+                    o.id AS order_id,
+                    o.date_created_gmt AS order_date_gmt,
+                    om.meta_key,
+                    CAST(om.meta_value AS CHAR) AS meta_value
+                 FROM {$wc_orders} o
+                 INNER JOIN {$wc_orders_meta} om ON om.order_id = o.id
+                 WHERE o.type = 'shop_order'
+                   AND o.status IN ('wc-processing', 'wc-completed', 'processing', 'completed')
+                   AND o.date_created_gmt BETWEEN %s AND %s
+                   {$date_status_where}",
+                $start_gmt,
+                $end_gmt
+            );
+        }
+
+        $selects[] = $wpdb->prepare(
+            "SELECT
+                p.ID AS order_id,
+                p.post_date_gmt AS order_date_gmt,
+                om.meta_key,
+                CAST(om.meta_value AS CHAR) AS meta_value
+             FROM {$wpdb->posts} p
+             INNER JOIN {$wpdb->postmeta} om ON om.post_id = p.ID
+             WHERE p.post_type = 'shop_order'
+               AND p.post_status IN ('wc-processing', 'wc-completed')
+               AND p.post_date_gmt BETWEEN %s AND %s
+               {$date_status_where}",
+            $start_gmt,
+            $end_gmt
+        );
+
+        $sql = "
+            SELECT
+                order_id,
+                MAX(order_date_gmt) AS order_date_gmt,
+                GROUP_CONCAT(DISTINCT CONCAT(meta_key, '=', LEFT(REPLACE(REPLACE(meta_value, '\n', ' '), '\r', ' '), 90)) SEPARATOR '; ') AS attribution
+            FROM (" . implode(' UNION ALL ', $selects) . ") matched
+            GROUP BY order_id
+            ORDER BY order_date_gmt ASC
+        ";
+
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        $orders = [];
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            $order_id = (int) ($row['order_id'] ?? 0);
+            if ($order_id <= 0) {
+                continue;
+            }
+
+            $orders[$order_id] = [
+                'order_id' => $order_id,
+                'order_date_gmt' => (string) ($row['order_date_gmt'] ?? ''),
+                'attribution' => array_filter(array_map('trim', explode('; ', (string) ($row['attribution'] ?? '')))),
+            ];
+        }
+
+        return $orders;
+    }
+
+    /**
+     * @param int[] $order_ids
+     * @return array<int,array<string,string>>
+     */
+    private function query_order_profit_meta_sql(array $order_ids): array
+    {
+        global $wpdb;
+        if (!$wpdb) {
+            return [];
+        }
+
+        $order_ids = array_values(array_unique(array_filter(array_map('intval', $order_ids))));
+        if (empty($order_ids)) {
+            return [];
+        }
+
+        $meta_keys = [
+            'fflhub_order_profit_lines',
+            'fflhub_order_revenue_total',
+            'fflhub_order_shipping_cost_total',
+            'fflhub_order_processor_fee_amount',
+            'fflhub_order_customer_shipping_charge',
+        ];
+        $meta_sql = implode(',', array_map(static function (string $key): string {
+            return "'" . esc_sql($key) . "'";
+        }, $meta_keys));
+
+        $rows = [];
+        foreach (array_chunk($order_ids, 500) as $chunk) {
+            $ids_sql = implode(',', $chunk);
+            $selects = [];
+
+            $wc_orders_meta = $wpdb->prefix . 'wc_orders_meta';
+            if ($this->table_exists($wc_orders_meta)) {
+                $selects[] = "
+                    SELECT order_id, meta_key, CAST(meta_value AS CHAR) AS meta_value
+                    FROM {$wc_orders_meta}
+                    WHERE order_id IN ({$ids_sql})
+                      AND meta_key IN ({$meta_sql})
+                ";
+            }
+
+            $selects[] = "
+                SELECT post_id AS order_id, meta_key, CAST(meta_value AS CHAR) AS meta_value
+                FROM {$wpdb->postmeta}
+                WHERE post_id IN ({$ids_sql})
+                  AND meta_key IN ({$meta_sql})
+            ";
+
+            $chunk_rows = $wpdb->get_results("
+                SELECT order_id, meta_key, MAX(meta_value) AS meta_value
+                FROM (" . implode(' UNION ALL ', $selects) . ") m
+                GROUP BY order_id, meta_key
+            ", ARRAY_A);
+            if (is_array($chunk_rows)) {
+                $rows = array_merge($rows, $chunk_rows);
+            }
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            $order_id = (int) ($row['order_id'] ?? 0);
+            $key = (string) ($row['meta_key'] ?? '');
+            if ($order_id <= 0 || $key === '') {
+                continue;
+            }
+
+            $out[$order_id][$key] = (string) ($row['meta_value'] ?? '');
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param int[] $order_ids
+     * @return array<int,array<string,mixed>>
+     */
+    private function query_order_line_items_sql(array $order_ids): array
+    {
+        global $wpdb;
+        if (!$wpdb) {
+            return [];
+        }
+
+        $order_ids = array_values(array_unique(array_filter(array_map('intval', $order_ids))));
+        if (empty($order_ids)) {
+            return [];
+        }
+
+        $order_items = $wpdb->prefix . 'woocommerce_order_items';
+        $order_itemmeta = $wpdb->prefix . 'woocommerce_order_itemmeta';
+        if (!$this->table_exists($order_items) || !$this->table_exists($order_itemmeta)) {
+            return [];
+        }
+
+        $out = [];
+        $upc_key = esc_sql(ProductMeta::FFLHUB_UPC_META);
+        foreach (array_chunk($order_ids, 500) as $chunk) {
+            $ids_sql = implode(',', $chunk);
+            $rows = $wpdb->get_results("
+                SELECT
+                    li.order_id,
+                    li.order_item_id,
+                    li.product_id,
+                    li.qty,
+                    upc_pm.meta_value AS upc
+                FROM (
+                    SELECT
+                        oi.order_id,
+                        oi.order_item_id,
+                        CAST(MAX(CASE WHEN oim.meta_key = '_product_id' THEN oim.meta_value END) AS UNSIGNED) AS product_id,
+                        CAST(MAX(CASE WHEN oim.meta_key = '_qty' THEN oim.meta_value END) AS DECIMAL(12,4)) AS qty
+                    FROM {$order_items} oi
+                    LEFT JOIN {$order_itemmeta} oim
+                        ON oim.order_item_id = oi.order_item_id
+                       AND oim.meta_key IN ('_product_id', '_qty')
+                    WHERE oi.order_item_type = 'line_item'
+                      AND oi.order_id IN ({$ids_sql})
+                    GROUP BY oi.order_id, oi.order_item_id
+                ) li
+                LEFT JOIN {$wpdb->postmeta} upc_pm
+                    ON upc_pm.post_id = li.product_id
+                   AND upc_pm.meta_key = '{$upc_key}'
+                ORDER BY li.order_id ASC, li.order_item_id ASC
+            ", ARRAY_A);
+
+            if (is_array($rows)) {
+                $out = array_merge($out, $rows);
+            }
+        }
+
+        return $out;
     }
 
     /**
      * @return array<int,array<string,mixed>>
      */
-    private function audit_lines_by_item_id(WC_Order $order): array
+    private function audit_lines_by_item_id_from_raw(string $raw): array
     {
-        $raw = $order->get_meta('fflhub_order_profit_lines', true);
-        if (is_string($raw) && $raw !== '') {
-            $decoded = json_decode($raw, true);
-        } elseif (is_array($raw)) {
-            $decoded = $raw;
-        } else {
-            $decoded = [];
-        }
+        $decoded = $raw !== '' ? json_decode($raw, true) : [];
 
         $lines = [];
         foreach (is_array($decoded) ? $decoded : [] as $line) {
@@ -681,13 +843,26 @@ final class GunDealsPerformancePage
         return $lines;
     }
 
-    private function order_fee_adjustments(WC_Order $order): float
+    /**
+     * @param array<string,string> $meta
+     */
+    private function order_fee_adjustments_from_meta(array $meta): float
     {
-        $shipping_cost = $this->money_float($order->get_meta('fflhub_order_shipping_cost_total', true));
-        $processor_fee = $this->money_float($order->get_meta('fflhub_order_processor_fee_amount', true));
-        $customer_shipping = $this->money_float($order->get_meta('fflhub_order_customer_shipping_charge', true));
+        $shipping_cost = $this->money_float($meta['fflhub_order_shipping_cost_total'] ?? 0);
+        $processor_fee = $this->money_float($meta['fflhub_order_processor_fee_amount'] ?? 0);
+        $customer_shipping = $this->money_float($meta['fflhub_order_customer_shipping_charge'] ?? 0);
 
         return $shipping_cost + $processor_fee - $customer_shipping;
+    }
+
+    private function table_exists(string $table): bool
+    {
+        global $wpdb;
+        if (!$wpdb || $table === '') {
+            return false;
+        }
+
+        return (string) $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) === $table;
     }
 
     /**
