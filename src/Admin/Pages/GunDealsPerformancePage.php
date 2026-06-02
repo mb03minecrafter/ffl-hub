@@ -20,6 +20,7 @@ final class GunDealsPerformancePage
     private const BASE_FEE = 500.0;
     private const INCLUDED_CLICKS = 2000;
     private const OVERAGE_CPC = 0.25;
+    private const LEGACY_CLICK_FALLBACK_END_DAY = '2026-06-02';
 
     public function register(): void
     {
@@ -190,7 +191,9 @@ final class GunDealsPerformancePage
         $start_gmt = $start_day . ' 00:00:00';
         $end_gmt = $end_day . ' 23:59:59';
 
-        $clicks = $this->query_click_rollups($start_day, $end_day);
+        $period_clicks = $this->query_click_rollups($start_day, $end_day);
+        $legacy_clicks = $this->query_legacy_cumulative_clicks($this->use_legacy_click_fallback($start_day, $end_day));
+        $clicks = $this->merge_click_sources($period_clicks, $legacy_clicks, $this->use_legacy_click_fallback($start_day, $end_day));
         $feed_rows = $this->query_latest_feed_rows();
         $orders = $this->query_attributed_order_metrics($start_gmt, $end_gmt);
 
@@ -268,7 +271,9 @@ final class GunDealsPerformancePage
                 'stock_status' => $stock_status !== '' ? $stock_status : 'unknown',
                 'stock_quantity' => (string) ($product['stock_quantity'] ?? ''),
                 'clicks' => $click_count,
-                'raw_cumulative_clicks' => (int) ($product['raw_cumulative_clicks'] ?? 0),
+                'period_clicks' => (int) ($click_row['period_clicks'] ?? $click_count),
+                'raw_cumulative_clicks' => (int) ($click_row['raw_cumulative_clicks'] ?? ($product['raw_cumulative_clicks'] ?? 0)),
+                'click_source' => (string) ($click_row['click_source'] ?? 'period'),
                 'deduped_clicks' => (int) ($click_row['deduped_clicks'] ?? 0),
                 'orders' => $orders_count,
                 'units' => $units,
@@ -376,15 +381,115 @@ final class GunDealsPerformancePage
                     'upc' => GunDealsAnalyticsStore::normalize_upc((string) ($row['upc'] ?? '')),
                     'product_id' => (int) ($row['product_id'] ?? 0),
                     'clicks' => 0,
+                    'period_clicks' => 0,
+                    'raw_cumulative_clicks' => 0,
                     'deduped_clicks' => 0,
+                    'click_source' => 'period',
                 ];
             }
 
             $out[$key]['clicks'] += (int) ($row['clicks'] ?? 0);
+            $out[$key]['period_clicks'] += (int) ($row['clicks'] ?? 0);
             $out[$key]['deduped_clicks'] += (int) ($row['deduped_clicks'] ?? 0);
         }
 
         return $out;
+    }
+
+    /**
+     * @return array<string,array<string,mixed>>
+     */
+    private function query_legacy_cumulative_clicks(bool $enabled): array
+    {
+        if (!$enabled) {
+            return [];
+        }
+
+        global $wpdb;
+        if (!$wpdb) {
+            return [];
+        }
+
+        $raw_key = esc_sql(GunDealsClickTracker::META_RAW_CLICKS);
+        $upc_key = esc_sql(ProductMeta::FFLHUB_UPC_META);
+        $deduped_key = esc_sql(GunDealsClickTracker::META_DEDUPED_CLICKS);
+
+        $rows = $wpdb->get_results("
+            SELECT
+                p.ID AS product_id,
+                upc_pm.meta_value AS upc,
+                CAST(raw_pm.meta_value AS UNSIGNED) AS raw_cumulative_clicks,
+                CAST(COALESCE(deduped_pm.meta_value, 0) AS UNSIGNED) AS deduped_clicks
+            FROM {$wpdb->postmeta} raw_pm
+            INNER JOIN {$wpdb->posts} p
+                ON p.ID = raw_pm.post_id
+               AND p.post_type = 'product'
+            LEFT JOIN {$wpdb->postmeta} upc_pm
+                ON upc_pm.post_id = p.ID
+               AND upc_pm.meta_key = '{$upc_key}'
+            LEFT JOIN {$wpdb->postmeta} deduped_pm
+                ON deduped_pm.post_id = p.ID
+               AND deduped_pm.meta_key = '{$deduped_key}'
+            WHERE raw_pm.meta_key = '{$raw_key}'
+              AND CAST(raw_pm.meta_value AS UNSIGNED) > 0
+            ORDER BY CAST(raw_pm.meta_value AS UNSIGNED) DESC
+        ", ARRAY_A);
+
+        $out = [];
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            $key = $this->row_key((string) ($row['upc'] ?? ''), (int) ($row['product_id'] ?? 0));
+            if ($key === '') {
+                continue;
+            }
+
+            $out[$key] = [
+                'upc' => GunDealsAnalyticsStore::normalize_upc((string) ($row['upc'] ?? '')),
+                'product_id' => (int) ($row['product_id'] ?? 0),
+                'clicks' => (int) ($row['raw_cumulative_clicks'] ?? 0),
+                'period_clicks' => 0,
+                'raw_cumulative_clicks' => (int) ($row['raw_cumulative_clicks'] ?? 0),
+                'deduped_clicks' => (int) ($row['deduped_clicks'] ?? 0),
+                'click_source' => 'legacy_cumulative_fallback',
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $period_clicks
+     * @param array<string,array<string,mixed>> $legacy_clicks
+     * @return array<string,array<string,mixed>>
+     */
+    private function merge_click_sources(array $period_clicks, array $legacy_clicks, bool $use_legacy_fallback): array
+    {
+        if (!$use_legacy_fallback || empty($legacy_clicks)) {
+            return $period_clicks;
+        }
+
+        $merged = $period_clicks;
+        foreach ($legacy_clicks as $key => $legacy_row) {
+            if (!isset($merged[$key])) {
+                $merged[$key] = $legacy_row;
+                continue;
+            }
+
+            $period_raw = (int) ($merged[$key]['period_clicks'] ?? $merged[$key]['clicks'] ?? 0);
+            $legacy_raw = (int) ($legacy_row['raw_cumulative_clicks'] ?? $legacy_row['clicks'] ?? 0);
+
+            $merged[$key]['raw_cumulative_clicks'] = $legacy_raw;
+            $merged[$key]['clicks'] = max($period_raw, $legacy_raw);
+            $merged[$key]['click_source'] = $legacy_raw > $period_raw ? 'legacy_cumulative_fallback' : 'period';
+            $merged[$key]['deduped_clicks'] = (int) ($merged[$key]['deduped_clicks'] ?? 0);
+        }
+
+        return $merged;
+    }
+
+    private function use_legacy_click_fallback(string $start_day, string $end_day): bool
+    {
+        return strcmp($start_day, self::LEGACY_CLICK_FALLBACK_END_DAY) <= 0
+            && strcmp($end_day, self::PERIOD_ANCHOR) >= 0;
     }
 
     /**
@@ -999,6 +1104,8 @@ final class GunDealsPerformancePage
             'customer_price' => ['label' => 'Customer Price', 'type' => 'number', 'default_order' => 'desc'],
             'product_id' => ['label' => 'Product ID', 'type' => 'number', 'default_order' => 'asc'],
             'raw_cumulative_clicks' => ['label' => 'Raw Cumulative Clicks', 'type' => 'number', 'default_order' => 'desc'],
+            'period_clicks' => ['label' => 'Period Raw Clicks', 'type' => 'number', 'default_order' => 'desc'],
+            'click_source' => ['label' => 'Click Source', 'type' => 'string', 'default_order' => 'asc'],
             'deduped_clicks' => ['label' => 'Deduped Clicks', 'type' => 'number', 'default_order' => 'desc'],
             'stock_quantity' => ['label' => 'Stock Quantity', 'type' => 'number', 'default_order' => 'desc'],
             'brand' => ['label' => 'Brand', 'type' => 'string', 'default_order' => 'asc'],
@@ -1489,6 +1596,8 @@ final class GunDealsPerformancePage
                     <?php if ($show_advanced) : ?>
                         <th><?php $this->sortable_header('product_id', 'Product ID', $filters); ?></th>
                         <th><?php $this->sortable_header('raw_cumulative_clicks', 'Raw Cumulative', $filters); ?></th>
+                        <th><?php $this->sortable_header('period_clicks', 'Period Raw', $filters); ?></th>
+                        <th><?php $this->sortable_header('click_source', 'Click Source', $filters); ?></th>
                         <th><?php $this->sortable_header('deduped_clicks', 'Deduped', $filters); ?></th>
                         <th><?php $this->sortable_header('stock_quantity', 'Stock Qty', $filters); ?></th>
                         <th><?php $this->sortable_header('brand', 'Brand', $filters); ?></th>
@@ -1512,7 +1621,7 @@ final class GunDealsPerformancePage
             </thead>
             <tbody>
             <?php if (empty($report['rows'])) : ?>
-                <tr><td colspan="<?php echo esc_attr($show_advanced ? '36' : '16'); ?>">No products match the current filters.</td></tr>
+                <tr><td colspan="<?php echo esc_attr($show_advanced ? '38' : '16'); ?>">No products match the current filters.</td></tr>
             <?php endif; ?>
             <?php foreach ($report['rows'] as $row) : ?>
                 <tr>
@@ -1541,6 +1650,8 @@ final class GunDealsPerformancePage
                     <?php if ($show_advanced) : ?>
                         <td><?php echo esc_html((string) $row['product_id']); ?></td>
                         <td><?php echo number_format_i18n((int) $row['raw_cumulative_clicks']); ?></td>
+                        <td><?php echo number_format_i18n((int) $row['period_clicks']); ?></td>
+                        <td><?php echo esc_html((string) $row['click_source']); ?></td>
                         <td><?php echo number_format_i18n((int) $row['deduped_clicks']); ?></td>
                         <td><?php echo esc_html((string) $row['stock_quantity']); ?></td>
                         <td><?php echo esc_html((string) $row['brand']); ?></td>
@@ -1757,6 +1868,8 @@ final class GunDealsPerformancePage
         return array_merge($columns, [
             'product_id' => 'product_id',
             'raw_cumulative_clicks' => 'raw_cumulative_clicks',
+            'period_clicks' => 'period_raw_clicks',
+            'click_source' => 'click_source',
             'deduped_clicks' => 'deduped_clicks',
             'stock_quantity' => 'stock_quantity',
             'brand' => 'brand',
