@@ -95,7 +95,17 @@ final class GunDealsPerformancePage
             'max_profit' => $this->nullable_float($_GET['max_profit'] ?? null),
             'missing_profit' => sanitize_key((string) ($_GET['missing_profit'] ?? '')),
             'advanced' => !empty($_GET['advanced']) ? 1 : 0,
+            'sort' => sanitize_key((string) ($_GET['sort'] ?? 'attention')),
+            'order' => strtolower(sanitize_key((string) ($_GET['order'] ?? ''))),
         ];
+
+        if (!isset($this->sortable_columns()[$filters['sort']])) {
+            $filters['sort'] = 'attention';
+        }
+
+        if (!in_array($filters['order'], ['asc', 'desc'], true)) {
+            $filters['order'] = $this->default_sort_order((string) $filters['sort']);
+        }
 
         if (strcmp((string) $filters['end_date'], (string) $filters['start_date']) < 0) {
             $filters['end_date'] = $filters['start_date'];
@@ -291,11 +301,7 @@ final class GunDealsPerformancePage
 
         $rows = $this->apply_saved_view($rows, (string) $filters['view']);
         $rows = $this->apply_filters($rows, $filters);
-        uasort($rows, static function (array $a, array $b): int {
-            return ((int) $b['clicks'] <=> (int) $a['clicks'])
-                ?: ((float) $a['net_profit'] <=> (float) $b['net_profit'])
-                ?: strcasecmp((string) $a['title'], (string) $b['title']);
-        });
+        $rows = $this->sort_rows($rows, (string) $filters['sort'], (string) $filters['order']);
 
         $summary = $this->summary_from_rows($rows);
         $summary['period_cost'] = $this->gun_deals_cost((int) $summary['clicks']);
@@ -955,6 +961,160 @@ final class GunDealsPerformancePage
     }
 
     /**
+     * @return array<string,array{label:string,type:string,default_order:string}>
+     */
+    private function sortable_columns(): array
+    {
+        return [
+            'attention' => ['label' => 'Attention', 'type' => 'number', 'default_order' => 'desc'],
+            'upc' => ['label' => 'UPC', 'type' => 'string', 'default_order' => 'asc'],
+            'title' => ['label' => 'Product', 'type' => 'string', 'default_order' => 'asc'],
+            'feed_included' => ['label' => 'Feed Included', 'type' => 'number', 'default_order' => 'desc'],
+            'stock_status' => ['label' => 'Stock Status', 'type' => 'string', 'default_order' => 'asc'],
+            'clicks' => ['label' => 'Clicks', 'type' => 'number', 'default_order' => 'desc'],
+            'orders' => ['label' => 'Orders', 'type' => 'number', 'default_order' => 'desc'],
+            'units' => ['label' => 'Units Sold', 'type' => 'number', 'default_order' => 'desc'],
+            'conversion_rate' => ['label' => 'Conversion Rate', 'type' => 'number', 'default_order' => 'desc'],
+            'revenue' => ['label' => 'Revenue', 'type' => 'number', 'default_order' => 'desc'],
+            'gross_profit' => ['label' => 'Gross Profit', 'type' => 'number', 'default_order' => 'desc'],
+            'allocated_cost' => ['label' => 'Allocated Cost', 'type' => 'number', 'default_order' => 'desc'],
+            'net_profit' => ['label' => 'Net Profit', 'type' => 'number', 'default_order' => 'asc'],
+            'ffl_required' => ['label' => 'FFL Required', 'type' => 'number', 'default_order' => 'desc'],
+            'map_status' => ['label' => 'MAP/Quote Status', 'type' => 'string', 'default_order' => 'asc'],
+            'customer_price' => ['label' => 'Customer Price', 'type' => 'number', 'default_order' => 'desc'],
+            'product_id' => ['label' => 'Product ID', 'type' => 'number', 'default_order' => 'asc'],
+            'raw_cumulative_clicks' => ['label' => 'Raw Cumulative Clicks', 'type' => 'number', 'default_order' => 'desc'],
+            'deduped_clicks' => ['label' => 'Deduped Clicks', 'type' => 'number', 'default_order' => 'desc'],
+            'stock_quantity' => ['label' => 'Stock Quantity', 'type' => 'number', 'default_order' => 'desc'],
+            'brand' => ['label' => 'Brand', 'type' => 'string', 'default_order' => 'asc'],
+            'category' => ['label' => 'Category', 'type' => 'string', 'default_order' => 'asc'],
+            'dealer_cost' => ['label' => 'Dealer Cost', 'type' => 'number', 'default_order' => 'desc'],
+            'true_cost' => ['label' => 'True Cost', 'type' => 'number', 'default_order' => 'desc'],
+            'margin' => ['label' => 'Margin', 'type' => 'number', 'default_order' => 'desc'],
+            'fees_adjustments' => ['label' => 'Fees/Adjustments', 'type' => 'number', 'default_order' => 'desc'],
+            'sot_required' => ['label' => 'SOT Required', 'type' => 'number', 'default_order' => 'desc'],
+            'last_order_date' => ['label' => 'Last Order Date', 'type' => 'string', 'default_order' => 'desc'],
+            'cost_per_order' => ['label' => 'Cost Per Order', 'type' => 'number', 'default_order' => 'desc'],
+            'cost_per_revenue_dollar' => ['label' => 'Cost Per Revenue Dollar', 'type' => 'number', 'default_order' => 'desc'],
+            'click_cost_profit_percent' => ['label' => 'Click Cost % Profit', 'type' => 'number', 'default_order' => 'desc'],
+            'marginal_click_cost' => ['label' => 'Marginal Click Cost', 'type' => 'number', 'default_order' => 'desc'],
+        ];
+    }
+
+    private function default_sort_order(string $sort): string
+    {
+        $columns = $this->sortable_columns();
+        return (string) ($columns[$sort]['default_order'] ?? 'desc');
+    }
+
+    /**
+     * @param array<string,array<string,mixed>> $rows
+     * @return array<string,array<string,mixed>>
+     */
+    private function sort_rows(array $rows, string $sort, string $order): array
+    {
+        $columns = $this->sortable_columns();
+        if (!isset($columns[$sort])) {
+            $sort = 'attention';
+        }
+
+        $order = $order === 'asc' ? 'asc' : 'desc';
+        $direction = $order === 'asc' ? 1 : -1;
+        $type = (string) ($columns[$sort]['type'] ?? 'number');
+
+        uasort($rows, function (array $a, array $b) use ($sort, $type, $direction): int {
+            $cmp = $this->compare_sort_values(
+                $this->sort_value($a, $sort),
+                $this->sort_value($b, $sort),
+                $type
+            );
+
+            if ($cmp !== 0) {
+                return $cmp * $direction;
+            }
+
+            $attention_cmp = $this->attention_score($b) <=> $this->attention_score($a);
+            if ($attention_cmp !== 0) {
+                return $attention_cmp;
+            }
+
+            return ((int) $b['clicks'] <=> (int) $a['clicks'])
+                ?: strcasecmp((string) $a['title'], (string) $b['title']);
+        });
+
+        return $rows;
+    }
+
+    /**
+     * @param mixed $a
+     * @param mixed $b
+     */
+    private function compare_sort_values($a, $b, string $type): int
+    {
+        if ($type === 'string') {
+            return strcasecmp((string) $a, (string) $b);
+        }
+
+        return (float) $a <=> (float) $b;
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @return mixed
+     */
+    private function sort_value(array $row, string $sort)
+    {
+        if ($sort === 'attention') {
+            return $this->attention_score($row);
+        }
+
+        if (in_array($sort, ['feed_included', 'ffl_required', 'sot_required'], true)) {
+            return !empty($row[$sort]) ? 1 : 0;
+        }
+
+        if ($sort === 'stock_quantity') {
+            return is_numeric($row['stock_quantity'] ?? null) ? (float) $row['stock_quantity'] : -1.0;
+        }
+
+        return $row[$sort] ?? '';
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    private function attention_score(array $row): int
+    {
+        $badges = is_array($row['badges'] ?? null) ? $row['badges'] : [];
+        $score = 0;
+
+        $weights = [
+            'Missing Profit Audit' => 1000,
+            'Consider Excluding From Feed' => 900,
+            'Unprofitable After Click Cost' => 800,
+            'High Demand / No Orders' => 700,
+            'Leaky Clicks' => 650,
+            'Click Cost Eating Margin' => 600,
+            'Review Price' => 550,
+            'MAP Friction' => 500,
+            'Firearm Checkout Friction' => 500,
+            'Recent Stock-Window Risk' => 450,
+            'Profitable After Click Cost' => 100,
+            'Good Converter' => 75,
+        ];
+
+        foreach ($badges as $badge) {
+            $score += (int) ($weights[(string) $badge] ?? 0);
+        }
+
+        $score += min(250, (int) $row['clicks']);
+        if ((int) $row['orders'] === 0 && (int) $row['clicks'] > 0) {
+            $score += 100;
+        }
+
+        return $score;
+    }
+
+    /**
      * @param array<string,array<string,mixed>> $rows
      * @return array<string,mixed>
      */
@@ -1118,6 +1278,11 @@ final class GunDealsPerformancePage
             'missing_profit_audit' => 'Missing Profit Audit',
         ];
 
+        $sort_options = [];
+        foreach ($this->sortable_columns() as $key => $column) {
+            $sort_options[$key] = (string) $column['label'];
+        }
+
         $export_url = add_query_arg(array_merge($_GET, [
             'page' => self::PAGE_SLUG,
             'fflhub_gundeals_export' => '1',
@@ -1144,6 +1309,8 @@ final class GunDealsPerformancePage
             <label>Min Net $ <input type="number" step="0.01" name="min_profit" value="<?php echo esc_attr($filters['min_profit'] !== null ? (string) $filters['min_profit'] : ''); ?>" /></label>
             <label>Max Net $ <input type="number" step="0.01" name="max_profit" value="<?php echo esc_attr($filters['max_profit'] !== null ? (string) $filters['max_profit'] : ''); ?>" /></label>
             <label>Missing Audit <?php $this->select('missing_profit', (string) $filters['missing_profit'], ['' => 'Any', 'yes' => 'Yes', 'no' => 'No']); ?></label>
+            <label>Sort <?php $this->select('sort', (string) $filters['sort'], $sort_options); ?></label>
+            <label>Order <?php $this->select('order', (string) $filters['order'], ['desc' => 'Descending', 'asc' => 'Ascending']); ?></label>
             <label><input type="checkbox" name="advanced" value="1" <?php checked(!empty($filters['advanced'])); ?> /> Advanced columns</label>
             <button class="button button-primary" type="submit">Apply</button>
             <a class="button" href="<?php echo esc_url($export_url); ?>">Export CSV</a>
@@ -1164,6 +1331,30 @@ final class GunDealsPerformancePage
             echo '<option value="' . esc_attr((string) $value) . '"' . selected($selected, (string) $value, false) . '>' . esc_html((string) $label) . '</option>';
         }
         echo '</select>';
+    }
+
+    /**
+     * @param array<string,mixed> $filters
+     */
+    private function sortable_header(string $sort, string $label, array $filters): void
+    {
+        $current_sort = (string) ($filters['sort'] ?? 'attention');
+        $current_order = (string) ($filters['order'] ?? $this->default_sort_order($current_sort));
+        $active = $current_sort === $sort;
+        $next_order = $active && $current_order === 'desc'
+            ? 'asc'
+            : ($active ? 'desc' : $this->default_sort_order($sort));
+
+        $args = $_GET;
+        unset($args['fflhub_gundeals_export'], $args['_wpnonce']);
+        $args['page'] = self::PAGE_SLUG;
+        $args['sort'] = $sort;
+        $args['order'] = $next_order;
+
+        $suffix = $active ? ' (' . $current_order . ')' : '';
+        echo '<a href="' . esc_url(add_query_arg($args, admin_url('admin.php'))) . '">'
+            . esc_html($label . $suffix)
+            . '</a>';
     }
 
     /**
@@ -1228,43 +1419,43 @@ final class GunDealsPerformancePage
         <table class="widefat striped fflhub-gd-table">
             <thead>
                 <tr>
-                    <th>Recommendation</th>
-                    <th>UPC</th>
-                    <th>Product</th>
-                    <th>Feed</th>
-                    <th>Stock</th>
-                    <th>Clicks</th>
-                    <th>Orders</th>
-                    <th>Units</th>
-                    <th>Conv.</th>
-                    <th>Revenue</th>
-                    <th>Gross Profit</th>
-                    <th>Allocated Cost</th>
-                    <th>Net</th>
-                    <th>FFL</th>
-                    <th>MAP/Quote</th>
-                    <th>Visible Price</th>
+                    <th><?php $this->sortable_header('attention', 'Recommendation', $filters); ?></th>
+                    <th><?php $this->sortable_header('upc', 'UPC', $filters); ?></th>
+                    <th><?php $this->sortable_header('title', 'Product', $filters); ?></th>
+                    <th><?php $this->sortable_header('feed_included', 'Feed', $filters); ?></th>
+                    <th><?php $this->sortable_header('stock_status', 'Stock', $filters); ?></th>
+                    <th><?php $this->sortable_header('clicks', 'Clicks', $filters); ?></th>
+                    <th><?php $this->sortable_header('orders', 'Orders', $filters); ?></th>
+                    <th><?php $this->sortable_header('units', 'Units', $filters); ?></th>
+                    <th><?php $this->sortable_header('conversion_rate', 'Conv.', $filters); ?></th>
+                    <th><?php $this->sortable_header('revenue', 'Revenue', $filters); ?></th>
+                    <th><?php $this->sortable_header('gross_profit', 'Gross Profit', $filters); ?></th>
+                    <th><?php $this->sortable_header('allocated_cost', 'Allocated Cost', $filters); ?></th>
+                    <th><?php $this->sortable_header('net_profit', 'Net', $filters); ?></th>
+                    <th><?php $this->sortable_header('ffl_required', 'FFL', $filters); ?></th>
+                    <th><?php $this->sortable_header('map_status', 'MAP/Quote', $filters); ?></th>
+                    <th><?php $this->sortable_header('customer_price', 'Visible Price', $filters); ?></th>
                     <?php if ($show_advanced) : ?>
-                        <th>Product ID</th>
-                        <th>Raw Cumulative</th>
-                        <th>Deduped</th>
-                        <th>Stock Qty</th>
-                        <th>Brand</th>
-                        <th>Category</th>
-                        <th>Dealer Cost</th>
-                        <th>True Cost</th>
-                        <th>Margin</th>
-                        <th>Fees/Adjustments</th>
-                        <th>SOT</th>
-                        <th>Last Order</th>
+                        <th><?php $this->sortable_header('product_id', 'Product ID', $filters); ?></th>
+                        <th><?php $this->sortable_header('raw_cumulative_clicks', 'Raw Cumulative', $filters); ?></th>
+                        <th><?php $this->sortable_header('deduped_clicks', 'Deduped', $filters); ?></th>
+                        <th><?php $this->sortable_header('stock_quantity', 'Stock Qty', $filters); ?></th>
+                        <th><?php $this->sortable_header('brand', 'Brand', $filters); ?></th>
+                        <th><?php $this->sortable_header('category', 'Category', $filters); ?></th>
+                        <th><?php $this->sortable_header('dealer_cost', 'Dealer Cost', $filters); ?></th>
+                        <th><?php $this->sortable_header('true_cost', 'True Cost', $filters); ?></th>
+                        <th><?php $this->sortable_header('margin', 'Margin', $filters); ?></th>
+                        <th><?php $this->sortable_header('fees_adjustments', 'Fees/Adjustments', $filters); ?></th>
+                        <th><?php $this->sortable_header('sot_required', 'SOT', $filters); ?></th>
+                        <th><?php $this->sortable_header('last_order_date', 'Last Order', $filters); ?></th>
                         <th>Views</th>
                         <th>Add to Cart</th>
                         <th>Email Quotes</th>
                         <th>Attribution</th>
-                        <th>Cost / Order</th>
-                        <th>Cost / Revenue $</th>
-                        <th>Click Cost % Profit</th>
-                        <th>Marginal Click Cost</th>
+                        <th><?php $this->sortable_header('cost_per_order', 'Cost / Order', $filters); ?></th>
+                        <th><?php $this->sortable_header('cost_per_revenue_dollar', 'Cost / Revenue $', $filters); ?></th>
+                        <th><?php $this->sortable_header('click_cost_profit_percent', 'Click Cost % Profit', $filters); ?></th>
+                        <th><?php $this->sortable_header('marginal_click_cost', 'Marginal Click Cost', $filters); ?></th>
                     <?php endif; ?>
                 </tr>
             </thead>
