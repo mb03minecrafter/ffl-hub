@@ -222,6 +222,26 @@ function fflhub_holosun_price_plan(float $cost, float $shipping, float $fee_frac
     ];
 }
 
+/**
+ * @return array<string,float|int|string|null>
+ */
+function fflhub_holosun_map_price_fallback_plan(float $map, float $cost, float $shipping, float $fee_fraction): array
+{
+    $computed_price = round($map, 2);
+    $actual_profit = ($computed_price * (1.0 - $fee_fraction)) - $cost - $shipping;
+    $actual_margin = ($computed_price > 0.0) ? ($actual_profit / $computed_price) : 0.0;
+
+    return [
+        'exact_price' => $map,
+        'floored_price' => $computed_price,
+        'fixed_profit' => null,
+        'computed_price' => $computed_price,
+        'actual_profit' => $actual_profit,
+        'actual_margin' => $actual_margin,
+        'fallback_mode' => 'map_price',
+    ];
+}
+
 $fee_percent = (float)Options::get_payment_processor_fee_percent();
 if (!is_finite($fee_percent) || $fee_percent < 0.0) {
     $fee_percent = 0.0;
@@ -344,18 +364,30 @@ do {
         } else {
             $plan = fflhub_holosun_price_plan($cost, $shipping, $fee_fraction, FFLHUB_HOLOSUN_TARGET_MARGIN);
             if (isset($plan['error'])) {
-                $stats['skipped']++;
-                $note = (string)$plan['error'];
+                $plan = fflhub_holosun_map_price_fallback_plan($map, $cost, $shipping, $fee_fraction);
+                $stats['planned']++;
+                $result = $commit ? 'committed' : 'dry-run';
+                $note = 'fallback_to_map_after_' . (string)$plan['fallback_mode'];
             } elseif ((float)$plan['computed_price'] >= $map) {
-                $stats['skipped']++;
-                $note = 'computed quote price is at or above MAP; coupon would not be positive';
+                $plan = fflhub_holosun_map_price_fallback_plan($map, $cost, $shipping, $fee_fraction);
+                $stats['planned']++;
+                $result = $commit ? 'committed' : 'dry-run';
+                $note = 'fallback_to_map_no_coupon';
             } else {
                 $stats['planned']++;
                 $result = $commit ? 'committed' : 'dry-run';
                 $note = 'ok';
+            }
 
-                if ($commit) {
-                    $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, ProductMeta::MARKUP_MODE_MAP_PRICE);
+            if ($commit && is_array($plan) && !isset($plan['error'])) {
+                $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, ProductMeta::MARKUP_MODE_MAP_PRICE);
+
+                if (($plan['fallback_mode'] ?? '') === 'map_price') {
+                    $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE);
+                    $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, 0);
+                    $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, 0);
+                    $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META, 0);
+                } else {
                     $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT);
                     $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, 0);
                     $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, 0);
@@ -363,10 +395,11 @@ do {
                         ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META,
                         (float)wc_format_decimal((float)$plan['fixed_profit'], 4)
                     );
-                    $product->save();
-                    DistributorProductHelper::apply_admin_pricing_to_woo_product($product_id);
-                    $stats['changed']++;
                 }
+
+                $product->save();
+                DistributorProductHelper::apply_admin_pricing_to_woo_product($product_id);
+                $stats['changed']++;
             }
         }
 
