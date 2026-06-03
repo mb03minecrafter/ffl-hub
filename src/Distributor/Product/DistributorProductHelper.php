@@ -51,7 +51,7 @@ class DistributorProductHelper
     private const CSSI_DISTRIBUTOR_ID = 'cssi';
     private const LIPSEYS_DISTRIBUTOR_ID = 'lipseys';
     private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
-    private const BRAND_TERM_ALIAS_MIGRATION_OPTION = 'fflhub_brand_term_alias_migration_v3';
+    private const BRAND_TERM_ALIAS_MIGRATION_OPTION = 'fflhub_brand_term_alias_migration_v4';
     private const BRAND_TERM_ALIAS_MIGRATIONS = [
         'Holosun Technologies' => 'Holosun',
         'Holoson Technologies' => 'Holosun',
@@ -60,6 +60,12 @@ class DistributorProductHelper
         'MAGPUL INDUSTRIES CORP' => 'Magpul',
         'Magpul Industries' => 'Magpul',
         'Magpul Accessories' => 'Magpul',
+        'OLIGHTSTORE USA INC' => 'Osight',
+    ];
+    private const OSIGHT_SOURCE_BRAND_KEYS = [
+        'olightstoreusainc' => true,
+        'olightstoreusa' => true,
+        'olightstore' => true,
     ];
     private const BRAND_ALIASES = [
         'smithandwesson' => 'Smith & Wesson',
@@ -979,7 +985,7 @@ class DistributorProductHelper
 
         self::maybe_run_brand_term_alias_migration($taxonomy);
 
-        $brand = self::normalize_brand_name((string) ($selected_product->brand ?? ''));
+        $brand = self::canonical_brand_name_from_payload($selected_product);
         if ($brand === '') {
             return false;
         }
@@ -1757,7 +1763,7 @@ class DistributorProductHelper
 
     public static function default_map_policy_for_payload(DistributorProductPayload $payload): string
     {
-        $brand = self::normalize_brand_name((string) ($payload->brand ?? ''));
+        $brand = self::canonical_brand_name_from_payload($payload);
         if ($brand !== '' && self::should_bypass_map_policy_pricing_for_brand($brand)) {
             return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
         }
@@ -2363,6 +2369,32 @@ class DistributorProductHelper
         }
 
         return $brand;
+    }
+
+    private static function canonical_brand_name_from_payload(DistributorProductPayload $payload): string
+    {
+        $brand = self::normalize_brand_name((string) ($payload->brand ?? ''));
+        if ($brand === '') {
+            return '';
+        }
+
+        $brand_key = self::brand_alias_key($brand);
+        if (isset(self::OSIGHT_SOURCE_BRAND_KEYS[$brand_key]) && self::payload_looks_like_osight($payload)) {
+            return 'Osight';
+        }
+
+        return $brand;
+    }
+
+    private static function payload_looks_like_osight(DistributorProductPayload $payload): bool
+    {
+        $haystack = strtolower(trim(implode(' ', [
+            (string) $payload->sku,
+            (string) $payload->name,
+            (string) $payload->description,
+        ])));
+
+        return $haystack !== '' && strpos($haystack, 'osight') !== false;
     }
 
     private static function brand_alias_key(string $brand): string
