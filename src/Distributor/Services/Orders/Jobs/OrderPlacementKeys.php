@@ -15,8 +15,11 @@ final class OrderPlacementKeys
     public const META_PIPELINE_STARTED_AT  = 'fflhub_place_pipeline_started_at';
     public const META_PIPELINE_STARTED_BY  = 'fflhub_place_pipeline_started_by';
 
-    //we use this to suspend jobs if the order is put into the trash can or if we wanna pause the pipeline for the jobs on this order
-    public const META_ORDER_SUSPENDED = 'fflhub_order_jobs_suspended'; 
+    // We use this to suspend jobs if an order is trashed, cancelled/refunded/failed, or manually paused.
+    public const META_ORDER_SUSPENDED = 'fflhub_order_jobs_suspended';
+
+    // Set only when suspension was caused by an order status change, so restoration can safely resume rows.
+    public const META_ORDER_STATUS_SUSPENDED = 'fflhub_order_jobs_suspended_by_order_status';
 
     /* ===================== Job registry (order-level) ===================== */
 

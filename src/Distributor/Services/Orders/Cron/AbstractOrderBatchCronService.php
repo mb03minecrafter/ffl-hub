@@ -211,6 +211,12 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                     continue;
                 }
 
+                if (!$this->order_allows_batch_placement($order)) {
+                    $this->pause_inactive_order_job($order, $job_key);
+                    $skipped_suspended++;
+                    continue;
+                }
+
                 // Empty payload cannot be sent; mark failed for operator visibility.
                 $lines = $job->payload_lines();
                 if (empty($lines)) {
@@ -1410,6 +1416,37 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             OrderPlacementJobLifeCycle::mark_job_failed($this->jobs_table, $order, $job_key, 'Batch single-row fallback failed: ' . $e->getMessage());
             return false;
         }
+    }
+
+    private function order_allows_batch_placement(WC_Order $order): bool
+    {
+        return $order->has_status(['processing', 'completed']);
+    }
+
+    private function pause_inactive_order_job(WC_Order $order, string $job_key): void
+    {
+        $order_id = (int) $order->get_id();
+        $job_key = trim((string) $job_key);
+        if ($order_id <= 0 || $job_key === '') {
+            return;
+        }
+
+        $status = strtolower(trim((string) $order->get_status()));
+        $status = $status !== '' ? $status : 'inactive';
+
+        update_post_meta($order_id, OrderPlacementKeys::META_ORDER_SUSPENDED, '1');
+        update_post_meta($order_id, OrderPlacementKeys::META_ORDER_STATUS_SUSPENDED, $status);
+
+        OrderPlacementJobWriter::apply_patch(
+            $this->jobs_table,
+            $order_id,
+            $job_key,
+            OrderPlacementJobPatch::empty()
+                ->with_status(OrderPlacementKeys::JOB_STATUS_PAUSED)
+                ->with_last_step('place')
+                ->with_last_error('Paused: order status is ' . $status)
+                ->clear_action_and_schedule()
+        );
     }
 
     private function mark_failed(int $order_id, string $job_key, string $message): void

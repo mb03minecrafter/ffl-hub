@@ -177,12 +177,34 @@ final class DealerBatchShippingOptimizer
 
         $jobs = [];
         foreach ($rows as $row) {
-            if (is_array($row)) {
+            if (is_array($row) && $this->order_allows_batch_optimization((int) ($row['order_id'] ?? 0))) {
                 $jobs[] = new OrderPlacementJobRow($row);
             }
         }
 
         return $jobs;
+    }
+
+    private function order_allows_batch_optimization(int $order_id): bool
+    {
+        if ($order_id <= 0) {
+            return false;
+        }
+
+        if (\FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore::is_order_suspended($order_id)) {
+            return false;
+        }
+
+        if (!function_exists('wc_get_order')) {
+            return true;
+        }
+
+        $order = wc_get_order($order_id);
+        if (!($order instanceof WC_Order)) {
+            return false;
+        }
+
+        return $order->has_status(['processing', 'completed']);
     }
 
     /**

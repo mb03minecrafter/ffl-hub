@@ -50,6 +50,12 @@ final class OrderTrashJobsService
         add_action('woocommerce_trash_order', [$this, 'handle_order_trashed'], 10, 1);
         add_action('woocommerce_untrash_order', [$this, 'handle_order_untrashed'], 10, 1);
         add_action('woocommerce_before_delete_order', [$this, 'handle_order_deleted_permanently'], 10, 1);
+
+        add_action('woocommerce_order_status_cancelled', [$this, 'handle_order_inactive_status'], 10, 2);
+        add_action('woocommerce_order_status_failed', [$this, 'handle_order_inactive_status'], 10, 2);
+        add_action('woocommerce_order_status_refunded', [$this, 'handle_order_inactive_status'], 10, 2);
+        add_action('woocommerce_order_status_processing', [$this, 'handle_order_active_status'], 10, 2);
+        add_action('woocommerce_order_status_completed', [$this, 'handle_order_active_status'], 10, 2);
     }
 
     /**
@@ -170,12 +176,86 @@ final class OrderTrashJobsService
     }
 
     /**
+     * Cancelled/refunded/failed orders must not remain eligible for batch optimization or placement.
+     *
+     * @param mixed $order Optional WC_Order supplied by WooCommerce.
+     */
+    public function handle_order_inactive_status(int $order_id, $order = null): void
+    {
+        $order_id = (int) $order_id;
+        if ($order_id <= 0 || !$this->is_woo_order($order_id, $order)) {
+            return;
+        }
+
+        $status = $this->order_status_label($order);
+        update_post_meta($order_id, OrderPlacementKeys::META_ORDER_STATUS_SUSPENDED, $status);
+        $this->suspend_order_and_pause_jobs($order_id, 'Order status changed to ' . $status);
+    }
+
+    /**
+     * If an order is intentionally restored to an active paid state, resume rows that we paused by status.
+     *
+     * @param mixed $order Optional WC_Order supplied by WooCommerce.
+     */
+    public function handle_order_active_status(int $order_id, $order = null): void
+    {
+        $order_id = (int) $order_id;
+        if ($order_id <= 0 || !$this->is_woo_order($order_id, $order)) {
+            return;
+        }
+
+        $status_flag = (string) get_post_meta($order_id, OrderPlacementKeys::META_ORDER_STATUS_SUSPENDED, true);
+        if ($status_flag === '') {
+            return;
+        }
+
+        delete_post_meta($order_id, OrderPlacementKeys::META_ORDER_STATUS_SUSPENDED);
+        $this->unsuspend_order_and_resume_jobs($order_id, 'Order status restored to ' . $this->order_status_label($order));
+    }
+
+    /**
      * Very small guard: ensure the underlying post type looks like a Woo order.
      */
     private function is_shop_order_post(int $post_id): bool
     {
         $post_type = (string) get_post_type($post_id);
         return ($post_type === 'shop_order' || $post_type === 'shop_order_placehold');
+    }
+
+    /**
+     * HPOS-safe order guard for status hooks.
+     *
+     * @param mixed $order Optional WC_Order supplied by WooCommerce.
+     */
+    private function is_woo_order(int $order_id, $order = null): bool
+    {
+        if (is_object($order) && method_exists($order, 'get_id') && (int) $order->get_id() === $order_id) {
+            return true;
+        }
+
+        if (function_exists('wc_get_order')) {
+            $resolved = wc_get_order($order_id);
+            if (is_object($resolved) && method_exists($resolved, 'get_id')) {
+                return (int) $resolved->get_id() === $order_id;
+            }
+        }
+
+        return $this->is_shop_order_post($order_id);
+    }
+
+    /**
+     * @param mixed $order Optional WC_Order supplied by WooCommerce.
+     */
+    private function order_status_label($order = null): string
+    {
+        if (is_object($order) && method_exists($order, 'get_status')) {
+            $status = strtolower(trim((string) $order->get_status()));
+            if ($status !== '') {
+                return $status;
+            }
+        }
+
+        return 'inactive';
     }
 
     /* ============================ DB mutations ============================ */
