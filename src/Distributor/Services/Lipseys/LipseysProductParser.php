@@ -170,6 +170,11 @@ class LipseysProductParser {
             'shipping_height_in'      => $packageHeight,
         );
 
+        if (SigDropshipApproval::row_is_nfa_or_sot($row)) {
+            $row['dropship_enabled'] = '0';
+            $row['dropship_block_reason'] = 'nfa_or_sot';
+        }
+
         return SigDropshipApproval::apply_to_row('lipseys', $row);
     }
 
