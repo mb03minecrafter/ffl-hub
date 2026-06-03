@@ -1299,7 +1299,17 @@ final class KinseysProductImporterService
     {
         global $wpdb;
 
-        $primary_columns = $wpdb->get_col("SHOW INDEX FROM {$stageTable} WHERE Key_name = 'PRIMARY' ORDER BY Seq_in_index", 4); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $primary_columns = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT COLUMN_NAME
+                FROM information_schema.statistics
+                WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = %s
+                    AND INDEX_NAME = 'PRIMARY'
+                ORDER BY SEQ_IN_INDEX",
+                $stageTable
+            )
+        );
         if ($primary_columns === ['upc']) {
             return;
         }
@@ -1326,7 +1336,17 @@ final class KinseysProductImporterService
 
         $wpdb->query("TRUNCATE TABLE {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
-        $secondary_indexes = $wpdb->get_col("SHOW INDEX FROM {$stageTable} WHERE Key_name = 'upc'", 2); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $secondary_indexes = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT COLUMN_NAME
+                FROM information_schema.statistics
+                WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = %s
+                    AND INDEX_NAME = 'upc'
+                ORDER BY SEQ_IN_INDEX",
+                $stageTable
+            )
+        );
         if (!empty($secondary_indexes)) {
             $wpdb->query("ALTER TABLE {$stageTable} DROP INDEX upc"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
