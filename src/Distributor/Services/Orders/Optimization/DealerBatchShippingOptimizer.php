@@ -52,7 +52,7 @@ final class DealerBatchShippingOptimizer
         $this->audit_table = $audit_table ?: new DealerBatchOptimizerAuditTable();
     }
 
-    public function run(string $trigger_dist_id = ''): void
+    public function run(string $trigger_dist_id = '', string $horizon_mysql_utc = ''): void
     {
         if (!DealerBatchOptimizerConfig::optimizer_enabled()) {
             return;
@@ -65,9 +65,13 @@ final class DealerBatchShippingOptimizer
         }
 
         try {
-            $jobs = $this->load_pending_dealer_batch_jobs();
+            $jobs = $this->load_plannable_dealer_batch_jobs($horizon_mysql_utc);
             if (empty($jobs)) {
-                $this->log_ctx('no_pending_jobs', ['run_id' => $run_id, 'trigger_dist_id' => $trigger_dist_id]);
+                $this->log_ctx('no_pending_jobs', [
+                    'run_id' => $run_id,
+                    'trigger_dist_id' => $trigger_dist_id,
+                    'horizon_mysql_utc' => $this->normalize_mysql_datetime_for_query($horizon_mysql_utc),
+                ]);
                 return;
             }
 
@@ -76,7 +80,7 @@ final class DealerBatchShippingOptimizer
             $state = $this->build_state($jobs, $registry_ids);
             $before = [
                 'subtotals' => $state['subtotals'],
-                'penalty' => $this->estimated_penalty_total($state['subtotals'], $config),
+                'estimated_paid_shipping' => $this->estimated_paid_shipping_total($state['subtotals'], $config),
                 'jobs_seen' => count($jobs),
             ];
 
@@ -84,16 +88,16 @@ final class DealerBatchShippingOptimizer
 
             $moves = $this->choose_moves($state, $config);
             if (empty($moves)) {
-                $this->audit_table->finish_run($run_id, 'no_moves', 0, $before, 'No positive equal-cost free-shipping move found.');
+                $this->audit_table->finish_run($run_id, 'no_moves', 0, $before, 'No positive equal-cost paid-shipping improvement found.');
                 $this->log_ctx('no_moves', ['run_id' => $run_id, 'before' => $before]);
                 return;
             }
 
             $persisted = $this->persist_moves($run_id, $moves);
-            $after_state = $this->build_state($this->load_pending_dealer_batch_jobs(), $registry_ids);
+            $after_state = $this->build_state($this->load_plannable_dealer_batch_jobs($horizon_mysql_utc), $registry_ids);
             $after = [
                 'subtotals' => $after_state['subtotals'],
-                'penalty' => $this->estimated_penalty_total($after_state['subtotals'], $config),
+                'estimated_paid_shipping' => $this->estimated_paid_shipping_total($after_state['subtotals'], $config),
                 'jobs_seen' => count($after_state['jobs']),
             ];
 
@@ -121,7 +125,7 @@ final class DealerBatchShippingOptimizer
     /**
      * @return OrderPlacementJobRow[]
      */
-    private function load_pending_dealer_batch_jobs(): array
+    private function load_plannable_dealer_batch_jobs(string $horizon_mysql_utc = ''): array
     {
         global $wpdb;
 
@@ -138,6 +142,22 @@ final class DealerBatchShippingOptimizer
         $lane = OrderPlacementKeysUtil::LANE_DEALER_FULFILLED;
         $status = OrderPlacementKeys::JOB_STATUS_BATCH_PENDING;
         $now = gmdate('Y-m-d H:i:s');
+        $horizon_mysql_utc = $this->normalize_mysql_datetime_for_query($horizon_mysql_utc);
+        $next_run_clause = "
+                AND (
+                    next_run_at IS NULL
+                    OR next_run_at = '0000-00-00 00:00:00'
+                    OR next_run_at <= %s
+                    OR (
+                        " . ($horizon_mysql_utc !== '' ? "next_run_at <= %s AND" : '') . "
+                        (last_error IS NULL OR last_error = '')
+                        AND (last_codes_json IS NULL OR last_codes_json = '' OR last_codes_json = '[]')
+                        AND (validate_result_json IS NULL OR validate_result_json = '')
+                        AND (place_result_json IS NULL OR place_result_json = '')
+                    )
+                )
+        ";
+        $time_args = $horizon_mysql_utc !== '' ? [$now, $horizon_mysql_utc] : [$now];
 
         $sql = $wpdb->prepare(
             "
@@ -159,15 +179,11 @@ final class DealerBatchShippingOptimizer
                 AND (merchant_po IS NULL OR merchant_po = '')
                 AND (external_order_id IS NULL OR external_order_id = '')
                 AND (external_order_ids_json IS NULL OR external_order_ids_json = '' OR external_order_ids_json = '[]')
-                AND (
-                    next_run_at IS NULL
-                    OR next_run_at = '0000-00-00 00:00:00'
-                    OR next_run_at <= %s
-                )
+                {$next_run_clause}
             ORDER BY created_at ASC, id ASC
             LIMIT %d
             ",
-            array_merge($dist_ids, [$lane, $status, $now, self::QUERY_LIMIT])
+            array_merge($dist_ids, [$lane, $status], $time_args, [self::QUERY_LIMIT])
         );
 
         $rows = $wpdb->get_results($sql, ARRAY_A);
@@ -543,7 +559,7 @@ final class DealerBatchShippingOptimizer
         array $stock,
         array $config
     ): ?array {
-        $before_penalty = $this->estimated_penalty_total($subtotals, $config);
+        $before_shipping = $this->estimated_paid_shipping_total($subtotals, $config);
         $best = null;
         $best_improvement = 0.0;
 
@@ -561,7 +577,7 @@ final class DealerBatchShippingOptimizer
 
                 $after = $subtotals;
                 $this->apply_simulated_move($move, $after, $demand, false);
-                $improvement = $before_penalty - $this->estimated_penalty_total($after, $config);
+                $improvement = $before_shipping - $this->estimated_paid_shipping_total($after, $config);
                 if ($improvement <= self::EPSILON) {
                     continue;
                 }
@@ -594,7 +610,7 @@ final class DealerBatchShippingOptimizer
         array $stock,
         array $config
     ): ?array {
-        $before_penalty = $this->estimated_penalty_total($subtotals, $config);
+        $before_shipping = $this->estimated_paid_shipping_total($subtotals, $config);
         $best_bundle = null;
         $best_improvement = 0.0;
 
@@ -652,7 +668,7 @@ final class DealerBatchShippingOptimizer
                 continue;
             }
 
-            $improvement = $before_penalty - $this->estimated_penalty_total($trial_subtotals, $config);
+            $improvement = $before_shipping - $this->estimated_paid_shipping_total($trial_subtotals, $config);
             if ($improvement <= self::EPSILON) {
                 continue;
             }
@@ -774,22 +790,26 @@ final class DealerBatchShippingOptimizer
      * @param array<string,float> $subtotals
      * @param array<string,array{threshold:float,penalty:float}> $config
      */
-    private function estimated_penalty_total(array $subtotals, array $config): float
+    private function estimated_paid_shipping_total(array $subtotals, array $config): float
     {
         $total = 0.0;
         foreach ($config as $dist_id => $row) {
             $threshold = (float) ($row['threshold'] ?? 0.0);
-            if ($threshold <= 0.0) {
-                continue;
-            }
-
             $subtotal = (float) ($subtotals[$dist_id] ?? 0.0);
-            if ($subtotal >= $threshold) {
+            if ($subtotal <= self::EPSILON) {
                 continue;
             }
 
-            $penalty = (float) ($row['penalty'] ?? 0.0);
-            $total += $penalty > 0.0 ? $penalty : 1.0;
+            if ($threshold > 0.0 && $subtotal >= $threshold) {
+                continue;
+            }
+
+            $paid_shipping = (float) ($row['penalty'] ?? 0.0);
+            if ($paid_shipping <= 0.0) {
+                continue;
+            }
+
+            $total += $paid_shipping;
         }
 
         return $this->money($total);
@@ -1004,7 +1024,7 @@ final class DealerBatchShippingOptimizer
         }
 
         $order->add_order_note(sprintf(
-            'FFLHub dealer-batch optimizer moved job %d from %s to %s for equal-cost free-shipping optimization.',
+            'FFLHub dealer-batch optimizer moved job %d from %s to %s for equal-cost paid-shipping optimization.',
             (int) ($move['job_id'] ?? 0),
             $old_job_key,
             $new_job_key
@@ -1206,6 +1226,16 @@ final class DealerBatchShippingOptimizer
         }
 
         return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private function normalize_mysql_datetime_for_query(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '' || $value === '0000-00-00 00:00:00') {
+            return '';
+        }
+
+        return preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value) ? $value : '';
     }
 
     private function money(float $value): float

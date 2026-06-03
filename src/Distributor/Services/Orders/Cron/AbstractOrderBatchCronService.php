@@ -149,12 +149,11 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             'scheduled_flushed_rows' => 0,
             'dispatch_blocked_rows' => 0,
             'manual_hold_rows' => 0,
+            'optimizer_preflight' => '',
         ];
 
         try {
-            if (!$this->is_ca_relay_mode()) {
-                (new DealerBatchShippingOptimizer($this->handler, $this->jobs_table))->run($dist_id);
-            }
+            $run_stats['optimizer_preflight'] = $this->maybe_run_global_dealer_batch_optimizer_preflight($run_id);
 
             // Resolve runtime controls once per run for consistent behavior.
             $max_rows = $this->max_rows_per_run();
@@ -1607,6 +1606,90 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         return $next_dispatch_local
             ->setTimezone(new \DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
+    }
+
+    private function maybe_run_global_dealer_batch_optimizer_preflight(string $run_id): string
+    {
+        if ($this->is_ca_relay_mode()) {
+            return 'skipped_ca_relay';
+        }
+
+        if (!DealerBatchOptimizerConfig::optimizer_enabled()) {
+            return 'skipped_disabled';
+        }
+
+        $ctx = $this->global_optimizer_dispatch_context();
+        $token = (string) ($ctx['token'] ?? '');
+        if ($token === '') {
+            return (string) ($ctx['status'] ?? 'not_due');
+        }
+
+        if (!DealerBatchOptimizerConfig::claim_pre_dispatch_optimizer_token($token)) {
+            return 'already_ran';
+        }
+
+        $horizon_mysql_utc = (string) ($ctx['horizon_mysql_utc'] ?? '');
+        $this->log_ctx('optimizer_preflight_start', [
+            'run_id' => $run_id,
+            'dist_id' => $this->get_distributor_id(),
+            'token' => $token,
+            'horizon_mysql_utc' => $horizon_mysql_utc,
+            'reason' => (string) ($ctx['status'] ?? ''),
+        ]);
+
+        (new DealerBatchShippingOptimizer($this->handler, $this->jobs_table))->run(
+            'global_pre_dispatch:' . $this->get_distributor_id(),
+            $horizon_mysql_utc
+        );
+
+        return 'ran';
+    }
+
+    /**
+     * @return array{status:string,token:string,horizon_mysql_utc:string}
+     */
+    private function global_optimizer_dispatch_context(): array
+    {
+        $force_token = DealerBatchOptimizerConfig::force_flush_token();
+        if (DealerBatchOptimizerConfig::truthy($force_token, false)) {
+            return [
+                'status' => 'force_flush',
+                'token' => 'force:' . $force_token,
+                'horizon_mysql_utc' => OrderPlacementTimeUtil::now_mysql_utc(),
+            ];
+        }
+
+        $ctx = $this->dispatch_window_context();
+        /** @var \DateTimeImmutable $now_local */
+        $now_local = $ctx['now_local'];
+        /** @var \DateTimeImmutable $dispatch_local */
+        $dispatch_local = $ctx['dispatch_local'];
+
+        if (!$this->is_dispatch_day_allowed($now_local)) {
+            return [
+                'status' => $this->dispatch_day_block_reason($now_local),
+                'token' => '',
+                'horizon_mysql_utc' => '',
+            ];
+        }
+
+        if ($now_local < $dispatch_local) {
+            return [
+                'status' => 'before_dispatch',
+                'token' => '',
+                'horizon_mysql_utc' => '',
+            ];
+        }
+
+        $dispatch_mysql_utc = $dispatch_local
+            ->setTimezone(new \DateTimeZone('UTC'))
+            ->format('Y-m-d H:i:s');
+
+        return [
+            'status' => 'dispatch_due',
+            'token' => 'dispatch:' . $dispatch_mysql_utc,
+            'horizon_mysql_utc' => $dispatch_mysql_utc,
+        ];
     }
 
     /**

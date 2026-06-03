@@ -128,15 +128,15 @@ final class DealerBatchOptimizerPage
                         <td><?php esc_html_e('Dealer-cost subtotal needed for that distributor to qualify for free inbound freight. A blank or zero value means the optimizer will not try to optimize toward free shipping for that distributor.', 'ffl-hub'); ?></td>
                     </tr>
                     <tr>
-                        <td><strong><?php esc_html_e('Below-threshold penalty', 'ffl-hub'); ?></strong></td>
-                        <td><?php esc_html_e('Estimated shipping cost when that distributor batch is below its free-shipping threshold. If left at zero, the optimizer uses a deterministic fallback: prefer crossing thresholds, avoid breaking an existing free-shipping batch, move fewer rows, and minimize overfill.', 'ffl-hub'); ?></td>
+                        <td><strong><?php esc_html_e('Estimated paid inbound shipping cost', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('Estimated inbound freight cost when that distributor has an active below-threshold batch. Empty distributors are not counted. If left at zero, known distributors use conservative defaults such as RSR $10 and Sports South $8.95.', 'ffl-hub'); ?></td>
                     </tr>
                 </tbody>
             </table>
 
             <h3><?php esc_html_e('Shipping Optimization Rules', 'ffl-hub'); ?></h3>
             <ol>
-                <li><?php esc_html_e('Only pending dealer-batch rows are considered. Direct customer drop-ship, CA relay, manual-only, failed, cancelled, already-submitted, and already-PO-stamped rows are not moved.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Only active pending dealer-batch rows are considered. Direct customer drop-ship, CA relay, manual-only, failed, cancelled, refunded, already-submitted, and already-PO-stamped rows are not moved.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('Only RSR, Lipsey\'s, Orion, Sports South, and Zanders are eligible. CSSI, MGE, Davidson\'s, and disabled distributors are not optimizer targets.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('Product distributor locks are respected. If a product is locked, the target distributor must be in the product\'s allowed distributor lock list.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('The target distributor must carry the same UPC, have a distributor SKU available, and have enough stock for the whole moved job row.', 'ffl-hub'); ?></li>
@@ -144,7 +144,8 @@ final class DealerBatchOptimizerPage
                 <li><?php esc_html_e('The optimizer moves whole job rows only. It does not split a quantity across multiple distributors.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('The optimizer accounts for other planned moves in the same run so it does not over-allocate target stock.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('Rows already optimized once are not bounced again by later optimizer runs.', 'ffl-hub'); ?></li>
-                <li><?php esc_html_e('Moves are written inside a database transaction and logged to the optimizer audit tables with before/after subtotals and per-row move details.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Before a daily dealer-batch dispatch, the first dealer-batch runner performs one shared optimizer preflight for the whole pending dealer-batch pool.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Moves are written inside a database transaction and logged to the optimizer audit tables with before/after subtotals, estimated paid inbound shipping, and per-row move details.', 'ffl-hub'); ?></li>
             </ol>
 
             <h3><?php esc_html_e('Manual Actions', 'ffl-hub'); ?></h3>
@@ -154,7 +155,7 @@ final class DealerBatchOptimizerPage
             </p>
             <p>
                 <strong><?php esc_html_e('Force Flush All Dealer Batches', 'ffl-hub'); ?></strong>
-                <?php esc_html_e('sets the shared force-flush token and schedules each dealer-batch distributor cron. The optimizer may run first, then each distributor batch places whatever rows belong to that distributor after the final refetch.', 'ffl-hub'); ?>
+                <?php esc_html_e('sets the shared force-flush token and schedules each dealer-batch distributor cron. A single shared optimizer preflight runs first, then each distributor batch places whatever rows belong to that distributor after the final refetch.', 'ffl-hub'); ?>
             </p>
         </div>
         <?php
@@ -283,7 +284,7 @@ final class DealerBatchOptimizerPage
 
             <h2><?php esc_html_e('Free Shipping Thresholds', 'ffl-hub'); ?></h2>
             <table class="widefat striped" style="max-width: 760px;">
-                <thead><tr><th><?php esc_html_e('Distributor', 'ffl-hub'); ?></th><th><?php esc_html_e('Free shipping threshold', 'ffl-hub'); ?></th><th><?php esc_html_e('Below-threshold penalty', 'ffl-hub'); ?></th></tr></thead>
+                <thead><tr><th><?php esc_html_e('Distributor', 'ffl-hub'); ?></th><th><?php esc_html_e('Free shipping threshold', 'ffl-hub'); ?></th><th><?php esc_html_e('Estimated paid inbound shipping cost', 'ffl-hub'); ?></th></tr></thead>
                 <tbody>
                     <?php foreach (DealerBatchCronRegistry::distributor_ids() as $dist_id) :
                         $threshold_option = DealerBatchOptimizerConfig::free_shipping_threshold_option_name((string) $dist_id);

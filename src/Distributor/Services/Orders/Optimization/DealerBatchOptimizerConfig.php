@@ -22,6 +22,11 @@ final class DealerBatchOptimizerConfig
     public const DEFAULT_MAX_ROWS_PER_RUN = 200;
 
     private const DEFAULT_FREE_SHIPPING_THRESHOLD = 1000.0;
+    private const DEFAULT_PAID_SHIPPING_COST = 1.0;
+    private const DEFAULT_PAID_SHIPPING_COST_BY_DISTRIBUTOR = [
+        'rsr'          => 10.0,
+        'sports_south' => 8.95,
+    ];
 
     private function __construct()
     {
@@ -141,7 +146,47 @@ final class DealerBatchOptimizerConfig
             return 0.0;
         }
 
-        return self::non_negative_float(get_option(self::shipping_penalty_option_name($dist_id), '0'));
+        $configured = self::non_negative_float(get_option(self::shipping_penalty_option_name($dist_id), '0'));
+        if ($configured > 0.0) {
+            return $configured;
+        }
+
+        return self::default_paid_shipping_cost($dist_id);
+    }
+
+    public static function force_flush_token(): string
+    {
+        return trim((string) get_option(self::dealer_batch_option_name('force_flush'), '0'));
+    }
+
+    public static function claim_pre_dispatch_optimizer_token(string $token): bool
+    {
+        $token = trim($token);
+        if ($token === '') {
+            return false;
+        }
+
+        $option = self::optimizer_option_name('last_pre_dispatch_token');
+        if (trim((string) get_option($option, '')) === $token) {
+            return false;
+        }
+
+        update_option($option, $token, false);
+        return true;
+    }
+
+    private static function default_paid_shipping_cost(string $dist_id): float
+    {
+        $dist_id = self::normalize_dist_id($dist_id);
+        if ($dist_id === '') {
+            return 0.0;
+        }
+
+        if (isset(self::DEFAULT_PAID_SHIPPING_COST_BY_DISTRIBUTOR[$dist_id])) {
+            return (float) self::DEFAULT_PAID_SHIPPING_COST_BY_DISTRIBUTOR[$dist_id];
+        }
+
+        return self::DEFAULT_PAID_SHIPPING_COST;
     }
 
     /**
@@ -175,6 +220,7 @@ final class DealerBatchOptimizerConfig
         self::add_default(self::dealer_batch_option_name('force_flush'), '0');
         self::add_default(self::dealer_batch_option_name('last_scheduled_flush_at_utc'), '');
         self::add_default(self::optimizer_option_name('enabled'), '0');
+        self::add_default(self::optimizer_option_name('last_pre_dispatch_token'), '');
 
         foreach (DealerBatchCronRegistry::distributor_ids() as $dist_id) {
             self::add_default(
