@@ -51,11 +51,15 @@ class DistributorProductHelper
     private const CSSI_DISTRIBUTOR_ID = 'cssi';
     private const LIPSEYS_DISTRIBUTOR_ID = 'lipseys';
     private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
-    private const BRAND_TERM_ALIAS_MIGRATION_OPTION = 'fflhub_brand_term_alias_migration_v2';
+    private const BRAND_TERM_ALIAS_MIGRATION_OPTION = 'fflhub_brand_term_alias_migration_v3';
     private const BRAND_TERM_ALIAS_MIGRATIONS = [
         'Holosun Technologies' => 'Holosun',
         'Holoson Technologies' => 'Holosun',
         'Burris Optics' => 'Burris',
+        'MAGPUL INDUSTRIES' => 'Magpul',
+        'MAGPUL INDUSTRIES CORP' => 'Magpul',
+        'Magpul Industries' => 'Magpul',
+        'Magpul Accessories' => 'Magpul',
     ];
     private const BRAND_ALIASES = [
         'smithandwesson' => 'Smith & Wesson',
@@ -71,6 +75,10 @@ class DistributorProductHelper
         'eotech' => 'EOTECH',
         'promagindustries' => 'ProMag',
         'promag' => 'ProMag',
+        'magpulindustriescorp' => 'Magpul',
+        'magpulindustries' => 'Magpul',
+        'magpulaccessories' => 'Magpul',
+        'magpul' => 'Magpul',
         'keltec' => 'Kel-Tec',
         'huxwrxsafetyco' => 'HUXWRX',
         'huxwrx' => 'HUXWRX',
