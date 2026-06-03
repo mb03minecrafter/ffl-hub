@@ -15,7 +15,7 @@ use FFLHub\Util\DebugLogUtil;
 final class KinseysServices extends DistributorServicesBase
 {
     private const SCHEMA_VERSION_OPTION = 'fflhub_kinseys_schema_version';
-    private const SCHEMA_VERSION = '2';
+    private const SCHEMA_VERSION = '3';
 
     public function __construct(
         DoubleBufferedProductTable $fulfillmentTable,

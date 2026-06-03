@@ -42,6 +42,7 @@ class MGEProductTableSchema implements ProductSchemaInterface
             'inventory_quantity' => 'VARCHAR(32) NULL',
             'allocation_status' => 'VARCHAR(64) NULL',
             'distributor_price' => 'VARCHAR(32) NULL',
+            'shipping_cost' => 'VARCHAR(32) NULL',
             'retail_map' => 'VARCHAR(32) NULL',
             'retail_msrp' => 'VARCHAR(32) NULL',
 

@@ -38,6 +38,7 @@ class CSSIProductTableSchema implements ProductSchemaInterface
             'in_stock_flag' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'allocation_status' => 'VARCHAR(64) NULL',
             'distributor_price' => 'VARCHAR(32) NULL',
+            'shipping_cost' => 'VARCHAR(32) NULL',
             'retail_map' => 'VARCHAR(32) NULL',
             'retail_msrp' => 'VARCHAR(32) NULL',
             'drop_ship_price' => 'VARCHAR(32) NULL',

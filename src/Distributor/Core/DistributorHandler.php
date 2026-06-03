@@ -102,6 +102,8 @@ class DistributorHandler
 
     private const DEBUG_CONST = 'FFLHUB_DEBUG_BOOT';
     private const LOG_PREFIX  = '[DistributorHandler]';
+    private const PRODUCT_TABLE_SCHEMA_OPTION = 'fflhub_distributor_product_tables_schema_version';
+    private const PRODUCT_TABLE_SCHEMA_VERSION = 'shipping_cost_v1';
 
     public function __construct(FFLTable $ffl_table)
     {
@@ -347,6 +349,8 @@ class DistributorHandler
      */
     public function register_runtime_services(): void
     {
+        $this->ensure_product_table_schema_current();
+
         foreach ($this->distributors as $id => $distributor) {
             if (!Options::is_distributor_enabled($id)) {
                 continue;
@@ -376,6 +380,46 @@ class DistributorHandler
         $this->zandersCaRelayBatchCronService->register();
 
         $this->orderTrashJobsService->register();
+    }
+
+    private function ensure_product_table_schema_current(): void
+    {
+        if ((string) get_option(self::PRODUCT_TABLE_SCHEMA_OPTION, '') === self::PRODUCT_TABLE_SCHEMA_VERSION) {
+            return;
+        }
+
+        // dbDelta across every distributor table can be noticeable; avoid putting
+        // the first post-deploy migration on a customer-facing page load.
+        $is_cli = defined('WP_CLI') && WP_CLI;
+        if (!$is_cli && !is_admin()) {
+            return;
+        }
+
+        foreach ($this->distributors as $id => $distributor) {
+            $services = $distributor->get_services();
+            if (!$services) {
+                continue;
+            }
+
+            $table = $services->get_fulfillment_table();
+            try {
+                $table->createTables();
+            } catch (\Throwable $e) {
+                DebugLogUtil::log_ctx(
+                    'FFLHUB_CRON_DEBUG',
+                    '[FFLHub][DistributorHandler]',
+                    'Distributor product table schema migration failed.',
+                    [
+                        'schema_version' => self::PRODUCT_TABLE_SCHEMA_VERSION,
+                        'dist_id' => (string) $id,
+                        'error' => $e->getMessage(),
+                    ]
+                );
+                return;
+            }
+        }
+
+        update_option(self::PRODUCT_TABLE_SCHEMA_OPTION, self::PRODUCT_TABLE_SCHEMA_VERSION, false);
     }
 
     /**

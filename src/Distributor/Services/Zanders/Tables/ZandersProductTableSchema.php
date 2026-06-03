@@ -54,6 +54,7 @@ class ZandersProductTableSchema implements ProductSchemaInterface
 
             // Pricing (normalized)
             'distributor_price' => 'VARCHAR(32) NULL', // map from price1 (recommended)
+            'shipping_cost'     => 'VARCHAR(32) NULL',
             'retail_map'        => 'VARCHAR(32) NULL', // mapprice
             'retail_msrp'       => 'VARCHAR(32) NULL', // msrp
 
