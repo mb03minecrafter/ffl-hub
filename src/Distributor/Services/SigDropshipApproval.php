@@ -27,6 +27,10 @@ final class SigDropshipApproval
             return false;
         }
 
+        if (self::row_is_nfa_or_sot($row)) {
+            return false;
+        }
+
         return self::row_is_sig_sauer($row);
     }
 
@@ -72,7 +76,12 @@ final class SigDropshipApproval
             return 0;
         }
 
-        $where = implode(' OR ', $where_parts);
+        $where = '(' . implode(' OR ', $where_parts) . ')';
+        $restriction_where = self::sql_nfa_or_sot_where($table_name);
+        if ($restriction_where !== '') {
+            $where .= " AND NOT ({$restriction_where})";
+        }
+
         $quoted_table = self::quote_identifier($table_name);
         $sql = "
             UPDATE {$quoted_table}
@@ -93,6 +102,39 @@ final class SigDropshipApproval
     {
         foreach (['manufacturer', 'brand', 'bound_book_manufacturer', 'manufacturer_name', 'mfg', 'vendor', 'vendor_name'] as $key) {
             if (array_key_exists($key, $row) && self::is_sig_sauer_name((string) $row[$key])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    public static function row_is_nfa_or_sot(array $row): bool
+    {
+        foreach (['sot_required', 'sotRequired', 'sot', 'requires_sot'] as $key) {
+            if (array_key_exists($key, $row) && self::truthy_flag($row[$key])) {
+                return true;
+            }
+        }
+
+        foreach ([
+            'item_type',
+            'itemType',
+            'type',
+            'item_group',
+            'itemGroup',
+            'family',
+            'product_description',
+            'description',
+            'description1',
+            'description2',
+            'bound_book_type',
+            'boundBookType',
+        ] as $key) {
+            if (array_key_exists($key, $row) && self::text_indicates_nfa((string) $row[$key])) {
                 return true;
             }
         }
@@ -134,6 +176,54 @@ final class SigDropshipApproval
             . " OR {$expr} LIKE 'SIGARMS%'";
     }
 
+    private static function sql_nfa_or_sot_where(string $table_name): string
+    {
+        $parts = [];
+        $columns = self::existing_columns($table_name);
+
+        foreach (['sot_required', 'sotRequired', 'sot', 'requires_sot'] as $column) {
+            if (in_array($column, $columns, true)) {
+                $quoted = self::quote_identifier($column);
+                $parts[] = "{$quoted} = 1 OR UPPER(TRIM({$quoted})) IN ('1','Y','YES','TRUE')";
+            }
+        }
+
+        foreach ([
+            'item_type',
+            'itemType',
+            'type',
+            'item_group',
+            'itemGroup',
+            'family',
+            'product_description',
+            'description',
+            'description1',
+            'description2',
+            'bound_book_type',
+            'boundBookType',
+        ] as $column) {
+            if (!in_array($column, $columns, true)) {
+                continue;
+            }
+
+            $expr = self::sql_normalize_expr(self::quote_identifier($column));
+            $parts[] = "{$expr} LIKE '%NFA%'"
+                . " OR {$expr} LIKE '%SOT%'"
+                . " OR {$expr} LIKE '%SILENCER%'"
+                . " OR {$expr} LIKE '%SUPPRESSOR%'"
+                . " OR {$expr} LIKE '%CLASSIII%'"
+                . " OR {$expr} LIKE '%SHORTBARRELRIFLE%'"
+                . " OR {$expr} LIKE '%SHORTBARRELSHOTGUN%'";
+        }
+
+        $parts = array_values(array_filter(array_map('trim', $parts)));
+        if (empty($parts)) {
+            return '';
+        }
+
+        return '(' . implode(') OR (', $parts) . ')';
+    }
+
     /**
      * @return string[]
      */
@@ -141,12 +231,7 @@ final class SigDropshipApproval
     {
         global $wpdb;
 
-        $columns = $wpdb->get_col('SHOW COLUMNS FROM ' . self::quote_identifier($table_name), 0); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        if (!is_array($columns)) {
-            return [];
-        }
-
-        $available = array_fill_keys(array_map('strtolower', array_map('strval', $columns)), true);
+        $available = array_fill_keys(array_map('strtolower', self::existing_columns($table_name)), true);
         $candidates = [
             'manufacturer',
             'brand',
@@ -160,6 +245,54 @@ final class SigDropshipApproval
         return array_values(array_filter($candidates, static function (string $column) use ($available): bool {
             return isset($available[strtolower($column)]);
         }));
+    }
+
+    /**
+     * @return string[]
+     */
+    private static function existing_columns(string $table_name): array
+    {
+        global $wpdb;
+
+        $columns = $wpdb->get_col('SHOW COLUMNS FROM ' . self::quote_identifier($table_name), 0); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if (!is_array($columns)) {
+            return [];
+        }
+
+        return array_values(array_map('strval', $columns));
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function truthy_flag($value): bool
+    {
+        $value = strtoupper(trim((string) $value));
+        return in_array($value, ['1', 'Y', 'YES', 'TRUE'], true);
+    }
+
+    private static function text_indicates_nfa(string $text): bool
+    {
+        $normalized = self::normalize_name($text);
+        if ($normalized === '') {
+            return false;
+        }
+
+        foreach ([
+            'NFA',
+            'SOT',
+            'SILENCER',
+            'SUPPRESSOR',
+            'CLASSIII',
+            'SHORTBARRELRIFLE',
+            'SHORTBARRELSHOTGUN',
+        ] as $needle) {
+            if (strpos($normalized, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static function quote_identifier(string $identifier): string
