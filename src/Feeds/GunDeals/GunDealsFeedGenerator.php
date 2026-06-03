@@ -21,7 +21,6 @@ final class GunDealsFeedGenerator
     private const PRICE_HIDE_EMAIL_FOR_QUOTE = 'Email Form for Best Price';
     private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price';
     private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;
-    private const HOLOSUN_HIDDEN_PRICE_FEED_MULTIPLIER = 0.8;
     private const BATCH_SIZE = 250;
 
     /**
@@ -522,10 +521,9 @@ final class GunDealsFeedGenerator
     private function build_offer_row(array $source_row, array $term_maps, array $image_url_map): array
     {
         $product_id = (int) ($source_row['product_id'] ?? 0);
-        $brand = $this->resolve_brand_from_maps($product_id, $term_maps);
         $actual_price = $this->resolve_price_from_row($source_row);
         $price_hide = $this->resolve_price_hide_from_row($source_row);
-        $feed_price = $this->resolve_feed_price($actual_price, $source_row, $brand, $price_hide);
+        $feed_price = $this->resolve_feed_price($actual_price, $source_row);
         $shipping_charge = $actual_price > 0.0 ? $this->customer_shipping_charge_for_row($source_row, $actual_price) : 0.0;
 
         $row = [
@@ -533,7 +531,7 @@ final class GunDealsFeedGenerator
             'title' => $this->clean_text((string) ($source_row['title'] ?? '')),
             'sku' => $this->clean_text((string) (($source_row['sku'] ?? '') !== '' ? $source_row['sku'] : ($source_row['lookup_sku'] ?? ''))),
             'upc' => $this->resolve_upc_from_row($source_row),
-            'brand' => $brand,
+            'brand' => $this->resolve_brand_from_maps($product_id, $term_maps),
             'category' => implode(', ', $term_maps['categories'][$product_id] ?? []),
             'price' => $feed_price > 0.0 ? number_format($feed_price, 2, '.', '') : '',
             'price_hide' => $price_hide,
@@ -701,14 +699,10 @@ final class GunDealsFeedGenerator
     /**
      * @param array<string,mixed> $row
      */
-    private function resolve_feed_price(float $actual_price, array $row, string $brand, string $price_hide): float
+    private function resolve_feed_price(float $actual_price, array $row): float
     {
         if ($actual_price <= 0.0) {
             return 0.0;
-        }
-
-        if ($price_hide !== '' && $this->is_holosun_brand($brand)) {
-            return max(0.01, round($actual_price * self::HOLOSUN_HIDDEN_PRICE_FEED_MULTIPLIER, 2));
         }
 
         if ($this->is_no_email_no_add_to_cart_policy_row($row)) {
@@ -716,13 +710,6 @@ final class GunDealsFeedGenerator
         }
 
         return $actual_price;
-    }
-
-    private function is_holosun_brand(string $brand): bool
-    {
-        $normalized = strtolower((string) preg_replace('/[^a-z0-9]+/i', '', $brand));
-
-        return str_starts_with($normalized, 'holosun');
     }
 
     /**
