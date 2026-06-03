@@ -20,6 +20,7 @@ class CategorySchema {
     public const CAT_MAGAZINES     = 'Magazines';
     public const CAT_AMMO          = 'Ammo';
     public const CAT_NFA           = 'NFA';
+    public const CAT_PARTS         = 'Parts & Accessories';
     public const CAT_BLACK_POWDER  = 'Black Powder';
     public const CAT_LESS_LETHAL   = 'Less Lethal';
 
@@ -35,12 +36,19 @@ class CategorySchema {
      *   Scopes / Magnified Optics
      *   Red Dots / Non-Magnified Optics
      *   Optic Mounts & Rings
+     *   Iron Sights
+     *   Night Vision & Thermal
      *   Observation / Range Finding
      *   Optics Accessories
      * Lights and Lasers
-     * Magazines: Rifle, Pistol, Shotgun
+     * Magazines: Rifle, Pistol, Shotgun, Magazine Accessories
      * Ammo: Rifle, Handgun, Shotgun
-     * NFA: Suppressor Accessories
+     * NFA: Suppressors, Suppressor Accessories
+     * Parts & Accessories:
+     *   Rifle Parts & Accessories, Handgun Parts & Accessories, Shotgun Parts & Accessories
+     *   Stocks & Braces, Grips & Hand Stops, Handguards & Rails
+     *   Slings & Sling Mounts, Bipods, Cases, Bags & Storage
+     *   Tools & Maintenance, Holsters
      * Black Powder: Guns, Firearms, Accessories
      * Less Lethal: Tasers, Pistol, Rifle, Ammo, Accessories
      */
@@ -72,6 +80,8 @@ class CategorySchema {
                 'Scopes / Magnified Optics'       => [],
                 'Red Dots / Non-Magnified Optics' => [],
                 'Optic Mounts & Rings'            => [],
+                'Iron Sights'                      => [],
+                'Night Vision & Thermal'           => [],
                 'Observation / Range Finding'     => [],
                 'Optics Accessories'              => [],
             ],
@@ -84,6 +94,7 @@ class CategorySchema {
                 'Rifle'   => [],
                 'Pistol'  => [],
                 'Shotgun' => [],
+                'Magazine Accessories' => [],
             ],
 
             self::CAT_AMMO => [
@@ -93,7 +104,22 @@ class CategorySchema {
             ],
 
             self::CAT_NFA => [
+                'Suppressors' => [],
                 'Suppressor Accessories' => [],
+            ],
+
+            self::CAT_PARTS => [
+                'Rifle Parts & Accessories'   => [],
+                'Handgun Parts & Accessories' => [],
+                'Shotgun Parts & Accessories' => [],
+                'Stocks & Braces'             => [],
+                'Grips & Hand Stops'          => [],
+                'Handguards & Rails'          => [],
+                'Slings & Sling Mounts'       => [],
+                'Bipods'                      => [],
+                'Cases, Bags & Storage'       => [],
+                'Tools & Maintenance'         => [],
+                'Holsters'                    => [],
             ],
 
             self::CAT_BLACK_POWDER => [
