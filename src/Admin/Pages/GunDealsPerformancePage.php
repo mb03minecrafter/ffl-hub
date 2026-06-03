@@ -515,6 +515,7 @@ final class GunDealsPerformancePage
         $order_ids = array_keys($orders);
         $order_meta = $this->query_order_profit_meta_sql($order_ids);
         $line_items = $this->query_order_line_items_sql($order_ids);
+        $order_audits = $this->prepare_order_profit_audits($order_meta, $line_items);
 
         foreach ($line_items as $line_item) {
             $order_id = (int) ($line_item['order_id'] ?? 0);
@@ -529,8 +530,15 @@ final class GunDealsPerformancePage
             }
 
             $meta = $order_meta[$order_id] ?? [];
-            $audit_lines = $this->audit_lines_by_item_id_from_raw($meta['fflhub_order_profit_lines'] ?? '');
-            $audit_missing = empty($audit_lines);
+            $audit = $order_audits[$order_id] ?? [
+                'lines' => [],
+                'line_revenue_total' => 0.0,
+                'line_count' => 0,
+                'actual_profit_total' => 0.0,
+                'has_actual_profit_total' => false,
+            ];
+            $audit_lines = is_array($audit['lines'] ?? null) ? $audit['lines'] : [];
+            $audit_missing = empty($audit_lines) || empty($audit['has_actual_profit_total']);
             $line = $audit_lines[$item_id] ?? null;
             $line_missing = $audit_missing || !is_array($line);
 
@@ -550,6 +558,7 @@ final class GunDealsPerformancePage
             $order_fee_adjustments = $this->order_fee_adjustments_from_meta($meta);
             $order_revenue_total = max(0.01, $this->money_float($meta['fflhub_order_revenue_total'] ?? 0));
             $fee_share = $line_revenue > 0.0 ? $order_fee_adjustments * ($line_revenue / $order_revenue_total) : 0.0;
+            $profit_share = $this->allocated_order_actual_profit($audit, $line_revenue, $line_missing);
 
             if (!isset($items[$key])) {
                 $items[$key] = [
@@ -578,7 +587,7 @@ final class GunDealsPerformancePage
             $items[$key]['revenue'] += $line_revenue;
             $items[$key]['dealer_cost'] += $dealer_cost;
             $items[$key]['true_cost'] += $unit_cost * $qty;
-            $items[$key]['gross_profit'] += $line_revenue - $dealer_cost;
+            $items[$key]['gross_profit'] += $profit_share;
             $items[$key]['fees_adjustments'] += $fee_share;
             $items[$key]['missing_profit_audit'] = !empty($items[$key]['missing_profit_audit']) || $line_missing;
             $items[$key]['attribution'] = array_values(array_unique(array_merge($items[$key]['attribution'], $attribution)));
@@ -709,6 +718,7 @@ final class GunDealsPerformancePage
         $meta_keys = [
             'fflhub_order_profit_lines',
             'fflhub_order_revenue_total',
+            'fflhub_order_actual_profit_total',
             'fflhub_order_shipping_cost_total',
             'fflhub_order_processor_fee_amount',
             'fflhub_order_customer_shipping_charge',
@@ -761,6 +771,68 @@ final class GunDealsPerformancePage
         }
 
         return $out;
+    }
+
+    /**
+     * @param array<int,array<string,string>> $order_meta
+     * @param array<int,array<string,mixed>> $line_items
+     * @return array<int,array{lines:array<int,array<string,mixed>>,line_revenue_total:float,line_count:int,actual_profit_total:float,has_actual_profit_total:bool}>
+     */
+    private function prepare_order_profit_audits(array $order_meta, array $line_items): array
+    {
+        $line_counts = [];
+        foreach ($line_items as $line_item) {
+            $order_id = (int) ($line_item['order_id'] ?? 0);
+            if ($order_id > 0) {
+                $line_counts[$order_id] = ($line_counts[$order_id] ?? 0) + 1;
+            }
+        }
+
+        $out = [];
+        foreach ($order_meta as $order_id => $meta) {
+            $order_id = (int) $order_id;
+            if ($order_id <= 0) {
+                continue;
+            }
+
+            $lines = $this->audit_lines_by_item_id_from_raw($meta['fflhub_order_profit_lines'] ?? '');
+            $line_revenue_total = 0.0;
+            foreach ($lines as $line) {
+                $line_revenue_total += max(0.0, $this->money_float($line['line_revenue'] ?? 0));
+            }
+
+            $actual_profit_raw = $meta['fflhub_order_actual_profit_total'] ?? null;
+            $has_actual_profit_total = $actual_profit_raw !== null && is_numeric($actual_profit_raw);
+
+            $out[$order_id] = [
+                'lines' => $lines,
+                'line_revenue_total' => $line_revenue_total,
+                'line_count' => max(1, (int) ($line_counts[$order_id] ?? count($lines))),
+                'actual_profit_total' => $has_actual_profit_total ? $this->money_float($actual_profit_raw) : 0.0,
+                'has_actual_profit_total' => $has_actual_profit_total,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<string,mixed> $audit
+     */
+    private function allocated_order_actual_profit(array $audit, float $line_revenue, bool $line_missing): float
+    {
+        if (empty($audit['has_actual_profit_total'])) {
+            return 0.0;
+        }
+
+        $actual_profit = (float) ($audit['actual_profit_total'] ?? 0.0);
+        $line_revenue_total = (float) ($audit['line_revenue_total'] ?? 0.0);
+        if (!$line_missing && $line_revenue_total > 0.0 && $line_revenue > 0.0) {
+            return $actual_profit * ($line_revenue / $line_revenue_total);
+        }
+
+        $line_count = max(1, (int) ($audit['line_count'] ?? 1));
+        return $actual_profit / $line_count;
     }
 
     /**
@@ -1262,7 +1334,7 @@ final class GunDealsPerformancePage
             'units' => ['label' => 'Units Sold', 'type' => 'number', 'default_order' => 'desc'],
             'conversion_rate' => ['label' => 'Conversion Rate', 'type' => 'number', 'default_order' => 'desc'],
             'revenue' => ['label' => 'Revenue', 'type' => 'number', 'default_order' => 'desc'],
-            'gross_profit' => ['label' => 'Gross Profit', 'type' => 'number', 'default_order' => 'desc'],
+            'gross_profit' => ['label' => 'Actual Profit', 'type' => 'number', 'default_order' => 'desc'],
             'allocated_cost' => ['label' => 'Allocated Gun.deals Cost', 'type' => 'number', 'default_order' => 'desc'],
             'net_profit' => ['label' => 'Channel Net', 'type' => 'number', 'default_order' => 'asc'],
             'ffl_required' => ['label' => 'FFL Required', 'type' => 'number', 'default_order' => 'desc'],
@@ -1710,7 +1782,7 @@ final class GunDealsPerformancePage
             'Gun.deals-attributed orders' => number_format_i18n((int) $s['attributed_orders']),
             'Units sold' => number_format_i18n((int) $s['units']),
             'Revenue' => $this->money((float) $s['revenue']),
-            'Gross profit' => $this->money((float) $s['gross_profit']),
+            'Actual profit' => $this->money((float) $s['gross_profit']),
             'Net after Gun.deals cost' => $this->money((float) $s['net_after_period_cost']),
             'Break-even status' => ((float) $s['break_even_gap'] <= 0.0 ? 'Profitable' : 'Short'),
             'Break-even gap' => $this->money((float) $s['break_even_gap']),
@@ -1753,7 +1825,7 @@ final class GunDealsPerformancePage
                     <th><?php $this->sortable_header('units', 'Units', $filters); ?></th>
                     <th><?php $this->sortable_header('conversion_rate', 'Conv.', $filters); ?></th>
                     <th><?php $this->sortable_header('revenue', 'Revenue', $filters); ?></th>
-                    <th><?php $this->sortable_header('gross_profit', 'Gross Profit', $filters); ?></th>
+                    <th><?php $this->sortable_header('gross_profit', 'Actual Profit', $filters); ?></th>
                     <th><?php $this->sortable_header('allocated_cost', 'Allocated GD Cost', $filters); ?></th>
                     <th><?php $this->sortable_header('net_profit', 'Channel Net', $filters); ?></th>
                     <th><?php $this->sortable_header('ffl_required', 'FFL', $filters); ?></th>
@@ -2019,7 +2091,7 @@ final class GunDealsPerformancePage
             'units' => 'units_sold',
             'conversion_rate' => 'conversion_rate',
             'revenue' => 'revenue',
-            'gross_profit' => 'gross_profit',
+            'gross_profit' => 'actual_profit_from_fflhub_order_actual_profit_total',
             'allocated_cost' => 'allocated_gundeals_cost',
             'net_profit' => 'channel_net_after_allocated_gundeals_cost',
             'ffl_required' => 'ffl_required',
@@ -2052,7 +2124,7 @@ final class GunDealsPerformancePage
             'source_attribution' => 'checkout_source_attribution',
             'cost_per_order' => 'cost_per_order',
             'cost_per_revenue_dollar' => 'cost_per_revenue_dollar',
-            'click_cost_profit_percent' => 'click_cost_percent_of_gross_profit',
+            'click_cost_profit_percent' => 'click_cost_percent_of_actual_profit',
             'marginal_click_cost' => 'marginal_click_cost',
             'missing_profit_audit' => 'missing_profit_audit',
         ]);
