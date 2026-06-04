@@ -150,7 +150,16 @@ cssi_bench_line('Report: ' . $reportPath);
 function cssi_bench_parse_args(array $argv): array
 {
     $out = [];
-    foreach (array_slice($argv, 1) as $arg) {
+
+    if (!empty($argv)) {
+        $first = basename((string) $argv[0]);
+        $firstLooksLikeScript = $first === basename(__FILE__) || substr($first, -4) === '.php';
+        if ($firstLooksLikeScript) {
+            array_shift($argv);
+        }
+    }
+
+    foreach ($argv as $arg) {
         $arg = trim((string) $arg);
         if ($arg === '') {
             continue;
