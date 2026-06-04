@@ -253,6 +253,7 @@ class ZandersProductImporterService
          * This keeps a complete product catalog while preserving fulfillment constraints.
          */
         $manufacturer_norm_expr = ZandersManufacturerNormalizer::sql_expression('@c5');
+        $initial_block_reason_expr = $this->load_data_initial_dropship_block_reason_sql('@c1', '@c5');
 
         $sql = "
             LOAD DATA LOCAL INFILE %s
@@ -339,7 +340,9 @@ class ZandersProductImporterService
                 sot_required         = CASE
                                         WHEN UPPER(TRIM(BOTH '\\r' FROM @c1)) IN ('DS SUPPRESSORS')
                                         THEN '1' ELSE '0'
-                                      END
+                                      END,
+
+                dropship_block_reason = {$initial_block_reason_expr}
         ";
 
         $t_truncate_ms        = 0.0;
@@ -707,6 +710,31 @@ class ZandersProductImporterService
                     OR s.manufacturer_norm LIKE 'SIGARMS%'
                 )
             )
+        ";
+    }
+
+    private function load_data_initial_dropship_block_reason_sql(string $category_expr, string $manufacturer_expr): string
+    {
+        if (!SigDropshipApproval::is_distributor_sig_approved('zanders')) {
+            return 'NULL';
+        }
+
+        $manufacturer_norm = ZandersManufacturerNormalizer::sql_expression("TRIM(BOTH '\\r' FROM {$manufacturer_expr})");
+        $category_norm = "UPPER(TRIM(BOTH '\\r' FROM {$category_expr}))";
+
+        return "
+            CASE
+                WHEN {$category_norm} NOT IN ('DS SUPPRESSORS')
+                 AND (
+                        {$manufacturer_norm} = 'SIG'
+                     OR {$manufacturer_norm} = 'SIGSAUER'
+                     OR {$manufacturer_norm} = 'SIGARMS'
+                     OR {$manufacturer_norm} LIKE 'SIGSAUER%'
+                     OR {$manufacturer_norm} LIKE 'SIGARMS%'
+                 )
+                THEN ''
+                ELSE NULL
+            END
         ";
     }
 
