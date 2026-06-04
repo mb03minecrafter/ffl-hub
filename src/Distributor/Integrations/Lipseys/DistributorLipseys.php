@@ -48,7 +48,7 @@ use FFLHub\Util\DebugLogUtil;
 class DistributorLipseys extends DistributorBase
 {
     private const ACCESSORY_DROPSHIP_SHIPPING_COST = 8.0;
-    private const FIREARM_DROPSHIP_SHIPPING_COST = 0.05;
+    private const FIREARM_DROPSHIP_SHIPPING_COST = 9.95;
 
     /**
      * ValidateItem caching:
@@ -226,7 +226,7 @@ class DistributorLipseys extends DistributorBase
      * Their published rate is per dropship order/lane, and our planner stores
      * this product value as the distributor lane fee. Continental US only:
      * - Accessories/non-FFL: $8.00
-     * - Firearms/FFL: $0.05
+     * - Firearms/FFL: $9.95
      */
     public function get_shipping_cost_by_upc(string $upc): ?float
     {
