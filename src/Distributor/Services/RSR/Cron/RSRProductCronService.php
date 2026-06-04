@@ -51,7 +51,7 @@ final class RSRProductCronService extends AbstractTableCronService
     /**
      * Hard minimum gap between FTP checks (guards overlaps / double-runs).
      */
-    private const FTP_MIN_CHECK_GAP_SECONDS = 300; // 5 minutes
+    private const FTP_MIN_CHECK_GAP_SECONDS = 1800; // 30 minutes; product ZIP updates roughly every 2 hours
 
     public function __construct(DoubleBufferedProductTable $table)
     {
