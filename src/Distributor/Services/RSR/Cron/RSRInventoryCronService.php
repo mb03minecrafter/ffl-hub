@@ -456,9 +456,9 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 FROM {$stage_table} S
                 INNER JOIN {$live_table} L
                     ON L.rsr_stock_number = S.rsr_stock_number
-                WHERE
-                    L.inventory_quantity IS NULL
-                    OR CAST(L.inventory_quantity AS UNSIGNED) <> S.qty
+                WHERE NOT (
+                    CAST(NULLIF(L.inventory_quantity, '') AS UNSIGNED) <=> S.qty
+                )
             ");
         }
 
@@ -473,10 +473,10 @@ final class RSRInventoryCronService extends AbstractTableCronService
         UPDATE {$live_table} L
         INNER JOIN {$stage_table} S
             ON S.rsr_stock_number = L.rsr_stock_number
-        SET L.inventory_quantity = S.qty
-        WHERE
-            L.inventory_quantity IS NULL
-            OR CAST(L.inventory_quantity AS UNSIGNED) <> S.qty
+        SET L.inventory_quantity = CAST(S.qty AS CHAR)
+        WHERE NOT (
+            CAST(NULLIF(L.inventory_quantity, '') AS UNSIGNED) <=> S.qty
+        )
         ";
 
         $join_updated = $wpdb->query($join_sql);
