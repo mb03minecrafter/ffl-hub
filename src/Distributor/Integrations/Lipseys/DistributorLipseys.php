@@ -48,7 +48,7 @@ use FFLHub\Util\DebugLogUtil;
 class DistributorLipseys extends DistributorBase
 {
     private const ACCESSORY_DROPSHIP_SHIPPING_COST = 8.0;
-    private const FIREARM_DROPSHIP_SHIPPING_COST = 9.95;
+    private const FIREARM_DROPSHIP_SHIPPING_COST = 0.05;
 
     /**
      * ValidateItem caching:
@@ -226,7 +226,7 @@ class DistributorLipseys extends DistributorBase
      * Their published rate is per dropship order/lane, and our planner stores
      * this product value as the distributor lane fee. Continental US only:
      * - Accessories/non-FFL: $8.00
-     * - Firearms/FFL: $9.95
+     * - Firearms/FFL: $0.05
      */
     public function get_shipping_cost_by_upc(string $upc): ?float
     {
@@ -241,10 +241,7 @@ class DistributorLipseys extends DistributorBase
         }
 
         if (is_array($row)) {
-            $ffl_required = $this->to_boolish($row['ffl_required'] ?? null, false);
-            return $ffl_required
-                ? self::FIREARM_DROPSHIP_SHIPPING_COST
-                : self::ACCESSORY_DROPSHIP_SHIPPING_COST;
+            return $this->get_shipping_cost_from_row($row, $normalized);
         }
 
         return self::ACCESSORY_DROPSHIP_SHIPPING_COST;
@@ -252,10 +249,31 @@ class DistributorLipseys extends DistributorBase
 
     protected function get_shipping_cost_from_row(array $row, string $normalized_upc): ?float
     {
+        $stored_shipping = $this->non_negative_shipping_cost($row['shipping_cost'] ?? null);
+        if ($stored_shipping !== null) {
+            return $stored_shipping;
+        }
+
         $ffl_required = $this->to_boolish($row['ffl_required'] ?? null, false);
         return $ffl_required
             ? self::FIREARM_DROPSHIP_SHIPPING_COST
             : self::ACCESSORY_DROPSHIP_SHIPPING_COST;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function non_negative_shipping_cost($value): ?float
+    {
+        if (is_string($value)) {
+            $value = trim($value);
+        }
+
+        if ($value === '' || $value === null || !is_numeric($value)) {
+            return null;
+        }
+
+        return max(0.0, (float) $value);
     }
 
 

@@ -110,6 +110,7 @@ class LipseysProductParser {
         // Interpret remaining booleans as '0'/'1' strings for TINYINT(1) columns.
         $ffl_required = $this->to_flag( $ffl_required_raw );
         $sot_required = $this->to_flag( $sot_required_raw );
+        $shipping_cost = ( $ffl_required === '1' ) ? '0.05' : '8';
 
         // item_type: prefer itemType, fall back to type.
         $final_item_type = $item_type !== '' ? $item_type : $type;
@@ -124,6 +125,7 @@ class LipseysProductParser {
             'inventory_quantity'      => $qty,
             'allocation_status'       => $allocated,
             'distributor_price'       => $currentPrice,
+            'shipping_cost'           => $shipping_cost,
             'retail_map'              => $retailMap,
             'retail_msrp'             => $msrp,
 
