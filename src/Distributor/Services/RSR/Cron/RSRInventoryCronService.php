@@ -10,7 +10,6 @@ use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
-use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -326,7 +325,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 'count_stage_rows_ms' => '0.00',
                 'stats_ms'       => '0.00',
                 'join_update_ms' => '0.00',
-                'sig_approval_ms' => '0.00',
                 'drop_ms'        => '0.00',
                 'total_ms'       => '0.00',
             ];
@@ -348,7 +346,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 'count_stage_rows_ms' => '0.00',
                 'stats_ms'       => '0.00',
                 'join_update_ms' => '0.00',
-                'sig_approval_ms' => '0.00',
                 'drop_ms'        => '0.00',
                 'total_ms'       => '0.00',
             ];
@@ -489,10 +486,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
 
         $join_update_ms = (microtime(true) - $t_join_update) * 1000.0;
 
-        $t_sig_approval = microtime(true);
-        $sig_approved_forced = SigDropshipApproval::apply_to_table('rsr', $live_table);
-        $sig_approval_ms = (microtime(true) - $t_sig_approval) * 1000.0;
-
         // No DROP for persistent stage table
         $drop_ms = 0.0;
 
@@ -504,7 +497,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
             'join_matched'   => (int) $join_matched,
             'would_change'   => (int) $would_change,
             'join_updated'   => (int) $join_updated,
-            'sig_approved_forced' => (int) $sig_approved_forced,
             'stage_table'    => (string) $stage_table,
             'ignore_lines'   => (int) $ignore_lines,
             'capability_check_ms' => number_format($capability_check_ms, 2, '.', ''),
@@ -514,7 +506,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
             'count_stage_rows_ms' => number_format($count_stage_rows_ms, 2, '.', ''),
             'stats_ms'       => number_format($stats_ms, 2, '.', ''),
             'join_update_ms' => number_format($join_update_ms, 2, '.', ''),
-            'sig_approval_ms' => number_format($sig_approval_ms, 2, '.', ''),
             'drop_ms'        => number_format($drop_ms, 2, '.', ''),
             'total_ms'       => number_format($t_total_ms, 2, '.', ''),
         ];
