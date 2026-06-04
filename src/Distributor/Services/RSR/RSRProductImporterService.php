@@ -126,6 +126,8 @@ class RSRProductImporterService
         $excluded_dept_numbers = $this->get_excluded_department_numbers();
         $deleted_missing_upc = 0;
         $deleted_excluded_dept = 0;
+        $rows_after_load = 0;
+        $sig_approved_forced = 0;
 
         if (! file_exists($file_path) || ! is_readable($file_path)) {
             $this->log_debug('[FFLHub][RSR Import][LOAD DATA] file missing or not readable at ' . $file_path);
@@ -190,6 +192,7 @@ class RSRProductImporterService
                 manufacturer_id              = TRIM(TRIM(BOTH '\\r' FROM @c4)),
                 retail_msrp                  = TRIM(TRIM(BOTH '\\r' FROM @c5)),
                 distributor_price            = TRIM(TRIM(BOTH '\\r' FROM @c6)),
+                shipping_cost                = '10',
                 shipping_weight              = TRIM(TRIM(BOTH '\\r' FROM @c7)),
                 sot_required                 = CASE
                                                   WHEN CAST(TRIM(TRIM(BOTH '\\r' FROM @c3)) AS UNSIGNED) = 6 THEN '1'
@@ -269,14 +272,24 @@ class RSRProductImporterService
                 reserved_future       = TRIM(TRIM(BOTH '\\r' FROM @c75))
         ";
 
+        $t_truncate_ms = 0.0;
+        $t_sql_ms = 0.0;
+        $t_delete_upc_ms = 0.0;
+        $t_delete_dept_ms = 0.0;
+        $t_sig_approval_ms = 0.0;
+        $t_count_ms = 0.0;
+        $t_update_options_ms = 0.0;
+
         try {
             // Clean staging table first.
+            $t_truncate_start = microtime(true);
             $wpdb->query("TRUNCATE TABLE {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $t_truncate_ms = (microtime(true) - $t_truncate_start) * 1000.0;
 
             $prepared    = $wpdb->prepare($sql, $file_path);
             $t_sql_start = microtime(true);
             $result      = $wpdb->query($prepared);
-            $t_sql_ms    = (microtime(true) - $t_sql_start) * 1000;
+            $t_sql_ms    = (microtime(true) - $t_sql_start) * 1000.0;
 
             if ($result === false) {
                 $this->log_debug(
@@ -284,9 +297,12 @@ class RSRProductImporterService
                 );
                 return -1;
             }
+            $rows_after_load = is_numeric($result) ? (int) $result : 0;
 
             // Post-clean: remove rows with empty UPC.
+            $t_delete_upc_start = microtime(true);
             $deleted_missing_upc = (int) $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $t_delete_upc_ms = (microtime(true) - $t_delete_upc_start) * 1000.0;
 
             // Department-level filter for accessory-only RSR accounts.
             if (!empty($excluded_dept_numbers)) {
@@ -298,7 +314,9 @@ class RSRProductImporterService
                       AND CAST(TRIM(dept_number) AS UNSIGNED) IN ({$placeholders})
                 ";
                 $prepared_delete_by_dept = $wpdb->prepare($delete_by_dept_sql, $excluded_dept_numbers);
+                $t_delete_dept_start = microtime(true);
                 $delete_result = $wpdb->query($prepared_delete_by_dept);
+                $t_delete_dept_ms = (microtime(true) - $t_delete_dept_start) * 1000.0;
 
                 if ($delete_result === false) {
                     $this->log_debug('[FFLHub][RSR Import][LOAD DATA] department filter delete failed: ' . $wpdb->last_error);
@@ -306,7 +324,10 @@ class RSRProductImporterService
                     $deleted_excluded_dept = (int) $delete_result;
                 }
             }
+
+            $t_sig_approval_start = microtime(true);
             $sig_approved_forced = SigDropshipApproval::apply_to_table('rsr', $table_name);
+            $t_sig_approval_ms = (microtime(true) - $t_sig_approval_start) * 1000.0;
             if ($sig_approved_forced > 0) {
                 $this->log_debug(
                     sprintf('[FFLHub][RSR Import][LOAD DATA] sig_approved_forced=%d', $sig_approved_forced)
@@ -318,27 +339,36 @@ class RSRProductImporterService
         }
 
         // Count rows actually loaded.
+        $t_count_start = microtime(true);
         $rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $t_count_ms = (microtime(true) - $t_count_start) * 1000.0;
 
         if ($rows > 0) {
+            $t_update_options_start = microtime(true);
             update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'), false);
             update_option('fflhub_rsr_fulfillment_last_import_count', $rows, false);
+            $t_update_options_ms = (microtime(true) - $t_update_options_start) * 1000.0;
         }
 
-        $t_total_ms = (microtime(true) - $t_start) * 1000;
+        $t_total_ms = (microtime(true) - $t_start) * 1000.0;
 
-        $this->log_debug(
-            sprintf(
-                '[FFLHub][RSR Import] import_fulfillment_file_via_load_data(): total=%.2f ms (sql=%.2f ms), rows=%d, ignore_lines=%d, deleted_missing_upc=%d, deleted_excluded_dept=%d, excluded_depts=%s',
-                $t_total_ms,
-                $t_sql_ms,
-                $rows,
-                $ignore_lines,
-                $deleted_missing_upc,
-                $deleted_excluded_dept,
-                empty($excluded_dept_numbers) ? '[]' : implode(',', $excluded_dept_numbers)
-            )
-        );
+        DebugLogUtil::log_ctx('FFLHUB_CRON_DEBUG', '[FFLHub][RSRImporter]', 'PROFILE: import_fulfillment_file_via_load_data steps', [
+            'truncate_staging_ms' => number_format($t_truncate_ms, 2, '.', ''),
+            'load_data_sql_ms' => number_format($t_sql_ms, 2, '.', ''),
+            'delete_blank_upc_ms' => number_format($t_delete_upc_ms, 2, '.', ''),
+            'delete_excluded_departments_ms' => number_format($t_delete_dept_ms, 2, '.', ''),
+            'sig_approval_ms' => number_format($t_sig_approval_ms, 2, '.', ''),
+            'count_staging_rows_ms' => number_format($t_count_ms, 2, '.', ''),
+            'update_options_ms' => number_format($t_update_options_ms, 2, '.', ''),
+            'total_import_ms' => number_format($t_total_ms, 2, '.', ''),
+            'rows_after_load' => $rows_after_load,
+            'blank_upc_deleted' => $deleted_missing_upc,
+            'excluded_department_deleted' => $deleted_excluded_dept,
+            'excluded_departments' => empty($excluded_dept_numbers) ? [] : array_values($excluded_dept_numbers),
+            'sig_approvals_forced' => $sig_approved_forced,
+            'ignore_lines' => $ignore_lines,
+            'final_staging_rows' => $rows,
+        ]);
 
         return $rows;
     }

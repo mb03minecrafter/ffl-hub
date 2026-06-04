@@ -213,6 +213,7 @@ class RSRProductParser
             'inventory_quantity'           => $inventory_quantity,
             'allocation_status'            => $allocation_status,
             'distributor_price'            => $distributor_price,
+            'shipping_cost'                => '10',
             'retail_map'                   => $retail_map,
             'retail_msrp'                  => $retail_msrp,
 
