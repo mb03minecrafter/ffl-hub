@@ -297,7 +297,12 @@ class RSRProductImporterService
                 );
                 return -1;
             }
-            $rows_after_load = is_numeric($result) ? (int) $result : 0;
+
+            if (defined('FFLHUB_CRON_DEBUG') && constant('FFLHUB_CRON_DEBUG')) {
+                $rows_after_load = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            } else {
+                $rows_after_load = is_numeric($result) ? (int) $result : 0;
+            }
 
             // Post-clean: remove rows with empty UPC.
             $t_delete_upc_start = microtime(true);
