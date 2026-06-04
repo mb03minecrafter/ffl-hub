@@ -802,6 +802,22 @@ KEY idx_restricted_lookup (distributor, active, match_type, alias_norm)
             'UMAREX (RWS, AXEON)' => ['UMAREX', 'RWS', 'AXEON'],
             'TIMNEY TRIGGERS' => ['TIMNEY'],
             'LONGSHOT' => ['LONGSHOT TARGET CAMERA'],
+            'LEGACY RESTRICTED MATCH' => [
+                'ARMASIGHT',
+                'CRKT KNIVES',
+                'CZ CUSTOM',
+                'DURA SIGHT',
+                'FN AMERICA',
+                'FRANKFORD ARSENAL',
+                'HKS',
+                'OSIGHT',
+                'SHIELD SIGHTS',
+                'SIGHTMARK',
+                'SIGHTRON',
+                'UMAREX USA',
+                'WILLIAMS GUNSIGHT CO',
+                'XS SIGHT SYSTEMS',
+            ],
         ];
 
         foreach ($aliases as $canonical => $labels) {
