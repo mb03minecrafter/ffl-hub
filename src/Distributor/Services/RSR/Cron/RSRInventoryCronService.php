@@ -201,6 +201,11 @@ final class RSRInventoryCronService extends AbstractTableCronService
             $this->finalize_run($t_start, $mem_start, 'ERROR (FTP connection failed)');
             return;
         }
+        $this->profile('FTP connection', $t_ftp, [
+            'ok'      => 1,
+            'host'    => $host,
+            'use_ssl' => $use_ssl ? 1 : 0,
+        ]);
 
         // -----------------------------
         // FTP freshness gate (remote mtime/size)
@@ -228,13 +233,14 @@ final class RSRInventoryCronService extends AbstractTableCronService
             return;
         }
         // 2) Download the file via FTP.
+        $t_download = microtime(true);
         $csv_kb_before = file_exists($local_path) ? (int) round(((int) filesize($local_path)) / 1024) : 0;
 
         $ok = $ftp->download_file($remote_path, $local_path);
 
         $csv_kb_after = file_exists($local_path) ? (int) round(((int) filesize($local_path)) / 1024) : 0;
 
-        $this->profile('FTP download', $t_ftp, [
+        $this->profile('FTP download', $t_download, [
             'ok'            => $ok ? 1 : 0,
             'csv_kb_before' => (int) $csv_kb_before,
             'csv_kb_after'  => (int) $csv_kb_after,
@@ -313,10 +319,14 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 'join_matched'   => 0,
                 'would_change'   => 0,
                 'join_updated'   => 0,
-                'create_ms'      => '0.00',
+                'capability_check_ms' => '0.00',
+                'ensure_stage_ms' => '0.00',
+                'truncate_stage_ms' => '0.00',
                 'load_ms'        => '0.00',
+                'count_stage_rows_ms' => '0.00',
                 'stats_ms'       => '0.00',
-                'join_ms'        => '0.00',
+                'join_update_ms' => '0.00',
+                'sig_approval_ms' => '0.00',
                 'drop_ms'        => '0.00',
                 'total_ms'       => '0.00',
             ];
@@ -331,10 +341,14 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 'join_matched'   => 0,
                 'would_change'   => 0,
                 'join_updated'   => 0,
-                'create_ms'      => '0.00',
+                'capability_check_ms' => '0.00',
+                'ensure_stage_ms' => '0.00',
+                'truncate_stage_ms' => '0.00',
                 'load_ms'        => '0.00',
+                'count_stage_rows_ms' => '0.00',
                 'stats_ms'       => '0.00',
-                'join_ms'        => '0.00',
+                'join_update_ms' => '0.00',
+                'sig_approval_ms' => '0.00',
                 'drop_ms'        => '0.00',
                 'total_ms'       => '0.00',
             ];
@@ -353,11 +367,12 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $t_check  = microtime(true);
         $mysql_ok = $this->mysql_local_infile_enabled();
         $php_ok   = $this->php_local_infile_enabled();
+        $capability_check_ms = (microtime(true) - $t_check) * 1000.0;
         DebugLogUtil::log_ctx(self::DEBUG_FLAG, '[FFLHub][RSR Import][DEBUG]', 'LOAD DATA check', [
             'mysql_ok'   => $mysql_ok ? 'true' : 'false',
             'php_ok'     => $php_ok ? 'true' : 'false',
             'result'     => ($mysql_ok && $php_ok) ? 'true' : 'false',
-            'elapsed_ms' => number_format((microtime(true) - $t_check) * 1000.0, 2, '.', ''),
+            'elapsed_ms' => number_format($capability_check_ms, 2, '.', ''),
         ]);
 
         $charset     = $wpdb->get_charset_collate();
@@ -366,7 +381,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
         // -----------------------
         // Ensure staging table exists + TRUNCATE
         // -----------------------
-        $t_create = microtime(true);
+        $t_ensure_stage = microtime(true);
 
         $create_sql = "
         CREATE TABLE IF NOT EXISTS {$stage_table} (
@@ -381,12 +396,15 @@ final class RSRInventoryCronService extends AbstractTableCronService
             throw new \RuntimeException('Failed to ensure staging table: ' . (string) $wpdb->last_error);
         }
 
+        $ensure_stage_ms = (microtime(true) - $t_ensure_stage) * 1000.0;
+
+        $t_truncate_stage = microtime(true);
         $truncated = $wpdb->query("TRUNCATE TABLE {$stage_table}");
         if ($truncated === false) {
             throw new \RuntimeException('Failed to truncate staging table: ' . (string) $wpdb->last_error);
         }
 
-        $create_ms = (microtime(true) - $t_create) * 1000.0;
+        $truncate_stage_ms = (microtime(true) - $t_truncate_stage) * 1000.0;
 
         // -----------------------
         // LOAD DATA LOCAL INFILE
@@ -411,11 +429,13 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $load_ms = (microtime(true) - $t_load) * 1000.0;
 
         // Count rows loaded
+        $t_count_stage_rows = microtime(true);
         $rows_loaded = 0;
         $count_row   = $wpdb->get_row("SELECT COUNT(*) AS c FROM {$stage_table}", ARRAY_A);
         if (is_array($count_row) && isset($count_row['c'])) {
             $rows_loaded = (int) $count_row['c'];
         }
+        $count_stage_rows_ms = (microtime(true) - $t_count_stage_rows) * 1000.0;
 
         // -----------------------
         // Pre-join stats (DEBUG only)
@@ -450,7 +470,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
         // -----------------------
         // JOIN update live table (only rows that change)
         // -----------------------
-        $t_join = microtime(true);
+        $t_join_update = microtime(true);
 
         $join_sql = "
         UPDATE {$live_table} L
@@ -467,8 +487,11 @@ final class RSRInventoryCronService extends AbstractTableCronService
             throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
         }
 
+        $join_update_ms = (microtime(true) - $t_join_update) * 1000.0;
+
+        $t_sig_approval = microtime(true);
         $sig_approved_forced = SigDropshipApproval::apply_to_table('rsr', $live_table);
-        $join_ms = (microtime(true) - $t_join) * 1000.0;
+        $sig_approval_ms = (microtime(true) - $t_sig_approval) * 1000.0;
 
         // No DROP for persistent stage table
         $drop_ms = 0.0;
@@ -484,10 +507,14 @@ final class RSRInventoryCronService extends AbstractTableCronService
             'sig_approved_forced' => (int) $sig_approved_forced,
             'stage_table'    => (string) $stage_table,
             'ignore_lines'   => (int) $ignore_lines,
-            'create_ms'      => number_format($create_ms, 2, '.', ''),
+            'capability_check_ms' => number_format($capability_check_ms, 2, '.', ''),
+            'ensure_stage_ms' => number_format($ensure_stage_ms, 2, '.', ''),
+            'truncate_stage_ms' => number_format($truncate_stage_ms, 2, '.', ''),
             'load_ms'        => number_format($load_ms, 2, '.', ''),
+            'count_stage_rows_ms' => number_format($count_stage_rows_ms, 2, '.', ''),
             'stats_ms'       => number_format($stats_ms, 2, '.', ''),
-            'join_ms'        => number_format($join_ms, 2, '.', ''),
+            'join_update_ms' => number_format($join_update_ms, 2, '.', ''),
+            'sig_approval_ms' => number_format($sig_approval_ms, 2, '.', ''),
             'drop_ms'        => number_format($drop_ms, 2, '.', ''),
             'total_ms'       => number_format($t_total_ms, 2, '.', ''),
         ];
