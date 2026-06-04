@@ -36,7 +36,8 @@ if (!class_exists(Options::class) || !class_exists(CSSIProductParser::class)) {
     exit(1);
 }
 
-$args = cssi_bench_parse_args($argv ?? []);
+$rawCliArgs = isset($args) && is_array($args) ? $args : ($argv ?? []);
+$args = cssi_bench_parse_args($rawCliArgs);
 $mode = strtolower((string) cssi_bench_arg($args, 'mode', 'inventory'));
 if (!in_array($mode, ['inventory', 'product-feed', 'both'], true)) {
     cssi_bench_fail('Invalid mode. Use inventory, product-feed, or both.');
