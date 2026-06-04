@@ -195,6 +195,18 @@ final class LipseysProductCronService extends AbstractTableCronService
                 'items_skipped' => (int) ($result['items_skipped'] ?? 0),
                 'bytes_received' => (int) ($result['bytes_received'] ?? 0),
                 'json_decode_fails' => (int) ($result['json_decode_fails'] ?? 0),
+                'chunk_count' => (int) ($result['chunk_count'] ?? 0),
+                'max_chunk_bytes' => (int) ($result['max_chunk_bytes'] ?? 0),
+                'curl_exec_ms' => $this->format_profile_ms($result['curl_exec_ms'] ?? 0),
+                'first_byte_ms' => $this->format_profile_ms($result['first_byte_ms'] ?? 0),
+                'network_wait_ms' => $this->format_profile_ms($result['network_wait_ms'] ?? 0),
+                'callback_total_ms' => $this->format_profile_ms($result['callback_total_ms'] ?? 0),
+                'json_decode_ms' => $this->format_profile_ms($result['json_decode_ms'] ?? 0),
+                'item_to_row_ms' => $this->format_profile_ms($result['item_to_row_ms'] ?? 0),
+                'tsv_write_ms' => $this->format_profile_ms($result['tsv_write_ms'] ?? 0),
+                'curl_total_time_ms' => $this->format_profile_ms($result['curl_total_time_ms'] ?? 0),
+                'curl_starttransfer_ms' => $this->format_profile_ms($result['curl_starttransfer_ms'] ?? 0),
+                'download_speed_bytes_sec' => $this->format_profile_ms($result['download_speed_bytes_sec'] ?? 0),
             ]);
 
             // 5) Handle errors/unauthorized
@@ -310,6 +322,14 @@ final class LipseysProductCronService extends AbstractTableCronService
     {
         $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000, 2);
         $this->log("PROFILE: {$label}", $ctx);
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function format_profile_ms($value): string
+    {
+        return number_format(is_numeric($value) ? (float) $value : 0.0, 2, '.', '');
     }
 
     private function finalize_run(float $t_start, int $mem_start, string $status): void

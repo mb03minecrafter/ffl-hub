@@ -935,6 +935,22 @@ class LipseysClient
             // ✅ NEW: capture nextUpdate while streaming (best-effort)
             'next_update_raw'   => null,
             'next_update_unix'  => null,
+            'chunk_count'        => 0,
+            'max_chunk_bytes'    => 0,
+            'first_byte_ms'      => 0.0,
+            'curl_exec_ms'       => 0.0,
+            'callback_total_ms'  => 0.0,
+            'network_wait_ms'    => 0.0,
+            'json_decode_ms'     => 0.0,
+            'item_to_row_ms'     => 0.0,
+            'tsv_write_ms'       => 0.0,
+            'curl_total_time_ms' => 0.0,
+            'curl_starttransfer_ms' => 0.0,
+            'curl_namelookup_ms' => 0.0,
+            'curl_connect_ms'    => 0.0,
+            'curl_appconnect_ms' => 0.0,
+            'curl_pretransfer_ms'=> 0.0,
+            'download_speed_bytes_sec' => 0.0,
         );
 
         $curl = $this->GetRequestBuilder($endpoint);
@@ -952,6 +968,8 @@ class LipseysClient
         $depth = 0;
         $collecting_obj = false;
         $obj = '';
+        $curl_start = 0.0;
+        $first_byte_at = 0.0;
 
         curl_setopt($curl, CURLOPT_RETURNTRANSFER, false);
 
@@ -970,10 +988,24 @@ class LipseysClient
             $item_to_row,
             $array_path,
             &$nextupdate_found,
-            $re_nextupdate
+            $re_nextupdate,
+            &$curl_start,
+            &$first_byte_at
         ) {
+            $callback_start = microtime(true);
+
+            try {
+                if ($first_byte_at <= 0.0) {
+                    $first_byte_at = $callback_start;
+                    if ($curl_start > 0.0) {
+                        $stats['first_byte_ms'] = ($first_byte_at - $curl_start) * 1000.0;
+                    }
+                }
+
             $len = strlen($chunk);
             $stats['bytes_received'] += $len;
+            $stats['chunk_count']++;
+            $stats['max_chunk_bytes'] = max((int) $stats['max_chunk_bytes'], $len);
             $buffer .= $chunk;
 
             // 1) Preamble check for authorized:false
@@ -1065,24 +1097,30 @@ class LipseysClient
                         if ($depth === 0) {
                             $collecting_obj = false;
 
+                            $t_decode = microtime(true);
                             $decoded = json_decode($obj, true);
+                            $stats['json_decode_ms'] += (microtime(true) - $t_decode) * 1000.0;
                             if (is_array($decoded)) {
                                 $stats['items_seen']++;
 
                                 $row = null;
+                                $t_map = microtime(true);
                                 try {
                                     $row = $item_to_row($decoded);
                                 } catch (\Throwable $e) {
                                     $stats['items_skipped']++;
                                     $row = null;
                                 }
+                                $stats['item_to_row_ms'] += (microtime(true) - $t_map) * 1000.0;
 
                                 if (is_array($row)) {
                                     $line = array();
                                     foreach ($columns as $col) {
                                         $line[] = isset($row[$col]) ? (string)$row[$col] : '';
                                     }
+                                    $t_write = microtime(true);
                                     $this->tsv_write_row($fh, $line);
+                                    $stats['tsv_write_ms'] += (microtime(true) - $t_write) * 1000.0;
                                     $stats['rows_written']++;
                                 } else {
                                     $stats['items_skipped']++;
@@ -1101,14 +1139,30 @@ class LipseysClient
 
             $buffer = '';
             return $len;
+            } finally {
+                $stats['callback_total_ms'] += (microtime(true) - $callback_start) * 1000.0;
+            }
         });
 
+        $curl_start = microtime(true);
         $ok = curl_exec($curl);
+        $curl_exec_ms = (microtime(true) - $curl_start) * 1000.0;
         $err = curl_error($curl);
         $errno = curl_errno($curl);
         $http = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        $curl_info = curl_getinfo($curl);
         curl_close($curl);
         fclose($fh);
+
+        $stats['curl_exec_ms'] = $curl_exec_ms;
+        $stats['network_wait_ms'] = max(0.0, $curl_exec_ms - (float) ($stats['callback_total_ms'] ?? 0.0));
+        $stats['curl_total_time_ms'] = isset($curl_info['total_time']) ? ((float) $curl_info['total_time'] * 1000.0) : 0.0;
+        $stats['curl_starttransfer_ms'] = isset($curl_info['starttransfer_time']) ? ((float) $curl_info['starttransfer_time'] * 1000.0) : 0.0;
+        $stats['curl_namelookup_ms'] = isset($curl_info['namelookup_time']) ? ((float) $curl_info['namelookup_time'] * 1000.0) : 0.0;
+        $stats['curl_connect_ms'] = isset($curl_info['connect_time']) ? ((float) $curl_info['connect_time'] * 1000.0) : 0.0;
+        $stats['curl_appconnect_ms'] = isset($curl_info['appconnect_time']) ? ((float) $curl_info['appconnect_time'] * 1000.0) : 0.0;
+        $stats['curl_pretransfer_ms'] = isset($curl_info['pretransfer_time']) ? ((float) $curl_info['pretransfer_time'] * 1000.0) : 0.0;
+        $stats['download_speed_bytes_sec'] = isset($curl_info['speed_download']) ? (float) $curl_info['speed_download'] : 0.0;
 
         $this->debug_log('stream.response', [
             'method'           => 'GET',
@@ -1123,6 +1177,12 @@ class LipseysClient
             'rows_written'     => (int) ($stats['rows_written'] ?? 0),
             'items_skipped'    => (int) ($stats['items_skipped'] ?? 0),
             'json_decode_fails'=> (int) ($stats['json_decode_fails'] ?? 0),
+            'curl_exec_ms'     => number_format((float) ($stats['curl_exec_ms'] ?? 0), 2, '.', ''),
+            'network_wait_ms'  => number_format((float) ($stats['network_wait_ms'] ?? 0), 2, '.', ''),
+            'callback_total_ms'=> number_format((float) ($stats['callback_total_ms'] ?? 0), 2, '.', ''),
+            'json_decode_ms'   => number_format((float) ($stats['json_decode_ms'] ?? 0), 2, '.', ''),
+            'item_to_row_ms'   => number_format((float) ($stats['item_to_row_ms'] ?? 0), 2, '.', ''),
+            'tsv_write_ms'     => number_format((float) ($stats['tsv_write_ms'] ?? 0), 2, '.', ''),
             'next_update_raw'  => isset($stats['next_update_raw']) ? $this->sanitizeErrorValue((string) $stats['next_update_raw']) : null,
         ]);
 
