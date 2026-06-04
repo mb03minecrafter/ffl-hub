@@ -5,7 +5,6 @@ namespace FFLHub\Distributor\Services\Lipseys\Cron;
 if (!defined('ABSPATH')) exit;
 
 use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
-use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -22,6 +21,7 @@ final class LipseysInventoryWorkerJob
     private const OPT_LAST_APPLIED_VERSION  = 'fflhub_lipseys_last_applied_version';
 
     private const FILE_LOG_NAME = 'lipseys_cron.log';
+    private const STAGE_TABLE_SUFFIX = 'fflhub_lipseys_pq_stage';
 
     private const WORKER_ARGS  = ['singleton' => 1];
     private const WORKER_GROUP = 'fflhub_catalog';
@@ -165,6 +165,7 @@ final class LipseysInventoryWorkerJob
                 'allocation_status',
                 'distributor_price',
                 'retail_map',
+                'can_dropship',
             ],
             static function (array $i) {
                 if (empty($i['itemNumber'])) return null;
@@ -175,6 +176,7 @@ final class LipseysInventoryWorkerJob
                     'allocation_status'   => !empty($i['allocated']) ? 'Y' : '',
                     'distributor_price'   => (string) ($i['currentPrice'] ?? ''),
                     'retail_map'          => (string) ($i['retailMap'] ?? ''),
+                    'can_dropship'         => !empty($i['canDropship']) ? '1' : '0',
                 ];
             }
         );
@@ -185,7 +187,9 @@ final class LipseysInventoryWorkerJob
             'tsv_bytes'  => (is_string($tsv) && file_exists($tsv)) ? (int) filesize($tsv) : null,
         ]);
 
-        self::debug_tsv_sample($tsv);
+        if (self::debug_enabled()) {
+            self::debug_tsv_sample($tsv);
+        }
 
         // --- Apply timing ---
         $t_apply = microtime(true);
@@ -270,15 +274,20 @@ final class LipseysInventoryWorkerJob
 
         $t_total = microtime(true);
 
-        $pid = function_exists('getmypid') ? (int) getmypid() : (int) wp_rand(1000, 9999);
-        $stage = $wpdb->prefix . 'fflhub_lipseys_pq_stage_' . $pid;
+        $stage = $wpdb->prefix . self::STAGE_TABLE_SUFFIX;
 
-        // Basic env (fast)
-        self::db_debug_env();
+        $debug_enabled = self::debug_enabled();
+
+        if ($debug_enabled) {
+            self::db_debug_env();
+        }
 
         // LIVE table rowcount (sanity; optional but very helpful)
         $t_live_count = microtime(true);
-        $live_count = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$live}") ?? 0);
+        $live_count = 0;
+        if ($debug_enabled) {
+            $live_count = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$live}") ?? 0);
+        }
         self::log('PROFILE: live_count', [
             'live_count'  => $live_count,
             'elapsed_ms'  => self::ms_since($t_live_count),
@@ -289,16 +298,15 @@ final class LipseysInventoryWorkerJob
         // -----------------------
         $t_create = microtime(true);
 
-        $wpdb->query("DROP TABLE IF EXISTS {$stage}");
-
         $charset = $wpdb->get_charset_collate();
         $create_sql = "
-            CREATE TABLE {$stage} (
+            CREATE TABLE IF NOT EXISTS {$stage} (
                 lipseys_item_number VARCHAR(64) NOT NULL,
                 inventory_quantity  VARCHAR(32) NULL,
                 allocation_status   VARCHAR(64) NULL,
                 distributor_price   VARCHAR(32) NULL,
                 retail_map          VARCHAR(32) NULL,
+                can_dropship        TINYINT(1) NOT NULL DEFAULT 0,
                 PRIMARY KEY (lipseys_item_number)
             ) {$charset};
         ";
@@ -306,6 +314,13 @@ final class LipseysInventoryWorkerJob
         $created = $wpdb->query($create_sql);
         if ($created === false) {
             throw new \RuntimeException('Stage create failed: ' . (string) $wpdb->last_error);
+        }
+
+        self::ensure_stage_can_dropship_column($stage);
+
+        $truncated = $wpdb->query("TRUNCATE TABLE {$stage}");
+        if ($truncated === false) {
+            throw new \RuntimeException('Stage truncate failed: ' . (string) $wpdb->last_error);
         }
 
         self::log('PROFILE: stage_create', [
@@ -326,21 +341,31 @@ final class LipseysInventoryWorkerJob
             INTO TABLE {$stage}
             FIELDS TERMINATED BY '\t'
             LINES TERMINATED BY '\n'
-            (lipseys_item_number, inventory_quantity, allocation_status, distributor_price, retail_map)
+            (
+                @lipseys_item_number,
+                @inventory_quantity,
+                @allocation_status,
+                @distributor_price,
+                @retail_map,
+                @can_dropship
+            )
+            SET
+                lipseys_item_number = TRIM(TRAILING '\r' FROM TRIM(@lipseys_item_number)),
+                inventory_quantity  = TRIM(TRAILING '\r' FROM TRIM(@inventory_quantity)),
+                allocation_status   = TRIM(TRAILING '\r' FROM TRIM(@allocation_status)),
+                distributor_price   = TRIM(TRAILING '\r' FROM TRIM(@distributor_price)),
+                retail_map          = TRIM(TRAILING '\r' FROM TRIM(@retail_map)),
+                can_dropship        = CASE
+                    WHEN LOWER(TRIM(TRAILING '\r' FROM TRIM(@can_dropship))) IN ('1', 'y', 'yes', 'true')
+                    THEN 1
+                    ELSE 0
+                END
         ";
 
         $loaded = $wpdb->query($load_sql);
         if ($loaded === false) {
-            $wpdb->query("DROP TABLE IF EXISTS {$stage}");
             throw new \RuntimeException('LOAD DATA failed: ' . (string) $wpdb->last_error);
         }
-
-        // CRLF hygiene
-        $wpdb->query("UPDATE {$stage} SET lipseys_item_number = TRIM(TRAILING '\r' FROM lipseys_item_number)");
-        $wpdb->query("UPDATE {$stage} SET inventory_quantity  = TRIM(TRAILING '\r' FROM inventory_quantity)");
-        $wpdb->query("UPDATE {$stage} SET allocation_status   = TRIM(TRAILING '\r' FROM allocation_status)");
-        $wpdb->query("UPDATE {$stage} SET distributor_price   = TRIM(TRAILING '\r' FROM distributor_price)");
-        $wpdb->query("UPDATE {$stage} SET retail_map          = TRIM(TRAILING '\r' FROM retail_map)");
 
         $stage_count = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$stage}") ?? 0);
 
@@ -357,24 +382,26 @@ final class LipseysInventoryWorkerJob
         // -----------------------
         $t_stats = microtime(true);
 
-        $join_matched = (int) ($wpdb->get_var("
-            SELECT COUNT(*)
-            FROM {$stage} S
-            INNER JOIN {$live} L
-                ON L.lipseys_item_number = S.lipseys_item_number
-        ") ?? 0);
+        $join_matched = 0;
+        $would_change = 0;
+        $changed_where_sql = self::changed_where_sql();
 
-        $would_change = (int) ($wpdb->get_var("
-            SELECT COUNT(*)
-            FROM {$stage} S
-            INNER JOIN {$live} L
-                ON L.lipseys_item_number = S.lipseys_item_number
-            WHERE
-                COALESCE(L.inventory_quantity,'') <> COALESCE(S.inventory_quantity,'')
-                OR COALESCE(L.allocation_status,'') <> COALESCE(S.allocation_status,'')
-                OR COALESCE(L.distributor_price,'') <> COALESCE(S.distributor_price,'')
-                OR COALESCE(L.retail_map,'') <> COALESCE(S.retail_map,'')
-        ") ?? 0);
+        if ($debug_enabled) {
+            $join_matched = (int) ($wpdb->get_var("
+                SELECT COUNT(*)
+                FROM {$stage} S
+                INNER JOIN {$live} L
+                    ON L.lipseys_item_number = S.lipseys_item_number
+            ") ?? 0);
+
+            $would_change = (int) ($wpdb->get_var("
+                SELECT COUNT(*)
+                FROM {$stage} S
+                INNER JOIN {$live} L
+                    ON L.lipseys_item_number = S.lipseys_item_number
+                WHERE {$changed_where_sql}
+            ") ?? 0);
+        }
 
         self::log('PROFILE: prejoin_stats', [
             'join_matched' => $join_matched,
@@ -395,12 +422,22 @@ final class LipseysInventoryWorkerJob
                 L.inventory_quantity = S.inventory_quantity,
                 L.allocation_status  = S.allocation_status,
                 L.distributor_price  = S.distributor_price,
-                L.retail_map         = S.retail_map
+                L.retail_map         = S.retail_map,
+                L.dropship_enabled   = CASE
+                    WHEN S.can_dropship = 0 THEN 0
+                    WHEN COALESCE(L.sot_required, 0) = 1 THEN L.dropship_enabled
+                    ELSE 1
+                END,
+                L.dropship_block_reason = CASE
+                    WHEN S.can_dropship = 0 THEN 'lipseys_inventory_canDropship_false'
+                    WHEN COALESCE(L.sot_required, 0) = 1 THEN L.dropship_block_reason
+                    ELSE ''
+                END
+            WHERE {$changed_where_sql}
         ";
 
         $updated = $wpdb->query($update_sql);
         if ($updated === false) {
-            $wpdb->query("DROP TABLE IF EXISTS {$stage}");
             throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
         }
 
@@ -410,21 +447,11 @@ final class LipseysInventoryWorkerJob
             'last_error'   => (string) $wpdb->last_error,
         ]);
 
-        $sig_approved_forced = SigDropshipApproval::apply_to_table('lipseys', $live);
-        if ($sig_approved_forced > 0) {
-            self::log('PROFILE: sig_approved_override', [
-                'rows_forced' => (int) $sig_approved_forced,
-            ]);
-        }
-
-        // -----------------------
-        // Drop stage
-        // -----------------------
-        $t_drop = microtime(true);
-        $wpdb->query("DROP TABLE IF EXISTS {$stage}");
+        // Persistent stage table is retained for verification/debugging.
+        $drop_ms = 0;
 
         self::log('PROFILE: drop_stage', [
-            'elapsed_ms' => self::ms_since($t_drop),
+            'elapsed_ms' => $drop_ms,
         ]);
 
         self::log('PROFILE: apply_total', [
@@ -439,8 +466,48 @@ final class LipseysInventoryWorkerJob
             'live_count'    => $live_count,
             'join_matched'  => $join_matched,
             'would_change'  => $would_change,
-            'sig_approved_forced' => (int) $sig_approved_forced,
+            'sig_approved_forced' => 0,
         ];
+    }
+
+    private static function ensure_stage_can_dropship_column(string $stage): void
+    {
+        global $wpdb;
+
+        $column = $wpdb->get_var("SHOW COLUMNS FROM {$stage} LIKE 'can_dropship'");
+        if ($column === 'can_dropship') {
+            return;
+        }
+
+        $added = $wpdb->query("ALTER TABLE {$stage} ADD COLUMN can_dropship TINYINT(1) NOT NULL DEFAULT 0 AFTER retail_map");
+        if ($added === false) {
+            throw new \RuntimeException('Failed to add stage can_dropship column: ' . (string) $wpdb->last_error);
+        }
+    }
+
+    private static function changed_where_sql(): string
+    {
+        return "
+            NOT (
+                    NULLIF(L.inventory_quantity, '') <=> NULLIF(S.inventory_quantity, '')
+                AND NULLIF(L.allocation_status, '')  <=> NULLIF(S.allocation_status, '')
+                AND NULLIF(L.distributor_price, '')  <=> NULLIF(S.distributor_price, '')
+                AND NULLIF(L.retail_map, '')         <=> NULLIF(S.retail_map, '')
+                AND L.dropship_enabled <=> CASE
+                    WHEN S.can_dropship = 0 THEN 0
+                    WHEN COALESCE(L.sot_required, 0) = 1 THEN L.dropship_enabled
+                    ELSE 1
+                END
+                AND NULLIF(L.dropship_block_reason, '') <=> NULLIF(
+                    CASE
+                        WHEN S.can_dropship = 0 THEN 'lipseys_inventory_canDropship_false'
+                        WHEN COALESCE(L.sot_required, 0) = 1 THEN L.dropship_block_reason
+                        ELSE ''
+                    END,
+                    ''
+                )
+            )
+        ";
     }
 
     private static function as_count_pending(string $hook, array $args, string $group): ?int
@@ -526,6 +593,11 @@ final class LipseysInventoryWorkerJob
     private static function ms_since(float $t0): int
     {
         return (int) round((microtime(true) - $t0) * 1000);
+    }
+
+    private static function debug_enabled(): bool
+    {
+        return defined(self::DEBUG_FLAG) && (bool) constant(self::DEBUG_FLAG);
     }
 
     private static function log(string $msg, array $ctx = []): void
