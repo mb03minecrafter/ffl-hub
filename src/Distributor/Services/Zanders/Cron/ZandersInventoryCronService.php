@@ -314,6 +314,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                 qty1        int unsigned NULL,
                 qty2        int unsigned NULL,
                 qty3        int unsigned NULL,
+                shipping_cost decimal(12,2) NOT NULL DEFAULT 15.00,
                 PRIMARY KEY (itemnumber)
             ) {$charset};
         ";
@@ -321,6 +322,17 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         $created = $wpdb->query($create_sql);
         if ($created === false) {
             throw new \RuntimeException('Failed to ensure staging table: ' . (string) $wpdb->last_error);
+        }
+
+        $stage_altered = 0;
+        $has_shipping_cost = (string) $wpdb->get_var("SHOW COLUMNS FROM {$stage_table} LIKE 'shipping_cost'");
+        if ($has_shipping_cost === '') {
+            $altered = $wpdb->query("ALTER TABLE {$stage_table} ADD COLUMN shipping_cost decimal(12,2) NOT NULL DEFAULT 15.00 AFTER qty3");
+            if ($altered === false) {
+                throw new \RuntimeException('Failed to add staging shipping_cost column: ' . (string) $wpdb->last_error);
+            }
+
+            $stage_altered = 1;
         }
 
         $truncated = $wpdb->query("TRUNCATE TABLE {$stage_table}");
@@ -364,7 +376,12 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                 price3     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price3)), ''),
                 qty1       = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty1)), '') + 0, 0),
                 qty2       = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty2)), '') + 0, 0),
-                qty3       = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty3)), '') + 0, 0)
+                qty3       = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty3)), '') + 0, 0),
+                shipping_cost = CASE
+                    WHEN CAST(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price1)), '') AS DECIMAL(12,4)) >= 500
+                    THEN 0.00
+                    ELSE 15.00
+                END
         ";
 
         $loaded = $wpdb->query($load_sql);
@@ -384,6 +401,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         $do_stats     = defined(self::DEBUG_FLAG) && constant(self::DEBUG_FLAG);
         $join_matched = 0;
         $would_change = 0;
+        $changed_where_sql = $this->changed_row_where_sql();
 
         if ($do_stats) {
             $join_matched = (int) $wpdb->get_var("
@@ -398,35 +416,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                 FROM {$stage_table} S
                 INNER JOIN {$live_table} L
                     ON L.zanders_item_number = S.itemnumber
-                WHERE
-                    (
-                        L.inventory_quantity IS NULL
-                        OR L.inventory_quantity = ''
-                        OR CAST(L.inventory_quantity AS UNSIGNED) <> IFNULL(S.available, CAST(L.inventory_quantity AS UNSIGNED))
-                    )
-                 OR (NULLIF(L.distributor_price,'') IS NULL AND S.price1 IS NOT NULL)
-                 OR (NULLIF(L.distributor_price,'') IS NOT NULL AND S.price1 IS NULL)
-                 OR (NULLIF(L.distributor_price,'') IS NOT NULL AND S.price1 IS NOT NULL AND CAST(NULLIF(L.distributor_price,'') AS DECIMAL(12,4)) <> S.price1)
-
-                 OR (NULLIF(L.price_2,'') IS NULL AND S.price2 IS NOT NULL)
-                 OR (NULLIF(L.price_2,'') IS NOT NULL AND S.price2 IS NULL)
-                 OR (NULLIF(L.price_2,'') IS NOT NULL AND S.price2 IS NOT NULL AND CAST(NULLIF(L.price_2,'') AS DECIMAL(12,4)) <> S.price2)
-
-                 OR (NULLIF(L.price_3,'') IS NULL AND S.price3 IS NOT NULL)
-                 OR (NULLIF(L.price_3,'') IS NOT NULL AND S.price3 IS NULL)
-                 OR (NULLIF(L.price_3,'') IS NOT NULL AND S.price3 IS NOT NULL AND CAST(NULLIF(L.price_3,'') AS DECIMAL(12,4)) <> S.price3)
-
-                 OR (NULLIF(L.bulk_qty_1,'') IS NULL AND S.qty1 IS NOT NULL)
-                 OR (NULLIF(L.bulk_qty_1,'') IS NOT NULL AND S.qty1 IS NULL)
-                 OR (NULLIF(L.bulk_qty_1,'') IS NOT NULL AND S.qty1 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_1,'') AS UNSIGNED) <> S.qty1)
-
-                 OR (NULLIF(L.bulk_qty_2,'') IS NULL AND S.qty2 IS NOT NULL)
-                 OR (NULLIF(L.bulk_qty_2,'') IS NOT NULL AND S.qty2 IS NULL)
-                 OR (NULLIF(L.bulk_qty_2,'') IS NOT NULL AND S.qty2 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_2,'') AS UNSIGNED) <> S.qty2)
-
-                 OR (NULLIF(L.bulk_qty_3,'') IS NULL AND S.qty3 IS NOT NULL)
-                 OR (NULLIF(L.bulk_qty_3,'') IS NOT NULL AND S.qty3 IS NULL)
-                 OR (NULLIF(L.bulk_qty_3,'') IS NOT NULL AND S.qty3 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_3,'') AS UNSIGNED) <> S.qty3)
+                WHERE {$changed_where_sql}
             ");
         }
 
@@ -448,36 +438,12 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                 L.price_3            = IFNULL(CAST(S.price3 AS CHAR), ''),
                 L.bulk_qty_1         = IFNULL(CAST(S.qty1 AS CHAR), ''),
                 L.bulk_qty_2         = IFNULL(CAST(S.qty2 AS CHAR), ''),
-                L.bulk_qty_3         = IFNULL(CAST(S.qty3 AS CHAR), '')
-            WHERE
-                (
-                    L.inventory_quantity IS NULL
-                    OR L.inventory_quantity = ''
-                    OR CAST(L.inventory_quantity AS UNSIGNED) <> IFNULL(S.available, CAST(L.inventory_quantity AS UNSIGNED))
-                )
-             OR (NULLIF(L.distributor_price,'') IS NULL AND S.price1 IS NOT NULL)
-             OR (NULLIF(L.distributor_price,'') IS NOT NULL AND S.price1 IS NULL)
-             OR (NULLIF(L.distributor_price,'') IS NOT NULL AND S.price1 IS NOT NULL AND CAST(NULLIF(L.distributor_price,'') AS DECIMAL(12,4)) <> S.price1)
-
-             OR (NULLIF(L.price_2,'') IS NULL AND S.price2 IS NOT NULL)
-             OR (NULLIF(L.price_2,'') IS NOT NULL AND S.price2 IS NULL)
-             OR (NULLIF(L.price_2,'') IS NOT NULL AND S.price2 IS NOT NULL AND CAST(NULLIF(L.price_2,'') AS DECIMAL(12,4)) <> S.price2)
-
-             OR (NULLIF(L.price_3,'') IS NULL AND S.price3 IS NOT NULL)
-             OR (NULLIF(L.price_3,'') IS NOT NULL AND S.price3 IS NULL)
-             OR (NULLIF(L.price_3,'') IS NOT NULL AND S.price3 IS NOT NULL AND CAST(NULLIF(L.price_3,'') AS DECIMAL(12,4)) <> S.price3)
-
-             OR (NULLIF(L.bulk_qty_1,'') IS NULL AND S.qty1 IS NOT NULL)
-             OR (NULLIF(L.bulk_qty_1,'') IS NOT NULL AND S.qty1 IS NULL)
-             OR (NULLIF(L.bulk_qty_1,'') IS NOT NULL AND S.qty1 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_1,'') AS UNSIGNED) <> S.qty1)
-
-             OR (NULLIF(L.bulk_qty_2,'') IS NULL AND S.qty2 IS NOT NULL)
-             OR (NULLIF(L.bulk_qty_2,'') IS NOT NULL AND S.qty2 IS NULL)
-             OR (NULLIF(L.bulk_qty_2,'') IS NOT NULL AND S.qty2 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_2,'') AS UNSIGNED) <> S.qty2)
-
-             OR (NULLIF(L.bulk_qty_3,'') IS NULL AND S.qty3 IS NOT NULL)
-             OR (NULLIF(L.bulk_qty_3,'') IS NOT NULL AND S.qty3 IS NULL)
-             OR (NULLIF(L.bulk_qty_3,'') IS NOT NULL AND S.qty3 IS NOT NULL AND CAST(NULLIF(L.bulk_qty_3,'') AS UNSIGNED) <> S.qty3)
+                L.bulk_qty_3         = IFNULL(CAST(S.qty3 AS CHAR), ''),
+                L.shipping_cost      = CASE
+                    WHEN S.shipping_cost = 0.00 THEN '0'
+                    ELSE '15'
+                END
+            WHERE {$changed_where_sql}
         ";
 
         $join_updated = $wpdb->query($join_sql);
@@ -499,6 +465,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'join_updated'   => (int) $join_updated,
             'sig_approved_forced' => (int) $sig_approved_forced,
             'stage_table'    => (string) $stage_table,
+            'stage_altered'  => (int) $stage_altered,
             'ignore_lines'   => (int) $ignore_lines,
             'create_ms'      => number_format($create_ms, 2, '.', ''),
             'load_ms'        => number_format($load_ms, 2, '.', ''),
@@ -513,6 +480,22 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         return $stats;
     }
 
+    private function changed_row_where_sql(): string
+    {
+        return "
+            NOT (
+                    CAST(NULLIF(L.inventory_quantity, '') AS UNSIGNED) <=> S.available
+                AND CAST(NULLIF(L.distributor_price, '') AS DECIMAL(12,4)) <=> S.price1
+                AND CAST(NULLIF(L.price_2, '') AS DECIMAL(12,4)) <=> S.price2
+                AND CAST(NULLIF(L.price_3, '') AS DECIMAL(12,4)) <=> S.price3
+                AND CAST(NULLIF(L.bulk_qty_1, '') AS UNSIGNED) <=> S.qty1
+                AND CAST(NULLIF(L.bulk_qty_2, '') AS UNSIGNED) <=> S.qty2
+                AND CAST(NULLIF(L.bulk_qty_3, '') AS UNSIGNED) <=> S.qty3
+                AND CAST(NULLIF(L.shipping_cost, '') AS DECIMAL(12,2)) <=> S.shipping_cost
+            )
+        ";
+    }
+
     private function empty_apply_stats(): array
     {
         return [
@@ -521,6 +504,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'join_matched'   => 0,
             'would_change'   => 0,
             'join_updated'   => 0,
+            'stage_altered'  => 0,
             'create_ms'      => '0.00',
             'load_ms'        => '0.00',
             'stats_ms'       => '0.00',
