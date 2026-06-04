@@ -65,6 +65,7 @@ class ZandersProductParser
         $category     = $this->get($csv, $header_map, 'category');
         $desc1        = $this->get($csv, $header_map, 'desc1');
         $desc2        = $this->get($csv, $header_map, 'desc2');
+        $price1       = $this->get($csv, $header_map, 'price1');
 
         return [
             'upc'                 => $upc,
@@ -73,7 +74,8 @@ class ZandersProductParser
             'inventory_quantity' => $this->blank_to_zero($this->get($csv, $header_map, 'available')),
             'allocation_status'  => '',
 
-            'distributor_price' => $this->get($csv, $header_map, 'price1'),
+            'distributor_price' => $price1,
+            'shipping_cost'     => $this->shipping_cost_from_distributor_price($price1),
             'retail_map'        => $this->blank_to_zero($this->get($csv, $header_map, 'mapprice')),
             'retail_msrp'       => $this->get($csv, $header_map, 'msrp'),
 
@@ -173,6 +175,22 @@ class ZandersProductParser
         $ounces = $pounds * 16.0;
 
         return number_format($ounces, 2, '.', '');
+    }
+
+    private function shipping_cost_from_distributor_price(string $v): string
+    {
+        $v = trim($v);
+        if ($v === '' || $v === '""') {
+            return '15';
+        }
+
+        $clean = preg_replace('/[^0-9\.\-]/', '', $v);
+        $clean = trim((string) $clean);
+        if ($clean === '' || $clean === '-' || $clean === '.' || $clean === '-.') {
+            return '15';
+        }
+
+        return ((float) $clean >= 500.0) ? '0' : '15';
     }
 
     private function to_bool_flag(string $v): string

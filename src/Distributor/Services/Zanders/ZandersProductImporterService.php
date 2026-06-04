@@ -299,6 +299,11 @@ class ZandersProductImporterService
                 retail_msrp          = TRIM(BOTH '\\r' FROM @c7),
 
                 distributor_price    = TRIM(BOTH '\\r' FROM @c8),
+                shipping_cost        = CASE
+                                        WHEN TRIM(BOTH '\\r' FROM @c8) IN ('', '\"\"') THEN '15'
+                                        WHEN CAST(TRIM(BOTH '\\r' FROM @c8) AS DECIMAL(10,4)) >= 500 THEN '0'
+                                        ELSE '15'
+                                      END,
                 price_2              = TRIM(BOTH '\\r' FROM @c9),
                 price_3              = TRIM(BOTH '\\r' FROM @c10),
 
