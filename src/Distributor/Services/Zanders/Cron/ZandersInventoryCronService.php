@@ -15,13 +15,13 @@ use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
 use FFLHub\Util\DebugLogUtil;
 
 /**
- * Cron job for near-real-time Zanders inventory + tier pricing updates using liveinv.csv.
+ * Cron job for near-real-time Zanders inventory + primary pricing updates using liveinv.csv.
  *
  * Runs frequently:
  *  - downloads /Inventory/liveinv.csv via FTP to uploads/fflhub-zanders/
  *  - bulk loads into a persistent staging table via LOAD DATA LOCAL INFILE
  *  - join-updates fast-moving columns in the LIVE fulfillment table:
- *      inventory_quantity, distributor_price, price_2, price_3, bulk_qty_1/2/3
+ *      inventory_quantity, distributor_price, shipping_cost
  *
  * Source CSV (header + CRLF):
  * itemnumber,available,price1,price2,price3,qty1,qty2,qty3
@@ -309,12 +309,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                 itemnumber  varchar(64) NOT NULL,
                 available   int unsigned NULL,
                 price1      decimal(12,4) NULL,
-                price2      decimal(12,4) NULL,
-                price3      decimal(12,4) NULL,
-                qty1        int unsigned NULL,
-                qty2        int unsigned NULL,
-                qty3        int unsigned NULL,
-                shipping_cost decimal(12,2) NOT NULL DEFAULT 15.00,
                 PRIMARY KEY (itemnumber)
             ) {$charset};
         ";
@@ -322,17 +316,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         $created = $wpdb->query($create_sql);
         if ($created === false) {
             throw new \RuntimeException('Failed to ensure staging table: ' . (string) $wpdb->last_error);
-        }
-
-        $stage_altered = 0;
-        $has_shipping_cost = (string) $wpdb->get_var("SHOW COLUMNS FROM {$stage_table} LIKE 'shipping_cost'");
-        if ($has_shipping_cost === '') {
-            $altered = $wpdb->query("ALTER TABLE {$stage_table} ADD COLUMN shipping_cost decimal(12,2) NOT NULL DEFAULT 15.00 AFTER qty3");
-            if ($altered === false) {
-                throw new \RuntimeException('Failed to add staging shipping_cost column: ' . (string) $wpdb->last_error);
-            }
-
-            $stage_altered = 1;
         }
 
         $truncated = $wpdb->query("TRUNCATE TABLE {$stage_table}");
@@ -371,17 +354,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             SET
                 itemnumber = TRIM(BOTH '\\r' FROM TRIM(@itemnumber)),
                 available  = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@available)), '') + 0, 0),
-                price1     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price1)), ''),
-                price2     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price2)), ''),
-                price3     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price3)), ''),
-                qty1       = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty1)), '') + 0, 0),
-                qty2       = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty2)), '') + 0, 0),
-                qty3       = IFNULL(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@qty3)), '') + 0, 0),
-                shipping_cost = CASE
-                    WHEN CAST(NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price1)), '') AS DECIMAL(12,4)) >= 500
-                    THEN 0.00
-                    ELSE 15.00
-                END
+                price1     = NULLIF(TRIM(BOTH '\\r' FROM TRIM(@price1)), '')
         ";
 
         $loaded = $wpdb->query($load_sql);
@@ -400,8 +373,10 @@ final class ZandersInventoryCronService extends AbstractTableCronService
 
         $do_stats     = defined(self::DEBUG_FLAG) && constant(self::DEBUG_FLAG);
         $join_matched = 0;
-        $would_change = 0;
-        $changed_where_sql = $this->changed_row_where_sql();
+        $inventory_would_change = 0;
+        $price_would_change = 0;
+        $inventory_changed_where_sql = $this->inventory_changed_where_sql();
+        $price_changed_where_sql = $this->price_changed_where_sql();
 
         if ($do_stats) {
             $join_matched = (int) $wpdb->get_var("
@@ -411,65 +386,98 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                     ON L.zanders_item_number = S.itemnumber
             ");
 
-            $would_change = (int) $wpdb->get_var("
+            $inventory_would_change = (int) $wpdb->get_var("
                 SELECT COUNT(*)
                 FROM {$stage_table} S
                 INNER JOIN {$live_table} L
                     ON L.zanders_item_number = S.itemnumber
-                WHERE {$changed_where_sql}
+                WHERE {$inventory_changed_where_sql}
+            ");
+
+            $price_would_change = (int) $wpdb->get_var("
+                SELECT COUNT(*)
+                FROM {$stage_table} S
+                INNER JOIN {$live_table} L
+                    ON L.zanders_item_number = S.itemnumber
+                WHERE {$price_changed_where_sql}
             ");
         }
 
         $stats_ms = (microtime(true) - $t_stats) * 1000.0;
 
         // -----------------------
-        // JOIN update (only rows that change)
+        // Inventory update (only rows where available changed)
         // -----------------------
-        $t_join = microtime(true);
+        $t_inventory_update = microtime(true);
 
-        $join_sql = "
+        $inventory_update_sql = "
             UPDATE {$live_table} L
             INNER JOIN {$stage_table} S
                 ON S.itemnumber = L.zanders_item_number
             SET
-                L.inventory_quantity = IFNULL(CAST(S.available AS CHAR), ''),
-                L.distributor_price  = IFNULL(CAST(S.price1 AS CHAR), ''),
-                L.price_2            = IFNULL(CAST(S.price2 AS CHAR), ''),
-                L.price_3            = IFNULL(CAST(S.price3 AS CHAR), ''),
-                L.bulk_qty_1         = IFNULL(CAST(S.qty1 AS CHAR), ''),
-                L.bulk_qty_2         = IFNULL(CAST(S.qty2 AS CHAR), ''),
-                L.bulk_qty_3         = IFNULL(CAST(S.qty3 AS CHAR), ''),
-                L.shipping_cost      = CASE
-                    WHEN S.shipping_cost = 0.00 THEN '0'
-                    ELSE '15'
-                END
-            WHERE {$changed_where_sql}
+                L.inventory_quantity = IFNULL(CAST(S.available AS CHAR), '')
+            WHERE {$inventory_changed_where_sql}
         ";
 
-        $join_updated = $wpdb->query($join_sql);
-        if ($join_updated === false) {
-            throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
+        $inventory_updated = $wpdb->query($inventory_update_sql);
+        if ($inventory_updated === false) {
+            throw new \RuntimeException('Inventory update failed: ' . (string) $wpdb->last_error);
         }
 
+        $inventory_update_ms = (microtime(true) - $t_inventory_update) * 1000.0;
+
+        // -----------------------
+        // Price + shipping update (shipping only changes when price1 changes)
+        // -----------------------
+        $t_price_update = microtime(true);
+
+        $price_update_sql = "
+            UPDATE {$live_table} L
+            INNER JOIN {$stage_table} S
+                ON S.itemnumber = L.zanders_item_number
+            SET
+                L.distributor_price = IFNULL(CAST(S.price1 AS CHAR), ''),
+                L.shipping_cost      = CASE
+                    WHEN S.price1 >= 500 THEN '0'
+                    ELSE '15'
+                END
+            WHERE {$price_changed_where_sql}
+        ";
+
+        $price_updated = $wpdb->query($price_update_sql);
+        if ($price_updated === false) {
+            throw new \RuntimeException('Price update failed: ' . (string) $wpdb->last_error);
+        }
+
+        $price_update_ms = (microtime(true) - $t_price_update) * 1000.0;
+
+        $t_sig_approval = microtime(true);
         $sig_approved_forced = SigDropshipApproval::apply_to_table('zanders', $live_table);
-        $join_ms = (microtime(true) - $t_join) * 1000.0;
+        $sig_approval_ms = (microtime(true) - $t_sig_approval) * 1000.0;
 
         $drop_ms    = 0.0; // persistent table
         $t_total_ms = (microtime(true) - $t_start) * 1000.0;
+        $join_ms    = $inventory_update_ms + $price_update_ms + $sig_approval_ms;
 
         $stats = [
             'processed_rows' => (int) $rows_loaded,
             'rows_loaded'    => (int) $rows_loaded,
             'join_matched'   => (int) $join_matched,
-            'would_change'   => (int) $would_change,
-            'join_updated'   => (int) $join_updated,
+            'would_change'   => (int) ($inventory_would_change + $price_would_change),
+            'inventory_would_change' => (int) $inventory_would_change,
+            'price_would_change' => (int) $price_would_change,
+            'join_updated'   => (int) ($inventory_updated + $price_updated),
+            'inventory_updated' => (int) $inventory_updated,
+            'price_updated' => (int) $price_updated,
             'sig_approved_forced' => (int) $sig_approved_forced,
             'stage_table'    => (string) $stage_table,
-            'stage_altered'  => (int) $stage_altered,
             'ignore_lines'   => (int) $ignore_lines,
             'create_ms'      => number_format($create_ms, 2, '.', ''),
             'load_ms'        => number_format($load_ms, 2, '.', ''),
             'stats_ms'       => number_format($stats_ms, 2, '.', ''),
+            'inventory_update_ms' => number_format($inventory_update_ms, 2, '.', ''),
+            'price_update_ms' => number_format($price_update_ms, 2, '.', ''),
+            'sig_approval_ms' => number_format($sig_approval_ms, 2, '.', ''),
             'join_ms'        => number_format($join_ms, 2, '.', ''),
             'drop_ms'        => number_format($drop_ms, 2, '.', ''),
             'total_ms'       => number_format($t_total_ms, 2, '.', ''),
@@ -480,18 +488,20 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         return $stats;
     }
 
-    private function changed_row_where_sql(): string
+    private function inventory_changed_where_sql(): string
     {
         return "
             NOT (
-                    CAST(NULLIF(L.inventory_quantity, '') AS UNSIGNED) <=> S.available
-                AND CAST(NULLIF(L.distributor_price, '') AS DECIMAL(12,4)) <=> S.price1
-                AND CAST(NULLIF(L.price_2, '') AS DECIMAL(12,4)) <=> S.price2
-                AND CAST(NULLIF(L.price_3, '') AS DECIMAL(12,4)) <=> S.price3
-                AND CAST(NULLIF(L.bulk_qty_1, '') AS UNSIGNED) <=> S.qty1
-                AND CAST(NULLIF(L.bulk_qty_2, '') AS UNSIGNED) <=> S.qty2
-                AND CAST(NULLIF(L.bulk_qty_3, '') AS UNSIGNED) <=> S.qty3
-                AND CAST(NULLIF(L.shipping_cost, '') AS DECIMAL(12,2)) <=> S.shipping_cost
+                CAST(NULLIF(L.inventory_quantity, '') AS UNSIGNED) <=> S.available
+            )
+        ";
+    }
+
+    private function price_changed_where_sql(): string
+    {
+        return "
+            NOT (
+                CAST(NULLIF(L.distributor_price, '') AS DECIMAL(12,4)) <=> S.price1
             )
         ";
     }
@@ -504,10 +514,16 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'join_matched'   => 0,
             'would_change'   => 0,
             'join_updated'   => 0,
-            'stage_altered'  => 0,
+            'inventory_would_change' => 0,
+            'price_would_change' => 0,
+            'inventory_updated' => 0,
+            'price_updated' => 0,
             'create_ms'      => '0.00',
             'load_ms'        => '0.00',
             'stats_ms'       => '0.00',
+            'inventory_update_ms' => '0.00',
+            'price_update_ms' => '0.00',
+            'sig_approval_ms' => '0.00',
             'join_ms'        => '0.00',
             'drop_ms'        => '0.00',
             'total_ms'       => '0.00',
