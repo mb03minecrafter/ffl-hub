@@ -342,10 +342,21 @@ class ZandersProductImporterService
                                       END
         ";
 
-        $t_sql_ms = 0.0;
+        $t_truncate_ms        = 0.0;
+        $t_sql_ms             = 0.0;
+        $t_delete_upc_ms      = 0.0;
+        $t_restricted_ms      = 0.0;
+        $t_sig_approval_ms    = 0.0;
+        $t_count_ms           = 0.0;
+        $t_update_options_ms  = 0.0;
+        $deleted_blank_upcs   = 0;
+        $marked_restricted    = 0;
+        $sig_approved_forced  = 0;
 
         try {
+            $t_truncate_start = microtime(true);
             $wpdb->query("TRUNCATE TABLE {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $t_truncate_ms = (microtime(true) - $t_truncate_start) * 1000.0;
 
             $prepared    = $wpdb->prepare($sql, $file_path);
             $t_sql_start = microtime(true);
@@ -358,11 +369,19 @@ class ZandersProductImporterService
             }
 
             // Post-clean: remove rows with empty/NULL UPC.
-            $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $t_delete_start = microtime(true);
+            $delete_result = $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $t_delete_upc_ms = (microtime(true) - $t_delete_start) * 1000.0;
+            $deleted_blank_upcs = is_numeric($delete_result) ? (int) $delete_result : 0;
 
             // Drop-ship restricted: keep rows, flag as non-dropship.
+            $t_restricted_start = microtime(true);
             $marked_restricted = $this->mark_restricted_manufacturers_in_table($table_name);
-            $sig_approved_forced = SigDropshipApproval::apply_to_table('zanders', $table_name);
+            $t_restricted_ms = (microtime(true) - $t_restricted_start) * 1000.0;
+
+            $t_sig_approval_start = microtime(true);
+            $sig_approved_forced = $this->apply_sig_approval_to_non_sot_rows($table_name);
+            $t_sig_approval_ms = (microtime(true) - $t_sig_approval_start) * 1000.0;
 
             $this->log_debug(
                 sprintf(
@@ -376,14 +395,33 @@ class ZandersProductImporterService
             return -1;
         }
 
+        $t_count_start = microtime(true);
         $rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $t_count_ms = (microtime(true) - $t_count_start) * 1000.0;
 
         if ($rows > 0) {
+            $t_update_options_start = microtime(true);
             update_option('fflhub_zanders_fulfillment_last_import', current_time('mysql'), false);
             update_option('fflhub_zanders_fulfillment_last_import_count', $rows, false);
+            $t_update_options_ms = (microtime(true) - $t_update_options_start) * 1000.0;
         }
 
         $t_total_ms = (microtime(true) - $t_start) * 1000.0;
+
+        DebugLogUtil::log_ctx('FFLHUB_CRON_DEBUG', '[FFLHub][ZandersImporter]', 'PROFILE: import_fulfillment_file_via_load_data steps', [
+            'truncate_ms' => number_format($t_truncate_ms, 2, '.', ''),
+            'load_data_sql_ms' => number_format($t_sql_ms, 2, '.', ''),
+            'delete_blank_upc_ms' => number_format($t_delete_upc_ms, 2, '.', ''),
+            'delete_blank_upc_rows' => $deleted_blank_upcs,
+            'restricted_ms' => number_format($t_restricted_ms, 2, '.', ''),
+            'restricted_rows' => $marked_restricted,
+            'sig_approval_ms' => number_format($t_sig_approval_ms, 2, '.', ''),
+            'sig_approval_rows' => $sig_approved_forced,
+            'count_rows_ms' => number_format($t_count_ms, 2, '.', ''),
+            'update_options_ms' => number_format($t_update_options_ms, 2, '.', ''),
+            'total_ms' => number_format($t_total_ms, 2, '.', ''),
+            'rows' => $rows,
+        ]);
 
         $this->log_debug(
             sprintf(
@@ -647,6 +685,50 @@ class ZandersProductImporterService
         ]);
 
         return $total_rows;
+    }
+
+    /**
+     * Zanders SIG approval can re-enable drop ship only for non-SOT rows.
+     *
+     * Restricted manufacturer marking runs first and blocks all SIG rows. This pass
+     * intentionally restores only ordinary SIG rows, leaving NFA/SOT items blocked.
+     */
+    private function apply_sig_approval_to_non_sot_rows(string $table_name): int
+    {
+        global $wpdb;
+
+        if (!SigDropshipApproval::is_distributor_sig_approved('zanders')) {
+            return 0;
+        }
+
+        $quoted_table = $this->quote_zanders_product_table($table_name);
+        if ($quoted_table === '') {
+            $this->log_debug('[FFLHub][Zanders Import][SIG] invalid product table: ' . $table_name);
+            return 0;
+        }
+
+        $manufacturer = ZandersManufacturerNormalizer::sql_expression('manufacturer');
+        $sql = "
+            UPDATE {$quoted_table}
+            SET
+                dropship_enabled = '1',
+                dropship_block_reason = ''
+            WHERE COALESCE(sot_required, 0) = 0
+              AND (
+                    {$manufacturer} = 'SIG'
+                 OR {$manufacturer} = 'SIGSAUER'
+                 OR {$manufacturer} = 'SIGARMS'
+                 OR {$manufacturer} LIKE 'SIGSAUER%'
+                 OR {$manufacturer} LIKE 'SIGARMS%'
+              )
+        ";
+
+        $result = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($result === false) {
+            throw new \RuntimeException('Zanders SIG approval update failed: ' . (string) $wpdb->last_error);
+        }
+
+        return is_numeric($result) ? (int) $result : 0;
     }
 
     /**
