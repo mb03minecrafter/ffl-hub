@@ -346,12 +346,10 @@ class ZandersProductImporterService
         $t_sql_ms             = 0.0;
         $t_delete_upc_ms      = 0.0;
         $t_restricted_ms      = 0.0;
-        $t_sig_approval_ms    = 0.0;
         $t_count_ms           = 0.0;
         $t_update_options_ms  = 0.0;
         $deleted_blank_upcs   = 0;
         $marked_restricted    = 0;
-        $sig_approved_forced  = 0;
 
         try {
             $t_truncate_start = microtime(true);
@@ -370,7 +368,7 @@ class ZandersProductImporterService
 
             // Post-clean: remove rows with empty/NULL UPC.
             $t_delete_start = microtime(true);
-            $delete_result = $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $delete_result = $wpdb->query("DELETE FROM {$table_name} WHERE upc IN ('', 'null', 'NULL', 'Null')"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $t_delete_upc_ms = (microtime(true) - $t_delete_start) * 1000.0;
             $deleted_blank_upcs = is_numeric($delete_result) ? (int) $delete_result : 0;
 
@@ -379,15 +377,10 @@ class ZandersProductImporterService
             $marked_restricted = $this->mark_restricted_manufacturers_in_table($table_name);
             $t_restricted_ms = (microtime(true) - $t_restricted_start) * 1000.0;
 
-            $t_sig_approval_start = microtime(true);
-            $sig_approved_forced = $this->apply_sig_approval_to_non_sot_rows($table_name);
-            $t_sig_approval_ms = (microtime(true) - $t_sig_approval_start) * 1000.0;
-
             $this->log_debug(
                 sprintf(
-                    '[FFLHub][Zanders Import][LOAD DATA] marked_restricted_manufacturers=%d, sig_approved_forced=%d',
-                    $marked_restricted,
-                    $sig_approved_forced
+                    '[FFLHub][Zanders Import][LOAD DATA] marked_restricted_manufacturers=%d, sig_approval=folded_into_restricted_update',
+                    $marked_restricted
                 )
             );
         } catch (\Throwable $e) {
@@ -415,8 +408,9 @@ class ZandersProductImporterService
             'delete_blank_upc_rows' => $deleted_blank_upcs,
             'restricted_ms' => number_format($t_restricted_ms, 2, '.', ''),
             'restricted_rows' => $marked_restricted,
-            'sig_approval_ms' => number_format($t_sig_approval_ms, 2, '.', ''),
-            'sig_approval_rows' => $sig_approved_forced,
+            'sig_approval_ms' => '0.00',
+            'sig_approval_rows' => 0,
+            'sig_approval_mode' => 'folded_into_restricted_update',
             'count_rows_ms' => number_format($t_count_ms, 2, '.', ''),
             'update_options_ms' => number_format($t_update_options_ms, 2, '.', ''),
             'total_ms' => number_format($t_total_ms, 2, '.', ''),
@@ -594,7 +588,7 @@ class ZandersProductImporterService
         $flush_batch();
 
         // Post-clean: remove rows with empty/NULL UPC (match LOAD DATA post-clean)
-        $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query("DELETE FROM {$table_name} WHERE upc IN ('', 'null', 'NULL', 'Null')"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         if ($total_import > 0) {
             update_option('fflhub_zanders_fulfillment_last_import', current_time('mysql'), false);
@@ -642,12 +636,14 @@ class ZandersProductImporterService
 
         $alias_table = self::quote_identifier($this->get_restricted_alias_table_name());
         $total_start = microtime(true);
+        $additional_where = $this->sig_approved_non_sot_exclusion_where_sql();
 
         $exact = $this->run_restricted_alias_update(
             $quoted_table,
             $alias_table,
             'exact',
-            'r.alias_norm = s.manufacturer_norm'
+            'r.alias_norm = s.manufacturer_norm',
+            $additional_where
         );
 
         $prefix = ['rows' => 0, 'elapsed_ms' => 0.0];
@@ -656,7 +652,8 @@ class ZandersProductImporterService
                 $quoted_table,
                 $alias_table,
                 'prefix',
-                "s.manufacturer_norm LIKE CONCAT(r.alias_norm, '%')"
+                "s.manufacturer_norm LIKE CONCAT(r.alias_norm, '%')",
+                $additional_where
             );
         }
 
@@ -666,7 +663,8 @@ class ZandersProductImporterService
                 $quoted_table,
                 $alias_table,
                 'contains',
-                'LOCATE(r.alias_norm, s.manufacturer_norm) > 0 AND CHAR_LENGTH(r.alias_norm) >= 5'
+                'LOCATE(r.alias_norm, s.manufacturer_norm) > 0 AND CHAR_LENGTH(r.alias_norm) >= 5',
+                $additional_where
             );
         }
 
@@ -688,53 +686,34 @@ class ZandersProductImporterService
     }
 
     /**
-     * Zanders SIG approval can re-enable drop ship only for non-SOT rows.
-     *
-     * Restricted manufacturer marking runs first and blocks all SIG rows. This pass
-     * intentionally restores only ordinary SIG rows, leaving NFA/SOT items blocked.
+     * Additional restricted-update guard for Zanders' SIG approval.
+     * Approved non-SOT SIG rows are never marked restricted, so we avoid a second
+     * update pass while keeping NFA/SOT SIG rows blocked.
      */
-    private function apply_sig_approval_to_non_sot_rows(string $table_name): int
+    private function sig_approved_non_sot_exclusion_where_sql(): string
     {
-        global $wpdb;
-
         if (!SigDropshipApproval::is_distributor_sig_approved('zanders')) {
-            return 0;
+            return '';
         }
 
-        $quoted_table = $this->quote_zanders_product_table($table_name);
-        if ($quoted_table === '') {
-            $this->log_debug('[FFLHub][Zanders Import][SIG] invalid product table: ' . $table_name);
-            return 0;
-        }
-
-        $manufacturer = ZandersManufacturerNormalizer::sql_expression('manufacturer');
-        $sql = "
-            UPDATE {$quoted_table}
-            SET
-                dropship_enabled = '1',
-                dropship_block_reason = ''
-            WHERE COALESCE(sot_required, 0) = 0
-              AND (
-                    {$manufacturer} = 'SIG'
-                 OR {$manufacturer} = 'SIGSAUER'
-                 OR {$manufacturer} = 'SIGARMS'
-                 OR {$manufacturer} LIKE 'SIGSAUER%'
-                 OR {$manufacturer} LIKE 'SIGARMS%'
-              )
+        return "
+            AND NOT (
+                COALESCE(s.sot_required, 0) = 0
+                AND (
+                       s.manufacturer_norm = 'SIG'
+                    OR s.manufacturer_norm = 'SIGSAUER'
+                    OR s.manufacturer_norm = 'SIGARMS'
+                    OR s.manufacturer_norm LIKE 'SIGSAUER%'
+                    OR s.manufacturer_norm LIKE 'SIGARMS%'
+                )
+            )
         ";
-
-        $result = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        if ($result === false) {
-            throw new \RuntimeException('Zanders SIG approval update failed: ' . (string) $wpdb->last_error);
-        }
-
-        return is_numeric($result) ? (int) $result : 0;
     }
 
     /**
      * @return array{rows:int,elapsed_ms:float}
      */
-    private function run_restricted_alias_update(string $quoted_table, string $quoted_alias_table, string $match_type, string $join_condition): array
+    private function run_restricted_alias_update(string $quoted_table, string $quoted_alias_table, string $match_type, string $join_condition, string $additional_where = ''): array
     {
         global $wpdb;
 
@@ -753,6 +732,7 @@ class ZandersProductImporterService
                     s.dropship_block_reason = 'restricted_manufacturer'
                 WHERE s.manufacturer_norm <> ''
                   AND s.dropship_enabled <> 0
+                  {$additional_where}
             ",
             'zanders',
             $match_type
