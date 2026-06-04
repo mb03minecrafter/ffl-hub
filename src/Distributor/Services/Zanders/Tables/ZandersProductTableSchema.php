@@ -62,6 +62,7 @@ class ZandersProductTableSchema implements ProductSchemaInterface
             'product_description' => 'TEXT NULL',        // desc1 + desc2 combined
             'item_type'           => 'VARCHAR(128) NULL',// map from category (or keep separate)
             'manufacturer'        => 'VARCHAR(255) NULL',
+            'manufacturer_norm'   => 'VARCHAR(191) NOT NULL DEFAULT \'\'',
             'mfg_model_number'    => 'VARCHAR(128) NULL',
 
             // Logistics (normalized)
@@ -91,6 +92,7 @@ class ZandersProductTableSchema implements ProductSchemaInterface
             'PRIMARY KEY (upc)',
             'KEY zanders_item_number (zanders_item_number)',
             'KEY manufacturer (manufacturer)',
+            'KEY manufacturer_norm (manufacturer_norm)',
             'KEY mfg_model_number (mfg_model_number)',
             'KEY ffl_required (ffl_required)',
             'KEY sot_required (sot_required)',

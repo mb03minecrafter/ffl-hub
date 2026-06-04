@@ -57,6 +57,10 @@ class ZandersProductImporterService
     /** @var DoubleBufferedProductTable */
     private $table;
 
+    private const RESTRICTED_ALIAS_TABLE = 'fflhub_restricted_manufacturer_aliases';
+
+    private static bool $restrictedAliasTableReady = false;
+
     /**
      * Zanders "restricted drop ship" manufacturers / brands (as provided).
      *
@@ -248,6 +252,8 @@ class ZandersProductImporterService
          *
          * This keeps a complete product catalog while preserving fulfillment constraints.
          */
+        $manufacturer_norm_expr = ZandersManufacturerNormalizer::sql_expression('@c5');
+
         $sql = "
             LOAD DATA LOCAL INFILE %s
             INTO TABLE {$table_name}
@@ -286,6 +292,7 @@ class ZandersProductImporterService
 
                 zanders_item_number  = TRIM(BOTH '\\r' FROM @c4),
                 manufacturer         = TRIM(BOTH '\\r' FROM @c5),
+                manufacturer_norm    = {$manufacturer_norm_expr},
                 mfg_model_number     = TRIM(BOTH '\\r' FROM @c6),
 
                 retail_msrp          = TRIM(BOTH '\\r' FROM @c7),
@@ -587,54 +594,254 @@ class ZandersProductImporterService
     {
         global $wpdb;
 
-        // Build (manufacturer IS NOT NULL AND (normalized match OR token match...)) as OR clauses.
-        // We avoid regex here for portability; this is fast enough and happens once per import.
-        $restricted = self::RESTRICTED_DROP_SHIP_MANUFACTURERS;
-
-        $clauses = [];
-        foreach ($restricted as $raw) {
-            $raw = (string) $raw;
-            $raw_norm = $this->normalize_mfr_key($raw);
-
-            // Skip empty just in case
-            if ($raw_norm === '') {
-                continue;
-            }
-
-            // Exact normalized match OR "contains" match.
-            // We normalize manufacturer in SQL by stripping common punctuation/spaces.
-            $clauses[] = sprintf(
-                "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(manufacturer)),' ',''),'&',''),'/',''),'-',''),'.','') = '%s'
-                 OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(manufacturer)),' ',''),'&',''),'/',''),'-',''),'.','') LIKE '%%%s%%'",
-                esc_sql($raw_norm),
-                esc_sql($raw_norm)
-            );
-
-            // Also handle some common synonyms in the restricted list that won't normalize well
-            // (e.g., "S&W" vs "SMITHWESSON", "HK" vs "HECKLERKOCH").
-            foreach ($this->restricted_alias_norms($raw_norm) as $alias_norm) {
-                if ($alias_norm === '') {
-                    continue;
-                }
-                $clauses[] = sprintf(
-                    "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(manufacturer)),' ',''),'&',''),'/',''),'-',''),'.','') = '%s'
-                     OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(manufacturer)),' ',''),'&',''),'/',''),'-',''),'.','') LIKE '%%%s%%'",
-                    esc_sql($alias_norm),
-                    esc_sql($alias_norm)
-                );
-            }
-        }
-
-        if (empty($clauses)) {
+        $quoted_table = $this->quote_zanders_product_table($table_name);
+        if ($quoted_table === '') {
+            $this->log_debug('[FFLHub][Zanders Import][Restricted] invalid product table: ' . $table_name);
             return 0;
         }
 
-        $where = '(' . implode(' OR ', $clauses) . ')';
+        $this->ensure_restricted_aliases_ready();
 
-        $sql = "UPDATE {$table_name} SET dropship_enabled = '0', dropship_block_reason = 'restricted_manufacturer' WHERE manufacturer IS NOT NULL AND TRIM(manufacturer) <> '' AND ({$where})";
-        $res = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $alias_table = self::quote_identifier($this->get_restricted_alias_table_name());
+        $total_start = microtime(true);
 
-        return is_numeric($res) ? (int) $res : 0;
+        $exact = $this->run_restricted_alias_update(
+            $quoted_table,
+            $alias_table,
+            'exact',
+            'r.alias_norm = s.manufacturer_norm'
+        );
+
+        $prefix = ['rows' => 0, 'elapsed_ms' => 0.0];
+        if ($this->has_active_restricted_alias_type('prefix')) {
+            $prefix = $this->run_restricted_alias_update(
+                $quoted_table,
+                $alias_table,
+                'prefix',
+                "s.manufacturer_norm LIKE CONCAT(r.alias_norm, '%')"
+            );
+        }
+
+        $contains = ['rows' => 0, 'elapsed_ms' => 0.0];
+        if ($this->has_active_restricted_alias_type('contains')) {
+            $contains = $this->run_restricted_alias_update(
+                $quoted_table,
+                $alias_table,
+                'contains',
+                'LOCATE(r.alias_norm, s.manufacturer_norm) > 0 AND CHAR_LENGTH(r.alias_norm) >= 5'
+            );
+        }
+
+        $total_rows = (int) $exact['rows'] + (int) $prefix['rows'] + (int) $contains['rows'];
+        $total_ms = (microtime(true) - $total_start) * 1000.0;
+
+        DebugLogUtil::log_ctx('FFLHUB_CRON_DEBUG', '[FFLHub][ZandersImporter]', 'PROFILE: mark_restricted_manufacturers_in_table()', [
+            'exact_rows' => (int) $exact['rows'],
+            'exact_ms' => number_format((float) $exact['elapsed_ms'], 2, '.', ''),
+            'prefix_rows' => (int) $prefix['rows'],
+            'prefix_ms' => number_format((float) $prefix['elapsed_ms'], 2, '.', ''),
+            'contains_rows' => (int) $contains['rows'],
+            'contains_ms' => number_format((float) $contains['elapsed_ms'], 2, '.', ''),
+            'total_rows' => $total_rows,
+            'total_ms' => number_format($total_ms, 2, '.', ''),
+        ]);
+
+        return $total_rows;
+    }
+
+    /**
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    private function run_restricted_alias_update(string $quoted_table, string $quoted_alias_table, string $match_type, string $join_condition): array
+    {
+        global $wpdb;
+
+        $t0 = microtime(true);
+
+        $sql = $wpdb->prepare(
+            "
+                UPDATE {$quoted_table} s
+                INNER JOIN {$quoted_alias_table} r
+                    ON r.distributor = %s
+                   AND r.active = 1
+                   AND r.match_type = %s
+                   AND {$join_condition}
+                SET
+                    s.dropship_enabled = 0,
+                    s.dropship_block_reason = 'restricted_manufacturer'
+                WHERE s.manufacturer_norm <> ''
+                  AND s.dropship_enabled <> 0
+            ",
+            'zanders',
+            $match_type
+        );
+
+        $result = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($result === false) {
+            throw new \RuntimeException('Restricted manufacturer update failed: ' . (string) $wpdb->last_error);
+        }
+
+        return [
+            'rows' => is_numeric($result) ? (int) $result : 0,
+            'elapsed_ms' => (microtime(true) - $t0) * 1000.0,
+        ];
+    }
+
+    private function has_active_restricted_alias_type(string $match_type): bool
+    {
+        global $wpdb;
+
+        $alias_table = self::quote_identifier($this->get_restricted_alias_table_name());
+        $count = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*) FROM {$alias_table} WHERE distributor = %s AND active = 1 AND match_type = %s",
+                'zanders',
+                $match_type
+            )
+        );
+
+        return $count > 0;
+    }
+
+    private function ensure_restricted_aliases_ready(): void
+    {
+        if (self::$restrictedAliasTableReady) {
+            return;
+        }
+
+        $this->ensure_restricted_alias_table();
+        $this->seed_restricted_aliases();
+
+        self::$restrictedAliasTableReady = true;
+    }
+
+    private function ensure_restricted_alias_table(): void
+    {
+        global $wpdb;
+
+        $table = $this->get_restricted_alias_table_name();
+        $charset = $wpdb->get_charset_collate();
+
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+        dbDelta(
+            "CREATE TABLE {$table} (
+id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+distributor VARCHAR(32) NOT NULL DEFAULT 'zanders',
+canonical_manufacturer VARCHAR(191) NOT NULL,
+alias_label VARCHAR(191) NOT NULL,
+alias_norm VARCHAR(191) NOT NULL,
+match_type VARCHAR(16) NOT NULL DEFAULT 'exact',
+active TINYINT(1) NOT NULL DEFAULT 1,
+PRIMARY KEY  (id),
+UNIQUE KEY uq_restricted_alias (distributor, alias_norm, match_type),
+KEY idx_restricted_lookup (distributor, active, match_type, alias_norm)
+) {$charset};"
+        );
+    }
+
+    private function seed_restricted_aliases(): void
+    {
+        global $wpdb;
+
+        $table = self::quote_identifier($this->get_restricted_alias_table_name());
+
+        foreach ($this->restricted_alias_seed_rows() as $row) {
+            $alias_norm = ZandersManufacturerNormalizer::normalize($row['alias_label']);
+            if ($alias_norm === '') {
+                continue;
+            }
+
+            $sql = $wpdb->prepare(
+                "
+                    INSERT INTO {$table}
+                        (distributor, canonical_manufacturer, alias_label, alias_norm, match_type, active)
+                    VALUES
+                        (%s, %s, %s, %s, %s, 1)
+                    ON DUPLICATE KEY UPDATE
+                        canonical_manufacturer = VALUES(canonical_manufacturer),
+                        alias_label = VALUES(alias_label),
+                        active = VALUES(active)
+                ",
+                'zanders',
+                $row['canonical_manufacturer'],
+                $row['alias_label'],
+                $alias_norm,
+                $row['match_type']
+            );
+
+            $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
+    }
+
+    /**
+     * @return array<int,array{canonical_manufacturer:string,alias_label:string,match_type:string}>
+     */
+    private function restricted_alias_seed_rows(): array
+    {
+        $rows = [];
+
+        foreach (self::RESTRICTED_DROP_SHIP_MANUFACTURERS as $manufacturer) {
+            $manufacturer = (string) $manufacturer;
+            $rows[] = [
+                'canonical_manufacturer' => $manufacturer,
+                'alias_label' => $manufacturer,
+                'match_type' => 'exact',
+            ];
+        }
+
+        $aliases = [
+            'S&W FIREARMS' => ['SMITH WESSON', 'SMITH AND WESSON'],
+            'HK/HECKLER & KOCH FIREARMS' => ['HK', 'HECKLER KOCH', 'HECKLER AND KOCH'],
+            'COLT/CZ' => ['COLT', 'CZ', 'CZ USA'],
+            'COLUMBIA RIVER KNIFE & TOOL/CRKT' => ['CRKT', 'COLUMBIA RIVER'],
+            'BERETTA FIREARMS' => ['BERETTA'],
+            'RUGER FIREARMS' => ['RUGER'],
+            'SPRINGFIELD FIREARMS' => ['SPRINGFIELD', 'SPRINGFIELD ARMORY'],
+            'SIG SAUER' => ['SIG'],
+            'UMAREX (RWS, AXEON)' => ['UMAREX', 'RWS', 'AXEON'],
+            'TIMNEY TRIGGERS' => ['TIMNEY'],
+            'LONGSHOT' => ['LONGSHOT TARGET CAMERA'],
+        ];
+
+        foreach ($aliases as $canonical => $labels) {
+            foreach ($labels as $label) {
+                $rows[] = [
+                    'canonical_manufacturer' => (string) $canonical,
+                    'alias_label' => (string) $label,
+                    'match_type' => 'exact',
+                ];
+            }
+        }
+
+        return $rows;
+    }
+
+    private function get_restricted_alias_table_name(): string
+    {
+        global $wpdb;
+
+        return $wpdb->prefix . self::RESTRICTED_ALIAS_TABLE;
+    }
+
+    private function quote_zanders_product_table(string $table_name): string
+    {
+        $table_name = trim($table_name);
+        $valid = [
+            $this->table->get_table_name_with_suffix('v1'),
+            $this->table->get_table_name_with_suffix('v2'),
+        ];
+
+        if (!in_array($table_name, $valid, true)) {
+            return '';
+        }
+
+        return self::quote_identifier($table_name);
+    }
+
+    private static function quote_identifier(string $identifier): string
+    {
+        return '`' . str_replace('`', '``', $identifier) . '`';
     }
 
     /**
@@ -685,15 +892,7 @@ class ZandersProductImporterService
      */
     private function normalize_mfr_key(string $v): string
     {
-        $v = strtoupper(trim($v));
-        $v = preg_replace('/^\xEF\xBB\xBF/', '', $v);
-        $v = str_replace([' ', "\t", "\r", "\n"], '', $v);
-        $v = str_replace(['&', '/', '-', '.', ',', '\'', '"'], '', $v);
-
-        // Also strip parentheses content markers without trying to parse them
-        $v = str_replace(['(', ')'], '', $v);
-
-        return (string) $v;
+        return ZandersManufacturerNormalizer::normalize($v);
     }
 
     /**

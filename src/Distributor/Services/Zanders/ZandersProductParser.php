@@ -80,6 +80,7 @@ class ZandersProductParser
             'product_description' => $this->combine_desc($desc1, $desc2),
             'item_type'           => $category,
             'manufacturer'        => $manufacturer,
+            'manufacturer_norm'   => ZandersManufacturerNormalizer::normalize($manufacturer),
             'mfg_model_number'    => $this->get($csv, $header_map, 'mfgpnumber'),
 
             'shipping_weight' => $this->pounds_to_ounces_or_null($this->get($csv, $header_map, 'weight')),

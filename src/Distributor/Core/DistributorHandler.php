@@ -103,7 +103,7 @@ class DistributorHandler
     private const DEBUG_CONST = 'FFLHUB_DEBUG_BOOT';
     private const LOG_PREFIX  = '[DistributorHandler]';
     private const PRODUCT_TABLE_SCHEMA_OPTION = 'fflhub_distributor_product_tables_schema_version';
-    private const PRODUCT_TABLE_SCHEMA_VERSION = 'shipping_cost_v1';
+    private const PRODUCT_TABLE_SCHEMA_VERSION = 'zanders_manufacturer_norm_v1';
 
     public function __construct(FFLTable $ffl_table)
     {
