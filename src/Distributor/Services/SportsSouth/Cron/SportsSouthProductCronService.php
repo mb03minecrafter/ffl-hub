@@ -10,6 +10,7 @@ use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductImporterService;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductParser;
+use FFLHub\Distributor\Services\SportsSouth\SportsSouthReferenceMapCache;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -92,8 +93,37 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         ]);
 
         $parser = new SportsSouthProductParser();
-        $brand_map = $this->download_brand_map($client, $parser);
-        $category_map = $this->download_category_map($client, $parser);
+        $reference_cache = new SportsSouthReferenceMapCache();
+        $t_maps = microtime(true);
+        $map_result = $reference_cache->get_maps(
+            $client,
+            $parser,
+            $this->uploads_subdir(),
+            $this->force_reference_refresh_enabled()
+        );
+        $this->remember_artifact_paths(...$map_result['artifacts']);
+        $this->profile('Sports South reference maps ready', $t_maps, [
+            'ok' => empty($map_result['ok']) ? 0 : 1,
+            'refreshed' => (int) ($map_result['refreshed'] ?? 0),
+            'stale_cache_used' => (int) ($map_result['stale_cache_used'] ?? 0),
+            'force_refresh' => (int) ($map_result['force_refresh'] ?? 0),
+            'brand_count' => (int) ($map_result['brand_count'] ?? 0),
+            'category_count' => (int) ($map_result['category_count'] ?? 0),
+            'error' => (string) ($map_result['error'] ?? ''),
+        ]);
+
+        if (empty($map_result['ok'])) {
+            update_option('fflhub_sports_south_fulfillment_last_stage', 'reference_maps_failed', false);
+            update_option('fflhub_sports_south_fulfillment_last_error', current_time('mysql'), false);
+            $this->log('Sports South reference maps unavailable; product import skipped.', [
+                'error' => (string) ($map_result['error'] ?? ''),
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (reference maps failed)');
+            return;
+        }
+
+        $brand_map = $map_result['brand_map'];
+        $category_map = $map_result['category_map'];
 
         update_option('fflhub_sports_south_fulfillment_last_stage', 'download_xml', false);
         $xml_path = $this->build_xml_file_path('daily_item_update');
@@ -251,6 +281,12 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         ]);
 
         return $brand_map;
+    }
+
+    private function force_reference_refresh_enabled(): bool
+    {
+        return defined('FFLHUB_SPORTS_SOUTH_FORCE_REFERENCE_REFRESH')
+            && (bool) constant('FFLHUB_SPORTS_SOUTH_FORCE_REFERENCE_REFRESH');
     }
 
     /**
