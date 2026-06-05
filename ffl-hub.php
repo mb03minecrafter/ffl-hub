@@ -169,6 +169,7 @@ if (defined('WP_CLI')) {
     \WP_CLI::add_command('fflhub seed-orders', \FFLHub\CLI\SeedOrdersCommand::class);
     \WP_CLI::add_command('fflhub stress-create-products', \FFLHub\CLI\StressCreateProductsCommand::class);
     \WP_CLI::add_command('fflhub quote-email-blast', \FFLHub\CLI\QuoteEmailBlastCommand::class);
+    \WP_CLI::add_command('fflhub rescue-authnet-order', \FFLHub\CLI\RescueAuthorizeNetOrderCommand::class);
 }
 
 /**

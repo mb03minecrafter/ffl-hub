@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Admin\Orders\OrderPlacementMetaBox;
+use FFLHub\Admin\Orders\AuthorizeNetOrderRescueButton;
 use FFLHub\Admin\Orders\OrderFulfillmentModeBadge;
 use FFLHub\Admin\Orders\OrderCartComplianceMetaBox;
 use FFLHub\Admin\Orders\OrderProfitAuditMetaBox;
@@ -106,6 +107,7 @@ final class Plugin
     public GunDealsPerformancePage $gundeals_performance_page;
     public UpcStockAlertsPage $upc_stock_alerts_page;
     public OrderPlacementMetaBox $order_placement_metabox;
+    public AuthorizeNetOrderRescueButton $authnet_order_rescue_button;
     public OrderCartComplianceMetaBox $order_cart_compliance_metabox;
     public OrderProfitAuditMetaBox $order_profit_audit_metabox;
     public OrderFulfillmentModeBadge $order_fulfillment_mode_badge;
@@ -239,6 +241,9 @@ final class Plugin
 
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();
+
+            $this->authnet_order_rescue_button = new AuthorizeNetOrderRescueButton();
+            $this->authnet_order_rescue_button->register();
 
             $this->order_cart_compliance_metabox = new OrderCartComplianceMetaBox();
             $this->order_cart_compliance_metabox->register();
