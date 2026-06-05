@@ -18,6 +18,7 @@ final class SportsSouthProductImporterService
 {
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][SportsSouthImporter]';
+    private const DEEP_PROFILE_FLAG = 'FFLHUB_SPORTS_SOUTH_PRODUCT_DEEP_PROFILE';
     private const INVENTORY_STAGE_TABLE_SUFFIX = 'fflhub_sports_south_onhand_stage';
 
     private DoubleBufferedProductTable $table;
@@ -263,46 +264,124 @@ final class SportsSouthProductImporterService
         $fulfillment_policy_blocks = 0;
         $accessories_only_enabled = SportsSouthAccessoriesOnlyPolicy::is_enabled();
         $accessories_only_skipped = 0;
+        $rows_before_accessories_skip = 0;
+        $rows_with_blank_upc_after_parse = 0;
         $seen = [];
+        $deep_profile = $this->deep_profile_enabled();
+        $detail_ms = [
+            'parser_callback_ms' => 0.0,
+            'brand_map_ms' => 0.0,
+            'category_map_ms' => 0.0,
+            'fulfillment_policy_ms' => 0.0,
+            'sig_policy_ms' => 0.0,
+            'accessories_skip_check_ms' => 0.0,
+            'values_array_build_ms' => 0.0,
+            'fputcsv_ms' => 0.0,
+        ];
 
-        $this->parser->each_catalog_row($xmlFilePath, function (array $row) use ($handle, $columns, &$rows_written, &$skipped_dupes, &$brand_hits, &$category_hits, &$fulfillment_policy_blocks, $accessories_only_enabled, &$accessories_only_skipped, &$seen, $brandMap, $categoryMap): void {
-            $upc = trim((string) ($row['upc'] ?? ''));
-            if ($upc === '') {
-                return;
-            }
-            if (isset($seen[$upc])) {
-                $skipped_dupes++;
-                return;
-            }
-            $seen[$upc] = true;
+        $t_parse = microtime(true);
+        $xml_rows_seen = $this->parser->each_catalog_row($xmlFilePath, function (array $row) use ($handle, $columns, &$rows_written, &$skipped_dupes, &$brand_hits, &$category_hits, &$fulfillment_policy_blocks, $accessories_only_enabled, &$accessories_only_skipped, &$rows_before_accessories_skip, &$rows_with_blank_upc_after_parse, &$seen, $brandMap, $categoryMap, $deep_profile, &$detail_ms): void {
+            $t_callback = $deep_profile ? microtime(true) : 0.0;
 
-            $row = $this->apply_brand_map($row, $brandMap, $brand_hits);
-            $row = $this->apply_category_map($row, $categoryMap, $category_hits);
-            $row = SportsSouthFulfillmentPolicy::apply_to_row($row);
-            $row = SigDropshipApproval::apply_to_row('sports_south', $row);
-            if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
-                $fulfillment_policy_blocks++;
-            }
-            if ($accessories_only_enabled && SportsSouthAccessoriesOnlyPolicy::row_is_ffl_or_sot($row)) {
-                $accessories_only_skipped++;
-                return;
-            }
+            try {
+                $upc = trim((string) ($row['upc'] ?? ''));
+                if ($upc === '') {
+                    $rows_with_blank_upc_after_parse++;
+                    return;
+                }
+                if (isset($seen[$upc])) {
+                    $skipped_dupes++;
+                    return;
+                }
+                $seen[$upc] = true;
 
-            $values = [];
-            foreach ($columns as $column) {
-                $values[] = array_key_exists($column, $row) ? (string) $row[$column] : '';
+                if ($deep_profile) {
+                    $t = microtime(true);
+                }
+                $row = $this->apply_brand_map($row, $brandMap, $brand_hits);
+                if ($deep_profile) {
+                    $detail_ms['brand_map_ms'] += (microtime(true) - $t) * 1000.0;
+                    $t = microtime(true);
+                }
+
+                $row = $this->apply_category_map($row, $categoryMap, $category_hits);
+                if ($deep_profile) {
+                    $detail_ms['category_map_ms'] += (microtime(true) - $t) * 1000.0;
+                    $t = microtime(true);
+                }
+
+                $row = SportsSouthFulfillmentPolicy::apply_to_row($row);
+                if ($deep_profile) {
+                    $detail_ms['fulfillment_policy_ms'] += (microtime(true) - $t) * 1000.0;
+                    $t = microtime(true);
+                }
+
+                $row = SigDropshipApproval::apply_to_row('sports_south', $row);
+                if ($deep_profile) {
+                    $detail_ms['sig_policy_ms'] += (microtime(true) - $t) * 1000.0;
+                }
+
+                if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
+                    $fulfillment_policy_blocks++;
+                }
+
+                $rows_before_accessories_skip++;
+                if ($deep_profile) {
+                    $t = microtime(true);
+                }
+                $skip_accessories_only = $accessories_only_enabled && SportsSouthAccessoriesOnlyPolicy::row_is_ffl_or_sot($row);
+                if ($deep_profile) {
+                    $detail_ms['accessories_skip_check_ms'] += (microtime(true) - $t) * 1000.0;
+                }
+                if ($skip_accessories_only) {
+                    $accessories_only_skipped++;
+                    return;
+                }
+
+                if ($deep_profile) {
+                    $t = microtime(true);
+                }
+                $values = [];
+                foreach ($columns as $column) {
+                    $values[] = array_key_exists($column, $row) ? (string) $row[$column] : '';
+                }
+                if ($deep_profile) {
+                    $detail_ms['values_array_build_ms'] += (microtime(true) - $t) * 1000.0;
+                    $t = microtime(true);
+                }
+
+                fputcsv($handle, $values, "\t", '"', '\\');
+                if ($deep_profile) {
+                    $detail_ms['fputcsv_ms'] += (microtime(true) - $t) * 1000.0;
+                }
+                $rows_written++;
+            } finally {
+                if ($deep_profile) {
+                    $detail_ms['parser_callback_ms'] += (microtime(true) - $t_callback) * 1000.0;
+                }
             }
-            fputcsv($handle, $values, "\t", '"', '\\');
-            $rows_written++;
         });
+        $xml_parse_callback_ms = (microtime(true) - $t_parse) * 1000.0;
 
         fclose($handle);
         clearstatcache(true, $tsvPath);
+        $parser_stats = $this->parser->get_last_catalog_stats();
+        $detail_profile = [];
+        if ($deep_profile) {
+            foreach ($detail_ms as $key => $ms) {
+                $detail_profile[$key] = $this->format_ms($ms);
+            }
+        }
 
-        return [
+        $stats = [
             'xml_path' => $xmlFilePath,
             'tsv_path' => $tsvPath,
             'tsv_bytes' => file_exists($tsvPath) ? (int) filesize($tsvPath) : 0,
+            'xml_rows_seen' => (int) $xml_rows_seen,
+            'catalog_rows_parsed' => (int) ($parser_stats['catalog_rows_parsed'] ?? 0),
+            'rows_with_blank_upc' => (int) ($parser_stats['rows_with_blank_upc'] ?? 0) + (int) $rows_with_blank_upc_after_parse,
+            'parse_product_null' => (int) ($parser_stats['parse_product_null'] ?? 0),
+            'rows_before_accessories_skip' => (int) $rows_before_accessories_skip,
             'rows_written' => (int) $rows_written,
             'skipped_dupes' => (int) $skipped_dupes,
             'brand_map_count' => count($brandMap),
@@ -312,8 +391,16 @@ final class SportsSouthProductImporterService
             'fulfillment_policy_blocks' => (int) $fulfillment_policy_blocks,
             'accessories_only_enabled' => $accessories_only_enabled ? 1 : 0,
             'accessories_only_skipped' => (int) $accessories_only_skipped,
+            'deep_profile_enabled' => $deep_profile ? 1 : 0,
+            'xml_parse_callback_ms' => $this->format_ms($xml_parse_callback_ms),
             'write_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
         ];
+
+        if (!empty($detail_profile)) {
+            $stats['detail_profile_ms'] = $detail_profile;
+        }
+
+        return $stats;
     }
 
     /**
@@ -410,17 +497,44 @@ final class SportsSouthProductImporterService
         ";
 
         try {
+            $t_total = microtime(true);
+            $t_truncate = microtime(true);
             $this->table->truncate_staging();
+            $truncate_ms = (microtime(true) - $t_truncate) * 1000.0;
+
+            $t_load = microtime(true);
             $result = $wpdb->query($wpdb->prepare($sql, $tsvPath));
+            $load_ms = (microtime(true) - $t_load) * 1000.0;
             if ($result === false) {
                 $this->log('Sports South LOAD DATA query failed.', [
                     'error' => (string) $wpdb->last_error,
                     'tsv_path' => $tsvPath,
+                    'load_data_ms' => $this->format_ms($load_ms),
                 ]);
                 return -1;
             }
 
-            $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $t_delete = microtime(true);
+            $deleted = $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $delete_ms = (microtime(true) - $t_delete) * 1000.0;
+
+            $t_count = microtime(true);
+            $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $count_ms = (microtime(true) - $t_count) * 1000.0;
+
+            $this->log('Sports South LOAD DATA import profile.', [
+                'tsv_path' => $tsvPath,
+                'load_result' => is_numeric($result) ? (int) $result : 0,
+                'post_load_deleted' => is_numeric($deleted) ? (int) $deleted : 0,
+                'staging_count' => (int) $count,
+                'truncate_ms' => $this->format_ms($truncate_ms),
+                'load_data_ms' => $this->format_ms($load_ms),
+                'post_load_delete_ms' => $this->format_ms($delete_ms),
+                'staging_count_ms' => $this->format_ms($count_ms),
+                'elapsed_ms' => $this->format_ms((microtime(true) - $t_total) * 1000.0),
+            ]);
+
+            return $count;
         } catch (\Throwable $e) {
             $this->log('Sports South LOAD DATA exception.', [
                 'error' => $e->getMessage(),
@@ -428,8 +542,6 @@ final class SportsSouthProductImporterService
             ]);
             return -1;
         }
-
-        return (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 
     /**
@@ -716,6 +828,16 @@ final class SportsSouthProductImporterService
         }
 
         return in_array(strtolower(trim((string) $value)), ['1', 'on', 'true', 'yes'], true);
+    }
+
+    private function deep_profile_enabled(): bool
+    {
+        return defined(self::DEEP_PROFILE_FLAG) && (bool) constant(self::DEEP_PROFILE_FLAG);
+    }
+
+    private function format_ms(float $ms): string
+    {
+        return number_format($ms, 2, '.', '');
     }
 
     /**

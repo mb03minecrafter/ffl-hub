@@ -30,6 +30,11 @@ final class CSSIInventoryCronService extends AbstractTableCronService
     private const OPT_CURSOR_UTC = 'fflhub_cssi_inventory_cursor_utc';
     private const SIG_SAUER_MANUFACTURER = 'SIG SAUER';
     private const SIG_SAUER_DROPSHIP_BLOCK_REASON = 'manufacturer_policy=sig_sauer_no_dropship';
+    private const SHIPPING_FLAT_RATE = 14.95;
+    private const SHIPPING_FLAT_RATE_WEIGHT_LBS = 30.0;
+    private const SHIPPING_MINIMUM_ORDER_FEE = 7.50;
+    private const SHIPPING_MINIMUM_ORDER_THRESHOLD = 50.0;
+    private const SHIPPING_INSURANCE_PER_100 = 1.00;
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -416,6 +421,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 in_stock_flag TINYINT(1) NOT NULL DEFAULT 0,
                 allocation_status VARCHAR(64) NULL,
                 distributor_price VARCHAR(32) NULL,
+                shipping_cost VARCHAR(32) NULL,
                 retail_map VARCHAR(32) NULL,
                 retail_msrp VARCHAR(32) NULL,
                 drop_ship_price VARCHAR(32) NULL,
@@ -448,6 +454,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         if ($created === false) {
             throw new \RuntimeException('Failed to ensure CSSI stage table: ' . (string) $wpdb->last_error);
         }
+        $this->ensure_stage_shipping_cost_column($stageTable);
         $createMs = (microtime(true) - $tCreate) * 1000.0;
 
         $tTruncate = microtime(true);
@@ -478,6 +485,28 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $insertDropshipBlockReasonExpr = $sigApproved
             ? "CASE WHEN {$insertSigMatchExpr} THEN '' ELSE S.dropship_block_reason END"
             : "CASE WHEN {$insertSigMatchExpr} THEN '" . self::SIG_SAUER_DROPSHIP_BLOCK_REASON . "' ELSE S.dropship_block_reason END";
+        $stagePriceExpr = "CAST(NULLIF(S.distributor_price, '') AS DECIMAL(12,4))";
+        $effectiveWeightOzExpr = "CAST(COALESCE(NULLIF(S.shipping_weight, ''), NULLIF(L.shipping_weight, ''), '0') AS DECIMAL(12,4))";
+        $effectiveWeightLbExpr = "CASE WHEN {$effectiveWeightOzExpr} > 0 THEN {$effectiveWeightOzExpr} / 16 ELSE 1 END";
+        $shippingCostExpr = sprintf(
+            "
+            CAST(ROUND(
+                (GREATEST(1, CEIL((%s) / %F)) * %F)
+                + CASE WHEN %s > 0 THEN CEIL(%s / 100) * %F ELSE 0 END
+                + CASE WHEN %s > 0 AND %s < %F THEN %F ELSE 0 END
+            , 2) AS CHAR)
+        ",
+            $effectiveWeightLbExpr,
+            self::SHIPPING_FLAT_RATE_WEIGHT_LBS,
+            self::SHIPPING_FLAT_RATE,
+            $stagePriceExpr,
+            $stagePriceExpr,
+            self::SHIPPING_INSURANCE_PER_100,
+            $stagePriceExpr,
+            $stagePriceExpr,
+            self::SHIPPING_MINIMUM_ORDER_THRESHOLD,
+            self::SHIPPING_MINIMUM_ORDER_FEE
+        );
 
         $joinUpcSql = "
             UPDATE {$liveTable} L
@@ -488,6 +517,10 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 L.inventory_quantity = S.inventory_quantity,
                 L.in_stock_flag = S.in_stock_flag,
                 L.allocation_status = S.allocation_status,
+                L.shipping_cost = CASE
+                    WHEN S.distributor_price <> '' AND COALESCE(L.distributor_price, '') <> COALESCE(S.distributor_price, '') THEN {$shippingCostExpr}
+                    ELSE L.shipping_cost
+                END,
                 L.distributor_price = CASE WHEN S.distributor_price <> '' THEN S.distributor_price ELSE L.distributor_price END,
                 L.retail_map = CASE WHEN S.retail_map <> '' THEN S.retail_map ELSE L.retail_map END,
                 L.retail_msrp = CASE WHEN S.retail_msrp <> '' THEN S.retail_msrp ELSE L.retail_msrp END,
@@ -541,6 +574,10 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 L.inventory_quantity = S.inventory_quantity,
                 L.in_stock_flag = S.in_stock_flag,
                 L.allocation_status = S.allocation_status,
+                L.shipping_cost = CASE
+                    WHEN S.distributor_price <> '' AND COALESCE(L.distributor_price, '') <> COALESCE(S.distributor_price, '') THEN {$shippingCostExpr}
+                    ELSE L.shipping_cost
+                END,
                 L.distributor_price = CASE WHEN S.distributor_price <> '' THEN S.distributor_price ELSE L.distributor_price END,
                 L.retail_map = CASE WHEN S.retail_map <> '' THEN S.retail_map ELSE L.retail_map END,
                 L.retail_msrp = CASE WHEN S.retail_msrp <> '' THEN S.retail_msrp ELSE L.retail_msrp END,
@@ -596,6 +633,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 in_stock_flag,
                 allocation_status,
                 distributor_price,
+                shipping_cost,
                 retail_map,
                 retail_msrp,
                 drop_ship_price,
@@ -625,6 +663,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 S.in_stock_flag,
                 S.allocation_status,
                 S.distributor_price,
+                S.shipping_cost,
                 S.retail_map,
                 S.retail_msrp,
                 S.drop_ship_price,
@@ -694,6 +733,21 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         return $stats;
     }
 
+    private function ensure_stage_shipping_cost_column(string $stageTable): void
+    {
+        global $wpdb;
+
+        $column = $wpdb->get_var("SHOW COLUMNS FROM {$stageTable} LIKE 'shipping_cost'");
+        if ($column === 'shipping_cost') {
+            return;
+        }
+
+        $added = $wpdb->query("ALTER TABLE {$stageTable} ADD COLUMN shipping_cost VARCHAR(32) NULL AFTER distributor_price");
+        if ($added === false) {
+            throw new \RuntimeException('Failed to add CSSI stage shipping_cost column: ' . (string) $wpdb->last_error);
+        }
+    }
+
     /**
      * @param array<int,array<string,mixed>> $rows
      * @return array<string,int>
@@ -710,6 +764,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             'in_stock_flag',
             'allocation_status',
             'distributor_price',
+            'shipping_cost',
             'retail_map',
             'retail_msrp',
             'drop_ship_price',
@@ -823,6 +878,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $normalized['in_stock_flag'] = $this->to_int01($row['in_stock_flag'] ?? 0);
         $normalized['allocation_status'] = trim((string) ($row['allocation_status'] ?? ''));
         $normalized['distributor_price'] = trim((string) ($row['distributor_price'] ?? ''));
+        $normalized['shipping_cost'] = trim((string) ($row['shipping_cost'] ?? ''));
         $normalized['retail_map'] = trim((string) ($row['retail_map'] ?? ''));
         $normalized['retail_msrp'] = trim((string) ($row['retail_msrp'] ?? ''));
         $normalized['drop_ship_price'] = trim((string) ($row['drop_ship_price'] ?? ''));

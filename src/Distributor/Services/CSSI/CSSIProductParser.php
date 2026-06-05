@@ -15,6 +15,11 @@ class CSSIProductParser
 {
     private const SIG_SAUER_MANUFACTURER = 'SIG SAUER';
     private const SIG_SAUER_DROPSHIP_BLOCK_REASON = 'manufacturer_policy=sig_sauer_no_dropship';
+    private const SHIPPING_FLAT_RATE = 14.95;
+    private const SHIPPING_FLAT_RATE_WEIGHT_LBS = 30.0;
+    private const SHIPPING_MINIMUM_ORDER_FEE = 7.50;
+    private const SHIPPING_MINIMUM_ORDER_THRESHOLD = 50.0;
+    private const SHIPPING_INSURANCE_PER_100 = 1.00;
 
     /**
      * @param array<int,mixed> $header
@@ -104,6 +109,8 @@ class CSSIProductParser
         if ($retailMsrp === '' && $retailMap !== '') {
             $retailMsrp = $retailMap;
         }
+        $distributorPrice = $this->clean_money($this->get_csv($csv, $headerMap, ['price', 'custom_price', 'dealer_price']));
+        $shippingWeight = $this->pounds_to_ounces_or_empty($this->get_csv($csv, $headerMap, ['ship weight', 'shipping_weight', 'weight']));
 
         return [
             'upc' => $upc,
@@ -112,7 +119,8 @@ class CSSIProductParser
             'inventory_quantity' => $inventory,
             'in_stock_flag' => $inStockFlag,
             'allocation_status' => $allocationStatus,
-            'distributor_price' => $this->clean_money($this->get_csv($csv, $headerMap, ['price', 'custom_price', 'dealer_price'])),
+            'distributor_price' => $distributorPrice,
+            'shipping_cost' => $this->calculate_shipping_cost($distributorPrice, $shippingWeight),
             'retail_map' => $retailMap,
             'retail_msrp' => $retailMsrp,
             'drop_ship_price' => $this->clean_money($this->get_csv($csv, $headerMap, ['drop ship price', 'drop_ship_price', 'dropship_price'])),
@@ -133,7 +141,7 @@ class CSSIProductParser
             'drop_ship_delivery_options' => $this->get_csv($csv, $headerMap, ['available drop ship delivery options', 'available_drop_ship_delivery_options', 'drop_ship_delivery_options']),
 
             // CSSI "Ship Weight" is pounds in feed exports; store normalized ounces.
-            'shipping_weight' => $this->pounds_to_ounces_or_empty($this->get_csv($csv, $headerMap, ['ship weight', 'shipping_weight', 'weight'])),
+            'shipping_weight' => $shippingWeight,
             'shipping_length_in' => $this->get_csv($csv, $headerMap, ['length', 'shipping_length_in']),
             'shipping_width_in' => $this->get_csv($csv, $headerMap, ['width', 'shipping_width_in']),
             'shipping_height_in' => $this->get_csv($csv, $headerMap, ['height', 'shipping_height_in']),
@@ -174,6 +182,8 @@ class CSSIProductParser
         if ($retailMsrp === '' && $retailMap !== '') {
             $retailMsrp = $retailMap;
         }
+        $distributorPrice = $this->clean_money($this->get_array($item, ['custom_price', 'price']));
+        $shippingWeight = $this->pounds_to_ounces_or_empty($this->get_array($item, ['shipping_weight', 'weight']));
 
         return [
             'upc' => $upc,
@@ -182,7 +192,8 @@ class CSSIProductParser
             'inventory_quantity' => $inventory,
             'in_stock_flag' => $inStockFlag,
             'allocation_status' => $this->allocation_status($inventory, $inStockFlag),
-            'distributor_price' => $this->clean_money($this->get_array($item, ['custom_price', 'price'])),
+            'distributor_price' => $distributorPrice,
+            'shipping_cost' => $this->calculate_shipping_cost($distributorPrice, $shippingWeight),
             'retail_map' => $retailMap,
             'retail_msrp' => $retailMsrp,
             'drop_ship_price' => $this->clean_money($this->get_array($item, ['drop_ship_price'])),
@@ -202,7 +213,7 @@ class CSSIProductParser
             'dropship_block_reason' => $dropShipBlockReason,
             'drop_ship_delivery_options' => $this->get_array($item, ['available_drop_ship_delivery_options', 'drop_ship_delivery_options']),
 
-            'shipping_weight' => $this->pounds_to_ounces_or_empty($this->get_array($item, ['shipping_weight', 'weight'])),
+            'shipping_weight' => $shippingWeight,
             'shipping_length_in' => $this->get_array($item, ['shipping_length_in', 'length']),
             'shipping_width_in' => $this->get_array($item, ['shipping_width_in', 'width']),
             'shipping_height_in' => $this->get_array($item, ['shipping_height_in', 'height']),
@@ -330,6 +341,38 @@ class CSSIProductParser
         }
 
         return $value;
+    }
+
+    private function calculate_shipping_cost(string $priceValue, string $weightOuncesValue): string
+    {
+        $price = $this->money_to_float($priceValue);
+        $weightOunces = $this->decimal_to_float($weightOuncesValue);
+        $weightPounds = $weightOunces > 0.0 ? ($weightOunces / 16.0) : 1.0;
+
+        $freightUnits = max(1, (int) ceil($weightPounds / self::SHIPPING_FLAT_RATE_WEIGHT_LBS));
+        $freight = self::SHIPPING_FLAT_RATE * $freightUnits;
+
+        $insurance = $price > 0.0
+            ? (ceil($price / 100.0) * self::SHIPPING_INSURANCE_PER_100)
+            : 0.0;
+
+        $minimumOrderFee = ($price > 0.0 && $price < self::SHIPPING_MINIMUM_ORDER_THRESHOLD)
+            ? self::SHIPPING_MINIMUM_ORDER_FEE
+            : 0.0;
+
+        return number_format($freight + $insurance + $minimumOrderFee, 2, '.', '');
+    }
+
+    private function money_to_float(string $value): float
+    {
+        $clean = $this->clean_money($value);
+        return $clean === '' ? 0.0 : max(0.0, (float) $clean);
+    }
+
+    private function decimal_to_float(string $value): float
+    {
+        $clean = $this->clean_decimal($value);
+        return $clean === '' ? 0.0 : max(0.0, (float) $clean);
     }
 
     /**

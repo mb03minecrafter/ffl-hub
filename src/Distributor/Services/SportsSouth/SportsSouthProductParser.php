@@ -13,22 +13,59 @@ final class SportsSouthProductParser
 {
     private const IMAGE_BASE = 'https://media.server.theshootingwarehouse.com';
 
+    /** @var array<string,int> */
+    private array $last_catalog_stats = [];
+
     /**
      * @param callable(array<string,mixed>):void $callback
      */
     public function each_catalog_row(string $filePath, callable $callback): int
     {
-        return $this->each_xml_row(
+        $stats = [
+            'xml_rows_seen' => 0,
+            'catalog_rows_parsed' => 0,
+            'rows_with_blank_upc' => 0,
+            'parse_product_null' => 0,
+        ];
+
+        $count = $this->each_xml_row(
             $filePath,
             ['Table', 'Item', 'ITEM', 'Product', 'DailyItem', 'InventoryItem'],
             ['ITEMNO', 'ITEMNUMBER'],
-            function (array $raw) use ($callback): void {
+            function (array $raw) use ($callback, &$stats): void {
+                $stats['xml_rows_seen']++;
+
+                $raw_upc = $this->normalize_upc($this->first($raw, ['UPC', 'ITUPC', 'U', 'BARCODE', 'GTIN']));
+                if ($raw_upc === '') {
+                    $stats['rows_with_blank_upc']++;
+                }
+
                 $row = $this->parse_product($raw);
                 if (is_array($row)) {
+                    $stats['catalog_rows_parsed']++;
                     $callback($row);
+                    return;
                 }
+
+                $stats['parse_product_null']++;
             }
         );
+
+        if ($stats['xml_rows_seen'] === 0 && $count > 0) {
+            $stats['xml_rows_seen'] = $count;
+        }
+
+        $this->last_catalog_stats = $stats;
+
+        return $count;
+    }
+
+    /**
+     * @return array<string,int>
+     */
+    public function get_last_catalog_stats(): array
+    {
+        return $this->last_catalog_stats;
     }
 
     /**
@@ -299,6 +336,7 @@ final class SportsSouthProductParser
         }
 
         $count = 0;
+        $candidate_lookup = array_fill_keys($candidateNodes, true);
 
         if (class_exists('\XMLReader')) {
             $reader = new \XMLReader();
@@ -308,12 +346,12 @@ final class SportsSouthProductParser
                         continue;
                     }
 
-                    if (!in_array($reader->localName, $candidateNodes, true)) {
+                    if (!isset($candidate_lookup[$reader->localName])) {
                         continue;
                     }
 
                     $outer = $reader->readOuterXML();
-                    if (!is_string($outer) || trim($outer) === '') {
+                    if (!is_string($outer) || $outer === '') {
                         continue;
                     }
 

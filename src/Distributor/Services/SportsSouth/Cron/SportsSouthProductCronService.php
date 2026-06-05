@@ -228,7 +228,8 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         update_option('fflhub_sports_south_fulfillment_last_brand_download_size', (string) (file_exists($brand_path) ? filesize($brand_path) : 0), false);
 
         $brand_map = [];
-        $parser->each_brand_row($brand_path, function (array $brand) use (&$brand_map): void {
+        $t_map = microtime(true);
+        $brand_rows_seen = $parser->each_brand_row($brand_path, function (array $brand) use (&$brand_map): void {
             $brand_number = trim((string) ($brand['brand_number'] ?? ''));
             $brand_name = trim((string) ($brand['brand_name'] ?? ''));
             if ($brand_number === '' || $brand_name === '') {
@@ -237,6 +238,11 @@ final class SportsSouthProductCronService extends AbstractTableCronService
 
             $brand_map[$brand_number] = $brand;
         });
+        $this->profile('BrandUpdate map parse', $t_map, [
+            'xml_rows_seen' => (int) $brand_rows_seen,
+            'brand_count' => count($brand_map),
+            'xml_path' => $brand_path,
+        ]);
 
         update_option('fflhub_sports_south_fulfillment_last_brand_count', count($brand_map), false);
         $this->log('Sports South BrandUpdate map ready.', [
@@ -284,7 +290,8 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         update_option('fflhub_sports_south_fulfillment_last_category_download_size', (string) (file_exists($category_path) ? filesize($category_path) : 0), false);
 
         $category_map = [];
-        $parser->each_category_row($category_path, function (array $category) use (&$category_map): void {
+        $t_map = microtime(true);
+        $category_rows_seen = $parser->each_category_row($category_path, function (array $category) use (&$category_map): void {
             $category_id = trim((string) ($category['category_id'] ?? ''));
             if ($category_id === '') {
                 return;
@@ -292,6 +299,11 @@ final class SportsSouthProductCronService extends AbstractTableCronService
 
             $category_map[$category_id] = $category;
         });
+        $this->profile('CategoryUpdate map parse', $t_map, [
+            'xml_rows_seen' => (int) $category_rows_seen,
+            'category_count' => count($category_map),
+            'xml_path' => $category_path,
+        ]);
 
         update_option('fflhub_sports_south_fulfillment_last_category_count', count($category_map), false);
         $this->log('Sports South CategoryUpdate map ready.', [

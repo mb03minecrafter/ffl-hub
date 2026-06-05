@@ -255,7 +255,9 @@ final class SportsSouthInventoryClient
             CURLOPT_FAILONERROR => false,
         ]);
 
+        $t_download = microtime(true);
         $ok = curl_exec($ch);
+        $download_ms = (microtime(true) - $t_download) * 1000.0;
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $curlError = $ok === false ? (string) curl_error($ch) : '';
         curl_close($ch);
@@ -264,6 +266,7 @@ final class SportsSouthInventoryClient
 
         $bodyBytes = file_exists($rawPath) ? (int) filesize($rawPath) : 0;
         $xmlBytes = 0;
+        $decode_ms = 0.0;
         $error = '';
 
         if ($ok === false) {
@@ -273,7 +276,9 @@ final class SportsSouthInventoryClient
         } elseif ($bodyBytes <= 0) {
             $error = 'Sports South ' . $operation . ' returned an empty response.';
         } else {
+            $t_decode = microtime(true);
             $xmlBytes = $this->write_decoded_payload_file($rawPath, $xmlPath);
+            $decode_ms = (microtime(true) - $t_decode) * 1000.0;
             if ($xmlBytes <= 0) {
                 $error = 'Failed to decode Sports South ASMX response.';
             }
@@ -286,6 +291,8 @@ final class SportsSouthInventoryClient
             'error' => $error,
             'xml_bytes' => $xmlBytes,
             'body_bytes' => $bodyBytes,
+            'download_ms' => number_format($download_ms, 2, '.', ''),
+            'decode_write_ms' => number_format($decode_ms, 2, '.', ''),
             'elapsed_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
         ], self::DEBUG_FLAG);
 
