@@ -28,7 +28,7 @@ use FFLHub\Util\DebugLogUtil;
 final class DistributorSportsSouth extends DistributorBase
 {
     private const DEFAULT_SHIP_VIA = '';
-    private const FLAT_SHIPPING_COST = 8.95;
+    private const FLAT_SHIPPING_COST = 7.95;
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][SportsSouthDistributor]';
 
@@ -327,6 +327,18 @@ final class DistributorSportsSouth extends DistributorBase
         $cost = apply_filters('fflhub_sports_south_flat_shipping_cost', self::FLAT_SHIPPING_COST, $normalized, $this);
 
         return is_numeric($cost) ? max(0.0, (float) $cost) : self::FLAT_SHIPPING_COST;
+    }
+
+    protected function get_shipping_cost_from_row(array $row, string $normalized_upc): ?float
+    {
+        if (array_key_exists('shipping_cost', $row)) {
+            $raw = trim((string) ($row['shipping_cost'] ?? ''));
+            if ($raw !== '' && is_numeric($raw)) {
+                return max(0.0, (float) $raw);
+            }
+        }
+
+        return parent::get_shipping_cost_from_row($row, $normalized_upc);
     }
 
     protected function supports_ordering(): bool

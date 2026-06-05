@@ -20,6 +20,8 @@ final class SportsSouthProductImporterService
     private const LOG_PREFIX = '[FFLHub][SportsSouthImporter]';
     private const DEEP_PROFILE_FLAG = 'FFLHUB_SPORTS_SOUTH_PRODUCT_DEEP_PROFILE';
     private const INVENTORY_STAGE_TABLE_SUFFIX = 'fflhub_sports_south_onhand_stage';
+    private const NON_FFL_SHIPPING_COST = '7.95';
+    private const FFL_SHIPPING_COST = '8.95';
 
     private DoubleBufferedProductTable $table;
     private SportsSouthProductParser $parser;
@@ -202,6 +204,7 @@ final class SportsSouthProductImporterService
             $row = $this->apply_category_map($row, $categoryMap, $category_hits);
             $row = SportsSouthFulfillmentPolicy::apply_to_row($row);
             $row = SigDropshipApproval::apply_to_row('sports_south', $row);
+            $row = $this->apply_shipping_cost_rule($row);
             if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
                 $fulfillment_policy_blocks++;
             }
@@ -320,6 +323,8 @@ final class SportsSouthProductImporterService
                 if ($deep_profile) {
                     $detail_ms['sig_policy_ms'] += (microtime(true) - $t) * 1000.0;
                 }
+
+                $row = $this->apply_shipping_cost_rule($row);
 
                 if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
                     $fulfillment_policy_blocks++;
@@ -469,6 +474,18 @@ final class SportsSouthProductImporterService
         $categoryHits++;
 
         return SportsSouthCategoryPolicy::apply_to_row($row, $categoryMap);
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @return array<string,mixed>
+     */
+    private function apply_shipping_cost_rule(array $row): array
+    {
+        $is_ffl = ((int) ($row['ffl_required'] ?? 0)) === 1;
+        $row['shipping_cost'] = $is_ffl ? self::FFL_SHIPPING_COST : self::NON_FFL_SHIPPING_COST;
+
+        return $row;
     }
 
     /**
