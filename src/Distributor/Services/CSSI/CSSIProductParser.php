@@ -139,7 +139,6 @@ class CSSIProductParser
             'shipping_height_in' => $this->get_csv($csv, $headerMap, ['height', 'shipping_height_in']),
             'image_location' => $this->get_csv($csv, $headerMap, ['image location', 'image_url']),
             'last_seen_utc' => $this->get_csv($csv, $headerMap, ['qas_last_updated', 'qas_last_updated_after', 'last_updated_utc']),
-            'specifications' => $this->get_csv($csv, $headerMap, ['specifications']),
         ];
     }
 

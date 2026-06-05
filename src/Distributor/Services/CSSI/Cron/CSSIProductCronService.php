@@ -30,6 +30,7 @@ final class CSSIProductCronService extends AbstractTableCronService
     private const LOG_PREFIX = '[FFLHub][CSSIProductCron]';
     private const DOWNLOAD_DIR = 'fflhub-cssi';
     private const DOWNLOAD_FILE = 'cssi_product_feed.csv';
+    private const PRODUCT_FEED_OPTIONAL_COLUMNS = 'retail_map';
     private const FEED_REFRESH_INTERVAL_SECONDS = DAY_IN_SECONDS;
     private const OPT_LAST_SUCCESS_TS = 'fflhub_cssi_fulfillment_last_success_ts';
     private const OPT_PENDING_FEED_URL = 'fflhub_cssi_fulfillment_pending_feed_url';
@@ -169,13 +170,14 @@ final class CSSIProductCronService extends AbstractTableCronService
 
             $tFeed = microtime(true);
             $feedRes = $client->get_product_feed_url([
-                'optional_columns' => 'specifications,retail_map',
+                'optional_columns' => self::PRODUCT_FEED_OPTIONAL_COLUMNS,
             ]);
             $feedOk = (bool) ($feedRes['ok'] ?? false);
             $feedUrl = trim((string) ($feedRes['url'] ?? ''));
             $this->profile('fetch product-feed URL', $tFeed, [
                 'ok' => $feedOk ? 1 : 0,
                 'status' => (int) ($feedRes['status'] ?? 0),
+                'optional_columns' => self::PRODUCT_FEED_OPTIONAL_COLUMNS,
                 'url_head' => $this->truncate($feedUrl, 220),
                 'error' => $feedOk ? '' : (string) ($feedRes['error'] ?? 'Unknown error'),
             ]);
@@ -211,6 +213,7 @@ final class CSSIProductCronService extends AbstractTableCronService
 
             $this->log('CSSI product-feed URL cached; download/import will begin on next cron run.', [
                 'run_id' => $runId,
+                'optional_columns' => self::PRODUCT_FEED_OPTIONAL_COLUMNS,
                 'feed_url_head' => $this->truncate($feedUrl, 220),
                 'feed_url_cached_ts' => $now,
             ]);
@@ -230,6 +233,7 @@ final class CSSIProductCronService extends AbstractTableCronService
             'status' => (int) ($downloadRes['status'] ?? 0),
             'bytes' => $downloadBytes,
             'path' => $outputPath,
+            'optional_columns' => self::PRODUCT_FEED_OPTIONAL_COLUMNS,
             'feed_url_age_sec' => ($pendingFeedUrlTs > 0) ? max(0, $now - $pendingFeedUrlTs) : null,
             'error' => $downloadOk ? '' : (string) ($downloadRes['error'] ?? 'Unknown error'),
         ]);
@@ -312,6 +316,7 @@ final class CSSIProductCronService extends AbstractTableCronService
 
         $this->log('CSSI full catalog refresh complete.', [
             'run_id' => $runId,
+            'optional_columns' => self::PRODUCT_FEED_OPTIONAL_COLUMNS,
             'product_feed_url_head' => $this->truncate($feedUrl, 220),
             'pending_url_age_sec' => ($pendingFeedUrlTs > 0) ? max(0, $now - $pendingFeedUrlTs) : null,
             'download_bytes' => $downloadBytes,

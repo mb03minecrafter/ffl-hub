@@ -16,6 +16,7 @@
  *   runs=1                             Repeat each version N times
  *   timeout=90                         JSON request timeout seconds
  *   download-feed=0|1                  Only for product-feed/both; default 0
+ *   optional-columns=retail_map         Product-feed optional columns
  *   output-dir=/tmp/cssi-api-benchmark Default: /tmp/cssi-api-benchmark
  *   keep-files=0|1                     Keep downloaded feed files; default 0
  *
@@ -76,6 +77,7 @@ $runs = max(1, min(10, (int) cssi_bench_arg($args, 'runs', 1)));
 $timeout = max(10, min(300, (int) cssi_bench_arg($args, 'timeout', 90)));
 $downloadFeed = cssi_bench_truthy(cssi_bench_arg($args, 'download-feed', '0'));
 $keepFiles = cssi_bench_truthy(cssi_bench_arg($args, 'keep-files', '0'));
+$optionalColumns = trim((string) cssi_bench_arg($args, 'optional-columns', 'retail_map'));
 $outputDir = rtrim((string) cssi_bench_arg($args, 'output-dir', '/tmp/cssi-api-benchmark'), '/\\');
 
 if (!is_dir($outputDir) && !mkdir($outputDir, 0775, true) && !is_dir($outputDir)) {
@@ -93,6 +95,7 @@ $report = [
     'runs' => $runs,
     'timeout_sec' => $timeout,
     'download_feed' => $downloadFeed ? 1 : 0,
+    'optional_columns' => $optionalColumns,
     'results' => [],
 ];
 
@@ -101,6 +104,9 @@ cssi_bench_line('Mode: ' . $mode);
 cssi_bench_line('Versions: ' . implode(', ', $versions));
 cssi_bench_line('Cursor: ' . ($cursorUtc !== '' ? $cursorUtc : '[none/full]'));
 cssi_bench_line('Per page: ' . $perPage . '; max pages: ' . ($maxPages > 0 ? (string) $maxPages : 'all'));
+if ($mode === 'product-feed' || $mode === 'both') {
+    cssi_bench_line('Optional columns: ' . ($optionalColumns !== '' ? $optionalColumns : '[none]'));
+}
 cssi_bench_line('');
 
 foreach ($versions as $version) {
@@ -121,7 +127,7 @@ foreach ($versions as $version) {
         }
 
         if ($mode === 'product-feed' || $mode === 'both') {
-            $feed = cssi_bench_product_feed($baseUrl, $sid, $token, $outputDir, $downloadFeed, $keepFiles, $timeout);
+            $feed = cssi_bench_product_feed($baseUrl, $sid, $token, $outputDir, $downloadFeed, $keepFiles, $timeout, $optionalColumns);
             $versionResult['product_feed'] = $feed;
             cssi_bench_line(cssi_bench_product_feed_summary($feed));
         }
@@ -378,12 +384,15 @@ function cssi_bench_product_feed(
     string $outputDir,
     bool $downloadFeed,
     bool $keepFiles,
-    int $timeout
+    int $timeout,
+    string $optionalColumns
 ): array {
     $tStart = microtime(true);
-    $feedRes = cssi_bench_request_json($baseUrl, $sid, $token, 'items/product-feed', [
-        'optional_columns' => 'specifications,retail_map',
-    ], max($timeout, 120));
+    $query = [];
+    if ($optionalColumns !== '') {
+        $query['optional_columns'] = $optionalColumns;
+    }
+    $feedRes = cssi_bench_request_json($baseUrl, $sid, $token, 'items/product-feed', $query, max($timeout, 120));
 
     $data = is_array($feedRes['data'] ?? null) ? (array) $feedRes['data'] : [];
     $feed = isset($data['product_feed']) && is_array($data['product_feed']) ? (array) $data['product_feed'] : [];
@@ -397,6 +406,7 @@ function cssi_bench_product_feed(
         'url_decode_ms' => round((float) ($feedRes['decode_ms'] ?? 0.0), 2),
         'url_body_bytes' => (int) ($feedRes['body_bytes'] ?? 0),
         'feed_url_head' => substr($url, 0, 220),
+        'optional_columns' => $optionalColumns,
         'download_requested' => $downloadFeed ? 1 : 0,
     ];
 
