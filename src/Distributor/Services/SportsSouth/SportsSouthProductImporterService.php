@@ -677,6 +677,122 @@ final class SportsSouthProductImporterService
 
     private function insert_onhand_stage_rows(string $stageTable, string $xmlFilePath): int
     {
+        if ($this->can_use_load_data_local_infile()) {
+            $tsv_path = $this->onhand_tsv_path();
+            if ($tsv_path !== '') {
+                $write_stats = $this->write_onhand_stage_tsv($xmlFilePath, $tsv_path);
+                $rows_written = (int) ($write_stats['rows_written'] ?? 0);
+                if ($rows_written > 0) {
+                    $rows_loaded = $this->load_onhand_stage_tsv($stageTable, $tsv_path);
+                    $this->log('Sports South onhand stage LOAD DATA profile.', array_merge($write_stats, [
+                        'stage_table' => $stageTable,
+                        'rows_loaded' => (int) $rows_loaded,
+                        'mode' => 'tsv_load',
+                    ]));
+                    @unlink($tsv_path);
+
+                    if ($rows_loaded >= 0) {
+                        return (int) $rows_loaded;
+                    }
+                }
+
+                @unlink($tsv_path);
+            }
+        }
+
+        return $this->insert_onhand_stage_rows_via_php($stageTable, $xmlFilePath);
+    }
+
+    private function write_onhand_stage_tsv(string $xmlFilePath, string $tsvPath): array
+    {
+        $t_start = microtime(true);
+        $handle = fopen($tsvPath, 'w');
+        if (!$handle) {
+            return [
+                'tsv_path' => $tsvPath,
+                'xml_path' => $xmlFilePath,
+                'rows_written' => 0,
+                'write_error' => 'fopen failed',
+            ];
+        }
+
+        $rows_written = 0;
+        $skipped_blank_identifier = 0;
+        $xml_rows_seen = $this->parser->each_onhand_row($xmlFilePath, static function (array $row) use ($handle, &$rows_written, &$skipped_blank_identifier): void {
+            $item_number = trim((string) ($row['item_number'] ?? ''));
+            $upc = trim((string) ($row['upc'] ?? ''));
+            if ($item_number === '' && $upc === '') {
+                $skipped_blank_identifier++;
+                return;
+            }
+
+            fputcsv(
+                $handle,
+                [
+                    $item_number,
+                    $upc,
+                    (string) ((int) ($row['quantity_delta'] ?? 0)),
+                    (string) ($row['catalog_price'] ?? ''),
+                    (string) ($row['customer_price'] ?? ''),
+                ],
+                "\t",
+                '"',
+                '\\'
+            );
+            $rows_written++;
+        });
+
+        fclose($handle);
+        clearstatcache(true, $tsvPath);
+
+        return [
+            'tsv_path' => $tsvPath,
+            'xml_path' => $xmlFilePath,
+            'tsv_bytes' => file_exists($tsvPath) ? (int) filesize($tsvPath) : 0,
+            'xml_rows_seen' => (int) $xml_rows_seen,
+            'rows_written' => (int) $rows_written,
+            'skipped_blank_identifier' => (int) $skipped_blank_identifier,
+            'write_ms' => $this->format_ms((microtime(true) - $t_start) * 1000.0),
+        ];
+    }
+
+    private function load_onhand_stage_tsv(string $stageTable, string $tsvPath): int
+    {
+        global $wpdb;
+
+        $sql = "
+            LOAD DATA LOCAL INFILE %s
+            INTO TABLE {$stageTable}
+            CHARACTER SET utf8mb4
+            FIELDS TERMINATED BY '\\t' ENCLOSED BY '\"' ESCAPED BY '\\\\'
+            LINES TERMINATED BY '\\n'
+            (item_number, upc, quantity_delta, catalog_price, customer_price)
+        ";
+
+        $t_load = microtime(true);
+        $result = $wpdb->query($wpdb->prepare($sql, $tsvPath)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($result === false) {
+            $this->log('Sports South onhand LOAD DATA query failed.', [
+                'stage_table' => $stageTable,
+                'tsv_path' => $tsvPath,
+                'error' => (string) $wpdb->last_error,
+                'load_data_ms' => $this->format_ms((microtime(true) - $t_load) * 1000.0),
+            ]);
+            return -1;
+        }
+
+        $this->log('Sports South onhand LOAD DATA loaded.', [
+            'stage_table' => $stageTable,
+            'tsv_path' => $tsvPath,
+            'rows_loaded' => is_numeric($result) ? (int) $result : 0,
+            'load_data_ms' => $this->format_ms((microtime(true) - $t_load) * 1000.0),
+        ]);
+
+        return is_numeric($result) ? (int) $result : 0;
+    }
+
+    private function insert_onhand_stage_rows_via_php(string $stageTable, string $xmlFilePath): int
+    {
         global $wpdb;
 
         $batch_size = 500;
@@ -732,6 +848,7 @@ final class SportsSouthProductImporterService
             'rows_loaded' => (int) $loaded,
             'batch_size' => (int) $batch_size,
             'batches' => (int) $batches,
+            'mode' => 'php_batch',
             'elapsed_ms' => $this->format_ms((microtime(true) - $t_start) * 1000.0),
         ]);
 
@@ -817,6 +934,16 @@ final class SportsSouthProductImporterService
         }
 
         return $dir . '/daily_item_update_catalog_' . gmdate('Ymd_His') . '.tsv';
+    }
+
+    private function onhand_tsv_path(): string
+    {
+        $dir = $this->uploads_subdir();
+        if ($dir === '') {
+            return '';
+        }
+
+        return $dir . '/incremental_onhand_update_stage_' . gmdate('Ymd_His') . '.tsv';
     }
 
     private function uploads_subdir(): string
