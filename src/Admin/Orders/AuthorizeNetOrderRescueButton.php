@@ -47,7 +47,16 @@ final class AuthorizeNetOrderRescueButton
         }
 
         $order_id = (int) $order->get_id();
-        $action_url = admin_url('admin-post.php');
+        $action_url = wp_nonce_url(
+            add_query_arg(
+                [
+                    'action' => self::ACTION,
+                    'order_id' => $order_id,
+                ],
+                admin_url('admin-post.php')
+            ),
+            self::NONCE_ACTION . '_' . $order_id
+        );
         $transaction_id = trim((string) $order->get_transaction_id());
         if ($transaction_id === '') {
             $transaction_id = trim((string) $order->get_meta('_authnet_charge_id', true));
@@ -59,31 +68,26 @@ final class AuthorizeNetOrderRescueButton
                 <strong><?php esc_html_e('FFLHub Authorize.net Rescue', 'ffl-hub'); ?></strong><br />
                 <span><?php esc_html_e('Use after manually approving/capturing an Authorize.net hold. This bypasses the gateway capture hook, sets the order to Processing, and schedules FFLHub order-placement rows only.', 'ffl-hub'); ?></span>
             </p>
-            <form method="post" action="<?php echo esc_url($action_url); ?>" onsubmit="return confirm('Rescue this Authorize.net order and schedule FFLHub job rows? This will not flush dealer batches.');">
-                <input type="hidden" name="action" value="<?php echo esc_attr(self::ACTION); ?>" />
-                <input type="hidden" name="order_id" value="<?php echo esc_attr((string) $order_id); ?>" />
-                <?php wp_nonce_field(self::NONCE_ACTION . '_' . $order_id); ?>
-                <label style="display:block;margin:0 0 8px;">
-                    <?php esc_html_e('Authorize.net transaction ID override (optional)', 'ffl-hub'); ?><br />
-                    <input
-                        type="text"
-                        name="transaction_id"
-                        value="<?php echo esc_attr($transaction_id); ?>"
-                        style="width:100%;max-width:360px;"
-                        autocomplete="off"
-                    />
-                </label>
-                <button type="submit" class="button button-primary">
-                    <?php esc_html_e('Rescue Auth.net Order + Schedule FFLHub Jobs', 'ffl-hub'); ?>
-                </button>
-            </form>
+            <?php if ($transaction_id !== '') : ?>
+                <p style="margin:0 0 8px;">
+                    <?php esc_html_e('Transaction ID:', 'ffl-hub'); ?>
+                    <code><?php echo esc_html($transaction_id); ?></code>
+                </p>
+            <?php endif; ?>
+            <a
+                href="<?php echo esc_url($action_url); ?>"
+                class="button button-primary"
+                onclick="return confirm('Rescue this Authorize.net order and schedule FFLHub job rows? This will not flush dealer batches.');"
+            >
+                <?php esc_html_e('Rescue Auth.net Order + Schedule FFLHub Jobs', 'ffl-hub'); ?>
+            </a>
         </div>
         <?php
     }
 
     public function handle_post(): void
     {
-        $order_id = isset($_POST['order_id']) ? (int) $_POST['order_id'] : 0;
+        $order_id = isset($_REQUEST['order_id']) ? (int) $_REQUEST['order_id'] : 0;
         if ($order_id <= 0) {
             $this->redirect_to_orders('error', __('Missing order ID.', 'ffl-hub'));
         }
@@ -94,8 +98,8 @@ final class AuthorizeNetOrderRescueButton
 
         check_admin_referer(self::NONCE_ACTION . '_' . $order_id);
 
-        $transaction_id = isset($_POST['transaction_id'])
-            ? sanitize_text_field(wp_unslash((string) $_POST['transaction_id']))
+        $transaction_id = isset($_REQUEST['transaction_id'])
+            ? sanitize_text_field(wp_unslash((string) $_REQUEST['transaction_id']))
             : '';
 
         try {
