@@ -50,9 +50,17 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
     public function run(): void
     {
         $t_start = microtime(true);
+        $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
+
+        $this->log('---- RUN START ----', [
+            'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
+            'hook' => self::CRON_HOOK,
+            'group' => $this->get_action_group(),
+            'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
+        ]);
 
         update_option('fflhub_sports_south_inventory_last_run', current_time('mysql'), false);
 
@@ -64,10 +72,22 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
         }
 
         $parser = new SportsSouthProductParser();
+        $t_since = microtime(true);
         $since = $this->resolve_since_datetime($parser);
+        $this->profile('resolve_since_datetime', $t_since, [
+            'since' => $since,
+        ]);
         $request_cursor = gmdate('Y-m-d\TH:i:s.00+00.00');
 
+        $t_request = microtime(true);
         $response = $client->incremental_onhand_update($since);
+        $this->profile('IncrementalOnhandUpdate request', $t_request, [
+            'ok' => empty($response['ok']) ? 0 : 1,
+            'status' => (int) ($response['status'] ?? 0),
+            'since' => $since,
+            'xml_bytes' => strlen((string) ($response['xml'] ?? '')),
+            'body_bytes' => strlen((string) ($response['body'] ?? '')),
+        ]);
         if (empty($response['ok'])) {
             update_option('fflhub_sports_south_inventory_last_error', current_time('mysql'), false);
             $this->log('Sports South IncrementalOnhandUpdate failed.', [
@@ -79,7 +99,13 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
         }
 
         $xml = (string) ($response['xml'] ?? '');
+        $t_write = microtime(true);
         $xml_path = $this->write_xml_file('incremental_onhand_update', $xml);
+        $this->profile('write_onhand_xml_file', $t_write, [
+            'xml_path' => $xml_path,
+            'xml_bytes' => strlen($xml),
+            'file_bytes' => $xml_path !== '' && file_exists($xml_path) ? (int) filesize($xml_path) : 0,
+        ]);
         if ($xml_path === '') {
             update_option('fflhub_sports_south_inventory_last_error', current_time('mysql'), false);
             return;
@@ -93,23 +119,34 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
         $stats = $importer->apply_onhand_delta_file_to_live($xml_path, $quantity_is_delta);
         $stats['apply_ms'] = number_format((microtime(true) - $t_apply) * 1000.0, 2, '.', '');
 
+        $t_cursor = microtime(true);
         $next_since = $parser->extract_next_since_datetime($xml);
+        $this->profile('extract_next_since_datetime', $t_cursor, [
+            'next_since_raw' => $next_since,
+        ]);
         if ($next_since === '') {
             $next_since = $request_cursor;
         }
 
+        $t_options = microtime(true);
         update_option(self::SINCE_OPTION, $next_since, false);
         update_option('fflhub_sports_south_inventory_last_update', current_time('mysql'), false);
         update_option('fflhub_sports_south_inventory_last_update_count', (int) ($stats['rows_loaded'] ?? 0), false);
         update_option('fflhub_sports_south_inventory_last_download_path', $xml_path, false);
         update_option('fflhub_sports_south_inventory_last_download_size', (string) (file_exists($xml_path) ? filesize($xml_path) : 0), false);
         delete_option('fflhub_sports_south_inventory_last_error');
+        $this->profile('persist_inventory_options', $t_options, [
+            'next_since' => $next_since,
+            'rows_loaded' => (int) ($stats['rows_loaded'] ?? 0),
+        ]);
 
         $this->log('Sports South inventory update complete.', array_merge($stats, [
             'since' => $since,
             'next_since' => $next_since,
             'xml_path' => $xml_path,
             'elapsed_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
+            'memory_start_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
+            'memory_end_kb' => function_exists('memory_get_usage') ? (int) round(memory_get_usage(true) / 1024) : 0,
         ]));
     }
 
@@ -190,5 +227,14 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
         }
 
         DebugLogUtil::log_if_ctx(true, self::LOG_PREFIX, $message, $ctx, self::DEBUG_FLAG);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function profile(string $label, float $t0, array $ctx = []): void
+    {
+        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000.0, 2, '.', '');
+        $this->log('PROFILE: ' . $label, $ctx);
     }
 }

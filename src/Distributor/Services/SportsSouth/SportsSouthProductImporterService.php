@@ -113,6 +113,7 @@ final class SportsSouthProductImporterService
 
     public function apply_onhand_delta_file_to_live(string $xmlFilePath, bool $treatQuantityAsDelta = true): array
     {
+        $t_total = microtime(true);
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
@@ -126,7 +127,9 @@ final class SportsSouthProductImporterService
             ];
         }
 
+        $t_ensure = microtime(true);
         $stage_table = $this->ensure_inventory_stage_table();
+        $ensure_ms = $this->format_ms((microtime(true) - $t_ensure) * 1000.0);
         if ($stage_table === '') {
             return [
                 'processed_rows' => 0,
@@ -137,20 +140,31 @@ final class SportsSouthProductImporterService
         }
 
         global $wpdb;
+        $t_truncate = microtime(true);
         $wpdb->query("TRUNCATE TABLE {$stage_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $truncate_ms = $this->format_ms((microtime(true) - $t_truncate) * 1000.0);
 
+        $t_insert = microtime(true);
         $rows_loaded = $this->insert_onhand_stage_rows($stage_table, $xmlFilePath);
+        $insert_ms = $this->format_ms((microtime(true) - $t_insert) * 1000.0);
         if ($rows_loaded <= 0) {
             return [
                 'processed_rows' => 0,
                 'rows_loaded' => 0,
                 'join_updated' => 0,
+                'ensure_stage_ms' => $ensure_ms,
+                'truncate_stage_ms' => $truncate_ms,
+                'insert_stage_ms' => $insert_ms,
             ];
         }
 
         $live_table = $this->table->get_live_table_name();
+        $t_update_item = microtime(true);
         $updated_item = $this->update_live_inventory_by_item_number($live_table, $stage_table, $treatQuantityAsDelta);
+        $update_item_ms = $this->format_ms((microtime(true) - $t_update_item) * 1000.0);
+        $t_update_upc = microtime(true);
         $updated_upc = $this->update_live_inventory_by_upc($live_table, $stage_table, $treatQuantityAsDelta);
+        $update_upc_ms = $this->format_ms((microtime(true) - $t_update_upc) * 1000.0);
 
         $stats = [
             'processed_rows' => (int) $rows_loaded,
@@ -159,6 +173,14 @@ final class SportsSouthProductImporterService
             'join_updated_item' => (int) max(0, $updated_item),
             'join_updated_upc' => (int) max(0, $updated_upc),
             'quantity_mode' => $treatQuantityAsDelta ? 'quantity_delta' : 'current_quantity',
+            'live_table' => $live_table,
+            'stage_table' => $stage_table,
+            'ensure_stage_ms' => $ensure_ms,
+            'truncate_stage_ms' => $truncate_ms,
+            'insert_stage_ms' => $insert_ms,
+            'update_item_ms' => $update_item_ms,
+            'update_upc_ms' => $update_upc_ms,
+            'apply_total_ms' => $this->format_ms((microtime(true) - $t_total) * 1000.0),
         ];
 
         $this->log('Sports South onhand update applied.', $stats);
@@ -661,8 +683,10 @@ final class SportsSouthProductImporterService
         $values = [];
         $placeholders = [];
         $loaded = 0;
+        $batches = 0;
+        $t_start = microtime(true);
 
-        $flush = function () use (&$values, &$placeholders, &$loaded, $stageTable, $wpdb): void {
+        $flush = function () use (&$values, &$placeholders, &$loaded, &$batches, $stageTable, $wpdb): void {
             if (empty($placeholders)) {
                 return;
             }
@@ -671,6 +695,7 @@ final class SportsSouthProductImporterService
             $result = $wpdb->query($wpdb->prepare($sql, $values));
             if ($result !== false) {
                 $loaded += (int) $result;
+                $batches++;
             } else {
                 $this->log('ERROR: Sports South onhand stage insert failed: ' . (string) $wpdb->last_error);
             }
@@ -679,7 +704,7 @@ final class SportsSouthProductImporterService
             $placeholders = [];
         };
 
-        $this->parser->each_onhand_row($xmlFilePath, function (array $row) use (&$values, &$placeholders, $batch_size, $flush): void {
+        $xml_rows_seen = $this->parser->each_onhand_row($xmlFilePath, function (array $row) use (&$values, &$placeholders, $batch_size, $flush): void {
             $item_number = trim((string) ($row['item_number'] ?? ''));
             $upc = trim((string) ($row['upc'] ?? ''));
             if ($item_number === '' && $upc === '') {
@@ -699,6 +724,16 @@ final class SportsSouthProductImporterService
         });
 
         $flush();
+
+        $this->log('Sports South onhand stage insert profile.', [
+            'stage_table' => $stageTable,
+            'xml_path' => $xmlFilePath,
+            'xml_rows_seen' => (int) $xml_rows_seen,
+            'rows_loaded' => (int) $loaded,
+            'batch_size' => (int) $batch_size,
+            'batches' => (int) $batches,
+            'elapsed_ms' => $this->format_ms((microtime(true) - $t_start) * 1000.0),
+        ]);
 
         return (int) $loaded;
     }
