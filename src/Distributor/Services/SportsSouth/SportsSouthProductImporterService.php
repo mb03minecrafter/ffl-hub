@@ -20,6 +20,7 @@ final class SportsSouthProductImporterService
     private const LOG_PREFIX = '[FFLHub][SportsSouthImporter]';
     private const DEEP_PROFILE_FLAG = 'FFLHUB_SPORTS_SOUTH_PRODUCT_DEEP_PROFILE';
     private const INVENTORY_STAGE_TABLE_SUFFIX = 'fflhub_sports_south_onhand_stage';
+    private const PRODUCT_DELTA_STAGE_TABLE_SUFFIX = 'fflhub_sports_south_product_delta_stage';
     private const NON_FFL_SHIPPING_COST = '7.95';
     private const FFL_SHIPPING_COST = '8.95';
 
@@ -118,6 +119,9 @@ final class SportsSouthProductImporterService
      * matching UPC, the incoming normalized delta row replaces the existing row
      * fields the same way a full rebuild would once the table is swapped.
      *
+     * DailyItemUpdate is allowed to reconcile quantity/price fields because
+     * Sports South's incremental onhand feed can drift between catalog snapshots.
+     *
      * @param array<string,array<string,mixed>> $brandMap
      * @param array<string,array<string,mixed>> $categoryMap
      * @return array<string,mixed>
@@ -133,6 +137,19 @@ final class SportsSouthProductImporterService
         }
 
         $live_count_before = $this->count_live_rows();
+        $delta_stage_table = $this->ensure_catalog_delta_stage_table();
+        if ($delta_stage_table === '') {
+            return [
+                'mode' => 'incremental_catalog_update',
+                'error' => 'Failed to ensure Sports South catalog delta stage table.',
+                'xml_path' => $xmlFilePath,
+                'live_rows_before' => $live_count_before,
+                'live_rows_after' => $live_count_before,
+                'rows_loaded' => 0,
+                'rows_updated' => 0,
+                'rows_inserted' => 0,
+            ];
+        }
 
         if (!is_readable($xmlFilePath)) {
             return [
@@ -185,7 +202,7 @@ final class SportsSouthProductImporterService
         }
 
         $t_load = microtime(true);
-        $rows_loaded = $this->import_tsv_into_staging($tsv_path, $columns);
+        $rows_loaded = $this->import_tsv_into_table($tsv_path, $columns, $delta_stage_table);
         $load_ms = $this->format_ms((microtime(true) - $t_load) * 1000.0);
 
         if ($rows_loaded < 0) {
@@ -203,7 +220,7 @@ final class SportsSouthProductImporterService
         }
 
         $t_apply = microtime(true);
-        $apply_stats = $this->apply_catalog_delta_from_staging($columns);
+        $apply_stats = $this->apply_catalog_delta_from_stage_table($columns, $delta_stage_table);
         $apply_ms = $this->format_ms((microtime(true) - $t_apply) * 1000.0);
         $live_count_after = $this->count_live_rows();
 
@@ -554,18 +571,26 @@ final class SportsSouthProductImporterService
      */
     private function import_tsv_into_staging(string $tsvPath, array $columns): int
     {
+        return $this->import_tsv_into_table($tsvPath, $columns, $this->table->get_staging_table_name());
+    }
+
+    /**
+     * @param string[] $columns
+     */
+    private function import_tsv_into_table(string $tsvPath, array $columns, string $tableName): int
+    {
         if (!is_readable($tsvPath)) {
             return 0;
         }
 
         if ($this->can_use_load_data_local_infile()) {
-            $rows = $this->import_tsv_via_load_data($tsvPath, $columns);
+            $rows = $this->import_tsv_via_load_data($tsvPath, $columns, $tableName);
             if ($rows >= 0) {
                 return $rows;
             }
         }
 
-        return $this->import_tsv_via_php($tsvPath, $columns);
+        return $this->import_tsv_via_php($tsvPath, $columns, $tableName);
     }
 
     /**
@@ -632,11 +657,10 @@ final class SportsSouthProductImporterService
     /**
      * @param string[] $columns
      */
-    private function import_tsv_via_load_data(string $tsvPath, array $columns): int
+    private function import_tsv_via_load_data(string $tsvPath, array $columns, string $tableName): int
     {
         global $wpdb;
 
-        $table_name = $this->table->get_staging_table_name();
         $column_list = implode(
             ', ',
             array_map(
@@ -647,7 +671,7 @@ final class SportsSouthProductImporterService
 
         $sql = "
             LOAD DATA LOCAL INFILE %s
-            INTO TABLE {$table_name}
+            INTO TABLE {$tableName}
             CHARACTER SET utf8mb4
             FIELDS TERMINATED BY '\\t' ENCLOSED BY '\"' ESCAPED BY '\\\\'
             LINES TERMINATED BY '\\n'
@@ -657,7 +681,7 @@ final class SportsSouthProductImporterService
         try {
             $t_total = microtime(true);
             $t_truncate = microtime(true);
-            $this->table->truncate_staging();
+            $wpdb->query("TRUNCATE TABLE {$tableName}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $truncate_ms = (microtime(true) - $t_truncate) * 1000.0;
 
             $t_load = microtime(true);
@@ -673,14 +697,15 @@ final class SportsSouthProductImporterService
             }
 
             $t_delete = microtime(true);
-            $deleted = $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $deleted = $wpdb->query("DELETE FROM {$tableName} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $delete_ms = (microtime(true) - $t_delete) * 1000.0;
 
             $t_count = microtime(true);
-            $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$tableName}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $count_ms = (microtime(true) - $t_count) * 1000.0;
 
             $this->log('Sports South LOAD DATA import profile.', [
+                'table_name' => $tableName,
                 'tsv_path' => $tsvPath,
                 'load_result' => is_numeric($result) ? (int) $result : 0,
                 'post_load_deleted' => is_numeric($deleted) ? (int) $deleted : 0,
@@ -705,7 +730,7 @@ final class SportsSouthProductImporterService
     /**
      * @param string[] $columns
      */
-    private function import_tsv_via_php(string $tsvPath, array $columns): int
+    private function import_tsv_via_php(string $tsvPath, array $columns, string $tableName): int
     {
         $handle = fopen($tsvPath, 'r');
         if (!$handle) {
@@ -713,7 +738,8 @@ final class SportsSouthProductImporterService
         }
 
         try {
-            $this->table->truncate_staging();
+            global $wpdb;
+            $wpdb->query("TRUNCATE TABLE {$tableName}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         } catch (\Throwable $e) {
             fclose($handle);
             $this->log('Sports South PHP TSV fallback truncate failed.', [
@@ -737,7 +763,7 @@ final class SportsSouthProductImporterService
 
             $batch[] = $row;
             if (count($batch) >= 1000) {
-                $total += $this->flush_staging_batch($batch);
+                $total += $this->flush_table_batch($tableName, $batch, $columns);
                 $batch = [];
             }
         }
@@ -745,7 +771,7 @@ final class SportsSouthProductImporterService
         fclose($handle);
 
         if (!empty($batch)) {
-            $total += $this->flush_staging_batch($batch);
+            $total += $this->flush_table_batch($tableName, $batch, $columns);
         }
 
         return (int) $total;
@@ -762,6 +788,44 @@ final class SportsSouthProductImporterService
             $this->log('ERROR: insert_rows_into_staging() failed: ' . $e->getMessage());
             return 0;
         }
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $rows
+     * @param string[] $columns
+     */
+    private function flush_table_batch(string $tableName, array $rows, array $columns): int
+    {
+        if (empty($rows) || empty($columns)) {
+            return 0;
+        }
+
+        global $wpdb;
+
+        $column_sql = implode(', ', array_map([$this, 'quote_identifier'], $columns));
+        $row_placeholder = '(' . implode(', ', array_fill(0, count($columns), '%s')) . ')';
+        $placeholders = [];
+        $values = [];
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $placeholders[] = $row_placeholder;
+            foreach ($columns as $column) {
+                $values[] = array_key_exists($column, $row) ? (string) $row[$column] : '';
+            }
+        }
+
+        if (empty($placeholders)) {
+            return 0;
+        }
+
+        $sql = "INSERT IGNORE INTO {$tableName} ({$column_sql}) VALUES " . implode(', ', $placeholders);
+        $result = $wpdb->query($wpdb->prepare($sql, $values)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        return is_numeric($result) ? (int) $result : 0;
     }
 
     private function ensure_inventory_stage_table(): string
@@ -998,20 +1062,68 @@ final class SportsSouthProductImporterService
      * @param string[] $columns
      * @return array<string,mixed>
      */
-    private function apply_catalog_delta_from_staging(array $columns): array
+    private function ensure_catalog_delta_stage_table(): string
+    {
+        global $wpdb;
+
+        $table_name = $wpdb->prefix . self::PRODUCT_DELTA_STAGE_TABLE_SUFFIX;
+        $charset = $wpdb->get_charset_collate();
+        $columns = $this->table->get_schema()->get_column_definitions();
+        $indexes = $this->table->get_schema()->get_index_definitions();
+        $lines = [];
+
+        foreach ($columns as $name => $definition) {
+            $lines[] = "{$name} {$definition}";
+        }
+
+        foreach ($indexes as $index_definition) {
+            $lines[] = $index_definition;
+        }
+
+        if (empty($lines)) {
+            return '';
+        }
+
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        dbDelta("CREATE TABLE {$table_name} (\n" . implode(",\n", $lines) . "\n) {$charset};");
+
+        $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
+        if ($exists !== $table_name) {
+            $this->log('ERROR: failed to ensure Sports South catalog delta stage table.', [
+                'delta_stage_table' => $table_name,
+                'db_error' => (string) $wpdb->last_error,
+            ]);
+            return '';
+        }
+
+        return $table_name;
+    }
+
+    /**
+     * @param string[] $columns
+     * @return array<string,mixed>
+     */
+    private function apply_catalog_delta_from_stage_table(array $columns, string $stageTable): array
     {
         global $wpdb;
 
         $live_table = $this->table->get_live_table_name();
-        $stage_table = $this->table->get_staging_table_name();
         $safe_columns = array_values(array_filter($columns, static fn($column): bool => is_string($column) && $column !== ''));
-        $update_columns = $safe_columns;
+        $local_only_columns = $this->local_only_columns();
+        $update_columns = array_values(array_filter($safe_columns, static fn($column): bool => !in_array($column, $local_only_columns, true)));
+        $quantity_reconciliation_columns = array_values(array_intersect($update_columns, [
+            'inventory_quantity',
+            'allocation_status',
+            'distributor_price',
+            'catalog_price',
+            'last_onhand_utc',
+        ]));
 
-        $stage_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stage_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $blank_upc_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stage_table} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $duplicate_upc_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM (SELECT upc FROM {$stage_table} WHERE upc IS NOT NULL AND upc <> '' GROUP BY upc HAVING COUNT(*) > 1) d"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $matched_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stage_table} S INNER JOIN {$live_table} L ON L.upc = S.upc"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $missing_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stage_table} S LEFT JOIN {$live_table} L ON L.upc = S.upc WHERE L.upc IS NULL"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $stage_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $blank_upc_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $duplicate_upc_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM (SELECT upc FROM {$stageTable} WHERE upc IS NOT NULL AND upc <> '' GROUP BY upc HAVING COUNT(*) > 1) d"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $matched_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable} S INNER JOIN {$live_table} L ON L.upc = S.upc"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $missing_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable} S LEFT JOIN {$live_table} L ON L.upc = S.upc WHERE L.upc IS NULL"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $assignments = [];
         $comparisons = [];
@@ -1027,7 +1139,7 @@ final class SportsSouthProductImporterService
             $t_update = microtime(true);
             $update_sql = "
                 UPDATE {$live_table} L
-                INNER JOIN {$stage_table} S
+                INNER JOIN {$stageTable} S
                     ON L.upc = S.upc
                 SET
                     " . implode(",\n                    ", $assignments) . "
@@ -1048,7 +1160,7 @@ final class SportsSouthProductImporterService
         $insert_sql = "
             INSERT INTO {$live_table} ({$column_sql})
             SELECT {$select_sql}
-            FROM {$stage_table} S
+            FROM {$stageTable} S
             LEFT JOIN {$live_table} L
                 ON L.upc = S.upc
             WHERE L.upc IS NULL
@@ -1059,18 +1171,38 @@ final class SportsSouthProductImporterService
 
         return [
             'live_table' => $live_table,
-            'delta_stage_table' => $stage_table,
+            'delta_stage_table' => $stageTable,
             'delta_stage_rows' => $stage_count,
             'blank_upc_count' => $blank_upc_count,
             'duplicate_upc_count' => $duplicate_upc_count,
             'matched_existing_rows' => $matched_count,
             'missing_live_rows' => $missing_count,
+            'vendor_owned_columns_updated_count' => count($update_columns),
+            'local_only_columns_preserved_count' => count($local_only_columns),
+            'local_only_columns_preserved' => implode(',', $local_only_columns),
+            'quantity_reconciliation_columns' => implode(',', $quantity_reconciliation_columns),
+            'quantity_reconciliation_column_count' => count($quantity_reconciliation_columns),
+            'daily_item_update_reconciles_quantity' => 1,
+            'last_seen_utc_updates_on_overlap' => in_array('last_seen_utc', $update_columns, true) ? 1 : 0,
             'catalog_update_columns' => count($update_columns),
             'rows_updated' => $updated,
             'rows_inserted' => $inserted,
             'delta_update_ms' => $update_ms,
             'delta_insert_ms' => $insert_ms,
         ];
+    }
+
+    /**
+     * @return string[]
+     */
+    private function local_only_columns(): array
+    {
+        // The current Sports South product table does not contain local admin
+        // overrides, Woo binding IDs, or internal notes. Its columns are vendor
+        // snapshot fields or importer-derived metadata, so the vendor delta row
+        // is allowed to replace them. Keep this list explicit for future schema
+        // additions that should not be overwritten by DailyItemUpdate.
+        return [];
     }
 
     private function count_live_rows(): int

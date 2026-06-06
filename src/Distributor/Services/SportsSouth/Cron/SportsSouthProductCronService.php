@@ -26,6 +26,8 @@ final class SportsSouthProductCronService extends AbstractTableCronService
     private const DEFAULT_FULL_LAST_UPDATE = '1/1/1990';
     private const DEFAULT_FULL_LAST_ITEM = -1;
     private const PRODUCT_CURSOR_OPTION = 'fflhub_sports_south_product_catalog_cursor_date';
+    private const PRODUCT_SYNC_LOCK_OPTION = 'fflhub_sports_south_product_catalog_sync_lock';
+    private const PRODUCT_SYNC_LOCK_TTL_SECONDS = 45 * MINUTE_IN_SECONDS;
 
     /** @var string[] */
     private array $artifact_paths = [];
@@ -57,6 +59,29 @@ final class SportsSouthProductCronService extends AbstractTableCronService
 
     public function run(): void
     {
+        $lock_mode = $this->configured_sync_mode();
+        if (
+            defined('FFLHUB_SPORTS_SOUTH_FORCE_FULL_REBUILD')
+            && (bool) constant('FFLHUB_SPORTS_SOUTH_FORCE_FULL_REBUILD')
+        ) {
+            $lock_mode = self::MODE_FULL_REBUILD;
+        }
+
+        $lock_owner = $this->acquire_product_sync_lock($lock_mode);
+        if ($lock_owner === '') {
+            update_option('fflhub_sports_south_fulfillment_last_stage', 'product_sync_lock_held', false);
+            return;
+        }
+
+        try {
+            $this->run_locked($lock_owner);
+        } finally {
+            $this->release_product_sync_lock($lock_owner);
+        }
+    }
+
+    private function run_locked(string $lockOwner): void
+    {
         $t_start = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
         $this->artifact_paths = [];
@@ -69,6 +94,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
             'hook' => self::CRON_HOOK,
             'group' => $this->get_action_group(),
+            'lock_owner' => $lockOwner,
             'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
         ]);
         update_option('fflhub_sports_south_fulfillment_last_stage', 'run_start', false);
@@ -106,6 +132,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             'last_update' => $last_update,
             'last_item' => $last_item,
             'paging_implemented' => 0,
+            'lock_owner' => $lockOwner,
         ]);
 
         $parser = new SportsSouthProductParser();
@@ -213,7 +240,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
                 'new_live' => (string) $new_live,
             ]);
 
-            $cursor_after = $this->persist_product_cursor($request_started_ts);
+            $cursor_after = $this->persist_product_cursor($request_started_ts, $sync_context);
             update_option('fflhub_sports_south_fulfillment_last_refresh', current_time('mysql'), false);
             update_option('fflhub_sports_south_fulfillment_last_refresh_count', (int) $count, false);
             update_option('fflhub_sports_south_fulfillment_last_swap', current_time('mysql'), false);
@@ -237,6 +264,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         }
 
         $delta_stats = $importer->import_catalog_delta_file($xml_path, $brand_map, $category_map);
+        $this->maybe_log_large_incremental_response($delta_stats);
         $this->profile('Import DailyItemUpdate XML', $t_import, array_merge([
             'mode' => $mode,
             'xml_path' => $xml_path,
@@ -256,7 +284,7 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             return;
         }
 
-        $cursor_after = $this->persist_product_cursor($request_started_ts);
+        $cursor_after = $this->persist_product_cursor($request_started_ts, $sync_context);
         update_option('fflhub_sports_south_fulfillment_last_refresh', current_time('mysql'), false);
         update_option('fflhub_sports_south_fulfillment_last_refresh_count', (int) ($delta_stats['rows_loaded'] ?? 0), false);
         update_option('fflhub_sports_south_fulfillment_last_stage', 'success', false);
@@ -273,6 +301,98 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             'deleted_artifacts' => (int) $deleted_artifacts,
             'deleted_old_artifacts' => (int) $deleted_old_artifacts,
         ]));
+    }
+
+    private function acquire_product_sync_lock(string $mode): string
+    {
+        $ttl = (int) apply_filters(
+            'fflhub_sports_south_product_sync_lock_ttl_seconds',
+            self::PRODUCT_SYNC_LOCK_TTL_SECONDS
+        );
+        $ttl = max(5 * MINUTE_IN_SECONDS, $ttl);
+        $owner = sprintf(
+            '%s:%d:%s',
+            function_exists('gethostname') ? (string) gethostname() : 'unknown-host',
+            function_exists('getmypid') ? (int) getmypid() : 0,
+            function_exists('wp_generate_uuid4') ? wp_generate_uuid4() : md5(uniqid('', true))
+        );
+
+        $payload = [
+            'owner' => $owner,
+            'mode' => $mode,
+            'started_at_utc' => gmdate('Y-m-d H:i:s'),
+            'started_ts' => time(),
+            'ttl_seconds' => $ttl,
+        ];
+
+        if (add_option(self::PRODUCT_SYNC_LOCK_OPTION, $this->encode_json($payload), '', 'no')) {
+            $this->log('Sports South product sync lock acquired.', $payload);
+            return $owner;
+        }
+
+        $existing = $this->decode_lock_payload((string) get_option(self::PRODUCT_SYNC_LOCK_OPTION, ''));
+        $age = time() - (int) ($existing['started_ts'] ?? 0);
+        $existing_ttl = max(1, (int) ($existing['ttl_seconds'] ?? $ttl));
+        if ($age > $existing_ttl) {
+            delete_option(self::PRODUCT_SYNC_LOCK_OPTION);
+            $payload['replaced_stale_lock_owner'] = (string) ($existing['owner'] ?? '');
+            $payload['replaced_stale_lock_age'] = $age;
+            if (add_option(self::PRODUCT_SYNC_LOCK_OPTION, $this->encode_json($payload), '', 'no')) {
+                $this->log('Sports South product sync stale lock replaced.', $payload);
+                return $owner;
+            }
+        }
+
+        $this->log('Sports South product sync skipped because lock is held.', [
+            'requested_mode' => $mode,
+            'existing_owner' => (string) ($existing['owner'] ?? ''),
+            'existing_mode' => (string) ($existing['mode'] ?? ''),
+            'existing_started_at_utc' => (string) ($existing['started_at_utc'] ?? ''),
+            'existing_age_seconds' => $age,
+            'existing_ttl_seconds' => $existing_ttl,
+        ]);
+
+        return '';
+    }
+
+    private function release_product_sync_lock(string $owner): void
+    {
+        $existing = $this->decode_lock_payload((string) get_option(self::PRODUCT_SYNC_LOCK_OPTION, ''));
+        if ((string) ($existing['owner'] ?? '') !== $owner) {
+            $this->log('Sports South product sync lock not released; owner changed.', [
+                'expected_owner' => $owner,
+                'existing_owner' => (string) ($existing['owner'] ?? ''),
+                'existing_mode' => (string) ($existing['mode'] ?? ''),
+            ]);
+            return;
+        }
+
+        delete_option(self::PRODUCT_SYNC_LOCK_OPTION);
+        $this->log('Sports South product sync lock released.', [
+            'owner' => $owner,
+            'mode' => (string) ($existing['mode'] ?? ''),
+        ]);
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function decode_lock_payload(string $payload): array
+    {
+        $decoded = json_decode($payload, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * @param array<string,mixed> $value
+     */
+    private function encode_json(array $value): string
+    {
+        $json = function_exists('wp_json_encode')
+            ? wp_json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
+            : json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return is_string($json) ? $json : '{}';
     }
 
     /**
@@ -380,13 +500,45 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         return gmdate('n/j/Y', $ts - ($lookbackDays * DAY_IN_SECONDS));
     }
 
-    private function persist_product_cursor(int $requestStartedTs): string
+    /**
+     * @param array<string,mixed> $syncContext
+     */
+    private function persist_product_cursor(int $requestStartedTs, array $syncContext): string
     {
         $cursor = gmdate('n/j/Y', $requestStartedTs);
         update_option(self::PRODUCT_CURSOR_OPTION, $cursor, false);
         update_option('fflhub_sports_south_product_catalog_cursor_updated', current_time('mysql'), false);
+        update_option('fflhub_sports_south_product_catalog_last_success_utc', gmdate('Y-m-d H:i:s'), false);
+        update_option('fflhub_sports_south_product_catalog_last_request_date', (string) ($syncContext['last_update'] ?? ''), false);
+        update_option(
+            'fflhub_sports_south_product_catalog_last_lookback_date',
+            (string) ($syncContext['mode'] ?? '') === self::MODE_INCREMENTAL_CATALOG_UPDATE
+                ? (string) ($syncContext['last_update'] ?? '')
+                : '',
+            false
+        );
 
         return $cursor;
+    }
+
+    /**
+     * @param array<string,mixed> $stats
+     */
+    private function maybe_log_large_incremental_response(array $stats): void
+    {
+        $threshold = (int) apply_filters('fflhub_sports_south_product_incremental_row_warning_threshold', 5000);
+        $threshold = max(1000, $threshold);
+        $rows_seen = (int) ($stats['xml_rows_seen'] ?? 0);
+
+        if ($rows_seen <= $threshold) {
+            return;
+        }
+
+        $this->log('WARNING: Sports South incremental DailyItemUpdate returned many rows; LastItem paging may need review.', [
+            'xml_rows_seen' => $rows_seen,
+            'threshold' => $threshold,
+            'paging_implemented' => 0,
+        ]);
     }
 
     private function make_client(): SportsSouthInventoryClient
