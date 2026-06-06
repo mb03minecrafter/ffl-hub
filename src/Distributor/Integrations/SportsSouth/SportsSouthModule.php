@@ -216,15 +216,25 @@ final class SportsSouthModule implements DistributorModuleInterface
                 'label' => 'DailyItemUpdate LastUpdate',
                 'type' => 'text',
                 'placeholder' => '1/1/1990',
-                'description' => 'Keep 1/1/1990 for a full double-buffer table rebuild. Sports South uses mm/dd/yyyy.',
+                'description' => 'Legacy/manual DailyItemUpdate value. Full rebuild mode always uses 1/1/1990. Sports South uses mm/dd/yyyy.',
                 'default' => '1/1/1990',
             ],
             'daily_item_last_item' => [
                 'label' => 'DailyItemUpdate LastItem',
                 'type' => 'text',
                 'placeholder' => '-1',
-                'description' => 'Use -1 to bypass 1000-row paging and return the full DailyItemUpdate payload.',
+                'description' => 'Legacy/manual DailyItemUpdate LastItem. Product catalog sync currently uses -1 for full and incremental requests.',
                 'default' => '-1',
+            ],
+            'daily_item_sync_mode' => [
+                'label' => 'DailyItemUpdate Product Sync Mode',
+                'type' => 'select',
+                'description' => 'Incremental mode uses the saved product catalog cursor with a one-day lookback. Full rebuild mode keeps the old staging-table swap path.',
+                'default' => 'incremental_catalog_update',
+                'options' => [
+                    'incremental_catalog_update' => 'Incremental catalog update',
+                    'full_rebuild' => 'Full rebuild',
+                ],
             ],
             'inventory_since_datetime' => [
                 'label' => 'Initial IncrementalOnhand SinceDateTime',

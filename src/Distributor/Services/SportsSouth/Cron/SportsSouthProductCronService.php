@@ -21,6 +21,11 @@ final class SportsSouthProductCronService extends AbstractTableCronService
 
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][SportsSouthProductCron]';
+    private const MODE_FULL_REBUILD = 'full_rebuild';
+    private const MODE_INCREMENTAL_CATALOG_UPDATE = 'incremental_catalog_update';
+    private const DEFAULT_FULL_LAST_UPDATE = '1/1/1990';
+    private const DEFAULT_FULL_LAST_ITEM = -1;
+    private const PRODUCT_CURSOR_OPTION = 'fflhub_sports_south_product_catalog_cursor_date';
 
     /** @var string[] */
     private array $artifact_paths = [];
@@ -79,17 +84,28 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             return;
         }
 
-        $last_update = trim(Options::get_distributor_option('sports_south', 'daily_item_last_update', '1/1/1990'));
-        if ($last_update === '') {
-            $last_update = '1/1/1990';
+        $configured_last_update = trim(Options::get_distributor_option('sports_south', 'daily_item_last_update', self::DEFAULT_FULL_LAST_UPDATE));
+        if ($configured_last_update === '') {
+            $configured_last_update = self::DEFAULT_FULL_LAST_UPDATE;
         }
 
-        $last_item = (int) Options::get_distributor_option('sports_south', 'daily_item_last_item', '-1');
+        $configured_last_item = (int) Options::get_distributor_option('sports_south', 'daily_item_last_item', (string) self::DEFAULT_FULL_LAST_ITEM);
+        $sync_context = $this->resolve_sync_context($configured_last_update, $configured_last_item);
+        $mode = (string) $sync_context['mode'];
+        $last_update = (string) $sync_context['last_update'];
+        $last_item = (int) $sync_context['last_item'];
+        $request_started_ts = time();
 
         update_option('fflhub_sports_south_fulfillment_last_stage', 'daily_item_update_request', false);
         $this->log('DailyItemUpdate request starting.', [
+            'mode' => $mode,
+            'mode_reason' => (string) ($sync_context['mode_reason'] ?? ''),
+            'cursor_before' => (string) ($sync_context['cursor_before'] ?? ''),
+            'cursor_source' => (string) ($sync_context['cursor_source'] ?? ''),
+            'lookback_days' => (int) ($sync_context['lookback_days'] ?? 0),
             'last_update' => $last_update,
             'last_item' => $last_item,
+            'paging_implemented' => 0,
         ]);
 
         $parser = new SportsSouthProductParser();
@@ -139,6 +155,8 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         $this->profile('DailyItemUpdate request', $t_api, [
             'ok' => empty($response['ok']) ? 0 : 1,
             'status' => (int) ($response['status'] ?? 0),
+            'mode' => $mode,
+            'cursor_before' => (string) ($sync_context['cursor_before'] ?? ''),
             'last_update' => $last_update,
             'last_item' => $last_item,
             'xml_path' => $xml_path,
@@ -167,32 +185,80 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         update_option('fflhub_sports_south_fulfillment_last_stage', 'import_xml', false);
         $t_import = microtime(true);
         $importer = new SportsSouthProductImporterService($this->table, $parser);
-        $count = $importer->import_catalog_file($xml_path, $brand_map, $category_map);
-        $this->profile('Import DailyItemUpdate XML', $t_import, [
-            'rows_imported' => (int) $count,
-            'xml_path' => $xml_path,
-            'brand_map_count' => count($brand_map),
-            'category_map_count' => count($category_map),
-        ]);
+        if ($mode === self::MODE_FULL_REBUILD) {
+            $count = $importer->import_catalog_file($xml_path, $brand_map, $category_map);
+            $this->profile('Import DailyItemUpdate XML', $t_import, [
+                'mode' => $mode,
+                'rows_imported' => (int) $count,
+                'xml_path' => $xml_path,
+                'brand_map_count' => count($brand_map),
+                'category_map_count' => count($category_map),
+            ]);
 
-        if ($count <= 0) {
-            update_option('fflhub_sports_south_fulfillment_last_stage', 'zero_rows_imported', false);
-            update_option('fflhub_sports_south_fulfillment_last_error', current_time('mysql'), false);
-            $this->log('Sports South catalog import produced zero rows; not swapping.');
-            $this->finalize_run($t_start, $mem_start, 'ERROR (0 imported)');
+            if ($count <= 0) {
+                update_option('fflhub_sports_south_fulfillment_last_stage', 'zero_rows_imported', false);
+                update_option('fflhub_sports_south_fulfillment_last_error', current_time('mysql'), false);
+                $this->log('Sports South catalog full import produced zero rows; not swapping.');
+                $this->finalize_run($t_start, $mem_start, 'ERROR (0 imported)', [
+                    'mode' => $mode,
+                    'cursor_before' => (string) ($sync_context['cursor_before'] ?? ''),
+                ]);
+                return;
+            }
+
+            update_option('fflhub_sports_south_fulfillment_last_stage', 'swap_live_table', false);
+            $t_swap = microtime(true);
+            $new_live = $this->table->swap_live_and_staging();
+            $this->profile('Swap staging/live', $t_swap, [
+                'new_live' => (string) $new_live,
+            ]);
+
+            $cursor_after = $this->persist_product_cursor($request_started_ts);
+            update_option('fflhub_sports_south_fulfillment_last_refresh', current_time('mysql'), false);
+            update_option('fflhub_sports_south_fulfillment_last_refresh_count', (int) $count, false);
+            update_option('fflhub_sports_south_fulfillment_last_swap', current_time('mysql'), false);
+            update_option('fflhub_sports_south_fulfillment_last_stage', 'success', false);
+            delete_option('fflhub_sports_south_fulfillment_last_error');
+
+            $deleted_artifacts = $importer->cleanup_last_artifacts();
+            $deleted_artifacts += $this->cleanup_artifact_paths($this->artifact_paths);
+            $deleted_old_artifacts = $this->cleanup_old_generated_artifacts($this->uploads_subdir());
+
+            $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
+                'mode' => $mode,
+                'rows_imported' => (int) $count,
+                'new_live' => (string) $new_live,
+                'cursor_before' => (string) ($sync_context['cursor_before'] ?? ''),
+                'cursor_after' => $cursor_after,
+                'deleted_artifacts' => (int) $deleted_artifacts,
+                'deleted_old_artifacts' => (int) $deleted_old_artifacts,
+            ]);
             return;
         }
 
-        update_option('fflhub_sports_south_fulfillment_last_stage', 'swap_live_table', false);
-        $t_swap = microtime(true);
-        $new_live = $this->table->swap_live_and_staging();
-        $this->profile('Swap staging/live', $t_swap, [
-            'new_live' => (string) $new_live,
-        ]);
+        $delta_stats = $importer->import_catalog_delta_file($xml_path, $brand_map, $category_map);
+        $this->profile('Import DailyItemUpdate XML', $t_import, array_merge([
+            'mode' => $mode,
+            'xml_path' => $xml_path,
+            'brand_map_count' => count($brand_map),
+            'category_map_count' => count($category_map),
+        ], $delta_stats));
 
+        if (!empty($delta_stats['error'])) {
+            update_option('fflhub_sports_south_fulfillment_last_stage', 'incremental_catalog_failed', false);
+            update_option('fflhub_sports_south_fulfillment_last_error', current_time('mysql'), false);
+            $this->log('Sports South catalog incremental update failed.', $delta_stats);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (incremental catalog failed)', [
+                'mode' => $mode,
+                'cursor_before' => (string) ($sync_context['cursor_before'] ?? ''),
+                'error' => (string) ($delta_stats['error'] ?? ''),
+            ]);
+            return;
+        }
+
+        $cursor_after = $this->persist_product_cursor($request_started_ts);
         update_option('fflhub_sports_south_fulfillment_last_refresh', current_time('mysql'), false);
-        update_option('fflhub_sports_south_fulfillment_last_refresh_count', (int) $count, false);
-        update_option('fflhub_sports_south_fulfillment_last_swap', current_time('mysql'), false);
+        update_option('fflhub_sports_south_fulfillment_last_refresh_count', (int) ($delta_stats['rows_loaded'] ?? 0), false);
         update_option('fflhub_sports_south_fulfillment_last_stage', 'success', false);
         delete_option('fflhub_sports_south_fulfillment_last_error');
 
@@ -200,12 +266,127 @@ final class SportsSouthProductCronService extends AbstractTableCronService
         $deleted_artifacts += $this->cleanup_artifact_paths($this->artifact_paths);
         $deleted_old_artifacts = $this->cleanup_old_generated_artifacts($this->uploads_subdir());
 
-        $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
-            'rows_imported' => (int) $count,
-            'new_live' => (string) $new_live,
+        $this->finalize_run($t_start, $mem_start, 'SUCCESS', array_merge($delta_stats, [
+            'mode' => $mode,
+            'cursor_before' => (string) ($sync_context['cursor_before'] ?? ''),
+            'cursor_after' => $cursor_after,
             'deleted_artifacts' => (int) $deleted_artifacts,
             'deleted_old_artifacts' => (int) $deleted_old_artifacts,
-        ]);
+        ]));
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function resolve_sync_context(string $configuredLastUpdate, int $configuredLastItem): array
+    {
+        $cursor = trim((string) get_option(self::PRODUCT_CURSOR_OPTION, ''));
+        $cursor_source = $cursor !== '' ? self::PRODUCT_CURSOR_OPTION : '';
+        if ($cursor === '') {
+            $cursor = $this->bootstrap_product_cursor_from_last_refresh();
+            if ($cursor !== '') {
+                $cursor_source = 'fflhub_sports_south_fulfillment_last_refresh';
+            }
+        }
+        $mode = $this->configured_sync_mode();
+        $reason = 'configured_mode';
+
+        if (
+            defined('FFLHUB_SPORTS_SOUTH_FORCE_FULL_REBUILD')
+            && (bool) constant('FFLHUB_SPORTS_SOUTH_FORCE_FULL_REBUILD')
+        ) {
+            $mode = self::MODE_FULL_REBUILD;
+            $reason = 'FFLHUB_SPORTS_SOUTH_FORCE_FULL_REBUILD';
+        }
+
+        if ($mode === self::MODE_INCREMENTAL_CATALOG_UPDATE && $cursor === '') {
+            $mode = self::MODE_FULL_REBUILD;
+            $reason = 'missing_product_catalog_cursor';
+        }
+
+        if ($mode === self::MODE_FULL_REBUILD) {
+            return [
+                'mode' => self::MODE_FULL_REBUILD,
+                'mode_reason' => $reason,
+                'cursor_before' => $cursor,
+                'cursor_source' => $cursor_source,
+                'lookback_days' => 0,
+                'last_update' => self::DEFAULT_FULL_LAST_UPDATE,
+                'last_item' => self::DEFAULT_FULL_LAST_ITEM,
+                'configured_last_update' => $configuredLastUpdate,
+                'configured_last_item' => $configuredLastItem,
+            ];
+        }
+
+        $lookback_days = (int) apply_filters('fflhub_sports_south_product_catalog_lookback_days', 1);
+        $lookback_days = max(0, min(14, $lookback_days));
+
+        return [
+            'mode' => self::MODE_INCREMENTAL_CATALOG_UPDATE,
+            'mode_reason' => $reason,
+            'cursor_before' => $cursor,
+            'cursor_source' => $cursor_source,
+            'lookback_days' => $lookback_days,
+            'last_update' => $this->daily_item_date_with_lookback($cursor, $lookback_days),
+            'last_item' => self::DEFAULT_FULL_LAST_ITEM,
+            'configured_last_update' => $configuredLastUpdate,
+            'configured_last_item' => $configuredLastItem,
+        ];
+    }
+
+    private function configured_sync_mode(): string
+    {
+        $mode = '';
+        if (defined('FFLHUB_SPORTS_SOUTH_PRODUCT_SYNC_MODE')) {
+            $mode = (string) constant('FFLHUB_SPORTS_SOUTH_PRODUCT_SYNC_MODE');
+        }
+
+        if ($mode === '') {
+            $mode = (string) Options::get_distributor_option(
+                'sports_south',
+                'daily_item_sync_mode',
+                self::MODE_INCREMENTAL_CATALOG_UPDATE
+            );
+        }
+
+        $mode = strtolower(trim($mode));
+        return $mode === self::MODE_FULL_REBUILD
+            ? self::MODE_FULL_REBUILD
+            : self::MODE_INCREMENTAL_CATALOG_UPDATE;
+    }
+
+    private function bootstrap_product_cursor_from_last_refresh(): string
+    {
+        $last_refresh = trim((string) get_option('fflhub_sports_south_fulfillment_last_refresh', ''));
+        if ($last_refresh === '') {
+            return '';
+        }
+
+        $ts = strtotime($last_refresh);
+        if ($ts === false) {
+            return '';
+        }
+
+        return gmdate('n/j/Y', $ts);
+    }
+
+    private function daily_item_date_with_lookback(string $cursor, int $lookbackDays): string
+    {
+        $ts = strtotime($cursor);
+        if ($ts === false) {
+            return gmdate('n/j/Y', time() - ($lookbackDays * DAY_IN_SECONDS));
+        }
+
+        return gmdate('n/j/Y', $ts - ($lookbackDays * DAY_IN_SECONDS));
+    }
+
+    private function persist_product_cursor(int $requestStartedTs): string
+    {
+        $cursor = gmdate('n/j/Y', $requestStartedTs);
+        update_option(self::PRODUCT_CURSOR_OPTION, $cursor, false);
+        update_option('fflhub_sports_south_product_catalog_cursor_updated', current_time('mysql'), false);
+
+        return $cursor;
     }
 
     private function make_client(): SportsSouthInventoryClient

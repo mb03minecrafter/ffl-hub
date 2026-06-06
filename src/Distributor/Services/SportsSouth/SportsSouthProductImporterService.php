@@ -111,6 +111,125 @@ final class SportsSouthProductImporterService
         return $deleted;
     }
 
+    /**
+     * Apply a partial DailyItemUpdate catalog response to the current live table.
+     *
+     * The Sports South distributor row is treated as vendor-owned data. For a
+     * matching UPC, the incoming normalized delta row replaces the existing row
+     * fields the same way a full rebuild would once the table is swapped.
+     *
+     * @param array<string,array<string,mixed>> $brandMap
+     * @param array<string,array<string,mixed>> $categoryMap
+     * @return array<string,mixed>
+     */
+    public function import_catalog_delta_file(string $xmlFilePath, array $brandMap = [], array $categoryMap = []): array
+    {
+        $t_start = microtime(true);
+        $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+        $this->last_artifact_paths = [];
+
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+
+        $live_count_before = $this->count_live_rows();
+
+        if (!is_readable($xmlFilePath)) {
+            return [
+                'mode' => 'incremental_catalog_update',
+                'error' => 'Sports South catalog XML missing/unreadable.',
+                'xml_path' => $xmlFilePath,
+                'live_rows_before' => $live_count_before,
+                'live_rows_after' => $live_count_before,
+                'rows_loaded' => 0,
+                'rows_updated' => 0,
+                'rows_inserted' => 0,
+            ];
+        }
+
+        $columns = $this->table->get_schema()->get_insert_columns();
+        $tsv_path = $this->catalog_tsv_path();
+        if ($tsv_path !== '') {
+            $this->last_artifact_paths[] = $tsv_path;
+        }
+
+        if ($tsv_path === '' || empty($columns)) {
+            return [
+                'mode' => 'incremental_catalog_update',
+                'error' => 'Failed to resolve Sports South delta TSV path or schema columns.',
+                'xml_path' => $xmlFilePath,
+                'live_rows_before' => $live_count_before,
+                'live_rows_after' => $live_count_before,
+                'rows_loaded' => 0,
+                'rows_updated' => 0,
+                'rows_inserted' => 0,
+            ];
+        }
+
+        $t_write = microtime(true);
+        $write_stats = $this->write_catalog_tsv($xmlFilePath, $tsv_path, $columns, $brandMap, $categoryMap);
+        $write_stats['delta_write_ms'] = $this->format_ms((microtime(true) - $t_write) * 1000.0);
+
+        if ((int) ($write_stats['rows_written'] ?? 0) <= 0) {
+            $stats = array_merge($write_stats, [
+                'mode' => 'incremental_catalog_update',
+                'rows_loaded' => 0,
+                'rows_updated' => 0,
+                'rows_inserted' => 0,
+                'live_rows_before' => $live_count_before,
+                'live_rows_after' => $live_count_before,
+                'elapsed_ms' => $this->format_ms((microtime(true) - $t_start) * 1000.0),
+            ]);
+            $this->log('Sports South catalog delta contained no importable rows.', $stats);
+            return $stats;
+        }
+
+        $t_load = microtime(true);
+        $rows_loaded = $this->import_tsv_into_staging($tsv_path, $columns);
+        $load_ms = $this->format_ms((microtime(true) - $t_load) * 1000.0);
+
+        if ($rows_loaded < 0) {
+            return array_merge($write_stats, [
+                'mode' => 'incremental_catalog_update',
+                'error' => 'Failed to load Sports South catalog delta staging table.',
+                'rows_loaded' => 0,
+                'rows_updated' => 0,
+                'rows_inserted' => 0,
+                'delta_stage_load_ms' => $load_ms,
+                'live_rows_before' => $live_count_before,
+                'live_rows_after' => $this->count_live_rows(),
+                'elapsed_ms' => $this->format_ms((microtime(true) - $t_start) * 1000.0),
+            ]);
+        }
+
+        $t_apply = microtime(true);
+        $apply_stats = $this->apply_catalog_delta_from_staging($columns);
+        $apply_ms = $this->format_ms((microtime(true) - $t_apply) * 1000.0);
+        $live_count_after = $this->count_live_rows();
+
+        $stats = array_merge($write_stats, $apply_stats, [
+            'mode' => 'incremental_catalog_update',
+            'rows_loaded' => (int) $rows_loaded,
+            'delta_stage_load_ms' => $load_ms,
+            'delta_apply_ms' => $apply_ms,
+            'live_rows_before' => $live_count_before,
+            'live_rows_after' => $live_count_after,
+            'live_rows_delta' => $live_count_after - $live_count_before,
+            'elapsed_ms' => $this->format_ms((microtime(true) - $t_start) * 1000.0),
+        ]);
+
+        if ($mem_start > 0 && function_exists('memory_get_usage')) {
+            $mem_end = (int) memory_get_usage(true);
+            $stats['memory_start_kb'] = (int) round($mem_start / 1024);
+            $stats['memory_end_kb'] = (int) round($mem_end / 1024);
+            $stats['memory_delta_kb'] = (int) round(($mem_end - $mem_start) / 1024);
+        }
+
+        $this->log('Sports South catalog delta import complete.', $stats);
+
+        return $stats;
+    }
+
     public function apply_onhand_delta_file_to_live(string $xmlFilePath, bool $treatQuantityAsDelta = true): array
     {
         $t_total = microtime(true);
@@ -873,6 +992,98 @@ final class SportsSouthProductImporterService
 
         $result = $wpdb->query($wpdb->prepare($sql, gmdate('Y-m-d H:i:s'))); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         return is_numeric($result) ? (int) $result : 0;
+    }
+
+    /**
+     * @param string[] $columns
+     * @return array<string,mixed>
+     */
+    private function apply_catalog_delta_from_staging(array $columns): array
+    {
+        global $wpdb;
+
+        $live_table = $this->table->get_live_table_name();
+        $stage_table = $this->table->get_staging_table_name();
+        $safe_columns = array_values(array_filter($columns, static fn($column): bool => is_string($column) && $column !== ''));
+        $update_columns = $safe_columns;
+
+        $stage_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stage_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $blank_upc_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stage_table} WHERE upc IS NULL OR upc = '' OR LOWER(upc) = 'null'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $duplicate_upc_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM (SELECT upc FROM {$stage_table} WHERE upc IS NOT NULL AND upc <> '' GROUP BY upc HAVING COUNT(*) > 1) d"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $matched_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stage_table} S INNER JOIN {$live_table} L ON L.upc = S.upc"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $missing_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stage_table} S LEFT JOIN {$live_table} L ON L.upc = S.upc WHERE L.upc IS NULL"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $assignments = [];
+        $comparisons = [];
+        foreach ($update_columns as $column) {
+            $quoted = $this->quote_identifier($column);
+            $assignments[] = "L.{$quoted} = S.{$quoted}";
+            $comparisons[] = "L.{$quoted} <=> S.{$quoted}";
+        }
+
+        $updated = 0;
+        $update_ms = '0.00';
+        if (!empty($assignments) && !empty($comparisons)) {
+            $t_update = microtime(true);
+            $update_sql = "
+                UPDATE {$live_table} L
+                INNER JOIN {$stage_table} S
+                    ON L.upc = S.upc
+                SET
+                    " . implode(",\n                    ", $assignments) . "
+                WHERE NOT (
+                    " . implode("\n                    AND ", $comparisons) . "
+                )
+            ";
+            $result = $wpdb->query($update_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $update_ms = $this->format_ms((microtime(true) - $t_update) * 1000.0);
+            $updated = is_numeric($result) ? (int) $result : 0;
+        }
+
+        $quoted_columns = array_map([$this, 'quote_identifier'], $safe_columns);
+        $column_sql = implode(', ', $quoted_columns);
+        $select_sql = implode(', ', array_map(static fn(string $column): string => 'S.' . $column, $quoted_columns));
+
+        $t_insert = microtime(true);
+        $insert_sql = "
+            INSERT INTO {$live_table} ({$column_sql})
+            SELECT {$select_sql}
+            FROM {$stage_table} S
+            LEFT JOIN {$live_table} L
+                ON L.upc = S.upc
+            WHERE L.upc IS NULL
+        ";
+        $insert_result = $wpdb->query($insert_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $insert_ms = $this->format_ms((microtime(true) - $t_insert) * 1000.0);
+        $inserted = is_numeric($insert_result) ? (int) $insert_result : 0;
+
+        return [
+            'live_table' => $live_table,
+            'delta_stage_table' => $stage_table,
+            'delta_stage_rows' => $stage_count,
+            'blank_upc_count' => $blank_upc_count,
+            'duplicate_upc_count' => $duplicate_upc_count,
+            'matched_existing_rows' => $matched_count,
+            'missing_live_rows' => $missing_count,
+            'catalog_update_columns' => count($update_columns),
+            'rows_updated' => $updated,
+            'rows_inserted' => $inserted,
+            'delta_update_ms' => $update_ms,
+            'delta_insert_ms' => $insert_ms,
+        ];
+    }
+
+    private function count_live_rows(): int
+    {
+        global $wpdb;
+
+        $live_table = $this->table->get_live_table_name();
+        return (int) $wpdb->get_var("SELECT COUNT(*) FROM {$live_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+    }
+
+    private function quote_identifier(string $identifier): string
+    {
+        return '`' . str_replace('`', '``', $identifier) . '`';
     }
 
     private function catalog_tsv_path(): string
