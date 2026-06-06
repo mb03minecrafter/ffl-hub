@@ -246,7 +246,12 @@ final class SportsSouthProductImporterService
         return $stats;
     }
 
-    public function apply_onhand_delta_file_to_live(string $xmlFilePath, bool $treatQuantityAsDelta = true): array
+    public function apply_onhand_delta_file_to_live(string $xmlFilePath, bool $_unusedLegacyQuantityMode = false): array
+    {
+        return $this->apply_onhand_file_to_live($xmlFilePath);
+    }
+
+    public function apply_onhand_file_to_live(string $xmlFilePath): array
     {
         $t_total = microtime(true);
         if (function_exists('set_time_limit')) {
@@ -276,13 +281,34 @@ final class SportsSouthProductImporterService
 
         global $wpdb;
         $t_truncate = microtime(true);
-        $wpdb->query("TRUNCATE TABLE {$stage_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $truncate_result = $wpdb->query("TRUNCATE TABLE {$stage_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $truncate_ms = $this->format_ms((microtime(true) - $t_truncate) * 1000.0);
+        if ($truncate_result === false) {
+            return [
+                'processed_rows' => 0,
+                'rows_loaded' => 0,
+                'join_updated' => 0,
+                'ensure_stage_ms' => $ensure_ms,
+                'truncate_stage_ms' => $truncate_ms,
+                'error' => 'Failed to truncate Sports South onhand stage table: ' . (string) $wpdb->last_error,
+            ];
+        }
 
         $t_insert = microtime(true);
         $rows_loaded = $this->insert_onhand_stage_rows($stage_table, $xmlFilePath);
         $insert_ms = $this->format_ms((microtime(true) - $t_insert) * 1000.0);
-        if ($rows_loaded <= 0) {
+        if ($rows_loaded < 0) {
+            return [
+                'processed_rows' => 0,
+                'rows_loaded' => 0,
+                'join_updated' => 0,
+                'ensure_stage_ms' => $ensure_ms,
+                'truncate_stage_ms' => $truncate_ms,
+                'insert_stage_ms' => $insert_ms,
+                'error' => 'Failed to load Sports South onhand stage rows.',
+            ];
+        }
+        if ($rows_loaded === 0) {
             return [
                 'processed_rows' => 0,
                 'rows_loaded' => 0,
@@ -293,12 +319,34 @@ final class SportsSouthProductImporterService
             ];
         }
 
+        $t_dedupe = microtime(true);
+        $dedupe_stats = $this->prepare_onhand_dedupe_tables($stage_table);
+        $dedupe_ms = $this->format_ms((microtime(true) - $t_dedupe) * 1000.0);
+        if (!empty($dedupe_stats['error'])) {
+            return [
+                'processed_rows' => (int) $rows_loaded,
+                'rows_loaded' => (int) $rows_loaded,
+                'join_updated' => 0,
+                'ensure_stage_ms' => $ensure_ms,
+                'truncate_stage_ms' => $truncate_ms,
+                'insert_stage_ms' => $insert_ms,
+                'dedupe_ms' => $dedupe_ms,
+                'error' => (string) $dedupe_stats['error'],
+            ];
+        }
+
         $live_table = $this->table->get_live_table_name();
+        $item_stage_table = (string) ($dedupe_stats['item_stage_table'] ?? '');
+        $upc_stage_table = (string) ($dedupe_stats['upc_stage_table'] ?? '');
+
+        $item_change_stats = $this->onhand_change_stats($live_table, $item_stage_table, 'item');
+        $upc_change_stats = $this->onhand_change_stats($live_table, $upc_stage_table, 'upc', $item_stage_table);
+
         $t_update_item = microtime(true);
-        $updated_item = $this->update_live_inventory_by_item_number($live_table, $stage_table, $treatQuantityAsDelta);
+        $updated_item = $this->update_live_inventory_by_item_number($live_table, $item_stage_table);
         $update_item_ms = $this->format_ms((microtime(true) - $t_update_item) * 1000.0);
         $t_update_upc = microtime(true);
-        $updated_upc = $this->update_live_inventory_by_upc($live_table, $stage_table, $treatQuantityAsDelta);
+        $updated_upc = $this->update_live_inventory_by_upc($live_table, $upc_stage_table, $item_stage_table);
         $update_upc_ms = $this->format_ms((microtime(true) - $t_update_upc) * 1000.0);
 
         $stats = [
@@ -307,16 +355,27 @@ final class SportsSouthProductImporterService
             'join_updated' => (int) max(0, $updated_item) + (int) max(0, $updated_upc),
             'join_updated_item' => (int) max(0, $updated_item),
             'join_updated_upc' => (int) max(0, $updated_upc),
-            'quantity_mode' => $treatQuantityAsDelta ? 'quantity_delta' : 'current_quantity',
+            'quantity_mode' => 'current_quantity',
             'live_table' => $live_table,
             'stage_table' => $stage_table,
             'ensure_stage_ms' => $ensure_ms,
             'truncate_stage_ms' => $truncate_ms,
             'insert_stage_ms' => $insert_ms,
+            'dedupe_ms' => $dedupe_ms,
             'update_item_ms' => $update_item_ms,
             'update_upc_ms' => $update_upc_ms,
             'apply_total_ms' => $this->format_ms((microtime(true) - $t_total) * 1000.0),
         ];
+        $stats = array_merge($stats, $this->public_dedupe_stats($dedupe_stats), [
+            'item_number_matched_live_rows' => (int) ($item_change_stats['matched_rows'] ?? 0),
+            'upc_fallback_matched_live_rows' => (int) ($upc_change_stats['matched_rows'] ?? 0),
+            'item_number_skipped_no_live_match' => max(0, (int) ($dedupe_stats['dedup_item_rows'] ?? 0) - (int) ($item_change_stats['matched_rows'] ?? 0)),
+            'upc_fallback_skipped_no_live_match' => max(0, (int) ($dedupe_stats['dedup_upc_rows'] ?? 0) - (int) ($upc_change_stats['matched_rows'] ?? 0)),
+            'quantity_changes_count' => (int) ($item_change_stats['quantity_changes'] ?? 0) + (int) ($upc_change_stats['quantity_changes'] ?? 0),
+            'price_changes_count' => (int) ($item_change_stats['price_changes'] ?? 0) + (int) ($upc_change_stats['price_changes'] ?? 0),
+            'out_of_stock_transitions' => (int) ($item_change_stats['out_of_stock_transitions'] ?? 0) + (int) ($upc_change_stats['out_of_stock_transitions'] ?? 0),
+            'in_stock_transitions' => (int) ($item_change_stats['in_stock_transitions'] ?? 0) + (int) ($upc_change_stats['in_stock_transitions'] ?? 0),
+        ]);
 
         $this->log('Sports South onhand update applied.', $stats);
 
@@ -825,18 +884,24 @@ final class SportsSouthProductImporterService
 
         $stage_table = $wpdb->prefix . self::INVENTORY_STAGE_TABLE_SUFFIX;
         $charset = $wpdb->get_charset_collate();
+        $existing = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $stage_table));
+        if ($existing === $stage_table && !$this->inventory_stage_schema_is_current($stage_table)) {
+            $wpdb->query("DROP TABLE IF EXISTS {$stage_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
 
         $sql = "
             CREATE TABLE IF NOT EXISTS {$stage_table} (
                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
                 item_number VARCHAR(64) NOT NULL DEFAULT '',
                 upc VARCHAR(32) NOT NULL DEFAULT '',
-                quantity_delta INT NOT NULL DEFAULT 0,
-                catalog_price VARCHAR(32) NULL,
-                customer_price VARCHAR(32) NULL,
+                current_quantity INT NOT NULL DEFAULT 0,
+                catalog_price DECIMAL(10,2) NULL,
+                customer_price DECIMAL(10,2) NULL,
                 PRIMARY KEY (id),
                 KEY item_number (item_number),
-                KEY upc (upc)
+                KEY upc (upc),
+                KEY item_number_id (item_number, id),
+                KEY upc_id (upc, id)
             ) {$charset};
         ";
 
@@ -849,6 +914,35 @@ final class SportsSouthProductImporterService
         return $stage_table;
     }
 
+    private function inventory_stage_schema_is_current(string $stageTable): bool
+    {
+        global $wpdb;
+
+        $rows = $wpdb->get_results("SHOW COLUMNS FROM {$stageTable}", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if (!is_array($rows) || empty($rows)) {
+            return false;
+        }
+
+        $columns = [];
+        foreach ($rows as $row) {
+            $field = strtolower((string) ($row['Field'] ?? ''));
+            if ($field === '') {
+                continue;
+            }
+
+            $columns[$field] = strtolower((string) ($row['Type'] ?? ''));
+        }
+
+        if (isset($columns['quantity_delta'])) {
+            return false;
+        }
+
+        return isset($columns['current_quantity'], $columns['catalog_price'], $columns['customer_price'])
+            && strpos($columns['current_quantity'], 'int') !== false
+            && strpos($columns['catalog_price'], 'decimal') !== false
+            && strpos($columns['customer_price'], 'decimal') !== false;
+    }
+
     private function insert_onhand_stage_rows(string $stageTable, string $xmlFilePath): int
     {
         if ($this->can_use_load_data_local_infile()) {
@@ -856,6 +950,9 @@ final class SportsSouthProductImporterService
             if ($rows_loaded >= 0) {
                 return (int) $rows_loaded;
             }
+
+            $fallback_rows = $this->insert_onhand_stage_rows_via_php($stageTable, $xmlFilePath);
+            return $fallback_rows > 0 ? (int) $fallback_rows : -1;
         }
 
         return $this->insert_onhand_stage_rows_via_php($stageTable, $xmlFilePath);
@@ -874,9 +971,9 @@ final class SportsSouthProductImporterService
             SET
                 item_number = COALESCE(@I, ''),
                 upc = COALESCE(@U, ''),
-                quantity_delta = CAST(COALESCE(NULLIF(TRIM(@Q), ''), '0') AS SIGNED),
-                catalog_price = COALESCE(@P, ''),
-                customer_price = COALESCE(@C, '')
+                current_quantity = GREATEST(CAST(COALESCE(NULLIF(TRIM(@Q), ''), '0') AS SIGNED), 0),
+                catalog_price = CAST(NULLIF(REGEXP_REPLACE(COALESCE(@P, ''), '[^0-9.-]', ''), '') AS DECIMAL(10,2)),
+                customer_price = CAST(NULLIF(REGEXP_REPLACE(COALESCE(@C, ''), '[^0-9.-]', ''), '') AS DECIMAL(10,2))
         ";
 
         $t_load = microtime(true);
@@ -930,7 +1027,7 @@ final class SportsSouthProductImporterService
                 return;
             }
 
-            $sql = "INSERT INTO {$stageTable} (item_number, upc, quantity_delta, catalog_price, customer_price) VALUES " . implode(', ', $placeholders);
+            $sql = "INSERT INTO {$stageTable} (item_number, upc, current_quantity, catalog_price, customer_price) VALUES " . implode(', ', $placeholders);
             $result = $wpdb->query($wpdb->prepare($sql, $values));
             if ($result !== false) {
                 $loaded += (int) $result;
@@ -950,10 +1047,10 @@ final class SportsSouthProductImporterService
                 return;
             }
 
-            $placeholders[] = '(%s, %s, %d, %s, %s)';
+            $placeholders[] = '(%s, %s, %d, CAST(NULLIF(%s, \'\') AS DECIMAL(10,2)), CAST(NULLIF(%s, \'\') AS DECIMAL(10,2)))';
             $values[] = $item_number;
             $values[] = $upc;
-            $values[] = (int) ($row['quantity_delta'] ?? 0);
+            $values[] = (int) ($row['current_quantity'] ?? 0);
             $values[] = (string) ($row['catalog_price'] ?? '');
             $values[] = (string) ($row['customer_price'] ?? '');
 
@@ -978,70 +1075,218 @@ final class SportsSouthProductImporterService
         return (int) $loaded;
     }
 
-    private function update_live_inventory_by_item_number(string $liveTable, string $stageTable, bool $treatQuantityAsDelta): int
+    /**
+     * @return array<string,mixed>
+     */
+    private function prepare_onhand_dedupe_tables(string $stageTable): array
+    {
+        global $wpdb;
+
+        $suffix = substr(md5(uniqid('', true)), 0, 10);
+        $item_table = $wpdb->prefix . 'tmp_ss_onhand_item_' . $suffix;
+        $upc_table = $wpdb->prefix . 'tmp_ss_onhand_upc_' . $suffix;
+        $t_item = microtime(true);
+
+        $stage_rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $blank_item_and_upc_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable} WHERE item_number = '' AND upc = ''"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $duplicate_item_number_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM (SELECT item_number FROM {$stageTable} WHERE item_number <> '' GROUP BY item_number HAVING COUNT(*) > 1) d"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $duplicate_upc_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM (SELECT upc FROM {$stageTable} WHERE upc <> '' GROUP BY upc HAVING COUNT(*) > 1) d"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $sql = "
+            CREATE TEMPORARY TABLE {$item_table} AS
+            SELECT S.*
+            FROM {$stageTable} S
+            INNER JOIN (
+                SELECT item_number, MAX(id) AS max_id
+                FROM {$stageTable}
+                WHERE item_number <> ''
+                GROUP BY item_number
+            ) D ON D.max_id = S.id
+        ";
+        $created_item = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($created_item === false) {
+            return [
+                'error' => 'Failed to create Sports South item-number dedupe table: ' . (string) $wpdb->last_error,
+                'stage_rows' => $stage_rows,
+            ];
+        }
+
+        $wpdb->query("ALTER TABLE {$item_table} ADD PRIMARY KEY (id), ADD KEY item_number (item_number), ADD KEY upc (upc)"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $dedupe_item_ms = $this->format_ms((microtime(true) - $t_item) * 1000.0);
+
+        $t_upc = microtime(true);
+        $sql = "
+            CREATE TEMPORARY TABLE {$upc_table} AS
+            SELECT S.*
+            FROM {$stageTable} S
+            INNER JOIN (
+                SELECT upc, MAX(id) AS max_id
+                FROM {$stageTable}
+                WHERE item_number = '' AND upc <> ''
+                GROUP BY upc
+            ) D ON D.max_id = S.id
+        ";
+        $created_upc = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($created_upc === false) {
+            return [
+                'error' => 'Failed to create Sports South UPC fallback dedupe table: ' . (string) $wpdb->last_error,
+                'stage_rows' => $stage_rows,
+                'item_stage_table' => $item_table,
+            ];
+        }
+
+        $wpdb->query("ALTER TABLE {$upc_table} ADD PRIMARY KEY (id), ADD KEY upc (upc)"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $dedupe_upc_ms = $this->format_ms((microtime(true) - $t_upc) * 1000.0);
+
+        return [
+            'stage_rows' => $stage_rows,
+            'blank_item_and_upc_count' => $blank_item_and_upc_count,
+            'duplicate_item_number_count' => $duplicate_item_number_count,
+            'duplicate_upc_count' => $duplicate_upc_count,
+            'item_stage_table' => $item_table,
+            'upc_stage_table' => $upc_table,
+            'dedup_item_rows' => (int) $wpdb->get_var("SELECT COUNT(*) FROM {$item_table}"), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'dedup_upc_rows' => (int) $wpdb->get_var("SELECT COUNT(*) FROM {$upc_table}"), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'dedupe_item_ms' => $dedupe_item_ms,
+            'dedupe_upc_ms' => $dedupe_upc_ms,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $stats
+     * @return array<string,mixed>
+     */
+    private function public_dedupe_stats(array $stats): array
+    {
+        return [
+            'stage_rows' => (int) ($stats['stage_rows'] ?? 0),
+            'blank_item_and_upc_count' => (int) ($stats['blank_item_and_upc_count'] ?? 0),
+            'duplicate_item_number_count' => (int) ($stats['duplicate_item_number_count'] ?? 0),
+            'duplicate_upc_count' => (int) ($stats['duplicate_upc_count'] ?? 0),
+            'dedup_item_rows' => (int) ($stats['dedup_item_rows'] ?? 0),
+            'dedup_upc_rows' => (int) ($stats['dedup_upc_rows'] ?? 0),
+            'dedupe_item_ms' => (string) ($stats['dedupe_item_ms'] ?? '0.00'),
+            'dedupe_upc_ms' => (string) ($stats['dedupe_upc_ms'] ?? '0.00'),
+        ];
+    }
+
+    /**
+     * @return array<string,int>
+     */
+    private function onhand_change_stats(string $liveTable, string $stageTable, string $mode, string $excludeItemStageTable = ''): array
+    {
+        if ($stageTable === '') {
+            return [];
+        }
+
+        global $wpdb;
+
+        $join = $mode === 'upc'
+            ? "S.upc <> '' AND L.upc = S.upc"
+            : "S.item_number <> '' AND L.sports_south_item_number = S.item_number";
+        $exclude_join = '';
+        $exclude_where = '';
+        if ($mode === 'upc' && $excludeItemStageTable !== '') {
+            $exclude_join = "
+            LEFT JOIN {$excludeItemStageTable} SI
+                ON SI.item_number <> '' AND L.sports_south_item_number = SI.item_number";
+            $exclude_where = 'WHERE SI.id IS NULL';
+        }
+        $current_qty_expression = "CAST(COALESCE(NULLIF(L.inventory_quantity, ''), '0') AS SIGNED)";
+        $live_price_expression = "CAST(NULLIF(L.distributor_price, '') AS DECIMAL(10,2))";
+        $live_catalog_expression = "CAST(NULLIF(L.catalog_price, '') AS DECIMAL(10,2))";
+
+        $sql = "
+            SELECT
+                COUNT(*) AS matched_rows,
+                SUM(CASE WHEN {$current_qty_expression} <> S.current_quantity THEN 1 ELSE 0 END) AS quantity_changes,
+                SUM(CASE
+                    WHEN (
+                        S.customer_price IS NOT NULL
+                        AND NOT ({$live_price_expression} <=> S.customer_price)
+                    ) OR (
+                        S.catalog_price IS NOT NULL
+                        AND NOT ({$live_catalog_expression} <=> S.catalog_price)
+                    )
+                    THEN 1 ELSE 0
+                END) AS price_changes,
+                SUM(CASE WHEN {$current_qty_expression} > 0 AND S.current_quantity <= 0 THEN 1 ELSE 0 END) AS out_of_stock_transitions,
+                SUM(CASE WHEN {$current_qty_expression} <= 0 AND S.current_quantity > 0 THEN 1 ELSE 0 END) AS in_stock_transitions
+            FROM {$liveTable} L
+            INNER JOIN {$stageTable} S
+                ON {$join}
+            {$exclude_join}
+            {$exclude_where}
+        ";
+
+        $row = $wpdb->get_row($sql, ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if (!is_array($row)) {
+            return [];
+        }
+
+        return [
+            'matched_rows' => (int) ($row['matched_rows'] ?? 0),
+            'quantity_changes' => (int) ($row['quantity_changes'] ?? 0),
+            'price_changes' => (int) ($row['price_changes'] ?? 0),
+            'out_of_stock_transitions' => (int) ($row['out_of_stock_transitions'] ?? 0),
+            'in_stock_transitions' => (int) ($row['in_stock_transitions'] ?? 0),
+        ];
+    }
+
+    private function update_live_inventory_by_item_number(string $liveTable, string $stageTable): int
     {
         global $wpdb;
 
         $current_qty_expression = "CAST(COALESCE(NULLIF(L.inventory_quantity, ''), '0') AS SIGNED)";
-        $incoming_qty_expression = 'GREATEST(S.quantity_delta, 0)';
-        $qty_expression = $treatQuantityAsDelta
-            ? "GREATEST({$current_qty_expression} + S.quantity_delta, 0)"
-            : $incoming_qty_expression;
-        $quantity_changed_condition = $treatQuantityAsDelta
-            ? 'S.quantity_delta <> 0'
-            : "{$current_qty_expression} <> {$incoming_qty_expression}";
+        $live_price_expression = "CAST(NULLIF(L.distributor_price, '') AS DECIMAL(10,2))";
+        $live_catalog_expression = "CAST(NULLIF(L.catalog_price, '') AS DECIMAL(10,2))";
 
         $sql = "
             UPDATE {$liveTable} L
             INNER JOIN {$stageTable} S
                 ON S.item_number <> '' AND L.sports_south_item_number = S.item_number
             SET
-                L.inventory_quantity = CAST({$qty_expression} AS CHAR),
-                L.allocation_status = CASE WHEN {$qty_expression} > 0 THEN 'in_stock' ELSE 'out_of_stock' END,
-                L.catalog_price = CASE WHEN S.catalog_price <> '' THEN S.catalog_price ELSE L.catalog_price END,
-                L.distributor_price = CASE WHEN S.customer_price <> '' THEN S.customer_price ELSE L.distributor_price END,
+                L.inventory_quantity = CAST(S.current_quantity AS CHAR),
+                L.allocation_status = CASE WHEN S.current_quantity > 0 THEN 'in_stock' ELSE 'out_of_stock' END,
+                L.catalog_price = CASE WHEN S.catalog_price IS NOT NULL THEN CAST(S.catalog_price AS CHAR) ELSE L.catalog_price END,
+                L.distributor_price = CASE WHEN S.customer_price IS NOT NULL THEN CAST(S.customer_price AS CHAR) ELSE L.distributor_price END,
                 L.last_onhand_utc = %s
             WHERE
-                {$quantity_changed_condition}
-                OR (S.customer_price <> '' AND COALESCE(L.distributor_price, '') <> S.customer_price)
-                OR (S.catalog_price <> '' AND COALESCE(L.catalog_price, '') <> S.catalog_price)
+                {$current_qty_expression} <> S.current_quantity
+                OR (S.customer_price IS NOT NULL AND NOT ({$live_price_expression} <=> S.customer_price))
+                OR (S.catalog_price IS NOT NULL AND NOT ({$live_catalog_expression} <=> S.catalog_price))
         ";
 
         $result = $wpdb->query($wpdb->prepare($sql, gmdate('Y-m-d H:i:s'))); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         return is_numeric($result) ? (int) $result : 0;
     }
 
-    private function update_live_inventory_by_upc(string $liveTable, string $stageTable, bool $treatQuantityAsDelta): int
+    private function update_live_inventory_by_upc(string $liveTable, string $stageTable, string $itemStageTable): int
     {
         global $wpdb;
 
         $current_qty_expression = "CAST(COALESCE(NULLIF(L.inventory_quantity, ''), '0') AS SIGNED)";
-        $incoming_qty_expression = 'GREATEST(S.quantity_delta, 0)';
-        $qty_expression = $treatQuantityAsDelta
-            ? "GREATEST({$current_qty_expression} + S.quantity_delta, 0)"
-            : $incoming_qty_expression;
-        $quantity_changed_condition = $treatQuantityAsDelta
-            ? 'S.quantity_delta <> 0'
-            : "{$current_qty_expression} <> {$incoming_qty_expression}";
+        $live_price_expression = "CAST(NULLIF(L.distributor_price, '') AS DECIMAL(10,2))";
+        $live_catalog_expression = "CAST(NULLIF(L.catalog_price, '') AS DECIMAL(10,2))";
 
         $sql = "
             UPDATE {$liveTable} L
             INNER JOIN {$stageTable} S
                 ON S.upc <> '' AND L.upc = S.upc
-            LEFT JOIN {$stageTable} SI
+            LEFT JOIN {$itemStageTable} SI
                 ON SI.item_number <> '' AND L.sports_south_item_number = SI.item_number
             SET
-                L.inventory_quantity = CAST({$qty_expression} AS CHAR),
-                L.allocation_status = CASE WHEN {$qty_expression} > 0 THEN 'in_stock' ELSE 'out_of_stock' END,
-                L.catalog_price = CASE WHEN S.catalog_price <> '' THEN S.catalog_price ELSE L.catalog_price END,
-                L.distributor_price = CASE WHEN S.customer_price <> '' THEN S.customer_price ELSE L.distributor_price END,
+                L.inventory_quantity = CAST(S.current_quantity AS CHAR),
+                L.allocation_status = CASE WHEN S.current_quantity > 0 THEN 'in_stock' ELSE 'out_of_stock' END,
+                L.catalog_price = CASE WHEN S.catalog_price IS NOT NULL THEN CAST(S.catalog_price AS CHAR) ELSE L.catalog_price END,
+                L.distributor_price = CASE WHEN S.customer_price IS NOT NULL THEN CAST(S.customer_price AS CHAR) ELSE L.distributor_price END,
                 L.last_onhand_utc = %s
             WHERE
                 SI.id IS NULL
                 AND (
-                    {$quantity_changed_condition}
-                    OR (S.customer_price <> '' AND COALESCE(L.distributor_price, '') <> S.customer_price)
-                    OR (S.catalog_price <> '' AND COALESCE(L.catalog_price, '') <> S.catalog_price)
+                    {$current_qty_expression} <> S.current_quantity
+                    OR (S.customer_price IS NOT NULL AND NOT ({$live_price_expression} <=> S.customer_price))
+                    OR (S.catalog_price IS NOT NULL AND NOT ({$live_catalog_expression} <=> S.catalog_price))
                 )
         ";
 

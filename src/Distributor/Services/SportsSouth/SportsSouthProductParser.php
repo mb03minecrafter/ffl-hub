@@ -225,10 +225,49 @@ final class SportsSouthProductParser
         return [
             'item_number' => $item_number,
             'upc' => $upc,
-            'quantity_delta' => (string) ((int) $quantity),
+            'current_quantity' => (string) max(0, (int) $quantity),
             'catalog_price' => $this->money_string($this->first($raw, ['P', 'CATALOGPRICE', 'CATALOG_PRICE'])),
             'customer_price' => $this->money_string($this->first($raw, ['C', 'CUSTOMERPRICE', 'CUSTOMER_PRICE'])),
         ];
+    }
+
+    public function extract_next_since_datetime_from_file(string $filePath): string
+    {
+        if (!is_readable($filePath)) {
+            return '';
+        }
+
+        $candidates = [];
+
+        if (class_exists('\XMLReader')) {
+            $reader = new \XMLReader();
+            if ($reader->open($filePath, null, LIBXML_NONET | LIBXML_NOCDATA)) {
+                while ($reader->read()) {
+                    if ($reader->nodeType !== \XMLReader::ELEMENT) {
+                        continue;
+                    }
+
+                    $name = $reader->localName;
+                    if (!is_string($name) || !preg_match('/(?:ServerTime|SERVERTIME|ServerDateTime|SinceDateTime|SinceDate|TimeStamp|Timestamp|DATETIME|LASTUPDATE)$/i', $name)) {
+                        continue;
+                    }
+
+                    $value = trim(html_entity_decode((string) $reader->readString(), ENT_QUOTES | ENT_XML1, 'UTF-8'));
+                    if ($value !== '') {
+                        $candidates[] = $value;
+                    }
+                }
+
+                $reader->close();
+            }
+        }
+
+        if (!empty($candidates)) {
+            return $this->format_since_datetime((string) end($candidates));
+        }
+
+        $tail = $this->read_file_tail($filePath, 1048576);
+        return $tail !== '' ? $this->extract_next_since_datetime($tail) : '';
     }
 
     /**
@@ -272,7 +311,7 @@ final class SportsSouthProductParser
 
     public function extract_next_since_datetime(string $xml): string
     {
-        if (preg_match('/<SERVERTIME\b[^>]*>(.*?)<\/SERVERTIME>/is', $xml, $server_time_match)) {
+        if (preg_match('/<(?:SERVERTIME|ServerTime)\b[^>]*>(.*?)<\/(?:SERVERTIME|ServerTime)>/is', $xml, $server_time_match)) {
             $server_time = trim(html_entity_decode((string) ($server_time_match[1] ?? ''), ENT_QUOTES | ENT_XML1, 'UTF-8'));
             if ($server_time !== '') {
                 return $this->format_since_datetime($server_time);
@@ -475,6 +514,31 @@ final class SportsSouthProductParser
         $fixed = preg_replace('/<(?!(?:\/?(?:NewDataSet|Table|Onhand|ServerDateTime|[A-Z][A-Z0-9_]*)(?:\s[^<>]*)?\/?>|[?!]))/', '&lt;', $xml);
 
         return is_string($fixed) ? $fixed : $xml;
+    }
+
+    private function read_file_tail(string $filePath, int $bytes): string
+    {
+        $handle = fopen($filePath, 'rb');
+        if (!$handle) {
+            return '';
+        }
+
+        $size = filesize($filePath);
+        if (!is_numeric($size) || (int) $size <= 0) {
+            fclose($handle);
+            return '';
+        }
+
+        $size = (int) $size;
+        $offset = max(0, $size - max(1, $bytes));
+        if ($offset > 0) {
+            fseek($handle, $offset);
+        }
+
+        $tail = stream_get_contents($handle);
+        fclose($handle);
+
+        return is_string($tail) ? $tail : '';
     }
 
     /**
