@@ -180,8 +180,8 @@ final class SportsSouthProductParser
 
             'ffl_required' => '0',
             'sot_required' => '0',
-            'dropship_enabled' => $this->dropship_enabled($raw) ? '1' : '0',
-            'dropship_block_reason' => $this->dropship_enabled($raw) ? '' : 'feed_flag',
+            'dropship_enabled' => '1',
+            'dropship_block_reason' => '',
             'restricted_states' => $restricted_states,
 
             'shipping_weight' => $this->weight_ounces($this->first($raw, ['WTPBX', 'WEIGHT', 'WT', 'SHPWT'])),
@@ -678,19 +678,6 @@ final class SportsSouthProductParser
         $value = (string) preg_replace('/\s+/', ' ', $value);
 
         return trim($value);
-    }
-
-    /**
-     * @param array<string,mixed> $raw
-     */
-    private function dropship_enabled(array $raw): bool
-    {
-        $flag = strtoupper($this->first($raw, ['DROPSHIP', 'DROPSHIPENABLED', 'FULFILLMENT', 'CANSHIPDIRECT']));
-        if ($flag === '') {
-            return true;
-        }
-
-        return !in_array($flag, ['0', 'N', 'NO', 'FALSE', 'F'], true);
     }
 
     /**

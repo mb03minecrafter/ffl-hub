@@ -2,7 +2,6 @@
 
 namespace FFLHub\Distributor\Services\SportsSouth;
 
-use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Util\DebugLogUtil;
 
@@ -361,7 +360,6 @@ final class SportsSouthProductImporterService
             $row = $this->apply_brand_map($row, $brandMap, $brand_hits);
             $row = $this->apply_category_map($row, $categoryMap, $category_hits);
             $row = SportsSouthFulfillmentPolicy::apply_to_row($row);
-            $row = SigDropshipApproval::apply_to_row('sports_south', $row);
             $row = $this->apply_shipping_cost_rule($row);
             if (SportsSouthFulfillmentPolicy::is_policy_blocked_row($row)) {
                 $fulfillment_policy_blocks++;
@@ -434,7 +432,6 @@ final class SportsSouthProductImporterService
             'brand_map_ms' => 0.0,
             'category_map_ms' => 0.0,
             'fulfillment_policy_ms' => 0.0,
-            'sig_policy_ms' => 0.0,
             'accessories_skip_check_ms' => 0.0,
             'values_array_build_ms' => 0.0,
             'fputcsv_ms' => 0.0,
@@ -474,12 +471,6 @@ final class SportsSouthProductImporterService
                 $row = SportsSouthFulfillmentPolicy::apply_to_row($row);
                 if ($deep_profile) {
                     $detail_ms['fulfillment_policy_ms'] += (microtime(true) - $t) * 1000.0;
-                    $t = microtime(true);
-                }
-
-                $row = SigDropshipApproval::apply_to_row('sports_south', $row);
-                if ($deep_profile) {
-                    $detail_ms['sig_policy_ms'] += (microtime(true) - $t) * 1000.0;
                 }
 
                 $row = $this->apply_shipping_cost_rule($row);

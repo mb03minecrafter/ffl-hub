@@ -18,6 +18,7 @@ final class SportsSouthFulfillmentPolicy
     private const BLOCK_REASON_NO_FULFILLMENT = 'manufacturer_policy=no_fulfillment';
     private const BLOCK_REASON_FACTORY_APPROVAL = 'manufacturer_policy=factory_approval_required';
     private const BLOCK_REASON_SIZE_WEIGHT = 'sports_south_size_weight_restricted';
+    private const BLOCK_REASON_NFA_OR_SOT = 'nfa_or_sot';
 
     /**
      * Manufacturer lines Sports South says cannot process through fulfillment.
@@ -146,6 +147,10 @@ final class SportsSouthFulfillmentPolicy
      */
     public static function apply_to_row(array $row): array
     {
+        if (SigDropshipApproval::row_is_nfa_or_sot($row)) {
+            return self::block($row, self::BLOCK_REASON_NFA_OR_SOT);
+        }
+
         $item_number = self::normalize_item_number((string) ($row['sports_south_item_number'] ?? $row['remote_identifier'] ?? ''));
         if ($item_number !== '' && isset(self::SIZE_WEIGHT_RESTRICTED_ITEMS[$item_number])) {
             return self::block($row, self::BLOCK_REASON_SIZE_WEIGHT);
@@ -199,7 +204,8 @@ final class SportsSouthFulfillmentPolicy
         $reason = (string) ($row['dropship_block_reason'] ?? '');
 
         return strpos($reason, 'manufacturer_policy=') === 0
-            || $reason === self::BLOCK_REASON_SIZE_WEIGHT;
+            || $reason === self::BLOCK_REASON_SIZE_WEIGHT
+            || $reason === self::BLOCK_REASON_NFA_OR_SOT;
     }
 
     /**
