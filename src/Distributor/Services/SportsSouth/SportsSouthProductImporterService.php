@@ -4,7 +4,6 @@ namespace FFLHub\Distributor\Services\SportsSouth;
 
 use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
-use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
@@ -82,19 +81,6 @@ final class SportsSouthProductImporterService
             'rows_inserted' => (int) $count,
             'elapsed_ms' => number_format((microtime(true) - $t_start) * 1000.0, 2, '.', ''),
         ]);
-
-        $mode = $this->product_importer_mode();
-        if (in_array($mode, ['loadxml_shadow', 'loadxml'], true)) {
-            $t_shadow = microtime(true);
-            $shadow_stats = (new SportsSouthLoadXmlProductImporterService($this->table))
-                ->run_shadow_validation($xmlFilePath, $this->table->get_staging_table_name());
-            $shadow_stats['elapsed_ms'] = $this->format_ms((microtime(true) - $t_shadow) * 1000.0);
-            $shadow_stats['requested_mode'] = $mode;
-            if ($mode === 'loadxml') {
-                $shadow_stats['source_of_truth'] = 'legacy_fallback_until_shadow_is_explicitly_promoted';
-            }
-            $ctx['loadxml_shadow'] = $shadow_stats;
-        }
 
         if ($mem_start > 0 && function_exists('memory_get_usage')) {
             $mem_end = (int) memory_get_usage(true);
@@ -923,17 +909,6 @@ final class SportsSouthProductImporterService
         }
 
         return $dir;
-    }
-
-    private function product_importer_mode(): string
-    {
-        $mode = Options::get_distributor_option('sports_south', 'product_importer_mode', 'legacy');
-        $mode = strtolower(trim((string) $mode));
-        if (!in_array($mode, ['legacy', 'loadxml_shadow', 'loadxml'], true)) {
-            return 'legacy';
-        }
-
-        return $mode;
     }
 
     private function can_use_load_data_local_infile(): bool

@@ -203,69 +203,6 @@ final class SportsSouthFulfillmentPolicy
     }
 
     /**
-     * @return array<int,array{manufacturer_key:string,policy_type:string,block_reason:string,factory_group:string,approved:int,sig_group:int}>
-     */
-    public static function sql_policy_reference_rows(): array
-    {
-        $rows = [];
-        foreach (self::NO_FULFILLMENT_MANUFACTURERS as $manufacturer) {
-            $key = self::normalize_manufacturer($manufacturer);
-            if ($key === '') {
-                continue;
-            }
-
-            $rows[] = [
-                'manufacturer_key' => $key,
-                'policy_type' => 'no_fulfillment',
-                'block_reason' => self::BLOCK_REASON_NO_FULFILLMENT,
-                'factory_group' => '',
-                'approved' => 0,
-                'sig_group' => 0,
-            ];
-        }
-
-        foreach (self::FACTORY_APPROVAL_GROUPS as $group => $def) {
-            $approved = $group === 'sig_sauer'
-                ? SigDropshipApproval::is_distributor_sig_approved('sports_south')
-                : Options::get_distributor_option('sports_south', self::setting_key((string) $group), '0') === '1';
-            $aliases = isset($def['aliases']) && is_array($def['aliases']) ? $def['aliases'] : [];
-            foreach ($aliases as $alias) {
-                $key = self::normalize_manufacturer((string) $alias);
-                if ($key === '') {
-                    continue;
-                }
-
-                $rows[] = [
-                    'manufacturer_key' => $key,
-                    'policy_type' => 'factory_approval',
-                    'block_reason' => self::BLOCK_REASON_FACTORY_APPROVAL . ':' . (string) $group,
-                    'factory_group' => (string) $group,
-                    'approved' => $approved ? 1 : 0,
-                    'sig_group' => $group === 'sig_sauer' ? 1 : 0,
-                ];
-            }
-        }
-
-        return $rows;
-    }
-
-    /**
-     * @return array<string,string>
-     */
-    public static function size_weight_restricted_item_rows(): array
-    {
-        $rows = [];
-        foreach (array_keys(self::SIZE_WEIGHT_RESTRICTED_ITEMS) as $item_number) {
-            $normalized = self::normalize_item_number((string) $item_number);
-            if ($normalized !== '') {
-                $rows[$normalized] = self::BLOCK_REASON_SIZE_WEIGHT;
-            }
-        }
-
-        return $rows;
-    }
-
-    /**
      * @param array<string,mixed> $row
      * @return array<string,mixed>
      */

@@ -226,17 +226,6 @@ final class SportsSouthModule implements DistributorModuleInterface
                 'description' => 'Use -1 to bypass 1000-row paging and return the full DailyItemUpdate payload.',
                 'default' => '-1',
             ],
-            'product_importer_mode' => [
-                'label' => 'Product Importer Mode',
-                'type' => 'select',
-                'description' => 'Legacy is the source of truth. LOAD XML Shadow runs the experimental SQL importer after legacy for timing and validation only.',
-                'default' => 'legacy',
-                'options' => [
-                    'legacy' => 'Legacy XMLReader + TSV',
-                    'loadxml_shadow' => 'LOAD XML Shadow Validation',
-                    'loadxml' => 'LOAD XML Experimental (falls back to legacy until validated)',
-                ],
-            ],
             'inventory_since_datetime' => [
                 'label' => 'Initial IncrementalOnhand SinceDateTime',
                 'type' => 'text',
