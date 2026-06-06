@@ -114,10 +114,18 @@ final class SigDropshipApproval
      */
     public static function row_is_nfa_or_sot(array $row): bool
     {
-        foreach (['sot_required', 'sotRequired', 'sot', 'requires_sot'] as $key) {
-            if (array_key_exists($key, $row) && self::truthy_flag($row[$key])) {
-                return true;
+        $explicit = false;
+        foreach (self::explicit_sot_keys() as $key) {
+            if (array_key_exists($key, $row)) {
+                $explicit = true;
+                if (self::truthy_flag($row[$key])) {
+                    return true;
+                }
             }
+        }
+
+        if ($explicit) {
+            return false;
         }
 
         foreach ([
@@ -181,11 +189,15 @@ final class SigDropshipApproval
         $parts = [];
         $columns = self::existing_columns($table_name);
 
-        foreach (['sot_required', 'sotRequired', 'sot', 'requires_sot'] as $column) {
+        foreach (self::explicit_sot_keys() as $column) {
             if (in_array($column, $columns, true)) {
                 $quoted = self::quote_identifier($column);
                 $parts[] = "{$quoted} = 1 OR UPPER(TRIM({$quoted})) IN ('1','Y','YES','TRUE')";
             }
+        }
+
+        if (!empty($parts)) {
+            return '(' . implode(') OR (', $parts) . ')';
         }
 
         foreach ([
@@ -222,6 +234,19 @@ final class SigDropshipApproval
         }
 
         return '(' . implode(') OR (', $parts) . ')';
+    }
+
+    /**
+     * @return string[]
+     */
+    private static function explicit_sot_keys(): array
+    {
+        return [
+            'sot_required',
+            'sotRequired',
+            'sot',
+            'requires_sot',
+        ];
     }
 
     /**
