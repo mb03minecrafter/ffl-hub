@@ -251,8 +251,8 @@ final class FFLRepository
 
     public static function get_expiration_by_number(FFLTable $table, string $ffl_number): string
     {
-        $ffl_number = FFLRowMapper::normalize_ffl_number($ffl_number);
-        if ($ffl_number === '') {
+        $normalized = FFLRowMapper::normalize_ffl_number($ffl_number);
+        if ($normalized === '') {
             return '';
         }
 
@@ -262,19 +262,46 @@ final class FFLRepository
 
         $sql = $wpdb->prepare(
             "SELECT ffl_expiration FROM {$table_name} WHERE ffl_number = %s LIMIT 1",
-            $ffl_number
+            $normalized
         );
 
-        $val = $wpdb->get_var($sql);
-        if (!is_string($val)) {
+        $expiration = self::normalize_expiration_value($wpdb->get_var($sql));
+        if ($expiration !== '') {
+            return $expiration;
+        }
+
+        $compact = self::normalize_ffl_number_without_punctuation($normalized);
+        if ($compact === '') {
             return '';
         }
 
-        // DB DATE should already be YYYY-MM-DD, but normalize defensively:
-        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $val)) {
-            return $val;
+        $sql = $wpdb->prepare(
+            "SELECT ffl_expiration
+             FROM {$table_name}
+             WHERE REPLACE(REPLACE(REPLACE(UPPER(ffl_number), '-', ''), ' ', ''), '.', '') = %s
+             LIMIT 1",
+            $compact
+        );
+
+        return self::normalize_expiration_value($wpdb->get_var($sql));
+    }
+
+    private static function normalize_ffl_number_without_punctuation(string $ffl_number): string
+    {
+        $normalized = preg_replace('/[^A-Z0-9]/', '', strtoupper(trim($ffl_number)));
+
+        return is_string($normalized) ? $normalized : '';
+    }
+
+    /**
+     * DB DATE should already be YYYY-MM-DD, but normalize defensively.
+     */
+    private static function normalize_expiration_value($value): string
+    {
+        if (!is_string($value)) {
+            return '';
         }
 
-        return '';
+        return preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) ? $value : '';
     }
 }
