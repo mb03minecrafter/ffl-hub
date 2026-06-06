@@ -19,10 +19,6 @@
  * distributor tables, WooCommerce posts, or Action Scheduler jobs.
  */
 
-use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient;
-use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductParser;
-use FFLHub\Settings\Options;
-
 if (!defined('ABSPATH')) {
     fwrite(STDERR, "This script must be run through WP-CLI eval-file.\n");
     exit(1);
@@ -319,12 +315,12 @@ function fflhub_ss_bench_make_sample_xml(string $sourcePath, string $destPath, i
 
 function fflhub_ss_bench_download_xml(string $xmlPath, string $lastUpdate, int $lastItem): array
 {
-    $client = new SportsSouthInventoryClient(
-        (string) Options::get_distributor_option('sports_south', 'customer_number', ''),
-        (string) Options::get_distributor_option('sports_south', 'username', ''),
-        (string) Options::get_distributor_option('sports_south', 'password', ''),
-        (string) Options::get_distributor_option('sports_south', 'source', ''),
-        (string) Options::get_distributor_option('sports_south', 'inventory_api_base_url', SportsSouthInventoryClient::DEFAULT_BASE_URL),
+    $client = new \FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient(
+        (string) \FFLHub\Settings\Options::get_distributor_option('sports_south', 'customer_number', ''),
+        (string) \FFLHub\Settings\Options::get_distributor_option('sports_south', 'username', ''),
+        (string) \FFLHub\Settings\Options::get_distributor_option('sports_south', 'password', ''),
+        (string) \FFLHub\Settings\Options::get_distributor_option('sports_south', 'source', ''),
+        (string) \FFLHub\Settings\Options::get_distributor_option('sports_south', 'inventory_api_base_url', \FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient::DEFAULT_BASE_URL),
         240
     );
 
@@ -474,7 +470,7 @@ function fflhub_ss_bench_run_load_xml(string $xmlPath, string $table, int $timeo
  */
 function fflhub_ss_bench_write_tsv(string $xmlPath, string $tsvPath, array $columns): array
 {
-    $parser = new SportsSouthProductParser();
+    $parser = new \FFLHub\Distributor\Services\SportsSouth\SportsSouthProductParser();
     $handle = fopen($tsvPath, 'wb');
     if (!$handle) {
         throw new RuntimeException('Failed to open TSV path: ' . $tsvPath);
