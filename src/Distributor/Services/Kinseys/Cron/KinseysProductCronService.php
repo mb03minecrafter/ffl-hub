@@ -562,7 +562,7 @@ final class KinseysProductCronService extends AbstractTableCronService
             $action_id = as_schedule_single_action(
                 time() + 5,
                 KinseysInventoryCronService::CRON_HOOK,
-                [],
+                ['source' => 'kinseys_product_success'],
                 $this->get_action_group()
             );
             return is_numeric($action_id) && (int) $action_id > 0;
