@@ -1167,9 +1167,18 @@ final class KinseysProductImporterService
         $live_prune_stats = $this->prune_live_ineligible_rows();
         $phase_ms['prune_live_ineligible_rows'] = $this->elapsed_ms($t_phase);
 
-        $t_phase = microtime(true);
-        $stage_prune_stats = $this->prune_inventory_stage_to_live_upcs($stage_table, $live_table);
-        $phase_ms['prune_inventory_stage_to_live_upcs'] = $this->elapsed_ms($t_phase);
+        $stage_not_live_stats = [
+            'ok' => true,
+            'stage_table' => $stage_table,
+            'live_table' => $live_table,
+            'rows_not_in_live' => null,
+            'debug_only' => true,
+        ];
+        if ($this->profile_detail_enabled()) {
+            $t_phase = microtime(true);
+            $stage_not_live_stats = $this->count_inventory_stage_rows_not_in_live($stage_table, $live_table);
+            $phase_ms['count_inventory_stage_rows_not_in_live'] = $this->elapsed_ms($t_phase);
+        }
 
         $t_phase = microtime(true);
         $join_updated_upc = $this->update_live_inventory_by_upc($live_table, $stage_table);
@@ -1199,8 +1208,8 @@ final class KinseysProductImporterService
             'sig_approved_forced' => (int) $sig_approved_forced,
             'live_ineligible_pruned' => (int) ($live_prune_stats['rows_deleted'] ?? 0),
             'live_prune_stats' => $live_prune_stats,
-            'inventory_stage_pruned' => (int) ($stage_prune_stats['rows_deleted'] ?? 0),
-            'inventory_stage_prune_stats' => $stage_prune_stats,
+            'inventory_stage_pruned' => 0,
+            'inventory_stage_not_live_stats' => $stage_not_live_stats,
             'write_stats' => $write_stats,
             'stage_insert_profile' => $stage_insert_profile,
         ], $t_start, $mem_start, $phase_ms, $live_table, $stage_table);
@@ -1298,44 +1307,26 @@ final class KinseysProductImporterService
     /**
      * @return array<string,mixed>
      */
-    private function prune_inventory_stage_to_live_upcs(string $stageTable, string $liveTable): array
+    private function count_inventory_stage_rows_not_in_live(string $stageTable, string $liveTable): array
     {
         $t_start = microtime(true);
         global $wpdb;
 
         try {
-            $before = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $deleted = $wpdb->query("
-                DELETE S
+            $rows_not_in_live = (int) $wpdb->get_var("
+                SELECT COUNT(*)
                 FROM {$stageTable} S
                 LEFT JOIN {$liveTable} L
                     ON S.upc <> '' AND L.upc = S.upc
                 WHERE L.upc IS NULL
             "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-
-            if ($deleted === false) {
-                return [
-                    'ok' => false,
-                    'error' => (string) $wpdb->last_error,
-                    'stage_table' => $stageTable,
-                    'live_table' => $liveTable,
-                    'rows_before' => $before,
-                    'rows_deleted' => 0,
-                    'rows_after' => $before,
-                    'elapsed_ms' => $this->elapsed_ms($t_start),
-                ];
-            }
-
-            $after = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$stageTable}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         } catch (\Throwable $e) {
             return [
                 'ok' => false,
                 'error' => $e->getMessage(),
                 'stage_table' => $stageTable,
                 'live_table' => $liveTable,
-                'rows_before' => 0,
-                'rows_deleted' => 0,
-                'rows_after' => 0,
+                'rows_not_in_live' => null,
                 'elapsed_ms' => $this->elapsed_ms($t_start),
             ];
         }
@@ -1344,9 +1335,7 @@ final class KinseysProductImporterService
             'ok' => true,
             'stage_table' => $stageTable,
             'live_table' => $liveTable,
-            'rows_before' => $before,
-            'rows_deleted' => (int) $deleted,
-            'rows_after' => $after,
+            'rows_not_in_live' => $rows_not_in_live,
             'elapsed_ms' => $this->elapsed_ms($t_start),
         ];
     }
