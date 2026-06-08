@@ -21,6 +21,7 @@ use FFLHub\Admin\Pages\FFLImporterPage;
 use FFLHub\Admin\Pages\GunDealsPerformancePage;
 use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
+use FFLHub\Admin\Pages\ProductStatePage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
 use FFLHub\Admin\Pages\UpcStockAlertsPage;
@@ -61,6 +62,7 @@ use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Order\WooShippingLabelCostSync;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Product\MapPriceVisibility;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Product\StockAlerts\UpcStockAlertCronService;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
@@ -104,6 +106,7 @@ final class Plugin
     public ZandersCreditLimitPage $zanders_credit_limit_page;
     public LipseysCreditLimitPage $lipseys_credit_limit_page;
     public MapPolicyPage $map_policy_page;
+    public ProductStatePage $product_state_page;
     public GunDealsPerformancePage $gundeals_performance_page;
     public UpcStockAlertsPage $upc_stock_alerts_page;
     public OrderPlacementMetaBox $order_placement_metabox;
@@ -188,6 +191,7 @@ final class Plugin
         // Admin-only initialization
         // -----------------------------------------------------------------
         if (is_admin()) {
+            ProductStateStore::ensure_schema();
             WPCronWarning::init();
 
             $this->admin_page = new AdminPage($this->distributor_handler);
@@ -232,6 +236,9 @@ final class Plugin
 
             $this->map_policy_page = new MapPolicyPage();
             $this->map_policy_page->register();
+
+            $this->product_state_page = new ProductStatePage();
+            $this->product_state_page->register();
 
             $this->gundeals_performance_page = new GunDealsPerformancePage();
             $this->gundeals_performance_page->register();
@@ -377,6 +384,7 @@ final class Plugin
         Options::init_defaults();
         DealerBatchOptimizerConfig::init_defaults();
         CategoryInstaller::install_default_categories();
+        ProductStateStore::ensure_schema();
         self::ensure_quote_email_jobs_table();
         $quote_email_jobs_cron = new QuoteEmailJobsCronService();
         $quote_email_jobs_cron->on_activation();

@@ -1,0 +1,159 @@
+<?php
+declare(strict_types=1);
+
+namespace FFLHub\Admin\Pages;
+
+use FFLHub\Product\State\ProductStateStore;
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+final class ProductStatePage
+{
+    private const PAGE_SLUG = 'fflhub-product-state';
+    private const NONCE_ACTION = 'fflhub_product_state_backfill';
+    private const NONCE_FIELD = 'fflhub_product_state_nonce';
+    private const ACTION_BACKFILL = 'backfill_product_state';
+    private const RESULT_TRANSIENT_PREFIX = 'fflhub_product_state_backfill_result_';
+
+    public function register(): void
+    {
+        add_action('admin_menu', [$this, 'register_menu_page']);
+    }
+
+    public function register_menu_page(): void
+    {
+        add_submenu_page(
+            AdminPage::get_page_slug(),
+            __('Product State', 'ffl-hub'),
+            __('Product State', 'ffl-hub'),
+            'manage_options',
+            self::PAGE_SLUG,
+            [$this, 'render_page']
+        );
+    }
+
+    public function render_page(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('You do not have permission to access this page.', 'ffl-hub'));
+        }
+
+        ProductStateStore::ensure_schema();
+        $this->maybe_handle_post();
+
+        $result = $this->read_result();
+        ?>
+        <div class="wrap fflhub-product-state">
+            <h1><?php esc_html_e('FFLHub Product State', 'ffl-hub'); ?></h1>
+            <p class="description">
+                <?php esc_html_e('Create or refresh the managed product state table from existing WooCommerce product meta. This does not change product prices, stock, status, or existing meta.', 'ffl-hub'); ?>
+            </p>
+
+            <?php $this->render_result($result); ?>
+            <?php $this->render_backfill_card(); ?>
+        </div>
+        <?php
+    }
+
+    private function maybe_handle_post(): void
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            return;
+        }
+
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('You do not have permission to perform this action.', 'ffl-hub'));
+        }
+
+        $action = isset($_POST['fflhub_product_state_action'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_product_state_action']))
+            : '';
+        if ($action !== self::ACTION_BACKFILL) {
+            return;
+        }
+
+        if (
+            !isset($_POST[self::NONCE_FIELD]) ||
+            !wp_verify_nonce(sanitize_text_field(wp_unslash((string) $_POST[self::NONCE_FIELD])), self::NONCE_ACTION)
+        ) {
+            wp_die(esc_html__('Security check failed. Please refresh and try again.', 'ffl-hub'));
+        }
+
+        $result = ProductStateStore::backfill_from_product_meta();
+        set_transient($this->result_transient_key(), $result, 5 * MINUTE_IN_SECONDS);
+
+        wp_safe_redirect(add_query_arg(['page' => self::PAGE_SLUG, 'backfilled' => '1'], admin_url('admin.php')));
+        exit;
+    }
+
+    private function render_backfill_card(): void
+    {
+        ?>
+        <div class="postbox" style="max-width: 760px; padding: 16px;">
+            <h2 style="margin-top:0;"><?php esc_html_e('Backfill FFLHub Product State', 'ffl-hub'); ?></h2>
+            <p>
+                <?php esc_html_e('Reads managed WooCommerce products from current FFLHub product meta and inserts or updates rows in the product state table.', 'ffl-hub'); ?>
+            </p>
+            <form method="post" action="">
+                <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
+                <input type="hidden" name="fflhub_product_state_action" value="<?php echo esc_attr(self::ACTION_BACKFILL); ?>" />
+                <?php submit_button(__('Backfill FFLHub Product State', 'ffl-hub'), 'primary', 'submit', false); ?>
+            </form>
+        </div>
+        <?php
+    }
+
+    /**
+     * @param array<string,mixed>|null $result
+     */
+    private function render_result(?array $result): void
+    {
+        if ($result === null) {
+            return;
+        }
+
+        ?>
+        <div class="notice notice-success">
+            <p><strong><?php esc_html_e('Product state backfill complete.', 'ffl-hub'); ?></strong></p>
+            <ul style="list-style:disc;margin-left:20px;">
+                <li><?php echo esc_html(sprintf('Scanned: %d', (int) ($result['scanned'] ?? 0))); ?></li>
+                <li><?php echo esc_html(sprintf('Inserted: %d', (int) ($result['inserted'] ?? 0))); ?></li>
+                <li><?php echo esc_html(sprintf('Updated: %d', (int) ($result['updated'] ?? 0))); ?></li>
+                <li><?php echo esc_html(sprintf('Skipped missing UPC: %d', (int) ($result['skipped_missing_upc'] ?? 0))); ?></li>
+                <li><?php echo esc_html(sprintf('Skipped not managed: %d', (int) ($result['skipped_not_managed'] ?? 0))); ?></li>
+                <li><?php echo esc_html(sprintf('Errors: %d', (int) ($result['errors'] ?? 0))); ?></li>
+            </ul>
+            <?php if (!empty($result['messages']) && is_array($result['messages'])) : ?>
+                <p><strong><?php esc_html_e('First error messages:', 'ffl-hub'); ?></strong></p>
+                <ul style="list-style:disc;margin-left:20px;">
+                    <?php foreach ($result['messages'] as $message) : ?>
+                        <li><?php echo esc_html((string) $message); ?></li>
+                    <?php endforeach; ?>
+                </ul>
+            <?php endif; ?>
+        </div>
+        <?php
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    private function read_result(): ?array
+    {
+        $result = get_transient($this->result_transient_key());
+        if (!is_array($result)) {
+            return null;
+        }
+
+        delete_transient($this->result_transient_key());
+
+        return $result;
+    }
+
+    private function result_transient_key(): string
+    {
+        return self::RESULT_TRANSIENT_PREFIX . (string) get_current_user_id();
+    }
+}
