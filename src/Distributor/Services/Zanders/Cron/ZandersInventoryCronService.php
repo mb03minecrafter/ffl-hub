@@ -373,6 +373,11 @@ final class ZandersInventoryCronService extends AbstractTableCronService
 
         $do_stats     = defined(self::DEBUG_FLAG) && constant(self::DEBUG_FLAG);
         $join_matched = 0;
+        $sig_approval_candidates = 0;
+        $sig_approval_enabled = SigDropshipApproval::is_distributor_sig_approved('zanders');
+        $sig_approval_where_sql = $sig_approval_enabled
+            ? $this->zanders_sig_approval_where_sql('L')
+            : '0 = 1';
 
         if ($do_stats) {
             $join_matched = (int) $wpdb->get_var("
@@ -381,26 +386,51 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                 INNER JOIN {$live_table} L
                     ON L.zanders_item_number = S.itemnumber
             ");
+
+            if ($sig_approval_enabled) {
+                $sig_approval_candidates = (int) $wpdb->get_var("
+                    SELECT COUNT(*)
+                    FROM {$live_table} L
+                    WHERE {$sig_approval_where_sql}
+                ");
+            }
         }
 
         $stats_ms = (microtime(true) - $t_stats) * 1000.0;
 
         // -----------------------
-        // Combined inventory + price + shipping update.
+        // Combined inventory + price + shipping + SIG dropship approval update.
         // -----------------------
         $t_combined_update = microtime(true);
 
         $combined_update_sql = "
             UPDATE {$live_table} L
-            INNER JOIN {$stage_table} S
+            LEFT JOIN {$stage_table} S
                 ON S.itemnumber = L.zanders_item_number
             SET
-                L.inventory_quantity = IFNULL(CAST(S.available AS CHAR), ''),
-                L.distributor_price = IFNULL(CAST(S.price1 AS CHAR), ''),
+                L.inventory_quantity = CASE
+                    WHEN S.itemnumber IS NOT NULL THEN IFNULL(CAST(S.available AS CHAR), '')
+                    ELSE L.inventory_quantity
+                END,
+                L.distributor_price = CASE
+                    WHEN S.itemnumber IS NOT NULL THEN IFNULL(CAST(S.price1 AS CHAR), '')
+                    ELSE L.distributor_price
+                END,
                 L.shipping_cost      = CASE
+                    WHEN S.itemnumber IS NULL THEN L.shipping_cost
                     WHEN S.price1 >= 500 THEN '0'
                     ELSE '15'
+                END,
+                L.dropship_enabled = CASE
+                    WHEN {$sig_approval_where_sql} THEN 1
+                    ELSE L.dropship_enabled
+                END,
+                L.dropship_block_reason = CASE
+                    WHEN {$sig_approval_where_sql} THEN ''
+                    ELSE L.dropship_block_reason
                 END
+            WHERE S.itemnumber IS NOT NULL
+               OR {$sig_approval_where_sql}
         ";
 
         $combined_updated = $wpdb->query($combined_update_sql);
@@ -410,27 +440,24 @@ final class ZandersInventoryCronService extends AbstractTableCronService
 
         $combined_update_ms = (microtime(true) - $t_combined_update) * 1000.0;
 
-        $t_sig_approval = microtime(true);
-        $sig_approved_forced = SigDropshipApproval::apply_to_table('zanders', $live_table);
-        $sig_approval_ms = (microtime(true) - $t_sig_approval) * 1000.0;
-
         $drop_ms    = 0.0; // persistent table
         $t_total_ms = (microtime(true) - $t_start) * 1000.0;
-        $join_ms    = $combined_update_ms + $sig_approval_ms;
+        $join_ms    = $combined_update_ms;
 
         $stats = [
             'processed_rows' => (int) $rows_loaded,
             'rows_loaded'    => (int) $rows_loaded,
             'join_matched'   => (int) $join_matched,
             'combined_update_rows' => is_numeric($combined_updated) ? (int) $combined_updated : 0,
-            'sig_approved_forced' => (int) $sig_approved_forced,
+            'sig_approval_enabled' => $sig_approval_enabled ? 1 : 0,
+            'sig_approval_candidates' => (int) $sig_approval_candidates,
+            'sig_approval_mode' => 'folded_into_combined_update',
             'stage_table'    => (string) $stage_table,
             'ignore_lines'   => (int) $ignore_lines,
             'create_ms'      => number_format($create_ms, 2, '.', ''),
             'load_ms'        => number_format($load_ms, 2, '.', ''),
             'stats_ms'       => number_format($stats_ms, 2, '.', ''),
             'combined_update_ms' => number_format($combined_update_ms, 2, '.', ''),
-            'sig_approval_ms' => number_format($sig_approval_ms, 2, '.', ''),
             'join_ms'        => number_format($join_ms, 2, '.', ''),
             'drop_ms'        => number_format($drop_ms, 2, '.', ''),
             'total_ms'       => number_format($t_total_ms, 2, '.', ''),
@@ -441,6 +468,23 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         return $stats;
     }
 
+    private function zanders_sig_approval_where_sql(string $alias): string
+    {
+        $alias = trim($alias);
+        $prefix = $alias !== '' ? $alias . '.' : '';
+
+        return "
+            COALESCE({$prefix}sot_required, 0) = 0
+            AND (
+                   {$prefix}manufacturer_norm = 'SIG'
+                OR {$prefix}manufacturer_norm = 'SIGSAUER'
+                OR {$prefix}manufacturer_norm = 'SIGARMS'
+                OR {$prefix}manufacturer_norm LIKE 'SIGSAUER%'
+                OR {$prefix}manufacturer_norm LIKE 'SIGARMS%'
+            )
+        ";
+    }
+
     private function empty_apply_stats(): array
     {
         return [
@@ -448,11 +492,13 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'rows_loaded'    => 0,
             'join_matched'   => 0,
             'combined_update_rows' => 0,
+            'sig_approval_enabled' => 0,
+            'sig_approval_candidates' => 0,
+            'sig_approval_mode' => 'folded_into_combined_update',
             'create_ms'      => '0.00',
             'load_ms'        => '0.00',
             'stats_ms'       => '0.00',
             'combined_update_ms' => '0.00',
-            'sig_approval_ms' => '0.00',
             'join_ms'        => '0.00',
             'drop_ms'        => '0.00',
             'total_ms'       => '0.00',
