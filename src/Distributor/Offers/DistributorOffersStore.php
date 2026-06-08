@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 final class DistributorOffersStore
 {
     private const SCHEMA_OPTION = 'fflhub_distributor_offers_schema_version';
-    private const SCHEMA_VERSION = '3';
+    private const SCHEMA_VERSION = '4';
     private const TABLE_SUFFIX = 'fflhub_distributor_offers';
     private const DIST_ZANDERS = 'zanders';
 
@@ -34,7 +34,13 @@ final class DistributorOffersStore
         }
 
         $installed = (string) get_option(self::SCHEMA_OPTION, '');
-        if ($installed === self::SCHEMA_VERSION && self::table_exists() && self::has_expected_columns() && self::has_expected_indexes()) {
+        if (
+            $installed === self::SCHEMA_VERSION
+            && self::table_exists()
+            && self::has_expected_columns()
+            && self::has_expected_indexes()
+            && !self::has_deprecated_columns()
+        ) {
             return;
         }
 
@@ -49,7 +55,6 @@ final class DistributorOffersStore
                 distributor_id VARCHAR(64) NOT NULL,
                 distributor_product_id VARCHAR(128) DEFAULT NULL,
                 distributor_sku VARCHAR(128) DEFAULT NULL,
-                manufacturer VARCHAR(191) DEFAULT NULL,
                 manufacturer_norm VARCHAR(191) DEFAULT NULL,
                 qty INT UNSIGNED NOT NULL DEFAULT 0,
                 stock_status VARCHAR(32) DEFAULT NULL,
@@ -79,6 +84,7 @@ final class DistributorOffersStore
         self::ensure_columns($table);
         self::ensure_indexes($table);
         self::drop_true_cost_column_if_exists($table);
+        self::drop_manufacturer_column_if_exists($table);
 
         update_option(self::SCHEMA_OPTION, self::SCHEMA_VERSION, false);
     }
@@ -167,7 +173,6 @@ final class DistributorOffersStore
 
         $dealer_price_expr = "CAST(NULLIF(TRIM(z.distributor_price), '') AS DECIMAL(12,4))";
         $shipping_cost_expr = "CAST(NULLIF(TRIM(z.shipping_cost), '') AS DECIMAL(12,4))";
-        $manufacturer_expr = ZandersManufacturerNormalizer::canonical_display_sql_expression('z.manufacturer');
         $manufacturer_norm_expr = ZandersManufacturerNormalizer::canonical_norm_sql_expression('z.manufacturer');
         $landed_cost_expr = "
             CASE
@@ -183,7 +188,6 @@ final class DistributorOffersStore
                     distributor_id,
                     distributor_product_id,
                     distributor_sku,
-                    manufacturer,
                     manufacturer_norm,
                     qty,
                     stock_status,
@@ -205,7 +209,6 @@ final class DistributorOffersStore
                     %s AS distributor_id,
                     NULLIF(TRIM(z.zanders_item_number), '') AS distributor_product_id,
                     NULLIF(TRIM(z.zanders_item_number), '') AS distributor_sku,
-                    NULLIF({$manufacturer_expr}, '') AS manufacturer,
                     NULLIF({$manufacturer_norm_expr}, '') AS manufacturer_norm,
                     CAST(COALESCE(NULLIF(TRIM(z.inventory_quantity), ''), '0') AS UNSIGNED) AS qty,
                     CASE
@@ -232,7 +235,6 @@ final class DistributorOffersStore
                 ON DUPLICATE KEY UPDATE
                     distributor_product_id = VALUES(distributor_product_id),
                     distributor_sku = VALUES(distributor_sku),
-                    manufacturer = VALUES(manufacturer),
                     manufacturer_norm = VALUES(manufacturer_norm),
                     qty = VALUES(qty),
                     stock_status = VALUES(stock_status),
@@ -336,6 +338,14 @@ final class DistributorOffersStore
         return true;
     }
 
+    private static function has_deprecated_columns(): bool
+    {
+        $table = self::table_name();
+
+        return self::table_has_column($table, 'true_cost')
+            || self::table_has_column($table, 'manufacturer');
+    }
+
     private static function current_zanders_live_table(): string
     {
         global $wpdb;
@@ -400,13 +410,23 @@ final class DistributorOffersStore
         $wpdb->query("ALTER TABLE {$table} DROP COLUMN true_cost"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 
+    private static function drop_manufacturer_column_if_exists(string $table): void
+    {
+        global $wpdb;
+
+        if ($table === '' || !self::table_has_column($table, 'manufacturer')) {
+            return;
+        }
+
+        $wpdb->query("ALTER TABLE {$table} DROP COLUMN manufacturer"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+    }
+
     private static function ensure_columns(string $table): void
     {
         global $wpdb;
 
         $missing_columns = [
-            'manufacturer' => 'ADD COLUMN manufacturer VARCHAR(191) DEFAULT NULL AFTER distributor_sku',
-            'manufacturer_norm' => 'ADD COLUMN manufacturer_norm VARCHAR(191) DEFAULT NULL AFTER manufacturer',
+            'manufacturer_norm' => 'ADD COLUMN manufacturer_norm VARCHAR(191) DEFAULT NULL AFTER distributor_sku',
         ];
 
         foreach ($missing_columns as $column => $definition) {
@@ -484,7 +504,6 @@ final class DistributorOffersStore
     private static function expected_column_names(): array
     {
         return [
-            'manufacturer',
             'manufacturer_norm',
         ];
     }
