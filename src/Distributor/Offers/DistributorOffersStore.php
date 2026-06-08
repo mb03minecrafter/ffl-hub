@@ -118,9 +118,9 @@ final class DistributorOffersStore
         $result = [
             'ok' => false,
             'source_live_table' => '',
-            'active_product_state_count' => 0,
-            'matched_active_upc_count' => 0,
-            'upsert_affected_rows' => 0,
+            'active_product_state_total' => 0,
+            'matched_active_zanders_upcs' => 0,
+            'upsert_mysql_affected_rows' => 0,
             'stale_disabled' => 0,
             'elapsed_ms' => '0.00',
             'elapsed_sec' => '0.000',
@@ -162,7 +162,7 @@ final class DistributorOffersStore
             ",
             'active'
         );
-        $result['active_product_state_count'] = (int) $wpdb->get_var($active_state_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $result['active_product_state_total'] = (int) $wpdb->get_var($active_state_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $matched_sql = $wpdb->prepare(
             "
@@ -175,7 +175,7 @@ final class DistributorOffersStore
             ",
             'active'
         );
-        $result['matched_active_upc_count'] = (int) $wpdb->get_var($matched_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $result['matched_active_zanders_upcs'] = (int) $wpdb->get_var($matched_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $product_normalized_insert = $has_product_normalized_at ? ",\n                product_normalized_at" : '';
         $product_normalized_select = $has_product_normalized_at ? ",\n                NOW()" : '';
@@ -273,7 +273,7 @@ final class DistributorOffersStore
             return self::finish_result($result, $started);
         }
 
-        $result['upsert_affected_rows'] = is_numeric($upserted) ? (int) $upserted : 0;
+        $result['upsert_mysql_affected_rows'] = is_numeric($upserted) ? (int) $upserted : 0;
         $result['upsert_elapsed_ms'] = number_format((microtime(true) - $t_upsert) * 1000.0, 2, '.', '');
 
         $t_stale = microtime(true);

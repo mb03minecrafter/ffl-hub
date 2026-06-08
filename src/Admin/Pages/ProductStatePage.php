@@ -152,8 +152,9 @@ final class ProductStatePage
                 <p><strong><?php esc_html_e('Zanders offer normalization complete.', 'ffl-hub'); ?></strong></p>
                 <ul style="list-style:disc;margin-left:20px;">
                     <li><?php echo esc_html(sprintf('Source live table: %s', (string) ($result['source_live_table'] ?? ''))); ?></li>
-                    <li><?php echo esc_html(sprintf('Matched active UPCs: %d', (int) ($result['matched_active_upc_count'] ?? 0))); ?></li>
-                    <li><?php echo esc_html(sprintf('Upsert affected rows: %d', (int) ($result['upsert_affected_rows'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Active product state total: %d', (int) ($result['active_product_state_total'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Matched active Zanders UPCs: %d', (int) ($result['matched_active_zanders_upcs'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Upsert MySQL affected rows: %d', (int) ($result['upsert_mysql_affected_rows'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Stale rows disabled: %d', (int) ($result['stale_disabled'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Runtime: %s ms (%s sec)', (string) ($result['elapsed_ms'] ?? '0.00'), (string) ($result['elapsed_sec'] ?? '0.000'))); ?></li>
                 </ul>

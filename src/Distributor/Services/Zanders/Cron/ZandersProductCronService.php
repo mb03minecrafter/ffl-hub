@@ -319,9 +319,9 @@ final class ZandersProductCronService extends AbstractTableCronService
 
         $this->profile('Normalize distributor offers from new live table', $t_offers, [
             'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
-            'active_product_state_rows_considered' => (int) ($offers_result['active_product_state_count'] ?? 0),
-            'matched_active_upc_count' => (int) ($offers_result['matched_active_upc_count'] ?? 0),
-            'distributor_offers_product_upsert_rows' => (int) ($offers_result['upsert_affected_rows'] ?? 0),
+            'active_product_state_total' => (int) ($offers_result['active_product_state_total'] ?? 0),
+            'matched_active_zanders_upcs' => (int) ($offers_result['matched_active_zanders_upcs'] ?? 0),
+            'distributor_offers_product_upsert_mysql_affected_rows' => (int) ($offers_result['upsert_mysql_affected_rows'] ?? 0),
             'distributor_offers_product_upsert_ms' => (string) ($offers_result['upsert_elapsed_ms'] ?? '0.00'),
             'distributor_offers_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
             'distributor_offers_stale_cleanup_ms' => (string) ($offers_result['stale_cleanup_elapsed_ms'] ?? '0.00'),
@@ -348,7 +348,7 @@ final class ZandersProductCronService extends AbstractTableCronService
             'imported_rows' => (int) $count,
             'new_live'      => (string) $new_live,
             'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
-            'distributor_offers_product_upsert_rows' => (int) ($offers_result['upsert_affected_rows'] ?? 0),
+            'distributor_offers_product_upsert_mysql_affected_rows' => (int) ($offers_result['upsert_mysql_affected_rows'] ?? 0),
             'distributor_offers_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
             'remote_mtime'  => $remote_mtime > 0 ? $remote_mtime : null,
         ]);
