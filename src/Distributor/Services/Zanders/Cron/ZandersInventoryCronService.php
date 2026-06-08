@@ -390,7 +390,9 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             if ($sig_approval_enabled) {
                 $sig_approval_candidates = (int) $wpdb->get_var("
                     SELECT COUNT(*)
-                    FROM {$live_table} L
+                    FROM {$stage_table} S
+                    INNER JOIN {$live_table} L
+                        ON L.zanders_item_number = S.itemnumber
                     WHERE {$sig_approval_where_sql}
                 ");
             }
@@ -405,19 +407,12 @@ final class ZandersInventoryCronService extends AbstractTableCronService
 
         $combined_update_sql = "
             UPDATE {$live_table} L
-            LEFT JOIN {$stage_table} S
+            INNER JOIN {$stage_table} S
                 ON S.itemnumber = L.zanders_item_number
             SET
-                L.inventory_quantity = CASE
-                    WHEN S.itemnumber IS NOT NULL THEN IFNULL(CAST(S.available AS CHAR), '')
-                    ELSE L.inventory_quantity
-                END,
-                L.distributor_price = CASE
-                    WHEN S.itemnumber IS NOT NULL THEN IFNULL(CAST(S.price1 AS CHAR), '')
-                    ELSE L.distributor_price
-                END,
+                L.inventory_quantity = IFNULL(CAST(S.available AS CHAR), ''),
+                L.distributor_price = IFNULL(CAST(S.price1 AS CHAR), ''),
                 L.shipping_cost      = CASE
-                    WHEN S.itemnumber IS NULL THEN L.shipping_cost
                     WHEN S.price1 >= 500 THEN '0'
                     ELSE '15'
                 END,
@@ -429,8 +424,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                     WHEN {$sig_approval_where_sql} THEN ''
                     ELSE L.dropship_block_reason
                 END
-            WHERE S.itemnumber IS NOT NULL
-               OR {$sig_approval_where_sql}
         ";
 
         $combined_updated = $wpdb->query($combined_update_sql);
