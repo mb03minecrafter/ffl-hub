@@ -12,7 +12,7 @@ use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
 use FFLHub\Distributor\Services\Zanders\ZandersProductImporterService;
 use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
-use FFLHub\Distributor\Offers\DistributorOffersStore;
+use FFLHub\Distributor\Services\Zanders\ZandersOfferNormalizationService;
 use FFLHub\Util\DebugLogUtil;
 
 /**
@@ -308,7 +308,7 @@ final class ZandersProductCronService extends AbstractTableCronService
         $offers_result = [];
 
         try {
-            $offers_result = DistributorOffersStore::normalize_zanders_offers($new_live);
+            $offers_result = ZandersOfferNormalizationService::normalize_from_product_table($new_live);
         } catch (\Throwable $e) {
             $offers_result = [
                 'ok' => false,

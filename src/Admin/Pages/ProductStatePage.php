@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Distributor\Offers\DistributorOffersStore;
+use FFLHub\Distributor\Services\Zanders\ZandersOfferNormalizationService;
 use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
@@ -89,7 +90,7 @@ final class ProductStatePage
             $result = ProductStateStore::backfill_from_product_meta();
             $result['type'] = self::ACTION_BACKFILL;
         } else {
-            $result = DistributorOffersStore::normalize_zanders_offers();
+            $result = ZandersOfferNormalizationService::normalize_from_product_table();
             $result['type'] = self::ACTION_NORMALIZE_ZANDERS;
         }
 
@@ -120,14 +121,14 @@ final class ProductStatePage
     {
         ?>
         <div class="postbox" style="max-width: 760px; padding: 16px;">
-            <h2 style="margin-top:0;"><?php esc_html_e('Normalize Zanders Offers', 'ffl-hub'); ?></h2>
+            <h2 style="margin-top:0;"><?php esc_html_e('Normalize Zanders Distributor Offers', 'ffl-hub'); ?></h2>
             <p>
-                <?php esc_html_e('Reads the current live Zanders product table and upserts offers only for active UPCs already present in the product state table. This does not change WooCommerce prices, stock, product meta, or Zanders cron behavior.', 'ffl-hub'); ?>
+                <?php esc_html_e('Runs the Zanders-owned normalizer against the current live Zanders product table and upserts distributor offers only for active UPCs already present in the product state table. This does not change WooCommerce prices, stock, product meta, or Zanders cron behavior.', 'ffl-hub'); ?>
             </p>
             <form method="post" action="">
                 <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
                 <input type="hidden" name="fflhub_product_state_action" value="<?php echo esc_attr(self::ACTION_NORMALIZE_ZANDERS); ?>" />
-                <?php submit_button(__('Normalize Zanders Offers', 'ffl-hub'), 'secondary', 'submit', false); ?>
+                <?php submit_button(__('Normalize Zanders Distributor Offers', 'ffl-hub'), 'secondary', 'submit', false); ?>
             </form>
         </div>
         <?php
