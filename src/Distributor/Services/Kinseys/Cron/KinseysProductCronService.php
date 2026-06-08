@@ -559,14 +559,13 @@ final class KinseysProductCronService extends AbstractTableCronService
         }
 
         try {
-            as_schedule_single_action(
+            $action_id = as_schedule_single_action(
                 time() + 5,
                 KinseysInventoryCronService::CRON_HOOK,
-                ['source' => 'kinseys_product_success'],
-                $this->get_action_group(),
-                true
+                [],
+                $this->get_action_group()
             );
-            return true;
+            return is_numeric($action_id) && (int) $action_id > 0;
         } catch (\Throwable $e) {
             $this->log('Kinsey\'s post-product inventory refresh schedule failed.', [
                 'error' => $e->getMessage(),
