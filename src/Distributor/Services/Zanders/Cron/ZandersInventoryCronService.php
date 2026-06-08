@@ -14,7 +14,6 @@ use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
 use FFLHub\Distributor\Services\Zanders\ZandersManufacturerNormalizer;
 use FFLHub\Distributor\Offers\DistributorOffersStore;
-use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Util\DebugLogUtil;
 
 /**
@@ -490,10 +489,8 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         $started = microtime(true);
 
         DistributorOffersStore::ensure_schema();
-        ProductStateStore::ensure_schema();
 
         $offers_table = DistributorOffersStore::table_name();
-        $product_state_table = ProductStateStore::table_name();
         $has_inventory_normalized_at = $this->table_has_column($offers_table, 'inventory_normalized_at');
         $has_dropship_block_reason = $this->table_has_column($offers_table, 'dropship_block_reason');
         $sig_approval_enabled = SigDropshipApproval::is_distributor_sig_approved('zanders');
@@ -524,15 +521,11 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                 UPDATE {$offers_table} o
                 INNER JOIN {$stage_table} S
                     ON S.itemnumber = o.distributor_product_id
-                INNER JOIN {$product_state_table} ps
-                    ON ps.upc = o.upc
                 SET
                     " . implode(",\n                    ", $set) . "
                 WHERE o.distributor_id = %s
-                  AND ps.status = %s
             ",
-            'zanders',
-            'active'
+            'zanders'
         );
 
         $updated = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared

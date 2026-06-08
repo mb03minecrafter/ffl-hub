@@ -16,6 +16,168 @@ final class ZandersOfferNormalizationService
     private const DIST_ID = 'zanders';
 
     /**
+     * Update existing normalized Zanders offer rows from the current/new live
+     * Zanders product table.
+     *
+     * This is the product-cron path. It intentionally does not read
+     * product_state and never inserts new offer rows.
+     *
+     * @return array<string,mixed>
+     */
+    public static function update_existing_from_product_table(?string $source_live_table = null): array
+    {
+        global $wpdb;
+
+        $started = microtime(true);
+        $result = [
+            'ok' => false,
+            'source_live_table' => '',
+            'matched_existing_zanders_offers' => 0,
+            'product_update_rows' => 0,
+            'stale_disabled' => 0,
+            'product_update_elapsed_ms' => '0.00',
+            'stale_cleanup_elapsed_ms' => '0.00',
+            'elapsed_ms' => '0.00',
+            'elapsed_sec' => '0.000',
+            'errors' => [],
+        ];
+
+        if (!$wpdb) {
+            $result['errors'][] = 'WordPress database connection is unavailable.';
+            return self::finish_result($result, $started);
+        }
+
+        DistributorOffersStore::ensure_schema();
+
+        $live_table = self::resolve_live_table($source_live_table);
+        if ($live_table === '') {
+            $result['errors'][] = 'Could not resolve a valid live Zanders product table.';
+            return self::finish_result($result, $started);
+        }
+
+        if (!self::table_exists_by_name($live_table)) {
+            $result['errors'][] = 'Resolved live Zanders product table does not exist: ' . $live_table;
+            $result['source_live_table'] = $live_table;
+            return self::finish_result($result, $started);
+        }
+
+        $offers_table = DistributorOffersStore::table_name();
+        $has_product_normalized_at = self::table_has_column($offers_table, 'product_normalized_at');
+        $has_dropship_block_reason = self::table_has_column($offers_table, 'dropship_block_reason');
+
+        $result['source_live_table'] = $live_table;
+
+        $matched_sql = $wpdb->prepare(
+            "
+                SELECT COUNT(*)
+                FROM {$offers_table} o
+                INNER JOIN {$live_table} z
+                    ON z.zanders_item_number = o.distributor_product_id
+                WHERE o.distributor_id = %s
+            ",
+            self::DIST_ID
+        );
+        $result['matched_existing_zanders_offers'] = (int) $wpdb->get_var($matched_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $qty_expr = "CAST(COALESCE(NULLIF(TRIM(z.inventory_quantity), ''), '0') AS UNSIGNED)";
+        $dealer_price_expr = "CAST(NULLIF(TRIM(z.distributor_price), '') AS DECIMAL(12,4))";
+        $shipping_cost_expr = "CAST(NULLIF(TRIM(z.shipping_cost), '') AS DECIMAL(12,4))";
+        $landed_cost_expr = "
+            CASE
+                WHEN {$dealer_price_expr} IS NULL THEN NULL
+                ELSE {$dealer_price_expr} + COALESCE({$shipping_cost_expr}, 0.0000)
+            END
+        ";
+
+        $set = [
+            "o.distributor_product_id = NULLIF(TRIM(z.zanders_item_number), '')",
+            "o.distributor_sku = NULLIF(TRIM(z.zanders_item_number), '')",
+            "o.manufacturer_norm = NULLIF(TRIM(z.manufacturer_norm), '')",
+            "o.qty = {$qty_expr}",
+            "o.stock_status = CASE WHEN {$qty_expr} > 0 THEN 'instock' ELSE 'outofstock' END",
+            "o.dealer_price = {$dealer_price_expr}",
+            "o.shipping_cost = {$shipping_cost_expr}",
+            "o.landed_cost = {$landed_cost_expr}",
+            "o.map_price = CAST(NULLIF(TRIM(z.retail_map), '') AS DECIMAL(12,4))",
+            "o.msrp = CAST(NULLIF(TRIM(z.retail_msrp), '') AS DECIMAL(12,4))",
+            'o.ffl_required = CAST(COALESCE(z.ffl_required, 0) AS UNSIGNED)',
+            'o.sot_required = CAST(COALESCE(z.sot_required, 0) AS UNSIGNED)',
+            'o.dropship_enabled = CAST(COALESCE(z.dropship_enabled, 1) AS UNSIGNED)',
+            'o.enabled = 1',
+            "o.shipping_weight_oz = CAST(NULLIF(TRIM(z.shipping_weight), '') AS DECIMAL(10,3))",
+            'o.normalized_at = NOW()',
+        ];
+
+        if ($has_dropship_block_reason) {
+            $set[] = "o.dropship_block_reason = NULLIF(TRIM(z.dropship_block_reason), '')";
+        }
+
+        if ($has_product_normalized_at) {
+            $set[] = 'o.product_normalized_at = NOW()';
+        }
+
+        $t_update = microtime(true);
+        $update_sql = $wpdb->prepare(
+            "
+                UPDATE {$offers_table} o
+                INNER JOIN {$live_table} z
+                    ON z.zanders_item_number = o.distributor_product_id
+                SET
+                    " . implode(",\n                    ", $set) . "
+                WHERE o.distributor_id = %s
+            ",
+            self::DIST_ID
+        );
+
+        $updated = $wpdb->query($update_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($updated === false) {
+            $result['errors'][] = 'Zanders existing offer product update failed: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $result['product_update_rows'] = is_numeric($updated) ? (int) $updated : 0;
+        $result['product_update_elapsed_ms'] = number_format((microtime(true) - $t_update) * 1000.0, 2, '.', '');
+
+        $t_stale = microtime(true);
+        $stale_set = [
+            'o.enabled = 0',
+            'o.dropship_enabled = 0',
+            'o.qty = 0',
+            "o.stock_status = 'outofstock'",
+            'o.normalized_at = NOW()',
+        ];
+
+        if ($has_product_normalized_at) {
+            $stale_set[] = 'o.product_normalized_at = NOW()';
+        }
+
+        $stale_sql = $wpdb->prepare(
+            "
+                UPDATE {$offers_table} o
+                LEFT JOIN {$live_table} z
+                    ON z.zanders_item_number = o.distributor_product_id
+                SET
+                    " . implode(",\n                    ", $stale_set) . "
+                WHERE o.distributor_id = %s
+                  AND z.zanders_item_number IS NULL
+            ",
+            self::DIST_ID
+        );
+
+        $stale_disabled = $wpdb->query($stale_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($stale_disabled === false) {
+            $result['errors'][] = 'Zanders existing offer stale cleanup failed: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $result['stale_disabled'] = is_numeric($stale_disabled) ? (int) $stale_disabled : 0;
+        $result['stale_cleanup_elapsed_ms'] = number_format((microtime(true) - $t_stale) * 1000.0, 2, '.', '');
+        $result['ok'] = true;
+
+        return self::finish_result($result, $started);
+    }
+
+    /**
      * Normalize the current live Zanders product table into distributor offers.
      *
      * This is intentionally set-based and only touches rows for UPCs that are

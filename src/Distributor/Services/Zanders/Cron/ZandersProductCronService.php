@@ -303,12 +303,12 @@ final class ZandersProductCronService extends AbstractTableCronService
             'new_live' => (string) $new_live,
         ]);
 
-        // 5) Normalize static/catalog offer fields from the newly live Zanders table.
+        // 5) Update existing normalized offer fields from the newly live Zanders table.
         $t_offers = microtime(true);
         $offers_result = [];
 
         try {
-            $offers_result = ZandersOfferNormalizationService::normalize_from_product_table($new_live);
+            $offers_result = ZandersOfferNormalizationService::update_existing_from_product_table($new_live);
         } catch (\Throwable $e) {
             $offers_result = [
                 'ok' => false,
@@ -317,20 +317,19 @@ final class ZandersProductCronService extends AbstractTableCronService
             ];
         }
 
-        $this->profile('Normalize distributor offers from new live table', $t_offers, [
+        $this->profile('Update existing distributor offers from new live table', $t_offers, [
             'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
-            'active_product_state_total' => (int) ($offers_result['active_product_state_total'] ?? 0),
-            'matched_active_zanders_upcs' => (int) ($offers_result['matched_active_zanders_upcs'] ?? 0),
-            'distributor_offers_product_upsert_mysql_affected_rows' => (int) ($offers_result['upsert_mysql_affected_rows'] ?? 0),
-            'distributor_offers_product_upsert_ms' => (string) ($offers_result['upsert_elapsed_ms'] ?? '0.00'),
-            'distributor_offers_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
-            'distributor_offers_stale_cleanup_ms' => (string) ($offers_result['stale_cleanup_elapsed_ms'] ?? '0.00'),
+            'matched_existing_zanders_offers' => (int) ($offers_result['matched_existing_zanders_offers'] ?? 0),
+            'distributor_offers_zanders_product_update_rows' => (int) ($offers_result['product_update_rows'] ?? 0),
+            'distributor_offers_zanders_product_update_ms' => (string) ($offers_result['product_update_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_zanders_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
+            'distributor_offers_zanders_stale_cleanup_ms' => (string) ($offers_result['stale_cleanup_elapsed_ms'] ?? '0.00'),
             'ok' => !empty($offers_result['ok']) ? 1 : 0,
             'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
         ]);
 
         if (empty($offers_result['ok'])) {
-            $this->log('ERROR: Zanders distributor offers normalization failed after product swap', [
+            $this->log('ERROR: Zanders distributor offers update failed after product swap', [
                 'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
                 'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
             ]);
@@ -348,8 +347,8 @@ final class ZandersProductCronService extends AbstractTableCronService
             'imported_rows' => (int) $count,
             'new_live'      => (string) $new_live,
             'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
-            'distributor_offers_product_upsert_mysql_affected_rows' => (int) ($offers_result['upsert_mysql_affected_rows'] ?? 0),
-            'distributor_offers_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
+            'distributor_offers_zanders_product_update_rows' => (int) ($offers_result['product_update_rows'] ?? 0),
+            'distributor_offers_zanders_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
             'remote_mtime'  => $remote_mtime > 0 ? $remote_mtime : null,
         ]);
     }
