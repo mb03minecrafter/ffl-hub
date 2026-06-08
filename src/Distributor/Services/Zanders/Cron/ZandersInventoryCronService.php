@@ -12,6 +12,7 @@ use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
 use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
+use FFLHub\Distributor\Services\Zanders\ZandersManufacturerNormalizer;
 use FFLHub\Util\DebugLogUtil;
 
 /**
@@ -465,16 +466,11 @@ final class ZandersInventoryCronService extends AbstractTableCronService
     {
         $alias = trim($alias);
         $prefix = $alias !== '' ? $alias . '.' : '';
+        $manufacturer_norm = ZandersManufacturerNormalizer::canonical_norm_sql_expression("{$prefix}manufacturer");
 
         return "
             COALESCE({$prefix}sot_required, 0) = 0
-            AND (
-                   {$prefix}manufacturer_norm = 'SIG'
-                OR {$prefix}manufacturer_norm = 'SIGSAUER'
-                OR {$prefix}manufacturer_norm = 'SIGARMS'
-                OR {$prefix}manufacturer_norm LIKE 'SIGSAUER%'
-                OR {$prefix}manufacturer_norm LIKE 'SIGARMS%'
-            )
+            AND {$manufacturer_norm} = 'SIG SAUER'
         ";
     }
 

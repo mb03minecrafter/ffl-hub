@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Distributor\Offers;
 
 use FFLHub\Distributor\Services\Zanders\Tables\ZandersProductTableSchema;
+use FFLHub\Distributor\Services\Zanders\ZandersManufacturerNormalizer;
 use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
@@ -166,6 +167,8 @@ final class DistributorOffersStore
 
         $dealer_price_expr = "CAST(NULLIF(TRIM(z.distributor_price), '') AS DECIMAL(12,4))";
         $shipping_cost_expr = "CAST(NULLIF(TRIM(z.shipping_cost), '') AS DECIMAL(12,4))";
+        $manufacturer_expr = ZandersManufacturerNormalizer::canonical_display_sql_expression('z.manufacturer');
+        $manufacturer_norm_expr = ZandersManufacturerNormalizer::canonical_norm_sql_expression('z.manufacturer');
         $landed_cost_expr = "
             CASE
                 WHEN {$dealer_price_expr} IS NULL THEN NULL
@@ -202,8 +205,8 @@ final class DistributorOffersStore
                     %s AS distributor_id,
                     NULLIF(TRIM(z.zanders_item_number), '') AS distributor_product_id,
                     NULLIF(TRIM(z.zanders_item_number), '') AS distributor_sku,
-                    NULLIF(TRIM(z.manufacturer), '') AS manufacturer,
-                    NULLIF(TRIM(z.manufacturer_norm), '') AS manufacturer_norm,
+                    NULLIF({$manufacturer_expr}, '') AS manufacturer,
+                    NULLIF({$manufacturer_norm_expr}, '') AS manufacturer_norm,
                     CAST(COALESCE(NULLIF(TRIM(z.inventory_quantity), ''), '0') AS UNSIGNED) AS qty,
                     CASE
                         WHEN CAST(COALESCE(NULLIF(TRIM(z.inventory_quantity), ''), '0') AS UNSIGNED) > 0 THEN 'instock'

@@ -61,7 +61,7 @@ class ZandersProductParser
 
         $upc          = $this->get($csv, $header_map, 'upc');
         $item         = $this->get($csv, $header_map, 'itemnumber');
-        $manufacturer = $this->get($csv, $header_map, 'manufacturer');
+        $manufacturer = ZandersManufacturerNormalizer::canonical_display($this->get($csv, $header_map, 'manufacturer'));
         $category     = $this->get($csv, $header_map, 'category');
         $desc1        = $this->get($csv, $header_map, 'desc1');
         $desc2        = $this->get($csv, $header_map, 'desc2');
@@ -82,7 +82,7 @@ class ZandersProductParser
             'product_description' => $this->combine_desc($desc1, $desc2),
             'item_type'           => $category,
             'manufacturer'        => $manufacturer,
-            'manufacturer_norm'   => ZandersManufacturerNormalizer::normalize($manufacturer),
+            'manufacturer_norm'   => ZandersManufacturerNormalizer::canonical_norm($manufacturer),
             'mfg_model_number'    => $this->get($csv, $header_map, 'mfgpnumber'),
 
             'shipping_weight' => $this->pounds_to_ounces_or_null($this->get($csv, $header_map, 'weight')),

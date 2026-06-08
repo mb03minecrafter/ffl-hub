@@ -252,7 +252,8 @@ class ZandersProductImporterService
          *
          * This keeps a complete product catalog while preserving fulfillment constraints.
          */
-        $manufacturer_norm_expr = ZandersManufacturerNormalizer::sql_expression('@c5');
+        $manufacturer_expr = ZandersManufacturerNormalizer::canonical_display_sql_expression('@c5');
+        $manufacturer_norm_expr = ZandersManufacturerNormalizer::canonical_norm_sql_expression('@c5');
         $initial_block_reason_expr = $this->load_data_initial_dropship_block_reason_sql('@c1', '@c5');
 
         $sql = "
@@ -292,7 +293,7 @@ class ZandersProductImporterService
                                       ),
 
                 zanders_item_number  = TRIM(BOTH '\\r' FROM @c4),
-                manufacturer         = TRIM(BOTH '\\r' FROM @c5),
+                manufacturer         = {$manufacturer_expr},
                 manufacturer_norm    = {$manufacturer_norm_expr},
                 mfg_model_number     = TRIM(BOTH '\\r' FROM @c6),
 
@@ -645,12 +646,13 @@ class ZandersProductImporterService
         $alias_table = self::quote_identifier($this->get_restricted_alias_table_name());
         $total_start = microtime(true);
         $additional_where = $this->sig_approved_non_sot_exclusion_where_sql();
+        $manufacturer_match_norm = ZandersManufacturerNormalizer::sql_expression('s.manufacturer_norm');
 
         $exact = $this->run_restricted_alias_update(
             $quoted_table,
             $alias_table,
             'exact',
-            'r.alias_norm = s.manufacturer_norm',
+            "r.alias_norm = {$manufacturer_match_norm}",
             $additional_where
         );
 
@@ -660,7 +662,7 @@ class ZandersProductImporterService
                 $quoted_table,
                 $alias_table,
                 'prefix',
-                "s.manufacturer_norm LIKE CONCAT(r.alias_norm, '%')",
+                "{$manufacturer_match_norm} LIKE CONCAT(r.alias_norm, '%')",
                 $additional_where
             );
         }
@@ -671,7 +673,7 @@ class ZandersProductImporterService
                 $quoted_table,
                 $alias_table,
                 'contains',
-                'LOCATE(r.alias_norm, s.manufacturer_norm) > 0 AND CHAR_LENGTH(r.alias_norm) >= 5',
+                "LOCATE(r.alias_norm, {$manufacturer_match_norm}) > 0 AND CHAR_LENGTH(r.alias_norm) >= 5",
                 $additional_where
             );
         }
@@ -707,13 +709,7 @@ class ZandersProductImporterService
         return "
             AND NOT (
                 COALESCE(s.sot_required, 0) = 0
-                AND (
-                       s.manufacturer_norm = 'SIG'
-                    OR s.manufacturer_norm = 'SIGSAUER'
-                    OR s.manufacturer_norm = 'SIGARMS'
-                    OR s.manufacturer_norm LIKE 'SIGSAUER%'
-                    OR s.manufacturer_norm LIKE 'SIGARMS%'
-                )
+                AND s.manufacturer_norm = 'SIG SAUER'
             )
         ";
     }
@@ -724,19 +720,13 @@ class ZandersProductImporterService
             return 'NULL';
         }
 
-        $manufacturer_norm = ZandersManufacturerNormalizer::sql_expression("TRIM(BOTH '\\r' FROM {$manufacturer_expr})");
+        $manufacturer_norm = ZandersManufacturerNormalizer::canonical_norm_sql_expression($manufacturer_expr);
         $category_norm = "UPPER(TRIM(BOTH '\\r' FROM {$category_expr}))";
 
         return "
             CASE
                 WHEN {$category_norm} NOT IN ('DS SUPPRESSORS')
-                 AND (
-                        {$manufacturer_norm} = 'SIG'
-                     OR {$manufacturer_norm} = 'SIGSAUER'
-                     OR {$manufacturer_norm} = 'SIGARMS'
-                     OR {$manufacturer_norm} LIKE 'SIGSAUER%'
-                     OR {$manufacturer_norm} LIKE 'SIGARMS%'
-                 )
+                 AND {$manufacturer_norm} = 'SIG SAUER'
                 THEN ''
                 ELSE NULL
             END
