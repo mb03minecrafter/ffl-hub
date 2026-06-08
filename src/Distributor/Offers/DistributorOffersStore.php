@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 final class DistributorOffersStore
 {
     private const SCHEMA_OPTION = 'fflhub_distributor_offers_schema_version';
-    private const SCHEMA_VERSION = '1';
+    private const SCHEMA_VERSION = '2';
     private const TABLE_SUFFIX = 'fflhub_distributor_offers';
     private const DIST_ZANDERS = 'zanders';
 
@@ -51,7 +51,6 @@ final class DistributorOffersStore
                 qty INT UNSIGNED NOT NULL DEFAULT 0,
                 stock_status VARCHAR(32) DEFAULT NULL,
                 dealer_price DECIMAL(12,4) DEFAULT NULL,
-                true_cost DECIMAL(12,4) DEFAULT NULL,
                 shipping_cost DECIMAL(12,4) DEFAULT NULL,
                 landed_cost DECIMAL(12,4) DEFAULT NULL,
                 map_price DECIMAL(12,4) DEFAULT NULL,
@@ -75,6 +74,7 @@ final class DistributorOffersStore
         ");
 
         self::ensure_indexes($table);
+        self::drop_true_cost_column_if_exists($table);
 
         update_option(self::SCHEMA_OPTION, self::SCHEMA_VERSION, false);
     }
@@ -180,7 +180,6 @@ final class DistributorOffersStore
                     qty,
                     stock_status,
                     dealer_price,
-                    true_cost,
                     shipping_cost,
                     landed_cost,
                     map_price,
@@ -204,7 +203,6 @@ final class DistributorOffersStore
                         ELSE 'outofstock'
                     END AS stock_status,
                     {$dealer_price_expr} AS dealer_price,
-                    {$landed_cost_expr} AS true_cost,
                     {$shipping_cost_expr} AS shipping_cost,
                     {$landed_cost_expr} AS landed_cost,
                     CAST(NULLIF(TRIM(z.retail_map), '') AS DECIMAL(12,4)) AS map_price,
@@ -227,7 +225,6 @@ final class DistributorOffersStore
                     qty = VALUES(qty),
                     stock_status = VALUES(stock_status),
                     dealer_price = VALUES(dealer_price),
-                    true_cost = VALUES(true_cost),
                     shipping_cost = VALUES(shipping_cost),
                     landed_cost = VALUES(landed_cost),
                     map_price = VALUES(map_price),
@@ -365,6 +362,17 @@ final class DistributorOffersStore
         $found = $wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $column)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         return is_string($found) && $found === $column;
+    }
+
+    private static function drop_true_cost_column_if_exists(string $table): void
+    {
+        global $wpdb;
+
+        if ($table === '' || !self::table_has_column($table, 'true_cost')) {
+            return;
+        }
+
+        $wpdb->query("ALTER TABLE {$table} DROP COLUMN true_cost"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 
     /**
