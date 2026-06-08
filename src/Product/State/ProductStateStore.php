@@ -12,7 +12,7 @@ if (!defined('ABSPATH')) {
 final class ProductStateStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_state_schema_version';
-    private const SCHEMA_VERSION = '1';
+    private const SCHEMA_VERSION = '2';
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
@@ -81,12 +81,53 @@ final class ProductStateStore
                 PRIMARY KEY  (product_id),
                 UNIQUE KEY upc (upc),
                 KEY status_upc (status, upc),
-                KEY primary_distributor (primary_distributor),
-                KEY last_sync_at (last_sync_at)
+                KEY status_product_id (status, product_id),
+                KEY status_last_sync_at (status, last_sync_at),
+                KEY primary_distributor (primary_distributor)
             ) {$charset};
         ");
 
+        self::ensure_indexes($table);
+
         update_option(self::SCHEMA_OPTION, self::SCHEMA_VERSION, false);
+    }
+
+    private static function ensure_indexes(string $table): void
+    {
+        global $wpdb;
+
+        $rows = $wpdb->get_results("SHOW INDEX FROM {$table}", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if (!is_array($rows)) {
+            return;
+        }
+
+        $keys = [];
+        foreach ($rows as $row) {
+            $key = isset($row['Key_name']) ? (string) $row['Key_name'] : '';
+            if ($key !== '') {
+                $keys[$key] = true;
+            }
+        }
+
+        if (isset($keys['last_sync_at'])) {
+            $wpdb->query("ALTER TABLE {$table} DROP INDEX last_sync_at"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            unset($keys['last_sync_at']);
+        }
+
+        $missing_indexes = [
+            'status_upc' => 'ADD KEY status_upc (status, upc)',
+            'status_product_id' => 'ADD KEY status_product_id (status, product_id)',
+            'status_last_sync_at' => 'ADD KEY status_last_sync_at (status, last_sync_at)',
+            'primary_distributor' => 'ADD KEY primary_distributor (primary_distributor)',
+        ];
+
+        foreach ($missing_indexes as $name => $definition) {
+            if (isset($keys[$name])) {
+                continue;
+            }
+
+            $wpdb->query("ALTER TABLE {$table} {$definition}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
     }
 
     public static function table_exists(): bool
