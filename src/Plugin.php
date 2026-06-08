@@ -43,6 +43,7 @@ use FFLHub\Checkout\Map\CheckoutMap;
 use FFLHub\Checkout\Notice\CaliforniaRelayNotice;
 use FFLHub\Checkout\QuoteCartLinkHandler;
 use FFLHub\Distributor\Core\DistributorHandler;
+use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Distributor\Services\Cron\QuoteEmailJobsCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
@@ -192,6 +193,7 @@ final class Plugin
         // -----------------------------------------------------------------
         if (is_admin()) {
             ProductStateStore::ensure_schema();
+            DistributorOffersStore::ensure_schema();
             WPCronWarning::init();
 
             $this->admin_page = new AdminPage($this->distributor_handler);
@@ -385,6 +387,7 @@ final class Plugin
         DealerBatchOptimizerConfig::init_defaults();
         CategoryInstaller::install_default_categories();
         ProductStateStore::ensure_schema();
+        DistributorOffersStore::ensure_schema();
         self::ensure_quote_email_jobs_table();
         $quote_email_jobs_cron = new QuoteEmailJobsCronService();
         $quote_email_jobs_cron->on_activation();
