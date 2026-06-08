@@ -242,6 +242,13 @@ final class KinseysProductImporterService
                 ], $t_start, $mem_start, $phase_ms);
             }
 
+            $allowed_match_counts = [];
+            if ($this->profile_detail_enabled()) {
+                $t_phase = microtime(true);
+                $allowed_match_counts = $this->allowed_product_match_counts($staging_table, $temp_table);
+                $phase_ms['allowed_match_counts'] = $this->elapsed_ms($t_phase);
+            }
+
             $t_phase = microtime(true);
             $deleted = $wpdb->query("
                 DELETE S
@@ -302,6 +309,7 @@ final class KinseysProductImporterService
             'allowed_product_ids' => count($ids),
             'allowed_ids_loaded' => (int) $loaded,
             'staging_rows_before' => $before,
+            'allowed_match_counts' => $allowed_match_counts,
             'rows_deleted' => (int) $deleted,
             'staging_rows_after' => $after,
             'staging_table' => $staging_table,
@@ -426,6 +434,54 @@ final class KinseysProductImporterService
         $flush();
 
         return (int) $loaded;
+    }
+
+    /**
+     * Debug-only visibility into which Kinsey's identifiers the Allowed endpoint
+     * actually matches. This keeps the defensive prune measurable without making
+     * production runs pay for another join.
+     *
+     * @return array<string,int>
+     */
+    private function allowed_product_match_counts(string $stagingTable, string $tempTable): array
+    {
+        global $wpdb;
+
+        $row = $wpdb->get_row("
+            SELECT
+                SUM(A1.product_id IS NOT NULL) AS matched_kinseys_product_id,
+                SUM(A2.product_id IS NOT NULL) AS matched_remote_identifier,
+                SUM(A3.product_id IS NOT NULL) AS matched_north_item_number,
+                SUM(A4.product_id IS NOT NULL) AS matched_south_item_number,
+                SUM(A5.product_id IS NOT NULL) AS matched_vendor_item_number
+            FROM {$stagingTable} S
+            LEFT JOIN {$tempTable} A1
+                ON S.kinseys_product_id <> '' AND A1.product_id = S.kinseys_product_id
+            LEFT JOIN {$tempTable} A2
+                ON S.remote_identifier <> '' AND A2.product_id = S.remote_identifier
+            LEFT JOIN {$tempTable} A3
+                ON S.north_item_number <> '' AND A3.product_id = S.north_item_number
+            LEFT JOIN {$tempTable} A4
+                ON S.south_item_number <> '' AND A4.product_id = S.south_item_number
+            LEFT JOIN {$tempTable} A5
+                ON S.vendor_item_number <> '' AND A5.product_id = S.vendor_item_number
+        ", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if (!is_array($row)) {
+            return [
+                'ok' => 0,
+                'error' => $wpdb->last_error !== '' ? 1 : 0,
+            ];
+        }
+
+        return [
+            'ok' => 1,
+            'matched_kinseys_product_id' => (int) ($row['matched_kinseys_product_id'] ?? 0),
+            'matched_remote_identifier' => (int) ($row['matched_remote_identifier'] ?? 0),
+            'matched_north_item_number' => (int) ($row['matched_north_item_number'] ?? 0),
+            'matched_south_item_number' => (int) ($row['matched_south_item_number'] ?? 0),
+            'matched_vendor_item_number' => (int) ($row['matched_vendor_item_number'] ?? 0),
+        ];
     }
 
     /**

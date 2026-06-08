@@ -21,6 +21,11 @@ final class KinseysProductCronService extends AbstractTableCronService
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][KinseysProductCron]';
     private const DEFAULT_TIMEOUT_SECONDS = 180;
+    private const RUN_LOCK_OPTION = 'fflhub_kinseys_product_run_lock';
+    private const RUN_LOCK_TTL_SECONDS = 30 * MINUTE_IN_SECONDS;
+    private const DEFAULT_MIN_PRODUCTS_SEEN = 20000;
+    private const DEFAULT_MIN_ROWS_IMPORTED_BEFORE_PRUNE = 20000;
+    private const DEFAULT_MIN_FINAL_ROWS = 20000;
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -58,252 +63,306 @@ final class KinseysProductCronService extends AbstractTableCronService
             @set_time_limit(0);
         }
 
-        update_option('fflhub_kinseys_product_last_run', current_time('mysql'), false);
-
-        $table_ctx = $this->table_context();
-        $this->log('---- RUN START ----', [
-            'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
-            'hook' => self::CRON_HOOK,
-            'group' => $this->get_action_group(),
-            'timeout_sec' => $timeout_seconds,
-            'live_table' => $table_ctx['live_table'],
-            'staging_table' => $table_ctx['staging_table'],
-            'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
-            'memory_peak_kb' => $this->memory_peak_kb(),
-        ]);
-
-        $client = $this->make_client($timeout_seconds);
-        if (!$client->has_credentials()) {
-            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Missing Kinsey\'s API credentials; product update skipped.');
-            $this->finalize_run($t_start, $mem_start, 'ERROR (missing credentials)');
+        $lock_token = $this->acquire_run_lock();
+        if ($lock_token === '') {
+            $this->log('Kinsey\'s product update skipped; another run lock is active.');
+            $this->finalize_run($t_start, $mem_start, 'SUCCESS (run lock active)');
             return;
         }
 
-        $parser = new KinseysProductParser();
+        try {
+            update_option('fflhub_kinseys_product_last_run', current_time('mysql'), false);
 
-        $t_products = microtime(true);
-        $this->log('PHASE START: get_products', [
-            'timeout_sec' => $timeout_seconds,
-            'memory_kb' => $this->memory_kb(),
-            'memory_peak_kb' => $this->memory_peak_kb(),
-        ]);
-        $products = $client->get_products();
-        $product_data = (array) ($products['data'] ?? []);
-        $product_rows = $parser->normalize_product_rows($product_data);
-        $this->profile('get_products', $t_products, array_merge([
-            'ok' => empty($products['ok']) ? 0 : 1,
-            'status' => (int) ($products['status'] ?? 0),
-            'timeout_sec' => $timeout_seconds,
-            'response_bytes' => (int) ($products['response_bytes'] ?? 0),
-        ], DebugLogUtil::summarize_array_keys($product_data), [
-            'products_seen' => count($product_rows),
-        ]));
+            $table_ctx = $this->table_context();
+            $this->log('---- RUN START ----', [
+                'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
+                'hook' => self::CRON_HOOK,
+                'group' => $this->get_action_group(),
+                'timeout_sec' => $timeout_seconds,
+                'live_table' => $table_ctx['live_table'],
+                'staging_table' => $table_ctx['staging_table'],
+                'memory_kb' => $mem_start > 0 ? (int) round($mem_start / 1024) : 0,
+                'memory_peak_kb' => $this->memory_peak_kb(),
+            ]);
 
-        if (empty($products['ok'])) {
-            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Kinsey\'s product request failed.', [
+            $client = $this->make_client($timeout_seconds);
+            if (!$client->has_credentials()) {
+                update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+                $this->log('Missing Kinsey\'s API credentials; product update skipped.');
+                $this->finalize_run($t_start, $mem_start, 'ERROR (missing credentials)');
+                return;
+            }
+
+            $parser = new KinseysProductParser();
+
+            $t_products = microtime(true);
+            $this->log('PHASE START: get_products', [
+                'timeout_sec' => $timeout_seconds,
+                'memory_kb' => $this->memory_kb(),
+                'memory_peak_kb' => $this->memory_peak_kb(),
+            ]);
+            $products = $client->get_products();
+            $product_data = (array) ($products['data'] ?? []);
+            $product_rows = $parser->normalize_product_rows($product_data);
+            $this->profile('get_products', $t_products, array_merge([
+                'ok' => empty($products['ok']) ? 0 : 1,
                 'status' => (int) ($products['status'] ?? 0),
-                'error' => (string) ($products['error'] ?? ''),
+                'timeout_sec' => $timeout_seconds,
+                'response_bytes' => (int) ($products['response_bytes'] ?? 0),
+            ], DebugLogUtil::summarize_array_keys($product_data), [
+                'products_seen' => count($product_rows),
+            ]));
+
+            if (empty($products['ok'])) {
+                update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+                $this->log('Kinsey\'s product request failed.', [
+                    'status' => (int) ($products['status'] ?? 0),
+                    'error' => (string) ($products['error'] ?? ''),
+                ]);
+                $this->finalize_run($t_start, $mem_start, 'ERROR (product request failed)', [
+                    'status' => (int) ($products['status'] ?? 0),
+                    'error' => (string) ($products['error'] ?? ''),
+                ]);
+                return;
+            }
+
+            if (empty($product_rows)) {
+                update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+                $this->log('Kinsey\'s product request returned zero rows; swap skipped.');
+                $this->finalize_run($t_start, $mem_start, 'ERROR (0 products)');
+                return;
+            }
+
+            if (!$this->passes_minimum_guard(
+                'products_seen',
+                count($product_rows),
+                'fflhub_kinseys_product_min_products_seen',
+                self::DEFAULT_MIN_PRODUCTS_SEEN,
+                $t_start,
+                $mem_start
+            )) {
+                return;
+            }
+
+            $importer = new KinseysProductImporterService($this->table, $parser);
+
+            $t_snapshot = microtime(true);
+            $this->log('PHASE START: load_live_inventory_snapshot', [
+                'products_seen' => count($product_rows),
+                'source' => 'live_table',
+                'memory_kb' => $this->memory_kb(),
+                'memory_peak_kb' => $this->memory_peak_kb(),
             ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (product request failed)', [
-                'status' => (int) ($products['status'] ?? 0),
-                'error' => (string) ($products['error'] ?? ''),
+            $inventory_rows = $importer->get_live_inventory_rows();
+            $this->profile('load_live_inventory_snapshot', $t_snapshot, [
+                'inventory_rows' => count($inventory_rows),
+                'source' => 'live_table',
+                'live_table' => $table_ctx['live_table'],
             ]);
-            return;
-        }
 
-        if (empty($product_rows)) {
-            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Kinsey\'s product request returned zero rows; swap skipped.');
-            $this->finalize_run($t_start, $mem_start, 'ERROR (0 products)');
-            return;
-        }
+            $t_import = microtime(true);
+            $this->log('PHASE START: import_products_array', [
+                'products_seen' => count($product_rows),
+                'inventory_rows' => count($inventory_rows),
+                'inventory_source' => 'live_table',
+                'staging_table' => $table_ctx['staging_table'],
+                'memory_kb' => $this->memory_kb(),
+                'memory_peak_kb' => $this->memory_peak_kb(),
+            ]);
+            $imported = $importer->import_products_array($product_rows, $inventory_rows);
+            $this->profile('import_products_array', $t_import, [
+                'products_seen' => count($product_rows),
+                'inventory_rows' => count($inventory_rows),
+                'inventory_source' => 'live_table',
+                'rows_imported' => (int) $imported,
+                'staging_table' => $table_ctx['staging_table'],
+            ]);
 
-        $importer = new KinseysProductImporterService($this->table, $parser);
+            if ($imported <= 0) {
+                update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+                $this->log('Kinsey\'s product import produced zero rows; swap skipped.');
+                $this->finalize_run($t_start, $mem_start, 'ERROR (0 imported)');
+                return;
+            }
 
-        $t_snapshot = microtime(true);
-        $this->log('PHASE START: load_live_inventory_snapshot', [
-            'products_seen' => count($product_rows),
-            'source' => 'live_table',
-            'memory_kb' => $this->memory_kb(),
-            'memory_peak_kb' => $this->memory_peak_kb(),
-        ]);
-        $inventory_rows = $importer->get_live_inventory_rows();
-        $this->profile('load_live_inventory_snapshot', $t_snapshot, [
-            'inventory_rows' => count($inventory_rows),
-            'source' => 'live_table',
-            'live_table' => $table_ctx['live_table'],
-        ]);
+            if (!$this->passes_minimum_guard(
+                'rows_imported_before_prune',
+                (int) $imported,
+                'fflhub_kinseys_product_min_rows_imported_before_prune',
+                self::DEFAULT_MIN_ROWS_IMPORTED_BEFORE_PRUNE,
+                $t_start,
+                $mem_start,
+                ['products_seen' => count($product_rows)]
+            )) {
+                return;
+            }
 
-        $t_import = microtime(true);
-        $this->log('PHASE START: import_products_array', [
-            'products_seen' => count($product_rows),
-            'inventory_rows' => count($inventory_rows),
-            'inventory_source' => 'live_table',
-            'staging_table' => $table_ctx['staging_table'],
-            'memory_kb' => $this->memory_kb(),
-            'memory_peak_kb' => $this->memory_peak_kb(),
-        ]);
-        $imported = $importer->import_products_array($product_rows, $inventory_rows);
-        $this->profile('import_products_array', $t_import, [
-            'products_seen' => count($product_rows),
-            'inventory_rows' => count($inventory_rows),
-            'inventory_source' => 'live_table',
-            'rows_imported' => (int) $imported,
-            'staging_table' => $table_ctx['staging_table'],
-        ]);
-
-        if ($imported <= 0) {
-            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Kinsey\'s product import produced zero rows; swap skipped.');
-            $this->finalize_run($t_start, $mem_start, 'ERROR (0 imported)');
-            return;
-        }
-
-        $t_allowed = microtime(true);
-        $this->log('PHASE START: get_allowed_products', [
-            'rows_imported_before_prune' => (int) $imported,
-            'timeout_sec' => $timeout_seconds,
-            'memory_kb' => $this->memory_kb(),
-            'memory_peak_kb' => $this->memory_peak_kb(),
-        ]);
-        $allowed = $client->get_allowed_products();
-        $allowed_data = (array) ($allowed['data'] ?? []);
-        $allowed_product_ids = $this->normalize_allowed_product_ids($allowed_data);
-        $this->profile('get_allowed_products', $t_allowed, array_merge([
-            'ok' => empty($allowed['ok']) ? 0 : 1,
-            'status' => (int) ($allowed['status'] ?? 0),
-            'timeout_sec' => $timeout_seconds,
-            'response_bytes' => (int) ($allowed['response_bytes'] ?? 0),
-        ], DebugLogUtil::summarize_array_keys($allowed_data), [
-            'allowed_product_ids' => count($allowed_product_ids),
-            'records_count' => (int) ($allowed_data['recordsCount'] ?? 0),
-        ]));
-
-        if (empty($allowed['ok'])) {
-            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Kinsey\'s allowed products request failed after staging import; swap skipped.', [
+            $t_allowed = microtime(true);
+            $this->log('PHASE START: get_allowed_products', [
+                'rows_imported_before_prune' => (int) $imported,
+                'timeout_sec' => $timeout_seconds,
+                'memory_kb' => $this->memory_kb(),
+                'memory_peak_kb' => $this->memory_peak_kb(),
+            ]);
+            $allowed = $client->get_allowed_products();
+            $allowed_data = (array) ($allowed['data'] ?? []);
+            $allowed_product_ids = $this->normalize_allowed_product_ids($allowed_data);
+            $this->profile('get_allowed_products', $t_allowed, array_merge([
+                'ok' => empty($allowed['ok']) ? 0 : 1,
                 'status' => (int) ($allowed['status'] ?? 0),
-                'error' => (string) ($allowed['error'] ?? ''),
-            ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (allowed products request failed)', [
-                'status' => (int) ($allowed['status'] ?? 0),
-                'error' => (string) ($allowed['error'] ?? ''),
-            ]);
-            return;
-        }
+                'timeout_sec' => $timeout_seconds,
+                'response_bytes' => (int) ($allowed['response_bytes'] ?? 0),
+            ], DebugLogUtil::summarize_array_keys($allowed_data), [
+                'allowed_product_ids' => count($allowed_product_ids),
+                'records_count' => (int) ($allowed_data['recordsCount'] ?? 0),
+            ]));
 
-        if (empty($allowed_product_ids)) {
-            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Kinsey\'s allowed products request returned zero product IDs after staging import; swap skipped.');
-            $this->finalize_run($t_start, $mem_start, 'ERROR (0 allowed product IDs)');
-            return;
-        }
+            if (empty($allowed['ok'])) {
+                update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+                $this->log('Kinsey\'s allowed products request failed after staging import; swap skipped.', [
+                    'status' => (int) ($allowed['status'] ?? 0),
+                    'error' => (string) ($allowed['error'] ?? ''),
+                ]);
+                $this->finalize_run($t_start, $mem_start, 'ERROR (allowed products request failed)', [
+                    'status' => (int) ($allowed['status'] ?? 0),
+                    'error' => (string) ($allowed['error'] ?? ''),
+                ]);
+                return;
+            }
 
-        $t_prune = microtime(true);
-        $this->log('PHASE START: prune_staging_to_allowed_products', [
-            'rows_imported_before_prune' => (int) $imported,
-            'allowed_product_ids' => count($allowed_product_ids),
-            'staging_table' => $table_ctx['staging_table'],
-            'memory_kb' => $this->memory_kb(),
-            'memory_peak_kb' => $this->memory_peak_kb(),
-        ]);
-        $prune_stats = $importer->prune_staging_to_allowed_product_ids($allowed_product_ids);
-        $this->profile('prune_staging_to_allowed_products', $t_prune, $prune_stats);
+            if (empty($allowed_product_ids)) {
+                update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+                $this->log('Kinsey\'s allowed products request returned zero product IDs after staging import; swap skipped.');
+                $this->finalize_run($t_start, $mem_start, 'ERROR (0 allowed product IDs)');
+                return;
+            }
 
-        if (empty($prune_stats['ok'])) {
-            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Kinsey\'s allowed product pruning failed; swap skipped.', [
-                'error' => (string) ($prune_stats['error'] ?? ''),
+            $t_prune = microtime(true);
+            $this->log('PHASE START: prune_staging_to_allowed_products', [
+                'rows_imported_before_prune' => (int) $imported,
+                'allowed_product_ids' => count($allowed_product_ids),
+                'staging_table' => $table_ctx['staging_table'],
+                'memory_kb' => $this->memory_kb(),
+                'memory_peak_kb' => $this->memory_peak_kb(),
             ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (allowed product prune failed)', [
-                'error' => (string) ($prune_stats['error'] ?? ''),
-            ]);
-            return;
-        }
+            $prune_stats = $importer->prune_staging_to_allowed_product_ids($allowed_product_ids);
+            $this->profile('prune_staging_to_allowed_products', $t_prune, $prune_stats);
 
-        $t_ineligible_prune = microtime(true);
-        $this->log('PHASE START: prune_staging_ineligible_rows', [
-            'staging_rows_before' => (int) ($prune_stats['staging_rows_after'] ?? 0),
-            'staging_table' => $table_ctx['staging_table'],
-            'memory_kb' => $this->memory_kb(),
-            'memory_peak_kb' => $this->memory_peak_kb(),
-        ]);
-        $ineligible_prune_stats = $importer->prune_staging_ineligible_rows();
-        $this->profile('prune_staging_ineligible_rows', $t_ineligible_prune, $ineligible_prune_stats);
+            if (empty($prune_stats['ok'])) {
+                update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+                $this->log('Kinsey\'s allowed product pruning failed; swap skipped.', [
+                    'error' => (string) ($prune_stats['error'] ?? ''),
+                ]);
+                $this->finalize_run($t_start, $mem_start, 'ERROR (allowed product prune failed)', [
+                    'error' => (string) ($prune_stats['error'] ?? ''),
+                ]);
+                return;
+            }
 
-        if (empty($ineligible_prune_stats['ok'])) {
-            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Kinsey\'s inactive/blocked product pruning failed; swap skipped.', [
-                'error' => (string) ($ineligible_prune_stats['error'] ?? ''),
+            $t_ineligible_prune = microtime(true);
+            $this->log('PHASE START: prune_staging_ineligible_rows', [
+                'staging_rows_before' => (int) ($prune_stats['staging_rows_after'] ?? 0),
+                'staging_table' => $table_ctx['staging_table'],
+                'memory_kb' => $this->memory_kb(),
+                'memory_peak_kb' => $this->memory_peak_kb(),
             ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (inactive product prune failed)', [
-                'error' => (string) ($ineligible_prune_stats['error'] ?? ''),
-            ]);
-            return;
-        }
+            $ineligible_prune_stats = $importer->prune_staging_ineligible_rows();
+            $this->profile('prune_staging_ineligible_rows', $t_ineligible_prune, $ineligible_prune_stats);
 
-        $publish_count = (int) ($ineligible_prune_stats['rows_after'] ?? 0);
-        if ($publish_count <= 0) {
-            update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
-            $this->log('Kinsey\'s allowed product pruning removed all staging rows; swap skipped.', [
+            if (empty($ineligible_prune_stats['ok'])) {
+                update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+                $this->log('Kinsey\'s inactive/blocked product pruning failed; swap skipped.', [
+                    'error' => (string) ($ineligible_prune_stats['error'] ?? ''),
+                ]);
+                $this->finalize_run($t_start, $mem_start, 'ERROR (inactive product prune failed)', [
+                    'error' => (string) ($ineligible_prune_stats['error'] ?? ''),
+                ]);
+                return;
+            }
+
+            $publish_count = (int) ($ineligible_prune_stats['rows_after'] ?? 0);
+            if ($publish_count <= 0) {
+                update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+                $this->log('Kinsey\'s allowed product pruning removed all staging rows; swap skipped.', [
+                    'rows_imported_before_prune' => (int) $imported,
+                    'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
+                    'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
+                ]);
+                $this->finalize_run($t_start, $mem_start, 'ERROR (0 allowed imported)', [
+                    'rows_imported_before_prune' => (int) $imported,
+                    'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
+                    'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
+                ]);
+                return;
+            }
+
+            if (!$this->passes_minimum_guard(
+                'final_staging_rows',
+                $publish_count,
+                'fflhub_kinseys_product_min_final_rows',
+                self::DEFAULT_MIN_FINAL_ROWS,
+                $t_start,
+                $mem_start,
+                [
+                    'products_seen' => count($product_rows),
+                    'rows_imported_before_prune' => (int) $imported,
+                    'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
+                    'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
+                ]
+            )) {
+                return;
+            }
+
+            $t_swap = microtime(true);
+            $this->log('PHASE START: swap_live_and_staging', [
+                'rows_imported' => $publish_count,
                 'rows_imported_before_prune' => (int) $imported,
                 'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
                 'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
+                'old_live' => $table_ctx['live_table'],
+                'old_staging' => $table_ctx['staging_table'],
+                'memory_kb' => $this->memory_kb(),
+                'memory_peak_kb' => $this->memory_peak_kb(),
             ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (0 allowed imported)', [
+            $new_live = (string) $this->table->swap_live_and_staging();
+            $this->profile('swap_live_and_staging', $t_swap, [
+                'new_live' => $new_live,
+            ]);
+
+            update_option('fflhub_kinseys_product_last_update', current_time('mysql'), false);
+            update_option('fflhub_kinseys_product_last_update_count', $publish_count, false);
+            delete_option('fflhub_kinseys_product_last_error');
+
+            $deleted_artifacts = $importer->cleanup_last_catalog_tsv() ? 1 : 0;
+            $deleted_old_artifacts = $this->cleanup_old_catalog_tsvs();
+            $inventory_refresh_scheduled = $this->schedule_inventory_refresh_after_success();
+
+            $this->log('Kinsey\'s product import complete.', [
+                'products_seen' => count($product_rows),
+                'rows_imported' => $publish_count,
                 'rows_imported_before_prune' => (int) $imported,
                 'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
                 'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
+                'new_live' => $new_live,
+                'deleted_artifacts' => (int) $deleted_artifacts,
+                'deleted_old_artifacts' => (int) $deleted_old_artifacts,
+                'inventory_refresh_scheduled' => $inventory_refresh_scheduled ? 1 : 0,
             ]);
-            return;
+            $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
+                'products_seen' => count($product_rows),
+                'rows_imported' => $publish_count,
+                'rows_imported_before_prune' => (int) $imported,
+                'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
+                'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
+                'old_live' => $table_ctx['live_table'],
+                'new_live' => $new_live,
+                'deleted_artifacts' => (int) $deleted_artifacts,
+                'deleted_old_artifacts' => (int) $deleted_old_artifacts,
+                'inventory_refresh_scheduled' => $inventory_refresh_scheduled ? 1 : 0,
+            ]);
+        } finally {
+            $this->release_run_lock($lock_token);
         }
-
-        $t_swap = microtime(true);
-        $this->log('PHASE START: swap_live_and_staging', [
-            'rows_imported' => $publish_count,
-            'rows_imported_before_prune' => (int) $imported,
-            'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
-            'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
-            'old_live' => $table_ctx['live_table'],
-            'old_staging' => $table_ctx['staging_table'],
-            'memory_kb' => $this->memory_kb(),
-            'memory_peak_kb' => $this->memory_peak_kb(),
-        ]);
-        $new_live = (string) $this->table->swap_live_and_staging();
-        $this->profile('swap_live_and_staging', $t_swap, [
-            'new_live' => $new_live,
-        ]);
-
-        update_option('fflhub_kinseys_product_last_update', current_time('mysql'), false);
-        update_option('fflhub_kinseys_product_last_update_count', $publish_count, false);
-        delete_option('fflhub_kinseys_product_last_error');
-
-        $deleted_artifacts = $importer->cleanup_last_catalog_tsv() ? 1 : 0;
-        $deleted_old_artifacts = $this->cleanup_old_catalog_tsvs();
-
-        $this->log('Kinsey\'s product import complete.', [
-            'products_seen' => count($product_rows),
-            'rows_imported' => $publish_count,
-            'rows_imported_before_prune' => (int) $imported,
-            'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
-            'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
-            'new_live' => $new_live,
-            'deleted_artifacts' => (int) $deleted_artifacts,
-            'deleted_old_artifacts' => (int) $deleted_old_artifacts,
-        ]);
-        $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
-            'products_seen' => count($product_rows),
-            'rows_imported' => $publish_count,
-            'rows_imported_before_prune' => (int) $imported,
-            'rows_pruned' => (int) ($prune_stats['rows_deleted'] ?? 0),
-            'inactive_blocked_rows_pruned' => (int) ($ineligible_prune_stats['rows_deleted'] ?? 0),
-            'old_live' => $table_ctx['live_table'],
-            'new_live' => $new_live,
-            'deleted_artifacts' => (int) $deleted_artifacts,
-            'deleted_old_artifacts' => (int) $deleted_old_artifacts,
-        ]);
     }
 
     private function make_client(int $timeoutSeconds): KinseysApiClient
@@ -418,6 +477,102 @@ final class KinseysProductCronService extends AbstractTableCronService
         }
 
         return $deleted;
+    }
+
+    private function acquire_run_lock(): string
+    {
+        $now = time();
+        $ttl = (int) apply_filters('fflhub_kinseys_product_run_lock_ttl_seconds', self::RUN_LOCK_TTL_SECONDS);
+        $ttl = max(5 * MINUTE_IN_SECONDS, $ttl);
+        $token = $this->make_lock_token();
+        $value = $token . '|' . (string) $now;
+
+        $existing = (string) get_option(self::RUN_LOCK_OPTION, '');
+        if ($existing !== '') {
+            $parts = explode('|', $existing, 2);
+            $locked_at = isset($parts[1]) ? (int) $parts[1] : 0;
+            if ($locked_at > 0 && ($now - $locked_at) < $ttl) {
+                return '';
+            }
+
+            delete_option(self::RUN_LOCK_OPTION);
+        }
+
+        return add_option(self::RUN_LOCK_OPTION, $value, '', 'no') ? $token : '';
+    }
+
+    private function release_run_lock(string $token): void
+    {
+        if ($token === '') {
+            return;
+        }
+
+        $existing = (string) get_option(self::RUN_LOCK_OPTION, '');
+        if (strpos($existing, $token . '|') === 0) {
+            delete_option(self::RUN_LOCK_OPTION);
+        }
+    }
+
+    private function make_lock_token(): string
+    {
+        if (function_exists('wp_generate_uuid4')) {
+            return (string) wp_generate_uuid4();
+        }
+
+        return uniqid('kinseys_product_', true);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function passes_minimum_guard(
+        string $label,
+        int $actual,
+        string $filterName,
+        int $defaultMinimum,
+        float $tStart,
+        int $memStart,
+        array $ctx = []
+    ): bool {
+        $minimum = (int) apply_filters($filterName, $defaultMinimum);
+        if ($minimum <= 0 || $actual >= $minimum) {
+            return true;
+        }
+
+        update_option('fflhub_kinseys_product_last_error', current_time('mysql'), false);
+        $payload = array_merge($ctx, [
+            'guard' => $label,
+            'actual' => $actual,
+            'minimum' => $minimum,
+            'filter' => $filterName,
+        ]);
+        $this->log('Kinsey\'s product row-count guard failed; swap skipped.', $payload);
+        $this->finalize_run($tStart, $memStart, 'ERROR (row-count guard failed)', $payload);
+
+        return false;
+    }
+
+    private function schedule_inventory_refresh_after_success(): bool
+    {
+        if (!function_exists('as_schedule_single_action')) {
+            return false;
+        }
+
+        try {
+            as_schedule_single_action(
+                time() + 5,
+                KinseysInventoryCronService::CRON_HOOK,
+                ['source' => 'kinseys_product_success'],
+                $this->get_action_group(),
+                true
+            );
+            return true;
+        } catch (\Throwable $e) {
+            $this->log('Kinsey\'s post-product inventory refresh schedule failed.', [
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
     }
 
     /**
