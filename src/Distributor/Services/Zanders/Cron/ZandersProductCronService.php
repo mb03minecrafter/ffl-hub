@@ -12,6 +12,7 @@ use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
 use FFLHub\Distributor\Services\Zanders\ZandersProductImporterService;
 use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
+use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Util\DebugLogUtil;
 
 /**
@@ -302,6 +303,39 @@ final class ZandersProductCronService extends AbstractTableCronService
             'new_live' => (string) $new_live,
         ]);
 
+        // 5) Normalize static/catalog offer fields from the newly live Zanders table.
+        $t_offers = microtime(true);
+        $offers_result = [];
+
+        try {
+            $offers_result = DistributorOffersStore::normalize_zanders_offers($new_live);
+        } catch (\Throwable $e) {
+            $offers_result = [
+                'ok' => false,
+                'source_live_table' => (string) $new_live,
+                'errors' => [$e->getMessage()],
+            ];
+        }
+
+        $this->profile('Normalize distributor offers from new live table', $t_offers, [
+            'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
+            'active_product_state_rows_considered' => (int) ($offers_result['active_product_state_count'] ?? 0),
+            'matched_active_upc_count' => (int) ($offers_result['matched_active_upc_count'] ?? 0),
+            'distributor_offers_product_upsert_rows' => (int) ($offers_result['upsert_affected_rows'] ?? 0),
+            'distributor_offers_product_upsert_ms' => (string) ($offers_result['upsert_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
+            'distributor_offers_stale_cleanup_ms' => (string) ($offers_result['stale_cleanup_elapsed_ms'] ?? '0.00'),
+            'ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+        ]);
+
+        if (empty($offers_result['ok'])) {
+            $this->log('ERROR: Zanders distributor offers normalization failed after product swap', [
+                'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
+                'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+            ]);
+        }
+
         update_option('fflhub_zanders_fulfillment_last_import', current_time('mysql'));
         update_option('fflhub_zanders_fulfillment_last_import_count', (int) $count);
         update_option('fflhub_zanders_fulfillment_last_swap', current_time('mysql'));
@@ -313,6 +347,9 @@ final class ZandersProductCronService extends AbstractTableCronService
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
             'imported_rows' => (int) $count,
             'new_live'      => (string) $new_live,
+            'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'distributor_offers_product_upsert_rows' => (int) ($offers_result['upsert_affected_rows'] ?? 0),
+            'distributor_offers_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
             'remote_mtime'  => $remote_mtime > 0 ? $remote_mtime : null,
         ]);
     }

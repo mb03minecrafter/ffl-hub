@@ -4,7 +4,6 @@ declare(strict_types=1);
 namespace FFLHub\Distributor\Offers;
 
 use FFLHub\Distributor\Services\Zanders\Tables\ZandersProductTableSchema;
-use FFLHub\Distributor\Services\Zanders\ZandersManufacturerNormalizer;
 use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
@@ -111,7 +110,7 @@ final class DistributorOffersStore
      *
      * @return array<string,mixed>
      */
-    public static function normalize_zanders_offers(): array
+    public static function normalize_zanders_offers(?string $source_live_table = null): array
     {
         global $wpdb;
 
@@ -119,6 +118,7 @@ final class DistributorOffersStore
         $result = [
             'ok' => false,
             'source_live_table' => '',
+            'active_product_state_count' => 0,
             'matched_active_upc_count' => 0,
             'upsert_affected_rows' => 0,
             'stale_disabled' => 0,
@@ -135,7 +135,7 @@ final class DistributorOffersStore
         self::ensure_schema();
         ProductStateStore::ensure_schema();
 
-        $live_table = self::current_zanders_live_table();
+        $live_table = self::resolve_zanders_live_table($source_live_table);
         if ($live_table === '') {
             $result['errors'][] = 'Could not resolve a valid live Zanders product table.';
             return self::finish_result($result, $started);
@@ -150,8 +150,19 @@ final class DistributorOffersStore
         $offers_table = self::table_name();
         $product_state_table = ProductStateStore::table_name();
         $has_product_normalized_at = self::table_has_column($offers_table, 'product_normalized_at');
+        $has_dropship_block_reason = self::table_has_column($offers_table, 'dropship_block_reason');
 
         $result['source_live_table'] = $live_table;
+
+        $active_state_sql = $wpdb->prepare(
+            "
+                SELECT COUNT(*)
+                FROM {$product_state_table}
+                WHERE status = %s
+            ",
+            'active'
+        );
+        $result['active_product_state_count'] = (int) $wpdb->get_var($active_state_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $matched_sql = $wpdb->prepare(
             "
@@ -170,10 +181,12 @@ final class DistributorOffersStore
         $product_normalized_select = $has_product_normalized_at ? ",\n                NOW()" : '';
         $product_normalized_update = $has_product_normalized_at ? ",\n                product_normalized_at = VALUES(product_normalized_at)" : '';
         $product_normalized_stale = $has_product_normalized_at ? ",\n                o.product_normalized_at = NOW()" : '';
+        $dropship_block_reason_insert = $has_dropship_block_reason ? "dropship_block_reason,\n                    " : '';
+        $dropship_block_reason_select = $has_dropship_block_reason ? "NULLIF(TRIM(z.dropship_block_reason), '') AS dropship_block_reason,\n                    " : '';
+        $dropship_block_reason_update = $has_dropship_block_reason ? "dropship_block_reason = VALUES(dropship_block_reason),\n                    " : '';
 
         $dealer_price_expr = "CAST(NULLIF(TRIM(z.distributor_price), '') AS DECIMAL(12,4))";
         $shipping_cost_expr = "CAST(NULLIF(TRIM(z.shipping_cost), '') AS DECIMAL(12,4))";
-        $manufacturer_norm_expr = ZandersManufacturerNormalizer::canonical_norm_sql_expression('z.manufacturer');
         $landed_cost_expr = "
             CASE
                 WHEN {$dealer_price_expr} IS NULL THEN NULL
@@ -181,6 +194,7 @@ final class DistributorOffersStore
             END
         ";
 
+        $t_upsert = microtime(true);
         $upsert_sql = $wpdb->prepare(
             "
                 INSERT INTO {$offers_table} (
@@ -200,6 +214,7 @@ final class DistributorOffersStore
                     sot_required,
                     dropship_enabled,
                     enabled,
+                    {$dropship_block_reason_insert}
                     shipping_weight_oz,
                     normalized_at
                     {$product_normalized_insert}
@@ -209,7 +224,7 @@ final class DistributorOffersStore
                     %s AS distributor_id,
                     NULLIF(TRIM(z.zanders_item_number), '') AS distributor_product_id,
                     NULLIF(TRIM(z.zanders_item_number), '') AS distributor_sku,
-                    NULLIF({$manufacturer_norm_expr}, '') AS manufacturer_norm,
+                    NULLIF(TRIM(z.manufacturer_norm), '') AS manufacturer_norm,
                     CAST(COALESCE(NULLIF(TRIM(z.inventory_quantity), ''), '0') AS UNSIGNED) AS qty,
                     CASE
                         WHEN CAST(COALESCE(NULLIF(TRIM(z.inventory_quantity), ''), '0') AS UNSIGNED) > 0 THEN 'instock'
@@ -224,6 +239,7 @@ final class DistributorOffersStore
                     CAST(COALESCE(z.sot_required, 0) AS UNSIGNED) AS sot_required,
                     CAST(COALESCE(z.dropship_enabled, 1) AS UNSIGNED) AS dropship_enabled,
                     1 AS enabled,
+                    {$dropship_block_reason_select}
                     z.shipping_weight AS shipping_weight_oz,
                     NOW() AS normalized_at
                     {$product_normalized_select}
@@ -236,17 +252,13 @@ final class DistributorOffersStore
                     distributor_product_id = VALUES(distributor_product_id),
                     distributor_sku = VALUES(distributor_sku),
                     manufacturer_norm = VALUES(manufacturer_norm),
-                    qty = VALUES(qty),
-                    stock_status = VALUES(stock_status),
-                    dealer_price = VALUES(dealer_price),
-                    shipping_cost = VALUES(shipping_cost),
-                    landed_cost = VALUES(landed_cost),
                     map_price = VALUES(map_price),
                     msrp = VALUES(msrp),
                     ffl_required = VALUES(ffl_required),
                     sot_required = VALUES(sot_required),
                     dropship_enabled = VALUES(dropship_enabled),
                     enabled = VALUES(enabled),
+                    {$dropship_block_reason_update}
                     shipping_weight_oz = VALUES(shipping_weight_oz),
                     normalized_at = VALUES(normalized_at)
                     {$product_normalized_update}
@@ -262,7 +274,9 @@ final class DistributorOffersStore
         }
 
         $result['upsert_affected_rows'] = is_numeric($upserted) ? (int) $upserted : 0;
+        $result['upsert_elapsed_ms'] = number_format((microtime(true) - $t_upsert) * 1000.0, 2, '.', '');
 
+        $t_stale = microtime(true);
         $stale_sql = $wpdb->prepare(
             "
                 UPDATE {$offers_table} o
@@ -293,6 +307,7 @@ final class DistributorOffersStore
         }
 
         $result['stale_disabled'] = is_numeric($stale_disabled) ? (int) $stale_disabled : 0;
+        $result['stale_cleanup_elapsed_ms'] = number_format((microtime(true) - $t_stale) * 1000.0, 2, '.', '');
         $result['ok'] = true;
 
         return self::finish_result($result, $started);
@@ -348,11 +363,20 @@ final class DistributorOffersStore
 
     private static function current_zanders_live_table(): string
     {
+        return self::resolve_zanders_live_table(null);
+    }
+
+    private static function resolve_zanders_live_table(?string $requested): string
+    {
         global $wpdb;
 
         $v1 = (string) ($wpdb->prefix . ZandersProductTableSchema::BASE_TABLE_KEY . '_v1');
         $v2 = (string) ($wpdb->prefix . ZandersProductTableSchema::BASE_TABLE_KEY . '_v2');
-        $stored = get_option(ZandersProductTableSchema::LIVE_TABLE_OPTION, '');
+        $stored = $requested;
+
+        if ($stored === null || $stored === '') {
+            $stored = get_option(ZandersProductTableSchema::LIVE_TABLE_OPTION, '');
+        }
 
         if ($stored === $v1 || $stored === $v2) {
             return (string) $stored;
