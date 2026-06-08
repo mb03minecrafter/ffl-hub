@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Admin\Pages;
 
+use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
@@ -15,6 +16,7 @@ final class ProductStatePage
     private const NONCE_ACTION = 'fflhub_product_state_backfill';
     private const NONCE_FIELD = 'fflhub_product_state_nonce';
     private const ACTION_BACKFILL = 'backfill_product_state';
+    private const ACTION_NORMALIZE_ZANDERS = 'normalize_zanders_offers';
     private const RESULT_TRANSIENT_PREFIX = 'fflhub_product_state_backfill_result_';
 
     public function register(): void
@@ -41,6 +43,7 @@ final class ProductStatePage
         }
 
         ProductStateStore::ensure_schema();
+        DistributorOffersStore::ensure_schema();
         $this->maybe_handle_post();
 
         $result = $this->read_result();
@@ -53,6 +56,7 @@ final class ProductStatePage
 
             <?php $this->render_result($result); ?>
             <?php $this->render_backfill_card(); ?>
+            <?php $this->render_zanders_normalize_card(); ?>
         </div>
         <?php
     }
@@ -70,7 +74,7 @@ final class ProductStatePage
         $action = isset($_POST['fflhub_product_state_action'])
             ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_product_state_action']))
             : '';
-        if ($action !== self::ACTION_BACKFILL) {
+        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS], true)) {
             return;
         }
 
@@ -81,10 +85,17 @@ final class ProductStatePage
             wp_die(esc_html__('Security check failed. Please refresh and try again.', 'ffl-hub'));
         }
 
-        $result = ProductStateStore::backfill_from_product_meta();
+        if ($action === self::ACTION_BACKFILL) {
+            $result = ProductStateStore::backfill_from_product_meta();
+            $result['type'] = self::ACTION_BACKFILL;
+        } else {
+            $result = DistributorOffersStore::normalize_zanders_offers();
+            $result['type'] = self::ACTION_NORMALIZE_ZANDERS;
+        }
+
         set_transient($this->result_transient_key(), $result, 5 * MINUTE_IN_SECONDS);
 
-        wp_safe_redirect(add_query_arg(['page' => self::PAGE_SLUG, 'backfilled' => '1'], admin_url('admin.php')));
+        wp_safe_redirect(add_query_arg(['page' => self::PAGE_SLUG, 'ran' => $action], admin_url('admin.php')));
         exit;
     }
 
@@ -105,6 +116,23 @@ final class ProductStatePage
         <?php
     }
 
+    private function render_zanders_normalize_card(): void
+    {
+        ?>
+        <div class="postbox" style="max-width: 760px; padding: 16px;">
+            <h2 style="margin-top:0;"><?php esc_html_e('Normalize Zanders Offers', 'ffl-hub'); ?></h2>
+            <p>
+                <?php esc_html_e('Reads the current live Zanders product table and upserts offers only for active UPCs already present in the product state table. This does not change WooCommerce prices, stock, product meta, or Zanders cron behavior.', 'ffl-hub'); ?>
+            </p>
+            <form method="post" action="">
+                <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
+                <input type="hidden" name="fflhub_product_state_action" value="<?php echo esc_attr(self::ACTION_NORMALIZE_ZANDERS); ?>" />
+                <?php submit_button(__('Normalize Zanders Offers', 'ffl-hub'), 'secondary', 'submit', false); ?>
+            </form>
+        </div>
+        <?php
+    }
+
     /**
      * @param array<string,mixed>|null $result
      */
@@ -114,8 +142,30 @@ final class ProductStatePage
             return;
         }
 
+        $type = (string) ($result['type'] ?? self::ACTION_BACKFILL);
+        $is_zanders = $type === self::ACTION_NORMALIZE_ZANDERS;
+        $has_errors = !empty($result['errors']) && is_array($result['errors']);
+        $notice_class = $has_errors ? 'notice-error' : 'notice-success';
         ?>
-        <div class="notice notice-success">
+        <div class="notice <?php echo esc_attr($notice_class); ?>">
+            <?php if ($is_zanders) : ?>
+                <p><strong><?php esc_html_e('Zanders offer normalization complete.', 'ffl-hub'); ?></strong></p>
+                <ul style="list-style:disc;margin-left:20px;">
+                    <li><?php echo esc_html(sprintf('Source live table: %s', (string) ($result['source_live_table'] ?? ''))); ?></li>
+                    <li><?php echo esc_html(sprintf('Matched active UPCs: %d', (int) ($result['matched_active_upc_count'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Upsert affected rows: %d', (int) ($result['upsert_affected_rows'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Stale rows disabled: %d', (int) ($result['stale_disabled'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Runtime: %s ms (%s sec)', (string) ($result['elapsed_ms'] ?? '0.00'), (string) ($result['elapsed_sec'] ?? '0.000'))); ?></li>
+                </ul>
+                <?php if ($has_errors) : ?>
+                    <p><strong><?php esc_html_e('Errors:', 'ffl-hub'); ?></strong></p>
+                    <ul style="list-style:disc;margin-left:20px;">
+                        <?php foreach ($result['errors'] as $message) : ?>
+                            <li><?php echo esc_html((string) $message); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            <?php else : ?>
             <p><strong><?php esc_html_e('Product state backfill complete.', 'ffl-hub'); ?></strong></p>
             <ul style="list-style:disc;margin-left:20px;">
                 <li><?php echo esc_html(sprintf('Scanned: %d', (int) ($result['scanned'] ?? 0))); ?></li>
@@ -132,6 +182,7 @@ final class ProductStatePage
                         <li><?php echo esc_html((string) $message); ?></li>
                     <?php endforeach; ?>
                 </ul>
+            <?php endif; ?>
             <?php endif; ?>
         </div>
         <?php
