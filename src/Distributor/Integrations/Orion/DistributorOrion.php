@@ -192,6 +192,18 @@ final class DistributorOrion extends DistributorBase
         return is_numeric($cost) ? max(0.0, (float) $cost) : self::DEFAULT_FLAT_SHIPPING_COST;
     }
 
+    protected function get_shipping_cost_from_row(array $row, string $normalized_upc): ?float
+    {
+        if (array_key_exists('shipping_cost', $row)) {
+            $raw = trim((string) ($row['shipping_cost'] ?? ''));
+            if ($raw !== '' && is_numeric($raw)) {
+                return max(0.0, (float) $raw);
+            }
+        }
+
+        return $this->get_shipping_cost_by_upc($normalized_upc);
+    }
+
     /**
      * @param array<string,int> $required_by_upc
      * @return array<string,mixed>

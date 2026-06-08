@@ -11,6 +11,13 @@ if (!defined('ABSPATH')) {
  */
 final class KinseysProductParser
 {
+    private const HANDLING_FEE = 3.50;
+    private const SMALL_ORDER_FREIGHT_COST = 4.99;
+    private const STANDARD_FREIGHT_COST = 13.99;
+    private const FIREARM_FREIGHT_COST = 15.85;
+    private const SMALL_ORDER_MAX_WEIGHT_OZ = 8.0;
+    private const SMALL_ORDER_MAX_LENGTH_IN = 22.0;
+
     /**
      * @param array<string,mixed> $product
      * @param array<string,array<string,mixed>> $inventoryLookup
@@ -89,6 +96,8 @@ final class KinseysProductParser
             $product_sub_group_2,
         ]);
         $restricted_states = $this->clean_text($this->string_value($product, 'ProhibitedStates'));
+        $shipping_weight = $this->weight_ounces($this->string_value($product, 'Weight'));
+        $shipping_length_in = $this->dimension_string($this->string_value($product, 'ProductLength'));
 
         return [
             'upc' => $upc,
@@ -101,6 +110,7 @@ final class KinseysProductParser
             'inventory_quantity' => (string) max(0, $quantity),
             'allocation_status' => $quantity > 0 ? 'in_stock' : 'out_of_stock',
             'distributor_price' => $distributor_price,
+            'shipping_cost' => $this->shipping_cost_string($ffl_required, $shipping_weight, $shipping_length_in),
             'retail_map' => $map_price,
             'retail_msrp' => $this->money_string($this->string_value($product, 'MSRP')),
             'unit_price' => $this->money_string($this->string_value($product, 'UnitPrice')),
@@ -145,8 +155,8 @@ final class KinseysProductParser
             'prop65_reproductive_harm' => $this->boolish($product['Prop65ReproductiveHarm'] ?? null) ? '1' : '0',
             'prop65_chemical' => $this->clean_text($this->string_value($product, 'Prop65Chemical')),
 
-            'shipping_weight' => $this->weight_ounces($this->string_value($product, 'Weight')),
-            'shipping_length_in' => $this->dimension_string($this->string_value($product, 'ProductLength')),
+            'shipping_weight' => $shipping_weight,
+            'shipping_length_in' => $shipping_length_in,
             'shipping_width_in' => $this->dimension_string($this->string_value($product, 'ProductWidth')),
             'shipping_height_in' => $this->dimension_string($this->string_value($product, 'ProductHeight')),
             'image_url' => '',
@@ -424,6 +434,26 @@ final class KinseysProductParser
         }
 
         return number_format($pounds * 16.0, 2, '.', '');
+    }
+
+    private function shipping_cost_string(bool $fflRequired, string $weightOz, string $lengthIn): string
+    {
+        if ($fflRequired) {
+            return number_format(self::HANDLING_FEE + self::FIREARM_FREIGHT_COST, 2, '.', '');
+        }
+
+        $weight = is_numeric($weightOz) ? (float) $weightOz : 0.0;
+        $length = is_numeric($lengthIn) ? (float) $lengthIn : 0.0;
+        $freight = (
+            $weight > 0.0
+            && $length > 0.0
+            && $weight < self::SMALL_ORDER_MAX_WEIGHT_OZ
+            && $length < self::SMALL_ORDER_MAX_LENGTH_IN
+        )
+            ? self::SMALL_ORDER_FREIGHT_COST
+            : self::STANDARD_FREIGHT_COST;
+
+        return number_format(self::HANDLING_FEE + $freight, 2, '.', '');
     }
 
     private function clean_text(string $value): string

@@ -93,6 +93,13 @@ final class DistributorKinseys extends DistributorBase
 
     private function resolve_shipping_cost_from_row(array $row, string $normalized_upc): float
     {
+        if (array_key_exists('shipping_cost', $row)) {
+            $raw = trim((string) ($row['shipping_cost'] ?? ''));
+            if ($raw !== '' && is_numeric($raw)) {
+                return max(0.0, (float) $raw);
+            }
+        }
+
         if ($this->is_firearm_shipping_row($row)) {
             return $this->resolve_shipping_total(self::FIREARM_FREIGHT_COST, $normalized_upc, 'firearm', $row);
         }

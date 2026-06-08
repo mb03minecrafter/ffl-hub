@@ -11,6 +11,8 @@ if (!defined('ABSPATH')) {
  */
 final class OrionProductParser
 {
+    private const FLAT_SHIPPING_COST = '13.00';
+
     /**
      * @param array<string,mixed> $product
      * @param array<string,mixed> $inventoryLookup
@@ -54,6 +56,7 @@ final class OrionProductParser
             'inventory_quantity' => (string) max(0, (int) $quantity),
             'allocation_status' => ((int) $quantity > 0) ? 'in_stock' : 'out_of_stock',
             'distributor_price' => $distributor_price,
+            'shipping_cost' => self::FLAT_SHIPPING_COST,
             'retail_map' => $map_price,
             'retail_msrp' => $list_price,
             'base_cost' => $base_cost,
