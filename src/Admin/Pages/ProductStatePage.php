@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Distributor\Offers\DistributorOffersStore;
+use FFLHub\Distributor\Services\Lipseys\LipseysOfferNormalizationService;
 use FFLHub\Distributor\Services\RSR\RSROfferNormalizationService;
 use FFLHub\Distributor\Services\Zanders\ZandersOfferNormalizationService;
 use FFLHub\Product\State\ProductStateStore;
@@ -20,6 +21,7 @@ final class ProductStatePage
     private const ACTION_BACKFILL = 'backfill_product_state';
     private const ACTION_NORMALIZE_ZANDERS = 'normalize_zanders_offers';
     private const ACTION_NORMALIZE_RSR = 'normalize_rsr_offers';
+    private const ACTION_NORMALIZE_LIPSEYS = 'normalize_lipseys_offers';
     private const RESULT_TRANSIENT_PREFIX = 'fflhub_product_state_backfill_result_';
 
     public function register(): void
@@ -61,6 +63,7 @@ final class ProductStatePage
             <?php $this->render_backfill_card(); ?>
             <?php $this->render_zanders_normalize_card(); ?>
             <?php $this->render_rsr_normalize_card(); ?>
+            <?php $this->render_lipseys_normalize_card(); ?>
         </div>
         <?php
     }
@@ -78,7 +81,7 @@ final class ProductStatePage
         $action = isset($_POST['fflhub_product_state_action'])
             ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_product_state_action']))
             : '';
-        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS, self::ACTION_NORMALIZE_RSR], true)) {
+        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS, self::ACTION_NORMALIZE_RSR, self::ACTION_NORMALIZE_LIPSEYS], true)) {
             return;
         }
 
@@ -95,9 +98,12 @@ final class ProductStatePage
         } elseif ($action === self::ACTION_NORMALIZE_ZANDERS) {
             $result = ZandersOfferNormalizationService::normalize_from_product_table();
             $result['type'] = self::ACTION_NORMALIZE_ZANDERS;
-        } else {
+        } elseif ($action === self::ACTION_NORMALIZE_RSR) {
             $result = RSROfferNormalizationService::normalize_from_product_table();
             $result['type'] = self::ACTION_NORMALIZE_RSR;
+        } else {
+            $result = LipseysOfferNormalizationService::normalize_from_product_table();
+            $result['type'] = self::ACTION_NORMALIZE_LIPSEYS;
         }
 
         set_transient($this->result_transient_key(), $result, 5 * MINUTE_IN_SECONDS);
@@ -157,6 +163,23 @@ final class ProductStatePage
         <?php
     }
 
+    private function render_lipseys_normalize_card(): void
+    {
+        ?>
+        <div class="postbox" style="max-width: 760px; padding: 16px;">
+            <h2 style="margin-top:0;"><?php esc_html_e('Normalize Lipsey\'s Offers', 'ffl-hub'); ?></h2>
+            <p>
+                <?php esc_html_e('Runs the Lipsey\'s-owned normalizer against the current live Lipsey\'s product table and upserts distributor offers only for active UPCs already present in the product state table. This does not change WooCommerce prices, stock, product meta, or Lipsey\'s cron behavior.', 'ffl-hub'); ?>
+            </p>
+            <form method="post" action="">
+                <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
+                <input type="hidden" name="fflhub_product_state_action" value="<?php echo esc_attr(self::ACTION_NORMALIZE_LIPSEYS); ?>" />
+                <?php submit_button(__('Normalize Lipsey\'s Offers', 'ffl-hub'), 'secondary', 'submit', false); ?>
+            </form>
+        </div>
+        <?php
+    }
+
     /**
      * @param array<string,mixed>|null $result
      */
@@ -167,16 +190,29 @@ final class ProductStatePage
         }
 
         $type = (string) ($result['type'] ?? self::ACTION_BACKFILL);
-        $is_zanders = $type === self::ACTION_NORMALIZE_ZANDERS;
-        $is_rsr = $type === self::ACTION_NORMALIZE_RSR;
+        $offer_normalizers = [
+            self::ACTION_NORMALIZE_ZANDERS => [
+                'label' => 'Zanders',
+                'matched_key' => 'matched_active_zanders_upcs',
+            ],
+            self::ACTION_NORMALIZE_RSR => [
+                'label' => 'RSR',
+                'matched_key' => 'matched_active_rsr_upcs',
+            ],
+            self::ACTION_NORMALIZE_LIPSEYS => [
+                'label' => 'Lipsey\'s',
+                'matched_key' => 'matched_active_lipseys_upcs',
+            ],
+        ];
+        $normalizer = $offer_normalizers[$type] ?? null;
         $has_errors = !empty($result['errors']) && is_array($result['errors']);
         $notice_class = $has_errors ? 'notice-error' : 'notice-success';
         ?>
         <div class="notice <?php echo esc_attr($notice_class); ?>">
-            <?php if ($is_zanders || $is_rsr) : ?>
+            <?php if ($normalizer !== null) : ?>
                 <?php
-                $label = $is_rsr ? 'RSR' : 'Zanders';
-                $matched_key = $is_rsr ? 'matched_active_rsr_upcs' : 'matched_active_zanders_upcs';
+                $label = (string) $normalizer['label'];
+                $matched_key = (string) $normalizer['matched_key'];
                 ?>
                 <p><strong><?php echo esc_html(sprintf('%s offer normalization complete.', $label)); ?></strong></p>
                 <ul style="list-style:disc;margin-left:20px;">
