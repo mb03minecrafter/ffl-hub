@@ -219,9 +219,16 @@ final class ProductStatePage
                     <li><?php echo esc_html(sprintf('Source live table: %s', (string) ($result['source_live_table'] ?? ''))); ?></li>
                     <li><?php echo esc_html(sprintf('Active product state total: %d', (int) ($result['active_product_state_total'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Matched active %s UPCs: %d', $label, (int) ($result[$matched_key] ?? 0))); ?></li>
-                    <li><?php echo esc_html(sprintf('Upsert MySQL affected rows: %d', (int) ($result['upsert_mysql_affected_rows'] ?? 0))); ?></li>
-                    <li><?php echo esc_html(sprintf('Upsert runtime: %s ms', (string) ($result['upsert_elapsed_ms'] ?? '0.00'))); ?></li>
-                    <li><?php echo esc_html(sprintf('Stale rows disabled: %d', (int) ($result['stale_disabled'] ?? 0))); ?></li>
+                    <?php if (array_key_exists('inserted_missing_offers', $result) || array_key_exists('updated_changed_offers', $result)) : ?>
+                        <li><?php echo esc_html(sprintf('Inserted missing offers: %d', (int) ($result['inserted_missing_offers'] ?? 0))); ?></li>
+                        <li><?php echo esc_html(sprintf('Insert missing runtime: %s ms', (string) ($result['insert_missing_elapsed_ms'] ?? '0.00'))); ?></li>
+                        <li><?php echo esc_html(sprintf('Updated changed offers: %d', (int) ($result['updated_changed_offers'] ?? 0))); ?></li>
+                        <li><?php echo esc_html(sprintf('Update changed runtime: %s ms', (string) ($result['update_changed_elapsed_ms'] ?? '0.00'))); ?></li>
+                    <?php else : ?>
+                        <li><?php echo esc_html(sprintf('Upsert MySQL affected rows: %d', (int) ($result['upsert_mysql_affected_rows'] ?? 0))); ?></li>
+                        <li><?php echo esc_html(sprintf('Upsert runtime: %s ms', (string) ($result['upsert_elapsed_ms'] ?? '0.00'))); ?></li>
+                    <?php endif; ?>
+                    <li><?php echo esc_html(sprintf('Stale rows disabled: %d', (int) ($result['stale_disabled_offers'] ?? $result['stale_disabled'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Stale cleanup runtime: %s ms', (string) ($result['stale_cleanup_elapsed_ms'] ?? '0.00'))); ?></li>
                     <li><?php echo esc_html(sprintf('Runtime: %s ms (%s sec)', (string) ($result['elapsed_ms'] ?? '0.00'), (string) ($result['elapsed_sec'] ?? '0.000'))); ?></li>
                 </ul>
