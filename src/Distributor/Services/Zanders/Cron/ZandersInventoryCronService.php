@@ -13,7 +13,7 @@ use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
 use FFLHub\Distributor\Services\Zanders\ZandersManufacturerNormalizer;
-use FFLHub\Distributor\Offers\DistributorOffersStore;
+use FFLHub\Distributor\Services\Zanders\ZandersOfferNormalizationService;
 use FFLHub\Util\DebugLogUtil;
 
 /**
@@ -254,6 +254,19 @@ final class ZandersInventoryCronService extends AbstractTableCronService
 
         $this->profile('Apply updates', $t_apply, $apply_stats);
 
+        // 6) Apply volatile inventory/price fields to existing normalized offer rows.
+        try {
+            $offers_update_stats = $this->update_distributor_offers_from_inventory_stage(
+                (string) ($apply_stats['stage_table'] ?? '')
+            );
+        } catch (\Throwable $e) {
+            $this->log('ERROR: exception updating normalized distributor offers', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (offers update failed)');
+            return;
+        }
+
         update_option('fflhub_zanders_inventory_last_update', current_time('mysql'));
         update_option('fflhub_zanders_inventory_last_update_count', (int) $processed_rows);
 
@@ -263,6 +276,7 @@ final class ZandersInventoryCronService extends AbstractTableCronService
 
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
             'processed_rows' => (int) $processed_rows,
+            'distributor_offers_update_rows' => (int) ($offers_update_stats['rows'] ?? 0),
             'remote_mtime'   => $remote_mtime > 0 ? $remote_mtime : null,
         ]);
     }
@@ -452,11 +466,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
 
         $combined_update_ms = (microtime(true) - $t_combined_update) * 1000.0;
 
-        // -----------------------
-        // Existing normalized Zanders offers: volatile inventory/price fields only.
-        // -----------------------
-        $offers_update_stats = $this->update_zanders_distributor_offers_from_stage($stage_table);
-
         $drop_ms    = 0.0; // persistent table
         $t_total_ms = (microtime(true) - $t_start) * 1000.0;
         $join_ms    = $combined_update_ms;
@@ -468,7 +477,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'join_matched'   => (int) $join_matched,
             'combined_update_rows' => is_numeric($combined_updated) ? (int) $combined_updated : 0,
             'live_table_update_rows' => is_numeric($combined_updated) ? (int) $combined_updated : 0,
-            'distributor_offers_update_rows' => (int) ($offers_update_stats['rows'] ?? 0),
             'sig_approval_enabled' => $sig_approval_enabled ? 1 : 0,
             'sig_approval_candidates' => (int) $sig_approval_candidates,
             'sig_approval_mode' => 'folded_into_combined_update',
@@ -480,7 +488,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'stats_ms'       => number_format($stats_ms, 2, '.', ''),
             'combined_update_ms' => number_format($combined_update_ms, 2, '.', ''),
             'live_table_update_ms' => number_format($combined_update_ms, 2, '.', ''),
-            'distributor_offers_update_ms' => number_format((float) ($offers_update_stats['elapsed_ms'] ?? 0.0), 2, '.', ''),
             'join_ms'        => number_format($join_ms, 2, '.', ''),
             'drop_ms'        => number_format($drop_ms, 2, '.', ''),
             'total_ms'       => number_format($t_total_ms, 2, '.', ''),
@@ -493,85 +500,26 @@ final class ZandersInventoryCronService extends AbstractTableCronService
     }
 
     /**
-     * Apply the loaded Zanders stage rows to existing normalized offer rows.
-     *
-     * This intentionally updates only volatile fields and never inserts rows.
+     * Apply loaded inventory stage rows to existing normalized offer rows.
      *
      * @return array{rows:int,elapsed_ms:float}
      */
-    private function update_zanders_distributor_offers_from_stage(string $stage_table): array
+    private function update_distributor_offers_from_inventory_stage(string $stage_table): array
     {
-        global $wpdb;
-
-        $started = microtime(true);
-
-        DistributorOffersStore::ensure_schema();
-
-        $offers_table = DistributorOffersStore::table_name();
-        $has_inventory_normalized_at = $this->table_has_column($offers_table, 'inventory_normalized_at');
-        $has_dropship_block_reason = $this->table_has_column($offers_table, 'dropship_block_reason');
-        $sig_approval_enabled = SigDropshipApproval::is_distributor_sig_approved('zanders');
-        $sig_offer_where_sql = $sig_approval_enabled
-            ? $this->zanders_offer_sig_approval_where_sql('o')
-            : '0 = 1';
-
-        $set = [
-            "o.qty = IFNULL(S.available, 0)",
-            "o.stock_status = CASE WHEN IFNULL(S.available, 0) > 0 THEN 'instock' ELSE 'outofstock' END",
-            'o.dealer_price = S.price1',
-            'o.shipping_cost = CASE WHEN S.price1 >= 500 THEN 0 ELSE 15 END',
-            'o.landed_cost = CASE WHEN S.price1 IS NULL THEN NULL ELSE S.price1 + CASE WHEN S.price1 >= 500 THEN 0 ELSE 15 END END',
-            "o.dropship_enabled = CASE WHEN {$sig_offer_where_sql} THEN 1 ELSE o.dropship_enabled END",
-            'o.normalized_at = NOW()',
-        ];
-
-        if ($has_dropship_block_reason) {
-            $set[] = "o.dropship_block_reason = CASE WHEN {$sig_offer_where_sql} THEN '' ELSE o.dropship_block_reason END";
+        if ($stage_table === '') {
+            throw new \RuntimeException('Zanders distributor offers update skipped because stage table was empty.');
         }
 
-        if ($has_inventory_normalized_at) {
-            $set[] = 'o.inventory_normalized_at = NOW()';
-        }
+        $t_offers = microtime(true);
+        $stats = ZandersOfferNormalizationService::update_existing_from_inventory_stage($stage_table);
 
-        $sig_offer_changed_sql = $has_dropship_block_reason
-            ? "(
-                {$sig_offer_where_sql}
-                AND (
-                    NOT (o.dropship_enabled <=> 1)
-                    OR NOT (o.dropship_block_reason <=> '')
-                )
-            )"
-            : "(
-                {$sig_offer_where_sql}
-                AND NOT (o.dropship_enabled <=> 1)
-            )";
+        $this->profile('Update existing distributor offers from inventory stage', $t_offers, [
+            'stage_table' => (string) $stage_table,
+            'distributor_offers_update_rows' => (int) ($stats['rows'] ?? 0),
+            'distributor_offers_update_ms' => number_format((float) ($stats['elapsed_ms'] ?? 0.0), 2, '.', ''),
+        ]);
 
-        $sql = $wpdb->prepare(
-            "
-                UPDATE {$offers_table} o
-                INNER JOIN {$stage_table} S
-                    ON S.itemnumber = o.distributor_product_id
-                SET
-                    " . implode(",\n                    ", $set) . "
-                WHERE o.distributor_id = %s
-                    AND (
-                        NOT (o.qty <=> IFNULL(S.available, 0))
-                        OR NOT (o.dealer_price <=> S.price1)
-                        OR {$sig_offer_changed_sql}
-                    )
-            ",
-            'zanders'
-        );
-
-        $updated = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        if ($updated === false) {
-            throw new \RuntimeException('Zanders distributor offers update failed: ' . (string) $wpdb->last_error);
-        }
-
-        return [
-            'rows' => is_numeric($updated) ? (int) $updated : 0,
-            'elapsed_ms' => (microtime(true) - $started) * 1000.0,
-        ];
+        return $stats;
     }
 
     private function zanders_sig_approval_where_sql(string $alias): string
@@ -586,36 +534,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
         ";
     }
 
-    private function zanders_offer_sig_approval_where_sql(string $alias): string
-    {
-        $alias = trim($alias);
-        $prefix = $alias !== '' ? $alias . '.' : '';
-
-        return "
-            COALESCE({$prefix}sot_required, 0) = 0
-            AND (
-                   {$prefix}manufacturer_norm IN ('SIG', 'SIGSAUER', 'SIG SAUER', 'SIGARMS', 'SIG ARMS')
-                OR {$prefix}manufacturer_norm LIKE 'SIGSAUER%'
-                OR {$prefix}manufacturer_norm LIKE 'SIG SAUER%'
-                OR {$prefix}manufacturer_norm LIKE 'SIGARMS%'
-                OR {$prefix}manufacturer_norm LIKE 'SIG ARMS%'
-            )
-        ";
-    }
-
-    private function table_has_column(string $table, string $column): bool
-    {
-        global $wpdb;
-
-        if ($table === '' || $column === '') {
-            return false;
-        }
-
-        $found = $wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $column)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-
-        return is_string($found) && $found === $column;
-    }
-
     private function empty_apply_stats(): array
     {
         return [
@@ -625,7 +543,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'join_matched'   => 0,
             'combined_update_rows' => 0,
             'live_table_update_rows' => 0,
-            'distributor_offers_update_rows' => 0,
             'sig_approval_enabled' => 0,
             'sig_approval_candidates' => 0,
             'sig_approval_mode' => 'folded_into_combined_update',
@@ -635,7 +552,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'stats_ms'       => '0.00',
             'combined_update_ms' => '0.00',
             'live_table_update_ms' => '0.00',
-            'distributor_offers_update_ms' => '0.00',
             'join_ms'        => '0.00',
             'drop_ms'        => '0.00',
             'total_ms'       => '0.00',

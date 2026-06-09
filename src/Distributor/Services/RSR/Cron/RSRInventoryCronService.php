@@ -7,7 +7,7 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
-use FFLHub\Distributor\Offers\DistributorOffersStore;
+use FFLHub\Distributor\Services\RSR\RSROfferNormalizationService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
@@ -270,7 +270,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
         delete_option('fflhub_rsr_inventory_last_download_error');
 
         // ---------------------------------------------------------------------
-        // Stage 7: Load quantity CSV and apply live/offers inventory updates.
+        // Stage 7: Load quantity CSV and apply live-table inventory updates.
         // ---------------------------------------------------------------------
         $t_apply = microtime(true);
 
@@ -292,7 +292,22 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $this->profile('Apply inventory updates', $t_apply, $apply_stats);
 
         // ---------------------------------------------------------------------
-        // Stage 8: Persist success metadata and finalize the run.
+        // Stage 8: Apply inventory fields to existing normalized offer rows.
+        // ---------------------------------------------------------------------
+        try {
+            $offers_update_stats = $this->update_distributor_offers_from_inventory_stage(
+                (string) ($apply_stats['stage_table'] ?? '')
+            );
+        } catch (\Throwable $e) {
+            $this->log('ERROR: exception updating normalized distributor offers', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (offers update failed)');
+            return;
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 9: Persist success metadata and finalize the run.
         // ---------------------------------------------------------------------
         update_option('fflhub_rsr_inventory_last_update', current_time('mysql'));
         update_option('fflhub_rsr_inventory_last_update_count', (int) $processed_rows);
@@ -303,6 +318,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
 
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
             'processed_rows' => (int) $processed_rows,
+            'distributor_offers_rsr_inventory_update_rows' => (int) ($offers_update_stats['rows'] ?? 0),
             'remote_mtime'   => $remote_mtime > 0 ? $remote_mtime : null,
         ]);
     }
@@ -342,8 +358,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 'count_stage_rows_ms' => '0.00',
                 'stats_ms'       => '0.00',
                 'join_update_ms' => '0.00',
-                'distributor_offers_rsr_inventory_update_rows' => 0,
-                'distributor_offers_rsr_inventory_update_ms' => '0.00',
                 'drop_ms'        => '0.00',
                 'total_ms'       => '0.00',
             ];
@@ -365,8 +379,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 'count_stage_rows_ms' => '0.00',
                 'stats_ms'       => '0.00',
                 'join_update_ms' => '0.00',
-                'distributor_offers_rsr_inventory_update_rows' => 0,
-                'distributor_offers_rsr_inventory_update_ms' => '0.00',
                 'drop_ms'        => '0.00',
                 'total_ms'       => '0.00',
             ];
@@ -503,8 +515,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
 
         $join_update_ms = (microtime(true) - $t_join_update) * 1000.0;
 
-        $offers_update_stats = $this->update_rsr_distributor_offers_from_stage($stage_table);
-
         // No DROP for persistent stage table
         $drop_ms = 0.0;
 
@@ -525,8 +535,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
             'count_stage_rows_ms' => number_format($count_stage_rows_ms, 2, '.', ''),
             'stats_ms'       => number_format($stats_ms, 2, '.', ''),
             'join_update_ms' => number_format($join_update_ms, 2, '.', ''),
-            'distributor_offers_rsr_inventory_update_rows' => (int) ($offers_update_stats['rows'] ?? 0),
-            'distributor_offers_rsr_inventory_update_ms' => number_format((float) ($offers_update_stats['elapsed_ms'] ?? 0.0), 2, '.', ''),
             'drop_ms'        => number_format($drop_ms, 2, '.', ''),
             'total_ms'       => number_format($t_total_ms, 2, '.', ''),
         ];
@@ -537,55 +545,26 @@ final class RSRInventoryCronService extends AbstractTableCronService
     }
 
     /**
-     * Apply loaded RSR stage quantities to existing normalized offer rows.
-     *
-     * This intentionally updates only inventory fields and never inserts rows.
+     * Apply loaded inventory stage rows to existing normalized offer rows.
      *
      * @return array{rows:int,elapsed_ms:float}
      */
-    private function update_rsr_distributor_offers_from_stage(string $stage_table): array
+    private function update_distributor_offers_from_inventory_stage(string $stage_table): array
     {
-        global $wpdb;
-
-        $started = microtime(true);
-
-        DistributorOffersStore::ensure_schema();
-
-        $offers_table = DistributorOffersStore::table_name();
-        $has_inventory_normalized_at = $this->table_has_column($offers_table, 'inventory_normalized_at');
-
-        $set = [
-            'o.qty = S.qty',
-            "o.stock_status = CASE WHEN S.qty > 0 THEN 'instock' ELSE 'outofstock' END",
-            'o.normalized_at = NOW()',
-        ];
-
-        if ($has_inventory_normalized_at) {
-            $set[] = 'o.inventory_normalized_at = NOW()';
+        if ($stage_table === '') {
+            throw new \RuntimeException('RSR distributor offers update skipped because stage table was empty.');
         }
 
-        $sql = $wpdb->prepare(
-            "
-                UPDATE {$offers_table} o
-                INNER JOIN {$stage_table} S
-                    ON S.rsr_stock_number = o.distributor_product_id
-                SET
-                    " . implode(",\n                    ", $set) . "
-                WHERE o.distributor_id = %s
-                    AND NOT (o.qty <=> S.qty)
-            ",
-            'rsr'
-        );
+        $t_offers = microtime(true);
+        $stats = RSROfferNormalizationService::update_existing_from_inventory_stage($stage_table);
 
-        $updated = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        if ($updated === false) {
-            throw new \RuntimeException('RSR distributor offers update failed: ' . (string) $wpdb->last_error);
-        }
+        $this->profile('Update existing distributor offers from inventory stage', $t_offers, [
+            'stage_table' => (string) $stage_table,
+            'distributor_offers_rsr_inventory_update_rows' => (int) ($stats['rows'] ?? 0),
+            'distributor_offers_rsr_inventory_update_ms' => number_format((float) ($stats['elapsed_ms'] ?? 0.0), 2, '.', ''),
+        ]);
 
-        return [
-            'rows' => is_numeric($updated) ? (int) $updated : 0,
-            'elapsed_ms' => (microtime(true) - $started) * 1000.0,
-        ];
+        return $stats;
     }
 
     /**
@@ -620,19 +599,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
     {
         $v = strtolower(trim($v));
         return in_array($v, ['1', 'on', 'true', 'yes'], true);
-    }
-
-    private function table_has_column(string $table, string $column): bool
-    {
-        global $wpdb;
-
-        if ($table === '' || $column === '') {
-            return false;
-        }
-
-        $found = $wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $column)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-
-        return is_string($found) && $found === $column;
     }
 
     /**

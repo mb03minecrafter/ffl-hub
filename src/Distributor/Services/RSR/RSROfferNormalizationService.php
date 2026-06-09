@@ -195,6 +195,63 @@ final class RSROfferNormalizationService
     }
 
     /**
+     * Apply loaded RSR inventory stage quantities to existing normalized offer rows.
+     *
+     * This is the inventory-cron path. It intentionally updates only inventory
+     * fields and never inserts rows.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    public static function update_existing_from_inventory_stage(string $stage_table): array
+    {
+        global $wpdb;
+
+        if (!$wpdb) {
+            throw new \RuntimeException('WordPress database connection is unavailable.');
+        }
+
+        $started = microtime(true);
+
+        DistributorOffersStore::ensure_schema();
+
+        $offers_table = DistributorOffersStore::table_name();
+        $has_inventory_normalized_at = self::table_has_column($offers_table, 'inventory_normalized_at');
+
+        $set = [
+            'o.qty = S.qty',
+            "o.stock_status = CASE WHEN S.qty > 0 THEN 'instock' ELSE 'outofstock' END",
+            'o.normalized_at = NOW()',
+        ];
+
+        if ($has_inventory_normalized_at) {
+            $set[] = 'o.inventory_normalized_at = NOW()';
+        }
+
+        $sql = $wpdb->prepare(
+            "
+                UPDATE {$offers_table} o
+                INNER JOIN {$stage_table} S
+                    ON S.rsr_stock_number = o.distributor_product_id
+                SET
+                    " . implode(",\n                    ", $set) . "
+                WHERE o.distributor_id = %s
+                    AND NOT (o.qty <=> S.qty)
+            ",
+            self::DIST_ID
+        );
+
+        $updated = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($updated === false) {
+            throw new \RuntimeException('RSR distributor offers update failed: ' . (string) $wpdb->last_error);
+        }
+
+        return [
+            'rows' => is_numeric($updated) ? (int) $updated : 0,
+            'elapsed_ms' => (microtime(true) - $started) * 1000.0,
+        ];
+    }
+
+    /**
      * Normalize the current live RSR product table into distributor offers.
      *
      * This is intentionally set-based and only touches rows for UPCs already

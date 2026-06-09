@@ -340,6 +340,37 @@ final class RSRProductCronService extends AbstractTableCronService
         // ---------------------------------------------------------------------
         // Stage 9: Update existing normalized offer fields from the newly live RSR table.
         // ---------------------------------------------------------------------
+        $offers_result = $this->update_distributor_offers_from_new_live_table($new_live);
+
+        // ---------------------------------------------------------------------
+        // Stage 10: Persist success metadata and finalize the run.
+        // ---------------------------------------------------------------------
+        update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'));
+        update_option('fflhub_rsr_fulfillment_last_import_count', (int) $count);
+        update_option('fflhub_rsr_fulfillment_last_swap', current_time('mysql'));
+
+        // Mark applied mtime ONLY after a successful import+swap
+        if ($remote_mtime > 0) {
+            update_option('fflhub_rsr_fulfillment_last_applied_mtime', $remote_mtime);
+        }
+
+        $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
+            'imported_rows' => (int) $count,
+            'new_live'      => (string) $new_live,
+            'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'distributor_offers_rsr_product_update_rows' => (int) ($offers_result['product_update_rows'] ?? 0),
+            'distributor_offers_rsr_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
+            'remote_mtime'  => $remote_mtime > 0 ? $remote_mtime : null,
+        ]);
+    }
+
+    /**
+     * Update existing normalized offer rows after the product table swap.
+     *
+     * @return array<string,mixed>
+     */
+    private function update_distributor_offers_from_new_live_table(string $new_live): array
+    {
         $t_offers = microtime(true);
         $offers_result = [];
 
@@ -371,26 +402,7 @@ final class RSRProductCronService extends AbstractTableCronService
             ]);
         }
 
-        // ---------------------------------------------------------------------
-        // Stage 10: Persist success metadata and finalize the run.
-        // ---------------------------------------------------------------------
-        update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'));
-        update_option('fflhub_rsr_fulfillment_last_import_count', (int) $count);
-        update_option('fflhub_rsr_fulfillment_last_swap', current_time('mysql'));
-
-        // Mark applied mtime ONLY after a successful import+swap
-        if ($remote_mtime > 0) {
-            update_option('fflhub_rsr_fulfillment_last_applied_mtime', $remote_mtime);
-        }
-
-        $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
-            'imported_rows' => (int) $count,
-            'new_live'      => (string) $new_live,
-            'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
-            'distributor_offers_rsr_product_update_rows' => (int) ($offers_result['product_update_rows'] ?? 0),
-            'distributor_offers_rsr_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
-            'remote_mtime'  => $remote_mtime > 0 ? $remote_mtime : null,
-        ]);
+        return $offers_result;
     }
 
     /**

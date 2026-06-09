@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Distributor\Services\Zanders;
 
 use FFLHub\Distributor\Offers\DistributorOffersStore;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Zanders\Tables\ZandersProductTableSchema;
 use FFLHub\Product\State\ProductStateStore;
 
@@ -175,6 +176,93 @@ final class ZandersOfferNormalizationService
         $result['ok'] = true;
 
         return self::finish_result($result, $started);
+    }
+
+    /**
+     * Apply loaded Zanders inventory stage rows to existing normalized offer rows.
+     *
+     * This is the inventory-cron path. It intentionally updates only volatile
+     * fields and never inserts rows.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    public static function update_existing_from_inventory_stage(string $stage_table): array
+    {
+        global $wpdb;
+
+        if (!$wpdb) {
+            throw new \RuntimeException('WordPress database connection is unavailable.');
+        }
+
+        $started = microtime(true);
+
+        DistributorOffersStore::ensure_schema();
+
+        $offers_table = DistributorOffersStore::table_name();
+        $has_inventory_normalized_at = self::table_has_column($offers_table, 'inventory_normalized_at');
+        $has_dropship_block_reason = self::table_has_column($offers_table, 'dropship_block_reason');
+        $sig_approval_enabled = SigDropshipApproval::is_distributor_sig_approved(self::DIST_ID);
+        $sig_offer_where_sql = $sig_approval_enabled
+            ? self::offer_sig_approval_where_sql('o')
+            : '0 = 1';
+
+        $set = [
+            'o.qty = IFNULL(S.available, 0)',
+            "o.stock_status = CASE WHEN IFNULL(S.available, 0) > 0 THEN 'instock' ELSE 'outofstock' END",
+            'o.dealer_price = S.price1',
+            'o.shipping_cost = CASE WHEN S.price1 >= 500 THEN 0 ELSE 15 END',
+            'o.landed_cost = CASE WHEN S.price1 IS NULL THEN NULL ELSE S.price1 + CASE WHEN S.price1 >= 500 THEN 0 ELSE 15 END END',
+            "o.dropship_enabled = CASE WHEN {$sig_offer_where_sql} THEN 1 ELSE o.dropship_enabled END",
+            'o.normalized_at = NOW()',
+        ];
+
+        if ($has_dropship_block_reason) {
+            $set[] = "o.dropship_block_reason = CASE WHEN {$sig_offer_where_sql} THEN '' ELSE o.dropship_block_reason END";
+        }
+
+        if ($has_inventory_normalized_at) {
+            $set[] = 'o.inventory_normalized_at = NOW()';
+        }
+
+        $sig_offer_changed_sql = $has_dropship_block_reason
+            ? "(
+                {$sig_offer_where_sql}
+                AND (
+                    NOT (o.dropship_enabled <=> 1)
+                    OR NOT (o.dropship_block_reason <=> '')
+                )
+            )"
+            : "(
+                {$sig_offer_where_sql}
+                AND NOT (o.dropship_enabled <=> 1)
+            )";
+
+        $sql = $wpdb->prepare(
+            "
+                UPDATE {$offers_table} o
+                INNER JOIN {$stage_table} S
+                    ON S.itemnumber = o.distributor_product_id
+                SET
+                    " . implode(",\n                    ", $set) . "
+                WHERE o.distributor_id = %s
+                    AND (
+                        NOT (o.qty <=> IFNULL(S.available, 0))
+                        OR NOT (o.dealer_price <=> S.price1)
+                        OR {$sig_offer_changed_sql}
+                    )
+            ",
+            self::DIST_ID
+        );
+
+        $updated = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($updated === false) {
+            throw new \RuntimeException('Zanders distributor offers update failed: ' . (string) $wpdb->last_error);
+        }
+
+        return [
+            'rows' => is_numeric($updated) ? (int) $updated : 0,
+            'elapsed_ms' => (microtime(true) - $started) * 1000.0,
+        ];
     }
 
     /**
@@ -448,6 +536,23 @@ final class ZandersOfferNormalizationService
         $found = $wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", $column)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         return is_string($found) && $found === $column;
+    }
+
+    private static function offer_sig_approval_where_sql(string $alias): string
+    {
+        $alias = trim($alias);
+        $prefix = $alias !== '' ? $alias . '.' : '';
+
+        return "
+            COALESCE({$prefix}sot_required, 0) = 0
+            AND (
+                   {$prefix}manufacturer_norm IN ('SIG', 'SIGSAUER', 'SIG SAUER', 'SIGARMS', 'SIG ARMS')
+                OR {$prefix}manufacturer_norm LIKE 'SIGSAUER%'
+                OR {$prefix}manufacturer_norm LIKE 'SIG SAUER%'
+                OR {$prefix}manufacturer_norm LIKE 'SIGARMS%'
+                OR {$prefix}manufacturer_norm LIKE 'SIG ARMS%'
+            )
+        ";
     }
 
     /**
