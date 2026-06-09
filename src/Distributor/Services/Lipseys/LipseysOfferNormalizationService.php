@@ -16,214 +16,6 @@ final class LipseysOfferNormalizationService
     private const DIST_ID = 'lipseys';
 
     /**
-     * Update existing normalized Lipsey's offer rows from the current/new live
-     * Lipsey's product table.
-     *
-     * This is the product-cron path. It intentionally does not read
-     * product_state and never inserts new offer rows.
-     *
-     * @return array<string,mixed>
-     */
-    public static function update_existing_from_product_table(?string $source_live_table = null): array
-    {
-        global $wpdb;
-
-        $started = microtime(true);
-        $result = [
-            'ok' => false,
-            'source_live_table' => '',
-            'matched_existing_lipseys_offers' => 0,
-            'product_update_rows' => 0,
-            'updated_changed_offers' => 0,
-            'stale_disabled_offers' => 0,
-            'stale_disabled' => 0,
-            'product_update_elapsed_ms' => '0.00',
-            'stale_cleanup_elapsed_ms' => '0.00',
-            'elapsed_ms' => '0.00',
-            'elapsed_sec' => '0.000',
-            'errors' => [],
-        ];
-
-        if (!$wpdb) {
-            $result['errors'][] = 'WordPress database connection is unavailable.';
-            return self::finish_result($result, $started);
-        }
-
-        DistributorOffersStore::ensure_schema();
-
-        $live_table = self::resolve_live_table($source_live_table);
-        if ($live_table === '') {
-            $result['errors'][] = 'Could not resolve a valid live Lipsey\'s product table.';
-            return self::finish_result($result, $started);
-        }
-
-        if (!self::table_exists_by_name($live_table)) {
-            $result['errors'][] = 'Resolved live Lipsey\'s product table does not exist: ' . $live_table;
-            $result['source_live_table'] = $live_table;
-            return self::finish_result($result, $started);
-        }
-
-        $offers_table = DistributorOffersStore::table_name();
-        $has_product_normalized_at = self::table_has_column($offers_table, 'product_normalized_at');
-        $has_dropship_block_reason = self::table_has_column($offers_table, 'dropship_block_reason');
-
-        $result['source_live_table'] = $live_table;
-
-        $matched_sql = $wpdb->prepare(
-            "
-                SELECT COUNT(*)
-                FROM {$offers_table} o
-                INNER JOIN {$live_table} l
-                    ON l.lipseys_item_number = o.distributor_product_id
-                WHERE o.distributor_id = %s
-            ",
-            self::DIST_ID
-        );
-        $result['matched_existing_lipseys_offers'] = (int) $wpdb->get_var($matched_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-
-        $qty_expr = "CAST(COALESCE(NULLIF(TRIM(l.inventory_quantity), ''), '0') AS UNSIGNED)";
-        $dealer_price_expr = "CAST(NULLIF(TRIM(l.distributor_price), '') AS DECIMAL(12,4))";
-        $shipping_cost_expr = "CAST(NULLIF(TRIM(l.shipping_cost), '') AS DECIMAL(12,4))";
-        $landed_cost_expr = "
-            CASE
-                WHEN {$dealer_price_expr} IS NULL THEN NULL
-                ELSE {$dealer_price_expr} + COALESCE({$shipping_cost_expr}, 0.0000)
-            END
-        ";
-        $source_columns = [
-            'upc' => 'l.upc',
-            'distributor_product_id' => "NULLIF(TRIM(l.lipseys_item_number), '')",
-            'distributor_sku' => "NULLIF(TRIM(l.lipseys_item_number), '')",
-            'manufacturer_norm' => "NULLIF(UPPER(TRIM(l.manufacturer)), '')",
-            'qty' => $qty_expr,
-            'stock_status' => "CASE WHEN {$qty_expr} > 0 THEN 'instock' ELSE 'outofstock' END",
-            'dealer_price' => $dealer_price_expr,
-            'shipping_cost' => $shipping_cost_expr,
-            'landed_cost' => $landed_cost_expr,
-            'map_price' => "CAST(NULLIF(TRIM(l.retail_map), '') AS DECIMAL(12,4))",
-            'msrp' => "CAST(NULLIF(TRIM(l.retail_msrp), '') AS DECIMAL(12,4))",
-            'ffl_required' => 'CAST(COALESCE(l.ffl_required, 0) AS UNSIGNED)',
-            'sot_required' => 'CAST(COALESCE(l.sot_required, 0) AS UNSIGNED)',
-            'dropship_enabled' => 'CAST(COALESCE(l.dropship_enabled, 1) AS UNSIGNED)',
-            'enabled' => '1',
-        ];
-
-        $dimension_map = [
-            'shipping_weight_oz' => ['source' => 'shipping_weight', 'cast' => 'DECIMAL(10,3)'],
-            'shipping_length_in' => ['source' => 'shipping_length_in', 'cast' => 'DECIMAL(10,3)'],
-            'shipping_width_in' => ['source' => 'shipping_width_in', 'cast' => 'DECIMAL(10,3)'],
-            'shipping_height_in' => ['source' => 'shipping_height_in', 'cast' => 'DECIMAL(10,3)'],
-        ];
-
-        foreach ($dimension_map as $target_column => $source) {
-            $source_column = (string) $source['source'];
-            if (!self::table_has_column($offers_table, $target_column) || !self::table_has_column($live_table, $source_column)) {
-                continue;
-            }
-
-            $source_columns[$target_column] = "CAST(NULLIF(TRIM(l.{$source_column}), '') AS {$source['cast']})";
-        }
-
-        if ($has_dropship_block_reason) {
-            $source_columns['dropship_block_reason'] = "NULLIF(TRIM(l.dropship_block_reason), '')";
-        }
-
-        $source_select_columns = [];
-        foreach ($source_columns as $column => $expression) {
-            $source_select_columns[] = "{$expression} AS {$column}";
-        }
-
-        $update_columns = array_values(array_diff(array_keys($source_columns), ['upc']));
-        $set = [];
-        $comparison_lines = [];
-        foreach ($update_columns as $column) {
-            $set[] = "o.{$column} = src.{$column}";
-            $comparison_lines[] = "NOT (o.{$column} <=> src.{$column})";
-        }
-        $set[] = 'o.normalized_at = NOW()';
-
-        if ($has_product_normalized_at) {
-            $set[] = 'o.product_normalized_at = NOW()';
-        }
-
-        $t_update = microtime(true);
-        $update_sql = $wpdb->prepare(
-            "
-                UPDATE {$offers_table} o
-                INNER JOIN (
-                    SELECT
-                        " . implode(",\n                        ", $source_select_columns) . "
-                    FROM {$live_table} l
-                    WHERE l.lipseys_item_number <> ''
-                ) src
-                    ON src.distributor_product_id = o.distributor_product_id
-                   AND o.distributor_id = %s
-                SET
-                    " . implode(",\n                    ", $set) . "
-                WHERE (
-                    " . implode("\n                    OR ", $comparison_lines) . "
-                )
-            ",
-            self::DIST_ID
-        );
-
-        $updated = $wpdb->query($update_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        if ($updated === false) {
-            $result['errors'][] = 'Lipsey\'s existing offer product update failed: ' . (string) $wpdb->last_error;
-            return self::finish_result($result, $started);
-        }
-
-        $result['product_update_rows'] = is_numeric($updated) ? (int) $updated : 0;
-        $result['updated_changed_offers'] = (int) $result['product_update_rows'];
-        $result['product_update_elapsed_ms'] = number_format((microtime(true) - $t_update) * 1000.0, 2, '.', '');
-
-        $t_stale = microtime(true);
-        $stale_set = [
-            'o.enabled = 0',
-            'o.dropship_enabled = 0',
-            'o.qty = 0',
-            "o.stock_status = 'outofstock'",
-            'o.normalized_at = NOW()',
-        ];
-
-        if ($has_product_normalized_at) {
-            $stale_set[] = 'o.product_normalized_at = NOW()';
-        }
-
-        $stale_sql = $wpdb->prepare(
-            "
-                UPDATE {$offers_table} o
-                LEFT JOIN {$live_table} l
-                    ON l.lipseys_item_number = o.distributor_product_id
-                SET
-                    " . implode(",\n                    ", $stale_set) . "
-                WHERE o.distributor_id = %s
-                  AND l.lipseys_item_number IS NULL
-                  AND (
-                    NOT (o.enabled <=> 0)
-                    OR NOT (o.dropship_enabled <=> 0)
-                    OR NOT (o.qty <=> 0)
-                    OR NOT (o.stock_status <=> 'outofstock')
-                  )
-            ",
-            self::DIST_ID
-        );
-
-        $stale_disabled = $wpdb->query($stale_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        if ($stale_disabled === false) {
-            $result['errors'][] = 'Lipsey\'s existing offer stale cleanup failed: ' . (string) $wpdb->last_error;
-            return self::finish_result($result, $started);
-        }
-
-        $result['stale_disabled_offers'] = is_numeric($stale_disabled) ? (int) $stale_disabled : 0;
-        $result['stale_disabled'] = (int) $result['stale_disabled_offers'];
-        $result['stale_cleanup_elapsed_ms'] = number_format((microtime(true) - $t_stale) * 1000.0, 2, '.', '');
-        $result['ok'] = true;
-
-        return self::finish_result($result, $started);
-    }
-
-    /**
      * Normalize the current live Lipsey's product table into distributor offers.
      *
      * This is the manual backfill/create path. It intentionally limits inserts
@@ -403,18 +195,12 @@ final class LipseysOfferNormalizationService
             $select_columns[] = 'NOW() AS product_normalized_at';
         }
 
-        $insert_select_columns = $select_columns;
-        $source_select_columns = [];
-        foreach ($source_columns as $column => $expression) {
-            $source_select_columns[] = "{$expression} AS {$column}";
-        }
-
         $update_columns = array_values(array_diff(array_keys($source_columns), ['upc']));
         $update_lines = [];
         $comparison_lines = [];
         foreach ($update_columns as $column) {
-            $update_lines[] = "o.{$column} = src.{$column}";
-            $comparison_lines[] = "NOT (o.{$column} <=> src.{$column})";
+            $update_lines[] = "o.{$column} = {$source_columns[$column]}";
+            $comparison_lines[] = "NOT (o.{$column} <=> {$source_columns[$column]})";
         }
         $update_lines[] = 'o.normalized_at = NOW()';
 
@@ -429,7 +215,7 @@ final class LipseysOfferNormalizationService
                     " . implode(",\n                    ", $insert_columns) . "
                 )
                 SELECT
-                    " . implode(",\n                    ", $insert_select_columns) . "
+                    " . implode(",\n                    ", $select_columns) . "
                 FROM {$product_state_table} ps
                 INNER JOIN {$live_table} l
                     ON l.upc = ps.upc
@@ -453,20 +239,16 @@ final class LipseysOfferNormalizationService
         $update_sql = $wpdb->prepare(
             "
                 UPDATE {$offers_table} o
-                INNER JOIN (
-                    SELECT
-                        " . implode(",\n                        ", $source_select_columns) . "
-                    FROM {$product_state_table} ps
-                    INNER JOIN {$live_table} l
-                        ON l.upc = ps.upc
-                    WHERE ps.status = %s
-                      AND l.upc <> ''
-                ) src
-                    ON src.upc = o.upc
-                   AND o.distributor_id = %s
+                INNER JOIN {$product_state_table} ps
+                    ON ps.upc = o.upc
+                   AND ps.status = %s
+                INNER JOIN {$live_table} l
+                    ON l.upc = o.upc
+                   AND l.upc <> ''
                 SET
                     " . implode(",\n                    ", $update_lines) . "
-                WHERE (
+                WHERE o.distributor_id = %s
+                  AND (
                     " . implode("\n                    OR ", $comparison_lines) . "
                   )
             ",
