@@ -8,11 +8,11 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
+use FFLHub\Distributor\Services\Cron\FtpFeedFetcher;
+use FFLHub\Distributor\Services\Cron\FtpFeedFetchRequest;
 use FFLHub\Distributor\Services\RSR\RSROfferNormalizationService;
+use FFLHub\Distributor\Services\RSR\RSRFtpCredentials;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
-use FFLHub\Distributor\Services\FTP\FTPClientService;
-use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
-use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
 /**
@@ -135,11 +135,6 @@ final class RSRInventoryCronService extends AbstractTableCronService
             return;
         }
 
-        $host     = (string) $creds['host'];
-        $username = (string) $creds['username'];
-        $password = (string) $creds['password'];
-        $use_ssl  = (bool) $creds['use_ssl'];
-
         // ---------------------------------------------------------------------
         // Stage 2: Prepare local quantity CSV path.
         // ---------------------------------------------------------------------
@@ -171,104 +166,36 @@ final class RSRInventoryCronService extends AbstractTableCronService
         ]);
 
         // ---------------------------------------------------------------------
-        // Stage 3: FTP freshness gate before connecting.
+        // Stage 3-6: Fetch the RSR quantity CSV over FTP.
         // ---------------------------------------------------------------------
-        $pre_gate = FTPFreshnessGate::evaluate_pre_connect(
-            self::OPT_LAST_CHECKED_AT,
-            'fflhub_rsr_qty_last_applied_mtime',
-            self::FTP_MIN_CHECK_GAP_SECONDS,
-            self::FTP_COOLDOWN_SECONDS,
-            $force_update
+        $fetch = (new FtpFeedFetcher())->fetch(
+            FtpFeedFetchRequest::create([
+                'distributor_id' => 'rsr',
+                'cron_name' => 'RSR inventory cron',
+                'credentials' => $creds,
+                'remote_path' => $remote_path,
+                'local_path' => $local_path,
+                'last_checked_option' => self::OPT_LAST_CHECKED_AT,
+                'last_applied_mtime_option' => 'fflhub_rsr_qty_last_applied_mtime',
+                'last_seen_mtime_option' => 'fflhub_rsr_qty_last_seen_mtime',
+                'last_seen_size_option' => 'fflhub_rsr_qty_last_seen_size',
+                'last_download_option' => 'fflhub_rsr_inventory_last_download',
+                'last_download_error_option' => 'fflhub_rsr_inventory_last_download_error',
+                'min_check_gap_seconds' => self::FTP_MIN_CHECK_GAP_SECONDS,
+                'cooldown_seconds' => self::FTP_COOLDOWN_SECONDS,
+                'force' => $force_update,
+                'ftp_log_prefix' => '[FFLHub][RSR][FTP]',
+                'no_change_log_message' => 'No update available (remote mtime unchanged) - skipping download/apply',
+            ]),
+            $this->cron_logger()
         );
 
-        if ((bool) $pre_gate['skip']) {
-            $this->log((string) $pre_gate['log_message'], (array) $pre_gate['log_context']);
-            $this->finalize_run($t_start, $mem_start, (string) $pre_gate['status']);
-            return;
-        }
-        // ---------------------------------------------------------------------
-        // Stage 4: Connect to RSR FTP.
-        // ---------------------------------------------------------------------
-        $t_ftp = microtime(true);
-
-        $ftp = new FTPClientService(
-            $host,
-            $username,
-            $password,
-            $use_ssl,
-            2222,
-            30,
-            true,
-            '[FFLHub][RSR][FTP]'
-        );
-        if (!$ftp->is_connected()) {
-            update_option('fflhub_rsr_inventory_last_download_error', current_time('mysql'));
-            $this->log('ERROR: FTP connection not available.', [
-                'host'    => $host,
-                'use_ssl' => $use_ssl ? 1 : 0,
-            ]);
-            $this->profile('FTP connection (failed)', $t_ftp);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (FTP connection failed)');
-            return;
-        }
-        $this->profile('FTP connection', $t_ftp, [
-            'ok'      => 1,
-            'host'    => $host,
-            'use_ssl' => $use_ssl ? 1 : 0,
-        ]);
-
-        // ---------------------------------------------------------------------
-        // Stage 5: Remote freshness gate using FTP mtime/size.
-        // ---------------------------------------------------------------------
-        $t_meta = microtime(true);
-        $last_applied_mtime = (int) get_option('fflhub_rsr_qty_last_applied_mtime', 0);
-        $meta_gate          = FTPFreshnessGate::evaluate_remote_meta(
-            $ftp,
-            $remote_path,
-            'fflhub_rsr_qty_last_seen_mtime',
-            'fflhub_rsr_qty_last_seen_size',
-            $last_applied_mtime,
-            $force_update,
-            250000,
-            'No update available (remote mtime unchanged) - skipping download/apply'
-        );
-
-        $this->profile((string) $meta_gate['profile_label'], $t_meta, (array) $meta_gate['profile_context']);
-
-        $remote_mtime = (int) $meta_gate['remote_mtime'];
-
-        if ((bool) $meta_gate['skip']) {
-            $this->log((string) $meta_gate['log_message'], (array) $meta_gate['log_context']);
-            $this->finalize_run($t_start, $mem_start, (string) $meta_gate['status']);
-            return;
-        }
-        // ---------------------------------------------------------------------
-        // Stage 6: Download the RSR quantity CSV.
-        // ---------------------------------------------------------------------
-        $t_download = microtime(true);
-        $csv_kb_before = file_exists($local_path) ? (int) round(((int) filesize($local_path)) / 1024) : 0;
-
-        $ok = $ftp->download_file($remote_path, $local_path);
-
-        $csv_kb_after = file_exists($local_path) ? (int) round(((int) filesize($local_path)) / 1024) : 0;
-
-        $this->profile('FTP download', $t_download, [
-            'ok'            => $ok ? 1 : 0,
-            'csv_kb_before' => (int) $csv_kb_before,
-            'csv_kb_after'  => (int) $csv_kb_after,
-        ]);
-
-        if (!$ok) {
-            update_option('fflhub_rsr_inventory_last_download_error', current_time('mysql'));
-            $this->log('ERROR: FTP download failed', [
-                'remote_csv' => (string) $remote_path,
-            ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (download failed)');
+        if ($fetch->is_skipped() || $fetch->is_failed()) {
+            $this->finalize_run($t_start, $mem_start, $fetch->cron_status !== '' ? $fetch->cron_status : 'ERROR (download failed)');
             return;
         }
 
-        update_option('fflhub_rsr_inventory_last_download', current_time('mysql'));
-        delete_option('fflhub_rsr_inventory_last_download_error');
+        $remote_mtime = $fetch->remote_mtime;
 
         // ---------------------------------------------------------------------
         // Stage 7: Load quantity CSV and apply live-table inventory updates.
@@ -603,36 +530,20 @@ final class RSRInventoryCronService extends AbstractTableCronService
     }
 
     /**
-     * Retrieve and validate FTP credentials from RSR distributor settings.
-     *
-     * @return array{host:string,username:string,password:string,use_ssl:bool}|null
+     * @return array{host:string,username:string,password:string,use_ssl:bool,port:int}|null
      */
     public function get_ftp_credentials(): ?array
     {
-        $host      = Options::get_distributor_option('rsr', 'ftp_host', '');
-        $username  = Options::get_distributor_option('rsr', 'ftp_username', '');
-        $password  = Options::get_distributor_option('rsr', 'ftp_password', '');
-        $use_ssl_s = Options::get_distributor_option('rsr', 'ftp_use_ssl', '');
+        $loaded = RSRFtpCredentials::load();
 
-        $host     = trim((string) $host);
-        $username = trim((string) $username);
-        $password = trim((string) $password);
-        $use_ssl  = ($use_ssl_s !== '');
-
-        if ($host === '' || $username === '' || $password === '') {
+        if ($loaded['credentials'] === null) {
             $this->log('Missing FTP credentials', [
-                'host' => $host !== '' ? 'set' : 'empty',
-                'user' => $username !== '' ? 'set' : 'empty',
+                'host' => !empty($loaded['has_host']) ? 'set' : 'empty',
+                'user' => !empty($loaded['has_username']) ? 'set' : 'empty',
             ]);
-            return null;
         }
 
-        return [
-            'host'     => $host,
-            'username' => $username,
-            'password' => $password,
-            'use_ssl'  => $use_ssl,
-        ];
+        return $loaded['credentials'];
     }
 
     // --------------------------------------------------

@@ -8,8 +8,8 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
-use FFLHub\Distributor\Services\FTP\FTPClientService;
-use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
+use FFLHub\Distributor\Services\Cron\FtpFeedFetcher;
+use FFLHub\Distributor\Services\Cron\FtpFeedFetchRequest;
 use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\Zanders\ZandersFtpCredentials;
@@ -112,12 +112,6 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             return;
         }
 
-        $host     = (string) $creds['host'];
-        $username = (string) $creds['username'];
-        $password = (string) $creds['password'];
-        $use_ssl  = (bool) $creds['use_ssl']; // Zanders: false
-        $port     = (int) ($creds['port'] ?? 21);
-
         // 1) Local paths
         $uploads  = wp_upload_dir();
         $base_dir = trailingslashit($uploads['basedir']) . self::LOCAL_DIR;
@@ -143,97 +137,34 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             'live_table' => (string) $this->table->get_live_table_name(),
         ]);
 
-        // ---------------------------------------------------------------------
-        // FTP freshness gate (pre-connect throttle/cooldown)
-        // ---------------------------------------------------------------------
-        $pre_gate = FTPFreshnessGate::evaluate_pre_connect(
-            self::OPT_LAST_CHECKED_AT,
-            'fflhub_zanders_qty_last_applied_mtime',
-            self::FTP_MIN_CHECK_GAP_SECONDS,
-            self::FTP_COOLDOWN_SECONDS,
-            $force_update
+        $fetch = (new FtpFeedFetcher())->fetch(
+            FtpFeedFetchRequest::create([
+                'distributor_id' => 'zanders',
+                'cron_name' => 'Zanders inventory cron',
+                'credentials' => $creds,
+                'remote_path' => $remote_path,
+                'local_path' => $local_path,
+                'last_checked_option' => self::OPT_LAST_CHECKED_AT,
+                'last_applied_mtime_option' => 'fflhub_zanders_qty_last_applied_mtime',
+                'last_seen_mtime_option' => 'fflhub_zanders_qty_last_seen_mtime',
+                'last_seen_size_option' => 'fflhub_zanders_qty_last_seen_size',
+                'last_download_option' => 'fflhub_zanders_inventory_last_download',
+                'last_download_error_option' => 'fflhub_zanders_inventory_last_download_error',
+                'min_check_gap_seconds' => self::FTP_MIN_CHECK_GAP_SECONDS,
+                'cooldown_seconds' => self::FTP_COOLDOWN_SECONDS,
+                'force' => $force_update,
+                'ftp_log_prefix' => '[FFLHub][Zanders][FTP]',
+                'no_change_log_message' => 'No update available (remote mtime unchanged) - skipping download/apply',
+            ]),
+            $this->cron_logger()
         );
 
-        if ((bool) $pre_gate['skip']) {
-            $this->log((string) $pre_gate['log_message'], (array) $pre_gate['log_context']);
-            $this->finalize_run($t_start, $mem_start, (string) $pre_gate['status']);
-            return;
-        }
-        // 2) FTP connect
-        $t_ftp = microtime(true);
-
-        $ftp = new FTPClientService(
-            $host,
-            $username,
-            $password,
-            $use_ssl,
-            $port,
-            30,
-            true,
-            '[FFLHub][Zanders][FTP]'
-        );
-
-        if (!$ftp->is_connected()) {
-            update_option('fflhub_zanders_inventory_last_download_error', current_time('mysql'));
-
-            $this->log('ERROR: FTP connection not available.', [
-                'host'    => $host,
-                'use_ssl' => $use_ssl ? 1 : 0,
-                'port'    => (int) $port,
-            ]);
-
-            $this->profile('FTP connection (failed)', $t_ftp);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (FTP connection failed)');
+        if ($fetch->is_skipped() || $fetch->is_failed()) {
+            $this->finalize_run($t_start, $mem_start, $fetch->cron_status !== '' ? $fetch->cron_status : 'ERROR (download failed)');
             return;
         }
 
-        // 3) FTP freshness gate (remote mtime/size)
-        $t_meta = microtime(true);
-        $last_applied_mtime = (int) get_option('fflhub_zanders_qty_last_applied_mtime', 0);
-        $meta_gate          = FTPFreshnessGate::evaluate_remote_meta(
-            $ftp,
-            $remote_path,
-            'fflhub_zanders_qty_last_seen_mtime',
-            'fflhub_zanders_qty_last_seen_size',
-            $last_applied_mtime,
-            $force_update,
-            250000,
-            'No update available (remote mtime unchanged) - skipping download/apply'
-        );
-
-        $this->profile((string) $meta_gate['profile_label'], $t_meta, (array) $meta_gate['profile_context']);
-
-        $remote_mtime = (int) $meta_gate['remote_mtime'];
-
-        if ((bool) $meta_gate['skip']) {
-            $this->log((string) $meta_gate['log_message'], (array) $meta_gate['log_context']);
-            $this->finalize_run($t_start, $mem_start, (string) $meta_gate['status']);
-            return;
-        }
-        // 4) Download
-        $t_download = microtime(true);
-
-        $csv_kb_before = file_exists($local_path) ? (int) round(((int) filesize($local_path)) / 1024) : 0;
-        $ok            = $ftp->download_file($remote_path, $local_path);
-        $csv_kb_after  = file_exists($local_path) ? (int) round(((int) filesize($local_path)) / 1024) : 0;
-
-        $this->profile('FTP download', $t_download, [
-            'ok'            => $ok ? 1 : 0,
-            'csv_kb_before' => (int) $csv_kb_before,
-            'csv_kb_after'  => (int) $csv_kb_after,
-        ]);
-
-        if (!$ok) {
-            update_option('fflhub_zanders_inventory_last_download_error', current_time('mysql'));
-            $this->log('ERROR: FTP download failed', [
-                'remote_csv' => (string) $remote_path,
-            ]);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (download failed)');
-            return;
-        }
-
-        update_option('fflhub_zanders_inventory_last_download', current_time('mysql'));
-        delete_option('fflhub_zanders_inventory_last_download_error');
+        $remote_mtime = $fetch->remote_mtime;
 
         // 5) Apply updates (LOAD DATA + JOIN)
         $t_apply = microtime(true);

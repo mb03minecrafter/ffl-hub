@@ -8,17 +8,17 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
+use FFLHub\Distributor\Services\Cron\FtpFeedFetcher;
+use FFLHub\Distributor\Services\Cron\FtpFeedFetchRequest;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
-use FFLHub\Distributor\Services\FTP\FTPClientService;
-use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
 use FFLHub\Distributor\Services\RSR\RSROfferNormalizationService;
+use FFLHub\Distributor\Services\RSR\RSRFtpCredentials;
 use FFLHub\Distributor\Services\RSR\RSRProductImporterService;
-use FFLHub\Settings\Options;
 
 /**
  * WP-Cron job to regularly download the RSR product catalog file
  * (rsrinventory-new.txt) from the RSR FTP server into uploads/fflhub-rsr/,
- * then import it into the staging table and swap staging ↔ live.
+ * then import it into the staging table and swap staging/live.
  */
 final class RSRProductCronService extends AbstractTableCronService
 {
@@ -93,7 +93,7 @@ final class RSRProductCronService extends AbstractTableCronService
      * Cron callback:
      *  1) Download rsrinventory-new.zip from RSR FTP to uploads.
      *  2) Import it into the STAGING table.
-     *  3) Swap staging ↔ live if import succeeded.
+     *  3) Swap staging/live if import succeeded.
      */
     public function run(): void
     {
@@ -140,11 +140,6 @@ final class RSRProductCronService extends AbstractTableCronService
             return;
         }
 
-        $host     = (string) $creds['host'];
-        $username = (string) $creds['username'];
-        $password = (string) $creds['password'];
-        $use_ssl  = (bool) $creds['use_ssl'];
-
         // ---------------------------------------------------------------------
         // Stage 2: Prepare local download/extract paths.
         // ---------------------------------------------------------------------
@@ -177,91 +172,48 @@ final class RSRProductCronService extends AbstractTableCronService
         ]);
 
         // ---------------------------------------------------------------------
-        // Stage 3: FTP freshness gate before connecting.
+        // Stage 3: Fetch the RSR product ZIP through shared FTP plumbing.
         // ---------------------------------------------------------------------
-        $pre_gate = FTPFreshnessGate::evaluate_pre_connect(
-            self::OPT_LAST_CHECKED_AT,
-            'fflhub_rsr_fulfillment_last_applied_mtime',
-            self::FTP_MIN_CHECK_GAP_SECONDS,
-            self::FTP_COOLDOWN_SECONDS,
-            $force_update
+        $fetch = (new FtpFeedFetcher())->fetch(
+            FtpFeedFetchRequest::create([
+                'distributor_id' => 'rsr',
+                'cron_name' => 'RSR product cron',
+                'credentials' => $creds,
+                'remote_path' => $remote_path,
+                'local_path' => $local_zip_path,
+                'last_checked_option' => self::OPT_LAST_CHECKED_AT,
+                'last_applied_mtime_option' => 'fflhub_rsr_fulfillment_last_applied_mtime',
+                'last_seen_mtime_option' => 'fflhub_rsr_fulfillment_last_seen_mtime',
+                'last_seen_size_option' => 'fflhub_rsr_fulfillment_last_seen_size',
+                'last_download_option' => '',
+                'last_download_error_option' => 'fflhub_rsr_fulfillment_last_download_error',
+                'min_check_gap_seconds' => self::FTP_MIN_CHECK_GAP_SECONDS,
+                'cooldown_seconds' => self::FTP_COOLDOWN_SECONDS,
+                'force' => $force_update,
+                'ftp_log_prefix' => '[FFLHub][RSR][FTP]',
+                'no_change_log_message' => 'No update available (remote mtime unchanged) - skipping download/import/swap',
+            ]),
+            $this->cron_logger()
         );
 
-        if ((bool) $pre_gate['skip']) {
-            $this->log((string) $pre_gate['log_message'], (array) $pre_gate['log_context']);
-            $this->finalize_run($t_start, $mem_start, (string) $pre_gate['status']);
-            return;
-        }
-        // ---------------------------------------------------------------------
-        // Stage 4: Connect to RSR FTP.
-        // ---------------------------------------------------------------------
-        $t_ftp = microtime(true);
-
-        $ftp = new FTPClientService(
-            $host,
-            $username,
-            $password,
-            $use_ssl,
-            2222, // RSR port
-            30,   // timeout
-            true, // passive
-            '[FFLHub][RSR][FTP]'
-        );
-        if (!$ftp->is_connected()) {
-            update_option('fflhub_rsr_fulfillment_last_download_error', current_time('mysql'));
-
-            $this->log('ERROR: FTP connection not available.', [
-                'host'    => $host,
-                'use_ssl' => $use_ssl ? 1 : 0,
-            ]);
-
-            $this->profile('FTP connection (failed)', $t_ftp);
-            $this->finalize_run($t_start, $mem_start, 'ERROR (FTP connection failed)');
+        if ($fetch->is_skipped() || $fetch->is_failed()) {
+            $this->finalize_run($t_start, $mem_start, $fetch->cron_status !== '' ? $fetch->cron_status : 'ERROR (download failed)');
             return;
         }
 
-        // ---------------------------------------------------------------------
-        // Stage 5: Remote freshness gate using FTP mtime/size.
-        // ---------------------------------------------------------------------
-        $t_meta = microtime(true);
-        $last_applied_mtime = (int) get_option('fflhub_rsr_fulfillment_last_applied_mtime', 0);
-        $meta_gate          = FTPFreshnessGate::evaluate_remote_meta(
-            $ftp,
-            $remote_path,
-            'fflhub_rsr_fulfillment_last_seen_mtime',
-            'fflhub_rsr_fulfillment_last_seen_size',
-            $last_applied_mtime,
-            $force_update,
-            250000,
-            'No update available (remote mtime unchanged) - skipping download/import/swap'
-        );
+        $remote_mtime = $fetch->remote_mtime;
 
-        $this->profile((string) $meta_gate['profile_label'], $t_meta, (array) $meta_gate['profile_context']);
-
-        $remote_mtime = (int) $meta_gate['remote_mtime'];
-
-        if ((bool) $meta_gate['skip']) {
-            $this->log((string) $meta_gate['log_message'], (array) $meta_gate['log_context']);
-            $this->finalize_run($t_start, $mem_start, (string) $meta_gate['status']);
-            return;
-        }
         // ---------------------------------------------------------------------
-        // Stage 6: Download RSR ZIP and extract the product TXT.
+        // Stage 4: Extract the downloaded RSR ZIP into the product TXT.
         // ---------------------------------------------------------------------
         $t_download = microtime(true);
-
-        $ok = $ftp->download_zip_file(
-            $remote_path,
-            $local_zip_path,
-            $base_dir,
-            false // keep zip temporarily for logging/inspection; delete after extract below
-        );
+        $ok = $this->extract_zip_file($local_zip_path, $base_dir);
 
         $zip_size_after = file_exists($local_zip_path) ? (int) filesize($local_zip_path) : 0;
         $txt_exists     = file_exists($local_path);
         $txt_size_after = $txt_exists ? (int) filesize($local_path) : 0;
 
-        $this->profile('FTP download', $t_download, [
+        $this->profile('Extract ZIP', $t_download, [
             'ok'            => $ok ? 1 : 0,
             'zip_kb_after'  => $zip_size_after > 0 ? (int) round($zip_size_after / 1024) : 0,
             'txt_extracted' => $txt_exists ? 1 : 0,
@@ -270,12 +222,12 @@ final class RSRProductCronService extends AbstractTableCronService
 
         if (!$ok) {
             update_option('fflhub_rsr_fulfillment_last_download_error', current_time('mysql'));
-            $this->log('ERROR: download failed – aborting import and swap.');
-            $this->finalize_run($t_start, $mem_start, 'ERROR (download failed)');
+            $this->log('ERROR: ZIP extraction failed - aborting import and swap.');
+            $this->finalize_run($t_start, $mem_start, 'ERROR (extract failed)');
             return;
         }
 
-        // Don’t retain ZIP on disk.
+        // Do not retain ZIP on disk.
         @unlink($local_zip_path);
 
         update_option('fflhub_rsr_fulfillment_last_download', current_time('mysql'));
@@ -289,7 +241,7 @@ final class RSRProductCronService extends AbstractTableCronService
         }
 
         // ---------------------------------------------------------------------
-        // Stage 7: Import product TXT into the inactive/staging table.
+        // Stage 5: Import product TXT into the inactive/staging table.
         // ---------------------------------------------------------------------
         $t_import = microtime(true);
 
@@ -317,7 +269,7 @@ final class RSRProductCronService extends AbstractTableCronService
         }
 
         // ---------------------------------------------------------------------
-        // Stage 8: Swap staging/live by flipping the live-table option.
+        // Stage 6: Swap staging/live by flipping the live-table option.
         // ---------------------------------------------------------------------
         $t_swap = microtime(true);
 
@@ -328,22 +280,22 @@ final class RSRProductCronService extends AbstractTableCronService
             $this->log('ERROR: exception during swap', [
                 'error' => $e->getMessage(),
             ]);
-            $this->profile('Swap staging ↔ live (failed)', $t_swap);
+            $this->profile('Swap staging/live (failed)', $t_swap);
             $this->finalize_run($t_start, $mem_start, 'ERROR (swap exception)');
             return;
         }
 
-        $this->profile('Swap staging ↔ live', $t_swap, [
+        $this->profile('Swap staging/live', $t_swap, [
             'new_live' => (string) $new_live,
         ]);
 
         // ---------------------------------------------------------------------
-        // Stage 9: Update existing normalized offer fields from the newly live RSR table.
+        // Stage 7: Update existing normalized offer fields from the newly live RSR table.
         // ---------------------------------------------------------------------
         $offers_result = $this->update_distributor_offers_from_new_live_table($new_live);
 
         // ---------------------------------------------------------------------
-        // Stage 10: Persist success metadata and finalize the run.
+        // Stage 8: Persist success metadata and finalize the run.
         // ---------------------------------------------------------------------
         update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'));
         update_option('fflhub_rsr_fulfillment_last_import_count', (int) $count);
@@ -405,37 +357,68 @@ final class RSRProductCronService extends AbstractTableCronService
         return $offers_result;
     }
 
+    private function extract_zip_file(string $zip_path, string $extract_to_dir): bool
+    {
+        if (!class_exists(\ZipArchive::class)) {
+            $this->log('ERROR: ZipArchive extension is not available.');
+            return false;
+        }
+
+        if (!file_exists($zip_path)) {
+            $this->log('ERROR: downloaded ZIP not found.', [
+                'zip_path' => (string) $zip_path,
+            ]);
+            return false;
+        }
+
+        if (!is_dir($extract_to_dir) && !wp_mkdir_p($extract_to_dir)) {
+            $this->log('ERROR: failed to create ZIP extract directory.', [
+                'extract_to_dir' => (string) $extract_to_dir,
+            ]);
+            return false;
+        }
+
+        $zip = new \ZipArchive();
+        $opened = $zip->open($zip_path);
+        if ($opened !== true) {
+            $this->log('ERROR: failed to open downloaded ZIP.', [
+                'zip_path' => (string) $zip_path,
+                'zip_error' => (string) $opened,
+            ]);
+            return false;
+        }
+
+        $ok = (bool) $zip->extractTo($extract_to_dir);
+        $zip->close();
+
+        if (!$ok) {
+            $this->log('ERROR: failed to extract downloaded ZIP.', [
+                'zip_path' => (string) $zip_path,
+                'extract_to_dir' => (string) $extract_to_dir,
+            ]);
+        }
+
+        return $ok;
+    }
+
     /**
      * Retrieve and validate FTP credentials from RSR distributor settings.
      *
-     * @return array{host:string,username:string,password:string,use_ssl:bool}|null
+     * @return array{host:string,username:string,password:string,use_ssl:bool,port:int}|null
      */
     public function get_ftp_credentials(): ?array
     {
-        $host      = Options::get_distributor_option('rsr', 'ftp_host', '');
-        $username  = Options::get_distributor_option('rsr', 'ftp_username', '');
-        $password  = Options::get_distributor_option('rsr', 'ftp_password', '');
-        $use_ssl_s = Options::get_distributor_option('rsr', 'ftp_use_ssl', '');
+        $loaded = RSRFtpCredentials::load();
 
-        $host     = trim((string) $host);
-        $username = trim((string) $username);
-        $password = trim((string) $password);
-        $use_ssl  = ($use_ssl_s !== '');
-
-        if ($host === '' || $username === '' || $password === '') {
+        if ($loaded['credentials'] === null) {
             $this->log('Missing FTP credentials', [
-                'host' => $host !== '' ? 'set' : 'empty',
-                'user' => $username !== '' ? 'set' : 'empty',
+                'host' => !empty($loaded['has_host']) ? 'set' : 'empty',
+                'user' => !empty($loaded['has_username']) ? 'set' : 'empty',
             ]);
             return null;
         }
 
-        return [
-            'host'     => $host,
-            'username' => $username,
-            'password' => $password,
-            'use_ssl'  => $use_ssl,
-        ];
+        return $loaded['credentials'];
     }
 
     // --------------------------------------------------
