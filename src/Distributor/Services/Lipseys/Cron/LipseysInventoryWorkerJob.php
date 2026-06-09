@@ -2,149 +2,192 @@
 
 namespace FFLHub\Distributor\Services\Lipseys\Cron;
 
-if (!defined('ABSPATH')) exit;
+if (!defined('ABSPATH')) {
+    exit;
+}
 
+use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
-use FFLHub\Util\DebugLogUtil;
 
 final class LipseysInventoryWorkerJob
 {
     public const HOOK = 'fflhub_lipseys_pricing_quantity_worker';
 
+    private static ?CronRunLogger $logger = null;
+
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHUB][LipseysInventoryWorker]';
 
-    private const OPT_LAST_SEEN_VERSION     = 'fflhub_lipseys_last_seen_version';
-    private const OPT_NEXT_UPDATE_UNIX      = 'fflhub_lipseys_next_update_unix';
-    private const OPT_LAST_APPLIED_VERSION  = 'fflhub_lipseys_last_applied_version';
+    private const OPT_LAST_SEEN_VERSION = 'fflhub_lipseys_last_seen_version';
+    private const OPT_NEXT_UPDATE_UNIX = 'fflhub_lipseys_next_update_unix';
+    private const OPT_LAST_APPLIED_VERSION = 'fflhub_lipseys_last_applied_version';
 
-    private const FILE_LOG_NAME = 'lipseys_cron.log';
     private const STAGE_TABLE_SUFFIX = 'fflhub_lipseys_pq_stage';
-
-    private const WORKER_ARGS  = ['singleton' => 1];
+    private const WORKER_ARGS = ['singleton' => 1];
     private const WORKER_GROUP = 'fflhub_catalog';
-
     private const WORKER_SKEW_SEC = 60;
     private const FALLBACK_RETRY_SEC = 600;
 
-    // Debug limits (avoid log spam)
-    private const MAX_WARNINGS_LOGGED = 25;
-    private const MAX_CREATE_TABLE_CHARS = 1200;
-
     public static function run(DoubleBufferedProductTable $table): void
     {
-        $t_total = microtime(true);
+        $started = microtime(true);
+        $memory_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
         $version = (string) get_option(self::OPT_LAST_SEEN_VERSION, '');
-        $unix    = (int) get_option(self::OPT_NEXT_UPDATE_UNIX, 0);
+        $next_unix = (int) get_option(self::OPT_NEXT_UPDATE_UNIX, 0);
 
-        self::log('RUN START', [
-            'pid'     => function_exists('getmypid') ? (int) getmypid() : 0,
+        self::logger()->runStart([
+            'pid' => function_exists('getmypid') ? (int) getmypid() : 0,
             'version' => $version,
-            'unix'    => $unix,
-            'mem_kb'  => function_exists('memory_get_usage') ? (int) round(memory_get_usage(true) / 1024) : 0,
+            'next_unix' => $next_unix,
+            'memory_kb' => self::logger()->memoryKb(),
         ]);
 
-        // --- Creds timing ---
-        $t_creds = microtime(true);
-        $email = (string) Options::get_distributor_option('lipseys', 'dealer_email', '');
-        $pass  = (string) Options::get_distributor_option('lipseys', 'dealer_password', '');
-
-        self::log('PROFILE: creds', [
-            'has_email' => $email !== '' ? 1 : 0,
-            'has_pass'  => $pass !== '' ? 1 : 0,
-            'elapsed_ms' => self::ms_since($t_creds),
-        ]);
-
-        if ($email === '' || $pass === '') {
+        // ------------------------------------------------------------------
+        // Stage 1: Credentials and API client.
+        // ------------------------------------------------------------------
+        $credentials = self::load_credentials();
+        if ($credentials === null) {
             self::log('Missing credentials');
-            self::log('RUN END', [
-                'elapsed_ms' => self::ms_since($t_total),
-            ]);
+            self::finish($started, $memory_start, 'ERROR (missing credentials)');
             return;
         }
 
-        // --- Client timing ---
-        $t_client = microtime(true);
-        try {
-            $client = new LipseysClient($email, $pass);
-        } catch (\Throwable $e) {
-            self::log('Client creation failed', ['error' => $e->getMessage()]);
-            self::log('PROFILE: client', [
-                'ok'         => 0,
-                'elapsed_ms' => self::ms_since($t_client),
-            ]);
-            self::log('RUN END', [
-                'elapsed_ms' => self::ms_since($t_total),
-            ]);
+        $client = self::create_client($credentials['email'], $credentials['password']);
+        if (!$client instanceof LipseysClient) {
+            self::finish($started, $memory_start, 'ERROR (client failed)');
             return;
         }
 
-        self::log('PROFILE: client', [
-            'ok'         => 1,
-            'elapsed_ms' => self::ms_since($t_client),
-        ]);
-
-        // --- Heavy timing (stream + apply) ---
-        $t_heavy = microtime(true);
-        $stats = null;
-
+        // ------------------------------------------------------------------
+        // Stage 2: Stream pricing/quantity and apply it to the live table.
+        // ------------------------------------------------------------------
         try {
             $stats = self::run_heavy_inventory_update($table, $client);
         } catch (\Throwable $e) {
-            self::log('HEAVY UPDATE FAILED', [
-                'error' => $e->getMessage(),
-                'elapsed_ms' => self::ms_since($t_heavy),
-            ]);
-
+            self::log('HEAVY UPDATE FAILED', ['error' => $e->getMessage()]);
             self::schedule_next_worker_fallback('heavy_failed');
-
-            self::log('RUN END', [
-                'elapsed_ms' => self::ms_since($t_total),
-            ]);
+            self::finish($started, $memory_start, 'ERROR (heavy failed)');
             return;
         }
 
-        // Mark applied if we have a current version.
+        // ------------------------------------------------------------------
+        // Stage 3: Persist version markers and schedule the next worker.
+        // ------------------------------------------------------------------
         if ($version !== '') {
             update_option(self::OPT_LAST_APPLIED_VERSION, $version);
         }
 
-        self::log('HEAVY SUCCESS', [
-            'version_applied' => $version,
-            'elapsed_ms'      => self::ms_since($t_heavy),
-        ]);
+        $next_raw = (string) ($stats['next_update_raw'] ?? '');
+        $next_unix = (int) ($stats['next_update_unix'] ?? 0);
 
-        $nextRaw  = is_array($stats) ? (string) ($stats['next_update_raw'] ?? '') : '';
-        $nextUnix = is_array($stats) ? (int) ($stats['next_update_unix'] ?? 0) : 0;
+        if ($next_raw !== '') {
+            update_option(self::OPT_LAST_SEEN_VERSION, $next_raw);
+        }
 
-        if ($nextRaw !== '') update_option(self::OPT_LAST_SEEN_VERSION, $nextRaw);
-        if ($nextUnix > 0)   update_option(self::OPT_NEXT_UPDATE_UNIX, $nextUnix);
+        if ($next_unix > 0) {
+            update_option(self::OPT_NEXT_UPDATE_UNIX, $next_unix);
+        }
 
         self::log('NEXT UPDATE (from TSV stream)', [
-            'next_raw'  => $nextRaw !== '' ? $nextRaw : null,
-            'next_unix' => $nextUnix > 0 ? $nextUnix : null,
+            'next_raw' => $next_raw !== '' ? $next_raw : null,
+            'next_unix' => $next_unix > 0 ? $next_unix : null,
         ]);
 
-        self::schedule_next_worker($nextUnix, $nextRaw);
+        self::schedule_next_worker($next_unix, $next_raw);
 
-        self::log('RUN END', [
-            'elapsed_ms' => self::ms_since($t_total),
+        self::finish($started, $memory_start, 'SUCCESS', [
+            'version_applied' => $version,
+            'stream_rows_written' => (int) ($stats['rows_written'] ?? 0),
+            'stream_bytes_received' => (int) ($stats['bytes_received'] ?? 0),
+            'rows_loaded' => (int) ($stats['_apply']['rows_loaded'] ?? 0),
+            'rows_updated' => (int) ($stats['_apply']['rows_updated'] ?? 0),
+            'stage_table' => (string) ($stats['_apply']['stage_table'] ?? ''),
         ]);
     }
 
+    /**
+     * @return array{email:string,password:string}|null
+     */
+    private static function load_credentials(): ?array
+    {
+        $started = microtime(true);
+
+        $email = (string) Options::get_distributor_option('lipseys', 'dealer_email', '');
+        $password = (string) Options::get_distributor_option('lipseys', 'dealer_password', '');
+
+        self::profile('Credentials retrieval', $started, [
+            'has_email' => $email !== '' ? 1 : 0,
+            'has_password' => $password !== '' ? 1 : 0,
+        ]);
+
+        if ($email === '' || $password === '') {
+            return null;
+        }
+
+        return [
+            'email' => $email,
+            'password' => $password,
+        ];
+    }
+
+    private static function create_client(string $email, string $password): ?LipseysClient
+    {
+        $started = microtime(true);
+
+        try {
+            $client = new LipseysClient($email, $password);
+        } catch (\Throwable $e) {
+            self::log('Client creation failed', ['error' => $e->getMessage()]);
+            self::profile('Client creation', $started, ['ok' => 0]);
+            return null;
+        }
+
+        self::profile('Client creation', $started, ['ok' => 1]);
+
+        return $client;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
     private static function run_heavy_inventory_update(DoubleBufferedProductTable $table, LipseysClient $client): array
     {
-        $t_heavy = microtime(true);
+        $started = microtime(true);
+
+        [$live_table, $tsv] = self::prepare_live_table_and_tsv_path($table);
+
+        $stats = self::stream_pricing_quantity_to_tsv($client, $tsv);
+
+        $apply = self::apply_tsv_to_live_table($tsv, $live_table);
+        self::log('DB APPLY COMPLETE', $apply);
+
+        $stats['_apply'] = $apply;
+        self::profile('Heavy inventory update', $started, [
+            'live_table' => $live_table,
+            'tsv_bytes' => file_exists($tsv) ? (int) filesize($tsv) : null,
+            'rows_loaded' => (int) ($apply['rows_loaded'] ?? 0),
+            'rows_updated' => (int) ($apply['rows_updated'] ?? 0),
+        ]);
+
+        return $stats;
+    }
+
+    /**
+     * @return array{0:string,1:string}
+     */
+    private static function prepare_live_table_and_tsv_path(DoubleBufferedProductTable $table): array
+    {
+        $started = microtime(true);
 
         $live_table = (string) $table->get_live_table_name();
         if ($live_table === '') {
             throw new \RuntimeException('Could not resolve live table name.');
         }
 
-        $uploads  = wp_upload_dir();
+        $uploads = wp_upload_dir();
         $base_dir = trailingslashit((string) ($uploads['basedir'] ?? '')) . 'fflhub/lipseys';
         if (!wp_mkdir_p($base_dir)) {
             throw new \RuntimeException('Failed to create base directory: ' . $base_dir);
@@ -152,10 +195,22 @@ final class LipseysInventoryWorkerJob
 
         $tsv = trailingslashit($base_dir) . 'pq_' . gmdate('Ymd_His') . '.tsv';
 
-        self::log('Starting TSV stream', ['path' => $tsv]);
+        self::profile('Prepare live table and TSV path', $started, [
+            'live_table' => $live_table,
+            'tsv_path' => $tsv,
+        ]);
 
-        // --- Stream timing ---
-        $t_stream = microtime(true);
+        return [$live_table, $tsv];
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private static function stream_pricing_quantity_to_tsv(LipseysClient $client, string $tsv): array
+    {
+        $started = microtime(true);
+
+        self::log('Starting TSV stream', ['path' => $tsv]);
 
         $stats = $client->PricingAndQuantityToTsv(
             $tsv,
@@ -167,140 +222,123 @@ final class LipseysInventoryWorkerJob
                 'retail_map',
                 'can_dropship',
             ],
-            static function (array $i) {
-                if (empty($i['itemNumber'])) return null;
+            static function (array $item) {
+                if (empty($item['itemNumber'])) {
+                    return null;
+                }
 
                 return [
-                    'lipseys_item_number' => (string) $i['itemNumber'],
-                    'inventory_quantity'  => (string) ((int) ($i['quantity'] ?? 0)),
-                    'allocation_status'   => !empty($i['allocated']) ? 'Y' : '',
-                    'distributor_price'   => (string) ($i['currentPrice'] ?? ''),
-                    'retail_map'          => (string) ($i['retailMap'] ?? ''),
-                    'can_dropship'         => !empty($i['canDropship']) ? '1' : '0',
+                    'lipseys_item_number' => (string) $item['itemNumber'],
+                    'inventory_quantity' => (string) ((int) ($item['quantity'] ?? 0)),
+                    'allocation_status' => !empty($item['allocated']) ? 'Y' : '',
+                    'distributor_price' => (string) ($item['currentPrice'] ?? ''),
+                    'retail_map' => (string) ($item['retailMap'] ?? ''),
+                    'can_dropship' => !empty($item['canDropship']) ? '1' : '0',
                 ];
             }
         );
 
-        self::log('STREAM COMPLETE', is_array($stats) ? $stats : ['stats' => $stats]);
-        self::log('PROFILE: stream', [
-            'elapsed_ms' => self::ms_since($t_stream),
-            'tsv_bytes'  => (is_string($tsv) && file_exists($tsv)) ? (int) filesize($tsv) : null,
+        $stats = is_array($stats) ? $stats : ['stats' => $stats];
+        self::log('STREAM COMPLETE', $stats);
+        self::profile('Stream pricing/quantity TSV', $started, [
+            'tsv_bytes' => file_exists($tsv) ? (int) filesize($tsv) : null,
+            'rows_seen' => (int) ($stats['rows_seen'] ?? 0),
+            'rows_written' => (int) ($stats['rows_written'] ?? 0),
+            'bytes_received' => (int) ($stats['bytes_received'] ?? 0),
+            'success' => !empty($stats['success']) ? 1 : 0,
+            'authorized' => array_key_exists('authorized', $stats) ? (!empty($stats['authorized']) ? 1 : 0) : null,
         ]);
 
         if (self::debug_enabled()) {
             self::debug_tsv_sample($tsv);
         }
 
-        // --- Apply timing ---
-        $t_apply = microtime(true);
-        $apply = self::apply_load_data($tsv, $live_table);
-        self::log('PROFILE: db_apply', [
-            'elapsed_ms' => self::ms_since($t_apply),
-        ]);
-
-        self::log('DB APPLY COMPLETE', $apply);
-
-        self::log('HEAVY DONE', [
-            'elapsed_ms' => self::ms_since($t_heavy),
-        ]);
-
-        // merge apply stats into stream stats (handy for one-line greps)
-        if (is_array($stats)) {
-            $stats['_apply'] = $apply;
-            $stats['_timing_ms'] = [
-                'stream' => self::ms_since($t_stream),
-                'apply'  => self::ms_since($t_apply),
-                'heavy'  => self::ms_since($t_heavy),
-            ];
-        }
-
-        return is_array($stats) ? $stats : ['success' => false, '_apply' => $apply];
+        return $stats;
     }
 
-    private static function schedule_next_worker(int $next_unix, string $next_raw): void
-    {
-        if (!function_exists('as_schedule_single_action') || !function_exists('as_unschedule_all_actions')) {
-            self::log('Action Scheduler unavailable — cannot chain schedule');
-            return;
-        }
-
-        $now = time();
-
-        $target = ($next_unix > 0)
-            ? (int) max($now + 10, $next_unix + self::WORKER_SKEW_SEC)
-            : (int) ($now + self::FALLBACK_RETRY_SEC);
-
-        // Optional: observe before/after pending counts (super useful for “why is it queued?”)
-        $before = self::as_count_pending(self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
-
-        as_unschedule_all_actions(self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
-        as_schedule_single_action($target, self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
-
-        $after = self::as_count_pending(self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
-
-        self::log('Next worker scheduled (self-chain)', [
-            'target_unix' => $target,
-            'next_unix'   => $next_unix > 0 ? $next_unix : null,
-            'next_raw'    => $next_raw !== '' ? $next_raw : null,
-            'skew_sec'    => self::WORKER_SKEW_SEC,
-            'args'        => self::WORKER_ARGS,
-            'group'       => self::WORKER_GROUP,
-            'pending_before' => $before,
-            'pending_after'  => $after,
-        ]);
-    }
-
-    private static function schedule_next_worker_fallback(string $reason): void
-    {
-        if (!function_exists('as_schedule_single_action') || !function_exists('as_unschedule_all_actions')) {
-            return;
-        }
-
-        $target = time() + self::FALLBACK_RETRY_SEC;
-
-        as_unschedule_all_actions(self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
-        as_schedule_single_action($target, self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
-
-        self::log('Next worker scheduled (fallback)', [
-            'reason'      => $reason,
-            'target_unix' => $target,
-            'retry_sec'   => self::FALLBACK_RETRY_SEC,
-        ]);
-    }
-
-    private static function apply_load_data(string $tsv, string $live): array
+    /**
+     * @return array<string,mixed>
+     */
+    private static function apply_tsv_to_live_table(string $tsv, string $live_table): array
     {
         global $wpdb;
 
-        $t_total = microtime(true);
+        $started = microtime(true);
+        $stage_table = $wpdb->prefix . self::STAGE_TABLE_SUFFIX;
 
-        $stage = $wpdb->prefix . self::STAGE_TABLE_SUFFIX;
-
-        $debug_enabled = self::debug_enabled();
-
-        if ($debug_enabled) {
+        // ------------------------------------------------------------------
+        // Stage A: optional DB environment/debug checks.
+        // ------------------------------------------------------------------
+        if (self::debug_enabled()) {
             self::db_debug_env();
         }
 
-        // LIVE table rowcount (sanity; optional but very helpful)
-        $t_live_count = microtime(true);
-        $live_count = 0;
-        if ($debug_enabled) {
-            $live_count = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$live}") ?? 0);
-        }
-        self::log('PROFILE: live_count', [
-            'live_count'  => $live_count,
-            'elapsed_ms'  => self::ms_since($t_live_count),
+        $live_count = self::count_live_rows_if_debug($live_table);
+
+        // ------------------------------------------------------------------
+        // Stage B: create/truncate persistent stage table.
+        // ------------------------------------------------------------------
+        self::ensure_stage_table($stage_table);
+
+        // ------------------------------------------------------------------
+        // Stage C: load the streamed TSV into stage with LOAD DATA.
+        // ------------------------------------------------------------------
+        $load_stats = self::load_stage_from_tsv($stage_table, $tsv);
+
+        // ------------------------------------------------------------------
+        // Stage D: inspect matched/changed rows when debug is enabled.
+        // ------------------------------------------------------------------
+        $changed_where_sql = self::changed_where_sql();
+        $prejoin_stats = self::collect_prejoin_stats($stage_table, $live_table, $changed_where_sql);
+
+        // ------------------------------------------------------------------
+        // Stage E: update changed live rows from stage.
+        // ------------------------------------------------------------------
+        $updated = self::update_live_from_stage($live_table, $stage_table, $changed_where_sql);
+
+        self::profile('Apply TSV to live table', $started, [
+            'stage_table' => $stage_table,
+            'live_table' => $live_table,
+            'rows_loaded' => (int) ($load_stats['stage_count'] ?? 0),
+            'rows_updated' => (int) $updated,
         ]);
 
-        // -----------------------
-        // Create stage
-        // -----------------------
-        $t_create = microtime(true);
+        return [
+            'rows_loaded' => (int) ($load_stats['stage_count'] ?? 0),
+            'rows_updated' => (int) $updated,
+            'stage_table' => (string) $stage_table,
+            'stage_count' => (int) ($load_stats['stage_count'] ?? 0),
+            'live_count' => (int) $live_count,
+            'join_matched' => (int) ($prejoin_stats['join_matched'] ?? 0),
+            'would_change' => (int) ($prejoin_stats['would_change'] ?? 0),
+            'sig_approved_forced' => 0,
+        ];
+    }
 
+    private static function count_live_rows_if_debug(string $live_table): int
+    {
+        global $wpdb;
+
+        $started = microtime(true);
+        $live_count = 0;
+
+        if (self::debug_enabled()) {
+            $live_count = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$live_table}") ?? 0);
+        }
+
+        self::profile('Live row count', $started, ['live_count' => $live_count]);
+
+        return $live_count;
+    }
+
+    private static function ensure_stage_table(string $stage_table): void
+    {
+        global $wpdb;
+
+        $started = microtime(true);
         $charset = $wpdb->get_charset_collate();
         $create_sql = "
-            CREATE TABLE IF NOT EXISTS {$stage} (
+            CREATE TABLE IF NOT EXISTS {$stage_table} (
                 lipseys_item_number VARCHAR(64) NOT NULL,
                 inventory_quantity  VARCHAR(32) NULL,
                 allocation_status   VARCHAR(64) NULL,
@@ -316,29 +354,32 @@ final class LipseysInventoryWorkerJob
             throw new \RuntimeException('Stage create failed: ' . (string) $wpdb->last_error);
         }
 
-        self::ensure_stage_can_dropship_column($stage);
+        self::ensure_stage_can_dropship_column($stage_table);
 
-        $truncated = $wpdb->query("TRUNCATE TABLE {$stage}");
+        $truncated = $wpdb->query("TRUNCATE TABLE {$stage_table}");
         if ($truncated === false) {
             throw new \RuntimeException('Stage truncate failed: ' . (string) $wpdb->last_error);
         }
 
-        self::log('PROFILE: stage_create', [
-            'stage_table' => $stage,
-            'elapsed_ms'  => self::ms_since($t_create),
+        self::profile('Ensure/truncate stage table', $started, [
+            'stage_table' => $stage_table,
         ]);
+    }
 
-        // -----------------------
-        // LOAD DATA
-        // -----------------------
-        $t_load = microtime(true);
+    /**
+     * @return array{rows_loaded_affected:int,stage_count:int}
+     */
+    private static function load_stage_from_tsv(string $stage_table, string $tsv): array
+    {
+        global $wpdb;
 
+        $started = microtime(true);
         $path = str_replace('\\', '\\\\', $tsv);
         $path = str_replace("'", "\\'", $path);
 
         $load_sql = "
             LOAD DATA LOCAL INFILE '{$path}'
-            INTO TABLE {$stage}
+            INTO TABLE {$stage_table}
             FIELDS TERMINATED BY '\t'
             LINES TERMINATED BY '\n'
             (
@@ -367,56 +408,67 @@ final class LipseysInventoryWorkerJob
             throw new \RuntimeException('LOAD DATA failed: ' . (string) $wpdb->last_error);
         }
 
-        $stage_count = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$stage}") ?? 0);
+        $stage_count = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$stage_table}") ?? 0);
 
-        self::log('PROFILE: load', [
-            // $loaded is often 0 in some MySQL configs; stage_count is truth.
+        self::profile('LOAD DATA into stage', $started, [
             'rows_loaded_affected' => (int) $loaded,
-            'stage_count'          => $stage_count,
-            'elapsed_ms'           => self::ms_since($t_load),
-            'last_error'           => (string) $wpdb->last_error,
+            'stage_count' => $stage_count,
+            'last_error' => (string) $wpdb->last_error,
         ]);
 
-        // -----------------------
-        // Pre-join stats
-        // -----------------------
-        $t_stats = microtime(true);
+        return [
+            'rows_loaded_affected' => (int) $loaded,
+            'stage_count' => $stage_count,
+        ];
+    }
 
+    /**
+     * @return array{join_matched:int,would_change:int}
+     */
+    private static function collect_prejoin_stats(string $stage_table, string $live_table, string $changed_where_sql): array
+    {
+        global $wpdb;
+
+        $started = microtime(true);
         $join_matched = 0;
         $would_change = 0;
-        $changed_where_sql = self::changed_where_sql();
 
-        if ($debug_enabled) {
+        if (self::debug_enabled()) {
             $join_matched = (int) ($wpdb->get_var("
                 SELECT COUNT(*)
-                FROM {$stage} S
-                INNER JOIN {$live} L
+                FROM {$stage_table} S
+                INNER JOIN {$live_table} L
                     ON L.lipseys_item_number = S.lipseys_item_number
             ") ?? 0);
 
             $would_change = (int) ($wpdb->get_var("
                 SELECT COUNT(*)
-                FROM {$stage} S
-                INNER JOIN {$live} L
+                FROM {$stage_table} S
+                INNER JOIN {$live_table} L
                     ON L.lipseys_item_number = S.lipseys_item_number
                 WHERE {$changed_where_sql}
             ") ?? 0);
         }
 
-        self::log('PROFILE: prejoin_stats', [
+        self::profile('Pre-join stats', $started, [
             'join_matched' => $join_matched,
             'would_change' => $would_change,
-            'elapsed_ms'   => self::ms_since($t_stats),
         ]);
 
-        // -----------------------
-        // JOIN update
-        // -----------------------
-        $t_join = microtime(true);
+        return [
+            'join_matched' => $join_matched,
+            'would_change' => $would_change,
+        ];
+    }
 
+    private static function update_live_from_stage(string $live_table, string $stage_table, string $changed_where_sql): int
+    {
+        global $wpdb;
+
+        $started = microtime(true);
         $update_sql = "
-            UPDATE {$live} L
-            INNER JOIN {$stage} S
+            UPDATE {$live_table} L
+            INNER JOIN {$stage_table} S
                 ON S.lipseys_item_number = L.lipseys_item_number
             SET
                 L.inventory_quantity = S.inventory_quantity,
@@ -441,33 +493,58 @@ final class LipseysInventoryWorkerJob
             throw new \RuntimeException('JOIN update failed: ' . (string) $wpdb->last_error);
         }
 
-        self::log('PROFILE: join_update', [
+        self::profile('Join update live table', $started, [
             'rows_updated' => (int) $updated,
-            'elapsed_ms'   => self::ms_since($t_join),
-            'last_error'   => (string) $wpdb->last_error,
+            'last_error' => (string) $wpdb->last_error,
         ]);
 
-        // Persistent stage table is retained for verification/debugging.
-        $drop_ms = 0;
+        return (int) $updated;
+    }
 
-        self::log('PROFILE: drop_stage', [
-            'elapsed_ms' => $drop_ms,
+    private static function schedule_next_worker(int $next_unix, string $next_raw): void
+    {
+        if (!function_exists('as_schedule_single_action') || !function_exists('as_unschedule_all_actions')) {
+            self::log('Action Scheduler unavailable - cannot chain schedule');
+            return;
+        }
+
+        $target = $next_unix > 0
+            ? (int) max(time() + 10, $next_unix + self::WORKER_SKEW_SEC)
+            : (int) (time() + self::FALLBACK_RETRY_SEC);
+
+        $before = self::as_count_pending(self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
+
+        as_unschedule_all_actions(self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
+        as_schedule_single_action($target, self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
+
+        self::log('Next worker scheduled (self-chain)', [
+            'target_unix' => $target,
+            'next_unix' => $next_unix > 0 ? $next_unix : null,
+            'next_raw' => $next_raw !== '' ? $next_raw : null,
+            'skew_sec' => self::WORKER_SKEW_SEC,
+            'args' => self::WORKER_ARGS,
+            'group' => self::WORKER_GROUP,
+            'pending_before' => $before,
+            'pending_after' => self::as_count_pending(self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP),
         ]);
+    }
 
-        self::log('PROFILE: apply_total', [
-            'elapsed_ms' => self::ms_since($t_total),
+    private static function schedule_next_worker_fallback(string $reason): void
+    {
+        if (!function_exists('as_schedule_single_action') || !function_exists('as_unschedule_all_actions')) {
+            return;
+        }
+
+        $target = time() + self::FALLBACK_RETRY_SEC;
+
+        as_unschedule_all_actions(self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
+        as_schedule_single_action($target, self::HOOK, self::WORKER_ARGS, self::WORKER_GROUP);
+
+        self::log('Next worker scheduled (fallback)', [
+            'reason' => $reason,
+            'target_unix' => $target,
+            'retry_sec' => self::FALLBACK_RETRY_SEC,
         ]);
-
-        return [
-            'rows_loaded'   => $stage_count,
-            'rows_updated'  => (int) $updated,
-            'stage_table'   => (string) $stage,
-            'stage_count'   => $stage_count,
-            'live_count'    => $live_count,
-            'join_matched'  => $join_matched,
-            'would_change'  => $would_change,
-            'sig_approved_forced' => 0,
-        ];
     }
 
     private static function ensure_stage_can_dropship_column(string $stage): void
@@ -518,10 +595,10 @@ final class LipseysInventoryWorkerJob
             }
 
             $ids = as_get_scheduled_actions([
-                'hook'     => $hook,
-                'args'     => $args,
-                'group'    => $group,
-                'status'   => \ActionScheduler_Store::STATUS_PENDING,
+                'hook' => $hook,
+                'args' => $args,
+                'group' => $group,
+                'status' => \ActionScheduler_Store::STATUS_PENDING,
                 'per_page' => 1000,
             ]);
 
@@ -539,16 +616,17 @@ final class LipseysInventoryWorkerJob
         $local_infile = null;
 
         try {
-            $sql_mode = $wpdb->get_var("SELECT @@SESSION.sql_mode");
+            $sql_mode = $wpdb->get_var('SELECT @@SESSION.sql_mode');
         } catch (\Throwable $e) {
         }
+
         try {
-            $local_infile = $wpdb->get_var("SELECT @@GLOBAL.local_infile");
+            $local_infile = $wpdb->get_var('SELECT @@GLOBAL.local_infile');
         } catch (\Throwable $e) {
         }
 
         self::log('DB DEBUG: ENV', [
-            'sql_mode'     => is_string($sql_mode) ? $sql_mode : null,
+            'sql_mode' => is_string($sql_mode) ? $sql_mode : null,
             'local_infile' => is_scalar($local_infile) ? (string) $local_infile : null,
         ]);
     }
@@ -574,8 +652,8 @@ final class LipseysInventoryWorkerJob
             $fields = $line_trim === '' ? [] : explode("\t", $line_trim);
 
             self::log('TSV DEBUG: sample', [
-                'path'        => $tsv,
-                'first_line'  => self::truncate_str($line_trim, 500),
+                'path' => $tsv,
+                'first_line' => self::truncate_str($line_trim, 500),
                 'field_count' => count($fields),
             ]);
         } catch (\Throwable $e) {
@@ -583,16 +661,17 @@ final class LipseysInventoryWorkerJob
         }
     }
 
-    private static function truncate_str(string $s, int $max): string
+    private static function truncate_str(string $value, int $max): string
     {
-        if ($max <= 0) return '';
-        if (strlen($s) <= $max) return $s;
-        return substr($s, 0, $max) . '…';
-    }
+        if ($max <= 0) {
+            return '';
+        }
 
-    private static function ms_since(float $t0): int
-    {
-        return (int) round((microtime(true) - $t0) * 1000);
+        if (strlen($value) <= $max) {
+            return $value;
+        }
+
+        return substr($value, 0, $max) . '...';
     }
 
     private static function debug_enabled(): bool
@@ -600,10 +679,36 @@ final class LipseysInventoryWorkerJob
         return defined(self::DEBUG_FLAG) && (bool) constant(self::DEBUG_FLAG);
     }
 
-    private static function log(string $msg, array $ctx = []): void
+    private static function logger(): CronRunLogger
     {
-        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $msg, $ctx);
+        if (!self::$logger instanceof CronRunLogger) {
+            self::$logger = CronRunLogger::create(self::DEBUG_FLAG, self::LOG_PREFIX);
+        }
+
+        return self::$logger;
     }
 
-    
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private static function log(string $message, array $ctx = []): void
+    {
+        self::logger()->log($message, $ctx);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private static function profile(string $label, float $started, array $ctx = []): void
+    {
+        self::logger()->profile($label, $started, $ctx);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private static function finish(float $started, int $memory_start, string $status, array $ctx = []): void
+    {
+        self::logger()->finishWithTotalProfile($started, $memory_start, $status, $ctx);
+    }
 }
