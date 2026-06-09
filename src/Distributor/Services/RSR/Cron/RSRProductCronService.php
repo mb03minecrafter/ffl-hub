@@ -96,6 +96,9 @@ final class RSRProductCronService extends AbstractTableCronService
      */
     public function run(): void
     {
+        // ---------------------------------------------------------------------
+        // Stage 0: Run setup, profiling baseline, and force-update detection.
+        // ---------------------------------------------------------------------
         $t_start   = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
@@ -118,7 +121,9 @@ final class RSRProductCronService extends AbstractTableCronService
             $this->log('FORCE_UPDATE enabled - bypassing cooldown/mtime gates');
         }
 
-        // 0) Load FTP credentials.
+        // ---------------------------------------------------------------------
+        // Stage 1: Load and validate RSR FTP credentials.
+        // ---------------------------------------------------------------------
         $t_creds = microtime(true);
         $creds   = $this->get_ftp_credentials();
 
@@ -139,7 +144,9 @@ final class RSRProductCronService extends AbstractTableCronService
         $password = (string) $creds['password'];
         $use_ssl  = (bool) $creds['use_ssl'];
 
-        // Local save dir.
+        // ---------------------------------------------------------------------
+        // Stage 2: Prepare local download/extract paths.
+        // ---------------------------------------------------------------------
         $uploads  = wp_upload_dir();
         $base_dir = trailingslashit($uploads['basedir']) . 'fflhub-rsr';
 
@@ -169,7 +176,7 @@ final class RSRProductCronService extends AbstractTableCronService
         ]);
 
         // ---------------------------------------------------------------------
-        // FTP freshness gate (pre-connect throttle/cooldown)
+        // Stage 3: FTP freshness gate before connecting.
         // ---------------------------------------------------------------------
         $pre_gate = FTPFreshnessGate::evaluate_pre_connect(
             self::OPT_LAST_CHECKED_AT,
@@ -184,7 +191,9 @@ final class RSRProductCronService extends AbstractTableCronService
             $this->finalize_run($t_start, $mem_start, (string) $pre_gate['status']);
             return;
         }
-        // 1) Connect FTP.
+        // ---------------------------------------------------------------------
+        // Stage 4: Connect to RSR FTP.
+        // ---------------------------------------------------------------------
         $t_ftp = microtime(true);
 
         $ftp = new FTPClientService(
@@ -210,9 +219,9 @@ final class RSRProductCronService extends AbstractTableCronService
             return;
         }
 
-        // -----------------------------
-        // FTP freshness gate (remote mtime/size)
-        // -----------------------------
+        // ---------------------------------------------------------------------
+        // Stage 5: Remote freshness gate using FTP mtime/size.
+        // ---------------------------------------------------------------------
         $t_meta = microtime(true);
         $last_applied_mtime = (int) get_option('fflhub_rsr_fulfillment_last_applied_mtime', 0);
         $meta_gate          = FTPFreshnessGate::evaluate_remote_meta(
@@ -235,7 +244,9 @@ final class RSRProductCronService extends AbstractTableCronService
             $this->finalize_run($t_start, $mem_start, (string) $meta_gate['status']);
             return;
         }
-        // 2) Download ZIP + extract TXT.
+        // ---------------------------------------------------------------------
+        // Stage 6: Download RSR ZIP and extract the product TXT.
+        // ---------------------------------------------------------------------
         $t_download = microtime(true);
 
         $ok = $ftp->download_zip_file(
@@ -276,7 +287,9 @@ final class RSRProductCronService extends AbstractTableCronService
             // keep going; importer may handle its own paths
         }
 
-        // 3) Import into staging.
+        // ---------------------------------------------------------------------
+        // Stage 7: Import product TXT into the inactive/staging table.
+        // ---------------------------------------------------------------------
         $t_import = microtime(true);
 
         $count = 0;
@@ -302,7 +315,9 @@ final class RSRProductCronService extends AbstractTableCronService
             return;
         }
 
-        // 4) Swap staging ↔ live.
+        // ---------------------------------------------------------------------
+        // Stage 8: Swap staging/live by flipping the live-table option.
+        // ---------------------------------------------------------------------
         $t_swap = microtime(true);
 
         $new_live = '';
@@ -321,6 +336,9 @@ final class RSRProductCronService extends AbstractTableCronService
             'new_live' => (string) $new_live,
         ]);
 
+        // ---------------------------------------------------------------------
+        // Stage 9: Persist success metadata and finalize the run.
+        // ---------------------------------------------------------------------
         update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'));
         update_option('fflhub_rsr_fulfillment_last_import_count', (int) $count);
         update_option('fflhub_rsr_fulfillment_last_swap', current_time('mysql'));

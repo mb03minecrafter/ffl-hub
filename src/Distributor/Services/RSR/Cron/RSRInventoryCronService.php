@@ -91,6 +91,9 @@ final class RSRInventoryCronService extends AbstractTableCronService
 
     public function run(): void
     {
+        // ---------------------------------------------------------------------
+        // Stage 0: Run setup, profiling baseline, and force-update detection.
+        // ---------------------------------------------------------------------
         $t_start   = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
@@ -113,7 +116,9 @@ final class RSRInventoryCronService extends AbstractTableCronService
             $this->log('FORCE_UPDATE enabled - bypassing cooldown/mtime gates');
         }
 
-        // 0) Get FTP credentials.
+        // ---------------------------------------------------------------------
+        // Stage 1: Load and validate RSR FTP credentials.
+        // ---------------------------------------------------------------------
         $t_creds = microtime(true);
         $creds   = $this->get_ftp_credentials();
 
@@ -134,7 +139,9 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $password = (string) $creds['password'];
         $use_ssl  = (bool) $creds['use_ssl'];
 
-        // Local path for the quantity file.
+        // ---------------------------------------------------------------------
+        // Stage 2: Prepare local quantity CSV path.
+        // ---------------------------------------------------------------------
         $uploads  = wp_upload_dir();
         $base_dir = trailingslashit($uploads['basedir']) . 'fflhub-rsr';
 
@@ -163,7 +170,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
         ]);
 
         // ---------------------------------------------------------------------
-        // FTP freshness gate (pre-connect throttle/cooldown)
+        // Stage 3: FTP freshness gate before connecting.
         // ---------------------------------------------------------------------
         $pre_gate = FTPFreshnessGate::evaluate_pre_connect(
             self::OPT_LAST_CHECKED_AT,
@@ -178,7 +185,9 @@ final class RSRInventoryCronService extends AbstractTableCronService
             $this->finalize_run($t_start, $mem_start, (string) $pre_gate['status']);
             return;
         }
-        // 1) Connect (and metadata gate).
+        // ---------------------------------------------------------------------
+        // Stage 4: Connect to RSR FTP.
+        // ---------------------------------------------------------------------
         $t_ftp = microtime(true);
 
         $ftp = new FTPClientService(
@@ -207,9 +216,9 @@ final class RSRInventoryCronService extends AbstractTableCronService
             'use_ssl' => $use_ssl ? 1 : 0,
         ]);
 
-        // -----------------------------
-        // FTP freshness gate (remote mtime/size)
-        // -----------------------------
+        // ---------------------------------------------------------------------
+        // Stage 5: Remote freshness gate using FTP mtime/size.
+        // ---------------------------------------------------------------------
         $t_meta = microtime(true);
         $last_applied_mtime = (int) get_option('fflhub_rsr_qty_last_applied_mtime', 0);
         $meta_gate          = FTPFreshnessGate::evaluate_remote_meta(
@@ -232,7 +241,9 @@ final class RSRInventoryCronService extends AbstractTableCronService
             $this->finalize_run($t_start, $mem_start, (string) $meta_gate['status']);
             return;
         }
-        // 2) Download the file via FTP.
+        // ---------------------------------------------------------------------
+        // Stage 6: Download the RSR quantity CSV.
+        // ---------------------------------------------------------------------
         $t_download = microtime(true);
         $csv_kb_before = file_exists($local_path) ? (int) round(((int) filesize($local_path)) / 1024) : 0;
 
@@ -258,7 +269,9 @@ final class RSRInventoryCronService extends AbstractTableCronService
         update_option('fflhub_rsr_inventory_last_download', current_time('mysql'));
         delete_option('fflhub_rsr_inventory_last_download_error');
 
-        // 3) Apply inventory updates to live table (LOAD DATA + JOIN).
+        // ---------------------------------------------------------------------
+        // Stage 7: Load quantity CSV and apply live/offers inventory updates.
+        // ---------------------------------------------------------------------
         $t_apply = microtime(true);
 
         $processed_rows = 0;
@@ -278,6 +291,9 @@ final class RSRInventoryCronService extends AbstractTableCronService
 
         $this->profile('Apply inventory updates', $t_apply, $apply_stats);
 
+        // ---------------------------------------------------------------------
+        // Stage 8: Persist success metadata and finalize the run.
+        // ---------------------------------------------------------------------
         update_option('fflhub_rsr_inventory_last_update', current_time('mysql'));
         update_option('fflhub_rsr_inventory_last_update_count', (int) $processed_rows);
 
