@@ -551,12 +551,7 @@ final class RSRInventoryCronService extends AbstractTableCronService
         $sql = $wpdb->prepare(
             "
                 UPDATE {$offers_table} o
-                INNER JOIN (
-                    SELECT
-                        rsr_stock_number,
-                        CAST(qty AS UNSIGNED) AS qty
-                    FROM {$stage_table}
-                ) S
+                INNER JOIN {$stage_table} S
                     ON S.rsr_stock_number = o.distributor_product_id
                 SET
                     " . implode(",\n                    ", $set) . "
