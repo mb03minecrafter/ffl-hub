@@ -310,14 +310,15 @@ final class RSRProductCronService extends AbstractTableCronService
             'imported_rows' => (int) $count,
             'new_live'      => (string) $new_live,
             'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
-            'distributor_offers_rsr_product_update_rows' => (int) ($offers_result['product_update_rows'] ?? 0),
+            'distributor_offers_rsr_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
+            'distributor_offers_rsr_updated_changed_rows' => (int) ($offers_result['updated_changed_offers'] ?? 0),
             'distributor_offers_rsr_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
             'remote_mtime'  => $remote_mtime > 0 ? $remote_mtime : null,
         ]);
     }
 
     /**
-     * Update existing normalized offer rows after the product table swap.
+     * Sync normalized offer rows for carried UPCs after the product table swap.
      *
      * @return array<string,mixed>
      */
@@ -327,7 +328,7 @@ final class RSRProductCronService extends AbstractTableCronService
         $offers_result = [];
 
         try {
-            $offers_result = RSROfferNormalizationService::update_existing_from_product_table($new_live);
+            $offers_result = RSROfferNormalizationService::normalize_from_product_table($new_live);
         } catch (\Throwable $e) {
             $offers_result = [
                 'ok' => false,
@@ -336,11 +337,16 @@ final class RSRProductCronService extends AbstractTableCronService
             ];
         }
 
-        $this->profile('Update existing distributor offers from new live table', $t_offers, [
+        $this->profile('Sync distributor offers from new live table', $t_offers, [
             'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
-            'matched_existing_rsr_offers' => (int) ($offers_result['matched_existing_rsr_offers'] ?? 0),
-            'distributor_offers_rsr_product_update_rows' => (int) ($offers_result['product_update_rows'] ?? 0),
-            'distributor_offers_rsr_product_update_ms' => (string) ($offers_result['product_update_elapsed_ms'] ?? '0.00'),
+            'active_product_state_total' => (int) ($offers_result['active_product_state_total'] ?? 0),
+            'matched_active_rsr_upcs' => (int) ($offers_result['matched_active_rsr_upcs'] ?? 0),
+            'distributor_offers_rsr_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
+            'distributor_offers_rsr_insert_missing_ms' => (string) ($offers_result['insert_missing_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_rsr_updated_changed_rows' => (int) ($offers_result['updated_changed_offers'] ?? 0),
+            'distributor_offers_rsr_update_changed_ms' => (string) ($offers_result['update_changed_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_rsr_upsert_rows' => (int) ($offers_result['upsert_mysql_affected_rows'] ?? 0),
+            'distributor_offers_rsr_upsert_ms' => (string) ($offers_result['upsert_elapsed_ms'] ?? '0.00'),
             'distributor_offers_rsr_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
             'distributor_offers_rsr_stale_cleanup_ms' => (string) ($offers_result['stale_cleanup_elapsed_ms'] ?? '0.00'),
             'ok' => !empty($offers_result['ok']) ? 1 : 0,
