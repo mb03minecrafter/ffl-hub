@@ -264,7 +264,11 @@ class LipseysProductImporterService
             @set_time_limit(0);
         }
 
+        $t_stage_table = microtime(true);
         $table_name = $this->table->get_staging_table_name();
+        $this->profile_debug('Resolve staging table', $t_stage_table, [
+            'stage_table' => $table_name,
+        ]);
 
         // Backtick columns defensively.
         $col_list = implode(', ', array_map(static function (string $c): string {
@@ -281,12 +285,19 @@ class LipseysProductImporterService
 
         try {
             // Always start clean staging (same as RSR).
+            $t_truncate = microtime(true);
             $this->table->truncate_staging();
+            $this->profile_debug('truncate_staging()', $t_truncate, [
+                'stage_table' => $table_name,
+            ]);
 
             $prepared    = $wpdb->prepare($sql, $file_path);
             $t_sql_start = microtime(true);
             $result      = $wpdb->query($prepared);
-            $t_sql_ms    = (microtime(true) - $t_sql_start) * 1000.0;
+            $this->profile_debug('LOAD DATA LOCAL INFILE', $t_sql_start, [
+                'stage_table' => $table_name,
+                'affected_rows' => is_numeric($result) ? (int) $result : 0,
+            ]);
 
             if ($result === false) {
                 $this->log_debug('[FFLHub][Lipseys Import][LOAD DATA] query failed: ' . $wpdb->last_error);
@@ -294,8 +305,20 @@ class LipseysProductImporterService
             }
 
             // Post-clean: remove rows with empty UPC.
-            $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $t_blank_cleanup = microtime(true);
+            $blank_deleted = $wpdb->query("DELETE FROM {$table_name} WHERE upc IS NULL OR upc = ''"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $this->profile_debug('Blank UPC cleanup', $t_blank_cleanup, [
+                'stage_table' => $table_name,
+                'deleted_rows' => is_numeric($blank_deleted) ? (int) $blank_deleted : 0,
+            ]);
+
+            $t_sig = microtime(true);
             $sig_approved_forced = SigDropshipApproval::apply_to_table('lipseys', $table_name);
+            $this->profile_debug('SIG dropship approval pass', $t_sig, [
+                'stage_table' => $table_name,
+                'forced_rows' => (int) $sig_approved_forced,
+            ]);
+
             if ($sig_approved_forced > 0) {
                 $this->log_debug(
                     sprintf('[FFLHub][Lipseys Import][LOAD DATA] sig_approved_forced=%d', $sig_approved_forced)
@@ -306,11 +329,20 @@ class LipseysProductImporterService
             return -1;
         }
 
+        $t_count = microtime(true);
         $rows = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->profile_debug('Stage row count', $t_count, [
+            'stage_table' => $table_name,
+            'rows' => $rows,
+        ]);
 
         if ($rows > 0) {
+            $t_options = microtime(true);
             update_option('fflhub_lipseys_fulfillment_last_import', current_time('mysql'));
             update_option('fflhub_lipseys_fulfillment_last_import_count', (int) $rows);
+            $this->profile_debug('Import option updates', $t_options, [
+                'rows' => $rows,
+            ]);
         }
 
         $t_total_ms = (microtime(true) - $t_start) * 1000.0;
@@ -455,6 +487,16 @@ class LipseysProductImporterService
     }
 
     // ------------------------------------------------------------
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function profile_debug(string $label, float $started, array $ctx = []): void
+    {
+        $ctx['elapsed_ms'] = number_format((microtime(true) - $started) * 1000.0, 2, '.', '');
+        $json = wp_json_encode($ctx, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $this->log_debug('PROFILE: ' . $label . ' ' . (is_string($json) ? $json : '{}'));
+    }
 
     private function log_debug(string $message): void
     {

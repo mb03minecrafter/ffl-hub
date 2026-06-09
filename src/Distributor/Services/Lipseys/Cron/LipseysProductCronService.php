@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
+use FFLHub\Distributor\Services\Lipseys\LipseysOfferNormalizationService;
 use FFLHub\Distributor\Services\Lipseys\LipseysProductImporterService;
 use FFLHub\Distributor\Services\Lipseys\LipseysProductParser;
 use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
@@ -83,6 +84,8 @@ final class LipseysProductCronService extends AbstractTableCronService
             $this->log('FORCE_UPDATE enabled - no freshness gate for Lipseys product cron');
         }
 
+        $t_credentials = microtime(true);
+
         // Catalog credentials:
         // - Prefer dedicated main-account creds for full catalog visibility.
         // - Fall back to dealer creds if main-account creds are not configured.
@@ -119,6 +122,10 @@ final class LipseysProductCronService extends AbstractTableCronService
             $this->finalize_run($t_start, $mem_start, 'ERROR');
             return;
         }
+
+        $this->profile('Credential/client setup', $t_credentials, [
+            'source' => $use_main_catalog ? 'main_account' : 'dealer_fallback',
+        ]);
 
         /**
          * ======================================================
@@ -289,15 +296,23 @@ final class LipseysProductCronService extends AbstractTableCronService
                 'new_live' => (string) $new_live,
             ]);
 
-            // 8) Mark success (keep same option names as old pipeline)
+            // 8) Update existing normalized offer fields from the newly live Lipsey's table.
+            $offers_result = $this->update_distributor_offers_from_new_live_table($new_live);
+
+            // 9) Mark success (keep same option names as old pipeline)
+            $t_options = microtime(true);
             update_option('fflhub_lipseys_fulfillment_last_refresh', current_time('mysql'));
             update_option('fflhub_lipseys_fulfillment_last_refresh_count', (int) $imported);
             update_option('fflhub_lipseys_fulfillment_last_swap', current_time('mysql'));
+            $this->profile('Success option updates', $t_options);
 
             $this->finalize_run($t_start, $mem_start, 'SUCCESS (STREAMING)', [
                 'rows_written'    => (int) ($result['rows_written'] ?? 0),
                 'imported_rows'   => (int) $imported,
                 'new_live'        => (string) $new_live,
+                'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
+                'distributor_offers_lipseys_product_update_rows' => (int) ($offers_result['product_update_rows'] ?? 0),
+                'distributor_offers_lipseys_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
                 'tsv_path'        => (string) ($result['tsv_path'] ?? $tsv_path),
                 'items_seen'      => (int) ($result['items_seen'] ?? 0),
                 'items_skipped'   => (int) ($result['items_skipped'] ?? 0),
@@ -310,6 +325,47 @@ final class LipseysProductCronService extends AbstractTableCronService
     }
 
     // ---------------------------------------------
+
+    /**
+     * Update existing normalized offer rows after the product table swap.
+     *
+     * @return array<string,mixed>
+     */
+    private function update_distributor_offers_from_new_live_table(string $new_live): array
+    {
+        $t_offers = microtime(true);
+        $offers_result = [];
+
+        try {
+            $offers_result = LipseysOfferNormalizationService::update_existing_from_product_table($new_live);
+        } catch (\Throwable $e) {
+            $offers_result = [
+                'ok' => false,
+                'source_live_table' => (string) $new_live,
+                'errors' => [$e->getMessage()],
+            ];
+        }
+
+        $this->profile('Update existing distributor offers from new live table', $t_offers, [
+            'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
+            'matched_existing_lipseys_offers' => (int) ($offers_result['matched_existing_lipseys_offers'] ?? 0),
+            'distributor_offers_lipseys_product_update_rows' => (int) ($offers_result['product_update_rows'] ?? 0),
+            'distributor_offers_lipseys_product_update_ms' => (string) ($offers_result['product_update_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_lipseys_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
+            'distributor_offers_lipseys_stale_cleanup_ms' => (string) ($offers_result['stale_cleanup_elapsed_ms'] ?? '0.00'),
+            'ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+        ]);
+
+        if (empty($offers_result['ok'])) {
+            $this->log('ERROR: Lipsey\'s distributor offers update failed after product swap', [
+                'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
+                'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+            ]);
+        }
+
+        return $offers_result;
+    }
 
     private function cron_logger(): CronRunLogger
     {
@@ -334,9 +390,12 @@ final class LipseysProductCronService extends AbstractTableCronService
         return number_format(is_numeric($value) ? (float) $value : 0.0, 2, '.', '');
     }
 
-    private function finalize_run(float $t_start, int $mem_start, string $status): void
+    /**
+     * @param array<string,mixed> $ctx
+     */
+    private function finalize_run(float $t_start, int $mem_start, string $status, array $ctx = []): void
     {
-        $this->cron_logger()->finishWithTotalProfile($t_start, $mem_start, $status);
+        $this->cron_logger()->finishWithTotalProfile($t_start, $mem_start, $status, $ctx);
     }
 
 }
