@@ -5,8 +5,13 @@ namespace FFLHub\Admin\Pages;
 
 use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Distributor\Services\Lipseys\LipseysOfferNormalizationService;
+use FFLHub\Distributor\Services\Lipseys\Tables\LipseysProductTableSchema;
 use FFLHub\Distributor\Services\RSR\RSROfferNormalizationService;
+use FFLHub\Distributor\Services\RSR\Tables\RSRProductTableSchema;
+use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
+use FFLHub\Distributor\Services\Tables\ProductSchemaInterface;
 use FFLHub\Distributor\Services\Zanders\ZandersOfferNormalizationService;
+use FFLHub\Distributor\Services\Zanders\Tables\ZandersProductTableSchema;
 use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
@@ -96,13 +101,19 @@ final class ProductStatePage
             $result = ProductStateStore::backfill_from_product_meta();
             $result['type'] = self::ACTION_BACKFILL;
         } elseif ($action === self::ACTION_NORMALIZE_ZANDERS) {
-            $result = ZandersOfferNormalizationService::normalize_from_product_table();
+            $result = ZandersOfferNormalizationService::normalize_from_product_table(
+                $this->resolve_live_product_table(new ZandersProductTableSchema(), 'fflhub_zanders_fulfillment_last_swap')
+            );
             $result['type'] = self::ACTION_NORMALIZE_ZANDERS;
         } elseif ($action === self::ACTION_NORMALIZE_RSR) {
-            $result = RSROfferNormalizationService::normalize_from_product_table();
+            $result = RSROfferNormalizationService::normalize_from_product_table(
+                $this->resolve_live_product_table(new RSRProductTableSchema(), 'fflhub_rsr_fulfillment_last_swap')
+            );
             $result['type'] = self::ACTION_NORMALIZE_RSR;
         } else {
-            $result = LipseysOfferNormalizationService::normalize_from_product_table();
+            $result = LipseysOfferNormalizationService::normalize_from_product_table(
+                $this->resolve_live_product_table(new LipseysProductTableSchema(), 'fflhub_lipseys_fulfillment_last_swap')
+            );
             $result['type'] = self::ACTION_NORMALIZE_LIPSEYS;
         }
 
@@ -110,6 +121,11 @@ final class ProductStatePage
 
         wp_safe_redirect(add_query_arg(['page' => self::PAGE_SLUG, 'ran' => $action], admin_url('admin.php')));
         exit;
+    }
+
+    private function resolve_live_product_table(ProductSchemaInterface $schema, string $swap_timestamp_option): string
+    {
+        return (new DoubleBufferedProductTable($schema, $swap_timestamp_option))->get_live_table_name();
     }
 
     private function render_backfill_card(): void

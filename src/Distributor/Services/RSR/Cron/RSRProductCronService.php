@@ -292,7 +292,7 @@ final class RSRProductCronService extends AbstractTableCronService
         // ---------------------------------------------------------------------
         // Stage 7: Update existing normalized offer fields from the newly live RSR table.
         // ---------------------------------------------------------------------
-        $offers_result = $this->update_distributor_offers_from_new_live_table($new_live);
+        $offers_result = $this->update_distributor_offers_from_new_live_table();
 
         // ---------------------------------------------------------------------
         // Stage 8: Persist success metadata and finalize the run.
@@ -322,23 +322,24 @@ final class RSRProductCronService extends AbstractTableCronService
      *
      * @return array<string,mixed>
      */
-    private function update_distributor_offers_from_new_live_table(string $new_live): array
+    private function update_distributor_offers_from_new_live_table(): array
     {
         $t_offers = microtime(true);
+        $live_table = $this->table->get_live_table_name();
         $offers_result = [];
 
         try {
-            $offers_result = RSROfferNormalizationService::normalize_from_product_table($new_live);
+            $offers_result = RSROfferNormalizationService::normalize_from_product_table($live_table);
         } catch (\Throwable $e) {
             $offers_result = [
                 'ok' => false,
-                'source_live_table' => (string) $new_live,
+                'source_live_table' => (string) $live_table,
                 'errors' => [$e->getMessage()],
             ];
         }
 
         $this->profile('Sync distributor offers from new live table', $t_offers, [
-            'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
+            'source_live_table' => (string) ($offers_result['source_live_table'] ?? $live_table),
             'active_product_state_total' => (int) ($offers_result['active_product_state_total'] ?? 0),
             'matched_active_rsr_upcs' => (int) ($offers_result['matched_active_rsr_upcs'] ?? 0),
             'distributor_offers_rsr_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
@@ -355,7 +356,7 @@ final class RSRProductCronService extends AbstractTableCronService
 
         if (empty($offers_result['ok'])) {
             $this->log('ERROR: RSR distributor offers update failed after product swap', [
-                'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
+                'source_live_table' => (string) ($offers_result['source_live_table'] ?? $live_table),
                 'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
             ]);
         }

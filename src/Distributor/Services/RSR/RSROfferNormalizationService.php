@@ -4,7 +4,6 @@ declare(strict_types=1);
 namespace FFLHub\Distributor\Services\RSR;
 
 use FFLHub\Distributor\Offers\DistributorOffersStore;
-use FFLHub\Distributor\Services\RSR\Tables\RSRProductTableSchema;
 use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
@@ -80,7 +79,7 @@ final class RSROfferNormalizationService
      *
      * @return array<string,mixed>
      */
-    public static function normalize_from_product_table(?string $source_live_table = null): array
+    public static function normalize_from_product_table(string $source_live_table): array
     {
         global $wpdb;
 
@@ -111,9 +110,9 @@ final class RSROfferNormalizationService
         DistributorOffersStore::ensure_schema();
         ProductStateStore::ensure_schema();
 
-        $live_table = self::resolve_live_table($source_live_table);
+        $live_table = trim($source_live_table);
         if ($live_table === '') {
-            $result['errors'][] = 'Could not resolve a valid live RSR product table.';
+            $result['errors'][] = 'A valid live RSR product table is required.';
             return self::finish_result($result, $started);
         }
 
@@ -379,37 +378,6 @@ final class RSROfferNormalizationService
         $result['ok'] = true;
 
         return self::finish_result($result, $started);
-    }
-
-    private static function resolve_live_table(?string $requested): string
-    {
-        global $wpdb;
-
-        $v1 = (string) ($wpdb->prefix . RSRProductTableSchema::BASE_TABLE_KEY . '_v1');
-        $v2 = (string) ($wpdb->prefix . RSRProductTableSchema::BASE_TABLE_KEY . '_v2');
-        $stored = $requested;
-
-        if ($stored === null || $stored === '') {
-            $stored = get_option(RSRProductTableSchema::LIVE_TABLE_OPTION, '');
-        }
-
-        if ($stored === $v1 || $stored === $v2) {
-            return (string) $stored;
-        }
-
-        if ($stored === 'v1') {
-            return $v1;
-        }
-
-        if ($stored === 'v2') {
-            return $v2;
-        }
-
-        if ($stored === '' || $stored === false || $stored === null) {
-            return $v1;
-        }
-
-        return '';
     }
 
     private static function table_exists_by_name(string $table): bool
