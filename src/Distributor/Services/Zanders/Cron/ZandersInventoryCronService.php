@@ -426,6 +426,23 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                     WHEN {$sig_approval_where_sql} THEN ''
                     ELSE L.dropship_block_reason
                 END
+            WHERE
+                NOT (L.inventory_quantity <=> IFNULL(CAST(S.available AS CHAR), ''))
+                OR NOT (L.distributor_price <=> IFNULL(CAST(S.price1 AS CHAR), ''))
+                OR NOT (
+                    L.shipping_cost <=>
+                    CASE
+                        WHEN S.price1 >= 500 THEN '0'
+                        ELSE '15'
+                    END
+                )
+                OR (
+                    {$sig_approval_where_sql}
+                    AND (
+                        NOT (L.dropship_enabled <=> 1)
+                        OR NOT (L.dropship_block_reason <=> '')
+                    )
+                )
         ";
 
         $combined_updated = $wpdb->query($combined_update_sql);
@@ -516,6 +533,19 @@ final class ZandersInventoryCronService extends AbstractTableCronService
             $set[] = 'o.inventory_normalized_at = NOW()';
         }
 
+        $sig_offer_changed_sql = $has_dropship_block_reason
+            ? "(
+                {$sig_offer_where_sql}
+                AND (
+                    NOT (o.dropship_enabled <=> 1)
+                    OR NOT (o.dropship_block_reason <=> '')
+                )
+            )"
+            : "(
+                {$sig_offer_where_sql}
+                AND NOT (o.dropship_enabled <=> 1)
+            )";
+
         $sql = $wpdb->prepare(
             "
                 UPDATE {$offers_table} o
@@ -524,6 +554,11 @@ final class ZandersInventoryCronService extends AbstractTableCronService
                 SET
                     " . implode(",\n                    ", $set) . "
                 WHERE o.distributor_id = %s
+                    AND (
+                        NOT (o.qty <=> IFNULL(S.available, 0))
+                        OR NOT (o.dealer_price <=> S.price1)
+                        OR {$sig_offer_changed_sql}
+                    )
             ",
             'zanders'
         );
