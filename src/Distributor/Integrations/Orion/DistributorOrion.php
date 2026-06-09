@@ -942,6 +942,8 @@ final class DistributorOrion extends DistributorBase
             }
 
             $this->append_values_for_keys_recursive($row, [
+                'tracking_identifier',
+                'trackingIdentifier',
                 'tracking_number',
                 'tracking_numbers',
                 'tracking',
@@ -959,10 +961,15 @@ final class DistributorOrion extends DistributorBase
 
             if ($shipping_service === null) {
                 $shipping_service = $this->first_non_empty_row_value($row, [
+                    'shipping_carrier',
+                    'shippingCarrier',
+                    'shipping_carrier_code',
+                    'shippingCarrierCode',
                     'shipping_service',
                     'shipping_method',
                     'shippingMethod',
                     'carrier',
+                    'carrier_code',
                     'carrier_name',
                     'shipper',
                     'service',
