@@ -2,8 +2,6 @@
 
 namespace FFLHub\Distributor\Services\Cron;
 
-use FFLHub\Util\DebugLogUtil;
-
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -67,7 +65,8 @@ abstract class AbstractCronService implements CronServiceInterface
      */
     final public function run_with_profile(): void
     {
-        $started = microtime(true);
+        $logger = CronRunLogger::create(self::PROFILER_DEBUG_CONST, self::PROFILER_LOG_PREFIX);
+        $started = $logger->now();
         $hook = (string) $this->get_cron_hook_name();
         $group = (string) $this->get_action_group();
         $class = static::class;
@@ -75,7 +74,7 @@ abstract class AbstractCronService implements CronServiceInterface
         $error = '';
         $start_memory = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
 
-        DebugLogUtil::log_ctx(self::PROFILER_DEBUG_CONST, self::PROFILER_LOG_PREFIX, 'START', [
+        $logger->log('START', [
             'hook' => $hook,
             'group' => $group,
             'class' => $class,
@@ -90,12 +89,12 @@ abstract class AbstractCronService implements CronServiceInterface
             throw $e;
         } finally {
             $end_memory = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
-            DebugLogUtil::log_ctx(self::PROFILER_DEBUG_CONST, self::PROFILER_LOG_PREFIX, 'END', [
+            $logger->log('END', [
                 'hook' => $hook,
                 'group' => $group,
                 'class' => $class,
                 'status' => $status,
-                'elapsed_ms' => number_format((microtime(true) - $started) * 1000.0, 2, '.', ''),
+                'elapsed_ms' => $logger->formatElapsedMs($started),
                 'memory_kb' => $end_memory > 0 ? (int) round($end_memory / 1024) : 0,
                 'memory_delta_kb' => ($start_memory > 0 && $end_memory > 0)
                     ? (int) round(($end_memory - $start_memory) / 1024)

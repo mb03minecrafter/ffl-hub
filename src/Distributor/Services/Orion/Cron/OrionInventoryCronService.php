@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
+use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\Orion\API\OrionApiClient;
 use FFLHub\Distributor\Services\Orion\OrionProductImporterService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
@@ -336,14 +337,17 @@ final class OrionInventoryCronService extends AbstractTableCronService
     /**
      * @param array<string,mixed> $ctx
      */
+    private function cron_logger(): CronRunLogger
+    {
+        return CronRunLogger::create(self::DEBUG_FLAG, self::LOG_PREFIX);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
     private function log(string $message, array $ctx = []): void
     {
-        if (empty($ctx)) {
-            DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $message);
-            return;
-        }
-
-        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $message, $ctx);
+        $this->cron_logger()->log($message, $ctx);
     }
 
     /**
@@ -351,20 +355,17 @@ final class OrionInventoryCronService extends AbstractTableCronService
      */
     private function profile(string $label, float $t0, array $ctx = []): void
     {
-        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000.0, 2, '.', '');
-        $ctx['memory_kb'] = $this->memory_kb();
-        $ctx['memory_peak_kb'] = $this->memory_peak_kb();
-        $this->log('PROFILE: ' . $label, $ctx);
+        $this->cron_logger()->profile($label, $t0, $ctx, true, true);
     }
 
     private function memory_kb(): int
     {
-        return function_exists('memory_get_usage') ? (int) round(memory_get_usage(true) / 1024) : 0;
+        return $this->cron_logger()->memoryKb();
     }
 
     private function memory_peak_kb(): int
     {
-        return function_exists('memory_get_peak_usage') ? (int) round(memory_get_peak_usage(true) / 1024) : 0;
+        return $this->cron_logger()->memoryPeakKb();
     }
 
     /**
@@ -372,17 +373,6 @@ final class OrionInventoryCronService extends AbstractTableCronService
      */
     private function finalize_run(float $t_start, int $mem_start, string $status, array $ctx = []): void
     {
-        $ctx['status'] = $status;
-        $ctx['elapsed_ms'] = number_format((microtime(true) - $t_start) * 1000.0, 2, '.', '');
-
-        if ($mem_start > 0 && function_exists('memory_get_usage')) {
-            $mem_end = (int) memory_get_usage(true);
-            $ctx['memory_start_kb'] = (int) round($mem_start / 1024);
-            $ctx['memory_end_kb'] = (int) round($mem_end / 1024);
-            $ctx['memory_delta_kb'] = (int) round(($mem_end - $mem_start) / 1024);
-            $ctx['memory_peak_kb'] = $this->memory_peak_kb();
-        }
-
-        $this->log('---- RUN END ----', $ctx);
+        $this->cron_logger()->finishWithContextSummary($t_start, $mem_start, $status, $ctx, true);
     }
 }

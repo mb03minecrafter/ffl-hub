@@ -7,13 +7,13 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
+use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
 use FFLHub\Distributor\Services\RSR\RSROfferNormalizationService;
 use FFLHub\Distributor\Services\RSR\RSRProductImporterService;
 use FFLHub\Settings\Options;
-use FFLHub\Util\DebugLogUtil;
 
 /**
  * WP-Cron job to regularly download the RSR product catalog file
@@ -442,51 +442,27 @@ final class RSRProductCronService extends AbstractTableCronService
     // Debug / profiling helpers (DebugLogUtil)
     // --------------------------------------------------
 
+    private function cron_logger(): CronRunLogger
+    {
+        return CronRunLogger::create(self::DEBUG_FLAG, self::LOG_PREFIX);
+    }
+
     /** @param array<string,mixed> $ctx */
     private function log(string $msg, array $ctx = []): void
     {
-        if (empty($ctx)) {
-            DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $msg);
-            return;
-        }
-
-        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $msg, $ctx);
+        $this->cron_logger()->log($msg, $ctx);
     }
 
     /** @param array<string,mixed> $ctx */
     private function profile(string $label, float $t0, array $ctx = []): void
     {
-        $elapsed_ms = (microtime(true) - $t0) * 1000.0;
-
-        $ctx = array_merge($ctx, [
-            'elapsed_ms' => number_format($elapsed_ms, 2, '.', ''),
-        ]);
-
-        $this->log("PROFILE: {$label}", $ctx);
+        $this->cron_logger()->profile($label, $t0, $ctx);
     }
 
     /** @param array<string,mixed> $ctx */
     private function finalize_run(float $t_start, int $mem_start, string $status, array $ctx = []): void
     {
-        $this->profile('Total cron run', $t_start, [
-            'status' => (string) $status,
-        ]);
-
-        $mem_end = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
-
-        if ($mem_start > 0 && $mem_end > 0) {
-            $this->log('Memory usage summary', [
-                'start_kb' => (int) round($mem_start / 1024),
-                'end_kb'   => (int) round($mem_end / 1024),
-                'delta_kb' => (int) round(($mem_end - $mem_start) / 1024),
-            ]);
-        }
-
-        if (!empty($ctx)) {
-            $this->log("---- RUN END ({$status}) ----", $ctx);
-        } else {
-            $this->log("---- RUN END ({$status}) ----");
-        }
+        $this->cron_logger()->finishWithTotalProfile($t_start, $mem_start, $status, $ctx);
     }
 
     /**
@@ -495,7 +471,7 @@ final class RSRProductCronService extends AbstractTableCronService
      */
     private function log_debug(string $message): void
     {
-        DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $message);
+        $this->log($message);
     }
 
     /**
@@ -504,17 +480,7 @@ final class RSRProductCronService extends AbstractTableCronService
      */
     private function log_memory_summary(int $mem_start): void
     {
-        $mem_end = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
-        if ($mem_start > 0 && $mem_end > 0) {
-            $this->log_debug(
-                sprintf(
-                    "[FFLHub][RSR Fulfillment Cron] Memory usage summary: start=%d KB, end=%d KB, delta=%+d KB",
-                    (int) round($mem_start / 1024),
-                    (int) round($mem_end / 1024),
-                    (int) round(($mem_end - $mem_start) / 1024)
-                )
-            );
-        }
+        $this->cron_logger()->logMemorySummary($mem_start);
     }
 
 }

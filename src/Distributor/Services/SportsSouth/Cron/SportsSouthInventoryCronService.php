@@ -7,12 +7,12 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
+use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductImporterService;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductParser;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
-use FFLHub\Util\DebugLogUtil;
 
 final class SportsSouthInventoryCronService extends AbstractTableCronService
 {
@@ -382,14 +382,17 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
     /**
      * @param array<string,mixed> $ctx
      */
+    private function cron_logger(): CronRunLogger
+    {
+        return CronRunLogger::create(self::DEBUG_FLAG, self::LOG_PREFIX);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
     private function log(string $message, array $ctx = []): void
     {
-        if (empty($ctx)) {
-            DebugLogUtil::log_if(true, self::LOG_PREFIX, $message, self::DEBUG_FLAG);
-            return;
-        }
-
-        DebugLogUtil::log_if_ctx(true, self::LOG_PREFIX, $message, $ctx, self::DEBUG_FLAG);
+        $this->cron_logger()->logAlways($message, $ctx);
     }
 
     /**
@@ -397,7 +400,6 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
      */
     private function profile(string $label, float $t0, array $ctx = []): void
     {
-        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000.0, 2, '.', '');
-        $this->log('PROFILE: ' . $label, $ctx);
+        $this->cron_logger()->profileAlways($label, $t0, $ctx);
     }
 }

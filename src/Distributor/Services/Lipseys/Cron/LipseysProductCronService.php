@@ -7,12 +7,12 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
+use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\Lipseys\LipseysProductImporterService;
 use FFLHub\Distributor\Services\Lipseys\LipseysProductParser;
 use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
-use FFLHub\Util\DebugLogUtil;
 
 final class LipseysProductCronService extends AbstractTableCronService
 {
@@ -311,17 +311,19 @@ final class LipseysProductCronService extends AbstractTableCronService
 
     // ---------------------------------------------
 
+    private function cron_logger(): CronRunLogger
+    {
+        return CronRunLogger::create(self::DEBUG_FLAG, self::LOG_PREFIX);
+    }
+
     private function log(string $msg, array $ctx = []): void
     {
-        empty($ctx)
-            ? DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $msg)
-            : DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $msg, $ctx);
+        $this->cron_logger()->log($msg, $ctx);
     }
 
     private function profile(string $label, float $t0, array $ctx = []): void
     {
-        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000, 2);
-        $this->log("PROFILE: {$label}", $ctx);
+        $this->cron_logger()->profile($label, $t0, $ctx);
     }
 
     /**
@@ -334,18 +336,7 @@ final class LipseysProductCronService extends AbstractTableCronService
 
     private function finalize_run(float $t_start, int $mem_start, string $status): void
     {
-        $this->profile('Total cron run', $t_start, ['status' => $status]);
-
-        $mem_end = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
-        if ($mem_start && $mem_end) {
-            $this->log('Memory usage summary', [
-                'start_kb' => (int) round($mem_start / 1024),
-                'end_kb'   => (int) round($mem_end / 1024),
-                'delta_kb' => (int) round(($mem_end - $mem_start) / 1024),
-            ]);
-        }
-
-        $this->log("---- RUN END ({$status}) ----");
+        $this->cron_logger()->finishWithTotalProfile($t_start, $mem_start, $status);
     }
 
 }

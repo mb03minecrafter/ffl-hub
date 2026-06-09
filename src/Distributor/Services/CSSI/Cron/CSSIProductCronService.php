@@ -7,11 +7,11 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
+use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\CSSI\API\CSSIClient;
 use FFLHub\Distributor\Services\CSSI\CSSIProductImporterService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
-use FFLHub\Util\DebugLogUtil;
 
 /**
  * Minute worker for CSSI full catalog refresh.
@@ -425,14 +425,17 @@ final class CSSIProductCronService extends AbstractTableCronService
     /**
      * @param array<string,mixed> $ctx
      */
+    private function cron_logger(): CronRunLogger
+    {
+        return CronRunLogger::create(self::DEBUG_FLAG, self::LOG_PREFIX);
+    }
+
+    /**
+     * @param array<string,mixed> $ctx
+     */
     private function log(string $message, array $ctx = []): void
     {
-        if (empty($ctx)) {
-            DebugLogUtil::log(self::DEBUG_FLAG, self::LOG_PREFIX, $message);
-            return;
-        }
-
-        DebugLogUtil::log_ctx(self::DEBUG_FLAG, self::LOG_PREFIX, $message, $ctx);
+        $this->cron_logger()->log($message, $ctx);
     }
 
     /**
@@ -440,8 +443,7 @@ final class CSSIProductCronService extends AbstractTableCronService
      */
     private function profile(string $label, float $t0, array $ctx = []): void
     {
-        $ctx['elapsed_ms'] = number_format((microtime(true) - $t0) * 1000, 2);
-        $this->log('PROFILE: ' . $label, $ctx);
+        $this->cron_logger()->profile($label, $t0, $ctx);
     }
 
     /**
@@ -449,18 +451,6 @@ final class CSSIProductCronService extends AbstractTableCronService
      */
     private function finalize_run(float $tStart, int $memStart, string $status, array $ctx = []): void
     {
-        $ctx['status'] = $status;
-        $this->profile('Total cron run', $tStart, $ctx);
-
-        $memEnd = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
-        if ($memStart > 0 && $memEnd > 0) {
-            $this->log('Memory usage summary', [
-                'start_kb' => (int) round($memStart / 1024),
-                'end_kb' => (int) round($memEnd / 1024),
-                'delta_kb' => (int) round(($memEnd - $memStart) / 1024),
-            ]);
-        }
-
-        $this->log('---- RUN END (' . $status . ') ----');
+        $this->cron_logger()->finishWithProfileAndEndMessage($tStart, $memStart, $status, $ctx);
     }
 }
