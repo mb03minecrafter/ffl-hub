@@ -10,6 +10,7 @@ use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\FTP\FTPClientService;
 use FFLHub\Distributor\Services\FTP\FTPFreshnessGate;
+use FFLHub\Distributor\Services\RSR\RSROfferNormalizationService;
 use FFLHub\Distributor\Services\RSR\RSRProductImporterService;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -337,7 +338,41 @@ final class RSRProductCronService extends AbstractTableCronService
         ]);
 
         // ---------------------------------------------------------------------
-        // Stage 9: Persist success metadata and finalize the run.
+        // Stage 9: Update existing normalized offer fields from the newly live RSR table.
+        // ---------------------------------------------------------------------
+        $t_offers = microtime(true);
+        $offers_result = [];
+
+        try {
+            $offers_result = RSROfferNormalizationService::update_existing_from_product_table($new_live);
+        } catch (\Throwable $e) {
+            $offers_result = [
+                'ok' => false,
+                'source_live_table' => (string) $new_live,
+                'errors' => [$e->getMessage()],
+            ];
+        }
+
+        $this->profile('Update existing distributor offers from new live table', $t_offers, [
+            'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
+            'matched_existing_rsr_offers' => (int) ($offers_result['matched_existing_rsr_offers'] ?? 0),
+            'distributor_offers_rsr_product_update_rows' => (int) ($offers_result['product_update_rows'] ?? 0),
+            'distributor_offers_rsr_product_update_ms' => (string) ($offers_result['product_update_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_rsr_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
+            'distributor_offers_rsr_stale_cleanup_ms' => (string) ($offers_result['stale_cleanup_elapsed_ms'] ?? '0.00'),
+            'ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+        ]);
+
+        if (empty($offers_result['ok'])) {
+            $this->log('ERROR: RSR distributor offers update failed after product swap', [
+                'source_live_table' => (string) ($offers_result['source_live_table'] ?? $new_live),
+                'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+            ]);
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 10: Persist success metadata and finalize the run.
         // ---------------------------------------------------------------------
         update_option('fflhub_rsr_fulfillment_last_import', current_time('mysql'));
         update_option('fflhub_rsr_fulfillment_last_import_count', (int) $count);
@@ -351,6 +386,9 @@ final class RSRProductCronService extends AbstractTableCronService
         $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
             'imported_rows' => (int) $count,
             'new_live'      => (string) $new_live,
+            'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'distributor_offers_rsr_product_update_rows' => (int) ($offers_result['product_update_rows'] ?? 0),
+            'distributor_offers_rsr_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
             'remote_mtime'  => $remote_mtime > 0 ? $remote_mtime : null,
         ]);
     }
