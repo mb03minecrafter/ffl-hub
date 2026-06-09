@@ -461,9 +461,8 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 FROM {$stage_table} S
                 INNER JOIN {$live_table} L
                     ON L.rsr_stock_number = S.rsr_stock_number
-                WHERE NOT (
-                    CAST(NULLIF(L.inventory_quantity, '') AS UNSIGNED) <=> S.qty
-                )
+                WHERE L.inventory_quantity IS NULL
+                    OR L.inventory_quantity != CAST(S.qty AS CHAR)
             ");
         }
 
@@ -479,9 +478,8 @@ final class RSRInventoryCronService extends AbstractTableCronService
         INNER JOIN {$stage_table} S
             ON S.rsr_stock_number = L.rsr_stock_number
         SET L.inventory_quantity = CAST(S.qty AS CHAR)
-        WHERE NOT (
-            CAST(NULLIF(L.inventory_quantity, '') AS UNSIGNED) <=> S.qty
-        )
+        WHERE L.inventory_quantity IS NULL
+            OR L.inventory_quantity != CAST(S.qty AS CHAR)
         ";
 
         $join_updated = $wpdb->query($join_sql);
@@ -560,6 +558,12 @@ final class RSRInventoryCronService extends AbstractTableCronService
                 SET
                     " . implode(",\n                    ", $set) . "
                 WHERE o.distributor_id = %s
+                    AND (
+                        o.qty IS NULL
+                        OR o.qty != S.qty
+                        OR o.stock_status IS NULL
+                        OR o.stock_status != CASE WHEN S.qty > 0 THEN 'instock' ELSE 'outofstock' END
+                    )
             ",
             'rsr'
         );
