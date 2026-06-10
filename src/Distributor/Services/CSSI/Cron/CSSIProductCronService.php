@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\CSSI\API\CSSIClient;
+use FFLHub\Distributor\Services\CSSI\CSSIOfferNormalizationService;
 use FFLHub\Distributor\Services\CSSI\CSSIProductImporterService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
@@ -305,6 +306,8 @@ final class CSSIProductCronService extends AbstractTableCronService
         }
         $this->profile('swap staging/live', $tSwap, ['new_live' => $newLive]);
 
+        $offersResult = $this->update_distributor_offers_from_new_live_table();
+
         update_option('fflhub_cssi_fulfillment_last_import', current_time('mysql'));
         update_option('fflhub_cssi_fulfillment_last_import_count', (int) $imported);
         update_option('fflhub_cssi_fulfillment_last_swap', current_time('mysql'));
@@ -323,6 +326,10 @@ final class CSSIProductCronService extends AbstractTableCronService
             'imported_rows' => $imported,
             'last_success_ts' => $now,
             'new_live' => $newLive,
+            'distributor_offers_ok' => !empty($offersResult['ok']) ? 1 : 0,
+            'distributor_offers_cssi_inserted_missing_rows' => (int) ($offersResult['inserted_missing_offers'] ?? 0),
+            'distributor_offers_cssi_updated_changed_rows' => (int) ($offersResult['updated_changed_offers'] ?? 0),
+            'distributor_offers_cssi_stale_disabled_rows' => (int) ($offersResult['stale_disabled'] ?? 0),
         ]);
 
         $this->finalize_run($tStart, $memStart, 'SUCCESS', [
@@ -330,7 +337,58 @@ final class CSSIProductCronService extends AbstractTableCronService
             'download_bytes' => $downloadBytes,
             'imported_rows' => $imported,
             'last_success_ts' => $now,
+            'distributor_offers_ok' => !empty($offersResult['ok']) ? 1 : 0,
+            'distributor_offers_cssi_inserted_missing_rows' => (int) ($offersResult['inserted_missing_offers'] ?? 0),
+            'distributor_offers_cssi_updated_changed_rows' => (int) ($offersResult['updated_changed_offers'] ?? 0),
+            'distributor_offers_cssi_stale_disabled_rows' => (int) ($offersResult['stale_disabled'] ?? 0),
         ]);
+    }
+
+    /**
+     * Sync normalized offer rows for carried UPCs after the product table swap.
+     *
+     * @return array<string,mixed>
+     */
+    private function update_distributor_offers_from_new_live_table(): array
+    {
+        $tOffers = microtime(true);
+        $liveTable = $this->table->get_live_table_name();
+        $offersResult = [];
+
+        try {
+            $offersResult = CSSIOfferNormalizationService::normalize_from_product_table($liveTable);
+        } catch (\Throwable $e) {
+            $offersResult = [
+                'ok' => false,
+                'source_live_table' => (string) $liveTable,
+                'errors' => [$e->getMessage()],
+            ];
+        }
+
+        $this->profile('Sync distributor offers from new live table', $tOffers, [
+            'source_live_table' => (string) ($offersResult['source_live_table'] ?? $liveTable),
+            'active_product_state_total' => (int) ($offersResult['active_product_state_total'] ?? 0),
+            'matched_active_cssi_upcs' => (int) ($offersResult['matched_active_cssi_upcs'] ?? 0),
+            'distributor_offers_cssi_inserted_missing_rows' => (int) ($offersResult['inserted_missing_offers'] ?? 0),
+            'distributor_offers_cssi_insert_missing_ms' => (string) ($offersResult['insert_missing_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_cssi_updated_changed_rows' => (int) ($offersResult['updated_changed_offers'] ?? 0),
+            'distributor_offers_cssi_update_changed_ms' => (string) ($offersResult['update_changed_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_cssi_upsert_rows' => (int) ($offersResult['upsert_mysql_affected_rows'] ?? 0),
+            'distributor_offers_cssi_upsert_ms' => (string) ($offersResult['upsert_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_cssi_stale_disabled_rows' => (int) ($offersResult['stale_disabled'] ?? 0),
+            'distributor_offers_cssi_stale_cleanup_ms' => (string) ($offersResult['stale_cleanup_elapsed_ms'] ?? '0.00'),
+            'ok' => !empty($offersResult['ok']) ? 1 : 0,
+            'errors' => !empty($offersResult['errors']) ? (array) $offersResult['errors'] : [],
+        ]);
+
+        if (empty($offersResult['ok'])) {
+            $this->log('ERROR: CSSI distributor offers update failed after product swap', [
+                'source_live_table' => (string) ($offersResult['source_live_table'] ?? $liveTable),
+                'errors' => !empty($offersResult['errors']) ? (array) $offersResult['errors'] : [],
+            ]);
+        }
+
+        return $offersResult;
     }
 
     private function extract_cssi_wait_seconds(string $error): int
