@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
+use FFLHub\Distributor\Services\Lipseys\LipseysOfferNormalizationService;
 use FFLHub\Distributor\Services\Lipseys\LipseysRawAPI\LipseysClient;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
@@ -104,6 +105,8 @@ final class LipseysInventoryWorkerJob
             'stream_bytes_received' => (int) ($stats['bytes_received'] ?? 0),
             'rows_loaded' => (int) ($stats['_apply']['rows_loaded'] ?? 0),
             'rows_updated' => (int) ($stats['_apply']['rows_updated'] ?? 0),
+            'distributor_offers_lipseys_inventory_update_rows' => (int) ($stats['_apply']['distributor_offers_lipseys_inventory_update_rows'] ?? 0),
+            'distributor_offers_lipseys_inventory_update_ms' => (string) ($stats['_apply']['distributor_offers_lipseys_inventory_update_ms'] ?? '0.00'),
             'stage_table' => (string) ($stats['_apply']['stage_table'] ?? ''),
         ]);
     }
@@ -170,6 +173,8 @@ final class LipseysInventoryWorkerJob
             'tsv_bytes' => file_exists($tsv) ? (int) filesize($tsv) : null,
             'rows_loaded' => (int) ($apply['rows_loaded'] ?? 0),
             'rows_updated' => (int) ($apply['rows_updated'] ?? 0),
+            'distributor_offers_lipseys_inventory_update_rows' => (int) ($apply['distributor_offers_lipseys_inventory_update_rows'] ?? 0),
+            'distributor_offers_lipseys_inventory_update_ms' => (string) ($apply['distributor_offers_lipseys_inventory_update_ms'] ?? '0.00'),
         ]);
 
         return $stats;
@@ -288,11 +293,18 @@ final class LipseysInventoryWorkerJob
         // ------------------------------------------------------------------
         $updated = self::update_live_from_stage($live_table, $stage_table, self::changed_where_sql());
 
+        // ------------------------------------------------------------------
+        // Stage E: update existing normalized offer rows from stage.
+        // ------------------------------------------------------------------
+        $offers_update = self::update_distributor_offers_from_inventory_stage($stage_table);
+
         self::profile('Apply TSV to live table', $started, [
             'stage_table' => $stage_table,
             'live_table' => $live_table,
             'rows_loaded' => (int) ($load_stats['stage_count'] ?? 0),
             'rows_updated' => (int) $updated,
+            'distributor_offers_lipseys_inventory_update_rows' => (int) ($offers_update['rows'] ?? 0),
+            'distributor_offers_lipseys_inventory_update_ms' => number_format((float) ($offers_update['elapsed_ms'] ?? 0.0), 2, '.', ''),
         ]);
 
         return [
@@ -300,6 +312,8 @@ final class LipseysInventoryWorkerJob
             'rows_updated' => (int) $updated,
             'stage_table' => (string) $stage_table,
             'stage_count' => (int) ($load_stats['stage_count'] ?? 0),
+            'distributor_offers_lipseys_inventory_update_rows' => (int) ($offers_update['rows'] ?? 0),
+            'distributor_offers_lipseys_inventory_update_ms' => number_format((float) ($offers_update['elapsed_ms'] ?? 0.0), 2, '.', ''),
         ];
     }
 
@@ -432,6 +446,23 @@ final class LipseysInventoryWorkerJob
         ]);
 
         return (int) $updated;
+    }
+
+    /**
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    private static function update_distributor_offers_from_inventory_stage(string $stage_table): array
+    {
+        $started = microtime(true);
+        $stats = LipseysOfferNormalizationService::update_existing_from_inventory_stage($stage_table);
+
+        self::profile('Update existing distributor offers from inventory stage', $started, [
+            'stage_table' => $stage_table,
+            'distributor_offers_lipseys_inventory_update_rows' => (int) ($stats['rows'] ?? 0),
+            'distributor_offers_lipseys_inventory_update_ms' => number_format((float) ($stats['elapsed_ms'] ?? 0.0), 2, '.', ''),
+        ]);
+
+        return $stats;
     }
 
     private static function schedule_next_worker(int $next_unix, string $next_raw): void

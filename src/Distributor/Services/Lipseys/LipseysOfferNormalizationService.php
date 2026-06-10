@@ -15,6 +15,87 @@ final class LipseysOfferNormalizationService
     private const DIST_ID = 'lipseys';
 
     /**
+     * Apply loaded Lipsey's pricing/quantity stage rows to existing offer rows.
+     *
+     * This is the inventory-worker path. It intentionally updates only
+     * inventory/pricing-owned fields and never inserts rows.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    public static function update_existing_from_inventory_stage(string $stage_table): array
+    {
+        global $wpdb;
+
+        if (!$wpdb) {
+            throw new \RuntimeException('WordPress database connection is unavailable.');
+        }
+
+        $started = microtime(true);
+
+        DistributorOffersStore::ensure_schema();
+
+        $offers_table = DistributorOffersStore::table_name();
+        $stage_table = trim($stage_table);
+        if ($stage_table === '' || !self::table_exists_by_name($stage_table)) {
+            throw new \RuntimeException('Lipsey\'s inventory stage table is unavailable: ' . $stage_table);
+        }
+
+        $qty_expr = "CAST(COALESCE(NULLIF(TRIM(S.inventory_quantity), ''), '0') AS UNSIGNED)";
+        $stock_status_expr = "CASE WHEN {$qty_expr} > 0 THEN 'instock' ELSE 'outofstock' END";
+        $dealer_price_expr = "CAST(NULLIF(TRIM(S.distributor_price), '') AS DECIMAL(12,4))";
+        $map_price_expr = "CAST(NULLIF(TRIM(S.retail_map), '') AS DECIMAL(12,4))";
+        $landed_cost_expr = "
+            CASE
+                WHEN {$dealer_price_expr} IS NULL THEN NULL
+                ELSE {$dealer_price_expr} + COALESCE(o.shipping_cost, 0.0000)
+            END
+        ";
+        $dropship_enabled_expr = "
+            CASE
+                WHEN S.can_dropship = 0 THEN 0
+                WHEN COALESCE(o.sot_required, 0) = 1 THEN o.dropship_enabled
+                ELSE 1
+            END
+        ";
+
+        $sql = $wpdb->prepare(
+            "
+                UPDATE {$offers_table} o
+                INNER JOIN {$stage_table} S
+                    ON S.lipseys_item_number = o.distributor_product_id
+                SET
+                    o.qty = {$qty_expr},
+                    o.stock_status = {$stock_status_expr},
+                    o.dealer_price = {$dealer_price_expr},
+                    o.map_price = {$map_price_expr},
+                    o.landed_cost = {$landed_cost_expr},
+                    o.dropship_enabled = {$dropship_enabled_expr},
+                    o.normalized_at = NOW()
+                WHERE o.distributor_id = %s
+                  AND NOT (
+                        o.qty <=> {$qty_expr}
+                    AND NULLIF(o.stock_status, '') <=> NULLIF({$stock_status_expr}, '')
+                    AND o.dealer_price <=> {$dealer_price_expr}
+                    AND o.map_price <=> {$map_price_expr}
+                    AND o.landed_cost <=> {$landed_cost_expr}
+                    AND o.dropship_enabled <=> {$dropship_enabled_expr}
+                  )
+            ",
+            self::DIST_ID
+        );
+
+        $updated = $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ($updated === false) {
+            throw new \RuntimeException('Lipsey\'s distributor offers inventory update failed: ' . (string) $wpdb->last_error);
+        }
+
+        return [
+            'rows' => is_numeric($updated) ? (int) $updated : 0,
+            'elapsed_ms' => (microtime(true) - $started) * 1000.0,
+        ];
+    }
+
+    /**
      * Normalize the current live Lipsey's product table into distributor offers.
      *
      * This is the manual backfill/create path. It intentionally limits inserts
