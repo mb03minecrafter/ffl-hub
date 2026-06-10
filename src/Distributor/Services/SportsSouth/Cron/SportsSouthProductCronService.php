@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient;
+use FFLHub\Distributor\Services\SportsSouth\SportsSouthOfferNormalizationService;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductImporterService;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductParser;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthReferenceMapCache;
@@ -240,6 +241,8 @@ final class SportsSouthProductCronService extends AbstractTableCronService
                 'new_live' => (string) $new_live,
             ]);
 
+            $offers_result = $this->update_distributor_offers_from_current_live_table();
+
             $cursor_after = $this->persist_product_cursor($request_started_ts, $sync_context);
             update_option('fflhub_sports_south_fulfillment_last_refresh', current_time('mysql'), false);
             update_option('fflhub_sports_south_fulfillment_last_refresh_count', (int) $count, false);
@@ -259,6 +262,10 @@ final class SportsSouthProductCronService extends AbstractTableCronService
                 'cursor_after' => $cursor_after,
                 'deleted_artifacts' => (int) $deleted_artifacts,
                 'deleted_old_artifacts' => (int) $deleted_old_artifacts,
+                'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
+                'distributor_offers_sports_south_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
+                'distributor_offers_sports_south_updated_changed_rows' => (int) ($offers_result['updated_changed_offers'] ?? 0),
+                'distributor_offers_sports_south_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
             ]);
             return;
         }
@@ -284,6 +291,8 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             return;
         }
 
+        $offers_result = $this->update_distributor_offers_from_current_live_table();
+
         $cursor_after = $this->persist_product_cursor($request_started_ts, $sync_context);
         update_option('fflhub_sports_south_fulfillment_last_refresh', current_time('mysql'), false);
         update_option('fflhub_sports_south_fulfillment_last_refresh_count', (int) ($delta_stats['rows_loaded'] ?? 0), false);
@@ -300,7 +309,63 @@ final class SportsSouthProductCronService extends AbstractTableCronService
             'cursor_after' => $cursor_after,
             'deleted_artifacts' => (int) $deleted_artifacts,
             'deleted_old_artifacts' => (int) $deleted_old_artifacts,
+            'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'distributor_offers_sports_south_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
+            'distributor_offers_sports_south_updated_changed_rows' => (int) ($offers_result['updated_changed_offers'] ?? 0),
+            'distributor_offers_sports_south_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
         ]));
+    }
+
+    /**
+     * Sync normalized offer rows for carried UPCs after the live table changes.
+     *
+     * Full rebuilds call this after the staging/live swap. Incremental catalog
+     * runs call it after the delta rows are applied to the current live table.
+     * In both cases the normalizer starts from active product_state UPCs and
+     * does not touch Woo product price, stock, status, or post/meta rows.
+     *
+     * @return array<string,mixed>
+     */
+    private function update_distributor_offers_from_current_live_table(): array
+    {
+        $t_offers = microtime(true);
+        $live_table = $this->table->get_live_table_name();
+        $offers_result = [];
+
+        try {
+            $offers_result = SportsSouthOfferNormalizationService::normalize_from_product_table($live_table);
+        } catch (\Throwable $e) {
+            $offers_result = [
+                'ok' => false,
+                'source_live_table' => (string) $live_table,
+                'errors' => [$e->getMessage()],
+            ];
+        }
+
+        $this->profile('Sync distributor offers from current live table', $t_offers, [
+            'source_live_table' => (string) ($offers_result['source_live_table'] ?? $live_table),
+            'active_product_state_total' => (int) ($offers_result['active_product_state_total'] ?? 0),
+            'matched_active_sports_south_upcs' => (int) ($offers_result['matched_active_sports_south_upcs'] ?? 0),
+            'distributor_offers_sports_south_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
+            'distributor_offers_sports_south_insert_missing_ms' => (string) ($offers_result['insert_missing_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_sports_south_updated_changed_rows' => (int) ($offers_result['updated_changed_offers'] ?? 0),
+            'distributor_offers_sports_south_update_changed_ms' => (string) ($offers_result['update_changed_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_sports_south_upsert_rows' => (int) ($offers_result['upsert_mysql_affected_rows'] ?? 0),
+            'distributor_offers_sports_south_upsert_ms' => (string) ($offers_result['upsert_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_sports_south_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
+            'distributor_offers_sports_south_stale_cleanup_ms' => (string) ($offers_result['stale_cleanup_elapsed_ms'] ?? '0.00'),
+            'ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+        ]);
+
+        if (empty($offers_result['ok'])) {
+            $this->log('ERROR: Sports South distributor offers update failed after product sync', [
+                'source_live_table' => (string) ($offers_result['source_live_table'] ?? $live_table),
+                'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+            ]);
+        }
+
+        return $offers_result;
     }
 
     private function acquire_product_sync_lock(string $mode): string
