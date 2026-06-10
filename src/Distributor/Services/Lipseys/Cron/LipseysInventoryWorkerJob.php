@@ -242,7 +242,7 @@ final class LipseysInventoryWorkerJob
         self::log('STREAM COMPLETE', $stats);
         self::profile('Stream pricing/quantity TSV', $started, [
             'tsv_bytes' => file_exists($tsv) ? (int) filesize($tsv) : null,
-            'rows_seen' => (int) ($stats['rows_seen'] ?? 0),
+            'items_seen' => (int) ($stats['items_seen'] ?? ($stats['rows_seen'] ?? 0)),
             'rows_written' => (int) ($stats['rows_written'] ?? 0),
             'bytes_received' => (int) ($stats['bytes_received'] ?? 0),
             'success' => !empty($stats['success']) ? 1 : 0,
@@ -273,8 +273,6 @@ final class LipseysInventoryWorkerJob
             self::db_debug_env();
         }
 
-        $live_count = self::count_live_rows_if_debug($live_table);
-
         // ------------------------------------------------------------------
         // Stage B: create/truncate persistent stage table.
         // ------------------------------------------------------------------
@@ -286,15 +284,9 @@ final class LipseysInventoryWorkerJob
         $load_stats = self::load_stage_from_tsv($stage_table, $tsv);
 
         // ------------------------------------------------------------------
-        // Stage D: inspect matched/changed rows when debug is enabled.
+        // Stage D: update changed live rows from stage.
         // ------------------------------------------------------------------
-        $changed_where_sql = self::changed_where_sql();
-        $prejoin_stats = self::collect_prejoin_stats($stage_table, $live_table, $changed_where_sql);
-
-        // ------------------------------------------------------------------
-        // Stage E: update changed live rows from stage.
-        // ------------------------------------------------------------------
-        $updated = self::update_live_from_stage($live_table, $stage_table, $changed_where_sql);
+        $updated = self::update_live_from_stage($live_table, $stage_table, self::changed_where_sql());
 
         self::profile('Apply TSV to live table', $started, [
             'stage_table' => $stage_table,
@@ -308,27 +300,7 @@ final class LipseysInventoryWorkerJob
             'rows_updated' => (int) $updated,
             'stage_table' => (string) $stage_table,
             'stage_count' => (int) ($load_stats['stage_count'] ?? 0),
-            'live_count' => (int) $live_count,
-            'join_matched' => (int) ($prejoin_stats['join_matched'] ?? 0),
-            'would_change' => (int) ($prejoin_stats['would_change'] ?? 0),
-            'sig_approved_forced' => 0,
         ];
-    }
-
-    private static function count_live_rows_if_debug(string $live_table): int
-    {
-        global $wpdb;
-
-        $started = microtime(true);
-        $live_count = 0;
-
-        if (self::debug_enabled()) {
-            $live_count = (int) ($wpdb->get_var("SELECT COUNT(*) FROM {$live_table}") ?? 0);
-        }
-
-        self::profile('Live row count', $started, ['live_count' => $live_count]);
-
-        return $live_count;
     }
 
     private static function ensure_stage_table(string $stage_table): void
@@ -419,45 +391,6 @@ final class LipseysInventoryWorkerJob
         return [
             'rows_loaded_affected' => (int) $loaded,
             'stage_count' => $stage_count,
-        ];
-    }
-
-    /**
-     * @return array{join_matched:int,would_change:int}
-     */
-    private static function collect_prejoin_stats(string $stage_table, string $live_table, string $changed_where_sql): array
-    {
-        global $wpdb;
-
-        $started = microtime(true);
-        $join_matched = 0;
-        $would_change = 0;
-
-        if (self::debug_enabled()) {
-            $join_matched = (int) ($wpdb->get_var("
-                SELECT COUNT(*)
-                FROM {$stage_table} S
-                INNER JOIN {$live_table} L
-                    ON L.lipseys_item_number = S.lipseys_item_number
-            ") ?? 0);
-
-            $would_change = (int) ($wpdb->get_var("
-                SELECT COUNT(*)
-                FROM {$stage_table} S
-                INNER JOIN {$live_table} L
-                    ON L.lipseys_item_number = S.lipseys_item_number
-                WHERE {$changed_where_sql}
-            ") ?? 0);
-        }
-
-        self::profile('Pre-join stats', $started, [
-            'join_matched' => $join_matched,
-            'would_change' => $would_change,
-        ]);
-
-        return [
-            'join_matched' => $join_matched,
-            'would_change' => $would_change,
         ];
     }
 
