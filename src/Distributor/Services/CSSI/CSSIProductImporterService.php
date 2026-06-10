@@ -275,7 +275,7 @@ class CSSIProductImporterService
         }
 
         $trim = static function (string $var): string {
-            return "TRIM(BOTH '\\r' FROM TRIM({$var}))";
+            return "TRIM(BOTH '\\t' FROM TRIM(BOTH '\\r' FROM TRIM({$var})))";
         };
         $money = static function (string $var) use ($trim): string {
             return "NULLIF(REPLACE(REPLACE({$trim($var)}, '$', ''), ',', ''), '')";
@@ -296,20 +296,24 @@ class CSSIProductImporterService
         $dropShipFlagExpr = $flag('@drop_ship_flag');
         $allocatedFlagExpr = $flag('@allocated_item');
         $sigManufacturerExpr = "UPPER({$trim('@manufacturer')}) = 'SIG SAUER'";
-        $retailMapExpr = "COALESCE({$money('@retail_map')}, {$money('@map')}, '')";
+        $retailMapExpr = "COALESCE({$money('@retail_map')}, '')";
         $retailMsrpExpr = "COALESCE({$money('@msrp')}, NULLIF({$retailMapExpr}, ''), '')";
         $priceDecimalExpr = "CAST(COALESCE({$money('@price')}, '0') AS DECIMAL(12,4))";
         $weightPoundsExpr = "CAST(COALESCE({$decimal('@ship_weight')}, '0') AS DECIMAL(12,4))";
         $weightOuncesExpr = "CASE WHEN {$weightPoundsExpr} < 0 THEN 0 ELSE {$weightPoundsExpr} * 16 END";
         $freightWeightExpr = "CASE WHEN {$weightPoundsExpr} > 0 THEN {$weightPoundsExpr} ELSE 1 END";
-        $shippingExpr = "FORMAT(
+        $shippingRawExpr = "(
             (
                 14.95 * GREATEST(1, CEIL(({$freightWeightExpr}) / 30.0))
             )
             + CASE WHEN {$priceDecimalExpr} > 0 THEN CEIL({$priceDecimalExpr} / 100.0) ELSE 0 END
-            + CASE WHEN {$priceDecimalExpr} > 0 AND {$priceDecimalExpr} < 50 THEN 7.50 ELSE 0 END,
-            2
+            + CASE WHEN {$priceDecimalExpr} > 0 AND {$priceDecimalExpr} < 50 THEN 7.50 ELSE 0 END
         )";
+        $shippingExpr = "REPLACE(FORMAT({$shippingRawExpr}, 2), ',', '')";
+        $descriptionExpr = "CASE
+            WHEN LEFT({$trim('@web_description')}, 1) = '\"' THEN REPLACE({$trim('@web_description')}, '\"', '')
+            ELSE {$trim('@web_description')}
+        END";
 
         $sql = "
             LOAD DATA LOCAL INFILE %s
@@ -360,7 +364,7 @@ class CSSIProductImporterService
                 retail_msrp = {$retailMsrpExpr},
                 drop_ship_price = COALESCE({$money('@drop_ship_price')}, ''),
                 product_name = {$trim('@web_name')},
-                product_description = {$trim('@web_description')},
+                product_description = {$descriptionExpr},
                 manufacturer = {$trim('@manufacturer')},
                 model = '',
                 mfg_model_number = {$trim('@manufacturer_item_number')},
