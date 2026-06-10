@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace FFLHub\Distributor\Services\SportsSouth;
 
 use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
+use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
+use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -22,6 +24,12 @@ if (!defined('ABSPATH')) {
  * base class owns the set-based SQL shape: insert missing carried UPC offers,
  * update changed carried UPC offers, and disable stale carried UPC offers that
  * no longer exist in the current live Sports South table.
+ *
+ * The inventory path is narrower. IncrementalOnhandUpdate owns current quantity
+ * and dealer/customer price, but it does not own MAP/MSRP, FFL/SOT policy,
+ * dimensions, or shipping. Those catalog-owned fields stay with the product
+ * cron. Inventory-stage updates therefore refresh only volatile offer fields on
+ * existing Sports South offers.
  */
 final class SportsSouthOfferNormalizationService extends AbstractDistributorTableSyncService
 {
@@ -57,6 +65,150 @@ final class SportsSouthOfferNormalizationService extends AbstractDistributorTabl
     protected static function matched_count_key(): string
     {
         return 'matched_active_sports_south_upcs';
+    }
+
+    /**
+     * Apply loaded Sports South IncrementalOnhandUpdate rows to existing offers.
+     *
+     * This is the inventory-cron path. It intentionally updates existing offer
+     * rows only and never inserts missing offers. Missing rows are created by
+     * the product/catalog sync, where we have the full catalog snapshot and the
+     * active product_state UPC filter.
+     *
+     * It writes these distributor_offers columns when changed:
+     * qty, stock_status, dealer_price, landed_cost, normalized_at.
+     *
+     * It does not write shipping_cost because Sports South shipping is derived
+     * from catalog/policy data, not the onhand feed. It does not write MAP/MSRP,
+     * FFL/SOT, manufacturer_norm, dimensions, enabled, or dropship fields.
+     *
+     * @return array{rows:int,elapsed_ms:float,item_rows:int,item_elapsed_ms:float,upc_rows:int,upc_elapsed_ms:float}
+     */
+    public static function update_existing_from_inventory_stage(string $stage_table): array
+    {
+        $item_stats = self::update_existing_from_inventory_stage_by_item_number($stage_table);
+        $upc_stats = self::update_existing_from_inventory_stage_by_upc_fallback($stage_table);
+
+        return [
+            'rows' => (int) ($item_stats['rows'] ?? 0) + (int) ($upc_stats['rows'] ?? 0),
+            'elapsed_ms' => (float) ($item_stats['elapsed_ms'] ?? 0.0) + (float) ($upc_stats['elapsed_ms'] ?? 0.0),
+            'item_rows' => (int) ($item_stats['rows'] ?? 0),
+            'item_elapsed_ms' => (float) ($item_stats['elapsed_ms'] ?? 0.0),
+            'upc_rows' => (int) ($upc_stats['rows'] ?? 0),
+            'upc_elapsed_ms' => (float) ($upc_stats['elapsed_ms'] ?? 0.0),
+        ];
+    }
+
+    /**
+     * Update offers by Sports South item number.
+     *
+     * The onhand stage table may theoretically contain repeated item numbers in
+     * one API window. The join keeps only the latest loaded row for each item by
+     * requiring S.id to match MAX(id) for that item_number.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    private static function update_existing_from_inventory_stage_by_item_number(string $stage_table): array
+    {
+        return self::run_inventory_stage_update(
+            $stage_table,
+            "
+                S.item_number <> ''
+                AND S.item_number = o.distributor_product_id
+                AND S.id = (
+                    SELECT MAX(S2.id)
+                    FROM {$stage_table} S2
+                    WHERE S2.item_number = S.item_number
+                )
+            "
+        );
+    }
+
+    /**
+     * Update offers from rare UPC-only onhand rows.
+     *
+     * Recent Sports South incremental payloads have item numbers and no UPCs,
+     * but the parser and live-table updater both support a UPC fallback. Keep
+     * the normalized offers path equivalent: if Sports South ever sends an
+     * onhand row with UPC but no item number, update the matching offer by UPC,
+     * unless that offer also had an item-number row in the same stage window.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    private static function update_existing_from_inventory_stage_by_upc_fallback(string $stage_table): array
+    {
+        return self::run_inventory_stage_update(
+            $stage_table,
+            "
+                S.item_number = ''
+                AND S.upc <> ''
+                AND S.upc = o.upc
+                AND S.id = (
+                    SELECT MAX(S2.id)
+                    FROM {$stage_table} S2
+                    WHERE S2.item_number = ''
+                      AND S2.upc = S.upc
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM {$stage_table} SI
+                    WHERE SI.item_number <> ''
+                      AND SI.item_number = o.distributor_product_id
+                    LIMIT 1
+                )
+            "
+        );
+    }
+
+    /**
+     * Compile the common Sports South inventory-stage UPDATE.
+     *
+     * IncrementalOnhandUpdate fields:
+     * - Q/current_quantity owns qty and derived stock_status.
+     * - C/customer_price owns dealer_price when present.
+     * - landed_cost is recalculated from dealer_price plus the existing
+     *   product-owned offer shipping_cost.
+     * - P/catalog_price is stored on the live Sports South table but does not
+     *   map to a distributor_offers column.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    private static function run_inventory_stage_update(string $stage_table, string $join_condition_sql): array
+    {
+        $qty_expr = 'COALESCE(S.current_quantity, 0)';
+        $stock_status_expr = self::stock_status_expr($qty_expr);
+        $dealer_price_expr = "
+            CASE
+                WHEN S.customer_price IS NULL THEN o.dealer_price
+                ELSE S.customer_price
+            END
+        ";
+        $landed_cost_expr = self::landed_cost_expr($dealer_price_expr, 'o.shipping_cost');
+
+        $map = new OfferInventorySyncMap(
+            self::DIST_ID,
+            static::label(),
+            $stage_table,
+            'S',
+            $join_condition_sql,
+            [
+                "o.qty = {$qty_expr}",
+                "o.stock_status = {$stock_status_expr}",
+                "o.dealer_price = {$dealer_price_expr}",
+                "o.landed_cost = {$landed_cost_expr}",
+                'o.normalized_at = NOW()',
+            ],
+            "
+                NOT (
+                        o.qty <=> {$qty_expr}
+                    AND NULLIF(o.stock_status, '') <=> NULLIF({$stock_status_expr}, '')
+                    AND o.dealer_price <=> {$dealer_price_expr}
+                    AND o.landed_cost <=> {$landed_cost_expr}
+                )
+            "
+        );
+
+        return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
     }
 
     /**
