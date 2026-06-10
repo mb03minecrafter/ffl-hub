@@ -247,6 +247,11 @@ function fflhub_holosun_map_price_fallback_plan(float $map, float $cost, float $
     ];
 }
 
+function fflhub_holosun_plan_loses_money(array $plan): bool
+{
+    return isset($plan['actual_profit']) && (float)$plan['actual_profit'] < 0.0;
+}
+
 $fee_percent = (float)Options::get_payment_processor_fee_percent();
 if (!is_finite($fee_percent) || $fee_percent < 0.0) {
     $fee_percent = 0.0;
@@ -277,6 +282,7 @@ fputcsv($report, [
     'profit_was_capped',
     'fixed_profit_saved',
     'computed_quote_price',
+    'actual_profit_after_fee',
     'actual_margin_percent',
     'coupon_discount_from_map',
     'before_markup_mode',
@@ -372,15 +378,26 @@ do {
         } else {
             $plan = fflhub_holosun_price_plan($cost, $shipping, $fee_fraction, FFLHUB_HOLOSUN_TARGET_MARGIN, FFLHUB_HOLOSUN_MAX_FIXED_PROFIT);
             if (isset($plan['error'])) {
+                $error = (string)$plan['error'];
                 $plan = fflhub_holosun_map_price_fallback_plan($map, $cost, $shipping, $fee_fraction);
-                $stats['planned']++;
-                $result = $commit ? 'committed' : 'dry-run';
-                $note = 'fallback_to_map_after_' . (string)$plan['fallback_mode'];
+                if (fflhub_holosun_plan_loses_money($plan)) {
+                    $stats['skipped']++;
+                    $note = 'skip_map_below_cost_after_' . $error;
+                } else {
+                    $stats['planned']++;
+                    $result = $commit ? 'committed' : 'dry-run';
+                    $note = 'fallback_to_map_after_' . $error;
+                }
             } elseif ((float)$plan['computed_price'] >= $map) {
                 $plan = fflhub_holosun_map_price_fallback_plan($map, $cost, $shipping, $fee_fraction);
-                $stats['planned']++;
-                $result = $commit ? 'committed' : 'dry-run';
-                $note = 'fallback_to_map_no_coupon';
+                if (fflhub_holosun_plan_loses_money($plan)) {
+                    $stats['skipped']++;
+                    $note = 'skip_map_below_cost_no_coupon';
+                } else {
+                    $stats['planned']++;
+                    $result = $commit ? 'committed' : 'dry-run';
+                    $note = 'fallback_to_map_no_coupon';
+                }
             } else {
                 $stats['planned']++;
                 $result = $commit ? 'committed' : 'dry-run';
@@ -430,6 +447,7 @@ do {
             is_array($plan) && isset($plan['profit_was_capped']) ? (int)$plan['profit_was_capped'] : '',
             is_array($plan) && isset($plan['fixed_profit']) ? wc_format_decimal((float)$plan['fixed_profit'], 4) : '',
             $computed > 0.0 ? wc_format_decimal($computed, 2) : '',
+            is_array($plan) && isset($plan['actual_profit']) ? wc_format_decimal((float)$plan['actual_profit'], 4) : '',
             is_array($plan) && isset($plan['actual_margin']) ? wc_format_decimal(((float)$plan['actual_margin']) * 100.0, 4) : '',
             $coupon_discount > 0.0 ? wc_format_decimal($coupon_discount, 2) : '',
             $before_mode,
