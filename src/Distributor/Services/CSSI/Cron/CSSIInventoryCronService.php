@@ -509,12 +509,11 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             self::SHIPPING_MINIMUM_ORDER_FEE
         );
 
-        $joinUpcSql = "
+        $joinItemSql = "
             UPDATE {$liveTable} L
             INNER JOIN {$stageTable} S
-                ON (S.upc IS NOT NULL AND S.upc <> '' AND L.upc = S.upc)
+                ON (S.cssi_item_number IS NOT NULL AND S.cssi_item_number <> '' AND L.cssi_item_number = S.cssi_item_number)
             SET
-                L.cssi_item_number = CASE WHEN S.cssi_item_number <> '' THEN S.cssi_item_number ELSE L.cssi_item_number END,
                 L.inventory_quantity = S.inventory_quantity,
                 L.in_stock_flag = S.in_stock_flag,
                 L.allocation_status = S.allocation_status,
@@ -558,70 +557,10 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 OR COALESCE(L.last_seen_utc, '') <> COALESCE(S.last_seen_utc, '')
         ";
 
-        $tJoinUpc = microtime(true);
-        $joinUpdatedUpc = $wpdb->query($joinUpcSql);
-        if ($joinUpdatedUpc === false) {
-            throw new \RuntimeException('CSSI join update (UPC) failed: ' . (string) $wpdb->last_error);
-        }
-        $joinUpcMs = (microtime(true) - $tJoinUpc) * 1000.0;
-
-        $joinItemSql = "
-            UPDATE {$liveTable} L
-            INNER JOIN {$stageTable} S
-                ON (S.cssi_item_number IS NOT NULL AND S.cssi_item_number <> '' AND L.cssi_item_number = S.cssi_item_number)
-            LEFT JOIN {$liveTable} LU
-                ON (S.upc IS NOT NULL AND S.upc <> '' AND LU.upc = S.upc)
-            SET
-                L.inventory_quantity = S.inventory_quantity,
-                L.in_stock_flag = S.in_stock_flag,
-                L.allocation_status = S.allocation_status,
-                L.shipping_cost = CASE
-                    WHEN S.distributor_price <> '' AND COALESCE(L.distributor_price, '') <> COALESCE(S.distributor_price, '') THEN {$shippingCostExpr}
-                    ELSE L.shipping_cost
-                END,
-                L.distributor_price = CASE WHEN S.distributor_price <> '' THEN S.distributor_price ELSE L.distributor_price END,
-                L.retail_map = CASE WHEN S.retail_map <> '' THEN S.retail_map ELSE L.retail_map END,
-                L.retail_msrp = CASE WHEN S.retail_msrp <> '' THEN S.retail_msrp ELSE L.retail_msrp END,
-                L.drop_ship_price = CASE WHEN S.drop_ship_price <> '' THEN S.drop_ship_price ELSE L.drop_ship_price END,
-                L.product_name = CASE WHEN S.product_name <> '' THEN S.product_name ELSE L.product_name END,
-                L.product_description = CASE WHEN S.product_description <> '' THEN S.product_description ELSE L.product_description END,
-                L.manufacturer = CASE WHEN S.manufacturer <> '' THEN S.manufacturer ELSE L.manufacturer END,
-                L.model = CASE WHEN S.model <> '' THEN S.model ELSE L.model END,
-                L.mfg_model_number = CASE WHEN S.mfg_model_number <> '' THEN S.mfg_model_number ELSE L.mfg_model_number END,
-                L.caliber_gauge = CASE WHEN S.caliber_gauge <> '' THEN S.caliber_gauge ELSE L.caliber_gauge END,
-                L.item_type = CASE WHEN S.item_type <> '' THEN S.item_type ELSE L.item_type END,
-                L.serialized_flag = S.serialized_flag,
-                L.ffl_required = S.ffl_required,
-                L.sot_required = S.sot_required,
-                L.dropship_enabled = {$dropshipEnabledExpr},
-                L.dropship_block_reason = {$dropshipBlockReasonExpr},
-                L.drop_ship_delivery_options = CASE WHEN S.drop_ship_delivery_options <> '' THEN S.drop_ship_delivery_options ELSE L.drop_ship_delivery_options END,
-                L.shipping_weight = CASE WHEN S.shipping_weight <> '' THEN S.shipping_weight ELSE L.shipping_weight END,
-                L.shipping_length_in = CASE WHEN S.shipping_length_in <> '' THEN S.shipping_length_in ELSE L.shipping_length_in END,
-                L.shipping_width_in = CASE WHEN S.shipping_width_in <> '' THEN S.shipping_width_in ELSE L.shipping_width_in END,
-                L.shipping_height_in = CASE WHEN S.shipping_height_in <> '' THEN S.shipping_height_in ELSE L.shipping_height_in END,
-                L.last_seen_utc = CASE WHEN S.last_seen_utc <> '' THEN S.last_seen_utc ELSE L.last_seen_utc END
-            WHERE
-                LU.upc IS NULL
-                AND (
-                    COALESCE(L.inventory_quantity, '') <> COALESCE(S.inventory_quantity, '')
-                    OR COALESCE(L.in_stock_flag, 0) <> COALESCE(S.in_stock_flag, 0)
-                    OR COALESCE(L.allocation_status, '') <> COALESCE(S.allocation_status, '')
-                    OR COALESCE(L.distributor_price, '') <> COALESCE(S.distributor_price, '')
-                    OR COALESCE(L.retail_map, '') <> COALESCE(S.retail_map, '')
-                    OR COALESCE(L.retail_msrp, '') <> COALESCE(S.retail_msrp, '')
-                    OR COALESCE(L.drop_ship_price, '') <> COALESCE(S.drop_ship_price, '')
-                    OR COALESCE(L.serialized_flag, 0) <> COALESCE(S.serialized_flag, 0)
-                    OR COALESCE(L.ffl_required, 0) <> COALESCE(S.ffl_required, 0)
-                    OR COALESCE(L.dropship_enabled, 0) <> COALESCE({$dropshipEnabledExpr}, 0)
-                    OR COALESCE(L.last_seen_utc, '') <> COALESCE(S.last_seen_utc, '')
-                )
-        ";
-
         $tJoinItem = microtime(true);
         $joinUpdatedItem = $wpdb->query($joinItemSql);
         if ($joinUpdatedItem === false) {
-            throw new \RuntimeException('CSSI join update (item fallback) failed: ' . (string) $wpdb->last_error);
+            throw new \RuntimeException('CSSI join update (item number) failed: ' . (string) $wpdb->last_error);
         }
         $joinItemMs = (microtime(true) - $tJoinItem) * 1000.0;
 
@@ -726,7 +665,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $stats = [
             'processed_rows' => count($rows),
             'rows_loaded' => (int) $rowsLoaded,
-            'join_updated_upc' => (int) $joinUpdatedUpc,
+            'join_updated_upc' => 0,
             'join_updated_item' => (int) $joinUpdatedItem,
             'inserted_new' => (int) $insertedNew,
             'sig_approved_forced' => (int) $sigApprovedForced,
@@ -739,7 +678,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             'create_ms' => number_format($createMs, 2, '.', ''),
             'truncate_ms' => number_format($truncateMs, 2, '.', ''),
             'stage_insert_ms' => number_format($stageInsertMs, 2, '.', ''),
-            'join_upc_ms' => number_format($joinUpcMs, 2, '.', ''),
+            'join_upc_ms' => '0.00',
             'join_item_ms' => number_format($joinItemMs, 2, '.', ''),
             'insert_new_ms' => number_format($insertNewMs, 2, '.', ''),
             'distributor_offers_update_ms' => number_format($offersMs, 2, '.', ''),
@@ -936,14 +875,14 @@ final class CSSIInventoryCronService extends AbstractTableCronService
      */
     private function stage_row_key(array $row): string
     {
-        $upc = trim((string) ($row['upc'] ?? ''));
-        if ($upc !== '') {
-            return 'upc:' . $upc;
-        }
-
         $itemNumber = trim((string) ($row['cssi_item_number'] ?? ''));
         if ($itemNumber !== '') {
             return 'item:' . strtoupper($itemNumber);
+        }
+
+        $upc = trim((string) ($row['upc'] ?? ''));
+        if ($upc !== '') {
+            return 'upc:' . $upc;
         }
 
         return '';
