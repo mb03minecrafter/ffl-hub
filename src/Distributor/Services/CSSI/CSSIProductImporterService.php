@@ -316,7 +316,7 @@ class CSSIProductImporterService
             IGNORE INTO TABLE {$tableName}
             CHARACTER SET utf8mb4
             FIELDS TERMINATED BY ','
-            OPTIONALLY ENCLOSED BY '\"'
+            OPTIONALLY ENCLOSED BY ''
             ESCAPED BY '\\\\'
             LINES TERMINATED BY '\n'
             IGNORE 1 LINES
