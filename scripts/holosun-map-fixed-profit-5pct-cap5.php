@@ -404,7 +404,7 @@ do {
                 $note = !empty($plan['profit_was_capped']) ? 'ok_capped_profit_to_5' : 'ok';
             }
 
-            if ($commit && is_array($plan) && !isset($plan['error'])) {
+            if ($commit && $result === 'committed' && is_array($plan) && !isset($plan['error'])) {
                 $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, ProductMeta::MARKUP_MODE_MAP_PRICE);
 
                 if (($plan['fallback_mode'] ?? '') === 'map_price') {
