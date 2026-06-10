@@ -144,6 +144,28 @@ class CSSIProductImporterService
             return -1;
         }
 
+        if ($this->csv_header_supports_direct_load($filePath)) {
+            $tDirectLoad = microtime(true);
+            $rows = $this->import_csv_directly_via_load_data($filePath);
+            $this->profile('LOAD DATA direct product CSV', $tDirectLoad, [
+                'ok' => ($rows >= 0) ? 1 : 0,
+                'inserted_rows' => max(0, $rows),
+                'file_path' => $filePath,
+            ]);
+
+            if ($rows >= 0) {
+                return $rows;
+            }
+
+            $this->log('Direct LOAD DATA path failed; falling back to normalized TSV path.', [
+                'file_path' => $filePath,
+            ]);
+        } else {
+            $this->log('CSSI CSV header does not match direct LOAD DATA mapping; using normalized TSV path.', [
+                'file_path' => $filePath,
+            ]);
+        }
+
         $tTransform = microtime(true);
         $transform = $this->transform_csv_to_normalized_tsv($filePath, $columns);
         $this->profile('transform CSV -> normalized TSV', $tTransform, [
@@ -176,6 +198,228 @@ class CSSIProductImporterService
         ]);
 
         return $rows;
+    }
+
+    private function csv_header_supports_direct_load(string $csvPath): bool
+    {
+        $handle = fopen($csvPath, 'r');
+        if (!is_resource($handle)) {
+            return false;
+        }
+
+        $header = fgetcsv($handle, 0, ',', '"', '\\');
+        fclose($handle);
+
+        if (!is_array($header)) {
+            return false;
+        }
+
+        $expected = [
+            'sku',
+            'item name',
+            'quantity in stock',
+            'price',
+            'upc',
+            'web item name',
+            'web item description',
+            'drop ship flag',
+            'drop ship price',
+            'category',
+            'ship weight',
+            'image location',
+            'manufacturer',
+            'manufacturer item number',
+            'length',
+            'width',
+            'height',
+            'map',
+            'msrp',
+            'available drop ship delivery options',
+            'allocated item?',
+            'retail map',
+        ];
+
+        $normalized = array_map(static function ($value): string {
+            $value = (string) $value;
+            $value = (string) preg_replace('/^\xEF\xBB\xBF/', '', $value);
+            return strtolower(trim($value));
+        }, $header);
+
+        return $normalized === $expected;
+    }
+
+    private function import_csv_directly_via_load_data(string $csvPath): int
+    {
+        global $wpdb;
+
+        if (!file_exists($csvPath) || !is_readable($csvPath)) {
+            $this->log('Direct LOAD DATA input CSV missing or unreadable.', [
+                'csv_path' => $csvPath,
+            ]);
+            return -1;
+        }
+
+        $tableName = $this->table->get_staging_table_name();
+        if ($tableName === '') {
+            $this->log('Direct LOAD DATA failed: staging table name missing.', []);
+            return -1;
+        }
+
+        try {
+            $this->table->truncate_staging();
+        } catch (\Throwable $e) {
+            $this->log('Direct LOAD DATA failed: truncate_staging exception.', [
+                'error' => $e->getMessage(),
+            ]);
+            return -1;
+        }
+
+        $trim = static function (string $var): string {
+            return "TRIM(BOTH '\\r' FROM TRIM({$var}))";
+        };
+        $money = static function (string $var) use ($trim): string {
+            return "NULLIF(REPLACE(REPLACE({$trim($var)}, '$', ''), ',', ''), '')";
+        };
+        $decimal = static function (string $var) use ($trim): string {
+            return "NULLIF(REGEXP_REPLACE({$trim($var)}, '[^0-9.\\\\-]', ''), '')";
+        };
+        $flag = static function (string $var) use ($trim): string {
+            $value = "UPPER({$trim($var)})";
+            return "CASE WHEN {$value} IN ('1','Y','YES','TRUE','T','ON') OR ({$trim($var)} REGEXP '^-?[0-9]+(\\\\.[0-9]+)?$' AND CAST({$trim($var)} AS DECIMAL(12,4)) > 0) THEN 1 ELSE 0 END";
+        };
+
+        $inventoryExpr = "CASE
+            WHEN CAST(COALESCE(NULLIF(REPLACE({$trim('@quantity')}, ',', ''), ''), '0') AS DECIMAL(12,4)) < 0 THEN '0'
+            ELSE CAST(CAST(ROUND(CAST(COALESCE(NULLIF(REPLACE({$trim('@quantity')}, ',', ''), ''), '0') AS DECIMAL(12,4)), 0) AS UNSIGNED) AS CHAR)
+        END";
+        $inStockFlagExpr = '0';
+        $dropShipFlagExpr = $flag('@drop_ship_flag');
+        $allocatedFlagExpr = $flag('@allocated_item');
+        $sigManufacturerExpr = "UPPER({$trim('@manufacturer')}) = 'SIG SAUER'";
+        $retailMapExpr = "COALESCE({$money('@retail_map')}, {$money('@map')}, '')";
+        $retailMsrpExpr = "COALESCE({$money('@msrp')}, NULLIF({$retailMapExpr}, ''), '')";
+        $priceDecimalExpr = "CAST(COALESCE({$money('@price')}, '0') AS DECIMAL(12,4))";
+        $weightPoundsExpr = "CAST(COALESCE({$decimal('@ship_weight')}, '0') AS DECIMAL(12,4))";
+        $weightOuncesExpr = "CASE WHEN {$weightPoundsExpr} < 0 THEN 0 ELSE {$weightPoundsExpr} * 16 END";
+        $freightWeightExpr = "CASE WHEN {$weightPoundsExpr} > 0 THEN {$weightPoundsExpr} ELSE 1 END";
+        $shippingExpr = "FORMAT(
+            (
+                14.95 * GREATEST(1, CEIL(({$freightWeightExpr}) / 30.0))
+            )
+            + CASE WHEN {$priceDecimalExpr} > 0 THEN CEIL({$priceDecimalExpr} / 100.0) ELSE 0 END
+            + CASE WHEN {$priceDecimalExpr} > 0 AND {$priceDecimalExpr} < 50 THEN 7.50 ELSE 0 END,
+            2
+        )";
+
+        $sql = "
+            LOAD DATA LOCAL INFILE %s
+            IGNORE INTO TABLE {$tableName}
+            CHARACTER SET utf8mb4
+            FIELDS TERMINATED BY ','
+            OPTIONALLY ENCLOSED BY '\"'
+            ESCAPED BY '\\\\'
+            LINES TERMINATED BY '\n'
+            IGNORE 1 LINES
+            (
+                @sku,
+                @item_name,
+                @quantity,
+                @price,
+                @upc,
+                @web_name,
+                @web_description,
+                @drop_ship_flag,
+                @drop_ship_price,
+                @category,
+                @ship_weight,
+                @image_location,
+                @manufacturer,
+                @manufacturer_item_number,
+                @length,
+                @width,
+                @height,
+                @map,
+                @msrp,
+                @drop_ship_delivery_options,
+                @allocated_item,
+                @retail_map
+            )
+            SET
+                upc = REGEXP_REPLACE({$trim('@upc')}, '[^0-9]', ''),
+                cssi_item_number = {$trim('@sku')},
+                inventory_quantity = {$inventoryExpr},
+                in_stock_flag = {$inStockFlagExpr},
+                allocation_status = CASE
+                    WHEN {$allocatedFlagExpr} = 1 THEN 'allocated'
+                    WHEN CAST({$inventoryExpr} AS UNSIGNED) > 0 OR {$inStockFlagExpr} = 1 THEN 'in_stock'
+                    ELSE 'out_of_stock'
+                END,
+                distributor_price = COALESCE({$money('@price')}, ''),
+                shipping_cost = {$shippingExpr},
+                retail_map = {$retailMapExpr},
+                retail_msrp = {$retailMsrpExpr},
+                drop_ship_price = COALESCE({$money('@drop_ship_price')}, ''),
+                product_name = {$trim('@web_name')},
+                product_description = {$trim('@web_description')},
+                manufacturer = {$trim('@manufacturer')},
+                model = '',
+                mfg_model_number = {$trim('@manufacturer_item_number')},
+                caliber_gauge = '',
+                item_type = {$trim('@category')},
+                serialized_flag = 0,
+                ffl_required = 0,
+                sot_required = 0,
+                dropship_enabled = CASE
+                    WHEN {$sigManufacturerExpr} THEN 0
+                    ELSE {$dropShipFlagExpr}
+                END,
+                dropship_block_reason = CASE
+                    WHEN {$sigManufacturerExpr} THEN 'manufacturer_policy=sig_sauer_no_dropship'
+                    WHEN {$dropShipFlagExpr} = 1 THEN ''
+                    ELSE 'drop_ship_flag=0'
+                END,
+                drop_ship_delivery_options = {$trim('@drop_ship_delivery_options')},
+                shipping_weight = {$weightOuncesExpr},
+                shipping_length_in = {$trim('@length')},
+                shipping_width_in = {$trim('@width')},
+                shipping_height_in = {$trim('@height')},
+                image_location = {$trim('@image_location')},
+                last_seen_utc = ''
+        ";
+
+        try {
+            $result = $wpdb->query($wpdb->prepare($sql, $csvPath));
+            if ($result === false) {
+                $this->log('Direct LOAD DATA query failed.', [
+                    'error' => (string) $wpdb->last_error,
+                ]);
+                return -1;
+            }
+
+            $wpdb->query(
+                "
+                DELETE FROM {$tableName}
+                WHERE
+                    upc IS NULL
+                    OR TRIM(upc) = ''
+                    OR LOWER(TRIM(upc)) = 'null'
+                "
+            ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+            $sigApprovedForced = SigDropshipApproval::apply_to_table('cssi', $tableName);
+            if ($sigApprovedForced > 0) {
+                $this->log('Direct LOAD DATA SIG approval override applied.', [
+                    'rows_forced' => (int) $sigApprovedForced,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            $this->log('Direct LOAD DATA exception.', [
+                'error' => $e->getMessage(),
+            ]);
+            return -1;
+        }
+
+        return (int) $wpdb->get_var("SELECT COUNT(*) FROM {$tableName}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 
     /**
