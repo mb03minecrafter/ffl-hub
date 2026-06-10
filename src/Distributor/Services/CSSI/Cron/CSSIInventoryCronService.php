@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\CSSI\API\CSSIClient;
+use FFLHub\Distributor\Services\CSSI\CSSIOfferNormalizationService;
 use FFLHub\Distributor\Services\CSSI\CSSIProductParser;
 use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
@@ -705,6 +706,21 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $insertNewMs = (microtime(true) - $tInsertNew) * 1000.0;
         $sigApprovedForced = SigDropshipApproval::apply_to_table('cssi', $liveTable);
 
+        $tOffers = microtime(true);
+        $offersUpdated = 0;
+        $offersMs = 0.0;
+        try {
+            $offersStats = CSSIOfferNormalizationService::update_existing_from_inventory_stage($stageTable);
+            $offersUpdated = (int) ($offersStats['rows'] ?? 0);
+            $offersMs = (float) ($offersStats['elapsed_ms'] ?? 0.0);
+        } catch (\Throwable $e) {
+            $this->profile('update distributor offers from inventory stage (failed)', $tOffers, [
+                'stage_table' => $stageTable,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
+
         $totalSqlMs = (microtime(true) - $tSqlStart) * 1000.0;
 
         $stats = [
@@ -714,6 +730,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             'join_updated_item' => (int) $joinUpdatedItem,
             'inserted_new' => (int) $insertedNew,
             'sig_approved_forced' => (int) $sigApprovedForced,
+            'distributor_offers_updated' => $offersUpdated,
             'stage_table' => $stageTable,
             'insert_batches' => (int) ($insertStats['batches'] ?? 0),
             'insert_batch_failures' => (int) ($insertStats['batch_failures'] ?? 0),
@@ -725,6 +742,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             'join_upc_ms' => number_format($joinUpcMs, 2, '.', ''),
             'join_item_ms' => number_format($joinItemMs, 2, '.', ''),
             'insert_new_ms' => number_format($insertNewMs, 2, '.', ''),
+            'distributor_offers_update_ms' => number_format($offersMs, 2, '.', ''),
             'total_sql_ms' => number_format($totalSqlMs, 2, '.', ''),
         ];
 

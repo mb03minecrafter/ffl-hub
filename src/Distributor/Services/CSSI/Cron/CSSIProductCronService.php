@@ -17,11 +17,27 @@ use FFLHub\Settings\Options;
 /**
  * Minute worker for CSSI full catalog refresh.
  *
- * Flow:
- * - After a successful import/swap, enforce a 24h cooldown.
- * - When cooldown expires, request product-feed URL once and cache it.
- * - On the next run(s), try downloading/importing from cached URL each minute
- *   until success, then restart cooldown.
+ * CSSI product catalog refresh is different from the FTP-backed distributors:
+ * CSSI does not give us a static FTP file. We first call the API for a signed
+ * product-feed URL, cache that URL, and then download/import the CSV from that
+ * cached URL on a later minute worker run.
+ *
+ * High-level flow:
+ * 1. Resolve credentials and local download path.
+ * 2. Enforce a 24-hour successful-import cooldown.
+ * 3. If no feed URL is pending, request/cache the product-feed URL and stop.
+ * 4. If a feed URL is pending, download the CSV to uploads/fflhub-cssi.
+ * 5. Import the CSV into the staging side of the double-buffered CSSI table.
+ * 6. Swap staging/live only after a non-empty import.
+ * 7. Normalize the newly live CSSI product table into distributor_offers.
+ * 8. Clear pending URL state and mark the run successful.
+ *
+ * The downloaded product-feed CSV currently includes these columns:
+ * SKU, Item Name, Quantity In Stock, Price, UPC, Web Item Name,
+ * Web Item Description, Drop Ship Flag, Drop Ship Price, Category,
+ * Ship Weight, Image Location, Manufacturer, Manufacturer Item Number,
+ * Length, Width, Height, MAP, MSRP, Available Drop Ship Delivery Options,
+ * Allocated Item?, Retail MAP.
  */
 final class CSSIProductCronService extends AbstractTableCronService
 {
@@ -65,6 +81,11 @@ final class CSSIProductCronService extends AbstractTableCronService
 
     public function run(): void
     {
+        // ------------------------------------------------------------------
+        // Stage 0: initialize run identity, profiling baseline, and runtime.
+        // ------------------------------------------------------------------
+        // CSSI downloads can be large and slow, so this cron disables the PHP
+        // time limit and records memory/runtime data from the beginning.
         $tStart = microtime(true);
         $memStart = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
         $runId = substr(sha1((string) microtime(true) . '|' . mt_rand()), 0, 10);
@@ -84,6 +105,12 @@ final class CSSIProductCronService extends AbstractTableCronService
             'group' => $this->get_action_group(),
         ]);
 
+        // ------------------------------------------------------------------
+        // Stage 1: resolve CSSI API credentials.
+        // ------------------------------------------------------------------
+        // The product-feed URL endpoint needs the CSSI SID/token. If those are
+        // missing, stop before doing any table work and leave the current live
+        // table untouched.
         $tCreds = microtime(true);
         $creds = $this->get_api_credentials();
         $this->profile('resolve API credentials', $tCreds, [
@@ -96,6 +123,12 @@ final class CSSIProductCronService extends AbstractTableCronService
             return;
         }
 
+        // ------------------------------------------------------------------
+        // Stage 2: resolve the local CSV download target.
+        // ------------------------------------------------------------------
+        // The feed is downloaded to uploads/fflhub-cssi/cssi_product_feed.csv.
+        // Importer code reads from this stable path; if the path cannot be
+        // created, the run stops before requesting/downloading remote data.
         $tPath = microtime(true);
         $outputPath = $this->resolve_output_path();
         $this->profile('resolve output path', $tPath, [
@@ -111,6 +144,12 @@ final class CSSIProductCronService extends AbstractTableCronService
         $client = new CSSIClient((string) $creds['sid'], (string) $creds['token']);
         $now = time();
 
+        // ------------------------------------------------------------------
+        // Stage 3: read persisted feed state.
+        // ------------------------------------------------------------------
+        // CSSI can rate-limit feed URL requests, and a successful import should
+        // only happen once per 24 hours. These options let the minute worker
+        // cheaply skip until the next meaningful action is allowed.
         $lastSuccessTs = (int) get_option(self::OPT_LAST_SUCCESS_TS, 0);
         $pendingFeedUrl = trim((string) get_option(self::OPT_PENDING_FEED_URL, ''));
         $pendingFeedUrlTs = (int) get_option(self::OPT_PENDING_FEED_URL_TS, 0);
@@ -122,6 +161,9 @@ final class CSSIProductCronService extends AbstractTableCronService
             'refresh_interval_sec' => self::FEED_REFRESH_INTERVAL_SECONDS,
         ]);
 
+        // A pending URL should not live forever. If the URL has aged past the
+        // same 24-hour refresh window, discard it and ask CSSI for a fresh one
+        // instead of retrying a stale signed URL.
         if ($pendingFeedUrl !== '' && $pendingFeedUrlTs > 0 && ($now - $pendingFeedUrlTs) >= self::FEED_REFRESH_INTERVAL_SECONDS) {
             $this->log('Pending product-feed URL exceeded 24h age; clearing and requesting a fresh URL.', [
                 'pending_url_age_sec' => (int) ($now - $pendingFeedUrlTs),
@@ -133,6 +175,12 @@ final class CSSIProductCronService extends AbstractTableCronService
             $pendingFeedUrlTs = 0;
         }
 
+        // ------------------------------------------------------------------
+        // Stage 4: enforce successful-import cooldown.
+        // ------------------------------------------------------------------
+        // A completed CSSI full catalog import resets the 24-hour window. The
+        // Action Scheduler job may still fire every minute, but most runs exit
+        // here with no network or database work.
         if ($lastSuccessTs > 0) {
             $nextEligibleTs = $lastSuccessTs + self::FEED_REFRESH_INTERVAL_SECONDS;
             if ($now < $nextEligibleTs) {
@@ -152,8 +200,19 @@ final class CSSIProductCronService extends AbstractTableCronService
             }
         }
 
+        // ------------------------------------------------------------------
+        // Stage 5: request and cache a product-feed URL when none is pending.
+        // ------------------------------------------------------------------
+        // CSSI's API returns a temporary download URL. We cache it and stop so
+        // the next minute run handles the heavy download/import. Splitting the
+        // URL request from the download also lets us survive transient download
+        // failures without repeatedly calling the URL endpoint.
         if ($pendingFeedUrl === '') {
             $feedRetryNotBeforeTs = (int) get_option(self::OPT_FEED_URL_RETRY_NOT_BEFORE_TS, 0);
+
+            // If CSSI rate-limited the last URL request, honor the parsed wait
+            // period. This avoids hammering their product-feed URL endpoint and
+            // keeps the run cheap while backoff is active.
             if ($feedRetryNotBeforeTs > 0 && $now < $feedRetryNotBeforeTs) {
                 $remaining = (int) max(0, $feedRetryNotBeforeTs - $now);
                 $this->log('CSSI product-feed URL request backoff active after prior rate-limit response; skipping request.', [
@@ -169,6 +228,9 @@ final class CSSIProductCronService extends AbstractTableCronService
                 return;
             }
 
+            // Request the URL with the exact optional columns we actually use.
+            // retail_map is needed for MAP logic; unused optional columns are
+            // intentionally omitted to keep the downloaded CSV smaller.
             $tFeed = microtime(true);
             $feedRes = $client->get_product_feed_url([
                 'optional_columns' => self::PRODUCT_FEED_OPTIONAL_COLUMNS,
@@ -184,6 +246,9 @@ final class CSSIProductCronService extends AbstractTableCronService
             ]);
 
             if (!$feedOk || $feedUrl === '') {
+                // CSSI may return 429 with a human-readable "wait N minutes"
+                // message. Convert that to a retry timestamp so the minute job
+                // can skip cleanly until the wait expires.
                 update_option('fflhub_cssi_fulfillment_last_download_error', current_time('mysql'));
                 $feedStatus = (int) ($feedRes['status'] ?? 0);
                 $feedError = (string) ($feedRes['error'] ?? 'Unknown error');
@@ -206,6 +271,9 @@ final class CSSIProductCronService extends AbstractTableCronService
                 return;
             }
 
+            // A valid URL was received. Persist it and exit; the following run
+            // will download/import it. This keeps the "URL request" stage small
+            // and independently observable in logs.
             delete_option(self::OPT_FEED_URL_RETRY_NOT_BEFORE_TS);
             update_option(self::OPT_PENDING_FEED_URL, $feedUrl, false);
             update_option(self::OPT_PENDING_FEED_URL_TS, $now, false);
@@ -224,6 +292,12 @@ final class CSSIProductCronService extends AbstractTableCronService
             return;
         }
 
+        // ------------------------------------------------------------------
+        // Stage 6: download the pending product-feed CSV.
+        // ------------------------------------------------------------------
+        // From this point on we have a cached signed URL and a local path. If
+        // download fails, leave the pending URL in place so the next minute run
+        // can retry without asking CSSI for a new URL.
         $feedUrl = $pendingFeedUrl;
         $tDownload = microtime(true);
         $downloadRes = $client->download_file($feedUrl, $outputPath);
@@ -254,6 +328,8 @@ final class CSSIProductCronService extends AbstractTableCronService
             return;
         }
 
+        // Record successful download metadata before import. These options are
+        // useful when debugging feed size, cached URL age, or local file path.
         update_option('fflhub_cssi_fulfillment_last_download', current_time('mysql'));
         update_option('fflhub_cssi_fulfillment_last_download_ts', (string) time());
         update_option('fflhub_cssi_fulfillment_last_download_size', (string) $downloadBytes);
@@ -261,6 +337,12 @@ final class CSSIProductCronService extends AbstractTableCronService
         update_option('fflhub_cssi_fulfillment_last_download_url', $feedUrl);
         delete_option('fflhub_cssi_fulfillment_last_download_error');
 
+        // ------------------------------------------------------------------
+        // Stage 7: import the downloaded CSV into the staging table.
+        // ------------------------------------------------------------------
+        // CSSIProductImporterService owns the feed parsing/loading strategy.
+        // It currently prefers direct LOAD DATA from the raw CSV, with the old
+        // PHP-normalized TSV path retained as a fallback for unexpected headers.
         $importer = new CSSIProductImporterService($this->table);
         $tImport = microtime(true);
         try {
@@ -281,6 +363,9 @@ final class CSSIProductCronService extends AbstractTableCronService
             'path' => $outputPath,
         ]);
 
+        // Never swap a blank staging table live. A zero-row import would make
+        // CSSI look empty and could disable offer rows even though the old live
+        // table is still better than the failed import.
         if ($imported <= 0) {
             update_option('fflhub_cssi_fulfillment_last_import_error', current_time('mysql'));
             $this->log('ERROR: CSSI product-feed import produced 0 rows; swap skipped.', [
@@ -291,6 +376,12 @@ final class CSSIProductCronService extends AbstractTableCronService
             return;
         }
 
+        // ------------------------------------------------------------------
+        // Stage 8: atomically promote staging to live.
+        // ------------------------------------------------------------------
+        // The double-buffered table keeps the prior live table available until
+        // after a successful import. Only this swap changes which CSSI table is
+        // considered authoritative for product lookup and offer normalization.
         $tSwap = microtime(true);
         try {
             $newLive = (string) $this->table->swap_live_and_staging();
@@ -306,8 +397,21 @@ final class CSSIProductCronService extends AbstractTableCronService
         }
         $this->profile('swap staging/live', $tSwap, ['new_live' => $newLive]);
 
+        // ------------------------------------------------------------------
+        // Stage 9: sync the newly live CSSI table into distributor_offers.
+        // ------------------------------------------------------------------
+        // This must run after the swap so the normalized rows reflect the same
+        // current/live CSSI table that product lookup will use. The normalizer
+        // limits itself to active product_state UPCs and does not touch Woo
+        // product price, stock, product status, or product meta.
         $offersResult = $this->update_distributor_offers_from_new_live_table();
 
+        // ------------------------------------------------------------------
+        // Stage 10: mark the full catalog refresh successful.
+        // ------------------------------------------------------------------
+        // Clearing the pending URL here confirms the CSV was downloaded,
+        // imported, swapped, and normalized. last_success_ts starts the next
+        // 24-hour cooldown window.
         update_option('fflhub_cssi_fulfillment_last_import', current_time('mysql'));
         update_option('fflhub_cssi_fulfillment_last_import_count', (int) $imported);
         update_option('fflhub_cssi_fulfillment_last_swap', current_time('mysql'));
@@ -332,6 +436,8 @@ final class CSSIProductCronService extends AbstractTableCronService
             'distributor_offers_cssi_stale_disabled_rows' => (int) ($offersResult['stale_disabled'] ?? 0),
         ]);
 
+        // Finalize with the same offer-sync counters written to the main log
+        // event so Action Scheduler/WP-CLI logs show the full run summary.
         $this->finalize_run($tStart, $memStart, 'SUCCESS', [
             'run_id' => $runId,
             'download_bytes' => $downloadBytes,
@@ -355,6 +461,11 @@ final class CSSIProductCronService extends AbstractTableCronService
         $liveTable = $this->table->get_live_table_name();
         $offersResult = [];
 
+        // Run the CSSI-owned product-table normalizer against the table that is
+        // currently marked live. On product cron runs this is the table we just
+        // swapped in; on the admin button it is simply the current live CSSI
+        // snapshot. Exceptions are converted into a normal result array so the
+        // cron can log the failure without fatalling the whole request.
         try {
             $offersResult = CSSIOfferNormalizationService::normalize_from_product_table($liveTable);
         } catch (\Throwable $e) {
@@ -365,6 +476,11 @@ final class CSSIProductCronService extends AbstractTableCronService
             ];
         }
 
+        // Mirror the RSR/Lipsey's/Zanders profile fields so normalized-offer
+        // runs are comparable across distributors. inserted_missing is the
+        // first seed path, updated_changed is the changed-only refresh path,
+        // and stale_disabled is the cleanup path for carried UPCs no longer
+        // present in the CSSI live table.
         $this->profile('Sync distributor offers from new live table', $tOffers, [
             'source_live_table' => (string) ($offersResult['source_live_table'] ?? $liveTable),
             'active_product_state_total' => (int) ($offersResult['active_product_state_total'] ?? 0),
@@ -381,6 +497,9 @@ final class CSSIProductCronService extends AbstractTableCronService
             'errors' => !empty($offersResult['errors']) ? (array) $offersResult['errors'] : [],
         ]);
 
+        // Normalization failure should be visible in logs, but it should not
+        // roll back the live CSSI table swap. The imported CSSI product table is
+        // still valuable, and the normalizer can be rerun from the admin button.
         if (empty($offersResult['ok'])) {
             $this->log('ERROR: CSSI distributor offers update failed after product swap', [
                 'source_live_table' => (string) ($offersResult['source_live_table'] ?? $liveTable),
