@@ -38,6 +38,7 @@ final class SportsSouthFulfillmentPolicy
         'HECKLERANDKOCH',
         'IWIUSA',
         'MOULTRIE',
+        'OSIGHT',
         'OLIGHT',
         'OUTDOOREDGE',
         'RUGER',
