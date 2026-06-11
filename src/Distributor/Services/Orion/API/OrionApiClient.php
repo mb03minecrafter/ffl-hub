@@ -63,6 +63,9 @@ final class OrionApiClient
      */
     public function get_catalog_inventory(array $productIds = []): array
     {
+        // Orion treats omitted product_ids as a full inventory request. The
+        // optimized inventory cron passes explicit product IDs; the normal full
+        // cron path passes an empty array on purpose.
         $params = [];
         $ids = $this->normalize_product_ids($productIds);
         if ($ids !== '') {
@@ -376,6 +379,9 @@ final class OrionApiClient
      */
     private function normalize_product_ids(array $productIds): string
     {
+        // Keep request IDs stable and unique before building Orion's comma
+        // separated product_ids query value. This prevents duplicate normalized
+        // offer rows from bloating an optimized inventory request.
         $ids = [];
         foreach ($productIds as $id) {
             $id = trim((string) $id);

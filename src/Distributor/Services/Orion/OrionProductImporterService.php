@@ -13,6 +13,12 @@ if (!defined('ABSPATH')) {
 /**
  * Imports Orion catalog rows into staging and applies lightweight inventory
  * updates to the live table.
+ *
+ * Product/catalog imports and inventory updates share this importer because
+ * both paths write Orion's distributor-owned tables. The normalized
+ * distributor_offers projection is intentionally kept as the last inventory
+ * step so it reads from the same staged API payload after the live table has
+ * already been made consistent.
  */
 final class OrionProductImporterService
 {
@@ -522,6 +528,9 @@ final class OrionProductImporterService
             @set_time_limit(0);
         }
 
+        // Stage A: normalize Orion's raw inventory response into the compact
+        // shape this importer owns: product_id, product_code, quantity, and
+        // sale_price. No database writes happen before this succeeds.
         $t_start = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
         $phase_ms = [];
@@ -541,6 +550,10 @@ final class OrionProductImporterService
 
         global $wpdb;
 
+        // Stage B: ensure and reset the persistent inventory stage table.
+        //
+        // The stage table lets the live Orion table and distributor_offers
+        // updates use indexed set-based SQL instead of row-by-row PHP loops.
         $t_phase = microtime(true);
         $stage_table = $this->ensure_inventory_stage_table();
         $phase_ms['ensure_inventory_stage_table'] = $this->elapsed_ms($t_phase);
@@ -571,18 +584,43 @@ final class OrionProductImporterService
 
         $live_table = $this->table->get_live_table_name();
 
+        // Stage C: update live Orion rows by Orion product ID.
+        //
+        // product_id is the preferred identifier because it is the API/order
+        // product id and the same value stored in distributor_offers as
+        // distributor_product_id. This update owns only volatile live-table
+        // fields: inventory_quantity, allocation_status, sale_price, and
+        // distributor_price when sale_price is present.
         $t_phase = microtime(true);
         $join_updated_id = $this->update_live_inventory_by_product_id($live_table, $stage_table);
         $phase_ms['update_live_inventory_by_product_id'] = $this->elapsed_ms($t_phase);
 
+        // Stage D: compatibility update by product code.
+        //
+        // Some legacy/live rows may have product_code but no matching product_id
+        // in the inventory stage. The LEFT JOIN prevents double-writing rows
+        // already handled by Stage C. This fallback is for the live Orion table
+        // only; normalized offers intentionally join by product_id.
         $t_phase = microtime(true);
         $join_updated_code = $this->update_live_inventory_by_product_code($live_table, $stage_table);
         $phase_ms['update_live_inventory_by_product_code'] = $this->elapsed_ms($t_phase);
 
+        // Stage E: re-apply shared SIG dropship approval to the live table.
+        //
+        // Inventory updates can change price/stock, but not manufacturer/SOT.
+        // The approval pass still runs after live-table writes so the table
+        // remains consistent with the current brand/drop-ship policy logic.
         $t_phase = microtime(true);
         $sig_approved_forced = SigDropshipApproval::apply_to_table('orion', $live_table);
         $phase_ms['apply_sig_dropship_approval'] = $this->elapsed_ms($t_phase);
 
+        // Stage F: project the same inventory stage into distributor_offers.
+        //
+        // This is deliberately last. The live table has already been updated,
+        // and the normalized offer table now receives only the volatile fields
+        // the Orion inventory endpoint owns: qty, stock_status, dealer_price,
+        // landed_cost, and normalized_at. It does not touch shipping, MAP/MSRP,
+        // FFL/SOT, manufacturer, dropship, dimensions, enabled, or identity.
         $t_phase = microtime(true);
         $offers_update = OrionOfferNormalizationService::update_existing_from_inventory_stage($stage_table);
         $phase_ms['sync_distributor_offers_from_inventory_stage'] = $this->elapsed_ms($t_phase);
@@ -667,6 +705,12 @@ final class OrionProductImporterService
         $stage_table = $wpdb->prefix . self::INVENTORY_STAGE_TABLE_SUFFIX;
         $charset = $wpdb->get_charset_collate();
 
+        // Persistent stage table used by the inventory cron.
+        //
+        // product_id is the primary Orion API/order identifier and is indexed
+        // for the preferred live-table and distributor_offers joins.
+        // product_code is indexed for the live-table compatibility fallback.
+        // quantity/sale_price are the only volatile values Orion inventory owns.
         $sql = "
             CREATE TABLE IF NOT EXISTS {$stage_table} (
                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -748,6 +792,12 @@ final class OrionProductImporterService
     {
         global $wpdb;
 
+        // Preferred live-table UPDATE.
+        //
+        // Writes only when at least one target value differs. sale_price is
+        // mirrored directly, while distributor_price is overwritten only when
+        // Orion supplied a nonblank sale_price. That preserves the catalog price
+        // when an inventory response omits pricing.
         $sql = "
             UPDATE {$liveTable} L
             INNER JOIN {$stageTable} S
@@ -772,6 +822,12 @@ final class OrionProductImporterService
     {
         global $wpdb;
 
+        // Live-table compatibility fallback.
+        //
+        // The LEFT JOIN against product_id matches prevents this path from
+        // re-updating rows that were already matched by the preferred Orion
+        // product ID. This is intentionally not used for distributor_offers:
+        // normalized Orion offer identity is distributor_product_id/product_id.
         $sql = "
             UPDATE {$liveTable} L
             INNER JOIN {$stageTable} S

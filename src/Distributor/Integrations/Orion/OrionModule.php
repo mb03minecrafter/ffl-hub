@@ -67,6 +67,11 @@ final class OrionModule implements DistributorModuleInterface
             'optimized_inventory_run' => [
                 'label'       => 'Optimized Inventory Run',
                 'type'        => 'checkbox',
+                // When enabled, the inventory cron asks Orion only for product
+                // IDs already present in fflhub_distributor_offers. Keep this
+                // disabled by default so the normal behavior remains a full
+                // inventory snapshot until we explicitly choose the faster
+                // carried-product path for production.
                 'description' => 'Only request inventory for Orion product IDs that already exist in normalized distributor offers. Leave disabled to pull the full Orion inventory feed.',
                 'default'     => '0',
             ],

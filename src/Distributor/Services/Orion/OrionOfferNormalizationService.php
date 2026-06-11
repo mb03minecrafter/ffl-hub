@@ -24,6 +24,11 @@ if (!defined('ABSPATH')) {
  * live Orion table. Because that snapshot is not fresh API inventory, this
  * product normalizer deliberately does not write qty or stock_status. A future
  * Orion inventory-stage normalizer should own those fields.
+ *
+ * Orion inventory-cron distinction:
+ * the inventory cron already stages Orion product_id, product_code, quantity,
+ * and sale_price. This class uses that stage to update existing normalized
+ * offer rows without joining the large live Orion product table.
  */
 final class OrionOfferNormalizationService extends AbstractDistributorTableSyncService
 {
@@ -80,10 +85,20 @@ final class OrionOfferNormalizationService extends AbstractDistributorTableSyncS
      */
     public static function update_existing_from_inventory_stage(string $stage_table): array
     {
+        // This method mirrors the other distributor inventory normalizers:
+        // it translates the already-loaded inventory stage into normalized
+        // offer columns and lets the shared SQL runner execute one changed-only
+        // UPDATE. It never inserts rows because the product cron/backfill path
+        // is responsible for creating Orion offer identities.
+
         // Inventory-stage source fields used here:
         // - S.product_id joins to distributor_offers.distributor_product_id.
         // - S.quantity becomes qty and drives derived stock_status.
         // - S.sale_price becomes dealer_price when nonblank.
+        //
+        // Inventory-stage source fields intentionally not used here:
+        // - S.product_code is a live-table compatibility fallback only. It is
+        //   not the normalized offer identity for Orion.
         //
         // Stage product_code is intentionally not used for normalized offers.
         // Orion product sync stores product_id as distributor_product_id, which
@@ -148,6 +163,9 @@ final class OrionOfferNormalizationService extends AbstractDistributorTableSyncS
         // 5. Let the shared base/runner execute the changed-only UPDATE.
         // Missing Orion offer rows are created by the product-table sync, where
         // the full catalog snapshot and active product_state filter exist.
+        // On the first run after product sync creates offer rows, this can
+        // legitimately update many rows because qty/stock_status were not
+        // seeded by the product cron. Later no-op runs should update zero rows.
         return self::update_existing_offers_from_inventory_stage_map($map);
     }
 
@@ -242,6 +260,10 @@ final class OrionOfferNormalizationService extends AbstractDistributorTableSyncS
     {
         global $wpdb;
 
+        // Optimized inventory runs are intentionally driven by
+        // distributor_offers, not product_state and not the live Orion table.
+        // distributor_offers is the carried, normalized offer set and already
+        // stores Orion's API product id in distributor_product_id.
         $offers_table = $wpdb->prefix . 'fflhub_distributor_offers';
         $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $offers_table));
         if (!is_string($found) || $found !== $offers_table) {
@@ -267,6 +289,10 @@ final class OrionOfferNormalizationService extends AbstractDistributorTableSyncS
             return [];
         }
 
+        // Dedupe in PHP after the DISTINCT query as a cheap extra guard. The
+        // API request should contain clean, stable product IDs only; no stock
+        // filter is applied because out-of-stock items need to be requested so
+        // they can come back in stock during optimized runs.
         $ids = [];
         foreach ($rows as $row) {
             $id = trim((string) $row);

@@ -15,6 +15,18 @@ use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
+/**
+ * Orion inventory/pricing Action Scheduler job.
+ *
+ * This job does not rebuild the Orion catalog table. It fetches the current
+ * get_catalog_inventory response, stages only the volatile inventory payload,
+ * applies that stage to the live Orion product table, then projects the same
+ * stage into fflhub_distributor_offers for already-normalized Orion offers.
+ *
+ * The optional optimized mode changes only the API request list. Full mode asks
+ * Orion for the full inventory feed. Optimized mode asks only for product IDs
+ * that already exist as enabled Orion rows in distributor_offers.
+ */
 final class OrionInventoryCronService extends AbstractTableCronService
 {
     public const CRON_HOOK = 'fflhub_orion_pricing_quantity_update';
@@ -131,6 +143,11 @@ final class OrionInventoryCronService extends AbstractTableCronService
 
     public function run(): void
     {
+        // Stage 0: initialize profiling, timeout, and the run marker.
+        //
+        // This cron can spend most of its time waiting on Orion's API, so the
+        // logger captures memory and phase timing from the start. The actual
+        // table writes happen later inside OrionProductImporterService.
         $t_start = microtime(true);
         $mem_start = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
         $timeout_seconds = $this->get_timeout_seconds();
@@ -150,6 +167,11 @@ final class OrionInventoryCronService extends AbstractTableCronService
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
 
+        // Stage 1: build the API client and stop early when credentials or a
+        // recent network/API failure cooldown make the run unsafe.
+        //
+        // The cooldown avoids hammering Orion during temporary outages. It does
+        // not mark inventory stale or touch distributor/offers tables.
         $client = $this->make_client($timeout_seconds);
         if (!$client->has_credentials()) {
             update_option('fflhub_orion_inventory_last_error', current_time('mysql'), false);
@@ -166,12 +188,26 @@ final class OrionInventoryCronService extends AbstractTableCronService
         }
 
         $t_inventory = microtime(true);
+
+        // Stage 2: choose the inventory request scope.
+        //
+        // Full mode passes an empty product-id list to the API client, which is
+        // the legacy/current behavior and returns the full Orion inventory
+        // snapshot.
+        //
+        // Optimized mode reads enabled Orion distributor_offers rows and sends
+        // their distributor_product_id values to Orion. That keeps the request
+        // limited to products we already carry without joining product_state or
+        // the large Orion live table during the inventory cron.
         $optimized_inventory_run = $this->optimized_inventory_run_enabled();
         $optimized_product_ids = $optimized_inventory_run
             ? OrionOfferNormalizationService::enabled_offer_product_ids_for_inventory()
             : [];
 
         if ($optimized_inventory_run && empty($optimized_product_ids)) {
+            // In optimized mode, an empty ID list should be a no-op. Passing an
+            // empty list through would look like full-mode behavior to the API
+            // client, which could accidentally trigger a full feed pull.
             $ctx = [
                 'optimized_inventory_run' => 1,
                 'requested_product_ids' => 0,
@@ -188,6 +224,12 @@ final class OrionInventoryCronService extends AbstractTableCronService
             'memory_kb' => $this->memory_kb(),
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
+
+        // Stage 3: fetch the raw Orion inventory payload.
+        //
+        // The API client owns request formatting. This cron records whether we
+        // used optimized IDs, how many IDs were requested, response size, and
+        // row count so we can compare full-vs-optimized runs cleanly.
         $inventory = $client->get_catalog_inventory($optimized_product_ids);
         $inventory_data = (array) ($inventory['data'] ?? []);
         $this->profile('get_catalog_inventory', $t_inventory, array_merge([
@@ -217,6 +259,15 @@ final class OrionInventoryCronService extends AbstractTableCronService
 
         $t_apply = microtime(true);
         $importer = new OrionProductImporterService($this->table);
+
+        // Stage 4: stage and apply the inventory payload.
+        //
+        // The importer owns all database work for this payload:
+        // - normalize Orion inventory rows,
+        // - recreate/truncate the inventory stage,
+        // - update live Orion inventory/price fields,
+        // - re-apply SIG dropship approval to the live table, and
+        // - update existing normalized Orion offer rows from the same stage.
         $this->log('PHASE START: apply_inventory_array_to_live', [
             'inventory_rows' => $this->count_inventory_rows($inventory_data),
             'optimized_inventory_run' => $optimized_inventory_run ? 1 : 0,
@@ -229,6 +280,8 @@ final class OrionInventoryCronService extends AbstractTableCronService
         $stats['requested_product_ids'] = count($optimized_product_ids);
         $this->profile('apply_inventory_array_to_live', $t_apply, $stats);
 
+        // Stage 5: persist the success markers only after the importer has
+        // completed both live-table updates and distributor_offers projection.
         update_option('fflhub_orion_inventory_last_update', current_time('mysql'), false);
         update_option('fflhub_orion_inventory_last_update_count', (int) ($stats['rows_loaded'] ?? 0), false);
         delete_option('fflhub_orion_inventory_last_error');
@@ -258,6 +311,9 @@ final class OrionInventoryCronService extends AbstractTableCronService
 
     private function optimized_inventory_run_enabled(): bool
     {
+        // Default is intentionally false. The full inventory run is the safest
+        // source-of-truth path; optimized mode is a performance switch that can
+        // be enabled once normalized Orion offer rows are known to be complete.
         return Options::get_distributor_option('orion', 'optimized_inventory_run', '0') === '1';
     }
 

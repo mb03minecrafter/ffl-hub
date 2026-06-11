@@ -111,6 +111,17 @@ abstract class AbstractDistributorTableSyncService
      * inventory feed has different identifiers and volatile fields. This helper
      * keeps the actual set-based UPDATE execution in one shared place.
      *
+     * The concrete class decides:
+     * - which stage table is safe to read,
+     * - which stage/live identifier should join to distributor_offers,
+     * - which distributor_offers columns that inventory feed owns, and
+     * - which null-safe changed-only predicate keeps no-op runs cheap.
+     *
+     * The shared runner then compiles the same optimized UPDATE shape for each
+     * distributor. That keeps the heavy SQL behavior consistent while still
+     * leaving distributor-specific field ownership in the child class where it
+     * is easier to audit.
+     *
      * @return array{rows:int,elapsed_ms:float}
      */
     protected static function update_existing_offers_from_inventory_stage_map(OfferInventorySyncMap $map): array
