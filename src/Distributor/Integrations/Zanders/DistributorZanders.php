@@ -131,13 +131,6 @@ class DistributorZanders extends DistributorBase
         return (bool) apply_filters('fflhub_zanders_testing_mode', $testing);
     }
 
-    private function is_dealer_fulfilled_manual_mode(): bool
-    {
-        $mode = strtolower(trim((string) Options::get_distributor_option('zanders', 'dealer_fulfilled_mode', 'manual')));
-        return $mode !== 'auto';
-    }
-
-
     /**
      * @return array{
      *   ok:bool,
@@ -241,21 +234,6 @@ class DistributorZanders extends DistributorBase
             return DistributorOrderResult::block_fatal(
                 'Zanders: missing merchant PO (purchaseOrderNumber).',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
-            );
-        }
-
-        $lane = strtolower(trim((string) ($request->lane ?? '')));
-        if ($lane === 'dealer_fulfilled' && $this->is_dealer_fulfilled_manual_mode()) {
-            return DistributorOrderResult::manual(
-                'Zanders dealer-fulfilled ordering is set to manual mode. Enter the merchant PO on the Zanders Dealer Batch Queue page after placing the order manually.',
-                [
-                    DistributorOrderResult::REASON_MANUAL_REQUIRED,
-                    'ZANDERS_DEALER_FULFILLED_MANUAL_MODE',
-                ],
-                [
-                    'lane' => $lane,
-                    'dealer_fulfilled_mode' => 'manual',
-                ]
             );
         }
 

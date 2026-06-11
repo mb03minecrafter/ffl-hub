@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInventoryClient;
+use FFLHub\Distributor\Services\SportsSouth\SportsSouthOfferNormalizationService;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductImporterService;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthProductParser;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
@@ -161,6 +162,50 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
             return;
         }
 
+        // Stage: apply Sports South onhand fields to existing normalized offers.
+        //
+        // Keep this at the cron layer, mirroring RSR/Zanders/Lipsey's/CSSI:
+        // the importer owns the physical Sports South stage/live-table work,
+        // then the cron asks the Sports South table-sync service to project
+        // those same stage rows into distributor_offers. The inventory feed
+        // owns only volatile offer fields: qty, stock_status, dealer_price,
+        // landed_cost, and normalized_at. Missing offer-row creation stays on
+        // the full product cron because that path has the complete catalog row.
+        $offers_update_stats = [
+            'rows' => 0,
+            'elapsed_ms' => 0.0,
+            'item_rows' => 0,
+            'item_elapsed_ms' => 0.0,
+            'upc_rows' => 0,
+            'upc_elapsed_ms' => 0.0,
+        ];
+        if ((int) ($stats['rows_loaded'] ?? 0) > 0) {
+            update_option('fflhub_sports_south_inventory_last_stage', 'sync_distributor_offers_from_inventory_stage', false);
+            try {
+                $offers_update_stats = $this->update_distributor_offers_from_inventory_stage(
+                    (string) ($stats['stage_table'] ?? '')
+                );
+            } catch (\Throwable $e) {
+                update_option('fflhub_sports_south_inventory_last_error', current_time('mysql'), false);
+                update_option('fflhub_sports_south_inventory_last_stage', 'offers_update_failed', false);
+                $this->log('Sports South distributor offers inventory update failed; cursor not advanced.', array_merge($stats, [
+                    'stage_table' => (string) ($stats['stage_table'] ?? ''),
+                    'error' => $e->getMessage(),
+                    'since_sent' => $since,
+                    'xml_path' => $xml_path,
+                ]));
+                return;
+            }
+        }
+        $stats = array_merge($stats, [
+            'distributor_offers_sports_south_inventory_update_rows' => (int) ($offers_update_stats['rows'] ?? 0),
+            'distributor_offers_sports_south_inventory_update_ms' => number_format((float) ($offers_update_stats['elapsed_ms'] ?? 0.0), 2, '.', ''),
+            'distributor_offers_sports_south_inventory_update_item_rows' => (int) ($offers_update_stats['item_rows'] ?? 0),
+            'distributor_offers_sports_south_inventory_update_item_ms' => number_format((float) ($offers_update_stats['item_elapsed_ms'] ?? 0.0), 2, '.', ''),
+            'distributor_offers_sports_south_inventory_update_upc_rows' => (int) ($offers_update_stats['upc_rows'] ?? 0),
+            'distributor_offers_sports_south_inventory_update_upc_ms' => number_format((float) ($offers_update_stats['upc_elapsed_ms'] ?? 0.0), 2, '.', ''),
+        ]);
+
         $t_cursor = microtime(true);
         update_option('fflhub_sports_south_inventory_last_stage', 'extract_next_since_datetime', false);
         $vendor_next_since = $parser->extract_next_since_datetime_from_file($xml_path);
@@ -239,6 +284,39 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
         $base_url = (string) apply_filters('fflhub_sports_south_inventory_api_base_url', $base_url);
 
         return new SportsSouthInventoryClient($customer, $username, $password, $source, $base_url, 90);
+    }
+
+    /**
+     * Update existing normalized Sports South offer rows from the onhand stage.
+     *
+     * This wrapper intentionally lives on the cron service like the RSR,
+     * Zanders, Lipsey's, and CSSI inventory paths. SportsSouthProductImporterService
+     * returns the stage table after applying vendor data to the live distributor
+     * table; this method then performs the separate distributor_offers projection
+     * and profiles that work as its own step.
+     *
+     * @return array{rows:int,elapsed_ms:float,item_rows:int,item_elapsed_ms:float,upc_rows:int,upc_elapsed_ms:float}
+     */
+    private function update_distributor_offers_from_inventory_stage(string $stageTable): array
+    {
+        if ($stageTable === '') {
+            throw new \RuntimeException('Sports South distributor offers update skipped because stage table was empty.');
+        }
+
+        $tOffers = microtime(true);
+        $stats = SportsSouthOfferNormalizationService::update_existing_from_inventory_stage($stageTable);
+
+        $this->profile('Update existing distributor offers from inventory stage', $tOffers, [
+            'stage_table' => $stageTable,
+            'distributor_offers_sports_south_inventory_update_rows' => (int) ($stats['rows'] ?? 0),
+            'distributor_offers_sports_south_inventory_update_ms' => number_format((float) ($stats['elapsed_ms'] ?? 0.0), 2, '.', ''),
+            'distributor_offers_sports_south_inventory_update_item_rows' => (int) ($stats['item_rows'] ?? 0),
+            'distributor_offers_sports_south_inventory_update_item_ms' => number_format((float) ($stats['item_elapsed_ms'] ?? 0.0), 2, '.', ''),
+            'distributor_offers_sports_south_inventory_update_upc_rows' => (int) ($stats['upc_rows'] ?? 0),
+            'distributor_offers_sports_south_inventory_update_upc_ms' => number_format((float) ($stats['upc_elapsed_ms'] ?? 0.0), 2, '.', ''),
+        ]);
+
+        return $stats;
     }
 
     private function resolve_since_datetime(SportsSouthProductParser $parser): string

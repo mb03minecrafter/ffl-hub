@@ -349,41 +349,6 @@ final class SportsSouthProductImporterService
         $updated_upc = $this->update_live_inventory_by_upc($live_table, $upc_stage_table, $item_stage_table);
         $update_upc_ms = $this->format_ms((microtime(true) - $t_update_upc) * 1000.0);
 
-        // Stage: apply Sports South onhand fields to existing normalized offers.
-        //
-        // This mirrors the RSR/Zanders/Lipsey's/CSSI inventory paths: the live
-        // distributor table is updated first, then distributor_offers is updated
-        // from the same stage data as the final normalized snapshot step. The
-        // update is changed-only and touches only fields owned by
-        // IncrementalOnhandUpdate: qty, stock_status, dealer_price, landed_cost,
-        // and normalized_at. It does not create missing offers because product
-        // crons own missing-row creation from full catalog data.
-        try {
-            $offers_update_stats = $this->update_distributor_offers_from_inventory_stage($stage_table);
-        } catch (\Throwable $e) {
-            $this->log('Sports South distributor offers inventory update failed.', [
-                'stage_table' => $stage_table,
-                'error' => $e->getMessage(),
-            ]);
-            return [
-                'processed_rows' => (int) $rows_loaded,
-                'rows_loaded' => (int) $rows_loaded,
-                'join_updated' => (int) max(0, $updated_item) + (int) max(0, $updated_upc),
-                'join_updated_item' => (int) max(0, $updated_item),
-                'join_updated_upc' => (int) max(0, $updated_upc),
-                'quantity_mode' => 'current_quantity',
-                'live_table' => $live_table,
-                'stage_table' => $stage_table,
-                'ensure_stage_ms' => $ensure_ms,
-                'truncate_stage_ms' => $truncate_ms,
-                'insert_stage_ms' => $insert_ms,
-                'dedupe_ms' => $dedupe_ms,
-                'update_item_ms' => $update_item_ms,
-                'update_upc_ms' => $update_upc_ms,
-                'error' => 'Sports South distributor offers inventory update failed: ' . $e->getMessage(),
-            ];
-        }
-
         $stats = [
             'processed_rows' => (int) $rows_loaded,
             'rows_loaded' => (int) $rows_loaded,
@@ -399,12 +364,6 @@ final class SportsSouthProductImporterService
             'dedupe_ms' => $dedupe_ms,
             'update_item_ms' => $update_item_ms,
             'update_upc_ms' => $update_upc_ms,
-            'distributor_offers_sports_south_inventory_update_rows' => (int) ($offers_update_stats['rows'] ?? 0),
-            'distributor_offers_sports_south_inventory_update_ms' => $this->format_ms((float) ($offers_update_stats['elapsed_ms'] ?? 0.0)),
-            'distributor_offers_sports_south_inventory_update_item_rows' => (int) ($offers_update_stats['item_rows'] ?? 0),
-            'distributor_offers_sports_south_inventory_update_item_ms' => $this->format_ms((float) ($offers_update_stats['item_elapsed_ms'] ?? 0.0)),
-            'distributor_offers_sports_south_inventory_update_upc_rows' => (int) ($offers_update_stats['upc_rows'] ?? 0),
-            'distributor_offers_sports_south_inventory_update_upc_ms' => $this->format_ms((float) ($offers_update_stats['upc_elapsed_ms'] ?? 0.0)),
             'apply_total_ms' => $this->format_ms((microtime(true) - $t_total) * 1000.0),
         ];
         $stats = array_merge($stats, $this->public_dedupe_stats($dedupe_stats), [
@@ -421,20 +380,6 @@ final class SportsSouthProductImporterService
         $this->log('Sports South onhand update applied.', $stats);
 
         return $stats;
-    }
-
-    /**
-     * Apply loaded onhand stage rows to existing normalized offer rows.
-     *
-     * @return array{rows:int,elapsed_ms:float,item_rows:int,item_elapsed_ms:float,upc_rows:int,upc_elapsed_ms:float}
-     */
-    private function update_distributor_offers_from_inventory_stage(string $stage_table): array
-    {
-        if ($stage_table === '') {
-            throw new \RuntimeException('Sports South distributor offers update skipped because stage table was empty.');
-        }
-
-        return SportsSouthOfferNormalizationService::update_existing_from_inventory_stage($stage_table);
     }
 
     /**
