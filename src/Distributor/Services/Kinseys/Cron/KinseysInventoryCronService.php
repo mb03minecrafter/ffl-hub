@@ -135,6 +135,20 @@ final class KinseysInventoryCronService extends AbstractTableCronService
         $stats = $importer->apply_inventory_array_to_live($inventory_data);
         $this->profile('apply_inventory_array_to_live', $t_apply, $stats);
 
+        // Stage 3: Project the same loaded inventory stage into distributor_offers.
+        //
+        // apply_inventory_array_to_live() does two important things before this
+        // point:
+        // - loads the fresh Kinsey's /v2/Inventory response into the persistent
+        //   inventory stage table, keyed by UPC;
+        // - applies changed qty/price/MAP/restock values from that stage table
+        //   into the current live Kinsey's product table.
+        //
+        // This offers pass intentionally runs after the live-table update so the
+        // normalized table follows the same completed inventory snapshot. It
+        // only updates existing Kinsey's offer rows; product/catalog sync creates
+        // missing rows because only the product table has the full catalog data
+        // needed to seed a complete offer record.
         try {
             $offers_update_stats = $this->update_distributor_offers_from_inventory_stage(
                 (string) ($stats['stage_table'] ?? '')
@@ -149,6 +163,9 @@ final class KinseysInventoryCronService extends AbstractTableCronService
             return;
         }
 
+        // Carry the offers-update profile into the final cron stats so Action
+        // Scheduler/admin logs show both the live-table update and normalized
+        // offers projection from the same run.
         $stats['distributor_offers_kinseys_inventory_update_rows'] = (int) ($offers_update_stats['rows'] ?? 0);
         $stats['distributor_offers_kinseys_inventory_update_ms'] = number_format((float) ($offers_update_stats['elapsed_ms'] ?? 0.0), 2, '.', '');
 
@@ -184,9 +201,13 @@ final class KinseysInventoryCronService extends AbstractTableCronService
     /**
      * Apply loaded Kinsey's inventory stage rows to existing normalized offers.
      *
-     * The importer has already updated the live Kinsey's table and run its SIG
-     * approval pass. This projection runs last so distributor_offers sees the
-     * same volatile qty/price/MAP snapshot for existing Kinsey's offer rows.
+     * The importer has already updated the live Kinsey's table from the stage.
+     * This projection runs last so distributor_offers sees the same volatile
+     * qty/price/MAP snapshot for existing Kinsey's offer rows.
+     *
+     * Dropship eligibility is intentionally not projected here. The inventory
+     * API does not own that value for normalized offers, so product/catalog sync
+     * remains the source for dropship_enabled.
      *
      * @return array{rows:int,elapsed_ms:float}
      */
@@ -196,9 +217,14 @@ final class KinseysInventoryCronService extends AbstractTableCronService
             throw new \RuntimeException('Kinsey\'s distributor offers update skipped because stage table was empty.');
         }
 
+        // Delegate SQL construction to Kinsey's table-sync service. The cron
+        // only owns run order, logging, and failure handling; the concrete
+        // service owns the Kinsey's-specific column mapping.
         $t_offers = microtime(true);
         $stats = KinseysOfferNormalizationService::update_existing_from_inventory_stage($stage_table);
 
+        // Keep this profile label consistent with RSR/Zanders/Lipsey's so we
+        // can compare distributor inventory projections in the logs.
         $this->profile('Update existing distributor offers from inventory stage', $t_offers, [
             'stage_table' => (string) $stage_table,
             'distributor_offers_kinseys_inventory_update_rows' => (int) ($stats['rows'] ?? 0),

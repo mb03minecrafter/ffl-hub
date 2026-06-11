@@ -65,6 +65,19 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
      */
     public static function update_existing_from_inventory_stage(string $stage_table): array
     {
+        // Inventory-stage source fields used here:
+        // - S.upc: joins the Kinsey's inventory row to an existing normalized
+        //   offer row for the same UPC.
+        // - S.quantity_on_hand: becomes distributor_offers.qty and drives the
+        //   derived stock_status value.
+        // - S.price: becomes distributor_offers.dealer_price when non-blank.
+        // - S.map_price: becomes distributor_offers.map_price when non-blank.
+        //
+        // Inventory-stage source fields intentionally not used here:
+        // - S.restock_eta has no normalized offer target column right now.
+        // - Any product identity, dimensions, FFL/SOT, dropship, and shipping
+        //   fields are catalog-owned and remain the product cron's job.
+
         // 1. Normalize stage values into the typed expressions expected by
         // distributor_offers. The Kinsey's stage stores price/MAP as strings.
         $qty_expr = 'CAST(COALESCE(S.quantity_on_hand, 0) AS UNSIGNED)';
@@ -96,6 +109,21 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
 
         // Target distributor_offers fields in this UPDATE:
         // qty, stock_status, dealer_price, map_price, landed_cost, normalized_at.
+        //
+        // Field-by-field behavior:
+        // - qty mirrors the API inventory quantity after casting to an integer.
+        // - stock_status is derived from qty, so no separate API flag is needed.
+        // - dealer_price and map_price keep the old normalized value when
+        //   Kinsey's sends an empty string, matching the live-table updater.
+        // - landed_cost uses the resulting dealer_price plus the existing
+        //   offer shipping_cost because Kinsey's shipping is based on product
+        //   weight/length/FFL and is calculated by the product cron.
+        // - normalized_at changes only when at least one target value changes.
+        //
+        // Fields deliberately not written:
+        // shipping_cost, ffl_required, sot_required, manufacturer_norm,
+        // dropship_enabled, enabled, distributor_product_id, distributor_sku,
+        // and dimensions all belong to the catalog/product sync path.
         // 4. Join by UPC because Kinsey's inventory is keyed by UPC in the live
         // updater and we intentionally do not trust alternate IDs here.
         $map = new OfferInventorySyncMap(
@@ -113,6 +141,13 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
                 'o.normalized_at = NOW()',
             ],
             "
+                /* Changed-only guard:
+                 * The UPDATE should be cheap on no-op runs. Null-safe <=>
+                 * comparisons let MariaDB treat NULLs consistently while still
+                 * writing rows where any normalized target value is actually
+                 * stale. This avoids unnecessary writes and keeps the affected
+                 * row count meaningful for profiling.
+                 */
                 NOT (
                         o.qty <=> {$qty_expr}
                     AND NULLIF(o.stock_status, '') <=> NULLIF({$stock_status_expr}, '')
