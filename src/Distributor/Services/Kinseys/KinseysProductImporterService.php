@@ -1135,10 +1135,6 @@ final class KinseysProductImporterService
 
         $live_table = $this->table->get_live_table_name();
 
-        $t_phase = microtime(true);
-        $live_prune_stats = $this->prune_live_ineligible_rows();
-        $phase_ms['prune_live_ineligible_rows'] = $this->elapsed_ms($t_phase);
-
         $stage_not_live_stats = [
             'ok' => true,
             'stage_table' => $stage_table,
@@ -1178,8 +1174,6 @@ final class KinseysProductImporterService
             'join_updated_id' => (int) max(0, $join_updated_id),
             'join_updated_manufacturer' => (int) max(0, $join_updated_manufacturer),
             'sig_approved_forced' => (int) $sig_approved_forced,
-            'live_ineligible_pruned' => (int) ($live_prune_stats['rows_deleted'] ?? 0),
-            'live_prune_stats' => $live_prune_stats,
             'inventory_stage_pruned' => 0,
             'inventory_stage_not_live_stats' => $stage_not_live_stats,
             'write_stats' => $write_stats,
