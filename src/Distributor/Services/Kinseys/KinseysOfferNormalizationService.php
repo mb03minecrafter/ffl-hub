@@ -6,7 +6,6 @@ namespace FFLHub\Distributor\Services\Kinseys;
 use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
 use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
 use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
-use FFLHub\Distributor\Services\SigDropshipApproval;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -55,10 +54,11 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
      * This is the inventory-cron path. It intentionally updates only volatile
      * inventory/pricing fields and never inserts rows.
      * It writes these distributor_offers columns:
-     * qty, stock_status, dealer_price, map_price, landed_cost,
-     * dropship_enabled for approved non-SOT SIG rows, normalized_at.
+     * qty, stock_status, dealer_price, map_price, landed_cost, normalized_at.
      * It does not write shipping_cost because Kinsey's shipping is based on
      * static product data (weight/length/FFL), which belongs to the product cron.
+     * It does not write dropship_enabled because Kinsey's inventory data does
+     * not own dropship eligibility.
      * The inventory stage is keyed by UPC, matching the live-table update path.
      *
      * @return array{rows:int,elapsed_ms:float}
@@ -94,25 +94,9 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
         // estimate rather than recalculating from the inventory stage.
         $landed_cost_expr = self::landed_cost_expr($dealer_price_expr, 'o.shipping_cost');
 
-        // 4. Mirror the live-table SIG approval pass on existing offers. If
-        // Kinsey's SIG approval is disabled, this expression resolves to false
-        // and leaves dropship_enabled unchanged.
-        $sig_approval_enabled = SigDropshipApproval::is_distributor_sig_approved(self::DIST_ID);
-        $sig_offer_where_sql = $sig_approval_enabled
-            ? self::offer_sig_approval_where_sql('o')
-            : '0 = 1';
-
-        $dropship_enabled_expr = "
-            CASE
-                WHEN {$sig_offer_where_sql} THEN 1
-                ELSE o.dropship_enabled
-            END
-        ";
-
         // Target distributor_offers fields in this UPDATE:
-        // qty, stock_status, dealer_price, map_price, landed_cost,
-        // dropship_enabled, normalized_at.
-        // 5. Join by UPC because Kinsey's inventory is keyed by UPC in the live
+        // qty, stock_status, dealer_price, map_price, landed_cost, normalized_at.
+        // 4. Join by UPC because Kinsey's inventory is keyed by UPC in the live
         // updater and we intentionally do not trust alternate IDs here.
         $map = new OfferInventorySyncMap(
             self::DIST_ID,
@@ -126,7 +110,6 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
                 "o.dealer_price = {$dealer_price_expr}",
                 "o.map_price = {$map_price_expr}",
                 "o.landed_cost = {$landed_cost_expr}",
-                "o.dropship_enabled = {$dropship_enabled_expr}",
                 'o.normalized_at = NOW()',
             ],
             "
@@ -136,12 +119,11 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
                     AND o.dealer_price <=> {$dealer_price_expr}
                     AND o.map_price <=> {$map_price_expr}
                     AND o.landed_cost <=> {$landed_cost_expr}
-                    AND o.dropship_enabled <=> {$dropship_enabled_expr}
                 )
             "
         );
 
-        // 6. Let the shared runner execute the changed-only UPDATE. Missing
+        // 5. Let the shared runner execute the changed-only UPDATE. Missing
         // Kinsey's offer rows are created by the product-table sync, where the
         // full catalog snapshot exists.
         return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
@@ -228,25 +210,5 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
             'shipping_width_in' => 'shipping_width_in',
             'shipping_height_in' => 'shipping_height_in',
         ];
-    }
-
-    private static function offer_sig_approval_where_sql(string $alias): string
-    {
-        $alias = trim($alias);
-        $prefix = $alias !== '' ? $alias . '.' : '';
-
-        // SIG approval never applies to SOT rows. Product sync stores Kinsey's
-        // manufacturer_norm as an uppercase manufacturer name, but keep the
-        // variants broad to handle older normalized rows too.
-        return "
-            COALESCE({$prefix}sot_required, 0) = 0
-            AND (
-                   {$prefix}manufacturer_norm IN ('SIG', 'SIGSAUER', 'SIG SAUER', 'SIGARMS', 'SIG ARMS')
-                OR {$prefix}manufacturer_norm LIKE 'SIGSAUER%'
-                OR {$prefix}manufacturer_norm LIKE 'SIG SAUER%'
-                OR {$prefix}manufacturer_norm LIKE 'SIGARMS%'
-                OR {$prefix}manufacturer_norm LIKE 'SIG ARMS%'
-            )
-        ";
     }
 }
