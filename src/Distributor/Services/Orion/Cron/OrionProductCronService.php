@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\Orion\API\OrionApiClient;
+use FFLHub\Distributor\Services\Orion\OrionOfferNormalizationService;
 use FFLHub\Distributor\Services\Orion\OrionProductImporterService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
@@ -201,6 +202,8 @@ final class OrionProductCronService extends AbstractTableCronService
             'new_live' => (string) $new_live,
         ]);
 
+        $offers_result = $this->update_distributor_offers_from_new_live_table();
+
         update_option('fflhub_orion_fulfillment_last_refresh', current_time('mysql'), false);
         update_option('fflhub_orion_fulfillment_last_refresh_count', (int) $count, false);
         update_option('fflhub_orion_fulfillment_last_swap', current_time('mysql'), false);
@@ -216,7 +219,63 @@ final class OrionProductCronService extends AbstractTableCronService
             'products_seen' => count($products),
             'rows_imported' => (int) $count,
             'new_live' => (string) $new_live,
+            'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'distributor_offers_orion_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
+            'distributor_offers_orion_updated_changed_rows' => (int) ($offers_result['updated_changed_offers'] ?? 0),
+            'distributor_offers_orion_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
         ]);
+    }
+
+    /**
+     * Sync normalized offer rows for carried UPCs after the product table swap.
+     *
+     * Orion product sync intentionally does not write qty/stock_status because
+     * the product cron usually carries those from the old live table. The
+     * Orion-specific normalization service owns that omission; this cron method
+     * only runs it at the correct time and records comparable profiling fields.
+     *
+     * @return array<string,mixed>
+     */
+    private function update_distributor_offers_from_new_live_table(): array
+    {
+        $t_offers = microtime(true);
+        $live_table = $this->table->get_live_table_name();
+        $offers_result = [];
+
+        try {
+            $offers_result = OrionOfferNormalizationService::normalize_from_product_table($live_table);
+        } catch (\Throwable $e) {
+            $offers_result = [
+                'ok' => false,
+                'source_live_table' => (string) $live_table,
+                'errors' => [$e->getMessage()],
+            ];
+        }
+
+        $this->profile('Sync distributor offers from new live table', $t_offers, [
+            'source_live_table' => (string) ($offers_result['source_live_table'] ?? $live_table),
+            'active_product_state_total' => (int) ($offers_result['active_product_state_total'] ?? 0),
+            'matched_active_orion_upcs' => (int) ($offers_result['matched_active_orion_upcs'] ?? 0),
+            'distributor_offers_orion_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
+            'distributor_offers_orion_insert_missing_ms' => (string) ($offers_result['insert_missing_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_orion_updated_changed_rows' => (int) ($offers_result['updated_changed_offers'] ?? 0),
+            'distributor_offers_orion_update_changed_ms' => (string) ($offers_result['update_changed_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_orion_upsert_rows' => (int) ($offers_result['upsert_mysql_affected_rows'] ?? 0),
+            'distributor_offers_orion_upsert_ms' => (string) ($offers_result['upsert_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_orion_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
+            'distributor_offers_orion_stale_cleanup_ms' => (string) ($offers_result['stale_cleanup_elapsed_ms'] ?? '0.00'),
+            'ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+        ]);
+
+        if (empty($offers_result['ok'])) {
+            $this->log('ERROR: Orion distributor offers update failed after product swap', [
+                'source_live_table' => (string) ($offers_result['source_live_table'] ?? $live_table),
+                'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+            ]);
+        }
+
+        return $offers_result;
     }
 
     private function make_client(int $timeoutSeconds): OrionApiClient
