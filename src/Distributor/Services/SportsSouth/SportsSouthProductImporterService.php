@@ -251,6 +251,24 @@ final class SportsSouthProductImporterService
         return $this->apply_onhand_file_to_live($xmlFilePath);
     }
 
+    /**
+     * Apply a Sports South IncrementalOnhandUpdate XML file to the live table.
+     *
+     * This method deliberately stops at the Sports South product table. It:
+     * 1. ensures/truncates the persistent onhand stage table;
+     * 2. loads XML rows into that stage table;
+     * 3. builds deduped item-number and UPC-fallback stage slices;
+     * 4. updates the current live Sports South product table from those slices;
+     * 5. returns the stage table and apply metrics to the cron.
+     *
+     * The normalized distributor_offers update is intentionally not performed
+     * here. SportsSouthInventoryCronService owns that final projection step so
+     * this importer mirrors the other distributor importers: it is responsible
+     * for vendor-table state, while the cron decides when to sync offer state,
+     * persist cursors, and finalize the run.
+     *
+     * @return array<string,mixed>
+     */
     public function apply_onhand_file_to_live(string $xmlFilePath): array
     {
         $t_total = microtime(true);
@@ -349,6 +367,13 @@ final class SportsSouthProductImporterService
         $updated_upc = $this->update_live_inventory_by_upc($live_table, $upc_stage_table, $item_stage_table);
         $update_upc_ms = $this->format_ms((microtime(true) - $t_update_upc) * 1000.0);
 
+        // Return the raw stage table as part of the apply stats. The cron uses
+        // this exact vendor window to update distributor_offers after the live
+        // table has been refreshed. Keeping that projection outside the importer
+        // makes the ordering explicit:
+        // 1. vendor stage -> live Sports South table;
+        // 2. vendor stage -> existing normalized Sports South offers;
+        // 3. cursor/options persist only after both succeed.
         $stats = [
             'processed_rows' => (int) $rows_loaded,
             'rows_loaded' => (int) $rows_loaded,

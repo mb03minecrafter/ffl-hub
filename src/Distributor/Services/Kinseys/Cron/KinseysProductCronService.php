@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\Kinseys\API\KinseysApiClient;
+use FFLHub\Distributor\Services\Kinseys\KinseysOfferNormalizationService;
 use FFLHub\Distributor\Services\Kinseys\KinseysProductImporterService;
 use FFLHub\Distributor\Services\Kinseys\KinseysProductParser;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
@@ -330,6 +331,8 @@ final class KinseysProductCronService extends AbstractTableCronService
                 'new_live' => $new_live,
             ]);
 
+            $offers_result = $this->update_distributor_offers_from_new_live_table();
+
             update_option('fflhub_kinseys_product_last_update', current_time('mysql'), false);
             update_option('fflhub_kinseys_product_last_update_count', $publish_count, false);
             delete_option('fflhub_kinseys_product_last_error');
@@ -348,6 +351,10 @@ final class KinseysProductCronService extends AbstractTableCronService
                 'deleted_artifacts' => (int) $deleted_artifacts,
                 'deleted_old_artifacts' => (int) $deleted_old_artifacts,
                 'inventory_refresh_scheduled' => $inventory_refresh_scheduled ? 1 : 0,
+                'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
+                'distributor_offers_kinseys_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
+                'distributor_offers_kinseys_updated_changed_rows' => (int) ($offers_result['updated_changed_offers'] ?? 0),
+                'distributor_offers_kinseys_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
             ]);
             $this->finalize_run($t_start, $mem_start, 'SUCCESS', [
                 'products_seen' => count($product_rows),
@@ -360,6 +367,10 @@ final class KinseysProductCronService extends AbstractTableCronService
                 'deleted_artifacts' => (int) $deleted_artifacts,
                 'deleted_old_artifacts' => (int) $deleted_old_artifacts,
                 'inventory_refresh_scheduled' => $inventory_refresh_scheduled ? 1 : 0,
+                'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
+                'distributor_offers_kinseys_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
+                'distributor_offers_kinseys_updated_changed_rows' => (int) ($offers_result['updated_changed_offers'] ?? 0),
+                'distributor_offers_kinseys_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
             ]);
         } finally {
             $this->release_run_lock($lock_token);
@@ -573,6 +584,53 @@ final class KinseysProductCronService extends AbstractTableCronService
             ]);
             return false;
         }
+    }
+
+    /**
+     * Sync normalized offer rows for carried UPCs after the product table swap.
+     *
+     * @return array<string,mixed>
+     */
+    private function update_distributor_offers_from_new_live_table(): array
+    {
+        $t_offers = microtime(true);
+        $live_table = $this->table->get_live_table_name();
+        $offers_result = [];
+
+        try {
+            $offers_result = KinseysOfferNormalizationService::normalize_from_product_table($live_table);
+        } catch (\Throwable $e) {
+            $offers_result = [
+                'ok' => false,
+                'source_live_table' => (string) $live_table,
+                'errors' => [$e->getMessage()],
+            ];
+        }
+
+        $this->profile('Sync distributor offers from new live table', $t_offers, [
+            'source_live_table' => (string) ($offers_result['source_live_table'] ?? $live_table),
+            'active_product_state_total' => (int) ($offers_result['active_product_state_total'] ?? 0),
+            'matched_active_kinseys_upcs' => (int) ($offers_result['matched_active_kinseys_upcs'] ?? 0),
+            'distributor_offers_kinseys_inserted_missing_rows' => (int) ($offers_result['inserted_missing_offers'] ?? 0),
+            'distributor_offers_kinseys_insert_missing_ms' => (string) ($offers_result['insert_missing_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_kinseys_updated_changed_rows' => (int) ($offers_result['updated_changed_offers'] ?? 0),
+            'distributor_offers_kinseys_update_changed_ms' => (string) ($offers_result['update_changed_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_kinseys_upsert_rows' => (int) ($offers_result['upsert_mysql_affected_rows'] ?? 0),
+            'distributor_offers_kinseys_upsert_ms' => (string) ($offers_result['upsert_elapsed_ms'] ?? '0.00'),
+            'distributor_offers_kinseys_stale_disabled_rows' => (int) ($offers_result['stale_disabled'] ?? 0),
+            'distributor_offers_kinseys_stale_cleanup_ms' => (string) ($offers_result['stale_cleanup_elapsed_ms'] ?? '0.00'),
+            'ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+        ]);
+
+        if (empty($offers_result['ok'])) {
+            $this->log('ERROR: Kinsey\'s distributor offers update failed after product swap', [
+                'source_live_table' => (string) ($offers_result['source_live_table'] ?? $live_table),
+                'errors' => !empty($offers_result['errors']) ? (array) $offers_result['errors'] : [],
+            ]);
+        }
+
+        return $offers_result;
     }
 
     /**

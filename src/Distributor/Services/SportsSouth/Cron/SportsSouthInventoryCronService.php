@@ -147,6 +147,21 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
             return;
         }
 
+        // ------------------------------------------------------------------
+        // Stage: load IncrementalOnhandUpdate XML and apply it to the live
+        // Sports South product table.
+        // ------------------------------------------------------------------
+        //
+        // SportsSouthProductImporterService owns the physical vendor-table
+        // work: ensure/truncate the onhand stage table, load the XML rows,
+        // dedupe the stage window, and update the current live Sports South
+        // product table by item number with a UPC fallback. It returns the
+        // stage table name so this cron can run the separate normalized-offer
+        // projection below, matching the RSR/Zanders/Lipsey's/CSSI shape.
+        //
+        // If this apply step fails, do not advance the cursor. Reusing the
+        // same vendor window on the next run is safer than acknowledging data
+        // that never made it into the live product table.
         $t_apply = microtime(true);
         update_option('fflhub_sports_south_inventory_last_stage', 'apply_onhand_file_to_live', false);
         $importer = new SportsSouthProductImporterService($this->table, $parser);
@@ -162,15 +177,29 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
             return;
         }
 
-        // Stage: apply Sports South onhand fields to existing normalized offers.
+        // ------------------------------------------------------------------
+        // Stage: apply onhand stage rows to existing normalized offers.
+        // ------------------------------------------------------------------
         //
         // Keep this at the cron layer, mirroring RSR/Zanders/Lipsey's/CSSI:
         // the importer owns the physical Sports South stage/live-table work,
         // then the cron asks the Sports South table-sync service to project
-        // those same stage rows into distributor_offers. The inventory feed
-        // owns only volatile offer fields: qty, stock_status, dealer_price,
-        // landed_cost, and normalized_at. Missing offer-row creation stays on
-        // the full product cron because that path has the complete catalog row.
+        // those same stage rows into distributor_offers.
+        //
+        // Field ownership matters here:
+        // - Q/current_quantity updates offer qty and derived stock_status.
+        // - C/customer_price updates offer dealer_price when Sports South sends it.
+        // - landed_cost is recalculated from dealer_price + existing offer shipping_cost.
+        // - normalized_at records the offer snapshot refresh time.
+        //
+        // The inventory feed does not own shipping_cost, MAP/MSRP, FFL/SOT,
+        // manufacturer_norm, dimensions, enabled, or dropship policy fields.
+        // Missing offer-row creation also stays on the product cron because
+        // only the product/catalog path has the complete catalog row.
+        //
+        // If this projection fails, do not advance the Sports South cursor.
+        // The live product table was updated, but distributor_offers would be
+        // stale for the same vendor window; replaying the window is preferable.
         $offers_update_stats = [
             'rows' => 0,
             'elapsed_ms' => 0.0,
@@ -294,6 +323,14 @@ final class SportsSouthInventoryCronService extends AbstractTableCronService
      * returns the stage table after applying vendor data to the live distributor
      * table; this method then performs the separate distributor_offers projection
      * and profiles that work as its own step.
+     *
+     * The service method underneath is distributor-specific because Sports
+     * South has two matching modes:
+     * - primary item-number match using sports_south_item_number /
+     *   distributor_product_id;
+     * - rare UPC-only fallback for vendor rows that do not contain item number.
+     *
+     * @param string $stageTable Persistent onhand stage table populated by the importer.
      *
      * @return array{rows:int,elapsed_ms:float,item_rows:int,item_elapsed_ms:float,upc_rows:int,upc_elapsed_ms:float}
      */

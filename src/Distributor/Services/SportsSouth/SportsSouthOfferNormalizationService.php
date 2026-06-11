@@ -86,9 +86,21 @@ final class SportsSouthOfferNormalizationService extends AbstractDistributorTabl
      */
     public static function update_existing_from_inventory_stage(string $stage_table): array
     {
+        // Step 1: update the normal path first. Sports South IncrementalOnhandUpdate
+        // rows are keyed by I/item number in current payloads, and product sync
+        // stores that same value as distributor_product_id. This is the fast,
+        // expected join and mirrors the live-table item-number update path.
         $item_stats = self::update_existing_from_inventory_stage_by_item_number($stage_table);
+
+        // Step 2: run the compatibility fallback. Older/parser-supported shapes
+        // may contain UPC with no item number. Those rows can still refresh an
+        // existing offer by UPC, but only when the same offer did not also have
+        // an item-number row in this stage window.
         $upc_stats = self::update_existing_from_inventory_stage_by_upc_fallback($stage_table);
 
+        // Step 3: return split metrics. The cron reports item and UPC fallback
+        // timings separately because item-number matches are the path we expect
+        // to see on real Sports South incremental payloads.
         return [
             'rows' => (int) ($item_stats['rows'] ?? 0) + (int) ($upc_stats['rows'] ?? 0),
             'elapsed_ms' => (float) ($item_stats['elapsed_ms'] ?? 0.0) + (float) ($upc_stats['elapsed_ms'] ?? 0.0),
@@ -105,6 +117,14 @@ final class SportsSouthOfferNormalizationService extends AbstractDistributorTabl
      * The onhand stage table may theoretically contain repeated item numbers in
      * one API window. The join keeps only the latest loaded row for each item by
      * requiring S.id to match MAX(id) for that item_number.
+     *
+     * Matching fields:
+     * - stage S.item_number comes from Sports South I/item number;
+     * - offer distributor_product_id comes from sports_south_item_number;
+     * - distributor_id is constrained by the shared runner to sports_south.
+     *
+     * Fields updated by the common map:
+     * qty, stock_status, dealer_price, landed_cost, normalized_at.
      *
      * @return array{rows:int,elapsed_ms:float}
      */
@@ -132,6 +152,14 @@ final class SportsSouthOfferNormalizationService extends AbstractDistributorTabl
      * the normalized offers path equivalent: if Sports South ever sends an
      * onhand row with UPC but no item number, update the matching offer by UPC,
      * unless that offer also had an item-number row in the same stage window.
+     *
+     * This fallback is intentionally narrower than the item-number update:
+     * - it requires S.item_number = '' so it cannot compete with the primary
+     *   identifier path;
+     * - it chooses the latest loaded UPC-only stage row with MAX(id);
+     * - it refuses to update an offer if this same stage window contained an
+     *   item-number row for that offer, because item number is the stronger
+     *   distributor identifier.
      *
      * @return array{rows:int,elapsed_ms:float}
      */
@@ -171,10 +199,18 @@ final class SportsSouthOfferNormalizationService extends AbstractDistributorTabl
      * - P/catalog_price is stored on the live Sports South table but does not
      *   map to a distributor_offers column.
      *
+     * The changed-only WHERE uses null-safe comparison so unchanged offers are
+     * not rewritten. That keeps write volume low and makes the affected-row
+     * count meaningful in cron profiling.
+     *
      * @return array{rows:int,elapsed_ms:float}
      */
     private static function run_inventory_stage_update(string $stage_table, string $join_condition_sql): array
     {
+        // Step 1: build typed target expressions from the onhand stage row.
+        // current_quantity is numeric in stage, with NULL treated as zero.
+        // customer_price is optional; if Sports South omits it, keep the offer's
+        // existing dealer_price rather than blanking a product-cron value.
         $qty_expr = 'COALESCE(S.current_quantity, 0)';
         $stock_status_expr = self::stock_status_expr($qty_expr);
         $dealer_price_expr = "
@@ -185,6 +221,10 @@ final class SportsSouthOfferNormalizationService extends AbstractDistributorTabl
         ";
         $landed_cost_expr = self::landed_cost_expr($dealer_price_expr, 'o.shipping_cost');
 
+        // Step 2: describe the UPDATE to the shared runner.
+        // The caller supplies only the join condition because Sports South has
+        // two valid matching modes. The assignments and changed-row predicate
+        // stay identical for item-number and UPC fallback updates.
         $map = new OfferInventorySyncMap(
             self::DIST_ID,
             static::label(),
@@ -208,6 +248,9 @@ final class SportsSouthOfferNormalizationService extends AbstractDistributorTabl
             "
         );
 
+        // Step 3: execute one changed-only set-based UPDATE. This updates only
+        // existing Sports South offers; product sync/backfill remains the owner
+        // of inserting missing offer rows from complete catalog data.
         return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
     }
 
