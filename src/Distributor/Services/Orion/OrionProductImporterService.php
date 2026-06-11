@@ -583,6 +583,10 @@ final class OrionProductImporterService
         $sig_approved_forced = SigDropshipApproval::apply_to_table('orion', $live_table);
         $phase_ms['apply_sig_dropship_approval'] = $this->elapsed_ms($t_phase);
 
+        $t_phase = microtime(true);
+        $offers_update = OrionOfferNormalizationService::update_existing_from_inventory_stage($stage_table);
+        $phase_ms['sync_distributor_offers_from_inventory_stage'] = $this->elapsed_ms($t_phase);
+
         $join_updated = max(0, $join_updated_id) + max(0, $join_updated_code);
 
         update_option('fflhub_orion_inventory_last_update', current_time('mysql'), false);
@@ -595,6 +599,8 @@ final class OrionProductImporterService
             'join_updated_id' => (int) max(0, $join_updated_id),
             'join_updated_code' => (int) max(0, $join_updated_code),
             'sig_approved_forced' => (int) $sig_approved_forced,
+            'distributor_offers_orion_inventory_update_rows' => (int) ($offers_update['rows'] ?? 0),
+            'distributor_offers_orion_inventory_update_ms' => number_format((float) ($offers_update['elapsed_ms'] ?? 0.0), 2, '.', ''),
         ], $t_start, $mem_start, $phase_ms, $live_table, $stage_table);
     }
 

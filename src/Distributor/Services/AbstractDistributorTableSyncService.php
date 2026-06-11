@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Distributor\Services;
 
 use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
+use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
 use FFLHub\Distributor\Services\OfferSync\OfferProductSyncMap;
 
 if (!defined('ABSPATH')) {
@@ -101,6 +102,20 @@ abstract class AbstractDistributorTableSyncService
             static::matched_count_key(),
             static::product_source_columns($live_table)
         ));
+    }
+
+    /**
+     * Run an inventory-stage update against existing normalized offer rows.
+     *
+     * Concrete distributors still own their stage-table mapping because each
+     * inventory feed has different identifiers and volatile fields. This helper
+     * keeps the actual set-based UPDATE execution in one shared place.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    protected static function update_existing_offers_from_inventory_stage_map(OfferInventorySyncMap $map): array
+    {
+        return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
     }
 
     public static function table_exists_by_name(string $table): bool

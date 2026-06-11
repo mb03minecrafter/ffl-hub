@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Distributor\Services\Orion;
 
 use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
+use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -61,6 +62,93 @@ final class OrionOfferNormalizationService extends AbstractDistributorTableSyncS
     protected static function matched_count_key(): string
     {
         return 'matched_active_orion_upcs';
+    }
+
+    /**
+     * Apply loaded Orion inventory stage rows to existing normalized offer rows.
+     *
+     * This is the inventory-cron path. It intentionally updates only volatile
+     * inventory/pricing fields and never inserts rows.
+     * It writes these distributor_offers columns:
+     * qty, stock_status, dealer_price, landed_cost, normalized_at.
+     * It does not write shipping_cost because Orion shipping is product-owned
+     * and currently flat from the product/catalog table. It also does not write
+     * MAP/MSRP, FFL/SOT, manufacturer_norm, dropship, dimensions, enabled, or
+     * identity columns because the inventory endpoint does not own them.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    public static function update_existing_from_inventory_stage(string $stage_table): array
+    {
+        // Inventory-stage source fields used here:
+        // - S.product_id joins to distributor_offers.distributor_product_id.
+        // - S.quantity becomes qty and drives derived stock_status.
+        // - S.sale_price becomes dealer_price when nonblank.
+        //
+        // Stage product_code is intentionally not used for normalized offers.
+        // Orion product sync stores product_id as distributor_product_id, which
+        // is the stable API/order identifier used for optimized inventory runs.
+
+        // 1. Normalize stage values into the typed expressions expected by
+        // distributor_offers. quantity is already an unsigned int in stage, but
+        // COALESCE keeps the expression safe if an old table permits NULL.
+        $qty_expr = 'CAST(COALESCE(S.quantity, 0) AS UNSIGNED)';
+        $stock_status_expr = self::stock_status_expr($qty_expr);
+
+        // 2. Preserve the existing normalized dealer price when Orion sends a
+        // blank sale_price. This mirrors the live-table inventory update, which
+        // only overwrites distributor_price when S.sale_price is nonblank.
+        $stage_dealer_price_expr = self::decimal_expr('S', 'sale_price');
+        $dealer_price_expr = "
+            CASE
+                WHEN NULLIF(TRIM(S.sale_price), '') IS NULL THEN o.dealer_price
+                ELSE {$stage_dealer_price_expr}
+            END
+        ";
+
+        // 3. Landed cost is volatile because dealer_price can change here, but
+        // shipping_cost stays product-owned. Use the offer's current shipping
+        // estimate rather than recalculating from the inventory stage.
+        $landed_cost_expr = self::landed_cost_expr($dealer_price_expr, 'o.shipping_cost');
+
+        // Target distributor_offers fields in this UPDATE:
+        // qty, stock_status, dealer_price, landed_cost, normalized_at.
+        //
+        // Fields deliberately not written:
+        // shipping_cost, map_price, msrp, ffl_required, sot_required,
+        // manufacturer_norm, dropship_enabled, enabled, distributor_product_id,
+        // distributor_sku, source_updated_at, and dimensions all belong to the
+        // product/catalog sync path.
+        // 4. Join by Orion product ID because product sync stores that value as
+        // distributor_product_id, and optimized inventory requests are built
+        // from that same offer identity column.
+        $map = new OfferInventorySyncMap(
+            self::DIST_ID,
+            static::label(),
+            $stage_table,
+            'S',
+            "S.product_id <> '' AND S.product_id = o.distributor_product_id",
+            [
+                "o.qty = {$qty_expr}",
+                "o.stock_status = {$stock_status_expr}",
+                "o.dealer_price = {$dealer_price_expr}",
+                "o.landed_cost = {$landed_cost_expr}",
+                'o.normalized_at = NOW()',
+            ],
+            "
+                NOT (
+                        o.qty <=> {$qty_expr}
+                    AND NULLIF(o.stock_status, '') <=> NULLIF({$stock_status_expr}, '')
+                    AND o.dealer_price <=> {$dealer_price_expr}
+                    AND o.landed_cost <=> {$landed_cost_expr}
+                )
+            "
+        );
+
+        // 5. Let the shared base/runner execute the changed-only UPDATE.
+        // Missing Orion offer rows are created by the product-table sync, where
+        // the full catalog snapshot and active product_state filter exist.
+        return self::update_existing_offers_from_inventory_stage_map($map);
     }
 
     /**
