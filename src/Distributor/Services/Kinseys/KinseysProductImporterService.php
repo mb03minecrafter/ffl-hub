@@ -255,20 +255,8 @@ final class KinseysProductImporterService
                 FROM {$staging_table} S
                 LEFT JOIN {$temp_table} A1
                     ON S.kinseys_product_id <> '' AND A1.product_id = S.kinseys_product_id
-                LEFT JOIN {$temp_table} A2
-                    ON S.remote_identifier <> '' AND A2.product_id = S.remote_identifier
-                LEFT JOIN {$temp_table} A3
-                    ON S.north_item_number <> '' AND A3.product_id = S.north_item_number
-                LEFT JOIN {$temp_table} A4
-                    ON S.south_item_number <> '' AND A4.product_id = S.south_item_number
-                LEFT JOIN {$temp_table} A5
-                    ON S.vendor_item_number <> '' AND A5.product_id = S.vendor_item_number
                 WHERE
                     A1.product_id IS NULL
-                    AND A2.product_id IS NULL
-                    AND A3.product_id IS NULL
-                    AND A4.product_id IS NULL
-                    AND A5.product_id IS NULL
             "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $phase_ms['delete_not_allowed_rows'] = $this->elapsed_ms($t_phase);
             if ($deleted === false) {
@@ -449,22 +437,10 @@ final class KinseysProductImporterService
 
         $row = $wpdb->get_row("
             SELECT
-                SUM(A1.product_id IS NOT NULL) AS matched_kinseys_product_id,
-                SUM(A2.product_id IS NOT NULL) AS matched_remote_identifier,
-                SUM(A3.product_id IS NOT NULL) AS matched_north_item_number,
-                SUM(A4.product_id IS NOT NULL) AS matched_south_item_number,
-                SUM(A5.product_id IS NOT NULL) AS matched_vendor_item_number
+                SUM(A1.product_id IS NOT NULL) AS matched_kinseys_product_id
             FROM {$stagingTable} S
             LEFT JOIN {$tempTable} A1
                 ON S.kinseys_product_id <> '' AND A1.product_id = S.kinseys_product_id
-            LEFT JOIN {$tempTable} A2
-                ON S.remote_identifier <> '' AND A2.product_id = S.remote_identifier
-            LEFT JOIN {$tempTable} A3
-                ON S.north_item_number <> '' AND A3.product_id = S.north_item_number
-            LEFT JOIN {$tempTable} A4
-                ON S.south_item_number <> '' AND A4.product_id = S.south_item_number
-            LEFT JOIN {$tempTable} A5
-                ON S.vendor_item_number <> '' AND A5.product_id = S.vendor_item_number
         ", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         if (!is_array($row)) {
@@ -477,10 +453,6 @@ final class KinseysProductImporterService
         return [
             'ok' => 1,
             'matched_kinseys_product_id' => (int) ($row['matched_kinseys_product_id'] ?? 0),
-            'matched_remote_identifier' => (int) ($row['matched_remote_identifier'] ?? 0),
-            'matched_north_item_number' => (int) ($row['matched_north_item_number'] ?? 0),
-            'matched_south_item_number' => (int) ($row['matched_south_item_number'] ?? 0),
-            'matched_vendor_item_number' => (int) ($row['matched_vendor_item_number'] ?? 0),
         ];
     }
 
