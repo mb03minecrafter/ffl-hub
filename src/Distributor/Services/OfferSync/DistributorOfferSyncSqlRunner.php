@@ -93,6 +93,9 @@ final class DistributorOfferSyncSqlRunner
             $select_columns[] = "{$expression} AS {$column}";
         }
 
+        $insert_columns[] = 'has_changed';
+        $select_columns[] = '1 AS has_changed';
+
         $insert_columns[] = 'normalized_at';
         $select_columns[] = 'NOW() AS normalized_at';
 
@@ -107,6 +110,7 @@ final class DistributorOfferSyncSqlRunner
             $comparison_lines[] = "NOT (o.{$column} <=> {$source_columns[$column]})";
         }
         $update_lines[] = 'o.normalized_at = NOW()';
+        $update_lines[] = 'o.has_changed = 1';
 
         // 2. Insert offer rows that do not yet exist for active carried UPCs.
         // Start from product_state so only UPCs we actively carry are eligible,
@@ -199,6 +203,7 @@ final class DistributorOfferSyncSqlRunner
                     o.dropship_enabled = 0,
                     o.qty = 0,
                     o.stock_status = 'outofstock',
+                    o.has_changed = 1,
                     o.normalized_at = NOW()
                 WHERE o.distributor_id = %s
                   AND {$alias}.upc IS NULL
@@ -258,6 +263,8 @@ final class DistributorOfferSyncSqlRunner
         if ($stage_alias === '' || $join_condition_sql === '' || !$set_expressions || $changed_where_sql === '') {
             throw new \RuntimeException($map->label() . ' inventory offer sync map is incomplete.');
         }
+
+        $set_expressions[] = 'o.has_changed = 1';
 
         $sql = $wpdb->prepare(
             "
