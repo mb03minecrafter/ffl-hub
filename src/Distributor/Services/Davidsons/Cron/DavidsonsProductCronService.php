@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Davidsons\API\DavidsonsPortalInventoryClient;
+use FFLHub\Distributor\Services\Davidsons\DavidsonsOfferNormalizationService;
 use FFLHub\Distributor\Services\Davidsons\DavidsonsProductImporterService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
@@ -133,6 +134,8 @@ final class DavidsonsProductCronService extends AbstractTableCronService
             return;
         }
 
+        $offers_result = $this->update_distributor_offers_from_new_live_table();
+
         update_option('fflhub_davidsons_fulfillment_last_import', current_time('mysql'));
         update_option('fflhub_davidsons_fulfillment_last_import_count', (int) $count);
         update_option('fflhub_davidsons_fulfillment_last_swap', current_time('mysql'));
@@ -145,7 +148,65 @@ final class DavidsonsProductCronService extends AbstractTableCronService
             'path'         => $path,
             'imported_rows' => (int) $count,
             'new_live'      => $new_live,
+            'distributor_offers_ok' => !empty($offers_result['ok']) ? 1 : 0,
+            'distributor_offers_davidsons_inserted_missing_rows' => (int) ($offers_result['inserted_missing_rows'] ?? 0),
+            'distributor_offers_davidsons_updated_changed_rows' => (int) ($offers_result['updated_changed_rows'] ?? 0),
+            'distributor_offers_davidsons_stale_disabled_rows' => (int) ($offers_result['stale_disabled_rows'] ?? 0),
         ]);
+    }
+
+    /**
+     * Copy the newly live Davidson's product snapshot into distributor offers.
+     *
+     * The importer has already finished and the double-buffered table has
+     * already swapped, so the current live table is the source of truth here.
+     * The shared sync limits rows to active product_state UPCs, inserts missing
+     * Davidson's offer rows, updates changed offer snapshots, and disables stale
+     * Davidson's offers that no longer exist in the fresh catalog table.
+     *
+     * @return array<string,mixed>
+     */
+    private function update_distributor_offers_from_new_live_table(): array
+    {
+        $t0 = microtime(true);
+        $live_table = (string) $this->table->get_live_table_name();
+
+        try {
+            $result = DavidsonsOfferNormalizationService::normalize_from_product_table($live_table);
+            $result['ok'] = true;
+        } catch (\Throwable $e) {
+            $result = [
+                'ok' => false,
+                'source_live_table' => $live_table,
+                'errors' => [$e->getMessage()],
+            ];
+        }
+
+        $result['elapsed_ms'] = round((microtime(true) - $t0) * 1000.0, 2);
+
+        $this->log('Sync distributor offers from new Davidson live table.', [
+            'source_live_table' => $live_table,
+            'active_product_state_total' => (int) ($result['active_product_state_total'] ?? 0),
+            'matched_active_davidsons_upcs' => (int) ($result['matched_active_davidsons_upcs'] ?? 0),
+            'inserted_missing_rows' => (int) ($result['inserted_missing_rows'] ?? 0),
+            'insert_missing_ms' => (float) ($result['insert_missing_ms'] ?? 0.0),
+            'updated_changed_rows' => (int) ($result['updated_changed_rows'] ?? 0),
+            'update_changed_ms' => (float) ($result['update_changed_ms'] ?? 0.0),
+            'stale_disabled_rows' => (int) ($result['stale_disabled_rows'] ?? 0),
+            'stale_cleanup_ms' => (float) ($result['stale_cleanup_ms'] ?? 0.0),
+            'elapsed_ms' => (float) ($result['elapsed_ms'] ?? 0.0),
+            'ok' => !empty($result['ok']) ? 1 : 0,
+            'errors' => (array) ($result['errors'] ?? []),
+        ]);
+
+        if (empty($result['ok'])) {
+            $this->log('ERROR: Davidson distributor offers update failed after product swap.', [
+                'source_live_table' => $live_table,
+                'errors' => (array) ($result['errors'] ?? []),
+            ]);
+        }
+
+        return $result;
     }
 
     /**
