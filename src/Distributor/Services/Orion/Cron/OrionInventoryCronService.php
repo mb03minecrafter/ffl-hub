@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\Orion\API\OrionApiClient;
+use FFLHub\Distributor\Services\Orion\OrionOfferNormalizationService;
 use FFLHub\Distributor\Services\Orion\OrionProductImporterService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
@@ -165,17 +166,36 @@ final class OrionInventoryCronService extends AbstractTableCronService
         }
 
         $t_inventory = microtime(true);
+        $optimized_inventory_run = $this->optimized_inventory_run_enabled();
+        $optimized_product_ids = $optimized_inventory_run
+            ? OrionOfferNormalizationService::enabled_offer_product_ids_for_inventory()
+            : [];
+
+        if ($optimized_inventory_run && empty($optimized_product_ids)) {
+            $ctx = [
+                'optimized_inventory_run' => 1,
+                'requested_product_ids' => 0,
+            ];
+            $this->log('Skipping optimized Orion inventory update because no enabled Orion offer product IDs were found.', $ctx);
+            $this->finalize_run($t_start, $mem_start, 'SUCCESS (optimized inventory no product ids)', $ctx);
+            return;
+        }
+
         $this->log('PHASE START: get_catalog_inventory', [
             'timeout_sec' => $timeout_seconds,
+            'optimized_inventory_run' => $optimized_inventory_run ? 1 : 0,
+            'requested_product_ids' => count($optimized_product_ids),
             'memory_kb' => $this->memory_kb(),
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
-        $inventory = $client->get_catalog_inventory();
+        $inventory = $client->get_catalog_inventory($optimized_product_ids);
         $inventory_data = (array) ($inventory['data'] ?? []);
         $this->profile('get_catalog_inventory', $t_inventory, array_merge([
             'ok' => empty($inventory['ok']) ? 0 : 1,
             'status' => (int) ($inventory['status'] ?? 0),
             'timeout_sec' => $timeout_seconds,
+            'optimized_inventory_run' => $optimized_inventory_run ? 1 : 0,
+            'requested_product_ids' => count($optimized_product_ids),
             'response_bytes' => (int) ($inventory['response_bytes'] ?? 0),
         ], DebugLogUtil::summarize_array_keys($inventory_data), [
             'inventory_rows' => $this->count_inventory_rows($inventory_data),
@@ -199,10 +219,14 @@ final class OrionInventoryCronService extends AbstractTableCronService
         $importer = new OrionProductImporterService($this->table);
         $this->log('PHASE START: apply_inventory_array_to_live', [
             'inventory_rows' => $this->count_inventory_rows($inventory_data),
+            'optimized_inventory_run' => $optimized_inventory_run ? 1 : 0,
+            'requested_product_ids' => count($optimized_product_ids),
             'memory_kb' => $this->memory_kb(),
             'memory_peak_kb' => $this->memory_peak_kb(),
         ]);
         $stats = $importer->apply_inventory_array_to_live($inventory_data);
+        $stats['optimized_inventory_run'] = $optimized_inventory_run ? 1 : 0;
+        $stats['requested_product_ids'] = count($optimized_product_ids);
         $this->profile('apply_inventory_array_to_live', $t_apply, $stats);
 
         update_option('fflhub_orion_inventory_last_update', current_time('mysql'), false);
@@ -230,6 +254,11 @@ final class OrionInventoryCronService extends AbstractTableCronService
         );
 
         return max(10, min(180, $timeout_seconds));
+    }
+
+    private function optimized_inventory_run_enabled(): bool
+    {
+        return Options::get_distributor_option('orion', 'optimized_inventory_run', '0') === '1';
     }
 
     /**

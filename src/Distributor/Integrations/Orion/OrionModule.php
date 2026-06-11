@@ -64,6 +64,12 @@ final class OrionModule implements DistributorModuleInterface
                 'description' => 'Your Orion Wholesale API connection key. Orion sends this as the Connection-Key request header.',
                 'default'     => '',
             ],
+            'optimized_inventory_run' => [
+                'label'       => 'Optimized Inventory Run',
+                'type'        => 'checkbox',
+                'description' => 'Only request inventory for Orion product IDs that already exist in normalized distributor offers. Leave disabled to pull the full Orion inventory feed.',
+                'default'     => '0',
+            ],
         ];
     }
 

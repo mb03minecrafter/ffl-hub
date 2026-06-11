@@ -141,6 +141,56 @@ final class OrionOfferNormalizationService extends AbstractDistributorTableSyncS
     }
 
     /**
+     * Return Orion product IDs that are already represented in normalized offers.
+     *
+     * The optimized Orion inventory cron uses this as its request list for
+     * get_catalog_inventory(product_ids=...). Do not filter by stock status:
+     * out-of-stock carried items still need to be requested so they can come
+     * back in stock without waiting for a full inventory pull.
+     *
+     * @return string[]
+     */
+    public static function enabled_offer_product_ids_for_inventory(): array
+    {
+        global $wpdb;
+
+        $offers_table = $wpdb->prefix . 'fflhub_distributor_offers';
+        $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $offers_table));
+        if (!is_string($found) || $found !== $offers_table) {
+            return [];
+        }
+
+        $rows = $wpdb->get_col(
+            $wpdb->prepare(
+                "
+                SELECT DISTINCT distributor_product_id
+                FROM {$offers_table}
+                WHERE distributor_id = %s
+                  AND enabled = 1
+                  AND distributor_product_id IS NOT NULL
+                  AND distributor_product_id <> ''
+                ORDER BY distributor_product_id
+                ",
+                self::DIST_ID
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ($rows as $row) {
+            $id = trim((string) $row);
+            if ($id !== '') {
+                $ids[$id] = $id;
+            }
+        }
+
+        return array_values($ids);
+    }
+
+    /**
      * Orion live table dimension column -> distributor_offers dimension column.
      *
      * @return array<string,string>
