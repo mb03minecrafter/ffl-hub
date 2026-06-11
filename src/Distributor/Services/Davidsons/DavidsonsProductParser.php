@@ -76,6 +76,7 @@ class DavidsonsProductParser
             'inventory_quantity' => $qty,
             'allocation_status'  => $stock_state,
             'distributor_price'  => $this->clean_money($this->get($csv, $header_map, 'dealer price')),
+            'shipping_cost'      => '13',
             'retail_map'         => $retail_msrp,
             'retail_msrp'        => $retail_msrp,
             'sale_price'         => $this->clean_money($this->get($csv, $header_map, 'sale price')),

@@ -134,6 +134,7 @@ class DavidsonsProductImporterService
                 retail_map         = NULLIF(REPLACE(REPLACE(TRIM(BOTH '\\r' FROM TRIM(@c3)), '$', ''), ',', ''), ''),
                 retail_msrp        = NULLIF(REPLACE(REPLACE(TRIM(BOTH '\\r' FROM TRIM(@c3)), '$', ''), ',', ''), ''),
                 distributor_price  = NULLIF(REPLACE(REPLACE(TRIM(BOTH '\\r' FROM TRIM(@c4)), '$', ''), ',', ''), ''),
+                shipping_cost      = '13',
                 sale_price         = NULLIF(REPLACE(REPLACE(TRIM(BOTH '\\r' FROM TRIM(@c5)), '$', ''), ',', ''), ''),
                 sale_ends          = TRIM(BOTH '\\r' FROM TRIM(@c6)),
 
