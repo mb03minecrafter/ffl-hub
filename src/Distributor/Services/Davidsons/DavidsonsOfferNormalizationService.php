@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace FFLHub\Distributor\Services\Davidsons;
 
 use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
+use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
+use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -17,8 +19,8 @@ if (!defined('ABSPATH')) {
  * only describes how that newly live Davidson's table maps into
  * fflhub_distributor_offers for active product_state UPCs.
  *
- * There is no Davidson's inventory-stage implementation yet. The product cron
- * snapshot is currently the authoritative source for Davidson's offer rows.
+ * The inventory cron has a narrower quantity-only feed. Its stage-table path
+ * updates only volatile stock fields on existing Davidson's offer rows.
  */
 final class DavidsonsOfferNormalizationService extends AbstractDistributorTableSyncService
 {
@@ -42,6 +44,60 @@ final class DavidsonsOfferNormalizationService extends AbstractDistributorTableS
     protected static function matched_count_key(): string
     {
         return 'matched_active_davidsons_upcs';
+    }
+
+    /**
+     * Apply loaded Davidson's quantity stage rows to existing normalized offers.
+     *
+     * This is the inventory-cron path. Davidson's quantity CSV owns only
+     * warehouse quantity, so this update intentionally writes only:
+     * qty, stock_status, normalized_at.
+     *
+     * It does not write price, shipping, MAP/MSRP, FFL/SOT, manufacturer, or
+     * dropship fields. Those fields belong to the full product/catalog cron.
+     *
+     * The join uses Davidson's item number because product sync stores
+     * davidsons_item_number as distributor_product_id. That avoids ambiguous
+     * UPC cases where Davidson's quantity feed can disagree with the live
+     * catalog row's UPC.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    public static function update_existing_from_inventory_stage(string $stage_table): array
+    {
+        // 1. Normalize the stage total into the integer quantity used by
+        // distributor_offers. The inventory cron has already loaded
+        // total_qty = Quantity_NC + Quantity_AZ into the persistent stage table.
+        $qty_expr = 'CAST(COALESCE(S.total_qty, 0) AS UNSIGNED)';
+        $stock_status_expr = self::stock_status_expr($qty_expr);
+
+        // Target distributor_offers fields in this UPDATE:
+        // qty, stock_status, normalized_at.
+        // 2. Join by item number, not UPC. Davidson's item_number is the stable
+        // distributor identifier and is stored as distributor_product_id.
+        $map = new OfferInventorySyncMap(
+            self::DIST_ID,
+            static::label(),
+            $stage_table,
+            'S',
+            "S.item_number <> '' AND S.item_number = o.distributor_product_id",
+            [
+                "o.qty = {$qty_expr}",
+                "o.stock_status = {$stock_status_expr}",
+                'o.normalized_at = NOW()',
+            ],
+            "
+                NOT (
+                        o.qty <=> {$qty_expr}
+                    AND NULLIF(o.stock_status, '') <=> NULLIF({$stock_status_expr}, '')
+                )
+            "
+        );
+
+        // 3. Let the shared runner compile/execute the changed-only UPDATE.
+        // Missing Davidson's offers are created by product sync where the full
+        // catalog snapshot exists.
+        return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
     }
 
     /**

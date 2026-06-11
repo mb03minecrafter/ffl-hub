@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Davidsons\API\DavidsonsPortalInventoryClient;
+use FFLHub\Distributor\Services\Davidsons\DavidsonsOfferNormalizationService;
 use FFLHub\Distributor\Services\SigDropshipApproval;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Settings\Options;
@@ -143,6 +144,18 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
 
         $processed_rows = (int) ($apply_stats['processed_rows'] ?? 0);
 
+        try {
+            $offers_update_stats = $this->update_distributor_offers_from_inventory_stage(
+                (string) ($apply_stats['stage_table'] ?? '')
+            );
+        } catch (\Throwable $e) {
+            update_option('fflhub_davidsons_inventory_last_update_error', current_time('mysql'));
+            $this->log('ERROR: Davidson normalized distributor offers update failed.', [
+                'error' => $e->getMessage(),
+            ]);
+            return;
+        }
+
         update_option('fflhub_davidsons_inventory_last_update', current_time('mysql'));
         update_option('fflhub_davidsons_inventory_last_update_count', (int) $processed_rows);
         delete_option('fflhub_davidsons_inventory_last_update_error');
@@ -153,6 +166,8 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
             'path'         => $path,
             'processed_rows' => $processed_rows,
             'join_updated'   => (int) ($apply_stats['join_updated'] ?? 0),
+            'distributor_offers_davidsons_inventory_update_rows' => (int) ($offers_update_stats['rows'] ?? 0),
+            'distributor_offers_davidsons_inventory_update_ms' => number_format((float) ($offers_update_stats['elapsed_ms'] ?? 0.0), 2, '.', ''),
         ]);
     }
 
@@ -375,6 +390,30 @@ final class DavidsonsInventoryCronService extends AbstractTableCronService
         ];
 
         $this->log('PROFILE: apply_inventory_updates_via_load_data() breakdown', $stats);
+
+        return $stats;
+    }
+
+    /**
+     * Apply loaded quantity stage rows to existing normalized Davidson's offers.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    private function update_distributor_offers_from_inventory_stage(string $stage_table): array
+    {
+        if ($stage_table === '') {
+            throw new \RuntimeException('Davidson distributor offers update skipped because stage table was empty.');
+        }
+
+        $t_offers = microtime(true);
+        $stats = DavidsonsOfferNormalizationService::update_existing_from_inventory_stage($stage_table);
+
+        $this->log('Update existing Davidson distributor offers from inventory stage.', [
+            'stage_table' => (string) $stage_table,
+            'distributor_offers_davidsons_inventory_update_rows' => (int) ($stats['rows'] ?? 0),
+            'distributor_offers_davidsons_inventory_update_ms' => number_format((float) ($stats['elapsed_ms'] ?? 0.0), 2, '.', ''),
+            'elapsed_ms' => number_format((microtime(true) - $t_offers) * 1000.0, 2, '.', ''),
+        ]);
 
         return $stats;
     }
