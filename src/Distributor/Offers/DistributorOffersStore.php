@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
 final class DistributorOffersStore
 {
     private const SCHEMA_OPTION = 'fflhub_distributor_offers_schema_version';
-    private const SCHEMA_VERSION = '4';
+    private const SCHEMA_VERSION = '5';
     private const TABLE_SUFFIX = 'fflhub_distributor_offers';
 
     public static function table_name(): string
@@ -62,6 +62,7 @@ final class DistributorOffersStore
                 sot_required TINYINT(1) NOT NULL DEFAULT 0,
                 dropship_enabled TINYINT(1) NOT NULL DEFAULT 1,
                 enabled TINYINT(1) NOT NULL DEFAULT 1,
+                has_changed TINYINT(1) NOT NULL DEFAULT 0,
                 shipping_weight_oz DECIMAL(10,3) DEFAULT NULL,
                 shipping_length_in DECIMAL(10,3) DEFAULT NULL,
                 shipping_width_in DECIMAL(10,3) DEFAULT NULL,
@@ -72,6 +73,7 @@ final class DistributorOffersStore
                 KEY distributor_upc (distributor_id, upc),
                 KEY distributor_product_id (distributor_id, distributor_product_id),
                 KEY upc_available_landed (upc, enabled, dropship_enabled, qty, landed_cost),
+                KEY has_changed (has_changed, upc),
                 KEY normalized_at (normalized_at)
             ) {$charset};
         ");
@@ -187,6 +189,7 @@ final class DistributorOffersStore
 
         $missing_columns = [
             'manufacturer_norm' => 'ADD COLUMN manufacturer_norm VARCHAR(191) DEFAULT NULL AFTER distributor_sku',
+            'has_changed' => 'ADD COLUMN has_changed TINYINT(1) NOT NULL DEFAULT 0 AFTER enabled',
         ];
 
         foreach ($missing_columns as $column => $definition) {
@@ -219,6 +222,7 @@ final class DistributorOffersStore
             'distributor_upc' => 'ADD KEY distributor_upc (distributor_id, upc)',
             'distributor_product_id' => 'ADD KEY distributor_product_id (distributor_id, distributor_product_id)',
             'upc_available_landed' => 'ADD KEY upc_available_landed (upc, enabled, dropship_enabled, qty, landed_cost)',
+            'has_changed' => 'ADD KEY has_changed (has_changed, upc)',
             'normalized_at' => 'ADD KEY normalized_at (normalized_at)',
         ];
 
@@ -241,6 +245,7 @@ final class DistributorOffersStore
             'distributor_upc',
             'distributor_product_id',
             'upc_available_landed',
+            'has_changed',
             'normalized_at',
         ];
     }
@@ -252,6 +257,7 @@ final class DistributorOffersStore
     {
         return [
             'manufacturer_norm',
+            'has_changed',
         ];
     }
 }
