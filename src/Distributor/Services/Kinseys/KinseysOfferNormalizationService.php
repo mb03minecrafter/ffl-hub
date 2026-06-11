@@ -4,6 +4,9 @@ declare(strict_types=1);
 namespace FFLHub\Distributor\Services\Kinseys;
 
 use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
+use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
+use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
+use FFLHub\Distributor\Services\SigDropshipApproval;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -44,6 +47,104 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
     protected static function matched_count_key(): string
     {
         return 'matched_active_kinseys_upcs';
+    }
+
+    /**
+     * Apply loaded Kinsey's inventory stage rows to existing normalized offer rows.
+     *
+     * This is the inventory-cron path. It intentionally updates only volatile
+     * inventory/pricing fields and never inserts rows.
+     * It writes these distributor_offers columns:
+     * qty, stock_status, dealer_price, map_price, landed_cost,
+     * dropship_enabled for approved non-SOT SIG rows, normalized_at.
+     * It does not write shipping_cost because Kinsey's shipping is based on
+     * static product data (weight/length/FFL), which belongs to the product cron.
+     * The inventory stage is keyed by UPC, matching the live-table update path.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    public static function update_existing_from_inventory_stage(string $stage_table): array
+    {
+        // 1. Normalize stage values into the typed expressions expected by
+        // distributor_offers. The Kinsey's stage stores price/MAP as strings.
+        $qty_expr = 'CAST(COALESCE(S.quantity_on_hand, 0) AS UNSIGNED)';
+        $stock_status_expr = self::stock_status_expr($qty_expr);
+
+        // 2. Preserve the existing offer price/MAP when Kinsey's sends blanks.
+        // This mirrors the live-table inventory update, which only overwrites
+        // distributor_price and retail_map when the stage value is non-blank.
+        $stage_dealer_price_expr = self::decimal_expr('S', 'price');
+        $dealer_price_expr = "
+            CASE
+                WHEN NULLIF(TRIM(S.price), '') IS NULL THEN o.dealer_price
+                ELSE {$stage_dealer_price_expr}
+            END
+        ";
+
+        $stage_map_price_expr = self::decimal_expr('S', 'map_price');
+        $map_price_expr = "
+            CASE
+                WHEN NULLIF(TRIM(S.map_price), '') IS NULL THEN o.map_price
+                ELSE {$stage_map_price_expr}
+            END
+        ";
+
+        // 3. Landed cost is volatile because dealer_price can change here, but
+        // shipping_cost stays product-owned. Use the offer's current shipping
+        // estimate rather than recalculating from the inventory stage.
+        $landed_cost_expr = self::landed_cost_expr($dealer_price_expr, 'o.shipping_cost');
+
+        // 4. Mirror the live-table SIG approval pass on existing offers. If
+        // Kinsey's SIG approval is disabled, this expression resolves to false
+        // and leaves dropship_enabled unchanged.
+        $sig_approval_enabled = SigDropshipApproval::is_distributor_sig_approved(self::DIST_ID);
+        $sig_offer_where_sql = $sig_approval_enabled
+            ? self::offer_sig_approval_where_sql('o')
+            : '0 = 1';
+
+        $dropship_enabled_expr = "
+            CASE
+                WHEN {$sig_offer_where_sql} THEN 1
+                ELSE o.dropship_enabled
+            END
+        ";
+
+        // Target distributor_offers fields in this UPDATE:
+        // qty, stock_status, dealer_price, map_price, landed_cost,
+        // dropship_enabled, normalized_at.
+        // 5. Join by UPC because Kinsey's inventory is keyed by UPC in the live
+        // updater and we intentionally do not trust alternate IDs here.
+        $map = new OfferInventorySyncMap(
+            self::DIST_ID,
+            static::label(),
+            $stage_table,
+            'S',
+            "S.upc <> '' AND S.upc = o.upc",
+            [
+                "o.qty = {$qty_expr}",
+                "o.stock_status = {$stock_status_expr}",
+                "o.dealer_price = {$dealer_price_expr}",
+                "o.map_price = {$map_price_expr}",
+                "o.landed_cost = {$landed_cost_expr}",
+                "o.dropship_enabled = {$dropship_enabled_expr}",
+                'o.normalized_at = NOW()',
+            ],
+            "
+                NOT (
+                        o.qty <=> {$qty_expr}
+                    AND NULLIF(o.stock_status, '') <=> NULLIF({$stock_status_expr}, '')
+                    AND o.dealer_price <=> {$dealer_price_expr}
+                    AND o.map_price <=> {$map_price_expr}
+                    AND o.landed_cost <=> {$landed_cost_expr}
+                    AND o.dropship_enabled <=> {$dropship_enabled_expr}
+                )
+            "
+        );
+
+        // 6. Let the shared runner execute the changed-only UPDATE. Missing
+        // Kinsey's offer rows are created by the product-table sync, where the
+        // full catalog snapshot exists.
+        return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
     }
 
     /**
@@ -127,5 +228,25 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
             'shipping_width_in' => 'shipping_width_in',
             'shipping_height_in' => 'shipping_height_in',
         ];
+    }
+
+    private static function offer_sig_approval_where_sql(string $alias): string
+    {
+        $alias = trim($alias);
+        $prefix = $alias !== '' ? $alias . '.' : '';
+
+        // SIG approval never applies to SOT rows. Product sync stores Kinsey's
+        // manufacturer_norm as an uppercase manufacturer name, but keep the
+        // variants broad to handle older normalized rows too.
+        return "
+            COALESCE({$prefix}sot_required, 0) = 0
+            AND (
+                   {$prefix}manufacturer_norm IN ('SIG', 'SIGSAUER', 'SIG SAUER', 'SIGARMS', 'SIG ARMS')
+                OR {$prefix}manufacturer_norm LIKE 'SIGSAUER%'
+                OR {$prefix}manufacturer_norm LIKE 'SIG SAUER%'
+                OR {$prefix}manufacturer_norm LIKE 'SIGARMS%'
+                OR {$prefix}manufacturer_norm LIKE 'SIG ARMS%'
+            )
+        ";
     }
 }

@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Services\Cron\AbstractTableCronService;
 use FFLHub\Distributor\Services\Cron\CronRunLogger;
 use FFLHub\Distributor\Services\Kinseys\API\KinseysApiClient;
+use FFLHub\Distributor\Services\Kinseys\KinseysOfferNormalizationService;
 use FFLHub\Distributor\Services\Kinseys\KinseysProductImporterService;
 use FFLHub\Distributor\Services\Kinseys\KinseysProductParser;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
@@ -134,6 +135,23 @@ final class KinseysInventoryCronService extends AbstractTableCronService
         $stats = $importer->apply_inventory_array_to_live($inventory_data);
         $this->profile('apply_inventory_array_to_live', $t_apply, $stats);
 
+        try {
+            $offers_update_stats = $this->update_distributor_offers_from_inventory_stage(
+                (string) ($stats['stage_table'] ?? '')
+            );
+        } catch (\Throwable $e) {
+            $this->log('ERROR: exception updating normalized distributor offers', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->finalize_run($t_start, $mem_start, 'ERROR (offers update failed)', [
+                'error' => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        $stats['distributor_offers_kinseys_inventory_update_rows'] = (int) ($offers_update_stats['rows'] ?? 0);
+        $stats['distributor_offers_kinseys_inventory_update_ms'] = number_format((float) ($offers_update_stats['elapsed_ms'] ?? 0.0), 2, '.', '');
+
         update_option('fflhub_kinseys_inventory_last_update', current_time('mysql'), false);
         update_option('fflhub_kinseys_inventory_last_update_count', (int) ($stats['rows_loaded'] ?? 0), false);
         delete_option('fflhub_kinseys_inventory_last_error');
@@ -161,6 +179,33 @@ final class KinseysInventoryCronService extends AbstractTableCronService
         );
 
         return max(30, min(300, $timeout_seconds));
+    }
+
+    /**
+     * Apply loaded Kinsey's inventory stage rows to existing normalized offers.
+     *
+     * The importer has already updated the live Kinsey's table and run its SIG
+     * approval pass. This projection runs last so distributor_offers sees the
+     * same volatile qty/price/MAP snapshot for existing Kinsey's offer rows.
+     *
+     * @return array{rows:int,elapsed_ms:float}
+     */
+    private function update_distributor_offers_from_inventory_stage(string $stage_table): array
+    {
+        if ($stage_table === '') {
+            throw new \RuntimeException('Kinsey\'s distributor offers update skipped because stage table was empty.');
+        }
+
+        $t_offers = microtime(true);
+        $stats = KinseysOfferNormalizationService::update_existing_from_inventory_stage($stage_table);
+
+        $this->profile('Update existing distributor offers from inventory stage', $t_offers, [
+            'stage_table' => (string) $stage_table,
+            'distributor_offers_kinseys_inventory_update_rows' => (int) ($stats['rows'] ?? 0),
+            'distributor_offers_kinseys_inventory_update_ms' => number_format((float) ($stats['elapsed_ms'] ?? 0.0), 2, '.', ''),
+        ]);
+
+        return $stats;
     }
 
     /**
