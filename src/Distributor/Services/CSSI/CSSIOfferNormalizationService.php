@@ -20,10 +20,8 @@ if (!defined('ABSPATH')) {
  * fflhub_distributor_offers for active product_state UPCs.
  *
  * CSSI product feeds currently own the full catalog snapshot plus quantity,
- * dealer price, MAP/MSRP, dropship state, shipping cost, and dimensions. The
- * product-feed rows do not currently expose reliable FFL/SOT data in the CSV
- * shape we ingest, so those flags are copied exactly as stored in the CSSI live
- * table.
+ * dealer price, MAP/MSRP, dropship state, shipping cost, dimensions, and the
+ * category-derived FFL/SOT flags stored in the CSSI live table.
  *
  * This class deliberately does not know how to download or import CSSI data.
  * It only describes how an already-live CSSI product table maps into the
@@ -72,7 +70,7 @@ final class CSSIOfferNormalizationService extends AbstractDistributorTableSyncSe
      *
      * This is the inventory-cron path. CSSI's /items response is broader than
      * most inventory feeds: it can carry quantity, dealer price, MAP/MSRP,
-     * dropship state, FFL/SOT flags, manufacturer, and shipping data. Because
+     * dropship state, serialized/FFL hints, manufacturer, and shipping data. Because
      * the stage table already contains the parsed current API rows, this method
      * updates distributor_offers directly from wp_fflhub_cssi_pq_stage after
      * the live CSSI table has been refreshed.
@@ -82,6 +80,9 @@ final class CSSIOfferNormalizationService extends AbstractDistributorTableSyncSe
      * landed_cost, map_price, msrp, ffl_required, sot_required,
      * dropship_enabled, shipping_weight_oz, shipping_length_in,
      * shipping_width_in, shipping_height_in, normalized_at.
+     * The inventory API does not reliably expose category/SOT data, so the
+     * SOT expression preserves the product-cron category-derived value unless
+     * the stage explicitly turns SOT on.
      *
      * It intentionally does not insert missing rows. Missing CSSI offer rows
      * are seeded by the product-table sync path, where we have the full catalog
@@ -142,8 +143,20 @@ final class CSSIOfferNormalizationService extends AbstractDistributorTableSyncSe
             END
         ";
 
-        $ffl_required_expr = 'CAST(COALESCE(S.ffl_required, 0) AS UNSIGNED)';
-        $sot_required_expr = 'CAST(COALESCE(S.sot_required, 0) AS UNSIGNED)';
+        $stage_ffl_required_expr = 'CAST(COALESCE(S.ffl_required, 0) AS UNSIGNED)';
+        $stage_sot_required_expr = 'CAST(COALESCE(S.sot_required, 0) AS UNSIGNED)';
+        $sot_required_expr = "
+            CASE
+                WHEN {$stage_sot_required_expr} = 1 THEN 1
+                ELSE o.sot_required
+            END
+        ";
+        $ffl_required_expr = "
+            CASE
+                WHEN {$stage_ffl_required_expr} = 1 OR {$sot_required_expr} = 1 THEN 1
+                ELSE o.ffl_required
+            END
+        ";
         $dropship_enabled_expr = 'CAST(COALESCE(S.dropship_enabled, 0) AS UNSIGNED)';
 
         $weight_expr = self::preserve_blank_decimal_expr('S', 'shipping_weight', 'o.shipping_weight_oz');

@@ -111,6 +111,19 @@ class CSSIProductParser
         }
         $distributorPrice = $this->clean_money($this->get_csv($csv, $headerMap, ['price', 'custom_price', 'dealer_price']));
         $shippingWeight = $this->pounds_to_ounces_or_empty($this->get_csv($csv, $headerMap, ['ship weight', 'shipping_weight', 'weight']));
+        $itemType = $this->get_csv($csv, $headerMap, ['category', 'item_type', 'type']);
+        $serializedFlag = $this->to_flag($this->get_csv($csv, $headerMap, ['serialized_flag', 'serialized flag']));
+        $categoryFflRequired = CSSIRegulatoryCategoryRules::is_ffl_required_category($itemType);
+        $categorySotRequired = CSSIRegulatoryCategoryRules::is_sot_required_category($itemType);
+        $fflRequired = ($categoryFflRequired || $serializedFlag === '1')
+            ? '1'
+            : $this->to_flag($this->get_csv($csv, $headerMap, ['ffl_flag', 'ffl_required', 'ffl flag']));
+        $sotRequired = $categorySotRequired
+            ? '1'
+            : $this->to_flag($this->get_csv($csv, $headerMap, ['sot_required', 'nfa_required']));
+        if ($fflRequired === '1' && $serializedFlag !== '1') {
+            $serializedFlag = '1';
+        }
 
         return [
             'upc' => $upc,
@@ -131,11 +144,11 @@ class CSSIProductParser
             'model' => $this->get_csv($csv, $headerMap, ['model', 'model_series']),
             'mfg_model_number' => $this->get_csv($csv, $headerMap, ['manufacturer item number', 'manufacturer_model_no', 'mfg_model_number']),
             'caliber_gauge' => $this->get_csv($csv, $headerMap, ['caliber', 'caliber_gauge']),
-            'item_type' => $this->get_csv($csv, $headerMap, ['category', 'item_type', 'type']),
-            'serialized_flag' => $this->to_flag($this->get_csv($csv, $headerMap, ['serialized_flag', 'serialized flag'])),
+            'item_type' => $itemType,
+            'serialized_flag' => $serializedFlag,
 
-            'ffl_required' => $this->to_flag($this->get_csv($csv, $headerMap, ['ffl_flag', 'ffl_required', 'ffl flag'])),
-            'sot_required' => $this->to_flag($this->get_csv($csv, $headerMap, ['sot_required', 'nfa_required'])),
+            'ffl_required' => $fflRequired,
+            'sot_required' => $sotRequired,
             'dropship_enabled' => $dropShipFlag,
             'dropship_block_reason' => $dropShipBlockReason,
             'drop_ship_delivery_options' => $this->get_csv($csv, $headerMap, ['available drop ship delivery options', 'available_drop_ship_delivery_options', 'drop_ship_delivery_options']),
@@ -184,6 +197,11 @@ class CSSIProductParser
         }
         $distributorPrice = $this->clean_money($this->get_array($item, ['custom_price', 'price']));
         $shippingWeight = $this->pounds_to_ounces_or_empty($this->get_array($item, ['shipping_weight', 'weight']));
+        $itemType = $this->get_array($item, ['item_type', 'type', 'category']);
+        $serializedFlag = $this->to_flag($this->get_array($item, ['serialized_flag']));
+        $fflRequired = ($serializedFlag === '1')
+            ? '1'
+            : $this->to_flag($this->get_array($item, ['ffl_flag', 'ffl_required']));
 
         return [
             'upc' => $upc,
@@ -204,10 +222,10 @@ class CSSIProductParser
             'model' => $this->get_array($item, ['model', 'model_series']),
             'mfg_model_number' => $this->get_array($item, ['manufacturer_model_no', 'mfg_model_number']),
             'caliber_gauge' => $this->get_array($item, ['caliber', 'caliber_gauge']),
-            'item_type' => $this->get_array($item, ['item_type', 'type', 'category']),
-            'serialized_flag' => $this->to_flag($this->get_array($item, ['serialized_flag'])),
+            'item_type' => $itemType,
+            'serialized_flag' => $serializedFlag,
 
-            'ffl_required' => $this->to_flag($this->get_array($item, ['ffl_flag', 'ffl_required'])),
+            'ffl_required' => $fflRequired,
             'sot_required' => $this->to_flag($this->get_array($item, ['sot_required', 'nfa_required'])),
             'dropship_enabled' => $dropShipFlag,
             'dropship_block_reason' => $dropShipBlockReason,

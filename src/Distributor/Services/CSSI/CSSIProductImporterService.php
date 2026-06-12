@@ -310,6 +310,9 @@ class CSSIProductImporterService
             + CASE WHEN {$priceDecimalExpr} > 0 AND {$priceDecimalExpr} < 50 THEN 7.50 ELSE 0 END
         )";
         $shippingExpr = "REPLACE(FORMAT({$shippingRawExpr}, 2), ',', '')";
+        $categoryExpr = $trim('@category');
+        $fflRequiredCategoryExpr = CSSIRegulatoryCategoryRules::ffl_required_category_sql($categoryExpr);
+        $sotRequiredCategoryExpr = CSSIRegulatoryCategoryRules::sot_required_category_sql($categoryExpr);
         $descriptionExpr = "CASE
             WHEN LEFT({$trim('@web_description')}, 1) = '\"' THEN REPLACE({$trim('@web_description')}, '\"', '')
             ELSE {$trim('@web_description')}
@@ -369,10 +372,10 @@ class CSSIProductImporterService
                 model = '',
                 mfg_model_number = {$trim('@manufacturer_item_number')},
                 caliber_gauge = '',
-                item_type = {$trim('@category')},
-                serialized_flag = 0,
-                ffl_required = 0,
-                sot_required = 0,
+                item_type = {$categoryExpr},
+                serialized_flag = CASE WHEN {$fflRequiredCategoryExpr} THEN 1 ELSE 0 END,
+                ffl_required = CASE WHEN {$fflRequiredCategoryExpr} THEN 1 ELSE 0 END,
+                sot_required = CASE WHEN {$sotRequiredCategoryExpr} THEN 1 ELSE 0 END,
                 dropship_enabled = CASE
                     WHEN {$sigManufacturerExpr} THEN 0
                     ELSE {$dropShipFlagExpr}

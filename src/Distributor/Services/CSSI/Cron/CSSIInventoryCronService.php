@@ -487,6 +487,14 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             ? "CASE WHEN {$insertSigMatchExpr} THEN '' ELSE S.dropship_block_reason END"
             : "CASE WHEN {$insertSigMatchExpr} THEN '" . self::SIG_SAUER_DROPSHIP_BLOCK_REASON . "' ELSE S.dropship_block_reason END";
         $stagePriceExpr = "CAST(NULLIF(S.distributor_price, '') AS DECIMAL(12,4))";
+        $fflRequiredExpr = "CASE
+            WHEN COALESCE(S.ffl_required, 0) = 1 OR COALESCE(L.sot_required, 0) = 1 THEN 1
+            ELSE L.ffl_required
+        END";
+        $sotRequiredExpr = "CASE
+            WHEN COALESCE(S.sot_required, 0) = 1 THEN 1
+            ELSE L.sot_required
+        END";
         $effectiveWeightOzExpr = "CAST(COALESCE(NULLIF(S.shipping_weight, ''), NULLIF(L.shipping_weight, ''), '0') AS DECIMAL(12,4))";
         $effectiveWeightLbExpr = "CASE WHEN {$effectiveWeightOzExpr} > 0 THEN {$effectiveWeightOzExpr} / 16 ELSE 1 END";
         $shippingCostExpr = sprintf(
@@ -533,8 +541,8 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 L.caliber_gauge = CASE WHEN S.caliber_gauge <> '' THEN S.caliber_gauge ELSE L.caliber_gauge END,
                 L.item_type = CASE WHEN S.item_type <> '' THEN S.item_type ELSE L.item_type END,
                 L.serialized_flag = S.serialized_flag,
-                L.ffl_required = S.ffl_required,
-                L.sot_required = S.sot_required,
+                L.ffl_required = {$fflRequiredExpr},
+                L.sot_required = {$sotRequiredExpr},
                 L.dropship_enabled = {$dropshipEnabledExpr},
                 L.dropship_block_reason = {$dropshipBlockReasonExpr},
                 L.drop_ship_delivery_options = CASE WHEN S.drop_ship_delivery_options <> '' THEN S.drop_ship_delivery_options ELSE L.drop_ship_delivery_options END,
@@ -552,7 +560,8 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 OR COALESCE(L.retail_msrp, '') <> COALESCE(S.retail_msrp, '')
                 OR COALESCE(L.drop_ship_price, '') <> COALESCE(S.drop_ship_price, '')
                 OR COALESCE(L.serialized_flag, 0) <> COALESCE(S.serialized_flag, 0)
-                OR COALESCE(L.ffl_required, 0) <> COALESCE(S.ffl_required, 0)
+                OR COALESCE(L.ffl_required, 0) <> COALESCE({$fflRequiredExpr}, 0)
+                OR COALESCE(L.sot_required, 0) <> COALESCE({$sotRequiredExpr}, 0)
                 OR COALESCE(L.dropship_enabled, 0) <> COALESCE({$dropshipEnabledExpr}, 0)
                 OR COALESCE(L.last_seen_utc, '') <> COALESCE(S.last_seen_utc, '')
         ";
