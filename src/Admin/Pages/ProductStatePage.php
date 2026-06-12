@@ -14,6 +14,7 @@ use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\Tables\ProductSchemaInterface;
 use FFLHub\Distributor\Services\Zanders\ZandersOfferNormalizationService;
 use FFLHub\Distributor\Services\Zanders\Tables\ZandersProductTableSchema;
+use FFLHub\Product\BestOffers\ProductBestOffersStore;
 use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
@@ -57,6 +58,7 @@ final class ProductStatePage
 
         ProductStateStore::ensure_schema();
         DistributorOffersStore::ensure_schema();
+        ProductBestOffersStore::ensure_schema();
         $this->maybe_handle_post();
 
         $result = $this->read_result();

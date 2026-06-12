@@ -62,6 +62,7 @@ use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Order\WooShippingLabelCostSync;
 use FFLHub\Product\CategoryInstaller;
+use FFLHub\Product\BestOffers\ProductBestOffersStore;
 use FFLHub\Product\MapPriceVisibility;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Product\StockAlerts\UpcStockAlertCronService;
@@ -194,6 +195,7 @@ final class Plugin
         if (is_admin()) {
             ProductStateStore::ensure_schema();
             DistributorOffersStore::ensure_schema();
+            ProductBestOffersStore::ensure_schema();
             WPCronWarning::init();
 
             $this->admin_page = new AdminPage($this->distributor_handler);
@@ -388,6 +390,7 @@ final class Plugin
         CategoryInstaller::install_default_categories();
         ProductStateStore::ensure_schema();
         DistributorOffersStore::ensure_schema();
+        ProductBestOffersStore::ensure_schema();
         self::ensure_quote_email_jobs_table();
         $quote_email_jobs_cron = new QuoteEmailJobsCronService();
         $quote_email_jobs_cron->on_activation();
