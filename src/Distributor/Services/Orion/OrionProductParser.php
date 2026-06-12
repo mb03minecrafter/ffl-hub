@@ -76,7 +76,7 @@ final class OrionProductParser
             'facets_json' => $this->encode_json($facets),
 
             'ffl_required' => $this->is_ffl_required($product_tags) ? '1' : '0',
-            'sot_required' => $this->is_sot_required($product_tags, $product_categories, $facets) ? '1' : '0',
+            'sot_required' => $this->is_sot_required($product_tags) ? '1' : '0',
             'dropship_enabled' => $dropship_info['enabled'] ? '1' : '0',
             'dropship_block_reason' => $dropship_info['reason'],
             'serializable' => $this->boolish($product['serializable'] ?? null) ? '1' : '0',
@@ -201,19 +201,12 @@ final class OrionProductParser
         return in_array('FFL_REQUIRED', $this->tokenize($tags), true);
     }
 
-    /**
-     * @param array<string,mixed> $facets
-     */
-    private function is_sot_required(string $tags, string $categories, array $facets): bool
+    private function is_sot_required(string $tags): bool
     {
-        $haystack = strtoupper($tags . ' ' . $categories . ' ' . $this->flatten_scalar_text($facets));
-        foreach (['SOT', 'NFA', 'SUPPRESSOR', 'SUPPRESSORS', 'SILENCER', 'SILENCERS', 'CLASS_3', 'CLASS III'] as $needle) {
-            if (strpos($haystack, $needle) !== false) {
-                return true;
-            }
-        }
-
-        return false;
+        // Orion's explicit CLASS_3 tag is the reliable SOT/NFA signal.
+        // Facets can contain phrases like "Suppressor Height Sights", which
+        // describe ordinary firearm features and must not trigger SOT status.
+        return in_array('CLASS_3', $this->tokenize($tags), true);
     }
 
     /**
@@ -329,30 +322,6 @@ final class OrionProductParser
         }
 
         return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'y', 'on'], true);
-    }
-
-    /**
-     * @param mixed $value
-     */
-    private function flatten_scalar_text($value): string
-    {
-        if (is_scalar($value) || $value === null) {
-            return trim((string) $value);
-        }
-
-        if (!is_array($value)) {
-            return '';
-        }
-
-        $parts = [];
-        foreach ($value as $child) {
-            $text = $this->flatten_scalar_text($child);
-            if ($text !== '') {
-                $parts[] = $text;
-            }
-        }
-
-        return implode(' ', $parts);
     }
 
     /**
