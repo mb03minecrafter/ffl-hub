@@ -3,8 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Distributor\Services\Kinseys;
 
-use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
-use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
+use FFLHub\Distributor\Services\OfferSync\AbstractDistributorTableSyncService;
 use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
 
 if (!defined('ABSPATH')) {
@@ -161,7 +160,7 @@ final class KinseysOfferNormalizationService extends AbstractDistributorTableSyn
         // 5. Let the shared runner execute the changed-only UPDATE. Missing
         // Kinsey's offer rows are created by the product-table sync, where the
         // full catalog snapshot exists.
-        return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
+        return self::update_existing_offers_from_inventory_stage_map($map);
     }
 
     /**

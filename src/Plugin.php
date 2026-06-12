@@ -62,7 +62,7 @@ use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Order\WooShippingLabelCostSync;
 use FFLHub\Product\CategoryInstaller;
-use FFLHub\Product\BestOffers\ProductBestOffersStore;
+use FFLHub\Distributor\Services\OfferSync\ProductBestOffersStore;
 use FFLHub\Product\MapPriceVisibility;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Product\StockAlerts\UpcStockAlertCronService;

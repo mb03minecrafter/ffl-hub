@@ -3,8 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Distributor\Services\SportsSouth;
 
-use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
-use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
+use FFLHub\Distributor\Services\OfferSync\AbstractDistributorTableSyncService;
 use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
 
 if (!defined('ABSPATH')) {
@@ -251,7 +250,7 @@ final class SportsSouthOfferNormalizationService extends AbstractDistributorTabl
         // Step 3: execute one changed-only set-based UPDATE. This updates only
         // existing Sports South offers; product sync/backfill remains the owner
         // of inserting missing offer rows from complete catalog data.
-        return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
+        return self::update_existing_offers_from_inventory_stage_map($map);
     }
 
     /**

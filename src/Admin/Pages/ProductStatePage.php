@@ -14,7 +14,8 @@ use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
 use FFLHub\Distributor\Services\Tables\ProductSchemaInterface;
 use FFLHub\Distributor\Services\Zanders\ZandersOfferNormalizationService;
 use FFLHub\Distributor\Services\Zanders\Tables\ZandersProductTableSchema;
-use FFLHub\Product\BestOffers\ProductBestOffersStore;
+use FFLHub\Distributor\Services\OfferSync\ProductBestOfferSelectionService;
+use FFLHub\Distributor\Services\OfferSync\ProductBestOffersStore;
 use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
@@ -31,6 +32,7 @@ final class ProductStatePage
     private const ACTION_NORMALIZE_RSR = 'normalize_rsr_offers';
     private const ACTION_NORMALIZE_LIPSEYS = 'normalize_lipseys_offers';
     private const ACTION_NORMALIZE_CSSI = 'normalize_cssi_offers';
+    private const ACTION_REFRESH_CHANGED_BEST_OFFERS = 'refresh_changed_best_offers';
     private const RESULT_TRANSIENT_PREFIX = 'fflhub_product_state_backfill_result_';
 
     public function register(): void
@@ -75,6 +77,7 @@ final class ProductStatePage
             <?php $this->render_rsr_normalize_card(); ?>
             <?php $this->render_lipseys_normalize_card(); ?>
             <?php $this->render_cssi_normalize_card(); ?>
+            <?php $this->render_changed_best_offers_card(); ?>
         </div>
         <?php
     }
@@ -92,7 +95,7 @@ final class ProductStatePage
         $action = isset($_POST['fflhub_product_state_action'])
             ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_product_state_action']))
             : '';
-        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS, self::ACTION_NORMALIZE_RSR, self::ACTION_NORMALIZE_LIPSEYS, self::ACTION_NORMALIZE_CSSI], true)) {
+        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS, self::ACTION_NORMALIZE_RSR, self::ACTION_NORMALIZE_LIPSEYS, self::ACTION_NORMALIZE_CSSI, self::ACTION_REFRESH_CHANGED_BEST_OFFERS], true)) {
             return;
         }
 
@@ -121,11 +124,14 @@ final class ProductStatePage
                 $this->resolve_live_product_table(new LipseysProductTableSchema(), 'fflhub_lipseys_fulfillment_last_swap')
             );
             $result['type'] = self::ACTION_NORMALIZE_LIPSEYS;
-        } else {
+        } elseif ($action === self::ACTION_NORMALIZE_CSSI) {
             $result = CSSIOfferNormalizationService::normalize_from_product_table(
                 $this->resolve_live_product_table(new CSSIProductTableSchema(), 'fflhub_cssi_fulfillment_last_swap')
             );
             $result['type'] = self::ACTION_NORMALIZE_CSSI;
+        } else {
+            $result = ProductBestOfferSelectionService::refresh_changed_upcs();
+            $result['type'] = self::ACTION_REFRESH_CHANGED_BEST_OFFERS;
         }
 
         set_transient($this->result_transient_key(), $result, 5 * MINUTE_IN_SECONDS);
@@ -224,6 +230,23 @@ final class ProductStatePage
         <?php
     }
 
+    private function render_changed_best_offers_card(): void
+    {
+        ?>
+        <div class="postbox" style="max-width: 760px; padding: 16px;">
+            <h2 style="margin-top:0;"><?php esc_html_e('Refresh Changed Best Offers', 'ffl-hub'); ?></h2>
+            <p>
+                <?php esc_html_e('Builds the dirty UPC set from distributor offers where has_changed = 1. This current step only counts changed UPCs and does not update WooCommerce products.', 'ffl-hub'); ?>
+            </p>
+            <form method="post" action="">
+                <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
+                <input type="hidden" name="fflhub_product_state_action" value="<?php echo esc_attr(self::ACTION_REFRESH_CHANGED_BEST_OFFERS); ?>" />
+                <?php submit_button(__('Refresh Changed Best Offers', 'ffl-hub'), 'secondary', 'submit', false); ?>
+            </form>
+        </div>
+        <?php
+    }
+
     /**
      * @param array<string,mixed>|null $result
      */
@@ -253,11 +276,30 @@ final class ProductStatePage
             ],
         ];
         $normalizer = $offer_normalizers[$type] ?? null;
+        $is_best_offer_refresh = ($type === self::ACTION_REFRESH_CHANGED_BEST_OFFERS);
         $has_errors = !empty($result['errors']) && is_array($result['errors']);
         $notice_class = $has_errors ? 'notice-error' : 'notice-success';
         ?>
         <div class="notice <?php echo esc_attr($notice_class); ?>">
-            <?php if ($normalizer !== null) : ?>
+            <?php if ($is_best_offer_refresh) : ?>
+                <p><strong><?php esc_html_e('Changed best-offer UPC scan complete.', 'ffl-hub'); ?></strong></p>
+                <ul style="list-style:disc;margin-left:20px;">
+                    <li><?php echo esc_html(sprintf('Stage: %s', (string) ($result['stage'] ?? ''))); ?></li>
+                    <li><?php echo esc_html(sprintf('Dirty UPCs found: %d', (int) ($result['dirty_upcs'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Temp table: %s', (string) ($result['temp_table'] ?? ''))); ?></li>
+                    <li><?php echo esc_html(sprintf('Updated best offers: %d', (int) ($result['updated_best_offers'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Cleared offer change flags: %d', (int) ($result['cleared_offer_change_flags'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
+                </ul>
+                <?php if ($has_errors) : ?>
+                    <p><strong><?php esc_html_e('Errors:', 'ffl-hub'); ?></strong></p>
+                    <ul style="list-style:disc;margin-left:20px;">
+                        <?php foreach ($result['errors'] as $message) : ?>
+                            <li><?php echo esc_html((string) $message); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            <?php elseif ($normalizer !== null) : ?>
                 <?php
                 $label = (string) $normalizer['label'];
                 $matched_key = (string) $normalizer['matched_key'];

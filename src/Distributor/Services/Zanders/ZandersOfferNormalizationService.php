@@ -3,8 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Distributor\Services\Zanders;
 
-use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
-use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
+use FFLHub\Distributor\Services\OfferSync\AbstractDistributorTableSyncService;
 use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
 use FFLHub\Distributor\Services\SigDropshipApproval;
 
@@ -116,7 +115,7 @@ final class ZandersOfferNormalizationService extends AbstractDistributorTableSyn
         // 5. Let the shared runner compile/execute the changed-only UPDATE.
         // A zero count is expected when the stage quantity/price/SIG state
         // matches the current offer snapshot.
-        return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
+        return self::update_existing_offers_from_inventory_stage_map($map);
     }
 
     /**

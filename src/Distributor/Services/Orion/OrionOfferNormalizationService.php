@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Distributor\Services\Orion;
 
-use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
+use FFLHub\Distributor\Services\OfferSync\AbstractDistributorTableSyncService;
 use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
 
 if (!defined('ABSPATH')) {

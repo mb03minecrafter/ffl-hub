@@ -1,11 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace FFLHub\Distributor\Services;
-
-use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
-use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
-use FFLHub\Distributor\Services\OfferSync\OfferProductSyncMap;
+namespace FFLHub\Distributor\Services\OfferSync;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -93,7 +89,7 @@ abstract class AbstractDistributorTableSyncService
      */
     protected static function normalize_product_offers(string $live_table): array
     {
-        return DistributorOfferSyncSqlRunner::sync_product_offers(new OfferProductSyncMap(
+        $result = DistributorOfferSyncSqlRunner::sync_product_offers(new OfferProductSyncMap(
             static::distributor_id(),
             static::label(),
             static::live_table_label(),
@@ -102,6 +98,12 @@ abstract class AbstractDistributorTableSyncService
             static::matched_count_key(),
             static::product_source_columns($live_table)
         ));
+
+        if (!empty($result['ok'])) {
+            $result['best_offer_selection'] = ProductBestOfferSelectionService::refresh_changed_upcs();
+        }
+
+        return $result;
     }
 
     /**
@@ -126,7 +128,10 @@ abstract class AbstractDistributorTableSyncService
      */
     protected static function update_existing_offers_from_inventory_stage_map(OfferInventorySyncMap $map): array
     {
-        return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
+        $result = DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
+        ProductBestOfferSelectionService::refresh_changed_upcs();
+
+        return $result;
     }
 
     public static function table_exists_by_name(string $table): bool

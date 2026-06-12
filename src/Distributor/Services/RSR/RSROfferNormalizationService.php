@@ -3,8 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Distributor\Services\RSR;
 
-use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
-use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
+use FFLHub\Distributor\Services\OfferSync\AbstractDistributorTableSyncService;
 use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
 
 if (!defined('ABSPATH')) {
@@ -87,7 +86,7 @@ final class RSROfferNormalizationService extends AbstractDistributorTableSyncSer
 
         // 3. Only write rows whose quantity changed. Stock status is implied by
         // qty, so comparing qty alone is enough for this inventory path.
-        return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
+        return self::update_existing_offers_from_inventory_stage_map($map);
     }
 
     /**

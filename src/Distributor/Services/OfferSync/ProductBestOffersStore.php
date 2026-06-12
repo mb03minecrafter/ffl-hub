@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace FFLHub\Product\BestOffers;
+namespace FFLHub\Distributor\Services\OfferSync;
 
 if (!defined('ABSPATH')) {
     exit;

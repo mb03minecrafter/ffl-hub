@@ -3,8 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Distributor\Services\Lipseys;
 
-use FFLHub\Distributor\Services\AbstractDistributorTableSyncService;
-use FFLHub\Distributor\Services\OfferSync\DistributorOfferSyncSqlRunner;
+use FFLHub\Distributor\Services\OfferSync\AbstractDistributorTableSyncService;
 use FFLHub\Distributor\Services\OfferSync\OfferInventorySyncMap;
 
 if (!defined('ABSPATH')) {
@@ -121,7 +120,7 @@ final class LipseysOfferNormalizationService extends AbstractDistributorTableSyn
         // 3. Let the shared runner compile/execute the changed-only UPDATE.
         // A zero row count is valid: it means the latest Lipsey's stage matched
         // the normalized offer snapshot.
-        return DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
+        return self::update_existing_offers_from_inventory_stage_map($map);
     }
 
     /**
