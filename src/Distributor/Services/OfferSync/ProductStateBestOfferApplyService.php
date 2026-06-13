@@ -211,7 +211,6 @@ final class ProductStateBestOfferApplyService
     private static function computed_sell_price_expr(string $state_alias, string $offer_alias): string
     {
         $pricing_percent = self::pricing_percent_expr($state_alias);
-        $cost_base = self::cost_base_expr($offer_alias);
         $cost_without_shipping = self::cost_base_without_shipping_expr($offer_alias);
         $shipping = "GREATEST(COALESCE({$offer_alias}.shipping_cost, 0.0000), 0.0000)";
         $fee_fraction = self::payment_fee_fraction_literal();
@@ -246,9 +245,9 @@ final class ProductStateBestOfferApplyService
 
                 WHEN {$state_alias}.pricing_mode IN ('global_percent', 'fixed_percent')
                     AND {$pricing_percent} IS NOT NULL
-                    AND {$cost_base} IS NOT NULL
-                    AND {$cost_base} > 0
-                THEN CEIL({$cost_base} * (1.0 + ({$pricing_percent} / 100.0))) - 0.01
+                    AND {$cost_without_shipping} IS NOT NULL
+                    AND {$cost_without_shipping} > 0
+                THEN CEIL({$cost_without_shipping} * (1.0 + ({$pricing_percent} / 100.0))) - 0.01
 
                 ELSE {$state_alias}.computed_sell_price
             END
@@ -332,19 +331,6 @@ final class ProductStateBestOfferApplyService
             CASE
                 WHEN {$state_alias}.pricing_mode = 'global_percent' THEN " . self::global_percent_literal() . "
                 ELSE {$state_alias}.pricing_percent
-            END
-        ";
-    }
-
-    private static function cost_base_expr(string $offer_alias): string
-    {
-        return "
-            CASE
-                WHEN {$offer_alias}.dealer_price IS NOT NULL AND {$offer_alias}.dealer_price > 0
-                THEN {$offer_alias}.dealer_price + GREATEST(COALESCE({$offer_alias}.shipping_cost, 0.0000), 0.0000)
-                WHEN {$offer_alias}.landed_cost IS NOT NULL AND {$offer_alias}.landed_cost > 0
-                THEN {$offer_alias}.landed_cost
-                ELSE NULL
             END
         ";
     }

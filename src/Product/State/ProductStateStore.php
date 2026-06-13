@@ -901,7 +901,7 @@ final class ProductStateStore
 
         if ($pricing_mode === 'global_percent' || $pricing_mode === 'fixed_percent') {
             $percent = self::float_or_null($pricing_percent);
-            $base = self::cost_base($dealer_price, $shipping_cost, $landed_cost);
+            $base = self::cost_base_without_shipping($dealer_price, $landed_cost);
             if ($percent !== null && $base !== null && $base > 0.0) {
                 return (float) (ceil($base * (1.0 + ($percent / 100.0))) - 0.01);
             }
