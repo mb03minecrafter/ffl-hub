@@ -45,6 +45,7 @@ final class ProductBestOfferSelectionService
         $best_offers_table = ProductBestOffersStore::table_name();
         $product_state_table = ProductStateStore::table_name();
         $temp_table = 'tmp_fflhub_best_offer_dirty_upcs';
+        $charset = $wpdb->get_charset_collate();
         $result['temp_table'] = $temp_table;
 
         $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$temp_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -53,7 +54,7 @@ final class ProductBestOfferSelectionService
             CREATE TEMPORARY TABLE {$temp_table} (
                 upc VARCHAR(32) NOT NULL,
                 PRIMARY KEY (upc)
-            ) ENGINE=MEMORY
+            ) ENGINE=MEMORY {$charset}
         "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         if ($created === false) {
