@@ -12,7 +12,7 @@ if (!defined('ABSPATH')) {
 final class ProductStateStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_state_schema_version';
-    private const SCHEMA_VERSION = '2';
+    private const SCHEMA_VERSION = '3';
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
@@ -46,6 +46,7 @@ final class ProductStateStore
                 product_id BIGINT UNSIGNED NOT NULL,
                 upc VARCHAR(32) NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'active',
+                has_changed TINYINT(1) NOT NULL DEFAULT 0,
                 primary_distributor VARCHAR(64) DEFAULT NULL,
                 last_sync_at DATETIME DEFAULT NULL,
                 last_true_cost DECIMAL(12,4) DEFAULT NULL,
@@ -83,6 +84,7 @@ final class ProductStateStore
                 KEY status_upc (status, upc),
                 KEY status_product_id (status, product_id),
                 KEY status_last_sync_at (status, last_sync_at),
+                KEY has_changed (has_changed, product_id),
                 KEY primary_distributor (primary_distributor)
             ) {$charset};
         ");
@@ -118,6 +120,7 @@ final class ProductStateStore
             'status_upc' => 'ADD KEY status_upc (status, upc)',
             'status_product_id' => 'ADD KEY status_product_id (status, product_id)',
             'status_last_sync_at' => 'ADD KEY status_last_sync_at (status, last_sync_at)',
+            'has_changed' => 'ADD KEY has_changed (has_changed, product_id)',
             'primary_distributor' => 'ADD KEY primary_distributor (primary_distributor)',
         ];
 
