@@ -287,7 +287,7 @@ final class ProductBestOfferSelectionService
                             OR (
                                 better.dropship_enabled = o.dropship_enabled
                                 AND better.dealer_price = o.dealer_price
-                                AND better.distributor_id < o.distributor_id
+                                AND better.landed_cost < o.landed_cost
                             )
                         )
                     )
@@ -301,10 +301,15 @@ final class ProductBestOfferSelectionService
                             AND o.qty > 0
                         )
                         AND (
-                            better.dealer_price < o.dealer_price
+                            better.dropship_enabled > o.dropship_enabled
                             OR (
-                                better.dealer_price = o.dealer_price
-                                AND better.distributor_id < o.distributor_id
+                                better.dropship_enabled = o.dropship_enabled
+                                AND better.dealer_price < o.dealer_price
+                            )
+                            OR (
+                                better.dropship_enabled = o.dropship_enabled
+                                AND better.dealer_price = o.dealer_price
+                                AND better.landed_cost < o.landed_cost
                             )
                         )
                     )
