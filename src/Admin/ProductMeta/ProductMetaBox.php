@@ -989,8 +989,14 @@ class ProductMetaBox
             ],
             [
                 'group' => __('MAP Visibility', 'ffl-hub'),
-                'field' => __('Old MAP real mode / New quote price', 'ffl-hub'),
+                'field' => __('MAP real mode', 'ffl-hub'),
                 'old' => self::old_map_real_mode_label($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true)),
+                'new' => '-',
+            ],
+            [
+                'group' => __('MAP Visibility', 'ffl-hub'),
+                'field' => __('Quote / hidden real price', 'ffl-hub'),
+                'old' => self::state_money(DistributorProductHelper::get_map_real_price_for_product($product)),
                 'new' => self::state_money($row['quote_price'] ?? null),
             ],
             [

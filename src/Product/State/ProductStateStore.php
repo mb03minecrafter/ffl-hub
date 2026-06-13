@@ -748,13 +748,9 @@ final class ProductStateStore
         }
 
         if ($pricing_mode === 'fixed_profit' && $fixed_profit !== null && $fixed_profit >= 0.0) {
-            $landed = self::cost_base($dealer_price, $shipping_cost, $landed_cost);
-            if ($landed !== null && $landed > 0.0) {
-                $fee_fraction = self::payment_fee_fraction();
-                $denominator = 1.0 - $fee_fraction;
-                if ($denominator > 0.0) {
-                    return round(($landed + $fixed_profit) / $denominator, 2);
-                }
+            $fixed_profit_price = self::fixed_profit_price($dealer_price, $shipping_cost, $landed_cost, $fixed_profit);
+            if ($fixed_profit_price !== null) {
+                return $fixed_profit_price;
             }
         }
 
@@ -863,13 +859,7 @@ final class ProductStateStore
 
         if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT) {
             $profit = self::float_or_null($fixed_profit_raw) ?? 0.0;
-            $landed = self::cost_base($dealer_price, $shipping_cost, $landed_cost);
-            if ($landed === null) {
-                return null;
-            }
-
-            $denominator = 1.0 - self::payment_fee_fraction();
-            return ($denominator > 0.0) ? round(($landed + max(0.0, $profit)) / $denominator, 2) : null;
+            return self::fixed_profit_price($dealer_price, $shipping_cost, $landed_cost, $profit);
         }
 
         $percent = self::float_or_null($percent_raw) ?? 0.0;
@@ -903,6 +893,33 @@ final class ProductStateStore
 
         $dealer = self::float_or_null($dealer_price);
         return ($dealer !== null && $dealer > 0.0) ? $dealer : null;
+    }
+
+    private static function fixed_profit_price(
+        ?string $dealer_price,
+        ?string $shipping_cost,
+        ?string $true_cost,
+        float $profit_target
+    ): ?float {
+        $cost_base = self::cost_base_without_shipping($dealer_price, $true_cost);
+        if ($cost_base === null || $cost_base <= 0.0) {
+            return null;
+        }
+
+        $shipping = self::float_or_null($shipping_cost) ?? 0.0;
+        $profit = max(0.0, $profit_target);
+        $fee_fraction = self::payment_fee_fraction();
+        $denominator = 1.0 - $fee_fraction;
+        if ($denominator <= 0.0) {
+            return null;
+        }
+
+        // Match DistributorProductHelper::get_map_real_price_for_product():
+        // price = true/dealer cost + ((profit + shipping + cost fee) / (1 - fee)).
+        $offset = ($profit + max(0.0, $shipping) + ($cost_base * $fee_fraction)) / $denominator;
+        $price = round($cost_base + $offset, 2);
+
+        return ($price > 0.0) ? $price : null;
     }
 
     private static function payment_fee_fraction(): float
