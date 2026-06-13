@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Product\State;
 
 use FFLHub\Product\ProductMeta;
+use FFLHub\Settings\Options;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -12,7 +13,7 @@ if (!defined('ABSPATH')) {
 final class ProductStateStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_state_schema_version';
-    private const SCHEMA_VERSION = '6';
+    private const SCHEMA_VERSION = '7';
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
@@ -70,15 +71,18 @@ final class ProductStateStore
                 selected_at DATETIME DEFAULT NULL,
                 woo_synced_at DATETIME DEFAULT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'active',
-                markup_mode VARCHAR(32) DEFAULT NULL,
-                markup_percent DECIMAL(8,4) DEFAULT NULL,
-                fixed_price DECIMAL(12,4) DEFAULT NULL,
-                map_policy VARCHAR(32) DEFAULT NULL,
-                map_real_price_mode VARCHAR(32) DEFAULT NULL,
-                map_real_price_offset DECIMAL(12,4) DEFAULT NULL,
-                map_real_price_percent DECIMAL(8,4) DEFAULT NULL,
-                map_real_price_fixed_profit DECIMAL(12,4) DEFAULT NULL,
-                map_real_price_free_shipping_override TINYINT(1) NOT NULL DEFAULT 0,
+                pricing_mode VARCHAR(32) DEFAULT NULL,
+                pricing_percent DECIMAL(8,4) DEFAULT NULL,
+                pricing_fixed_price DECIMAL(12,4) DEFAULT NULL,
+                pricing_fixed_profit DECIMAL(12,4) DEFAULT NULL,
+                computed_sell_price DECIMAL(12,4) DEFAULT NULL,
+                map_applicable TINYINT(1) NOT NULL DEFAULT 0,
+                map_visibility_policy VARCHAR(32) DEFAULT NULL,
+                quote_price DECIMAL(12,4) DEFAULT NULL,
+                quote_free_shipping_override TINYINT(1) NOT NULL DEFAULT 0,
+                public_regular_price DECIMAL(12,4) DEFAULT NULL,
+                public_sale_price DECIMAL(12,4) DEFAULT NULL,
+                public_active_price DECIMAL(12,4) DEFAULT NULL,
                 manual_shipping_override TINYINT(1) NOT NULL DEFAULT 0,
                 stock_oos_override TINYINT(1) NOT NULL DEFAULT 0,
                 local_stock_override_qty INT UNSIGNED DEFAULT NULL,
@@ -273,15 +277,18 @@ final class ProductStateStore
             'selected_at' => 'selected_at DATETIME DEFAULT NULL',
             'woo_synced_at' => 'woo_synced_at DATETIME DEFAULT NULL',
             'status' => "status VARCHAR(20) NOT NULL DEFAULT 'active'",
-            'markup_mode' => 'markup_mode VARCHAR(32) DEFAULT NULL',
-            'markup_percent' => 'markup_percent DECIMAL(8,4) DEFAULT NULL',
-            'fixed_price' => 'fixed_price DECIMAL(12,4) DEFAULT NULL',
-            'map_policy' => 'map_policy VARCHAR(32) DEFAULT NULL',
-            'map_real_price_mode' => 'map_real_price_mode VARCHAR(32) DEFAULT NULL',
-            'map_real_price_offset' => 'map_real_price_offset DECIMAL(12,4) DEFAULT NULL',
-            'map_real_price_percent' => 'map_real_price_percent DECIMAL(8,4) DEFAULT NULL',
-            'map_real_price_fixed_profit' => 'map_real_price_fixed_profit DECIMAL(12,4) DEFAULT NULL',
-            'map_real_price_free_shipping_override' => 'map_real_price_free_shipping_override TINYINT(1) NOT NULL DEFAULT 0',
+            'pricing_mode' => 'pricing_mode VARCHAR(32) DEFAULT NULL',
+            'pricing_percent' => 'pricing_percent DECIMAL(8,4) DEFAULT NULL',
+            'pricing_fixed_price' => 'pricing_fixed_price DECIMAL(12,4) DEFAULT NULL',
+            'pricing_fixed_profit' => 'pricing_fixed_profit DECIMAL(12,4) DEFAULT NULL',
+            'computed_sell_price' => 'computed_sell_price DECIMAL(12,4) DEFAULT NULL',
+            'map_applicable' => 'map_applicable TINYINT(1) NOT NULL DEFAULT 0',
+            'map_visibility_policy' => 'map_visibility_policy VARCHAR(32) DEFAULT NULL',
+            'quote_price' => 'quote_price DECIMAL(12,4) DEFAULT NULL',
+            'quote_free_shipping_override' => 'quote_free_shipping_override TINYINT(1) NOT NULL DEFAULT 0',
+            'public_regular_price' => 'public_regular_price DECIMAL(12,4) DEFAULT NULL',
+            'public_sale_price' => 'public_sale_price DECIMAL(12,4) DEFAULT NULL',
+            'public_active_price' => 'public_active_price DECIMAL(12,4) DEFAULT NULL',
             'manual_shipping_override' => 'manual_shipping_override TINYINT(1) NOT NULL DEFAULT 0',
             'stock_oos_override' => 'stock_oos_override TINYINT(1) NOT NULL DEFAULT 0',
             'local_stock_override_qty' => 'local_stock_override_qty INT UNSIGNED DEFAULT NULL',
@@ -308,6 +315,15 @@ final class ProductStateStore
             'last_map',
             'last_msrp',
             'last_computed_price',
+            'markup_mode',
+            'markup_percent',
+            'fixed_price',
+            'map_policy',
+            'map_real_price_mode',
+            'map_real_price_offset',
+            'map_real_price_percent',
+            'map_real_price_fixed_profit',
+            'map_real_price_free_shipping_override',
         ];
     }
 
@@ -433,6 +449,26 @@ final class ProductStateStore
         $shipping_height_in = self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, true), 3);
         $stock_qty = self::int_or_null(get_post_meta($product_id, '_stock', true));
         $stock_status = self::text(get_post_meta($product_id, '_stock_status', true), 32);
+        $pricing = self::pricing_state_from_product_meta(
+            get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_MODE_META, true),
+            get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_PERCENT_META, true),
+            get_post_meta($product_id, ProductMeta::FFLHUB_FIXED_PRICE_META, true),
+            get_post_meta($product_id, ProductMeta::FFLHUB_MAP_POLICY_META, true),
+            get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true),
+            get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true),
+            get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, true),
+            get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META, true),
+            get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true),
+            get_post_meta($product_id, ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true),
+            get_post_meta($product_id, '_regular_price', true),
+            get_post_meta($product_id, '_sale_price', true),
+            get_post_meta($product_id, '_price', true),
+            $dealer_price,
+            $shipping_cost,
+            $landed_cost,
+            $map_price,
+            $msrp
+        );
 
         return [
             'product_id' => $product_id,
@@ -455,15 +491,18 @@ final class ProductStateStore
             'shipping_height_in' => $shipping_height_in,
             'selection_status' => ($stock_status === 'instock' && (int) ($stock_qty ?? 0) > 0) ? 'instock' : 'no_offer',
             'status' => 'active',
-            'markup_mode' => self::text(get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_MODE_META, true), 32),
-            'markup_percent' => self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_PERCENT_META, true), 4),
-            'fixed_price' => self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_FIXED_PRICE_META, true), 4),
-            'map_policy' => self::text(get_post_meta($product_id, ProductMeta::FFLHUB_MAP_POLICY_META, true), 32),
-            'map_real_price_mode' => self::text(get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true), 32),
-            'map_real_price_offset' => self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true), 4),
-            'map_real_price_percent' => self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, true), 4),
-            'map_real_price_fixed_profit' => self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META, true), 4),
-            'map_real_price_free_shipping_override' => self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true)) ? 1 : 0,
+            'pricing_mode' => $pricing['pricing_mode'],
+            'pricing_percent' => $pricing['pricing_percent'],
+            'pricing_fixed_price' => $pricing['pricing_fixed_price'],
+            'pricing_fixed_profit' => $pricing['pricing_fixed_profit'],
+            'computed_sell_price' => $pricing['computed_sell_price'],
+            'map_applicable' => $pricing['map_applicable'],
+            'map_visibility_policy' => $pricing['map_visibility_policy'],
+            'quote_price' => $pricing['quote_price'],
+            'quote_free_shipping_override' => $pricing['quote_free_shipping_override'],
+            'public_regular_price' => $pricing['public_regular_price'],
+            'public_sale_price' => $pricing['public_sale_price'],
+            'public_active_price' => $pricing['public_active_price'],
             'manual_shipping_override' => self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, true)) ? 1 : 0,
             'stock_oos_override' => self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true)) ? 1 : 0,
             'local_stock_override_qty' => $local_stock_enabled ? self::int_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true)) : null,
@@ -475,6 +514,405 @@ final class ProductStateStore
             'bom_total_cost' => $bom_enabled ? self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_BOM_TOTAL_COST_META, true), 4) : null,
             'has_changed' => 0,
         ];
+    }
+
+    /**
+     * Translate the old product-meta pricing shape into the clearer product
+     * state model:
+     * - pricing_mode answers how we calculate the sell/quote price.
+     * - map_applicable answers whether a usable MAP exists right now.
+     * - map_visibility_policy answers how price may be displayed when MAP exists.
+     *
+     * @return array<string,mixed>
+     */
+    private static function pricing_state_from_product_meta(
+        $markup_mode_raw,
+        $markup_percent_raw,
+        $fixed_price_raw,
+        $map_policy_raw,
+        $map_real_price_mode_raw,
+        $map_real_price_offset_raw,
+        $map_real_price_percent_raw,
+        $map_real_price_fixed_profit_raw,
+        $map_real_price_free_shipping_override_raw,
+        $last_computed_raw,
+        $woo_regular_raw,
+        $woo_sale_raw,
+        $woo_active_raw,
+        ?string $dealer_price,
+        ?string $shipping_cost,
+        ?string $landed_cost,
+        ?string $map_price,
+        ?string $msrp
+    ): array {
+        $markup_mode = self::old_markup_mode($markup_mode_raw);
+        $map_real_price_mode = self::old_map_real_price_mode($map_real_price_mode_raw);
+        $map_applicable = self::float_or_null($map_price) !== null && (float) $map_price > 0.0;
+        $visibility_policy = self::map_visibility_policy($map_policy_raw, $map_applicable);
+
+        $old_map_real_price = self::old_map_real_price(
+            $map_real_price_mode,
+            $map_real_price_offset_raw,
+            $map_real_price_percent_raw,
+            $map_real_price_fixed_profit_raw,
+            $last_computed_raw,
+            $woo_regular_raw,
+            $woo_active_raw,
+            $dealer_price,
+            $shipping_cost,
+            $landed_cost,
+            $map_price
+        );
+
+        $pricing_mode = self::pricing_mode_from_old_meta(
+            $markup_mode,
+            $visibility_policy,
+            $map_real_price_mode,
+            $old_map_real_price,
+            $map_real_price_fixed_profit_raw
+        );
+
+        $fixed_price = self::float_or_null($fixed_price_raw);
+        $fixed_profit = self::float_or_null($map_real_price_fixed_profit_raw);
+        $pricing_percent = self::pricing_percent_for_column($pricing_mode, $markup_percent_raw);
+
+        if ($pricing_mode === 'fixed_price' && $fixed_price === null && $old_map_real_price !== null) {
+            $fixed_price = $old_map_real_price;
+        }
+
+        $computed_sell_price = self::computed_sell_price(
+            $pricing_mode,
+            $pricing_percent,
+            $fixed_price,
+            $fixed_profit,
+            $dealer_price,
+            $shipping_cost,
+            $landed_cost,
+            $map_price,
+            $last_computed_raw,
+            $woo_regular_raw,
+            $woo_active_raw
+        );
+
+        $public_prices = self::public_price_fields(
+            $computed_sell_price,
+            $map_price,
+            $msrp,
+            $visibility_policy,
+            $map_applicable,
+            $woo_regular_raw,
+            $woo_sale_raw,
+            $woo_active_raw
+        );
+
+        $quote_price = ($map_applicable && $visibility_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE)
+            ? $computed_sell_price
+            : null;
+
+        return [
+            'pricing_mode' => $pricing_mode,
+            'pricing_percent' => self::money_or_null($pricing_percent, 4),
+            'pricing_fixed_price' => self::money_or_null($fixed_price, 4),
+            'pricing_fixed_profit' => self::money_or_null($pricing_mode === 'fixed_profit' ? $fixed_profit : null, 4),
+            'computed_sell_price' => self::money_or_null($computed_sell_price, 4),
+            'map_applicable' => $map_applicable ? 1 : 0,
+            'map_visibility_policy' => $visibility_policy,
+            'quote_price' => self::money_or_null($quote_price, 4),
+            'quote_free_shipping_override' => self::truthy($map_real_price_free_shipping_override_raw) ? 1 : 0,
+            'public_regular_price' => self::money_or_null($public_prices['regular'], 4),
+            'public_sale_price' => self::money_or_null($public_prices['sale'], 4),
+            'public_active_price' => self::money_or_null($public_prices['active'], 4),
+        ];
+    }
+
+    private static function old_markup_mode($raw): int
+    {
+        if ($raw === '' || $raw === null) {
+            return ProductMeta::MARKUP_MODE_GLOBAL;
+        }
+
+        return (int) $raw;
+    }
+
+    private static function old_map_real_price_mode($raw): int
+    {
+        if ($raw === '' || $raw === null) {
+            return ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED;
+        }
+
+        $mode = (int) $raw;
+        return in_array($mode, [
+            ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET,
+            ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE,
+            ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED,
+            ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT,
+        ], true) ? $mode : ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED;
+    }
+
+    private static function map_visibility_policy($raw, bool $map_applicable): string
+    {
+        if (!$map_applicable) {
+            return 'none';
+        }
+
+        $policy = strtolower(trim((string) $raw));
+        if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+            return $policy;
+        }
+
+        return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+    }
+
+    private static function pricing_mode_from_old_meta(
+        int $markup_mode,
+        string $visibility_policy,
+        int $map_real_price_mode,
+        ?float $old_map_real_price,
+        $map_real_price_fixed_profit_raw
+    ): string {
+        if ($markup_mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
+            return 'fixed_percent';
+        }
+
+        if ($markup_mode === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
+            return 'fixed_price';
+        }
+
+        if ($markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            if ($visibility_policy === 'none') {
+                return 'global_percent';
+            }
+
+            if (
+                $visibility_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE
+                && $map_real_price_mode === ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT
+                && self::float_or_null($map_real_price_fixed_profit_raw) !== null
+            ) {
+                return 'fixed_profit';
+            }
+
+            if (
+                $visibility_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE
+                && in_array($map_real_price_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE], true)
+                && $old_map_real_price !== null
+            ) {
+                return 'fixed_price';
+            }
+
+            if (
+                $visibility_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE
+                && $map_real_price_mode === ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED
+            ) {
+                return 'global_percent';
+            }
+
+            return 'map_price';
+        }
+
+        return 'global_percent';
+    }
+
+    private static function pricing_percent_for_column(string $pricing_mode, $markup_percent_raw): ?float
+    {
+        if ($pricing_mode === 'global_percent') {
+            return max(0.0, (float) Options::get_global_markup());
+        }
+
+        if ($pricing_mode !== 'fixed_percent') {
+            return null;
+        }
+
+        $percent = self::float_or_null($markup_percent_raw);
+        if ($percent === null || $percent < 0.0) {
+            return null;
+        }
+
+        return ($percent <= 1.0) ? ($percent * 100.0) : $percent;
+    }
+
+    private static function computed_sell_price(
+        string $pricing_mode,
+        ?float $pricing_percent,
+        ?float $fixed_price,
+        ?float $fixed_profit,
+        ?string $dealer_price,
+        ?string $shipping_cost,
+        ?string $landed_cost,
+        ?string $map_price,
+        $last_computed_raw,
+        $woo_regular_raw,
+        $woo_active_raw
+    ): ?float {
+        if ($pricing_mode === 'fixed_price' && $fixed_price !== null && $fixed_price > 0.0) {
+            return round($fixed_price, 2);
+        }
+
+        if ($pricing_mode === 'fixed_profit' && $fixed_profit !== null && $fixed_profit >= 0.0) {
+            $landed = self::cost_base($dealer_price, $shipping_cost, $landed_cost);
+            if ($landed !== null && $landed > 0.0) {
+                $fee_fraction = self::payment_fee_fraction();
+                $denominator = 1.0 - $fee_fraction;
+                if ($denominator > 0.0) {
+                    return round(($landed + $fixed_profit) / $denominator, 2);
+                }
+            }
+        }
+
+        if ($pricing_mode === 'map_price') {
+            $map = self::float_or_null($map_price);
+            if ($map !== null && $map > 0.0) {
+                return round($map, 2);
+            }
+        }
+
+        if ($pricing_mode === 'global_percent' || $pricing_mode === 'fixed_percent') {
+            $percent = self::float_or_null($pricing_percent);
+            $base = self::cost_base($dealer_price, $shipping_cost, $landed_cost);
+            if ($percent !== null && $base !== null && $base > 0.0) {
+                return (float) (ceil($base * (1.0 + ($percent / 100.0))) - 0.01);
+            }
+        }
+
+        return self::float_or_null($last_computed_raw)
+            ?? self::float_or_null($woo_active_raw)
+            ?? self::float_or_null($woo_regular_raw);
+    }
+
+    /**
+     * @return array{regular:?float,sale:?float,active:?float}
+     */
+    private static function public_price_fields(
+        ?float $computed_sell_price,
+        ?string $map_price,
+        ?string $msrp,
+        string $visibility_policy,
+        bool $map_applicable,
+        $woo_regular_raw,
+        $woo_sale_raw,
+        $woo_active_raw
+    ): array {
+        $map = self::float_or_null($map_price);
+        if (
+            $map_applicable
+            && $map !== null
+            && ($visibility_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $visibility_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART)
+        ) {
+            return [
+                'regular' => round($map, 2),
+                'sale' => null,
+                'active' => round($map, 2),
+            ];
+        }
+
+        if ($computed_sell_price === null || $computed_sell_price <= 0.0) {
+            return [
+                'regular' => self::float_or_null($woo_regular_raw),
+                'sale' => self::float_or_null($woo_sale_raw),
+                'active' => self::float_or_null($woo_active_raw),
+            ];
+        }
+
+        $regular = round($computed_sell_price, 2);
+        $sale = null;
+        $msrp_float = self::float_or_null($msrp);
+
+        if ($map !== null && $map > $computed_sell_price) {
+            $regular = round($map, 2);
+            $sale = round($computed_sell_price, 2);
+        } elseif ($msrp_float !== null && $msrp_float > $computed_sell_price) {
+            $regular = round($msrp_float, 2);
+            $sale = round($computed_sell_price, 2);
+        }
+
+        return [
+            'regular' => $regular,
+            'sale' => $sale,
+            'active' => $sale ?? $regular,
+        ];
+    }
+
+    private static function old_map_real_price(
+        int $real_mode,
+        $offset_raw,
+        $percent_raw,
+        $fixed_profit_raw,
+        $last_computed_raw,
+        $woo_regular_raw,
+        $woo_active_raw,
+        ?string $dealer_price,
+        ?string $shipping_cost,
+        ?string $landed_cost,
+        ?string $map_price
+    ): ?float {
+        $map = self::float_or_null($map_price);
+        if ($map === null || $map <= 0.0) {
+            return null;
+        }
+
+        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED) {
+            return self::float_or_null($last_computed_raw)
+                ?? self::float_or_null($woo_regular_raw)
+                ?? self::float_or_null($woo_active_raw);
+        }
+
+        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET) {
+            $base = self::cost_base_without_shipping($dealer_price, $landed_cost);
+            $offset = self::float_or_null($offset_raw) ?? 0.0;
+            return ($base !== null) ? round($base + max(0.0, $offset), 2) : null;
+        }
+
+        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT) {
+            $profit = self::float_or_null($fixed_profit_raw) ?? 0.0;
+            $landed = self::cost_base($dealer_price, $shipping_cost, $landed_cost);
+            if ($landed === null) {
+                return null;
+            }
+
+            $denominator = 1.0 - self::payment_fee_fraction();
+            return ($denominator > 0.0) ? round(($landed + max(0.0, $profit)) / $denominator, 2) : null;
+        }
+
+        $percent = self::float_or_null($percent_raw) ?? 0.0;
+        $real_price = $map - ($map * (max(0.0, $percent) / 100.0));
+
+        return ($real_price > 0.0) ? round($real_price, 2) : null;
+    }
+
+    private static function cost_base(?string $dealer_price, ?string $shipping_cost, ?string $landed_cost): ?float
+    {
+        $landed = self::float_or_null($landed_cost);
+        if ($landed !== null && $landed > 0.0) {
+            return $landed;
+        }
+
+        $dealer = self::float_or_null($dealer_price);
+        if ($dealer === null || $dealer <= 0.0) {
+            return null;
+        }
+
+        $shipping = self::float_or_null($shipping_cost) ?? 0.0;
+        return $dealer + max(0.0, $shipping);
+    }
+
+    private static function cost_base_without_shipping(?string $dealer_price, ?string $landed_cost): ?float
+    {
+        $landed = self::float_or_null($landed_cost);
+        if ($landed !== null && $landed > 0.0) {
+            return $landed;
+        }
+
+        $dealer = self::float_or_null($dealer_price);
+        return ($dealer !== null && $dealer > 0.0) ? $dealer : null;
+    }
+
+    private static function payment_fee_fraction(): float
+    {
+        $fee_percent = (float) Options::get_payment_processor_fee_percent();
+        if (!is_finite($fee_percent) || $fee_percent < 0.0) {
+            return 0.0;
+        }
+
+        return min(0.99, $fee_percent / 100.0);
     }
 
     /**
@@ -556,15 +994,18 @@ final class ProductStateStore
             'selected_at' => '%s',
             'woo_synced_at' => '%s',
             'status' => '%s',
-            'markup_mode' => '%s',
-            'markup_percent' => '%f',
-            'fixed_price' => '%f',
-            'map_policy' => '%s',
-            'map_real_price_mode' => '%s',
-            'map_real_price_offset' => '%f',
-            'map_real_price_percent' => '%f',
-            'map_real_price_fixed_profit' => '%f',
-            'map_real_price_free_shipping_override' => '%d',
+            'pricing_mode' => '%s',
+            'pricing_percent' => '%f',
+            'pricing_fixed_price' => '%f',
+            'pricing_fixed_profit' => '%f',
+            'computed_sell_price' => '%f',
+            'map_applicable' => '%d',
+            'map_visibility_policy' => '%s',
+            'quote_price' => '%f',
+            'quote_free_shipping_override' => '%d',
+            'public_regular_price' => '%f',
+            'public_sale_price' => '%f',
+            'public_active_price' => '%f',
             'manual_shipping_override' => '%d',
             'stock_oos_override' => '%d',
             'local_stock_override_qty' => '%d',
@@ -627,6 +1068,26 @@ final class ProductStateStore
         }
 
         return number_format($number, $scale, '.', '');
+    }
+
+    private static function float_or_null($value): ?float
+    {
+        $value = preg_replace('/[^0-9.\-]/', '', trim((string) $value));
+        if (!is_string($value) || $value === '' || !is_numeric($value)) {
+            return null;
+        }
+
+        $number = (float) $value;
+        return is_finite($number) ? $number : null;
+    }
+
+    private static function money_or_null(?float $value, int $scale): ?string
+    {
+        if ($value === null || !is_finite($value)) {
+            return null;
+        }
+
+        return number_format($value, $scale, '.', '');
     }
 
     private static function int_or_null($value): ?int

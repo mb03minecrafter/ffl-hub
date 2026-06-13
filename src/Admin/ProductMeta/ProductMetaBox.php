@@ -5,6 +5,7 @@ namespace FFLHub\Admin\ProductMeta;
 use FFLHub\Distributor\Core\DistributorRegistry;
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 use WC_Product;
@@ -41,6 +42,15 @@ class ProductMetaBox
             array(__CLASS__, 'render_meta_box'),
             'product',
             'side',
+            'default'
+        );
+
+        add_meta_box(
+            'fflhub_product_state_row',
+            __('FFLHub Product State Row', 'ffl-hub'),
+            array(__CLASS__, 'render_product_state_row_box'),
+            'product',
+            'normal',
             'default'
         );
     }
@@ -821,6 +831,195 @@ class ProductMetaBox
         echo '<p style="margin-top:6px;font-size:11px;color:#6b7280;">';
         esc_html_e('Most values are managed by FFLHub and updated automatically by sync jobs.', 'ffl-hub');
         echo '</p>';
+    }
+
+    public static function render_product_state_row_box(WP_Post $post): void
+    {
+        /** @var WC_Product|null $product */
+        $product = function_exists('wc_get_product') ? wc_get_product($post->ID) : null;
+        if (! $product) {
+            echo '<p style="margin:0;color:#6b7280;">' . esc_html__('Unable to load product data.', 'ffl-hub') . '</p>';
+            return;
+        }
+
+        $row = self::product_state_row((int) $post->ID);
+        if ($row === null) {
+            echo '<p style="margin:0;color:#6b7280;">' .
+                esc_html__('No product_state row exists for this product yet. Run the Product State backfill to create one.', 'ffl-hub') .
+                '</p>';
+            return;
+        }
+
+        echo '<p style="margin-top:0;color:#6b7280;">' .
+            esc_html__('Read-only comparison of the NEW product_state row beside the OLD Woo/FFLHub meta values for this product.', 'ffl-hub') .
+            '</p>';
+
+        echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;">';
+
+        self::render_state_panel(
+            __('Selected Offer Snapshot', 'ffl-hub'),
+            [
+                'Product ID' => (string) ($row['product_id'] ?? ''),
+                'UPC' => (string) ($row['upc'] ?? ''),
+                'Distributor' => self::state_value($row['distributor_id'] ?? null),
+                'Distributor product ID' => self::state_value($row['distributor_product_id'] ?? null),
+                'SKU' => self::state_value($row['distributor_sku'] ?? null),
+                'Manufacturer norm' => self::state_value($row['manufacturer_norm'] ?? null),
+                'Qty' => self::state_value($row['qty'] ?? null),
+                'Stock status' => self::state_value($row['stock_status'] ?? null),
+                'Dropship' => self::state_yes_no($row['dropship_enabled'] ?? null),
+                'Enabled' => self::state_yes_no($row['enabled'] ?? null),
+                'Selection status' => self::state_value($row['selection_status'] ?? null),
+                'Has changed' => self::state_yes_no($row['has_changed'] ?? null),
+            ]
+        );
+
+        self::render_state_panel(
+            __('NEW Product State Pricing', 'ffl-hub'),
+            [
+                'Pricing mode' => self::state_value($row['pricing_mode'] ?? null),
+                'Pricing percent' => self::state_value($row['pricing_percent'] ?? null),
+                'Fixed price' => self::state_money($row['pricing_fixed_price'] ?? null),
+                'Fixed profit' => self::state_money($row['pricing_fixed_profit'] ?? null),
+                'Computed sell' => self::state_money($row['computed_sell_price'] ?? null),
+                'MAP applicable' => self::state_yes_no($row['map_applicable'] ?? null),
+                'MAP visibility' => self::state_value($row['map_visibility_policy'] ?? null),
+                'Quote price' => self::state_money($row['quote_price'] ?? null),
+                'Quote free shipping' => self::state_yes_no($row['quote_free_shipping_override'] ?? null),
+                'Public regular' => self::state_money($row['public_regular_price'] ?? null),
+                'Public sale' => self::state_money($row['public_sale_price'] ?? null),
+                'Public active' => self::state_money($row['public_active_price'] ?? null),
+            ]
+        );
+
+        self::render_state_panel(
+            __('OLD Woo/FFLHub Meta Pricing', 'ffl-hub'),
+            [
+                'Markup mode' => self::old_markup_mode_label($product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true)),
+                'Markup percent' => self::state_value($product->get_meta(ProductMeta::FFLHUB_MARKUP_PERCENT_META, true)),
+                'Fixed price' => self::state_money($product->get_meta(ProductMeta::FFLHUB_FIXED_PRICE_META, true)),
+                'MAP policy' => self::state_value($product->get_meta(ProductMeta::FFLHUB_MAP_POLICY_META, true)),
+                'MAP real mode' => self::old_map_real_mode_label($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true)),
+                'MAP real offset' => self::state_money($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true)),
+                'MAP real percent' => self::state_value($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, true)),
+                'MAP real fixed profit' => self::state_money($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META, true)),
+                'MAP free shipping override' => self::state_yes_no($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true)),
+                'Last computed' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true)),
+            ]
+        );
+
+        self::render_state_panel(
+            __('Price/Cost Comparison', 'ffl-hub'),
+            [
+                'NEW dealer price' => self::state_money($row['dealer_price'] ?? null),
+                'NEW shipping cost' => self::state_money($row['shipping_cost'] ?? null),
+                'NEW landed cost' => self::state_money($row['landed_cost'] ?? null),
+                'NEW MAP' => self::state_money($row['map_price'] ?? null),
+                'NEW MSRP' => self::state_money($row['msrp'] ?? null),
+                'OLD true cost' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true)),
+                'OLD dealer price' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true)),
+                'OLD shipping cost' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true)),
+                'OLD MAP' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true)),
+                'OLD MSRP' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true)),
+                'Woo regular' => self::state_money($product->get_regular_price()),
+                'Woo sale' => self::state_money($product->get_sale_price()),
+                'Woo active' => self::state_money($product->get_price()),
+            ]
+        );
+
+        echo '</div>';
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    private static function product_state_row(int $product_id): ?array
+    {
+        global $wpdb;
+
+        ProductStateStore::ensure_schema();
+        $table = ProductStateStore::table_name();
+        $row = $wpdb->get_row(
+            $wpdb->prepare("SELECT * FROM {$table} WHERE product_id = %d LIMIT 1", $product_id), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            ARRAY_A
+        );
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @param array<string,string> $pairs
+     */
+    private static function render_state_panel(string $title, array $pairs): void
+    {
+        echo '<div style="border:1px solid #dcdcde;background:#fff;border-radius:4px;overflow:hidden;">';
+        echo '<div style="padding:8px 10px;background:#f6f7f7;font-weight:700;border-bottom:1px solid #dcdcde;">' . esc_html($title) . '</div>';
+        echo '<table class="widefat" style="border:0;">';
+        echo '<tbody>';
+        foreach ($pairs as $label => $value) {
+            echo '<tr>';
+            echo '<th style="width:48%;font-weight:600;">' . esc_html($label) . '</th>';
+            echo '<td><code style="white-space:normal;">' . esc_html($value) . '</code></td>';
+            echo '</tr>';
+        }
+        echo '</tbody>';
+        echo '</table>';
+        echo '</div>';
+    }
+
+    private static function state_value($value): string
+    {
+        $value = trim((string) $value);
+        return $value === '' ? '-' : $value;
+    }
+
+    private static function state_money($value): string
+    {
+        $value = preg_replace('/[^0-9.\-]/', '', trim((string) $value));
+        if (!is_string($value) || $value === '' || !is_numeric($value)) {
+            return '-';
+        }
+
+        return '$' . number_format((float) $value, 2, '.', '');
+    }
+
+    private static function state_yes_no($value): string
+    {
+        if ($value === null || trim((string) $value) === '') {
+            return '-';
+        }
+
+        return ((float) $value > 0.0) ? 'yes' : 'no';
+    }
+
+    private static function old_markup_mode_label($value): string
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return 'global_percent';
+        }
+
+        return match ((int) $value) {
+            ProductMeta::MARKUP_MODE_FIXED_PCT => 'fixed_percent',
+            ProductMeta::MARKUP_MODE_FIXED_PRICE => 'fixed_price',
+            ProductMeta::MARKUP_MODE_MAP_PRICE => 'map_price',
+            default => 'global_percent',
+        };
+    }
+
+    private static function old_map_real_mode_label($value): string
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return 'recommended';
+        }
+
+        return match ((int) $value) {
+            ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET => 'fixed_offset',
+            ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE => 'map_percent_discount',
+            ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT => 'fixed_profit',
+            default => 'recommended',
+        };
     }
 
     public static function save_meta_and_update_price(int $post_id): void
