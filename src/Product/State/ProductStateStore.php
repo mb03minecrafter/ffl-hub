@@ -930,9 +930,14 @@ final class ProductStateStore
             && $map !== null
             && ($visibility_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $visibility_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART)
         ) {
+            $msrp_float = self::float_or_null($msrp);
+            $regular = ($msrp_float !== null && $msrp_float > $map)
+                ? $msrp_float
+                : $map;
+
             return [
-                'regular' => round($map, 2),
-                'sale' => null,
+                'regular' => round($regular, 2),
+                'sale' => round($map, 2),
             ];
         }
 

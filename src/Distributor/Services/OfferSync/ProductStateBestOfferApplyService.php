@@ -262,7 +262,12 @@ final class ProductStateBestOfferApplyService
                 WHEN {$offer_alias}.map_price IS NOT NULL
                     AND {$offer_alias}.map_price > 0
                     AND {$effective_map_policy} IN ('" . esc_sql(Options::MAP_POLICY_EMAIL_FOR_QUOTE) . "', '" . esc_sql(Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) . "')
-                THEN ROUND({$offer_alias}.map_price, 2)
+                THEN CASE
+                    WHEN {$offer_alias}.msrp IS NOT NULL
+                        AND {$offer_alias}.msrp > {$offer_alias}.map_price
+                    THEN ROUND({$offer_alias}.msrp, 2)
+                    ELSE ROUND({$offer_alias}.map_price, 2)
+                END
 
                 WHEN {$computed_sell_price} IS NULL OR {$computed_sell_price} <= 0
                 THEN {$state_alias}.public_regular_price
@@ -287,7 +292,7 @@ final class ProductStateBestOfferApplyService
                 WHEN {$offer_alias}.map_price IS NOT NULL
                     AND {$offer_alias}.map_price > 0
                     AND {$effective_map_policy} IN ('" . esc_sql(Options::MAP_POLICY_EMAIL_FOR_QUOTE) . "', '" . esc_sql(Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) . "')
-                THEN NULL
+                THEN ROUND({$offer_alias}.map_price, 2)
 
                 WHEN {$computed_sell_price} IS NULL OR {$computed_sell_price} <= 0
                 THEN {$state_alias}.public_sale_price
