@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
 final class ProductBestOffersStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_best_offers_schema_version';
-    private const SCHEMA_VERSION = '2';
+    private const SCHEMA_VERSION = '3';
     private const TABLE_SUFFIX = 'fflhub_product_best_offers';
 
     public static function table_name(): string
@@ -29,7 +29,7 @@ final class ProductBestOffersStore
         }
 
         $installed = (string) get_option(self::SCHEMA_OPTION, '');
-        if ($installed === self::SCHEMA_VERSION && self::table_exists() && self::has_expected_columns() && self::has_expected_indexes()) {
+        if ($installed === self::SCHEMA_VERSION && self::table_exists() && self::has_expected_columns() && self::has_expected_indexes() && !self::has_legacy_columns()) {
             return;
         }
 
@@ -65,19 +65,18 @@ final class ProductBestOffersStore
                 source_offer_normalized_at DATETIME DEFAULT NULL,
                 selection_status VARCHAR(32) NOT NULL DEFAULT 'no_offer',
                 selected_at DATETIME DEFAULT NULL,
-                woo_synced_at DATETIME DEFAULT NULL,
                 has_changed TINYINT(1) NOT NULL DEFAULT 0,
                 PRIMARY KEY  (product_id),
                 UNIQUE KEY upc (upc),
                 KEY has_changed (has_changed, product_id),
                 KEY distributor_id (distributor_id),
                 KEY selection_status (selection_status),
-                KEY selected_at (selected_at),
-                KEY woo_synced_at (woo_synced_at)
+                KEY selected_at (selected_at)
             ) {$charset};
         ");
 
         self::ensure_columns($table);
+        self::drop_legacy_columns($table);
         self::ensure_column_order($table);
         self::ensure_indexes($table);
 
@@ -111,6 +110,13 @@ final class ProductBestOffersStore
         return true;
     }
 
+    private static function has_legacy_columns(): bool
+    {
+        $table = self::table_name();
+
+        return self::table_has_column($table, 'woo_synced_at');
+    }
+
     private static function table_has_column(string $table, string $column): bool
     {
         global $wpdb;
@@ -124,6 +130,19 @@ final class ProductBestOffersStore
         return is_string($found) && $found === $column;
     }
 
+    private static function table_has_index(string $table, string $index): bool
+    {
+        global $wpdb;
+
+        if ($table === '' || $index === '') {
+            return false;
+        }
+
+        $found = $wpdb->get_var($wpdb->prepare("SHOW INDEX FROM {$table} WHERE Key_name = %s", $index)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        return $found !== null;
+    }
+
     private static function ensure_columns(string $table): void
     {
         global $wpdb;
@@ -133,8 +152,7 @@ final class ProductBestOffersStore
             'source_offer_normalized_at' => 'ADD COLUMN source_offer_normalized_at DATETIME DEFAULT NULL AFTER source_updated_at',
             'selection_status' => "ADD COLUMN selection_status VARCHAR(32) NOT NULL DEFAULT 'no_offer' AFTER source_offer_normalized_at",
             'selected_at' => 'ADD COLUMN selected_at DATETIME DEFAULT NULL AFTER selection_status',
-            'woo_synced_at' => 'ADD COLUMN woo_synced_at DATETIME DEFAULT NULL AFTER selected_at',
-            'has_changed' => 'ADD COLUMN has_changed TINYINT(1) NOT NULL DEFAULT 0 AFTER woo_synced_at',
+            'has_changed' => 'ADD COLUMN has_changed TINYINT(1) NOT NULL DEFAULT 0 AFTER selected_at',
         ];
 
         foreach ($missing_columns as $column => $definition) {
@@ -143,6 +161,19 @@ final class ProductBestOffersStore
             }
 
             $wpdb->query("ALTER TABLE {$table} {$definition}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
+    }
+
+    private static function drop_legacy_columns(string $table): void
+    {
+        global $wpdb;
+
+        if (self::table_has_index($table, 'woo_synced_at')) {
+            $wpdb->query("ALTER TABLE {$table} DROP INDEX woo_synced_at"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
+
+        if (self::table_has_column($table, 'woo_synced_at')) {
+            $wpdb->query("ALTER TABLE {$table} DROP COLUMN woo_synced_at"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
     }
 
@@ -212,7 +243,6 @@ final class ProductBestOffersStore
             'distributor_id' => 'ADD KEY distributor_id (distributor_id)',
             'selection_status' => 'ADD KEY selection_status (selection_status)',
             'selected_at' => 'ADD KEY selected_at (selected_at)',
-            'woo_synced_at' => 'ADD KEY woo_synced_at (woo_synced_at)',
         ];
 
         foreach ($missing_indexes as $name => $definition) {
@@ -244,7 +274,6 @@ final class ProductBestOffersStore
             'distributor_id',
             'selection_status',
             'selected_at',
-            'woo_synced_at',
         ];
     }
 
@@ -283,7 +312,6 @@ final class ProductBestOffersStore
             'source_offer_normalized_at' => 'source_offer_normalized_at DATETIME DEFAULT NULL',
             'selection_status' => "selection_status VARCHAR(32) NOT NULL DEFAULT 'no_offer'",
             'selected_at' => 'selected_at DATETIME DEFAULT NULL',
-            'woo_synced_at' => 'woo_synced_at DATETIME DEFAULT NULL',
             'has_changed' => 'has_changed TINYINT(1) NOT NULL DEFAULT 0',
         ];
     }
