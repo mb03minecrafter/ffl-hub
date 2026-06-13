@@ -310,8 +310,10 @@ final class ProductStatePage
                 <ul style="list-style:disc;margin-left:20px;">
                     <li><?php echo esc_html(sprintf('Stage: %s', (string) ($result['stage'] ?? ''))); ?></li>
                     <li><?php echo esc_html(sprintf('Dirty UPCs found: %d', (int) ($result['dirty_upcs'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Missing product-state UPCs staged: %d', (int) ($result['missing_product_state_upcs'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Temp table: %s', (string) ($result['temp_table'] ?? ''))); ?></li>
                     <li><?php echo esc_html(sprintf('MAP rows: %d', (int) ($result['map_rows'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('MSRP rows: %d', (int) ($result['msrp_rows'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('MAP lookup build: %s ms', (string) ($result['map_elapsed_ms'] ?? '0.00'))); ?></li>
                     <li><?php echo esc_html(sprintf('Updated best offers: %d', (int) ($result['updated_best_offers'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Cleared offer change flags: %d', (int) ($result['cleared_offer_change_flags'] ?? 0))); ?></li>

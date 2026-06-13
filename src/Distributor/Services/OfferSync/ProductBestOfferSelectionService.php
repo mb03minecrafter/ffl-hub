@@ -29,6 +29,8 @@ final class ProductBestOfferSelectionService
         $result['temp_table'] = '';
         $result['upsert_elapsed_ms'] = '0.00';
         $result['clear_flags_elapsed_ms'] = '0.00';
+        $result['missing_product_state_upcs'] = 0;
+        $result['msrp_rows'] = 0;
         $result['errors'] = [];
 
         if (!$wpdb) {
@@ -70,6 +72,7 @@ final class ProductBestOfferSelectionService
             CREATE TEMPORARY TABLE {$map_table} (
                 upc VARCHAR(32) NOT NULL,
                 map_price DECIMAL(12,4) DEFAULT NULL,
+                msrp DECIMAL(12,4) DEFAULT NULL,
                 PRIMARY KEY (upc)
             ) ENGINE=MEMORY {$charset}
         "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -93,6 +96,25 @@ final class ProductBestOfferSelectionService
             return self::finish_result($result, $started);
         }
 
+        $missing_inserted = $wpdb->query("
+            INSERT IGNORE INTO {$temp_table} (upc)
+            SELECT ps.upc
+            FROM {$product_state_table} ps
+            LEFT JOIN {$best_offers_table} pbo
+                ON pbo.product_id = ps.product_id
+            WHERE ps.status = 'active'
+              AND ps.upc <> ''
+              AND pbo.product_id IS NULL
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if ($missing_inserted === false) {
+            $result['ok'] = false;
+            $result['errors'][] = 'Failed to collect missing product-state UPCs: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $result['missing_product_state_upcs'] = is_numeric($missing_inserted) ? (int) $missing_inserted : 0;
+
         $dirty_upcs = $wpdb->get_var("SELECT COUNT(*) FROM {$temp_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $result['dirty_upcs'] = is_numeric($dirty_upcs) ? (int) $dirty_upcs : 0;
         $result['processed_upcs'] = (int) $result['dirty_upcs'];
@@ -105,17 +127,18 @@ final class ProductBestOfferSelectionService
 
         $t_map = microtime(true);
         $map_inserted = $wpdb->query("
-            INSERT INTO {$map_table} (upc, map_price)
+            INSERT INTO {$map_table} (upc, map_price, msrp)
             SELECT
                 d.upc,
-                MAX(o.map_price) AS map_price
+                MAX(CASE WHEN o.map_price IS NOT NULL AND o.map_price > 0 THEN o.map_price ELSE NULL END) AS map_price,
+                MAX(CASE WHEN o.msrp IS NOT NULL AND o.msrp > 0 THEN o.msrp ELSE NULL END) AS msrp
             FROM {$temp_table} d
             INNER JOIN {$offers_table} o
                 ON o.upc = d.upc
                AND o.enabled = 1
-               AND o.map_price IS NOT NULL
-               AND o.map_price > 0
             GROUP BY d.upc
+            HAVING map_price IS NOT NULL
+                OR msrp IS NOT NULL
         "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $result['map_elapsed_ms'] = number_format((microtime(true) - $t_map) * 1000.0, 2, '.', '');
@@ -125,7 +148,10 @@ final class ProductBestOfferSelectionService
             return self::finish_result($result, $started);
         }
 
-        $result['map_rows'] = is_numeric($map_inserted) ? (int) $map_inserted : 0;
+        $map_rows = $wpdb->get_var("SELECT COUNT(*) FROM {$map_table} WHERE map_price IS NOT NULL"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $msrp_rows = $wpdb->get_var("SELECT COUNT(*) FROM {$map_table} WHERE msrp IS NOT NULL"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $result['map_rows'] = is_numeric($map_rows) ? (int) $map_rows : 0;
+        $result['msrp_rows'] = is_numeric($msrp_rows) ? (int) $msrp_rows : 0;
 
         $best_offer_changed_sql = "
             NOT ({$best_offers_table}.product_id <=> VALUES(product_id))
@@ -200,7 +226,7 @@ final class ProductBestOfferSelectionService
                 o.shipping_cost,
                 o.landed_cost,
                 COALESCE(NULLIF(o.map_price, 0), dm.map_price) AS map_price,
-                o.msrp,
+                COALESCE(NULLIF(o.msrp, 0), dm.msrp) AS msrp,
                 COALESCE(o.ffl_required, 0) AS ffl_required,
                 COALESCE(o.sot_required, 0) AS sot_required,
                 CASE
