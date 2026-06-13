@@ -45,10 +45,13 @@ final class ProductBestOfferSelectionService
         $best_offers_table = ProductBestOffersStore::table_name();
         $product_state_table = ProductStateStore::table_name();
         $temp_table = 'tmp_fflhub_best_offer_dirty_upcs';
+        $map_table = 'tmp_fflhub_best_offer_dirty_maps';
         $charset = $wpdb->get_charset_collate();
         $result['temp_table'] = $temp_table;
+        $result['map_temp_table'] = $map_table;
 
         $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$temp_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$map_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $created = $wpdb->query("
             CREATE TEMPORARY TABLE {$temp_table} (
@@ -60,6 +63,20 @@ final class ProductBestOfferSelectionService
         if ($created === false) {
             $result['ok'] = false;
             $result['errors'][] = 'Failed to create dirty UPC temp table: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $map_created = $wpdb->query("
+            CREATE TEMPORARY TABLE {$map_table} (
+                upc VARCHAR(32) NOT NULL,
+                map_price DECIMAL(12,4) DEFAULT NULL,
+                PRIMARY KEY (upc)
+            ) ENGINE=MEMORY {$charset}
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if ($map_created === false) {
+            $result['ok'] = false;
+            $result['errors'][] = 'Failed to create dirty UPC MAP temp table: ' . (string) $wpdb->last_error;
             return self::finish_result($result, $started);
         }
 
@@ -85,6 +102,57 @@ final class ProductBestOfferSelectionService
         }
 
         $result['stage'] = 'best_offer_upsert';
+
+        $t_map = microtime(true);
+        $map_inserted = $wpdb->query("
+            INSERT INTO {$map_table} (upc, map_price)
+            SELECT
+                d.upc,
+                MAX(o.map_price) AS map_price
+            FROM {$temp_table} d
+            INNER JOIN {$offers_table} o
+                ON o.upc = d.upc
+               AND o.enabled = 1
+               AND o.map_price IS NOT NULL
+               AND o.map_price > 0
+            GROUP BY d.upc
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $result['map_elapsed_ms'] = number_format((microtime(true) - $t_map) * 1000.0, 2, '.', '');
+        if ($map_inserted === false) {
+            $result['ok'] = false;
+            $result['errors'][] = 'Failed to build dirty UPC MAP lookup: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $result['map_rows'] = is_numeric($map_inserted) ? (int) $map_inserted : 0;
+
+        $best_offer_changed_sql = "
+            NOT ({$best_offers_table}.product_id <=> VALUES(product_id))
+            OR NOT ({$best_offers_table}.upc <=> VALUES(upc))
+            OR NOT ({$best_offers_table}.distributor_id <=> VALUES(distributor_id))
+            OR NOT ({$best_offers_table}.distributor_product_id <=> VALUES(distributor_product_id))
+            OR NOT ({$best_offers_table}.distributor_sku <=> VALUES(distributor_sku))
+            OR NOT ({$best_offers_table}.manufacturer_norm <=> VALUES(manufacturer_norm))
+            OR NOT ({$best_offers_table}.qty <=> VALUES(qty))
+            OR NOT ({$best_offers_table}.stock_status <=> VALUES(stock_status))
+            OR NOT ({$best_offers_table}.dealer_price <=> VALUES(dealer_price))
+            OR NOT ({$best_offers_table}.shipping_cost <=> VALUES(shipping_cost))
+            OR NOT ({$best_offers_table}.landed_cost <=> VALUES(landed_cost))
+            OR NOT ({$best_offers_table}.map_price <=> VALUES(map_price))
+            OR NOT ({$best_offers_table}.msrp <=> VALUES(msrp))
+            OR NOT ({$best_offers_table}.ffl_required <=> VALUES(ffl_required))
+            OR NOT ({$best_offers_table}.sot_required <=> VALUES(sot_required))
+            OR NOT ({$best_offers_table}.dropship_enabled <=> VALUES(dropship_enabled))
+            OR NOT ({$best_offers_table}.enabled <=> VALUES(enabled))
+            OR NOT ({$best_offers_table}.shipping_weight_oz <=> VALUES(shipping_weight_oz))
+            OR NOT ({$best_offers_table}.shipping_length_in <=> VALUES(shipping_length_in))
+            OR NOT ({$best_offers_table}.shipping_width_in <=> VALUES(shipping_width_in))
+            OR NOT ({$best_offers_table}.shipping_height_in <=> VALUES(shipping_height_in))
+            OR NOT ({$best_offers_table}.source_updated_at <=> VALUES(source_updated_at))
+            OR NOT ({$best_offers_table}.source_offer_normalized_at <=> VALUES(source_offer_normalized_at))
+            OR NOT ({$best_offers_table}.selection_status <=> VALUES(selection_status))
+        ";
 
         $t_upsert = microtime(true);
         $upserted = $wpdb->query("
@@ -131,17 +199,7 @@ final class ProductBestOfferSelectionService
                 o.dealer_price,
                 o.shipping_cost,
                 o.landed_cost,
-                COALESCE(
-                    NULLIF(o.map_price, 0),
-                    (
-                        SELECT MAX(map_o.map_price)
-                        FROM {$offers_table} map_o
-                        WHERE map_o.upc = ps.upc
-                          AND map_o.enabled = 1
-                          AND map_o.map_price IS NOT NULL
-                          AND map_o.map_price > 0
-                    )
-                ) AS map_price,
+                COALESCE(NULLIF(o.map_price, 0), dm.map_price) AS map_price,
                 o.msrp,
                 COALESCE(o.ffl_required, 0) AS ffl_required,
                 COALESCE(o.sot_required, 0) AS sot_required,
@@ -170,6 +228,8 @@ final class ProductBestOfferSelectionService
             INNER JOIN {$product_state_table} ps
                 ON ps.upc = d.upc
                AND ps.status = 'active'
+            LEFT JOIN {$map_table} dm
+                ON dm.upc = ps.upc
             LEFT JOIN {$offers_table} o
                 ON o.upc = ps.upc
                AND o.enabled = 1
@@ -226,32 +286,7 @@ final class ProductBestOfferSelectionService
             WHERE better.upc IS NULL
             ON DUPLICATE KEY UPDATE
                 has_changed = CASE
-                    WHEN
-                        NOT ({$best_offers_table}.product_id <=> VALUES(product_id))
-                        OR NOT ({$best_offers_table}.upc <=> VALUES(upc))
-                        OR NOT ({$best_offers_table}.distributor_id <=> VALUES(distributor_id))
-                        OR NOT ({$best_offers_table}.distributor_product_id <=> VALUES(distributor_product_id))
-                        OR NOT ({$best_offers_table}.distributor_sku <=> VALUES(distributor_sku))
-                        OR NOT ({$best_offers_table}.manufacturer_norm <=> VALUES(manufacturer_norm))
-                        OR NOT ({$best_offers_table}.qty <=> VALUES(qty))
-                        OR NOT ({$best_offers_table}.stock_status <=> VALUES(stock_status))
-                        OR NOT ({$best_offers_table}.dealer_price <=> VALUES(dealer_price))
-                        OR NOT ({$best_offers_table}.shipping_cost <=> VALUES(shipping_cost))
-                        OR NOT ({$best_offers_table}.landed_cost <=> VALUES(landed_cost))
-                        OR NOT ({$best_offers_table}.map_price <=> VALUES(map_price))
-                        OR NOT ({$best_offers_table}.msrp <=> VALUES(msrp))
-                        OR NOT ({$best_offers_table}.ffl_required <=> VALUES(ffl_required))
-                        OR NOT ({$best_offers_table}.sot_required <=> VALUES(sot_required))
-                        OR NOT ({$best_offers_table}.dropship_enabled <=> VALUES(dropship_enabled))
-                        OR NOT ({$best_offers_table}.enabled <=> VALUES(enabled))
-                        OR NOT ({$best_offers_table}.shipping_weight_oz <=> VALUES(shipping_weight_oz))
-                        OR NOT ({$best_offers_table}.shipping_length_in <=> VALUES(shipping_length_in))
-                        OR NOT ({$best_offers_table}.shipping_width_in <=> VALUES(shipping_width_in))
-                        OR NOT ({$best_offers_table}.shipping_height_in <=> VALUES(shipping_height_in))
-                        OR NOT ({$best_offers_table}.source_updated_at <=> VALUES(source_updated_at))
-                        OR NOT ({$best_offers_table}.source_offer_normalized_at <=> VALUES(source_offer_normalized_at))
-                        OR NOT ({$best_offers_table}.selection_status <=> VALUES(selection_status))
-                    THEN 1
+                    WHEN {$best_offer_changed_sql} THEN 1
                     ELSE {$best_offers_table}.has_changed
                 END,
                 product_id = VALUES(product_id),
@@ -278,7 +313,10 @@ final class ProductBestOfferSelectionService
                 source_updated_at = VALUES(source_updated_at),
                 source_offer_normalized_at = VALUES(source_offer_normalized_at),
                 selection_status = VALUES(selection_status),
-                selected_at = NOW()
+                selected_at = CASE
+                    WHEN {$best_offer_changed_sql} THEN NOW()
+                    ELSE {$best_offers_table}.selected_at
+                END
         "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $result['upsert_elapsed_ms'] = number_format((microtime(true) - $t_upsert) * 1000.0, 2, '.', '');
