@@ -35,6 +35,7 @@ final class ProductStatePage
     private const ACTION_NORMALIZE_CSSI = 'normalize_cssi_offers';
     private const ACTION_REFRESH_CHANGED_BEST_OFFERS = 'refresh_changed_best_offers';
     private const ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE = 'collect_changed_best_offers_for_product_state';
+    private const ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS = 'recalculate_product_state_outputs';
     private const RESULT_TRANSIENT_PREFIX = 'fflhub_product_state_backfill_result_';
 
     public function register(): void
@@ -81,6 +82,7 @@ final class ProductStatePage
             <?php $this->render_cssi_normalize_card(); ?>
             <?php $this->render_changed_best_offers_card(); ?>
             <?php $this->render_collect_changed_best_offers_for_product_state_card(); ?>
+            <?php $this->render_recalculate_product_state_outputs_card(); ?>
         </div>
         <?php
     }
@@ -98,7 +100,7 @@ final class ProductStatePage
         $action = isset($_POST['fflhub_product_state_action'])
             ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_product_state_action']))
             : '';
-        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS, self::ACTION_NORMALIZE_RSR, self::ACTION_NORMALIZE_LIPSEYS, self::ACTION_NORMALIZE_CSSI, self::ACTION_REFRESH_CHANGED_BEST_OFFERS, self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE], true)) {
+        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS, self::ACTION_NORMALIZE_RSR, self::ACTION_NORMALIZE_LIPSEYS, self::ACTION_NORMALIZE_CSSI, self::ACTION_REFRESH_CHANGED_BEST_OFFERS, self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE, self::ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS], true)) {
             return;
         }
 
@@ -135,9 +137,12 @@ final class ProductStatePage
         } elseif ($action === self::ACTION_REFRESH_CHANGED_BEST_OFFERS) {
             $result = ProductBestOfferSelectionService::refresh_changed_upcs();
             $result['type'] = self::ACTION_REFRESH_CHANGED_BEST_OFFERS;
-        } else {
+        } elseif ($action === self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE) {
             $result = ProductStateBestOfferApplyService::apply_changed_best_offers();
             $result['type'] = self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE;
+        } else {
+            $result = ProductStateBestOfferApplyService::recalculate_all_outputs();
+            $result['type'] = self::ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS;
         }
 
         set_transient($this->result_transient_key(), $result, 5 * MINUTE_IN_SECONDS);
@@ -270,6 +275,23 @@ final class ProductStatePage
         <?php
     }
 
+    private function render_recalculate_product_state_outputs_card(): void
+    {
+        ?>
+        <div class="postbox" style="max-width: 760px; padding: 16px;">
+            <h2 style="margin-top:0;"><?php esc_html_e('Recalculate Product State Outputs', 'ffl-hub'); ?></h2>
+            <p>
+                <?php esc_html_e('Recomputes calculated product_state pricing outputs from the current product_state inputs and selected offer snapshot. Use this after direct SQL changes to pricing mode, pricing values, or MAP visibility. This does not update WooCommerce products or old product meta.', 'ffl-hub'); ?>
+            </p>
+            <form method="post" action="">
+                <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
+                <input type="hidden" name="fflhub_product_state_action" value="<?php echo esc_attr(self::ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS); ?>" />
+                <?php submit_button(__('Recalculate Product State Outputs', 'ffl-hub'), 'secondary', 'submit', false); ?>
+            </form>
+        </div>
+        <?php
+    }
+
     /**
      * @param array<string,mixed>|null $result
      */
@@ -301,6 +323,7 @@ final class ProductStatePage
         $normalizer = $offer_normalizers[$type] ?? null;
         $is_best_offer_refresh = ($type === self::ACTION_REFRESH_CHANGED_BEST_OFFERS);
         $is_product_state_best_offer_collect = ($type === self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE);
+        $is_product_state_output_recalculation = ($type === self::ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS);
         $has_errors = !empty($result['errors']) && is_array($result['errors']);
         $notice_class = $has_errors ? 'notice-error' : 'notice-success';
         ?>
@@ -342,6 +365,23 @@ final class ProductStatePage
                     <li><?php echo esc_html(sprintf('Product state apply runtime: %s ms', (string) ($result['apply_elapsed_ms'] ?? '0.00'))); ?></li>
                     <li><?php echo esc_html(sprintf('Best-offer flags cleared: %d', (int) ($result['cleared_best_offer_flags'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Best-offer flag clear runtime: %s ms', (string) ($result['clear_flags_elapsed_ms'] ?? '0.00'))); ?></li>
+                    <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
+                </ul>
+                <?php if ($has_errors) : ?>
+                    <p><strong><?php esc_html_e('Errors:', 'ffl-hub'); ?></strong></p>
+                    <ul style="list-style:disc;margin-left:20px;">
+                        <?php foreach ($result['errors'] as $message) : ?>
+                            <li><?php echo esc_html((string) $message); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            <?php elseif ($is_product_state_output_recalculation) : ?>
+                <p><strong><?php esc_html_e('Product state output recalculation complete.', 'ffl-hub'); ?></strong></p>
+                <ul style="list-style:disc;margin-left:20px;">
+                    <li><?php echo esc_html(sprintf('Stage: %s', (string) ($result['stage'] ?? ''))); ?></li>
+                    <li><?php echo esc_html(sprintf('Product state rows scanned: %d', (int) ($result['total_product_state_rows'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Product state rows updated: %d', (int) ($result['updated_product_state'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Recalculation runtime: %s ms', (string) ($result['recalculate_elapsed_ms'] ?? '0.00'))); ?></li>
                     <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
                 </ul>
                 <?php if ($has_errors) : ?>

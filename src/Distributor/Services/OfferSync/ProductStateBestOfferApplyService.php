@@ -152,6 +152,60 @@ final class ProductStateBestOfferApplyService
         return self::finish_result($result, $started);
     }
 
+    /**
+     * Recalculate denormalized product_state pricing/MAP outputs in place.
+     *
+     * This is intentionally separate from apply_changed_best_offers(). Use this
+     * when product_state input controls were changed directly, such as a bulk
+     * SQL update to pricing_mode, and the selected best-offer snapshot itself
+     * did not change.
+     *
+     * @return array<string,mixed>
+     */
+    public static function recalculate_all_outputs(): array
+    {
+        global $wpdb;
+
+        $started = microtime(true);
+        $result = [
+            'ok' => true,
+            'implemented' => true,
+            'stage' => 'product_state_output_recalculation',
+            'total_product_state_rows' => 0,
+            'updated_product_state' => 0,
+            'recalculate_elapsed_ms' => '0.00',
+            'elapsed_ms' => '0.00',
+            'errors' => [],
+        ];
+
+        if (!$wpdb) {
+            $result['ok'] = false;
+            $result['errors'][] = 'WordPress database connection is unavailable.';
+            return self::finish_result($result, $started);
+        }
+
+        ProductStateStore::ensure_schema();
+
+        $product_state_table = ProductStateStore::table_name();
+        $total = $wpdb->get_var("SELECT COUNT(*) FROM {$product_state_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $result['total_product_state_rows'] = is_numeric($total) ? (int) $total : 0;
+
+        $t_recalculate = microtime(true);
+        $updated = $wpdb->query(self::recalculate_outputs_sql($product_state_table)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $result['recalculate_elapsed_ms'] = number_format((microtime(true) - $t_recalculate) * 1000.0, 2, '.', '');
+
+        if ($updated === false) {
+            $result['ok'] = false;
+            $result['errors'][] = 'Failed to recalculate product_state outputs: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $result['updated_product_state'] = is_numeric($updated) ? (int) $updated : 0;
+        $result['stage'] = 'complete';
+
+        return self::finish_result($result, $started);
+    }
+
     private static function apply_sql(string $product_state_table, string $best_offers_table, string $temp_table): string
     {
         $computed_sell_price = ProductStatePricingSql::computed_sell_price_expr('ps', 'b');
@@ -205,6 +259,46 @@ final class ProductStateBestOfferApplyService
                 ps.updated_at = NOW(),
                 ps.has_changed = 1
             WHERE ps.status = 'active'
+        ";
+    }
+
+    private static function recalculate_outputs_sql(string $product_state_table): string
+    {
+        $computed_sell_price = ProductStatePricingSql::computed_sell_price_expr('ps', 'ps');
+        $effective_map_policy = ProductStatePricingSql::effective_map_policy_expr('ps', 'ps');
+        $public_regular_price = ProductStatePricingSql::public_regular_price_expr('ps', 'ps', $computed_sell_price, $effective_map_policy);
+        $public_sale_price = ProductStatePricingSql::public_sale_price_expr('ps', 'ps', $computed_sell_price, $effective_map_policy);
+        $global_percent = self::global_percent_literal();
+        $pricing_percent = "
+            CASE
+                WHEN ps.pricing_mode = 'global_percent' THEN {$global_percent}
+                ELSE ps.pricing_percent
+            END
+        ";
+        $map_applicable = "
+            CASE
+                WHEN ps.map_price IS NOT NULL AND ps.map_price > 0 THEN 1
+                ELSE 0
+            END
+        ";
+
+        return "
+            UPDATE {$product_state_table} ps
+            SET
+                ps.pricing_percent = {$pricing_percent},
+                ps.computed_sell_price = {$computed_sell_price},
+                ps.map_applicable = {$map_applicable},
+                ps.public_regular_price = {$public_regular_price},
+                ps.public_sale_price = {$public_sale_price},
+                ps.updated_at = NOW(),
+                ps.has_changed = 1
+            WHERE NOT (
+                    ps.pricing_percent <=> {$pricing_percent}
+                AND ps.computed_sell_price <=> {$computed_sell_price}
+                AND ps.map_applicable <=> {$map_applicable}
+                AND ps.public_regular_price <=> {$public_regular_price}
+                AND ps.public_sale_price <=> {$public_sale_price}
+            )
         ";
     }
 
