@@ -406,6 +406,155 @@ final class ProductStateStore
     }
 
     /**
+     * Save the product_state controls owned by the admin product editor.
+     *
+     * This deliberately edits only product_state. It does not write old product
+     * meta and does not touch Woo prices/stock. Calculated product_state outputs
+     * are refreshed from the newly saved controls so the row remains internally
+     * consistent for the future product_state-to-Woo writer.
+     *
+     * @param array<string,mixed> $raw
+     * @return array{ok:bool,updated:int,changed:bool,message:string}
+     */
+    public static function update_admin_controls(int $product_id, array $raw): array
+    {
+        global $wpdb;
+
+        self::ensure_schema();
+
+        $table = self::table_name();
+        $row = $wpdb->get_row(
+            $wpdb->prepare("SELECT * FROM {$table} WHERE product_id = %d LIMIT 1", $product_id), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            ARRAY_A
+        );
+
+        if (!is_array($row)) {
+            return [
+                'ok' => false,
+                'updated' => 0,
+                'changed' => false,
+                'message' => "No product_state row exists for product #{$product_id}.",
+            ];
+        }
+
+        $pricing_mode = self::admin_pricing_mode($raw['pricing_mode'] ?? '');
+        $pricing_percent = null;
+        if ($pricing_mode === 'global_percent') {
+            $pricing_percent = max(0.0, (float) Options::get_global_markup());
+        } elseif ($pricing_mode === 'fixed_percent') {
+            $pricing_percent = max(0.0, self::float_or_null($raw['pricing_percent'] ?? null) ?? 0.0);
+        }
+
+        $fixed_price = ($pricing_mode === 'fixed_price')
+            ? self::float_or_null($raw['pricing_fixed_price'] ?? null)
+            : null;
+        $fixed_profit = ($pricing_mode === 'fixed_profit')
+            ? max(0.0, self::float_or_null($raw['pricing_fixed_profit'] ?? null) ?? 0.0)
+            : null;
+
+        $map_applicable = self::float_or_null($row['map_price'] ?? null) !== null
+            && (float) $row['map_price'] > 0.0;
+        $visibility_policy = self::admin_map_visibility_policy($raw['map_visibility_policy'] ?? '', $map_applicable);
+
+        $computed_sell_price = self::computed_sell_price(
+            $pricing_mode,
+            $pricing_percent,
+            $fixed_price,
+            $fixed_profit,
+            self::nullable_string($row['dealer_price'] ?? null),
+            self::nullable_string($row['shipping_cost'] ?? null),
+            self::nullable_string($row['landed_cost'] ?? null),
+            self::nullable_string($row['map_price'] ?? null),
+            $row['computed_sell_price'] ?? null,
+            get_post_meta($product_id, '_regular_price', true),
+            get_post_meta($product_id, '_price', true)
+        );
+
+        $public_prices = self::public_price_fields(
+            $computed_sell_price,
+            self::nullable_string($row['map_price'] ?? null),
+            self::nullable_string($row['msrp'] ?? null),
+            $visibility_policy,
+            $map_applicable,
+            get_post_meta($product_id, '_regular_price', true),
+            get_post_meta($product_id, '_sale_price', true)
+        );
+
+        $allowed_distributors_enabled = !empty($raw['allowed_distributors_enabled']);
+        $allowed_distributors_json = $allowed_distributors_enabled
+            ? self::allowed_distributors_json(true, $raw['allowed_distributors'] ?? [])
+            : null;
+
+        $status = strtolower(trim((string) ($raw['status'] ?? 'active')));
+        if (!in_array($status, ['active', 'ignored'], true)) {
+            $status = 'active';
+        }
+
+        $updates = [
+            'status' => $status,
+            'pricing_mode' => $pricing_mode,
+            'pricing_percent' => self::money_or_null($pricing_percent, 4),
+            'pricing_fixed_price' => self::money_or_null($fixed_price, 4),
+            'pricing_fixed_profit' => self::money_or_null($fixed_profit, 4),
+            'map_visibility_policy' => $visibility_policy,
+            'quote_free_shipping_override' => !empty($raw['quote_free_shipping_override']) ? 1 : 0,
+            'computed_sell_price' => self::money_or_null($computed_sell_price, 4),
+            'map_applicable' => $map_applicable ? 1 : 0,
+            'public_regular_price' => self::money_or_null($public_prices['regular'], 4),
+            'public_sale_price' => self::money_or_null($public_prices['sale'], 4),
+            'manual_shipping_override' => !empty($raw['manual_shipping_override']) ? 1 : 0,
+            'stock_oos_override' => !empty($raw['stock_oos_override']) ? 1 : 0,
+            'local_stock_override_qty' => self::admin_nullable_absint($raw['local_stock_override_qty'] ?? null),
+            'local_stock_free_shipping' => !empty($raw['local_stock_free_shipping']) ? 1 : 0,
+            'allowed_distributors_json' => $allowed_distributors_json,
+        ];
+
+        $changed = false;
+        foreach ($updates as $column => $value) {
+            if (self::admin_value_changed($row[$column] ?? null, $value)) {
+                $changed = true;
+                break;
+            }
+        }
+
+        if (!$changed) {
+            return [
+                'ok' => true,
+                'updated' => 0,
+                'changed' => false,
+                'message' => 'No product_state changes detected.',
+            ];
+        }
+
+        $updates['updated_at'] = current_time('mysql');
+        $updates['has_changed'] = 1;
+
+        $updated = $wpdb->update(
+            $table,
+            $updates,
+            ['product_id' => $product_id],
+            self::formats_for_row($updates),
+            ['%d']
+        );
+
+        if ($updated === false) {
+            return [
+                'ok' => false,
+                'updated' => 0,
+                'changed' => true,
+                'message' => 'Product_state update failed: ' . (string) $wpdb->last_error,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'updated' => (int) $updated,
+            'changed' => true,
+            'message' => 'Product_state controls saved.',
+        ];
+    }
+
+    /**
      * @return int[]
      */
     private static function get_product_ids_batch(int $last_id, int $limit): array
@@ -915,6 +1064,69 @@ final class ProductStateStore
         }
 
         return min(0.99, $fee_percent / 100.0);
+    }
+
+    private static function admin_pricing_mode($raw): string
+    {
+        $mode = strtolower(trim((string) $raw));
+        return in_array($mode, ['global_percent', 'fixed_percent', 'fixed_price', 'fixed_profit', 'map_price'], true)
+            ? $mode
+            : 'global_percent';
+    }
+
+    private static function admin_map_visibility_policy($raw, bool $map_applicable): string
+    {
+        if (!$map_applicable) {
+            return 'none';
+        }
+
+        $policy = strtolower(trim((string) $raw));
+        return in_array($policy, [
+            'none',
+            Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE,
+            Options::MAP_POLICY_EMAIL_FOR_QUOTE,
+            Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART,
+        ], true) ? $policy : Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+    }
+
+    private static function admin_nullable_absint($raw): ?int
+    {
+        $raw = trim((string) $raw);
+        if ($raw === '') {
+            return null;
+        }
+
+        return max(0, (int) $raw);
+    }
+
+    private static function nullable_string($value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+        return ($value === '') ? null : $value;
+    }
+
+    /**
+     * Product_state values are stored as strings by wpdb for most scalar types,
+     * so compare by the normalized storage representation we are about to save.
+     *
+     * @param mixed $old
+     * @param mixed $new
+     */
+    private static function admin_value_changed($old, $new): bool
+    {
+        if ($new === null) {
+            return trim((string) $old) !== '';
+        }
+
+        if (is_int($new)) {
+            return (int) $old !== $new;
+        }
+
+        return trim((string) $old) !== (string) $new;
     }
 
     /**

@@ -32,6 +32,13 @@ class ProductMetaBox
             999,
             1
         );
+
+        add_action(
+            'woocommerce_process_product_meta',
+            array(__CLASS__, 'save_product_state_controls'),
+            1000,
+            1
+        );
     }
 
     public static function add_meta_box(): void
@@ -43,6 +50,15 @@ class ProductMetaBox
             'product',
             'side',
             'default'
+        );
+
+        add_meta_box(
+            'fflhub_product_state_editor',
+            __('FFLHub Product State Editor', 'ffl-hub'),
+            array(__CLASS__, 'render_product_state_editor_box'),
+            'product',
+            'normal',
+            'high'
         );
 
         add_meta_box(
@@ -833,6 +849,181 @@ class ProductMetaBox
         echo '</p>';
     }
 
+    public static function render_product_state_editor_box(WP_Post $post): void
+    {
+        $row = self::product_state_row((int) $post->ID);
+        if ($row === null) {
+            echo '<p style="margin:0;color:#6b7280;">' .
+                esc_html__('No product_state row exists for this product yet. Run the Product State backfill to create one.', 'ffl-hub') .
+                '</p>';
+            return;
+        }
+
+        wp_nonce_field('fflhub_save_product_state_controls', 'fflhub_product_state_nonce');
+
+        $pricing_mode = self::state_value_raw($row['pricing_mode'] ?? 'global_percent', 'global_percent');
+        $map_policy = self::state_value_raw($row['map_visibility_policy'] ?? 'none', 'none');
+        $status = self::state_value_raw($row['status'] ?? 'active', 'active');
+        $enabled_distributors = self::enabled_distributor_options();
+        $allowed_distributor_ids = self::normalize_distributor_lock_ids($row['allowed_distributors_json'] ?? '');
+        $allowed_distributor_lookup = array_fill_keys($allowed_distributor_ids, true);
+
+        echo '<p style="margin-top:0;color:#6b7280;">' .
+            esc_html__('Edits the new product_state controls only. This does not write old product meta or Woo prices yet; it prepares the row for the product_state sync path.', 'ffl-hub') .
+            '</p>';
+
+        echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;align-items:start;">';
+
+        echo '<div style="border:1px solid #dcdcde;border-radius:4px;padding:10px;background:#fff;">';
+        echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Row Status', 'ffl-hub') . '</h3>';
+        echo '<label style="display:block;font-weight:600;margin-bottom:4px;">' . esc_html__('State status', 'ffl-hub') . '</label>';
+        echo '<select name="fflhub_state_status" style="width:100%;">';
+        echo '<option value="active" ' . selected($status, 'active', false) . '>' . esc_html__('Active - eligible for offer selection', 'ffl-hub') . '</option>';
+        echo '<option value="ignored" ' . selected($status, 'ignored', false) . '>' . esc_html__('Ignored - exclude from offer selection', 'ffl-hub') . '</option>';
+        echo '</select>';
+        echo '<p style="margin:6px 0 0;color:#6b7280;">' .
+            esc_html__('Active rows can receive best-offer updates. Ignored rows stay in product_state but are skipped by active-row offer selection SQL.', 'ffl-hub') .
+            '</p>';
+        echo '</div>';
+
+        echo '<div style="border:1px solid #dcdcde;border-radius:4px;padding:10px;background:#fff;">';
+        echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Pricing Calculation', 'ffl-hub') . '</h3>';
+        echo '<label style="display:block;font-weight:600;margin-bottom:4px;">' . esc_html__('Pricing mode', 'ffl-hub') . '</label>';
+        echo '<select name="fflhub_state_pricing_mode" style="width:100%;">';
+        foreach (self::product_state_pricing_mode_options() as $value => $label) {
+            echo '<option value="' . esc_attr($value) . '" ' . selected($pricing_mode, $value, false) . '>' . esc_html($label) . '</option>';
+        }
+        echo '</select>';
+        echo '<p style="margin:6px 0;color:#6b7280;">' .
+            esc_html__('Controls how product_state computes the internal sell or quote price. Global percent uses the current global markup setting.', 'ffl-hub') .
+            '</p>';
+
+        echo '<label style="display:block;font-weight:600;margin-bottom:4px;">' . esc_html__('Fixed percent', 'ffl-hub') . '</label>';
+        echo '<input type="number" step="0.01" min="0" name="fflhub_state_pricing_percent" value="' .
+            esc_attr(self::state_decimal_for_input($row['pricing_percent'] ?? null)) .
+            '" style="width:100%;" />';
+        echo '<p style="margin:4px 0 8px;color:#6b7280;">' .
+            esc_html__('Used only by Fixed Percent mode. Enter 7 for 7 percent.', 'ffl-hub') .
+            '</p>';
+
+        echo '<label style="display:block;font-weight:600;margin-bottom:4px;">' . esc_html__('Fixed price', 'ffl-hub') . '</label>';
+        echo '<input type="number" step="0.01" min="0" name="fflhub_state_pricing_fixed_price" value="' .
+            esc_attr(self::state_decimal_for_input($row['pricing_fixed_price'] ?? null)) .
+            '" style="width:100%;" />';
+        echo '<p style="margin:4px 0 8px;color:#6b7280;">' .
+            esc_html__('Used only by Fixed Price mode. This becomes the computed sell price.', 'ffl-hub') .
+            '</p>';
+
+        echo '<label style="display:block;font-weight:600;margin-bottom:4px;">' . esc_html__('Fixed profit', 'ffl-hub') . '</label>';
+        echo '<input type="number" step="0.01" min="0" name="fflhub_state_pricing_fixed_profit" value="' .
+            esc_attr(self::state_decimal_for_input($row['pricing_fixed_profit'] ?? null)) .
+            '" style="width:100%;" />';
+        echo '<p style="margin:4px 0 0;color:#6b7280;">' .
+            esc_html__('Used only by Fixed Profit mode. It accounts for shipping and payment processor cost in the product_state calculation.', 'ffl-hub') .
+            '</p>';
+        echo '</div>';
+
+        echo '<div style="border:1px solid #dcdcde;border-radius:4px;padding:10px;background:#fff;">';
+        echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('MAP Visibility', 'ffl-hub') . '</h3>';
+        echo '<label style="display:block;font-weight:600;margin-bottom:4px;">' . esc_html__('Visibility policy', 'ffl-hub') . '</label>';
+        echo '<select name="fflhub_state_map_visibility_policy" style="width:100%;">';
+        foreach (self::product_state_map_policy_options() as $value => $label) {
+            echo '<option value="' . esc_attr($value) . '" ' . selected($map_policy, $value, false) . '>' . esc_html($label) . '</option>';
+        }
+        echo '</select>';
+        echo '<p style="margin:6px 0;color:#6b7280;">' .
+            esc_html__('Controls storefront price visibility when this row has a positive MAP. If MAP is missing, the save path stores this as None.', 'ffl-hub') .
+            '</p>';
+        echo '<label style="display:flex;gap:6px;align-items:flex-start;margin-top:8px;">';
+        echo '<input type="checkbox" name="fflhub_state_quote_free_shipping_override" value="1" ' .
+            checked(self::truthy_state($row['quote_free_shipping_override'] ?? null), true, false) .
+            ' />';
+        echo '<span><strong>' . esc_html__('Quote free shipping override', 'ffl-hub') . '</strong><br />' .
+            '<span style="color:#6b7280;">' . esc_html__('Marks quote-required MAP products as free-shipping eligible in the new state row.', 'ffl-hub') . '</span></span>';
+        echo '</label>';
+        echo '</div>';
+
+        echo '<div style="border:1px solid #dcdcde;border-radius:4px;padding:10px;background:#fff;">';
+        echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Stock And Fulfillment Overrides', 'ffl-hub') . '</h3>';
+        echo '<label style="display:flex;gap:6px;align-items:flex-start;margin-bottom:8px;">';
+        echo '<input type="checkbox" name="fflhub_state_stock_oos_override" value="1" ' .
+            checked(self::truthy_state($row['stock_oos_override'] ?? null), true, false) .
+            ' />';
+        echo '<span><strong>' . esc_html__('Out of stock override', 'ffl-hub') . '</strong><br />' .
+            '<span style="color:#6b7280;">' . esc_html__('Treat distributor stock as unavailable for this product_state row.', 'ffl-hub') . '</span></span>';
+        echo '</label>';
+
+        echo '<label style="display:block;font-weight:600;margin-bottom:4px;">' . esc_html__('Local stock quantity', 'ffl-hub') . '</label>';
+        echo '<input type="number" step="1" min="0" name="fflhub_state_local_stock_override_qty" value="' .
+            esc_attr(self::state_int_for_input($row['local_stock_override_qty'] ?? null)) .
+            '" style="width:100%;" />';
+        echo '<p style="margin:4px 0 8px;color:#6b7280;">' .
+            esc_html__('Blank means no local stock override. A positive value can later make local stock the source of truth for checkout/sync.', 'ffl-hub') .
+            '</p>';
+
+        echo '<label style="display:flex;gap:6px;align-items:flex-start;margin-bottom:8px;">';
+        echo '<input type="checkbox" name="fflhub_state_local_stock_free_shipping" value="1" ' .
+            checked(self::truthy_state($row['local_stock_free_shipping'] ?? null), true, false) .
+            ' />';
+        echo '<span><strong>' . esc_html__('Local stock free shipping', 'ffl-hub') . '</strong><br />' .
+            '<span style="color:#6b7280;">' . esc_html__('Use free shipping behavior when local stock is used.', 'ffl-hub') . '</span></span>';
+        echo '</label>';
+
+        echo '<label style="display:flex;gap:6px;align-items:flex-start;">';
+        echo '<input type="checkbox" name="fflhub_state_manual_shipping_override" value="1" ' .
+            checked(self::truthy_state($row['manual_shipping_override'] ?? null), true, false) .
+            ' />';
+        echo '<span><strong>' . esc_html__('Manual shipping override flag', 'ffl-hub') . '</strong><br />' .
+            '<span style="color:#6b7280;">' . esc_html__('Preserves the product_state override flag. Offer dimensions and shipping values remain read-only selected-offer data.', 'ffl-hub') . '</span></span>';
+        echo '</label>';
+        echo '</div>';
+
+        echo '<div style="border:1px solid #dcdcde;border-radius:4px;padding:10px;background:#fff;">';
+        echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Distributor Lock', 'ffl-hub') . '</h3>';
+        echo '<label style="display:flex;gap:6px;align-items:flex-start;margin-bottom:8px;">';
+        echo '<input type="checkbox" name="fflhub_state_allowed_distributors_enabled" value="1" ' .
+            checked(!empty($allowed_distributor_ids), true, false) .
+            ' />';
+        echo '<span><strong>' . esc_html__('Restrict allowed distributors', 'ffl-hub') . '</strong><br />' .
+            '<span style="color:#6b7280;">' . esc_html__('When enabled, only the selected distributor IDs should be considered by the future product_state sync path.', 'ffl-hub') . '</span></span>';
+        echo '</label>';
+
+        if (empty($enabled_distributors)) {
+            echo '<p style="margin:0;color:#b45309;">' . esc_html__('No enabled distributors are available.', 'ffl-hub') . '</p>';
+        } else {
+            echo '<select name="fflhub_state_allowed_distributors[]" multiple="multiple" size="' .
+                esc_attr((string) min(8, max(4, count($enabled_distributors)))) .
+                '" style="width:100%;">';
+            foreach ($enabled_distributors as $dist_id => $dist_label) {
+                echo '<option value="' . esc_attr($dist_id) . '" ' .
+                    selected(isset($allowed_distributor_lookup[$dist_id]), true, false) .
+                    '>' . esc_html($dist_label . ' (' . $dist_id . ')') . '</option>';
+            }
+            echo '</select>';
+            echo '<p style="margin:6px 0 0;color:#6b7280;">' .
+                esc_html__('Hold Ctrl or Command to select multiple distributors.', 'ffl-hub') .
+                '</p>';
+        }
+        echo '</div>';
+
+        echo '</div>';
+
+        echo '<div style="margin-top:12px;border:1px solid #dcdcde;border-radius:4px;padding:10px;background:#f6f7f7;">';
+        echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Calculated Product State Outputs', 'ffl-hub') . '</h3>';
+        echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;">';
+        self::render_state_output_chip(__('Computed sell price', 'ffl-hub'), self::state_money($row['computed_sell_price'] ?? null));
+        self::render_state_output_chip(__('MAP applicable', 'ffl-hub'), self::state_yes_no($row['map_applicable'] ?? null));
+        self::render_state_output_chip(__('Public regular', 'ffl-hub'), self::state_money($row['public_regular_price'] ?? null));
+        self::render_state_output_chip(__('Public sale', 'ffl-hub'), self::state_money($row['public_sale_price'] ?? null));
+        self::render_state_output_chip(__('Public/display', 'ffl-hub'), self::state_money(self::derived_public_price($row)));
+        self::render_state_output_chip(__('Has changed', 'ffl-hub'), self::state_yes_no($row['has_changed'] ?? null));
+        echo '</div>';
+        echo '<p style="margin:8px 0 0;color:#6b7280;">' .
+            esc_html__('These outputs refresh after saving the product. They are shown here so you can sanity-check the state row without opening the comparison table.', 'ffl-hub') .
+            '</p>';
+        echo '</div>';
+    }
+
     public static function render_product_state_row_box(WP_Post $post): void
     {
         /** @var WC_Product|null $product */
@@ -1100,6 +1291,20 @@ class ProductMetaBox
         echo '</div>';
     }
 
+    private static function render_state_output_chip(string $label, string $value): void
+    {
+        echo '<div style="background:#fff;border:1px solid #dcdcde;border-radius:4px;padding:8px;">';
+        echo '<div style="font-size:11px;color:#6b7280;margin-bottom:3px;">' . esc_html($label) . '</div>';
+        echo '<code style="font-size:12px;">' . esc_html($value) . '</code>';
+        echo '</div>';
+    }
+
+    private static function state_value_raw($value, string $default = ''): string
+    {
+        $value = trim((string) $value);
+        return ($value === '') ? $default : $value;
+    }
+
     private static function state_value($value): string
     {
         $value = trim((string) $value);
@@ -1114,6 +1319,26 @@ class ProductMetaBox
         }
 
         return '$' . number_format((float) $value, 2, '.', '');
+    }
+
+    private static function state_decimal_for_input($value): string
+    {
+        $value = preg_replace('/[^0-9.\-]/', '', trim((string) $value));
+        if (!is_string($value) || $value === '' || !is_numeric($value)) {
+            return '';
+        }
+
+        return rtrim(rtrim(number_format((float) $value, 4, '.', ''), '0'), '.');
+    }
+
+    private static function state_int_for_input($value): string
+    {
+        $value = trim((string) $value);
+        if ($value === '' || !is_numeric($value)) {
+            return '';
+        }
+
+        return (string) max(0, (int) $value);
     }
 
     /**
@@ -1141,6 +1366,19 @@ class ProductMetaBox
         }
 
         return ((float) $value > 0.0) ? 'yes' : 'no';
+    }
+
+    private static function truthy_state($value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return (float) $value > 0.0;
+        }
+
+        return in_array(strtolower(trim((string) $value)), ['1', 'yes', 'true', 'on', 'enabled'], true);
     }
 
     private static function old_markup_mode_label($value): string
@@ -1171,6 +1409,51 @@ class ProductMetaBox
             ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT => 'fixed_profit',
             default => 'recommended',
         };
+    }
+
+    public static function save_product_state_controls(int $post_id): void
+    {
+        if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+            return;
+        }
+
+        if (
+            ! isset($_POST['fflhub_product_state_nonce']) ||
+            ! wp_verify_nonce(
+                sanitize_text_field(wp_unslash($_POST['fflhub_product_state_nonce'])),
+                'fflhub_save_product_state_controls'
+            )
+        ) {
+            return;
+        }
+
+        if (! current_user_can('edit_post', $post_id)) {
+            return;
+        }
+
+        $allowed_distributors = $_POST['fflhub_state_allowed_distributors'] ?? [];
+        if (!is_array($allowed_distributors)) {
+            $allowed_distributors = [$allowed_distributors];
+        }
+
+        ProductStateStore::update_admin_controls($post_id, [
+            'status' => self::sanitize_state_text_post('fflhub_state_status'),
+            'pricing_mode' => self::sanitize_state_text_post('fflhub_state_pricing_mode'),
+            'pricing_percent' => self::sanitize_state_decimal_post('fflhub_state_pricing_percent'),
+            'pricing_fixed_price' => self::sanitize_state_decimal_post('fflhub_state_pricing_fixed_price'),
+            'pricing_fixed_profit' => self::sanitize_state_decimal_post('fflhub_state_pricing_fixed_profit'),
+            'map_visibility_policy' => self::sanitize_state_text_post('fflhub_state_map_visibility_policy'),
+            'quote_free_shipping_override' => isset($_POST['fflhub_state_quote_free_shipping_override']) ? 1 : 0,
+            'manual_shipping_override' => isset($_POST['fflhub_state_manual_shipping_override']) ? 1 : 0,
+            'stock_oos_override' => isset($_POST['fflhub_state_stock_oos_override']) ? 1 : 0,
+            'local_stock_override_qty' => self::sanitize_state_int_post('fflhub_state_local_stock_override_qty'),
+            'local_stock_free_shipping' => isset($_POST['fflhub_state_local_stock_free_shipping']) ? 1 : 0,
+            'allowed_distributors_enabled' => isset($_POST['fflhub_state_allowed_distributors_enabled']) ? 1 : 0,
+            'allowed_distributors' => array_map(
+                static fn($value): string => sanitize_key((string) wp_unslash($value)),
+                $allowed_distributors
+            ),
+        ]);
     }
 
     public static function save_meta_and_update_price(int $post_id): void
@@ -1464,12 +1747,76 @@ class ProductMetaBox
         return (string) wc_format_decimal($value, 4);
     }
 
+    private static function sanitize_state_text_post(string $post_key): string
+    {
+        if (!isset($_POST[$post_key])) {
+            return '';
+        }
+
+        return sanitize_text_field(wp_unslash((string) $_POST[$post_key]));
+    }
+
+    private static function sanitize_state_decimal_post(string $post_key): string
+    {
+        if (!isset($_POST[$post_key])) {
+            return '';
+        }
+
+        $raw = trim(sanitize_text_field(wp_unslash((string) $_POST[$post_key])));
+        if ($raw === '' || !is_numeric($raw)) {
+            return '';
+        }
+
+        return (string) max(0.0, (float) $raw);
+    }
+
+    private static function sanitize_state_int_post(string $post_key): string
+    {
+        if (!isset($_POST[$post_key])) {
+            return '';
+        }
+
+        $raw = trim(sanitize_text_field(wp_unslash((string) $_POST[$post_key])));
+        if ($raw === '' || !is_numeric($raw)) {
+            return '';
+        }
+
+        return (string) max(0, (int) $raw);
+    }
+
     /**
      * @return array<string,string>
      */
     private static function map_policy_options(): array
     {
         return [
+            Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE => __('Add to Cart for Price', 'ffl-hub'),
+            Options::MAP_POLICY_EMAIL_FOR_QUOTE => __('Email for Quote', 'ffl-hub'),
+            Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART => __('No Email, No Add to Cart', 'ffl-hub'),
+        ];
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private static function product_state_pricing_mode_options(): array
+    {
+        return [
+            'global_percent' => __('Global Percent', 'ffl-hub'),
+            'fixed_percent' => __('Fixed Percent', 'ffl-hub'),
+            'fixed_price' => __('Fixed Price', 'ffl-hub'),
+            'fixed_profit' => __('Fixed Profit', 'ffl-hub'),
+            'map_price' => __('MAP Price', 'ffl-hub'),
+        ];
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private static function product_state_map_policy_options(): array
+    {
+        return [
+            'none' => __('None', 'ffl-hub'),
             Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE => __('Add to Cart for Price', 'ffl-hub'),
             Options::MAP_POLICY_EMAIL_FOR_QUOTE => __('Email for Quote', 'ffl-hub'),
             Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART => __('No Email, No Add to Cart', 'ffl-hub'),
