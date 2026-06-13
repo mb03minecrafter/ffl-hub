@@ -609,6 +609,10 @@ final class GunDealsFeedGenerator
                 continue;
             }
 
+            if ($this->is_expected_landed_cost_shipping_drift($field, $state_value, $legacy_value, $source_row)) {
+                continue;
+            }
+
             if ($this->drift_values_match((string) $config['type'], $state_value, $legacy_value, $source_row)) {
                 continue;
             }
@@ -696,6 +700,52 @@ final class GunDealsFeedGenerator
             && $state_num > 0.0
             && $legacy_num !== null
             && abs($legacy_num) < 0.0001;
+    }
+
+    /**
+     * Legacy `_fflhub_last_true_cost` often stored only dealer cost while the
+     * product_state `landed_cost` correctly stores dealer cost plus shipping.
+     * When the source distributor and dealer price are unchanged, that exact
+     * shipping delta is expected migration noise rather than a real mismatch.
+     *
+     * @param mixed $state_value
+     * @param mixed $legacy_value
+     * @param array<string,mixed> $row
+     */
+    private function is_expected_landed_cost_shipping_drift(string $field, $state_value, $legacy_value, array $row): bool
+    {
+        if ($field !== 'landed_cost') {
+            return false;
+        }
+
+        $source = strtolower(trim((string) ($row['source'] ?? '')));
+        $legacy_source = strtolower(trim((string) ($row['meta_source'] ?? '')));
+        if ($source === '' || $legacy_source === '' || $source !== $legacy_source) {
+            return false;
+        }
+
+        $state_dealer = $this->drift_float_or_null($row['dealer_price'] ?? null);
+        $legacy_dealer = $this->drift_float_or_null($row['meta_dealer_price'] ?? null);
+        if ($state_dealer === null || $legacy_dealer === null || abs($state_dealer - $legacy_dealer) >= 0.0001) {
+            return false;
+        }
+
+        $state_num = $this->drift_float_or_null($state_value);
+        $legacy_num = $this->drift_float_or_null($legacy_value);
+        if ($state_num === null || $legacy_num === null) {
+            return false;
+        }
+
+        $delta = $state_num - $legacy_num;
+        if ($delta <= 0.0) {
+            return false;
+        }
+
+        $state_shipping = $this->drift_float_or_null($row['shipping_cost'] ?? null);
+        $legacy_shipping = $this->drift_float_or_null($row['meta_shipping_cost'] ?? null);
+
+        return ($state_shipping !== null && abs($delta - $state_shipping) < 0.0001)
+            || ($legacy_shipping !== null && abs($delta - $legacy_shipping) < 0.0001);
     }
 
     /**
