@@ -1018,6 +1018,12 @@ class ProductMetaBox
                 'new' => self::state_money($row['public_sale_price'] ?? null),
             ],
             [
+                'group' => __('Public Prices', 'ffl-hub'),
+                'field' => __('Public/display price', 'ffl-hub'),
+                'old' => self::state_money($product->get_price()),
+                'new' => self::state_money(self::derived_public_price($row)),
+            ],
+            [
                 'group' => __('Sync Flags', 'ffl-hub'),
                 'field' => __('Selection status', 'ffl-hub'),
                 'old' => '-',
@@ -1108,6 +1114,24 @@ class ProductMetaBox
         }
 
         return '$' . number_format((float) $value, 2, '.', '');
+    }
+
+    /**
+     * The product_state table intentionally stores only regular/sale outputs.
+     * The customer-facing active price is derived the same way Woo derives
+     * `_price`: sale price wins when present, otherwise regular price.
+     *
+     * @param array<string,mixed> $row
+     */
+    private static function derived_public_price(array $row): ?string
+    {
+        $sale = trim((string) ($row['public_sale_price'] ?? ''));
+        if ($sale !== '' && is_numeric($sale)) {
+            return $sale;
+        }
+
+        $regular = trim((string) ($row['public_regular_price'] ?? ''));
+        return ($regular !== '' && is_numeric($regular)) ? $regular : null;
     }
 
     private static function state_yes_no($value): string
