@@ -982,6 +982,16 @@ class ProductMetaBox
             '</span>';
         echo '</div>';
 
+        echo '<div class="fflhub-state-field" data-pricing-field="global_percent">';
+        echo '<label>' . esc_html__('Current global percent', 'ffl-hub') . '</label>';
+        echo '<code style="display:block;font-size:13px;">' .
+            esc_html(number_format((float) Options::get_global_markup(), 2, '.', '') . '%') .
+            '</code>';
+        echo '<span class="fflhub-state-field__hint">' .
+            esc_html__('Read-only. This is the sitewide markup used when Pricing Mode is Global Percent.', 'ffl-hub') .
+            '</span>';
+        echo '</div>';
+
         echo '<div class="fflhub-state-field" data-pricing-field="fixed_percent">';
         echo '<label>' . esc_html__('Fixed percent', 'ffl-hub') . '</label>';
         echo '<input type="number" step="0.01" min="0" name="fflhub_state_pricing_percent" value="' .
