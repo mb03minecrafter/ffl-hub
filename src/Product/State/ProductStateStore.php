@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 final class ProductStateStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_state_schema_version';
-    private const SCHEMA_VERSION = '7';
+    private const SCHEMA_VERSION = '8';
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
@@ -75,14 +75,12 @@ final class ProductStateStore
                 pricing_percent DECIMAL(8,4) DEFAULT NULL,
                 pricing_fixed_price DECIMAL(12,4) DEFAULT NULL,
                 pricing_fixed_profit DECIMAL(12,4) DEFAULT NULL,
+                map_visibility_policy VARCHAR(32) DEFAULT NULL,
+                quote_free_shipping_override TINYINT(1) NOT NULL DEFAULT 0,
                 computed_sell_price DECIMAL(12,4) DEFAULT NULL,
                 map_applicable TINYINT(1) NOT NULL DEFAULT 0,
-                map_visibility_policy VARCHAR(32) DEFAULT NULL,
-                quote_price DECIMAL(12,4) DEFAULT NULL,
-                quote_free_shipping_override TINYINT(1) NOT NULL DEFAULT 0,
                 public_regular_price DECIMAL(12,4) DEFAULT NULL,
                 public_sale_price DECIMAL(12,4) DEFAULT NULL,
-                public_active_price DECIMAL(12,4) DEFAULT NULL,
                 manual_shipping_override TINYINT(1) NOT NULL DEFAULT 0,
                 stock_oos_override TINYINT(1) NOT NULL DEFAULT 0,
                 local_stock_override_qty INT UNSIGNED DEFAULT NULL,
@@ -281,14 +279,12 @@ final class ProductStateStore
             'pricing_percent' => 'pricing_percent DECIMAL(8,4) DEFAULT NULL',
             'pricing_fixed_price' => 'pricing_fixed_price DECIMAL(12,4) DEFAULT NULL',
             'pricing_fixed_profit' => 'pricing_fixed_profit DECIMAL(12,4) DEFAULT NULL',
+            'map_visibility_policy' => 'map_visibility_policy VARCHAR(32) DEFAULT NULL',
+            'quote_free_shipping_override' => 'quote_free_shipping_override TINYINT(1) NOT NULL DEFAULT 0',
             'computed_sell_price' => 'computed_sell_price DECIMAL(12,4) DEFAULT NULL',
             'map_applicable' => 'map_applicable TINYINT(1) NOT NULL DEFAULT 0',
-            'map_visibility_policy' => 'map_visibility_policy VARCHAR(32) DEFAULT NULL',
-            'quote_price' => 'quote_price DECIMAL(12,4) DEFAULT NULL',
-            'quote_free_shipping_override' => 'quote_free_shipping_override TINYINT(1) NOT NULL DEFAULT 0',
             'public_regular_price' => 'public_regular_price DECIMAL(12,4) DEFAULT NULL',
             'public_sale_price' => 'public_sale_price DECIMAL(12,4) DEFAULT NULL',
-            'public_active_price' => 'public_active_price DECIMAL(12,4) DEFAULT NULL',
             'manual_shipping_override' => 'manual_shipping_override TINYINT(1) NOT NULL DEFAULT 0',
             'stock_oos_override' => 'stock_oos_override TINYINT(1) NOT NULL DEFAULT 0',
             'local_stock_override_qty' => 'local_stock_override_qty INT UNSIGNED DEFAULT NULL',
@@ -324,6 +320,8 @@ final class ProductStateStore
             'map_real_price_percent',
             'map_real_price_fixed_profit',
             'map_real_price_free_shipping_override',
+            'quote_price',
+            'public_active_price',
         ];
     }
 
@@ -498,11 +496,9 @@ final class ProductStateStore
             'computed_sell_price' => $pricing['computed_sell_price'],
             'map_applicable' => $pricing['map_applicable'],
             'map_visibility_policy' => $pricing['map_visibility_policy'],
-            'quote_price' => $pricing['quote_price'],
             'quote_free_shipping_override' => $pricing['quote_free_shipping_override'],
             'public_regular_price' => $pricing['public_regular_price'],
             'public_sale_price' => $pricing['public_sale_price'],
-            'public_active_price' => $pricing['public_active_price'],
             'manual_shipping_override' => self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, true)) ? 1 : 0,
             'stock_oos_override' => self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true)) ? 1 : 0,
             'local_stock_override_qty' => $local_stock_enabled ? self::int_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true)) : null,
@@ -601,27 +597,20 @@ final class ProductStateStore
             $visibility_policy,
             $map_applicable,
             $woo_regular_raw,
-            $woo_sale_raw,
-            $woo_active_raw
+            $woo_sale_raw
         );
-
-        $quote_price = ($map_applicable && $visibility_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE)
-            ? $computed_sell_price
-            : null;
 
         return [
             'pricing_mode' => $pricing_mode,
             'pricing_percent' => self::money_or_null($pricing_percent, 4),
             'pricing_fixed_price' => self::money_or_null($fixed_price, 4),
             'pricing_fixed_profit' => self::money_or_null($pricing_mode === 'fixed_profit' ? $fixed_profit : null, 4),
+            'map_visibility_policy' => $visibility_policy,
+            'quote_free_shipping_override' => self::truthy($map_real_price_free_shipping_override_raw) ? 1 : 0,
             'computed_sell_price' => self::money_or_null($computed_sell_price, 4),
             'map_applicable' => $map_applicable ? 1 : 0,
-            'map_visibility_policy' => $visibility_policy,
-            'quote_price' => self::money_or_null($quote_price, 4),
-            'quote_free_shipping_override' => self::truthy($map_real_price_free_shipping_override_raw) ? 1 : 0,
             'public_regular_price' => self::money_or_null($public_prices['regular'], 4),
             'public_sale_price' => self::money_or_null($public_prices['sale'], 4),
-            'public_active_price' => self::money_or_null($public_prices['active'], 4),
         ];
     }
 
@@ -775,7 +764,7 @@ final class ProductStateStore
     }
 
     /**
-     * @return array{regular:?float,sale:?float,active:?float}
+     * @return array{regular:?float,sale:?float}
      */
     private static function public_price_fields(
         ?float $computed_sell_price,
@@ -784,8 +773,7 @@ final class ProductStateStore
         string $visibility_policy,
         bool $map_applicable,
         $woo_regular_raw,
-        $woo_sale_raw,
-        $woo_active_raw
+        $woo_sale_raw
     ): array {
         $map = self::float_or_null($map_price);
         if (
@@ -796,7 +784,6 @@ final class ProductStateStore
             return [
                 'regular' => round($map, 2),
                 'sale' => null,
-                'active' => round($map, 2),
             ];
         }
 
@@ -804,7 +791,6 @@ final class ProductStateStore
             return [
                 'regular' => self::float_or_null($woo_regular_raw),
                 'sale' => self::float_or_null($woo_sale_raw),
-                'active' => self::float_or_null($woo_active_raw),
             ];
         }
 
@@ -823,7 +809,6 @@ final class ProductStateStore
         return [
             'regular' => $regular,
             'sale' => $sale,
-            'active' => $sale ?? $regular,
         ];
     }
 
@@ -1015,14 +1000,12 @@ final class ProductStateStore
             'pricing_percent' => '%f',
             'pricing_fixed_price' => '%f',
             'pricing_fixed_profit' => '%f',
+            'map_visibility_policy' => '%s',
+            'quote_free_shipping_override' => '%d',
             'computed_sell_price' => '%f',
             'map_applicable' => '%d',
-            'map_visibility_policy' => '%s',
-            'quote_price' => '%f',
-            'quote_free_shipping_override' => '%d',
             'public_regular_price' => '%f',
             'public_sale_price' => '%f',
-            'public_active_price' => '%f',
             'manual_shipping_override' => '%d',
             'stock_oos_override' => '%d',
             'local_stock_override_qty' => '%d',

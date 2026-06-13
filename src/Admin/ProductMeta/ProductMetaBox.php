@@ -997,7 +997,7 @@ class ProductMetaBox
                 'group' => __('MAP Visibility', 'ffl-hub'),
                 'field' => __('Quote / hidden real price', 'ffl-hub'),
                 'old' => self::state_money(DistributorProductHelper::get_map_real_price_for_product($product)),
-                'new' => self::state_money($row['quote_price'] ?? null),
+                'new' => self::state_money($row['computed_sell_price'] ?? null),
             ],
             [
                 'group' => __('MAP Visibility', 'ffl-hub'),
@@ -1016,12 +1016,6 @@ class ProductMetaBox
                 'field' => __('Sale price', 'ffl-hub'),
                 'old' => self::state_money($product->get_sale_price()),
                 'new' => self::state_money($row['public_sale_price'] ?? null),
-            ],
-            [
-                'group' => __('Public Prices', 'ffl-hub'),
-                'field' => __('Active price', 'ffl-hub'),
-                'old' => self::state_money($product->get_price()),
-                'new' => self::state_money($row['public_active_price'] ?? null),
             ],
             [
                 'group' => __('Sync Flags', 'ffl-hub'),
