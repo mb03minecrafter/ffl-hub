@@ -236,7 +236,7 @@ final class ProductStatePage
         <div class="postbox" style="max-width: 760px; padding: 16px;">
             <h2 style="margin-top:0;"><?php esc_html_e('Refresh Changed Best Offers', 'ffl-hub'); ?></h2>
             <p>
-                <?php esc_html_e('Builds the dirty UPC set from distributor offers where has_changed = 1. This current step only counts changed UPCs and does not update WooCommerce products.', 'ffl-hub'); ?>
+                <?php esc_html_e('Recalculates product best-offer rows for distributor offer UPCs where has_changed = 1. This does not update WooCommerce products.', 'ffl-hub'); ?>
             </p>
             <form method="post" action="">
                 <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
@@ -282,13 +282,15 @@ final class ProductStatePage
         ?>
         <div class="notice <?php echo esc_attr($notice_class); ?>">
             <?php if ($is_best_offer_refresh) : ?>
-                <p><strong><?php esc_html_e('Changed best-offer UPC scan complete.', 'ffl-hub'); ?></strong></p>
+                <p><strong><?php esc_html_e('Changed best-offer refresh complete.', 'ffl-hub'); ?></strong></p>
                 <ul style="list-style:disc;margin-left:20px;">
                     <li><?php echo esc_html(sprintf('Stage: %s', (string) ($result['stage'] ?? ''))); ?></li>
                     <li><?php echo esc_html(sprintf('Dirty UPCs found: %d', (int) ($result['dirty_upcs'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Temp table: %s', (string) ($result['temp_table'] ?? ''))); ?></li>
                     <li><?php echo esc_html(sprintf('Updated best offers: %d', (int) ($result['updated_best_offers'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Cleared offer change flags: %d', (int) ($result['cleared_offer_change_flags'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Best-offer upsert: %s ms', (string) ($result['upsert_elapsed_ms'] ?? '0.00'))); ?></li>
+                    <li><?php echo esc_html(sprintf('Flag clear: %s ms', (string) ($result['clear_flags_elapsed_ms'] ?? '0.00'))); ?></li>
                     <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
                 </ul>
                 <?php if ($has_errors) : ?>
