@@ -601,6 +601,10 @@ final class GunDealsFeedGenerator
         foreach ($this->product_state_drift_fields() as $field => $config) {
             $state_value = $source_row[$config['state']] ?? null;
             $legacy_value = $source_row[$config['legacy']] ?? null;
+            if ($this->is_expected_resolved_map_or_msrp_drift($field, $state_value, $legacy_value)) {
+                continue;
+            }
+
             if ($this->drift_values_match((string) $config['type'], $state_value, $legacy_value, $source_row)) {
                 continue;
             }
@@ -651,6 +655,29 @@ final class GunDealsFeedGenerator
             'ffl_required' => ['state' => 'ffl_required', 'legacy' => 'meta_ffl_required', 'type' => 'bool'],
             'dropship_enabled' => ['state' => 'dropship_enabled', 'legacy' => 'meta_dropship_enabled', 'type' => 'bool'],
         ];
+    }
+
+    /**
+     * Best-offer selection intentionally rescues missing MAP/MSRP from other
+     * distributor offers. If old Woo meta was zero and product_state has a real
+     * value, that drift is expected signal, not an actionable mismatch.
+     *
+     * @param mixed $state_value
+     * @param mixed $legacy_value
+     */
+    private function is_expected_resolved_map_or_msrp_drift(string $field, $state_value, $legacy_value): bool
+    {
+        if ($field !== 'map_price' && $field !== 'msrp') {
+            return false;
+        }
+
+        $state_num = $this->drift_float_or_null($state_value);
+        $legacy_num = $this->drift_float_or_null($legacy_value);
+
+        return $state_num !== null
+            && $state_num > 0.0
+            && $legacy_num !== null
+            && abs($legacy_num) < 0.0001;
     }
 
     /**
