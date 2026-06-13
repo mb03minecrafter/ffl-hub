@@ -12,7 +12,7 @@ if (!defined('ABSPATH')) {
 final class ProductStateStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_state_schema_version';
-    private const SCHEMA_VERSION = '4';
+    private const SCHEMA_VERSION = '5';
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
@@ -71,13 +71,6 @@ final class ProductStateStore
                 selected_at DATETIME DEFAULT NULL,
                 woo_synced_at DATETIME DEFAULT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'active',
-                primary_distributor VARCHAR(64) DEFAULT NULL,
-                last_true_cost DECIMAL(12,4) DEFAULT NULL,
-                last_dealer_price DECIMAL(12,4) DEFAULT NULL,
-                last_shipping_cost DECIMAL(12,4) DEFAULT NULL,
-                last_map DECIMAL(12,4) DEFAULT NULL,
-                last_msrp DECIMAL(12,4) DEFAULT NULL,
-                last_computed_price DECIMAL(12,4) DEFAULT NULL,
                 markup_mode VARCHAR(32) DEFAULT NULL,
                 markup_percent DECIMAL(8,4) DEFAULT NULL,
                 fixed_price DECIMAL(12,4) DEFAULT NULL,
@@ -103,13 +96,12 @@ final class ProductStateStore
                 KEY distributor_id (distributor_id),
                 KEY selection_status (selection_status),
                 KEY selected_at (selected_at),
-                KEY woo_synced_at (woo_synced_at),
-                KEY primary_distributor (primary_distributor)
+                KEY woo_synced_at (woo_synced_at)
             ) {$charset};
         ");
 
         self::ensure_columns($table);
-        self::drop_legacy_last_sync_column($table);
+        self::drop_legacy_columns($table);
         self::ensure_column_order($table);
         self::ensure_indexes($table);
 
@@ -141,7 +133,6 @@ final class ProductStateStore
             'selection_status' => 'ADD KEY selection_status (selection_status)',
             'selected_at' => 'ADD KEY selected_at (selected_at)',
             'woo_synced_at' => 'ADD KEY woo_synced_at (woo_synced_at)',
-            'primary_distributor' => 'ADD KEY primary_distributor (primary_distributor)',
         ];
 
         foreach ($missing_indexes as $name => $definition) {
@@ -168,11 +159,11 @@ final class ProductStateStore
         }
     }
 
-    private static function drop_legacy_last_sync_column(string $table): void
+    private static function drop_legacy_columns(string $table): void
     {
         global $wpdb;
 
-        foreach (['status_last_sync_at', 'last_sync_at'] as $index) {
+        foreach (['status_last_sync_at', 'last_sync_at', 'primary_distributor'] as $index) {
             if (!self::table_has_index($table, $index)) {
                 continue;
             }
@@ -180,8 +171,12 @@ final class ProductStateStore
             $wpdb->query("ALTER TABLE {$table} DROP INDEX {$index}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
 
-        if (self::table_has_column($table, 'last_sync_at')) {
-            $wpdb->query("ALTER TABLE {$table} DROP COLUMN last_sync_at"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        foreach (self::legacy_column_names() as $column) {
+            if (!self::table_has_column($table, $column)) {
+                continue;
+            }
+
+            $wpdb->query("ALTER TABLE {$table} DROP COLUMN {$column}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
     }
 
@@ -279,13 +274,6 @@ final class ProductStateStore
             'selected_at' => 'selected_at DATETIME DEFAULT NULL',
             'woo_synced_at' => 'woo_synced_at DATETIME DEFAULT NULL',
             'status' => "status VARCHAR(20) NOT NULL DEFAULT 'active'",
-            'primary_distributor' => 'primary_distributor VARCHAR(64) DEFAULT NULL',
-            'last_true_cost' => 'last_true_cost DECIMAL(12,4) DEFAULT NULL',
-            'last_dealer_price' => 'last_dealer_price DECIMAL(12,4) DEFAULT NULL',
-            'last_shipping_cost' => 'last_shipping_cost DECIMAL(12,4) DEFAULT NULL',
-            'last_map' => 'last_map DECIMAL(12,4) DEFAULT NULL',
-            'last_msrp' => 'last_msrp DECIMAL(12,4) DEFAULT NULL',
-            'last_computed_price' => 'last_computed_price DECIMAL(12,4) DEFAULT NULL',
             'markup_mode' => 'markup_mode VARCHAR(32) DEFAULT NULL',
             'markup_percent' => 'markup_percent DECIMAL(8,4) DEFAULT NULL',
             'fixed_price' => 'fixed_price DECIMAL(12,4) DEFAULT NULL',
@@ -303,6 +291,23 @@ final class ProductStateStore
             'bom_total_cost' => 'bom_total_cost DECIMAL(12,4) DEFAULT NULL',
             'created_at' => 'created_at DATETIME NOT NULL',
             'updated_at' => 'updated_at DATETIME NOT NULL',
+        ];
+    }
+
+    /**
+     * @return string[]
+     */
+    private static function legacy_column_names(): array
+    {
+        return [
+            'last_sync_at',
+            'primary_distributor',
+            'last_true_cost',
+            'last_dealer_price',
+            'last_shipping_cost',
+            'last_map',
+            'last_msrp',
+            'last_computed_price',
         ];
     }
 
@@ -413,7 +418,7 @@ final class ProductStateStore
     {
         $local_stock_enabled = self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true));
         $bom_enabled = self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_BOM_ENABLED_META, true));
-        $primary_distributor = self::text(get_post_meta($product_id, ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true), 64);
+        $source_distributor = self::text(get_post_meta($product_id, ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true), 64);
         $dealer_price = self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true), 4);
         $shipping_cost = self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true), 4);
         $landed_cost = self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_LAST_TRUE_COST_META, true), 4);
@@ -432,7 +437,7 @@ final class ProductStateStore
         return [
             'product_id' => $product_id,
             'upc' => $upc,
-            'distributor_id' => $primary_distributor,
+            'distributor_id' => $source_distributor,
             'qty' => max(0, (int) ($stock_qty ?? 0)),
             'stock_status' => $stock_status,
             'dealer_price' => $dealer_price,
@@ -451,13 +456,6 @@ final class ProductStateStore
             'shipping_height_in' => $shipping_height_in,
             'selection_status' => ($stock_status === 'instock' && (int) ($stock_qty ?? 0) > 0) ? 'instock' : 'no_offer',
             'status' => 'active',
-            'primary_distributor' => $primary_distributor,
-            'last_true_cost' => $landed_cost,
-            'last_dealer_price' => $dealer_price,
-            'last_shipping_cost' => $shipping_cost,
-            'last_map' => $map_price,
-            'last_msrp' => $msrp,
-            'last_computed_price' => self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true), 4),
             'markup_mode' => self::text(get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_MODE_META, true), 32),
             'markup_percent' => self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_PERCENT_META, true), 4),
             'fixed_price' => self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_FIXED_PRICE_META, true), 4),
@@ -559,13 +557,6 @@ final class ProductStateStore
             'selected_at' => '%s',
             'woo_synced_at' => '%s',
             'status' => '%s',
-            'primary_distributor' => '%s',
-            'last_true_cost' => '%f',
-            'last_dealer_price' => '%f',
-            'last_shipping_cost' => '%f',
-            'last_map' => '%f',
-            'last_msrp' => '%f',
-            'last_computed_price' => '%f',
             'markup_mode' => '%s',
             'markup_percent' => '%f',
             'fixed_price' => '%f',
@@ -645,25 +636,6 @@ final class ProductStateStore
         }
 
         return max(0, (int) $value);
-    }
-
-    private static function datetime_or_null($value): ?string
-    {
-        $value = trim((string) $value);
-        if ($value === '') {
-            return null;
-        }
-
-        if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value) === 1) {
-            return $value;
-        }
-
-        $timestamp = strtotime($value);
-        if ($timestamp === false) {
-            return null;
-        }
-
-        return date('Y-m-d H:i:s', $timestamp);
     }
 
     private static function allowed_distributors_json($lock_enabled, $lock_ids): ?string
