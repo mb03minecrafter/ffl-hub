@@ -4,6 +4,7 @@ namespace FFLHub\Feeds\GunDeals;
 
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -34,6 +35,7 @@ final class GunDealsFeedGenerator
 
         $xml_tmp = $paths['xml'] . '.tmp';
         $debug_tmp = $paths['debug_csv'] . '.tmp';
+        $drift_tmp = $paths['product_state_drift_csv'] . '.tmp';
         $summary_tmp = $paths['summary_json'] . '.tmp';
 
         $summary = [
@@ -42,6 +44,7 @@ final class GunDealsFeedGenerator
             'finished_at_utc' => '',
             'xml_path' => $paths['xml'],
             'debug_csv_path' => $paths['debug_csv'],
+            'product_state_drift_csv_path' => $paths['product_state_drift_csv'],
             'summary_json_path' => $paths['summary_json'],
             'public_url' => $paths['public_url'],
             'products_scanned' => 0,
@@ -52,6 +55,9 @@ final class GunDealsFeedGenerator
             'elapsed_ms' => 0,
             'xml_bytes' => 0,
             'feed_snapshot_rows' => 0,
+            'product_state_drift_rows' => 0,
+            'product_state_drift_products' => 0,
+            'product_state_drift_fields' => [],
         ];
 
         if (!class_exists('\XMLWriter')) {
@@ -71,6 +77,13 @@ final class GunDealsFeedGenerator
         if (!is_resource($debug)) {
             $writer->flush();
             throw new \RuntimeException('Unable to open Gun.deals debug CSV temp file for writing: ' . $debug_tmp);
+        }
+
+        $drift = @fopen($drift_tmp, 'wb');
+        if (!is_resource($drift)) {
+            $writer->flush();
+            fclose($debug);
+            throw new \RuntimeException('Unable to open Gun.deals product_state drift CSV temp file for writing: ' . $drift_tmp);
         }
 
         fputcsv($debug, [
@@ -93,7 +106,21 @@ final class GunDealsFeedGenerator
             'last_stock_update',
         ]);
 
+        fputcsv($drift, [
+            'product_id',
+            'upc',
+            'field',
+            'product_state_value',
+            'legacy_meta_value',
+            'title',
+        ]);
+
         $snapshot_rows = [];
+        $drift_stats = [
+            'rows' => 0,
+            'products' => [],
+            'fields' => [],
+        ];
 
         $writer->startDocument('1.0', 'UTF-8');
         $writer->setIndent(true);
@@ -117,6 +144,7 @@ final class GunDealsFeedGenerator
             foreach ($source_rows as $source_row) {
                 $summary['products_scanned']++;
                 $last_id = max($last_id, (int) ($source_row['product_id'] ?? 0));
+                $this->write_product_state_drift_rows($drift, $source_row, $drift_stats);
                 $row = $this->build_offer_row($source_row, $term_maps, $image_url_map);
 
                 if (!$row['included']) {
@@ -138,6 +166,7 @@ final class GunDealsFeedGenerator
         $writer->endDocument();
         $writer->flush();
         fclose($debug);
+        fclose($drift);
 
         $validation = $this->validate_xml($xml_tmp);
         if (!$validation['ok']) {
@@ -149,6 +178,10 @@ final class GunDealsFeedGenerator
         $summary['elapsed_ms'] = number_format((microtime(true) - $started) * 1000.0, 2, '.', '');
         $summary['xml_bytes'] = is_file($xml_tmp) ? (int) filesize($xml_tmp) : 0;
         $summary['feed_snapshot_rows'] = count($snapshot_rows);
+        $summary['product_state_drift_rows'] = (int) $drift_stats['rows'];
+        $summary['product_state_drift_products'] = count($drift_stats['products']);
+        ksort($drift_stats['fields']);
+        $summary['product_state_drift_fields'] = $drift_stats['fields'];
 
         GunDealsAnalyticsStore::replace_feed_snapshot($summary['finished_at_utc'], $snapshot_rows);
 
@@ -156,6 +189,7 @@ final class GunDealsFeedGenerator
 
         $this->publish_file($xml_tmp, $paths['xml']);
         $this->publish_file($debug_tmp, $paths['debug_csv']);
+        $this->publish_file($drift_tmp, $paths['product_state_drift_csv']);
         $this->publish_file($summary_tmp, $paths['summary_json']);
 
         self::debug_ctx('feed generation complete', $summary);
@@ -164,7 +198,7 @@ final class GunDealsFeedGenerator
     }
 
     /**
-     * @return array{dir:string,xml:string,debug_csv:string,summary_json:string,public_url:string}
+     * @return array{dir:string,xml:string,debug_csv:string,product_state_drift_csv:string,summary_json:string,public_url:string}
      */
     private function resolve_paths(): array
     {
@@ -180,6 +214,7 @@ final class GunDealsFeedGenerator
             'dir' => $dir,
             'xml' => $dir . DIRECTORY_SEPARATOR . 'gundeals-feed.xml',
             'debug_csv' => $dir . DIRECTORY_SEPARATOR . 'gundeals-feed-debug.csv',
+            'product_state_drift_csv' => $dir . DIRECTORY_SEPARATOR . 'gundeals-feed-product-state-drift.csv',
             'summary_json' => $dir . DIRECTORY_SEPARATOR . 'gundeals-feed-summary.json',
             'public_url' => $base_url !== '' ? $base_url . '/feeds/gundeals-feed.xml' : '',
         ];
@@ -218,6 +253,7 @@ final class GunDealsFeedGenerator
         $posts = $wpdb->posts;
         $postmeta = $wpdb->postmeta;
         $lookup = $wpdb->prefix . 'wc_product_meta_lookup';
+        $product_state = ProductStateStore::table_name();
         $term_relationships = $wpdb->term_relationships;
         $term_taxonomy = $wpdb->term_taxonomy;
         $terms = $wpdb->terms;
@@ -232,12 +268,19 @@ final class GunDealsFeedGenerator
                 lookup.min_price AS lookup_min_price,
                 lookup.max_price AS lookup_max_price,
                 MAX(CASE WHEN pm.meta_key = '_sku' THEN pm.meta_value END) AS sku,
-                MAX(CASE WHEN pm.meta_key = '_price' THEN pm.meta_value END) AS price,
-                MAX(CASE WHEN pm.meta_key = '_regular_price' THEN pm.meta_value END) AS regular_price,
-                MAX(CASE WHEN pm.meta_key = '_sale_price' THEN pm.meta_value END) AS sale_price,
+                MAX(CASE WHEN pm.meta_key = '_price' THEN pm.meta_value END) AS meta_price,
+                CAST(COALESCE(MAX(ps.public_sale_price), MAX(ps.public_regular_price), MAX(CASE WHEN pm.meta_key = '_price' THEN pm.meta_value END)) AS CHAR) AS price,
+                MAX(CASE WHEN pm.meta_key = '_regular_price' THEN pm.meta_value END) AS meta_regular_price,
+                CAST(COALESCE(MAX(ps.public_regular_price), MAX(CASE WHEN pm.meta_key = '_regular_price' THEN pm.meta_value END)) AS CHAR) AS regular_price,
+                MAX(CASE WHEN pm.meta_key = '_sale_price' THEN pm.meta_value END) AS meta_sale_price,
+                CAST(COALESCE(MAX(ps.public_sale_price), MAX(CASE WHEN pm.meta_key = '_sale_price' THEN pm.meta_value END)) AS CHAR) AS sale_price,
                 MAX(CASE WHEN pm.meta_key = '_thumbnail_id' THEN pm.meta_value END) AS thumbnail_id,
                 MAX(CASE WHEN pm.meta_key = '_product_image_gallery' THEN pm.meta_value END) AS gallery_ids,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_upc' THEN pm.meta_value END) AS fflhub_upc,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_upc' THEN pm.meta_value END) AS meta_fflhub_upc,
+                COALESCE(
+                    NULLIF(MAX(ps.upc), ''),
+                    MAX(CASE WHEN pm.meta_key = '_fflhub_upc' THEN pm.meta_value END)
+                ) AS fflhub_upc,
                 MAX(CASE WHEN pm.meta_key = '_global_unique_id' THEN pm.meta_value END) AS global_unique_id,
                 MAX(CASE WHEN pm.meta_key = '_alg_ean' THEN pm.meta_value END) AS alg_ean,
                 MAX(CASE WHEN pm.meta_key = '_wpm_gtin_code' THEN pm.meta_value END) AS wpm_gtin_code,
@@ -246,31 +289,55 @@ final class GunDealsFeedGenerator
                 MAX(CASE WHEN pm.meta_key = '_upc' THEN pm.meta_value END) AS upc_meta,
                 MAX(CASE WHEN pm.meta_key = 'upc' THEN pm.meta_value END) AS upc_plain,
                 MAX(CASE WHEN pm.meta_key = 'gtin' THEN pm.meta_value END) AS gtin,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_managed' THEN pm.meta_value END) AS fflhub_managed,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_primary_distributor' THEN pm.meta_value END) AS source,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_last_sync_at' THEN pm.meta_value END) AS last_stock_update,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_last_true_cost' THEN pm.meta_value END) AS true_cost,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_last_dealer_price' THEN pm.meta_value END) AS dealer_price,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_last_map' THEN pm.meta_value END) AS map_price,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_last_msrp' THEN pm.meta_value END) AS msrp,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_last_computed_price' THEN pm.meta_value END) AS computed_price,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_map_policy' THEN pm.meta_value END) AS map_policy,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_markup_mode' THEN pm.meta_value END) AS markup_mode,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_managed' THEN pm.meta_value END) AS meta_fflhub_managed,
+                CASE WHEN MAX(ps.product_id) IS NOT NULL THEN '1' ELSE MAX(CASE WHEN pm.meta_key = '_fflhub_managed' THEN pm.meta_value END) END AS fflhub_managed,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_primary_distributor' THEN pm.meta_value END) AS meta_source,
+                COALESCE(NULLIF(MAX(ps.distributor_id), ''), MAX(CASE WHEN pm.meta_key = '_fflhub_primary_distributor' THEN pm.meta_value END)) AS source,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_last_sync_at' THEN pm.meta_value END) AS meta_last_stock_update,
+                COALESCE(CAST(MAX(ps.source_offer_normalized_at) AS CHAR), CAST(MAX(ps.selected_at) AS CHAR), MAX(CASE WHEN pm.meta_key = '_fflhub_last_sync_at' THEN pm.meta_value END)) AS last_stock_update,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_last_true_cost' THEN pm.meta_value END) AS meta_true_cost,
+                CAST(COALESCE(MAX(ps.landed_cost), MAX(CASE WHEN pm.meta_key = '_fflhub_last_true_cost' THEN pm.meta_value END)) AS CHAR) AS true_cost,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_last_dealer_price' THEN pm.meta_value END) AS meta_dealer_price,
+                CAST(COALESCE(MAX(ps.dealer_price), MAX(CASE WHEN pm.meta_key = '_fflhub_last_dealer_price' THEN pm.meta_value END)) AS CHAR) AS dealer_price,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_last_map' THEN pm.meta_value END) AS meta_map_price,
+                CAST(COALESCE(MAX(ps.map_price), MAX(CASE WHEN pm.meta_key = '_fflhub_last_map' THEN pm.meta_value END)) AS CHAR) AS map_price,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_last_msrp' THEN pm.meta_value END) AS meta_msrp,
+                CAST(COALESCE(MAX(ps.msrp), MAX(CASE WHEN pm.meta_key = '_fflhub_last_msrp' THEN pm.meta_value END)) AS CHAR) AS msrp,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_last_computed_price' THEN pm.meta_value END) AS meta_computed_price,
+                CAST(COALESCE(MAX(ps.computed_sell_price), MAX(CASE WHEN pm.meta_key = '_fflhub_last_computed_price' THEN pm.meta_value END)) AS CHAR) AS computed_price,
+                CAST(COALESCE(MAX(ps.map_applicable), 0) AS CHAR) AS map_applicable,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_map_policy' THEN pm.meta_value END) AS meta_map_policy,
+                COALESCE(NULLIF(MAX(ps.map_visibility_policy), ''), MAX(CASE WHEN pm.meta_key = '_fflhub_map_policy' THEN pm.meta_value END)) AS map_policy,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_markup_mode' THEN pm.meta_value END) AS meta_markup_mode,
+                COALESCE(NULLIF(MAX(ps.pricing_mode), ''), MAX(CASE WHEN pm.meta_key = '_fflhub_markup_mode' THEN pm.meta_value END)) AS markup_mode,
                 MAX(CASE WHEN pm.meta_key = '_fflhub_map_real_price_mode' THEN pm.meta_value END) AS map_real_price_mode,
                 MAX(CASE WHEN pm.meta_key = '_fflhub_map_real_price_offset' THEN pm.meta_value END) AS map_real_price_offset,
                 MAX(CASE WHEN pm.meta_key = '_fflhub_map_real_price_percent' THEN pm.meta_value END) AS map_real_price_percent,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_map_real_price_fixed_profit' THEN pm.meta_value END) AS map_real_price_fixed_profit,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_map_real_price_free_shipping_override' THEN pm.meta_value END) AS map_real_price_free_shipping_override,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_last_shipping_cost' THEN pm.meta_value END) AS shipping_cost,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_weight' THEN pm.meta_value END) AS shipping_weight_oz,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_length_in' THEN pm.meta_value END) AS shipping_length_in,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_width_in' THEN pm.meta_value END) AS shipping_width_in,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_height_in' THEN pm.meta_value END) AS shipping_height_in,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_ffl_required' THEN pm.meta_value END) AS ffl_required,
-                MAX(CASE WHEN pm.meta_key = '_fflhub_dropship_enabled' THEN pm.meta_value END) AS dropship_enabled
+                MAX(CASE WHEN pm.meta_key = '_fflhub_map_real_price_fixed_profit' THEN pm.meta_value END) AS meta_map_real_price_fixed_profit,
+                CAST(COALESCE(MAX(ps.pricing_fixed_profit), MAX(CASE WHEN pm.meta_key = '_fflhub_map_real_price_fixed_profit' THEN pm.meta_value END)) AS CHAR) AS map_real_price_fixed_profit,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_map_real_price_free_shipping_override' THEN pm.meta_value END) AS meta_map_real_price_free_shipping_override,
+                CAST(COALESCE(MAX(ps.quote_free_shipping_override), MAX(CASE WHEN pm.meta_key = '_fflhub_map_real_price_free_shipping_override' THEN pm.meta_value END)) AS CHAR) AS map_real_price_free_shipping_override,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_last_shipping_cost' THEN pm.meta_value END) AS meta_shipping_cost,
+                CAST(COALESCE(MAX(ps.shipping_cost), MAX(CASE WHEN pm.meta_key = '_fflhub_last_shipping_cost' THEN pm.meta_value END)) AS CHAR) AS shipping_cost,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_weight' THEN pm.meta_value END) AS meta_shipping_weight_oz,
+                CAST(COALESCE(MAX(ps.shipping_weight_oz), MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_weight' THEN pm.meta_value END)) AS CHAR) AS shipping_weight_oz,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_length_in' THEN pm.meta_value END) AS meta_shipping_length_in,
+                CAST(COALESCE(MAX(ps.shipping_length_in), MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_length_in' THEN pm.meta_value END)) AS CHAR) AS shipping_length_in,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_width_in' THEN pm.meta_value END) AS meta_shipping_width_in,
+                CAST(COALESCE(MAX(ps.shipping_width_in), MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_width_in' THEN pm.meta_value END)) AS CHAR) AS shipping_width_in,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_height_in' THEN pm.meta_value END) AS meta_shipping_height_in,
+                CAST(COALESCE(MAX(ps.shipping_height_in), MAX(CASE WHEN pm.meta_key = '_fflhub_shipping_height_in' THEN pm.meta_value END)) AS CHAR) AS shipping_height_in,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_ffl_required' THEN pm.meta_value END) AS meta_ffl_required,
+                CAST(COALESCE(MAX(ps.ffl_required), MAX(CASE WHEN pm.meta_key = '_fflhub_ffl_required' THEN pm.meta_value END)) AS CHAR) AS ffl_required,
+                MAX(CASE WHEN pm.meta_key = '_fflhub_dropship_enabled' THEN pm.meta_value END) AS meta_dropship_enabled,
+                CAST(COALESCE(MAX(ps.dropship_enabled), MAX(CASE WHEN pm.meta_key = '_fflhub_dropship_enabled' THEN pm.meta_value END)) AS CHAR) AS dropship_enabled,
+                CASE WHEN MAX(ps.product_id) IS NOT NULL THEN '1' ELSE '0' END AS product_state_exists
             FROM {$posts} p
             LEFT JOIN {$lookup} lookup
                 ON lookup.product_id = p.ID
+            LEFT JOIN {$product_state} ps
+                ON ps.product_id = p.ID
+               AND ps.status = 'active'
             LEFT JOIN {$postmeta} stock_pm
                 ON stock_pm.post_id = p.ID
                AND stock_pm.meta_key = '_stock_status'
@@ -510,6 +577,225 @@ final class GunDealsFeedGenerator
         }
 
         return 0;
+    }
+
+    /**
+     * Product State is now the feed source of truth. This CSV is the safety rail:
+     * it records every product-state value that differs from the old Woo meta
+     * value that used to feed Gun.deals, without writing any product meta.
+     *
+     * @param resource $drift
+     * @param array<string,mixed> $source_row
+     * @param array{rows:int,products:array<int,int>,fields:array<string,int>} $drift_stats
+     */
+    private function write_product_state_drift_rows($drift, array $source_row, array &$drift_stats): void
+    {
+        if (!$this->to_boolish($source_row['product_state_exists'] ?? null, false)) {
+            return;
+        }
+
+        $product_id = (int) ($source_row['product_id'] ?? 0);
+        $upc = $this->resolve_upc_from_row($source_row);
+        $title = $this->clean_text((string) ($source_row['title'] ?? ''));
+
+        foreach ($this->product_state_drift_fields() as $field => $config) {
+            $state_value = $source_row[$config['state']] ?? null;
+            $legacy_value = $source_row[$config['legacy']] ?? null;
+            if ($this->drift_values_match((string) $config['type'], $state_value, $legacy_value, $source_row)) {
+                continue;
+            }
+
+            fputcsv($drift, [
+                $product_id,
+                $upc,
+                $field,
+                $this->drift_display_value($state_value),
+                $this->drift_display_value($legacy_value),
+                $title,
+            ]);
+
+            $drift_stats['rows']++;
+            if ($product_id > 0) {
+                $drift_stats['products'][$product_id] = 1;
+            }
+            $drift_stats['fields'][$field] = (int) ($drift_stats['fields'][$field] ?? 0) + 1;
+        }
+    }
+
+    /**
+     * @return array<string,array{state:string,legacy:string,type:string}>
+     */
+    private function product_state_drift_fields(): array
+    {
+        return [
+            'public_price' => ['state' => 'price', 'legacy' => 'meta_price', 'type' => 'decimal'],
+            'public_regular_price' => ['state' => 'regular_price', 'legacy' => 'meta_regular_price', 'type' => 'decimal'],
+            'public_sale_price' => ['state' => 'sale_price', 'legacy' => 'meta_sale_price', 'type' => 'decimal'],
+            'upc' => ['state' => 'fflhub_upc', 'legacy' => 'meta_fflhub_upc', 'type' => 'digits'],
+            'managed' => ['state' => 'fflhub_managed', 'legacy' => 'meta_fflhub_managed', 'type' => 'bool'],
+            'distributor_id' => ['state' => 'source', 'legacy' => 'meta_source', 'type' => 'text'],
+            'landed_cost' => ['state' => 'true_cost', 'legacy' => 'meta_true_cost', 'type' => 'decimal'],
+            'dealer_price' => ['state' => 'dealer_price', 'legacy' => 'meta_dealer_price', 'type' => 'decimal'],
+            'map_price' => ['state' => 'map_price', 'legacy' => 'meta_map_price', 'type' => 'decimal'],
+            'msrp' => ['state' => 'msrp', 'legacy' => 'meta_msrp', 'type' => 'decimal'],
+            'computed_sell_price' => ['state' => 'computed_price', 'legacy' => 'meta_computed_price', 'type' => 'decimal'],
+            'map_policy' => ['state' => 'map_policy', 'legacy' => 'meta_map_policy', 'type' => 'map_policy'],
+            'pricing_mode' => ['state' => 'markup_mode', 'legacy' => 'meta_markup_mode', 'type' => 'pricing_mode'],
+            'fixed_profit' => ['state' => 'map_real_price_fixed_profit', 'legacy' => 'meta_map_real_price_fixed_profit', 'type' => 'decimal'],
+            'quote_free_shipping_override' => ['state' => 'map_real_price_free_shipping_override', 'legacy' => 'meta_map_real_price_free_shipping_override', 'type' => 'bool'],
+            'shipping_cost' => ['state' => 'shipping_cost', 'legacy' => 'meta_shipping_cost', 'type' => 'decimal'],
+            'shipping_weight_oz' => ['state' => 'shipping_weight_oz', 'legacy' => 'meta_shipping_weight_oz', 'type' => 'decimal'],
+            'shipping_length_in' => ['state' => 'shipping_length_in', 'legacy' => 'meta_shipping_length_in', 'type' => 'decimal'],
+            'shipping_width_in' => ['state' => 'shipping_width_in', 'legacy' => 'meta_shipping_width_in', 'type' => 'decimal'],
+            'shipping_height_in' => ['state' => 'shipping_height_in', 'legacy' => 'meta_shipping_height_in', 'type' => 'decimal'],
+            'ffl_required' => ['state' => 'ffl_required', 'legacy' => 'meta_ffl_required', 'type' => 'bool'],
+            'dropship_enabled' => ['state' => 'dropship_enabled', 'legacy' => 'meta_dropship_enabled', 'type' => 'bool'],
+        ];
+    }
+
+    /**
+     * @param mixed $state_value
+     * @param mixed $legacy_value
+     * @param array<string,mixed> $row
+     */
+    private function drift_values_match(string $type, $state_value, $legacy_value, array $row): bool
+    {
+        if ($type === 'decimal') {
+            $state_num = $this->drift_float_or_null($state_value);
+            $legacy_num = $this->drift_float_or_null($legacy_value);
+            if ($state_num === null || $legacy_num === null) {
+                return $state_num === null && $legacy_num === null;
+            }
+
+            return abs($state_num - $legacy_num) < 0.0001;
+        }
+
+        if ($type === 'bool') {
+            return $this->to_boolish($state_value, false) === $this->to_boolish($legacy_value, false);
+        }
+
+        if ($type === 'digits') {
+            return $this->digits_only($state_value) === $this->digits_only($legacy_value);
+        }
+
+        if ($type === 'map_policy') {
+            return $this->normalize_drift_map_policy($state_value) === $this->normalize_drift_map_policy($legacy_value);
+        }
+
+        if ($type === 'pricing_mode') {
+            return $this->normalize_drift_pricing_mode($state_value, $row, false) === $this->normalize_drift_pricing_mode($legacy_value, $row, true);
+        }
+
+        return strtolower(trim((string) $state_value)) === strtolower(trim((string) $legacy_value));
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function drift_float_or_null($value): ?float
+    {
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return null;
+        }
+
+        $num = is_numeric($raw) ? $raw : trim((string) preg_replace('/[^0-9\.\-]/', '', $raw));
+        if ($num === '' || !is_numeric($num)) {
+            return null;
+        }
+
+        return (float) $num;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function digits_only($value): string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $value);
+        return is_string($digits) ? $digits : '';
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function normalize_drift_map_policy($value): string
+    {
+        $policy = strtolower(trim((string) $value));
+        if ($policy === '' || $policy === 'none') {
+            return $policy;
+        }
+
+        if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+            return $policy;
+        }
+
+        return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+    }
+
+    /**
+     * @param mixed $value
+     * @param array<string,mixed> $row
+     */
+    private function normalize_drift_pricing_mode($value, array $row, bool $legacy): string
+    {
+        $raw = strtolower(trim((string) $value));
+        if (!$legacy && in_array($raw, ['global_percent', 'fixed_percent', 'fixed_price', 'fixed_profit', 'map_price'], true)) {
+            return $raw;
+        }
+
+        if (!is_numeric($raw)) {
+            return $raw !== '' ? $raw : 'global_percent';
+        }
+
+        $markup_mode = (int) $raw;
+        if ($markup_mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
+            return 'fixed_percent';
+        }
+
+        if ($markup_mode === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
+            return 'fixed_price';
+        }
+
+        if ($markup_mode !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
+            return 'global_percent';
+        }
+
+        $policy = $this->normalize_drift_map_policy($row['meta_map_policy'] ?? null);
+        $real_mode_raw = $row['map_real_price_mode'] ?? '';
+        $real_mode = is_numeric($real_mode_raw) ? (int) $real_mode_raw : ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED;
+        if ($policy === '' || $policy === 'none') {
+            return 'global_percent';
+        }
+
+        if (
+            $policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE
+            && $real_mode === ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT
+            && $this->drift_float_or_null($row['meta_map_real_price_fixed_profit'] ?? null) !== null
+        ) {
+            return 'fixed_profit';
+        }
+
+        if (
+            $policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE
+            && in_array($real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE], true)
+        ) {
+            return 'fixed_price';
+        }
+
+        if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE && $real_mode === ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED) {
+            return 'global_percent';
+        }
+
+        return 'map_price';
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function drift_display_value($value): string
+    {
+        return trim((string) $value);
     }
 
     /**
@@ -766,6 +1052,17 @@ final class GunDealsFeedGenerator
      */
     private function resolve_map_real_price_from_row(array $row): ?float
     {
+        if ($this->to_boolish($row['product_state_exists'] ?? null, false)) {
+            return $this->first_positive_float([
+                $row['computed_price'] ?? null,
+                $row['sale_price'] ?? null,
+                $row['regular_price'] ?? null,
+                $row['price'] ?? null,
+                $row['lookup_min_price'] ?? null,
+                $row['lookup_max_price'] ?? null,
+            ]);
+        }
+
         if ($this->markup_mode_from_row($row) !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
             return null;
         }
