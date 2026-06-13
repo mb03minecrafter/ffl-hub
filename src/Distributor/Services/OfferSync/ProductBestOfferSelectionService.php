@@ -259,11 +259,11 @@ final class ProductBestOfferSelectionService
             LEFT JOIN {$offers_table} o
                 ON o.upc = ps.upc
                AND o.enabled = 1
-               AND o.dealer_price > 0
+               AND o.landed_cost > 0
             LEFT JOIN {$offers_table} better
                 ON better.upc = ps.upc
                AND better.enabled = 1
-               AND better.dealer_price > 0
+               AND better.landed_cost > 0
                AND (
                     (
                         better.stock_status = 'instock'
@@ -282,11 +282,6 @@ final class ProductBestOfferSelectionService
                             better.dropship_enabled > o.dropship_enabled
                             OR (
                                 better.dropship_enabled = o.dropship_enabled
-                                AND better.dealer_price < o.dealer_price
-                            )
-                            OR (
-                                better.dropship_enabled = o.dropship_enabled
-                                AND better.dealer_price = o.dealer_price
                                 AND better.landed_cost < o.landed_cost
                             )
                         )
@@ -304,11 +299,6 @@ final class ProductBestOfferSelectionService
                             better.dropship_enabled > o.dropship_enabled
                             OR (
                                 better.dropship_enabled = o.dropship_enabled
-                                AND better.dealer_price < o.dealer_price
-                            )
-                            OR (
-                                better.dropship_enabled = o.dropship_enabled
-                                AND better.dealer_price = o.dealer_price
                                 AND better.landed_cost < o.landed_cost
                             )
                         )
