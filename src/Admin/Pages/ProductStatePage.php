@@ -16,6 +16,7 @@ use FFLHub\Distributor\Services\Zanders\ZandersOfferNormalizationService;
 use FFLHub\Distributor\Services\Zanders\Tables\ZandersProductTableSchema;
 use FFLHub\Distributor\Services\OfferSync\ProductBestOfferSelectionService;
 use FFLHub\Distributor\Services\OfferSync\ProductBestOffersStore;
+use FFLHub\Distributor\Services\OfferSync\ProductStateBestOfferApplyService;
 use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
@@ -33,6 +34,7 @@ final class ProductStatePage
     private const ACTION_NORMALIZE_LIPSEYS = 'normalize_lipseys_offers';
     private const ACTION_NORMALIZE_CSSI = 'normalize_cssi_offers';
     private const ACTION_REFRESH_CHANGED_BEST_OFFERS = 'refresh_changed_best_offers';
+    private const ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE = 'collect_changed_best_offers_for_product_state';
     private const RESULT_TRANSIENT_PREFIX = 'fflhub_product_state_backfill_result_';
 
     public function register(): void
@@ -78,6 +80,7 @@ final class ProductStatePage
             <?php $this->render_lipseys_normalize_card(); ?>
             <?php $this->render_cssi_normalize_card(); ?>
             <?php $this->render_changed_best_offers_card(); ?>
+            <?php $this->render_collect_changed_best_offers_for_product_state_card(); ?>
         </div>
         <?php
     }
@@ -95,7 +98,7 @@ final class ProductStatePage
         $action = isset($_POST['fflhub_product_state_action'])
             ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_product_state_action']))
             : '';
-        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS, self::ACTION_NORMALIZE_RSR, self::ACTION_NORMALIZE_LIPSEYS, self::ACTION_NORMALIZE_CSSI, self::ACTION_REFRESH_CHANGED_BEST_OFFERS], true)) {
+        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS, self::ACTION_NORMALIZE_RSR, self::ACTION_NORMALIZE_LIPSEYS, self::ACTION_NORMALIZE_CSSI, self::ACTION_REFRESH_CHANGED_BEST_OFFERS, self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE], true)) {
             return;
         }
 
@@ -129,9 +132,12 @@ final class ProductStatePage
                 $this->resolve_live_product_table(new CSSIProductTableSchema(), 'fflhub_cssi_fulfillment_last_swap')
             );
             $result['type'] = self::ACTION_NORMALIZE_CSSI;
-        } else {
+        } elseif ($action === self::ACTION_REFRESH_CHANGED_BEST_OFFERS) {
             $result = ProductBestOfferSelectionService::refresh_changed_upcs();
             $result['type'] = self::ACTION_REFRESH_CHANGED_BEST_OFFERS;
+        } else {
+            $result = ProductStateBestOfferApplyService::apply_changed_best_offers();
+            $result['type'] = self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE;
         }
 
         set_transient($this->result_transient_key(), $result, 5 * MINUTE_IN_SECONDS);
@@ -247,6 +253,23 @@ final class ProductStatePage
         <?php
     }
 
+    private function render_collect_changed_best_offers_for_product_state_card(): void
+    {
+        ?>
+        <div class="postbox" style="max-width: 760px; padding: 16px;">
+            <h2 style="margin-top:0;"><?php esc_html_e('Collect Changed Best Offers for Product State', 'ffl-hub'); ?></h2>
+            <p>
+                <?php esc_html_e('Runs the first product-state apply-service step: collect product_best_offers rows where has_changed = 1 into a temporary table and report stats. This does not update product_state, WooCommerce products, or any flags yet.', 'ffl-hub'); ?>
+            </p>
+            <form method="post" action="">
+                <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
+                <input type="hidden" name="fflhub_product_state_action" value="<?php echo esc_attr(self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE); ?>" />
+                <?php submit_button(__('Collect Changed Best Offers', 'ffl-hub'), 'secondary', 'submit', false); ?>
+            </form>
+        </div>
+        <?php
+    }
+
     /**
      * @param array<string,mixed>|null $result
      */
@@ -277,6 +300,7 @@ final class ProductStatePage
         ];
         $normalizer = $offer_normalizers[$type] ?? null;
         $is_best_offer_refresh = ($type === self::ACTION_REFRESH_CHANGED_BEST_OFFERS);
+        $is_product_state_best_offer_collect = ($type === self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE);
         $has_errors = !empty($result['errors']) && is_array($result['errors']);
         $notice_class = $has_errors ? 'notice-error' : 'notice-success';
         ?>
@@ -293,6 +317,25 @@ final class ProductStatePage
                     <li><?php echo esc_html(sprintf('Cleared offer change flags: %d', (int) ($result['cleared_offer_change_flags'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Best-offer upsert: %s ms', (string) ($result['upsert_elapsed_ms'] ?? '0.00'))); ?></li>
                     <li><?php echo esc_html(sprintf('Flag clear: %s ms', (string) ($result['clear_flags_elapsed_ms'] ?? '0.00'))); ?></li>
+                    <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
+                </ul>
+                <?php if ($has_errors) : ?>
+                    <p><strong><?php esc_html_e('Errors:', 'ffl-hub'); ?></strong></p>
+                    <ul style="list-style:disc;margin-left:20px;">
+                        <?php foreach ($result['errors'] as $message) : ?>
+                            <li><?php echo esc_html((string) $message); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            <?php elseif ($is_product_state_best_offer_collect) : ?>
+                <p><strong><?php esc_html_e('Changed best-offer product-state collection complete.', 'ffl-hub'); ?></strong></p>
+                <ul style="list-style:disc;margin-left:20px;">
+                    <li><?php echo esc_html(sprintf('Stage: %s', (string) ($result['stage'] ?? ''))); ?></li>
+                    <li><?php echo esc_html(sprintf('Temp table: %s', (string) ($result['temp_table'] ?? ''))); ?></li>
+                    <li><?php echo esc_html(sprintf('Dirty best offers collected: %d', (int) ($result['processed_best_offers'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Collect runtime: %s ms', (string) ($result['collect_elapsed_ms'] ?? '0.00'))); ?></li>
+                    <li><?php echo esc_html(sprintf('Product state rows updated: %d', (int) ($result['updated_product_state'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Best-offer flags cleared: %d', (int) ($result['cleared_best_offer_flags'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
                 </ul>
                 <?php if ($has_errors) : ?>
