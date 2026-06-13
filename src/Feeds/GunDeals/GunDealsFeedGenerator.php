@@ -1018,6 +1018,10 @@ final class GunDealsFeedGenerator
         }
 
         $policy = $this->normalize_map_policy($raw_policy);
+        if ($policy === 'none') {
+            return '';
+        }
+
         if ($policy === Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE) {
             $price = $this->resolve_price_from_row($row);
             if ($price <= 0.0 || $price >= ($map - 0.0001)) {
@@ -1279,6 +1283,10 @@ final class GunDealsFeedGenerator
     private function normalize_map_policy(string $policy): string
     {
         $policy = strtolower(trim($policy));
+        if ($policy === 'none') {
+            return 'none';
+        }
+
         if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
             return Options::MAP_POLICY_EMAIL_FOR_QUOTE;
         }
