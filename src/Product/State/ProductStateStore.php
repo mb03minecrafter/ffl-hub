@@ -603,7 +603,7 @@ final class ProductStateStore
         return [
             'pricing_mode' => $pricing_mode,
             'pricing_percent' => self::money_or_null($pricing_percent, 4),
-            'pricing_fixed_price' => self::money_or_null($fixed_price, 4),
+            'pricing_fixed_price' => self::money_or_null($pricing_mode === 'fixed_price' ? $fixed_price : null, 4),
             'pricing_fixed_profit' => self::money_or_null($pricing_mode === 'fixed_profit' ? $fixed_profit : null, 4),
             'map_visibility_policy' => $visibility_policy,
             'quote_free_shipping_override' => self::truthy($map_real_price_free_shipping_override_raw) ? 1 : 0,
