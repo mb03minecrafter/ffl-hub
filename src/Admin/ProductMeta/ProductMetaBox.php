@@ -926,6 +926,49 @@ class ProductMetaBox
         echo '</div>';
 
         echo '<div class="fflhub-state-card">';
+        echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Stock And Fulfillment Overrides', 'ffl-hub') . '</h3>';
+        echo '<div class="fflhub-state-field">';
+        echo '<label class="fflhub-state-check">';
+        echo '<input type="checkbox" name="fflhub_state_stock_oos_override" value="1" ' .
+            checked(self::truthy_state($row['stock_oos_override'] ?? null), true, false) .
+            ' />';
+        echo '<span><strong>' . esc_html__('Out of stock override', 'ffl-hub') . '</strong><br />' .
+            '<span>' . esc_html__('Treat distributor stock as unavailable for this product_state row.', 'ffl-hub') . '</span></span>';
+        echo '</label>';
+        echo '</div>';
+
+        echo '<div class="fflhub-state-field" data-local-stock-field="qty">';
+        echo '<label>' . esc_html__('Local stock quantity', 'ffl-hub') . '</label>';
+        echo '<input type="number" step="1" min="0" name="fflhub_state_local_stock_override_qty" value="' .
+            esc_attr(self::state_int_for_input($row['local_stock_override_qty'] ?? null)) .
+            '" />';
+        echo '<span class="fflhub-state-field__hint">' .
+            esc_html__('Blank means no local stock override. A positive value can later make local stock the source of truth for checkout/sync.', 'ffl-hub') .
+            '</span>';
+        echo '</div>';
+
+        echo '<div class="fflhub-state-field" data-local-stock-field="free_shipping">';
+        echo '<label class="fflhub-state-check">';
+        echo '<input type="checkbox" name="fflhub_state_local_stock_free_shipping" value="1" ' .
+            checked(self::truthy_state($row['local_stock_free_shipping'] ?? null), true, false) .
+            ' />';
+        echo '<span><strong>' . esc_html__('Local stock free shipping', 'ffl-hub') . '</strong><br />' .
+            '<span>' . esc_html__('Use free shipping behavior when local stock is used.', 'ffl-hub') . '</span></span>';
+        echo '</label>';
+        echo '</div>';
+
+        echo '<div class="fflhub-state-field">';
+        echo '<label class="fflhub-state-check">';
+        echo '<input type="checkbox" name="fflhub_state_manual_shipping_override" value="1" ' .
+            checked(self::truthy_state($row['manual_shipping_override'] ?? null), true, false) .
+            ' />';
+        echo '<span><strong>' . esc_html__('Manual shipping override flag', 'ffl-hub') . '</strong><br />' .
+            '<span>' . esc_html__('Preserves the product_state override flag. Offer dimensions and shipping values remain read-only selected-offer data.', 'ffl-hub') . '</span></span>';
+        echo '</label>';
+        echo '</div>';
+        echo '</div>';
+
+        echo '<div class="fflhub-state-card">';
         echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Pricing Calculation', 'ffl-hub') . '</h3>';
         echo '<div class="fflhub-state-field">';
         echo '<label>' . esc_html__('Pricing mode', 'ffl-hub') . '</label>';
@@ -990,49 +1033,6 @@ class ProductMetaBox
             ' />';
         echo '<span><strong>' . esc_html__('Quote free shipping override', 'ffl-hub') . '</strong><br />' .
             '<span>' . esc_html__('Marks quote-required MAP products as free-shipping eligible in the new state row.', 'ffl-hub') . '</span></span>';
-        echo '</label>';
-        echo '</div>';
-        echo '</div>';
-
-        echo '<div class="fflhub-state-card">';
-        echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Stock And Fulfillment Overrides', 'ffl-hub') . '</h3>';
-        echo '<div class="fflhub-state-field">';
-        echo '<label class="fflhub-state-check">';
-        echo '<input type="checkbox" name="fflhub_state_stock_oos_override" value="1" ' .
-            checked(self::truthy_state($row['stock_oos_override'] ?? null), true, false) .
-            ' />';
-        echo '<span><strong>' . esc_html__('Out of stock override', 'ffl-hub') . '</strong><br />' .
-            '<span>' . esc_html__('Treat distributor stock as unavailable for this product_state row.', 'ffl-hub') . '</span></span>';
-        echo '</label>';
-        echo '</div>';
-
-        echo '<div class="fflhub-state-field" data-local-stock-field="qty">';
-        echo '<label>' . esc_html__('Local stock quantity', 'ffl-hub') . '</label>';
-        echo '<input type="number" step="1" min="0" name="fflhub_state_local_stock_override_qty" value="' .
-            esc_attr(self::state_int_for_input($row['local_stock_override_qty'] ?? null)) .
-            '" />';
-        echo '<span class="fflhub-state-field__hint">' .
-            esc_html__('Blank means no local stock override. A positive value can later make local stock the source of truth for checkout/sync.', 'ffl-hub') .
-            '</span>';
-        echo '</div>';
-
-        echo '<div class="fflhub-state-field" data-local-stock-field="free_shipping">';
-        echo '<label class="fflhub-state-check">';
-        echo '<input type="checkbox" name="fflhub_state_local_stock_free_shipping" value="1" ' .
-            checked(self::truthy_state($row['local_stock_free_shipping'] ?? null), true, false) .
-            ' />';
-        echo '<span><strong>' . esc_html__('Local stock free shipping', 'ffl-hub') . '</strong><br />' .
-            '<span>' . esc_html__('Use free shipping behavior when local stock is used.', 'ffl-hub') . '</span></span>';
-        echo '</label>';
-        echo '</div>';
-
-        echo '<div class="fflhub-state-field">';
-        echo '<label class="fflhub-state-check">';
-        echo '<input type="checkbox" name="fflhub_state_manual_shipping_override" value="1" ' .
-            checked(self::truthy_state($row['manual_shipping_override'] ?? null), true, false) .
-            ' />';
-        echo '<span><strong>' . esc_html__('Manual shipping override flag', 'ffl-hub') . '</strong><br />' .
-            '<span>' . esc_html__('Preserves the product_state override flag. Offer dimensions and shipping values remain read-only selected-offer data.', 'ffl-hub') . '</span></span>';
         echo '</label>';
         echo '</div>';
         echo '</div>';
