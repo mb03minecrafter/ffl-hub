@@ -130,7 +130,13 @@ final class ProductBestOfferSelectionService
             INSERT INTO {$map_table} (upc, map_price, msrp)
             SELECT
                 d.upc,
-                MAX(CASE WHEN o.map_price IS NOT NULL AND o.map_price > 0 THEN o.map_price ELSE NULL END) AS map_price,
+                MAX(CASE
+                    WHEN o.distributor_id <> 'davidsons'
+                        AND o.map_price IS NOT NULL
+                        AND o.map_price > 0
+                    THEN o.map_price
+                    ELSE NULL
+                END) AS map_price,
                 MAX(CASE WHEN o.msrp IS NOT NULL AND o.msrp > 0 THEN o.msrp ELSE NULL END) AS msrp
             FROM {$temp_table} d
             INNER JOIN {$offers_table} o
