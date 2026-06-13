@@ -23,6 +23,13 @@ class CSSIProductImporterService
 {
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][CSSIImporter]';
+    private const SHIPPING_NON_FFL_RATE = 8.95;
+    private const SHIPPING_NON_FFL_WEIGHT_LBS = 8.0;
+    private const SHIPPING_FFL_RATE = 14.95;
+    private const SHIPPING_FFL_WEIGHT_LBS = 30.0;
+    private const SHIPPING_MINIMUM_ORDER_FEE = 7.50;
+    private const SHIPPING_MINIMUM_ORDER_THRESHOLD = 50.0;
+    private const SHIPPING_INSURANCE_PER_100 = 1.00;
 
     private DoubleBufferedProductTable $table;
 
@@ -302,17 +309,27 @@ class CSSIProductImporterService
         $weightPoundsExpr = "CAST(COALESCE({$decimal('@ship_weight')}, '0') AS DECIMAL(12,4))";
         $weightOuncesExpr = "CASE WHEN {$weightPoundsExpr} < 0 THEN 0 ELSE {$weightPoundsExpr} * 16 END";
         $freightWeightExpr = "CASE WHEN {$weightPoundsExpr} > 0 THEN {$weightPoundsExpr} ELSE 1 END";
-        $shippingRawExpr = "(
-            (
-                14.95 * GREATEST(1, CEIL(({$freightWeightExpr}) / 30.0))
-            )
-            + CASE WHEN {$priceDecimalExpr} > 0 THEN CEIL({$priceDecimalExpr} / 100.0) ELSE 0 END
-            + CASE WHEN {$priceDecimalExpr} > 0 AND {$priceDecimalExpr} < 50 THEN 7.50 ELSE 0 END
-        )";
-        $shippingExpr = "REPLACE(FORMAT({$shippingRawExpr}, 2), ',', '')";
         $categoryExpr = $trim('@category');
         $fflRequiredCategoryExpr = CSSIRegulatoryCategoryRules::ffl_required_category_sql($categoryExpr);
         $sotRequiredCategoryExpr = CSSIRegulatoryCategoryRules::sot_required_category_sql($categoryExpr);
+        $freightChargeExpr = sprintf(
+            "
+            CASE
+                WHEN {$fflRequiredCategoryExpr} THEN %F * GREATEST(1, CEIL(({$freightWeightExpr}) / %F))
+                ELSE %F * GREATEST(1, CEIL(({$freightWeightExpr}) / %F))
+            END
+        ",
+            self::SHIPPING_FFL_RATE,
+            self::SHIPPING_FFL_WEIGHT_LBS,
+            self::SHIPPING_NON_FFL_RATE,
+            self::SHIPPING_NON_FFL_WEIGHT_LBS
+        );
+        $shippingRawExpr = "(
+            ({$freightChargeExpr})
+            + CASE WHEN {$priceDecimalExpr} > 0 THEN CEIL({$priceDecimalExpr} / 100.0) * " . self::SHIPPING_INSURANCE_PER_100 . " ELSE 0 END
+            + CASE WHEN {$priceDecimalExpr} > 0 AND {$priceDecimalExpr} < " . self::SHIPPING_MINIMUM_ORDER_THRESHOLD . ' THEN ' . self::SHIPPING_MINIMUM_ORDER_FEE . " ELSE 0 END
+        )";
+        $shippingExpr = "REPLACE(FORMAT({$shippingRawExpr}, 2), ',', '')";
         $descriptionExpr = "CASE
             WHEN LEFT({$trim('@web_description')}, 1) = '\"' THEN REPLACE({$trim('@web_description')}, '\"', '')
             ELSE {$trim('@web_description')}

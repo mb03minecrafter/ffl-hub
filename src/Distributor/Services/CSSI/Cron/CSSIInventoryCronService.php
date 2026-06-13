@@ -31,8 +31,10 @@ final class CSSIInventoryCronService extends AbstractTableCronService
     private const OPT_CURSOR_UTC = 'fflhub_cssi_inventory_cursor_utc';
     private const SIG_SAUER_MANUFACTURER = 'SIG SAUER';
     private const SIG_SAUER_DROPSHIP_BLOCK_REASON = 'manufacturer_policy=sig_sauer_no_dropship';
-    private const SHIPPING_FLAT_RATE = 14.95;
-    private const SHIPPING_FLAT_RATE_WEIGHT_LBS = 30.0;
+    private const SHIPPING_NON_FFL_RATE = 8.95;
+    private const SHIPPING_NON_FFL_WEIGHT_LBS = 8.0;
+    private const SHIPPING_FFL_RATE = 14.95;
+    private const SHIPPING_FFL_WEIGHT_LBS = 30.0;
     private const SHIPPING_MINIMUM_ORDER_FEE = 7.50;
     private const SHIPPING_MINIMUM_ORDER_THRESHOLD = 50.0;
     private const SHIPPING_INSURANCE_PER_100 = 1.00;
@@ -500,14 +502,22 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         $shippingCostExpr = sprintf(
             "
             CAST(ROUND(
-                (GREATEST(1, CEIL((%s) / %F)) * %F)
+                (
+                    CASE
+                        WHEN {$fflRequiredExpr} = 1 THEN GREATEST(1, CEIL((%s) / %F)) * %F
+                        ELSE GREATEST(1, CEIL((%s) / %F)) * %F
+                    END
+                )
                 + CASE WHEN %s > 0 THEN CEIL(%s / 100) * %F ELSE 0 END
                 + CASE WHEN %s > 0 AND %s < %F THEN %F ELSE 0 END
             , 2) AS CHAR)
         ",
             $effectiveWeightLbExpr,
-            self::SHIPPING_FLAT_RATE_WEIGHT_LBS,
-            self::SHIPPING_FLAT_RATE,
+            self::SHIPPING_FFL_WEIGHT_LBS,
+            self::SHIPPING_FFL_RATE,
+            $effectiveWeightLbExpr,
+            self::SHIPPING_NON_FFL_WEIGHT_LBS,
+            self::SHIPPING_NON_FFL_RATE,
             $stagePriceExpr,
             $stagePriceExpr,
             self::SHIPPING_INSURANCE_PER_100,
@@ -526,7 +536,9 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 L.in_stock_flag = S.in_stock_flag,
                 L.allocation_status = S.allocation_status,
                 L.shipping_cost = CASE
-                    WHEN S.distributor_price <> '' AND COALESCE(L.distributor_price, '') <> COALESCE(S.distributor_price, '') THEN {$shippingCostExpr}
+                    WHEN S.distributor_price <> ''
+                        AND NOT (CAST(NULLIF(COALESCE(L.shipping_cost, ''), '') AS DECIMAL(12,2)) <=> CAST({$shippingCostExpr} AS DECIMAL(12,2)))
+                    THEN {$shippingCostExpr}
                     ELSE L.shipping_cost
                 END,
                 L.distributor_price = CASE WHEN S.distributor_price <> '' THEN S.distributor_price ELSE L.distributor_price END,
@@ -556,6 +568,10 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 OR COALESCE(L.in_stock_flag, 0) <> COALESCE(S.in_stock_flag, 0)
                 OR COALESCE(L.allocation_status, '') <> COALESCE(S.allocation_status, '')
                 OR COALESCE(L.distributor_price, '') <> COALESCE(S.distributor_price, '')
+                OR (
+                    S.distributor_price <> ''
+                    AND NOT (CAST(NULLIF(COALESCE(L.shipping_cost, ''), '') AS DECIMAL(12,2)) <=> CAST({$shippingCostExpr} AS DECIMAL(12,2)))
+                )
                 OR COALESCE(L.retail_map, '') <> COALESCE(S.retail_map, '')
                 OR COALESCE(L.retail_msrp, '') <> COALESCE(S.retail_msrp, '')
                 OR COALESCE(L.drop_ship_price, '') <> COALESCE(S.drop_ship_price, '')
