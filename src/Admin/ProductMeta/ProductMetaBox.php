@@ -854,80 +854,188 @@ class ProductMetaBox
             esc_html__('Read-only comparison of the NEW product_state row beside the OLD Woo/FFLHub meta values for this product.', 'ffl-hub') .
             '</p>';
 
-        echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;">';
-
-        self::render_state_panel(
-            __('Selected Offer Snapshot', 'ffl-hub'),
+        self::render_state_comparison_table([
             [
-                'Product ID' => (string) ($row['product_id'] ?? ''),
-                'UPC' => (string) ($row['upc'] ?? ''),
-                'Distributor' => self::state_value($row['distributor_id'] ?? null),
-                'Distributor product ID' => self::state_value($row['distributor_product_id'] ?? null),
-                'SKU' => self::state_value($row['distributor_sku'] ?? null),
-                'Manufacturer norm' => self::state_value($row['manufacturer_norm'] ?? null),
-                'Qty' => self::state_value($row['qty'] ?? null),
-                'Stock status' => self::state_value($row['stock_status'] ?? null),
-                'Dropship' => self::state_yes_no($row['dropship_enabled'] ?? null),
-                'Enabled' => self::state_yes_no($row['enabled'] ?? null),
-                'Selection status' => self::state_value($row['selection_status'] ?? null),
-                'Has changed' => self::state_yes_no($row['has_changed'] ?? null),
-            ]
-        );
-
-        self::render_state_panel(
-            __('NEW Product State Pricing', 'ffl-hub'),
+                'group' => __('Identity / Offer', 'ffl-hub'),
+                'field' => __('UPC', 'ffl-hub'),
+                'old' => self::state_value($product->get_meta(ProductMeta::FFLHUB_UPC_META, true)),
+                'new' => self::state_value($row['upc'] ?? null),
+            ],
             [
-                'Pricing mode' => self::state_value($row['pricing_mode'] ?? null),
-                'Pricing percent' => self::state_value($row['pricing_percent'] ?? null),
-                'Fixed price' => self::state_money($row['pricing_fixed_price'] ?? null),
-                'Fixed profit' => self::state_money($row['pricing_fixed_profit'] ?? null),
-                'Computed sell' => self::state_money($row['computed_sell_price'] ?? null),
-                'MAP applicable' => self::state_yes_no($row['map_applicable'] ?? null),
-                'MAP visibility' => self::state_value($row['map_visibility_policy'] ?? null),
-                'Quote price' => self::state_money($row['quote_price'] ?? null),
-                'Quote free shipping' => self::state_yes_no($row['quote_free_shipping_override'] ?? null),
-                'Public regular' => self::state_money($row['public_regular_price'] ?? null),
-                'Public sale' => self::state_money($row['public_sale_price'] ?? null),
-                'Public active' => self::state_money($row['public_active_price'] ?? null),
-            ]
-        );
-
-        self::render_state_panel(
-            __('OLD Woo/FFLHub Meta Pricing', 'ffl-hub'),
+                'group' => __('Identity / Offer', 'ffl-hub'),
+                'field' => __('Primary distributor', 'ffl-hub'),
+                'old' => self::state_value($product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)),
+                'new' => self::state_value($row['distributor_id'] ?? null),
+            ],
             [
-                'Markup mode' => self::old_markup_mode_label($product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true)),
-                'Markup percent' => self::state_value($product->get_meta(ProductMeta::FFLHUB_MARKUP_PERCENT_META, true)),
-                'Fixed price' => self::state_money($product->get_meta(ProductMeta::FFLHUB_FIXED_PRICE_META, true)),
-                'MAP policy' => self::state_value($product->get_meta(ProductMeta::FFLHUB_MAP_POLICY_META, true)),
-                'MAP real mode' => self::old_map_real_mode_label($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true)),
-                'MAP real offset' => self::state_money($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true)),
-                'MAP real percent' => self::state_value($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, true)),
-                'MAP real fixed profit' => self::state_money($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META, true)),
-                'MAP free shipping override' => self::state_yes_no($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true)),
-                'Last computed' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true)),
-            ]
-        );
-
-        self::render_state_panel(
-            __('Price/Cost Comparison', 'ffl-hub'),
+                'group' => __('Identity / Offer', 'ffl-hub'),
+                'field' => __('Distributor product ID', 'ffl-hub'),
+                'old' => '-',
+                'new' => self::state_value($row['distributor_product_id'] ?? null),
+            ],
             [
-                'NEW dealer price' => self::state_money($row['dealer_price'] ?? null),
-                'NEW shipping cost' => self::state_money($row['shipping_cost'] ?? null),
-                'NEW landed cost' => self::state_money($row['landed_cost'] ?? null),
-                'NEW MAP' => self::state_money($row['map_price'] ?? null),
-                'NEW MSRP' => self::state_money($row['msrp'] ?? null),
-                'OLD true cost' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true)),
-                'OLD dealer price' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true)),
-                'OLD shipping cost' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true)),
-                'OLD MAP' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true)),
-                'OLD MSRP' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true)),
-                'Woo regular' => self::state_money($product->get_regular_price()),
-                'Woo sale' => self::state_money($product->get_sale_price()),
-                'Woo active' => self::state_money($product->get_price()),
-            ]
-        );
-
-        echo '</div>';
+                'group' => __('Identity / Offer', 'ffl-hub'),
+                'field' => __('Distributor SKU', 'ffl-hub'),
+                'old' => '-',
+                'new' => self::state_value($row['distributor_sku'] ?? null),
+            ],
+            [
+                'group' => __('Identity / Offer', 'ffl-hub'),
+                'field' => __('Manufacturer norm', 'ffl-hub'),
+                'old' => '-',
+                'new' => self::state_value($row['manufacturer_norm'] ?? null),
+            ],
+            [
+                'group' => __('Stock / Rules', 'ffl-hub'),
+                'field' => __('Quantity', 'ffl-hub'),
+                'old' => self::state_value($product->get_stock_quantity()),
+                'new' => self::state_value($row['qty'] ?? null),
+            ],
+            [
+                'group' => __('Stock / Rules', 'ffl-hub'),
+                'field' => __('Stock status', 'ffl-hub'),
+                'old' => self::state_value($product->get_stock_status()),
+                'new' => self::state_value($row['stock_status'] ?? null),
+            ],
+            [
+                'group' => __('Stock / Rules', 'ffl-hub'),
+                'field' => __('FFL required', 'ffl-hub'),
+                'old' => self::state_yes_no($product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true)),
+                'new' => self::state_yes_no($row['ffl_required'] ?? null),
+            ],
+            [
+                'group' => __('Stock / Rules', 'ffl-hub'),
+                'field' => __('SOT required', 'ffl-hub'),
+                'old' => self::state_yes_no($product->get_meta(ProductMeta::FFLHUB_SOT_REQUIRED_META, true)),
+                'new' => self::state_yes_no($row['sot_required'] ?? null),
+            ],
+            [
+                'group' => __('Stock / Rules', 'ffl-hub'),
+                'field' => __('Dropship enabled', 'ffl-hub'),
+                'old' => self::state_yes_no($product->get_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true)),
+                'new' => self::state_yes_no($row['dropship_enabled'] ?? null),
+            ],
+            [
+                'group' => __('Costs', 'ffl-hub'),
+                'field' => __('Dealer price', 'ffl-hub'),
+                'old' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true)),
+                'new' => self::state_money($row['dealer_price'] ?? null),
+            ],
+            [
+                'group' => __('Costs', 'ffl-hub'),
+                'field' => __('Shipping cost', 'ffl-hub'),
+                'old' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true)),
+                'new' => self::state_money($row['shipping_cost'] ?? null),
+            ],
+            [
+                'group' => __('Costs', 'ffl-hub'),
+                'field' => __('Landed / true cost', 'ffl-hub'),
+                'old' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true)),
+                'new' => self::state_money($row['landed_cost'] ?? null),
+            ],
+            [
+                'group' => __('Costs', 'ffl-hub'),
+                'field' => __('MAP', 'ffl-hub'),
+                'old' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true)),
+                'new' => self::state_money($row['map_price'] ?? null),
+            ],
+            [
+                'group' => __('Costs', 'ffl-hub'),
+                'field' => __('MSRP', 'ffl-hub'),
+                'old' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true)),
+                'new' => self::state_money($row['msrp'] ?? null),
+            ],
+            [
+                'group' => __('Pricing Mode', 'ffl-hub'),
+                'field' => __('Calculation mode', 'ffl-hub'),
+                'old' => self::old_markup_mode_label($product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true)),
+                'new' => self::state_value($row['pricing_mode'] ?? null),
+            ],
+            [
+                'group' => __('Pricing Mode', 'ffl-hub'),
+                'field' => __('Percent', 'ffl-hub'),
+                'old' => self::state_value($product->get_meta(ProductMeta::FFLHUB_MARKUP_PERCENT_META, true)),
+                'new' => self::state_value($row['pricing_percent'] ?? null),
+            ],
+            [
+                'group' => __('Pricing Mode', 'ffl-hub'),
+                'field' => __('Fixed price', 'ffl-hub'),
+                'old' => self::state_money($product->get_meta(ProductMeta::FFLHUB_FIXED_PRICE_META, true)),
+                'new' => self::state_money($row['pricing_fixed_price'] ?? null),
+            ],
+            [
+                'group' => __('Pricing Mode', 'ffl-hub'),
+                'field' => __('Fixed profit', 'ffl-hub'),
+                'old' => self::state_money($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META, true)),
+                'new' => self::state_money($row['pricing_fixed_profit'] ?? null),
+            ],
+            [
+                'group' => __('Pricing Mode', 'ffl-hub'),
+                'field' => __('Computed sell price', 'ffl-hub'),
+                'old' => self::state_money($product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true)),
+                'new' => self::state_money($row['computed_sell_price'] ?? null),
+            ],
+            [
+                'group' => __('MAP Visibility', 'ffl-hub'),
+                'field' => __('MAP applicable', 'ffl-hub'),
+                'old' => self::state_yes_no(self::positive_float_or_null($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true)) !== null ? 1 : 0),
+                'new' => self::state_yes_no($row['map_applicable'] ?? null),
+            ],
+            [
+                'group' => __('MAP Visibility', 'ffl-hub'),
+                'field' => __('Visibility policy', 'ffl-hub'),
+                'old' => self::state_value($product->get_meta(ProductMeta::FFLHUB_MAP_POLICY_META, true)),
+                'new' => self::state_value($row['map_visibility_policy'] ?? null),
+            ],
+            [
+                'group' => __('MAP Visibility', 'ffl-hub'),
+                'field' => __('Old MAP real mode / New quote price', 'ffl-hub'),
+                'old' => self::old_map_real_mode_label($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true)),
+                'new' => self::state_money($row['quote_price'] ?? null),
+            ],
+            [
+                'group' => __('MAP Visibility', 'ffl-hub'),
+                'field' => __('Quote free shipping override', 'ffl-hub'),
+                'old' => self::state_yes_no($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true)),
+                'new' => self::state_yes_no($row['quote_free_shipping_override'] ?? null),
+            ],
+            [
+                'group' => __('Public Prices', 'ffl-hub'),
+                'field' => __('Regular price', 'ffl-hub'),
+                'old' => self::state_money($product->get_regular_price()),
+                'new' => self::state_money($row['public_regular_price'] ?? null),
+            ],
+            [
+                'group' => __('Public Prices', 'ffl-hub'),
+                'field' => __('Sale price', 'ffl-hub'),
+                'old' => self::state_money($product->get_sale_price()),
+                'new' => self::state_money($row['public_sale_price'] ?? null),
+            ],
+            [
+                'group' => __('Public Prices', 'ffl-hub'),
+                'field' => __('Active price', 'ffl-hub'),
+                'old' => self::state_money($product->get_price()),
+                'new' => self::state_money($row['public_active_price'] ?? null),
+            ],
+            [
+                'group' => __('Sync Flags', 'ffl-hub'),
+                'field' => __('Selection status', 'ffl-hub'),
+                'old' => '-',
+                'new' => self::state_value($row['selection_status'] ?? null),
+            ],
+            [
+                'group' => __('Sync Flags', 'ffl-hub'),
+                'field' => __('State enabled', 'ffl-hub'),
+                'old' => self::state_yes_no($product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true)),
+                'new' => self::state_yes_no($row['enabled'] ?? null),
+            ],
+            [
+                'group' => __('Sync Flags', 'ffl-hub'),
+                'field' => __('Has changed', 'ffl-hub'),
+                'old' => '-',
+                'new' => self::state_yes_no($row['has_changed'] ?? null),
+            ],
+        ]);
     }
 
     /**
@@ -948,20 +1056,39 @@ class ProductMetaBox
     }
 
     /**
-     * @param array<string,string> $pairs
+     * @param array<int,array{group:string,field:string,old:string,new:string}> $rows
      */
-    private static function render_state_panel(string $title, array $pairs): void
+    private static function render_state_comparison_table(array $rows): void
     {
-        echo '<div style="border:1px solid #dcdcde;background:#fff;border-radius:4px;overflow:hidden;">';
-        echo '<div style="padding:8px 10px;background:#f6f7f7;font-weight:700;border-bottom:1px solid #dcdcde;">' . esc_html($title) . '</div>';
-        echo '<table class="widefat" style="border:0;">';
+        echo '<div style="overflow-x:auto;border:1px solid #dcdcde;border-radius:4px;">';
+        echo '<table class="widefat striped" style="min-width:900px;border:0;">';
+        echo '<thead>';
+        echo '<tr>';
+        echo '<th style="width:16%;">' . esc_html__('Group', 'ffl-hub') . '</th>';
+        echo '<th style="width:24%;">' . esc_html__('Field', 'ffl-hub') . '</th>';
+        echo '<th style="width:30%;">' . esc_html__('OLD Woo / Product Meta', 'ffl-hub') . '</th>';
+        echo '<th style="width:30%;">' . esc_html__('NEW product_state', 'ffl-hub') . '</th>';
+        echo '</tr>';
+        echo '</thead>';
         echo '<tbody>';
-        foreach ($pairs as $label => $value) {
+
+        $last_group = '';
+        foreach ($rows as $row) {
+            $group = (string) $row['group'];
+            $field = (string) $row['field'];
+            $old = (string) $row['old'];
+            $new = (string) $row['new'];
+            $group_display = ($group === $last_group) ? '' : $group;
+            $last_group = $group;
+
             echo '<tr>';
-            echo '<th style="width:48%;font-weight:600;">' . esc_html($label) . '</th>';
-            echo '<td><code style="white-space:normal;">' . esc_html($value) . '</code></td>';
+            echo '<th style="vertical-align:top;font-weight:700;color:#1d2327;">' . esc_html($group_display) . '</th>';
+            echo '<td style="vertical-align:top;font-weight:600;">' . esc_html($field) . '</td>';
+            echo '<td style="vertical-align:top;"><code style="white-space:normal;">' . esc_html($old) . '</code></td>';
+            echo '<td style="vertical-align:top;"><code style="white-space:normal;">' . esc_html($new) . '</code></td>';
             echo '</tr>';
         }
+
         echo '</tbody>';
         echo '</table>';
         echo '</div>';
