@@ -131,7 +131,6 @@ final class ProductStatePricingSql
     {
         return "
             CASE
-                WHEN {$offer_alias}.map_price IS NULL OR {$offer_alias}.map_price <= 0 THEN 'none'
                 WHEN {$state_alias}.map_visibility_policy IN (
                     'none',
                     '" . esc_sql(Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE) . "',

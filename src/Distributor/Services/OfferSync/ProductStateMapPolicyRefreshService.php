@@ -253,10 +253,7 @@ final class ProductStateMapPolicyRefreshService
     private static function target_policy_expr(string $state_alias, string $policy_alias): string
     {
         return "
-            CASE
-                WHEN {$state_alias}.map_price IS NULL OR {$state_alias}.map_price <= 0 THEN 'none'
-                ELSE {$policy_alias}.policy
-            END
+            {$policy_alias}.policy
         ";
     }
 

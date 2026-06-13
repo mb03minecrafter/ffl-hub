@@ -666,7 +666,7 @@ final class ProductStateStore
      * state model:
      * - pricing_mode answers how we calculate the sell/quote price.
      * - map_applicable answers whether a usable MAP exists right now.
-     * - map_visibility_policy answers how price may be displayed when MAP exists.
+     * - map_visibility_policy answers the configured display policy.
      *
      * @return array<string,mixed>
      */
@@ -789,10 +789,6 @@ final class ProductStateStore
 
     private static function map_visibility_policy($raw, bool $map_applicable): string
     {
-        if (!$map_applicable) {
-            return 'none';
-        }
-
         $policy = strtolower(trim((string) $raw));
         if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
             return $policy;
@@ -1077,10 +1073,6 @@ final class ProductStateStore
 
     private static function admin_map_visibility_policy($raw, bool $map_applicable): string
     {
-        if (!$map_applicable) {
-            return 'none';
-        }
-
         $policy = strtolower(trim((string) $raw));
         return in_array($policy, [
             'none',
