@@ -449,7 +449,6 @@ final class ProductStateStore
             'sot_required' => $sot_required,
             'dropship_enabled' => $dropship_enabled,
             'enabled' => 1,
-            'has_changed' => 0,
             'shipping_weight_oz' => $shipping_weight_oz,
             'shipping_length_in' => $shipping_length_in,
             'shipping_width_in' => $shipping_width_in,
@@ -474,6 +473,7 @@ final class ProductStateStore
                 get_post_meta($product_id, ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_IDS_META, true)
             ),
             'bom_total_cost' => $bom_enabled ? self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_BOM_TOTAL_COST_META, true), 4) : null,
+            'has_changed' => 0,
         ];
     }
 
@@ -546,7 +546,6 @@ final class ProductStateStore
             'sot_required' => '%d',
             'dropship_enabled' => '%d',
             'enabled' => '%d',
-            'has_changed' => '%d',
             'shipping_weight_oz' => '%f',
             'shipping_length_in' => '%f',
             'shipping_width_in' => '%f',
@@ -574,6 +573,7 @@ final class ProductStateStore
             'bom_total_cost' => '%f',
             'created_at' => '%s',
             'updated_at' => '%s',
+            'has_changed' => '%d',
         ];
 
         return array_map(
