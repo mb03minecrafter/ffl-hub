@@ -257,14 +257,14 @@ final class ProductStatePage
     {
         ?>
         <div class="postbox" style="max-width: 760px; padding: 16px;">
-            <h2 style="margin-top:0;"><?php esc_html_e('Collect Changed Best Offers for Product State', 'ffl-hub'); ?></h2>
+            <h2 style="margin-top:0;"><?php esc_html_e('Apply Changed Best Offers to Product State', 'ffl-hub'); ?></h2>
             <p>
-                <?php esc_html_e('Runs the first product-state apply-service step: collect product_best_offers rows where has_changed = 1 into a temporary table and report stats. This does not update product_state, WooCommerce products, or any flags yet.', 'ffl-hub'); ?>
+                <?php esc_html_e('Copies changed product_best_offers rows into product_state, recalculates product_state pricing outputs, marks product_state as changed, and clears product_best_offers change flags. This does not update WooCommerce products or old product meta.', 'ffl-hub'); ?>
             </p>
             <form method="post" action="">
                 <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
                 <input type="hidden" name="fflhub_product_state_action" value="<?php echo esc_attr(self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE); ?>" />
-                <?php submit_button(__('Collect Changed Best Offers', 'ffl-hub'), 'secondary', 'submit', false); ?>
+                <?php submit_button(__('Apply Changed Best Offers', 'ffl-hub'), 'secondary', 'submit', false); ?>
             </form>
         </div>
         <?php
@@ -330,14 +330,18 @@ final class ProductStatePage
                     </ul>
                 <?php endif; ?>
             <?php elseif ($is_product_state_best_offer_collect) : ?>
-                <p><strong><?php esc_html_e('Changed best-offer product-state collection complete.', 'ffl-hub'); ?></strong></p>
+                <p><strong><?php esc_html_e('Changed best-offer product-state apply complete.', 'ffl-hub'); ?></strong></p>
                 <ul style="list-style:disc;margin-left:20px;">
                     <li><?php echo esc_html(sprintf('Stage: %s', (string) ($result['stage'] ?? ''))); ?></li>
                     <li><?php echo esc_html(sprintf('Temp table: %s', (string) ($result['temp_table'] ?? ''))); ?></li>
-                    <li><?php echo esc_html(sprintf('Dirty best offers collected: %d', (int) ($result['processed_best_offers'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Dirty best offers found: %d', (int) ($result['dirty_best_offers_found'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Dirty best offers staged: %d', (int) ($result['processed_best_offers'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Skipped missing/ignored product_state rows: %d', (int) ($result['skipped_missing_product_state'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Collect runtime: %s ms', (string) ($result['collect_elapsed_ms'] ?? '0.00'))); ?></li>
                     <li><?php echo esc_html(sprintf('Product state rows updated: %d', (int) ($result['updated_product_state'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Product state apply runtime: %s ms', (string) ($result['apply_elapsed_ms'] ?? '0.00'))); ?></li>
                     <li><?php echo esc_html(sprintf('Best-offer flags cleared: %d', (int) ($result['cleared_best_offer_flags'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Best-offer flag clear runtime: %s ms', (string) ($result['clear_flags_elapsed_ms'] ?? '0.00'))); ?></li>
                     <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
                 </ul>
                 <?php if ($has_errors) : ?>

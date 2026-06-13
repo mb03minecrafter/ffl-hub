@@ -101,6 +101,9 @@ abstract class AbstractDistributorTableSyncService
 
         if (!empty($result['ok'])) {
             $result['best_offer_selection'] = ProductBestOfferSelectionService::refresh_changed_upcs();
+            if (!empty($result['best_offer_selection']['ok'])) {
+                $result['product_state_best_offer_apply'] = ProductStateBestOfferApplyService::apply_changed_best_offers();
+            }
         }
 
         return $result;
@@ -129,7 +132,10 @@ abstract class AbstractDistributorTableSyncService
     protected static function update_existing_offers_from_inventory_stage_map(OfferInventorySyncMap $map): array
     {
         $result = DistributorOfferSyncSqlRunner::update_existing_offers_from_inventory_stage($map);
-        ProductBestOfferSelectionService::refresh_changed_upcs();
+        $result['best_offer_selection'] = ProductBestOfferSelectionService::refresh_changed_upcs();
+        if (!empty($result['best_offer_selection']['ok'])) {
+            $result['product_state_best_offer_apply'] = ProductStateBestOfferApplyService::apply_changed_best_offers();
+        }
 
         return $result;
     }
