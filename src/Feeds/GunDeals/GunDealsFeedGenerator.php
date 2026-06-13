@@ -594,6 +594,10 @@ final class GunDealsFeedGenerator
             return;
         }
 
+        if ($this->is_expected_dropship_preference_drift($source_row)) {
+            return;
+        }
+
         $product_id = (int) ($source_row['product_id'] ?? 0);
         $upc = $this->resolve_upc_from_row($source_row);
         $title = $this->clean_text((string) ($source_row['title'] ?? ''));
@@ -655,6 +659,20 @@ final class GunDealsFeedGenerator
             'ffl_required' => ['state' => 'ffl_required', 'legacy' => 'meta_ffl_required', 'type' => 'bool'],
             'dropship_enabled' => ['state' => 'dropship_enabled', 'legacy' => 'meta_dropship_enabled', 'type' => 'bool'],
         ];
+    }
+
+    /**
+     * Product State's best-offer selection intentionally prefers dropship-capable
+     * offers before comparing landed cost. If the only reason the selected
+     * product-state row moved away from legacy meta is that the new offer can
+     * dropship, the related distributor/price/cost drift is expected noise.
+     *
+     * @param array<string,mixed> $source_row
+     */
+    private function is_expected_dropship_preference_drift(array $source_row): bool
+    {
+        return $this->to_boolish($source_row['dropship_enabled'] ?? null, false)
+            && !$this->to_boolish($source_row['meta_dropship_enabled'] ?? null, false);
     }
 
     /**
@@ -750,7 +768,7 @@ final class GunDealsFeedGenerator
     {
         $policy = strtolower(trim((string) $value));
         if ($policy === '' || $policy === 'none') {
-            return $policy;
+            return 'none';
         }
 
         if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
