@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Core\DistributorRegistry;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
+use FFLHub\Distributor\Services\OfferSync\ProductStateMapPolicyRefreshService;
 
 /**
  * Centralized WP Settings API registration for FFL Hub.
@@ -31,6 +32,12 @@ final class SettingsRegistrar
     public static function init(): void
     {
         add_action('admin_init', [__CLASS__, 'register_all_settings']);
+        add_action(
+            'update_option_' . Options::OPTION_MAP_BRAND_POLICIES,
+            [ProductStateMapPolicyRefreshService::class, 'handle_map_brand_policies_updated'],
+            10,
+            2
+        );
     }
 
     /**
