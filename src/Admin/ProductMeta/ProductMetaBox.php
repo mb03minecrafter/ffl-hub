@@ -1087,8 +1087,9 @@ class ProductMetaBox
         echo '<div class="fflhub-state-output__grid">';
         self::render_state_output_chip(__('Dealer cost', 'ffl-hub'), self::state_money($row['dealer_price'] ?? null));
         self::render_state_output_chip(__('Shipping cost', 'ffl-hub'), self::state_money($row['shipping_cost'] ?? null));
-        self::render_state_output_chip(__('Landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null));
-        self::render_state_output_chip(__('Profit cost basis', 'ffl-hub'), self::state_money($profit_metrics['cost_basis']));
+        self::render_state_output_chip(__('Dealer + shipping basis', 'ffl-hub'), self::state_money($profit_metrics['dealer_shipping_basis']));
+        self::render_state_output_chip(__('Stored landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null));
+        self::render_state_output_chip(__('Profit basis used', 'ffl-hub'), self::state_money($profit_metrics['cost_basis']));
         self::render_state_output_chip(__('Computed sell price', 'ffl-hub'), self::state_money($row['computed_sell_price'] ?? null));
         self::render_state_output_chip(
             sprintf(__('Estimated card fee (%s%%)', 'ffl-hub'), $profit_metrics['fee_percent_label']),
@@ -1098,7 +1099,7 @@ class ProductMetaBox
         self::render_state_output_chip(__('Estimated margin', 'ffl-hub'), self::state_percent($profit_metrics['margin_percent']));
         echo '</div>';
         echo '<p style="margin:8px 0 0;color:#6b7280;">' .
-            esc_html__('Net profit uses computed sell price minus landed cost/cost basis and estimated card processing fee. It is an estimate, not an order audit total.', 'ffl-hub') .
+            esc_html__('Net profit uses computed sell price minus dealer + shipping cost basis and estimated card processing fee. Stored landed cost is shown for auditing stale rows, but dealer + shipping wins when dealer cost is present.', 'ffl-hub') .
             '</p>';
         echo '</div>';
 
@@ -1502,7 +1503,7 @@ class ProductMetaBox
 
     /**
      * @param array<string,mixed> $row
-     * @return array{cost_basis:?float,processor_fee:?float,net_profit:?float,margin_percent:?float,fee_percent_label:string}
+     * @return array{dealer_shipping_basis:?float,cost_basis:?float,processor_fee:?float,net_profit:?float,margin_percent:?float,fee_percent_label:string}
      */
     private static function product_state_profit_metrics(array $row): array
     {
@@ -1511,12 +1512,10 @@ class ProductMetaBox
         $landed = self::state_float_or_null($row['landed_cost'] ?? null);
         $sell = self::state_float_or_null($row['computed_sell_price'] ?? null);
 
-        $cost_basis = null;
-        if ($landed !== null && $landed > 0.0) {
-            $cost_basis = $landed;
-        } elseif ($dealer !== null && $dealer > 0.0) {
-            $cost_basis = $dealer + max(0.0, $shipping ?? 0.0);
-        }
+        $dealer_shipping_basis = ($dealer !== null && $dealer > 0.0)
+            ? $dealer + max(0.0, $shipping ?? 0.0)
+            : null;
+        $cost_basis = $dealer_shipping_basis ?? (($landed !== null && $landed > 0.0) ? $landed : null);
 
         $fee_percent = (float) Options::get_payment_processor_fee_percent();
         if (!is_finite($fee_percent) || $fee_percent < 0.0) {
@@ -1536,6 +1535,7 @@ class ProductMetaBox
         }
 
         return [
+            'dealer_shipping_basis' => $dealer_shipping_basis,
             'cost_basis' => $cost_basis,
             'processor_fee' => $processor_fee,
             'net_profit' => $net_profit,

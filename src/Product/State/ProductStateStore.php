@@ -1004,29 +1004,25 @@ final class ProductStateStore
 
     private static function cost_base(?string $dealer_price, ?string $shipping_cost, ?string $landed_cost): ?float
     {
-        $landed = self::float_or_null($landed_cost);
-        if ($landed !== null && $landed > 0.0) {
-            return $landed;
-        }
-
         $dealer = self::float_or_null($dealer_price);
-        if ($dealer === null || $dealer <= 0.0) {
-            return null;
+        if ($dealer !== null && $dealer > 0.0) {
+            $shipping = self::float_or_null($shipping_cost) ?? 0.0;
+            return $dealer + max(0.0, $shipping);
         }
 
-        $shipping = self::float_or_null($shipping_cost) ?? 0.0;
-        return $dealer + max(0.0, $shipping);
+        $landed = self::float_or_null($landed_cost);
+        return ($landed !== null && $landed > 0.0) ? $landed : null;
     }
 
     private static function cost_base_without_shipping(?string $dealer_price, ?string $landed_cost): ?float
     {
-        $landed = self::float_or_null($landed_cost);
-        if ($landed !== null && $landed > 0.0) {
-            return $landed;
+        $dealer = self::float_or_null($dealer_price);
+        if ($dealer !== null && $dealer > 0.0) {
+            return $dealer;
         }
 
-        $dealer = self::float_or_null($dealer_price);
-        return ($dealer !== null && $dealer > 0.0) ? $dealer : null;
+        $landed = self::float_or_null($landed_cost);
+        return ($landed !== null && $landed > 0.0) ? $landed : null;
     }
 
     private static function fixed_profit_price(
