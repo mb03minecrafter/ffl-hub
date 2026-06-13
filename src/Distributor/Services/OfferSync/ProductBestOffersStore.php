@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
 final class ProductBestOffersStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_best_offers_schema_version';
-    private const SCHEMA_VERSION = '1';
+    private const SCHEMA_VERSION = '2';
     private const TABLE_SUFFIX = 'fflhub_product_best_offers';
 
     public static function table_name(): string
@@ -57,7 +57,6 @@ final class ProductBestOffersStore
                 sot_required TINYINT(1) NOT NULL DEFAULT 0,
                 dropship_enabled TINYINT(1) NOT NULL DEFAULT 1,
                 enabled TINYINT(1) NOT NULL DEFAULT 0,
-                has_changed TINYINT(1) NOT NULL DEFAULT 0,
                 shipping_weight_oz DECIMAL(10,3) DEFAULT NULL,
                 shipping_length_in DECIMAL(10,3) DEFAULT NULL,
                 shipping_width_in DECIMAL(10,3) DEFAULT NULL,
@@ -67,6 +66,7 @@ final class ProductBestOffersStore
                 selection_status VARCHAR(32) NOT NULL DEFAULT 'no_offer',
                 selected_at DATETIME DEFAULT NULL,
                 woo_synced_at DATETIME DEFAULT NULL,
+                has_changed TINYINT(1) NOT NULL DEFAULT 0,
                 PRIMARY KEY  (product_id),
                 UNIQUE KEY upc (upc),
                 KEY has_changed (has_changed, product_id),
@@ -78,6 +78,7 @@ final class ProductBestOffersStore
         ");
 
         self::ensure_columns($table);
+        self::ensure_column_order($table);
         self::ensure_indexes($table);
 
         update_option(self::SCHEMA_OPTION, self::SCHEMA_VERSION, false);
@@ -129,11 +130,11 @@ final class ProductBestOffersStore
 
         $missing_columns = [
             'manufacturer_norm' => 'ADD COLUMN manufacturer_norm VARCHAR(191) DEFAULT NULL AFTER distributor_sku',
-            'has_changed' => 'ADD COLUMN has_changed TINYINT(1) NOT NULL DEFAULT 0 AFTER enabled',
             'source_offer_normalized_at' => 'ADD COLUMN source_offer_normalized_at DATETIME DEFAULT NULL AFTER source_updated_at',
             'selection_status' => "ADD COLUMN selection_status VARCHAR(32) NOT NULL DEFAULT 'no_offer' AFTER source_offer_normalized_at",
             'selected_at' => 'ADD COLUMN selected_at DATETIME DEFAULT NULL AFTER selection_status',
             'woo_synced_at' => 'ADD COLUMN woo_synced_at DATETIME DEFAULT NULL AFTER selected_at',
+            'has_changed' => 'ADD COLUMN has_changed TINYINT(1) NOT NULL DEFAULT 0 AFTER woo_synced_at',
         ];
 
         foreach ($missing_columns as $column => $definition) {
@@ -142,6 +143,22 @@ final class ProductBestOffersStore
             }
 
             $wpdb->query("ALTER TABLE {$table} {$definition}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
+    }
+
+    private static function ensure_column_order(string $table): void
+    {
+        global $wpdb;
+
+        $previous = null;
+        foreach (self::ordered_column_definitions() as $column => $definition) {
+            if (!self::table_has_column($table, $column)) {
+                continue;
+            }
+
+            $placement = ($previous === null) ? ' FIRST' : " AFTER {$previous}";
+            $wpdb->query("ALTER TABLE {$table} MODIFY COLUMN {$definition}{$placement}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $previous = $column;
         }
     }
 
@@ -212,14 +229,7 @@ final class ProductBestOffersStore
      */
     private static function expected_column_names(): array
     {
-        return [
-            'manufacturer_norm',
-            'has_changed',
-            'source_offer_normalized_at',
-            'selection_status',
-            'selected_at',
-            'woo_synced_at',
-        ];
+        return array_keys(self::ordered_column_definitions());
     }
 
     /**
@@ -235,6 +245,46 @@ final class ProductBestOffersStore
             'selection_status',
             'selected_at',
             'woo_synced_at',
+        ];
+    }
+
+    /**
+     * Keep product_best_offers as the canonical selected-offer snapshot shape.
+     * Product state mirrors these columns first, then appends its own policy
+     * and Woo-sync fields, with has_changed staying at the far right.
+     *
+     * @return array<string,string>
+     */
+    private static function ordered_column_definitions(): array
+    {
+        return [
+            'product_id' => 'product_id BIGINT UNSIGNED NOT NULL',
+            'upc' => 'upc VARCHAR(32) NOT NULL',
+            'distributor_id' => 'distributor_id VARCHAR(64) DEFAULT NULL',
+            'distributor_product_id' => 'distributor_product_id VARCHAR(128) DEFAULT NULL',
+            'distributor_sku' => 'distributor_sku VARCHAR(128) DEFAULT NULL',
+            'manufacturer_norm' => 'manufacturer_norm VARCHAR(191) DEFAULT NULL',
+            'qty' => 'qty INT UNSIGNED NOT NULL DEFAULT 0',
+            'stock_status' => 'stock_status VARCHAR(32) DEFAULT NULL',
+            'dealer_price' => 'dealer_price DECIMAL(12,4) DEFAULT NULL',
+            'shipping_cost' => 'shipping_cost DECIMAL(12,4) DEFAULT NULL',
+            'landed_cost' => 'landed_cost DECIMAL(12,4) DEFAULT NULL',
+            'map_price' => 'map_price DECIMAL(12,4) DEFAULT NULL',
+            'msrp' => 'msrp DECIMAL(12,4) DEFAULT NULL',
+            'ffl_required' => 'ffl_required TINYINT(1) NOT NULL DEFAULT 0',
+            'sot_required' => 'sot_required TINYINT(1) NOT NULL DEFAULT 0',
+            'dropship_enabled' => 'dropship_enabled TINYINT(1) NOT NULL DEFAULT 1',
+            'enabled' => 'enabled TINYINT(1) NOT NULL DEFAULT 0',
+            'shipping_weight_oz' => 'shipping_weight_oz DECIMAL(10,3) DEFAULT NULL',
+            'shipping_length_in' => 'shipping_length_in DECIMAL(10,3) DEFAULT NULL',
+            'shipping_width_in' => 'shipping_width_in DECIMAL(10,3) DEFAULT NULL',
+            'shipping_height_in' => 'shipping_height_in DECIMAL(10,3) DEFAULT NULL',
+            'source_updated_at' => 'source_updated_at DATETIME DEFAULT NULL',
+            'source_offer_normalized_at' => 'source_offer_normalized_at DATETIME DEFAULT NULL',
+            'selection_status' => "selection_status VARCHAR(32) NOT NULL DEFAULT 'no_offer'",
+            'selected_at' => 'selected_at DATETIME DEFAULT NULL',
+            'woo_synced_at' => 'woo_synced_at DATETIME DEFAULT NULL',
+            'has_changed' => 'has_changed TINYINT(1) NOT NULL DEFAULT 0',
         ];
     }
 }

@@ -12,7 +12,7 @@ if (!defined('ABSPATH')) {
 final class ProductStateStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_state_schema_version';
-    private const SCHEMA_VERSION = '5';
+    private const SCHEMA_VERSION = '6';
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
@@ -60,7 +60,6 @@ final class ProductStateStore
                 sot_required TINYINT(1) NOT NULL DEFAULT 0,
                 dropship_enabled TINYINT(1) NOT NULL DEFAULT 1,
                 enabled TINYINT(1) NOT NULL DEFAULT 0,
-                has_changed TINYINT(1) NOT NULL DEFAULT 0,
                 shipping_weight_oz DECIMAL(10,3) DEFAULT NULL,
                 shipping_length_in DECIMAL(10,3) DEFAULT NULL,
                 shipping_width_in DECIMAL(10,3) DEFAULT NULL,
@@ -88,6 +87,7 @@ final class ProductStateStore
                 bom_total_cost DECIMAL(12,4) DEFAULT NULL,
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL,
+                has_changed TINYINT(1) NOT NULL DEFAULT 0,
                 PRIMARY KEY  (product_id),
                 UNIQUE KEY upc (upc),
                 KEY status_upc (status, upc),
@@ -263,7 +263,6 @@ final class ProductStateStore
             'sot_required' => 'sot_required TINYINT(1) NOT NULL DEFAULT 0',
             'dropship_enabled' => 'dropship_enabled TINYINT(1) NOT NULL DEFAULT 1',
             'enabled' => 'enabled TINYINT(1) NOT NULL DEFAULT 0',
-            'has_changed' => 'has_changed TINYINT(1) NOT NULL DEFAULT 0',
             'shipping_weight_oz' => 'shipping_weight_oz DECIMAL(10,3) DEFAULT NULL',
             'shipping_length_in' => 'shipping_length_in DECIMAL(10,3) DEFAULT NULL',
             'shipping_width_in' => 'shipping_width_in DECIMAL(10,3) DEFAULT NULL',
@@ -291,6 +290,7 @@ final class ProductStateStore
             'bom_total_cost' => 'bom_total_cost DECIMAL(12,4) DEFAULT NULL',
             'created_at' => 'created_at DATETIME NOT NULL',
             'updated_at' => 'updated_at DATETIME NOT NULL',
+            'has_changed' => 'has_changed TINYINT(1) NOT NULL DEFAULT 0',
         ];
     }
 
