@@ -1081,6 +1081,27 @@ class ProductMetaBox
 
         echo '</div>';
 
+        $profit_metrics = self::product_state_profit_metrics($row);
+        echo '<div class="fflhub-state-output">';
+        echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Cost And Profit Metrics', 'ffl-hub') . '</h3>';
+        echo '<div class="fflhub-state-output__grid">';
+        self::render_state_output_chip(__('Dealer cost', 'ffl-hub'), self::state_money($row['dealer_price'] ?? null));
+        self::render_state_output_chip(__('Shipping cost', 'ffl-hub'), self::state_money($row['shipping_cost'] ?? null));
+        self::render_state_output_chip(__('Landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null));
+        self::render_state_output_chip(__('Profit cost basis', 'ffl-hub'), self::state_money($profit_metrics['cost_basis']));
+        self::render_state_output_chip(__('Computed sell price', 'ffl-hub'), self::state_money($row['computed_sell_price'] ?? null));
+        self::render_state_output_chip(
+            sprintf(__('Estimated card fee (%s%%)', 'ffl-hub'), $profit_metrics['fee_percent_label']),
+            self::state_money($profit_metrics['processor_fee'])
+        );
+        self::render_state_output_chip(__('Estimated net profit', 'ffl-hub'), self::state_money($profit_metrics['net_profit']));
+        self::render_state_output_chip(__('Estimated margin', 'ffl-hub'), self::state_percent($profit_metrics['margin_percent']));
+        echo '</div>';
+        echo '<p style="margin:8px 0 0;color:#6b7280;">' .
+            esc_html__('Net profit uses computed sell price minus landed cost/cost basis and estimated card processing fee. It is an estimate, not an order audit total.', 'ffl-hub') .
+            '</p>';
+        echo '</div>';
+
         echo '<div class="fflhub-state-output">';
         echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Calculated Product State Outputs', 'ffl-hub') . '</h3>';
         echo '<div class="fflhub-state-output__grid">';
@@ -1467,6 +1488,71 @@ class ProductMetaBox
         }
 
         return '$' . number_format((float) $value, 2, '.', '');
+    }
+
+    private static function state_percent($value): string
+    {
+        $value = preg_replace('/[^0-9.\-]/', '', trim((string) $value));
+        if (!is_string($value) || $value === '' || !is_numeric($value)) {
+            return '-';
+        }
+
+        return number_format((float) $value, 2, '.', '') . '%';
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @return array{cost_basis:?float,processor_fee:?float,net_profit:?float,margin_percent:?float,fee_percent_label:string}
+     */
+    private static function product_state_profit_metrics(array $row): array
+    {
+        $dealer = self::state_float_or_null($row['dealer_price'] ?? null);
+        $shipping = self::state_float_or_null($row['shipping_cost'] ?? null);
+        $landed = self::state_float_or_null($row['landed_cost'] ?? null);
+        $sell = self::state_float_or_null($row['computed_sell_price'] ?? null);
+
+        $cost_basis = null;
+        if ($landed !== null && $landed > 0.0) {
+            $cost_basis = $landed;
+        } elseif ($dealer !== null && $dealer > 0.0) {
+            $cost_basis = $dealer + max(0.0, $shipping ?? 0.0);
+        }
+
+        $fee_percent = (float) Options::get_payment_processor_fee_percent();
+        if (!is_finite($fee_percent) || $fee_percent < 0.0) {
+            $fee_percent = 0.0;
+        }
+
+        $fee_fraction = min(0.99, $fee_percent / 100.0);
+        $processor_fee = ($sell !== null && $sell > 0.0)
+            ? round($sell * $fee_fraction, 2)
+            : null;
+
+        $net_profit = null;
+        $margin_percent = null;
+        if ($sell !== null && $sell > 0.0 && $cost_basis !== null) {
+            $net_profit = round($sell - $cost_basis - ($processor_fee ?? 0.0), 2);
+            $margin_percent = round(($net_profit / $sell) * 100.0, 2);
+        }
+
+        return [
+            'cost_basis' => $cost_basis,
+            'processor_fee' => $processor_fee,
+            'net_profit' => $net_profit,
+            'margin_percent' => $margin_percent,
+            'fee_percent_label' => number_format($fee_percent, 2, '.', ''),
+        ];
+    }
+
+    private static function state_float_or_null($value): ?float
+    {
+        $value = preg_replace('/[^0-9.\-]/', '', trim((string) $value));
+        if (!is_string($value) || $value === '' || !is_numeric($value)) {
+            return null;
+        }
+
+        $number = (float) $value;
+        return is_finite($number) ? $number : null;
     }
 
     private static function state_decimal_for_input($value): string
