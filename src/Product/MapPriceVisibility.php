@@ -13,14 +13,8 @@ if (!defined('ABSPATH')) {
 
 class MapPriceVisibility
 {
-    private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
     private const EMAIL_FOR_QUOTE_FORM_ACTION = 'fflhub_email_for_quote_submit';
     private const QUOTE_SUBMISSION_DEDUPE_TTL_SECONDS = 180;
-    private const HOLOSUN_BRAND_DEFAULT_ALIAS = 'holosun';
-
-    /** @var array<int,array<int,string>> */
-    private static array $brand_names_by_product_id = [];
-    private static bool $holosun_notice_rendered = false;
 
     public static function init(): void
     {
@@ -34,16 +28,6 @@ class MapPriceVisibility
         // Replace price HTML everywhere except cart/checkout
         add_filter('woocommerce_get_price_html', [self::class, 'filter_price_html'], 99, 2);
 
-        // If Holosun show-price override is enabled, fixed-price mode must win
-        // even if Woo's _price cache is stale from an earlier MAP sync.
-        add_filter('woocommerce_product_get_price', [self::class, 'filter_holosun_override_active_price'], 99, 2);
-        add_filter('woocommerce_product_variation_get_price', [self::class, 'filter_holosun_override_active_price'], 99, 2);
-        add_filter('woocommerce_product_get_sale_price', [self::class, 'filter_holosun_override_sale_price'], 99, 2);
-        add_filter('woocommerce_product_variation_get_sale_price', [self::class, 'filter_holosun_override_sale_price'], 99, 2);
-        add_filter('woocommerce_product_get_sku', [self::class, 'filter_holosun_single_product_sku'], 99, 2);
-        add_filter('woocommerce_product_variation_get_sku', [self::class, 'filter_holosun_single_product_sku'], 99, 2);
-        add_filter('wc_product_sku_enabled', [self::class, 'filter_holosun_single_product_sku_enabled'], 99, 1);
-
         // Variable products / variation JSON (prevents price appearing on selection UI)
         add_filter('woocommerce_available_variation', [self::class, 'filter_available_variation'], 99, 3);
 
@@ -51,7 +35,6 @@ class MapPriceVisibility
         add_filter('woocommerce_structured_data_product_offer', [self::class, 'filter_structured_offer'], 99, 2);
         // Render single-product notices/CTAs around the purchase controls.
         add_action('woocommerce_after_add_to_cart_form', [self::class, 'render_email_for_quote_button'], 10);
-        add_action('woocommerce_single_product_summary', [self::class, 'render_holosun_brand_notice_near_image'], 30);
         add_action('wp_footer', [self::class, 'render_email_for_quote_modal']);
     }
 
@@ -87,77 +70,6 @@ class MapPriceVisibility
             (string) filemtime($js_abs_path),
             true
         );
-    }
-
-    /**
-     * Hide Holosun SKU/stock number text on the public single-product page.
-     *
-     * @param mixed $sku
-     * @param mixed $product
-     * @return mixed
-     */
-    public static function filter_holosun_single_product_sku($sku, $product)
-    {
-        if (!self::should_hide_holosun_stock_number($product)) {
-            return $sku;
-        }
-
-        return '';
-    }
-
-    /**
-     * Suppress Woo's stock number wrapper for Holosun single-product pages.
-     *
-     * @param mixed $enabled
-     * @return mixed
-     */
-    public static function filter_holosun_single_product_sku_enabled($enabled)
-    {
-        if (!$enabled || (is_admin() && !wp_doing_ajax())) {
-            return $enabled;
-        }
-
-        if (!function_exists('is_product') || !is_product()) {
-            return $enabled;
-        }
-
-        global $product;
-        if ($product instanceof WC_Product && self::should_hide_holosun_stock_number($product)) {
-            return false;
-        }
-
-        return $enabled;
-    }
-
-    /**
-     * @param mixed $product
-     */
-    private static function should_hide_holosun_stock_number($product): bool
-    {
-        if (!($product instanceof WC_Product)) {
-            return false;
-        }
-
-        if (is_admin() && !wp_doing_ajax()) {
-            return false;
-        }
-
-        if (!function_exists('is_product') || !is_product()) {
-            return false;
-        }
-
-        $parent = null;
-        if (method_exists($product, 'get_parent_id')) {
-            $parent_id = (int) $product->get_parent_id();
-            if ($parent_id > 0) {
-                $maybe_parent = wc_get_product($parent_id);
-                if ($maybe_parent instanceof WC_Product) {
-                    $parent = $maybe_parent;
-                }
-            }
-        }
-
-        return self::is_holosun_branded_product($product, $parent);
     }
 
     private static function in_cart_flow(): bool
@@ -255,10 +167,6 @@ class MapPriceVisibility
             return false;
         }
 
-        if (self::should_show_holosun_price_override($product, $parent)) {
-            return false;
-        }
-
         // MAP: prefer variation meta, fallback to parent meta
         $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
         if ($map <= 0.0 && $parent instanceof WC_Product) {
@@ -311,21 +219,10 @@ class MapPriceVisibility
             return $price_html;
         }
 
-        if (self::should_show_holosun_price_override($product, null)) {
-            return self::stored_visible_price_html($product, null) ?? $price_html;
-        }
-
         if (self::should_force_email_quote_map_price($product, null)) {
             $map_html = self::map_price_html($product, null);
             if ($map_html !== null) {
                 return $map_html;
-            }
-        }
-
-        if (self::should_force_holosun_msrp_price($product, null)) {
-            $msrp_html = self::msrp_price_html($product, null);
-            if ($msrp_html !== null) {
-                return $msrp_html;
             }
         }
 
@@ -348,39 +245,6 @@ class MapPriceVisibility
         return '<span class="fflhub-map-hidden-price">' . esc_html(self::hidden_text($product, null)) . '</span>';
     }
 
-    public static function filter_holosun_override_active_price($price, $product)
-    {
-        if (!($product instanceof WC_Product)) {
-            return $price;
-        }
-
-        $fixed = self::fixed_price_override_for_product($product, null);
-        if ($fixed === null) {
-            return $price;
-        }
-
-        return function_exists('wc_format_decimal') ? wc_format_decimal($fixed) : (string) $fixed;
-    }
-
-    public static function filter_holosun_override_sale_price($sale_price, $product)
-    {
-        if (!($product instanceof WC_Product)) {
-            return $sale_price;
-        }
-
-        $fixed = self::fixed_price_override_for_product($product, null);
-        if ($fixed === null) {
-            return $sale_price;
-        }
-
-        $regular = self::positive_float_or_null($product->get_regular_price());
-        if ($regular !== null && $regular > $fixed) {
-            return function_exists('wc_format_decimal') ? wc_format_decimal($fixed) : (string) $fixed;
-        }
-
-        return '';
-    }
-
     public static function filter_available_variation(array $data, $parent, $variation): array
     {
         if (!($variation instanceof WC_Product)) {
@@ -388,10 +252,6 @@ class MapPriceVisibility
         }
 
         $parent_product = ($parent instanceof WC_Product) ? $parent : null;
-
-        if (self::should_show_holosun_price_override($variation, $parent_product)) {
-            return self::apply_stored_visible_variation_price_data($data, $variation, $parent_product);
-        }
 
         if (self::should_force_email_quote_map_price($variation, $parent_product)) {
             $map = self::map_price_for_product($variation, $parent_product);
@@ -410,29 +270,6 @@ class MapPriceVisibility
                 $data['display_regular_price'] = $map_value;
                 $data['price'] = $map_decimal;
                 $data['regular_price'] = $map_decimal;
-                $data['sale_price'] = '';
-            }
-
-            return $data;
-        }
-
-        if (self::should_force_holosun_msrp_price($variation, $parent_product)) {
-            $msrp = self::msrp_price_for_product($variation, $parent_product);
-            $msrp_html = self::msrp_price_html($variation, $parent_product);
-
-            if ($msrp_html !== null) {
-                $data['price_html'] = $msrp_html;
-            }
-
-            if (is_numeric($msrp) && (float) $msrp > 0.0) {
-                $msrp_value = (float) $msrp;
-                $msrp_decimal = function_exists('wc_format_decimal')
-                    ? wc_format_decimal($msrp_value, wc_get_price_decimals())
-                    : (string) $msrp_value;
-                $data['display_price'] = $msrp_value;
-                $data['display_regular_price'] = $msrp_value;
-                $data['price'] = $msrp_decimal;
-                $data['regular_price'] = $msrp_decimal;
                 $data['sale_price'] = '';
             }
 
@@ -489,10 +326,6 @@ class MapPriceVisibility
             return $offer;
         }
 
-        if (self::should_show_holosun_price_override($product, null)) {
-            return self::apply_stored_visible_structured_offer($offer, $product, null);
-        }
-
         if (self::should_force_email_quote_map_price($product, null)) {
             $map = self::map_price_for_product($product, null);
             if (!is_numeric($map) || (float) $map <= 0.0 || !is_array($offer)) {
@@ -513,33 +346,6 @@ class MapPriceVisibility
                 foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
                     if (isset($offer['priceSpecification'][$price_spec_key])) {
                         $offer['priceSpecification'][$price_spec_key] = $map_decimal;
-                    }
-                }
-            }
-
-            return $offer;
-        }
-
-        if (self::should_force_holosun_msrp_price($product, null)) {
-            $msrp = self::msrp_price_for_product($product, null);
-            if (!is_numeric($msrp) || (float) $msrp <= 0.0 || !is_array($offer)) {
-                return $offer;
-            }
-
-            $msrp_decimal = function_exists('wc_format_decimal')
-                ? wc_format_decimal((float) $msrp, wc_get_price_decimals())
-                : (string) $msrp;
-
-            foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
-                if (isset($offer[$price_key])) {
-                    $offer[$price_key] = $msrp_decimal;
-                }
-            }
-
-            if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
-                foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
-                    if (isset($offer['priceSpecification'][$price_spec_key])) {
-                        $offer['priceSpecification'][$price_spec_key] = $msrp_decimal;
                     }
                 }
             }
@@ -613,42 +419,6 @@ class MapPriceVisibility
         echo '</p>';
 
         self::render_quote_notice(self::quote_request_status());
-    }
-
-    public static function render_holosun_brand_notice_near_image(): void
-    {
-        if (self::$holosun_notice_rendered) {
-            return;
-        }
-
-        if (!Options::get_holosun_image_notice_enabled()) {
-            return;
-        }
-
-        $product = self::current_product_for_quote();
-        if (!($product instanceof WC_Product)) {
-            return;
-        }
-
-        if (!self::is_holosun_branded_product($product, null)) {
-            return;
-        }
-
-        $notice = self::holosun_notice_parts_for_product($product);
-        if ($notice['message'] === '') {
-            return;
-        }
-
-        // Intentionally shown regardless of stock status.
-        self::$holosun_notice_rendered = true;
-        echo '<div class="fflhub-holosun-image-notice">';
-        echo '<p><strong>' . esc_html($notice['message']) . '</strong></p>';
-        echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Email : ' . $notice['email']) . '</strong></p>';
-        echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html('Phone: ' . $notice['phone']) . '</strong></p>';
-        if ($notice['footer'] !== '') {
-            echo '<p class="fflhub-holosun-image-notice-contact"><strong>' . esc_html($notice['footer']) . '</strong></p>';
-        }
-        echo '</div>';
     }
 
     public static function render_email_for_quote_modal(): void
@@ -855,10 +625,6 @@ class MapPriceVisibility
 
     private static function is_email_for_quote_policy(WC_Product $product, ?WC_Product $parent = null): bool
     {
-        if (self::should_show_holosun_price_override($product, $parent)) {
-            return false;
-        }
-
         if (!self::has_product_level_map_policy_requirements($product, $parent)) {
             return false;
         }
@@ -868,10 +634,6 @@ class MapPriceVisibility
 
     private static function is_no_email_no_add_to_cart_policy(WC_Product $product, ?WC_Product $parent = null): bool
     {
-        if (self::should_show_holosun_price_override($product, $parent)) {
-            return false;
-        }
-
         if (!self::has_product_level_map_policy_requirements($product, $parent)) {
             return false;
         }
@@ -892,74 +654,6 @@ class MapPriceVisibility
         return self::map_price_for_product($product, $parent) !== null;
     }
 
-    private static function should_show_holosun_price_override(WC_Product $product, ?WC_Product $parent = null): bool
-    {
-        if (!Options::get_holosun_show_price_override_enabled()) {
-            return false;
-        }
-
-        return self::is_holosun_branded_product($product, $parent);
-    }
-
-    private static function is_holosun_branded_product(WC_Product $product, ?WC_Product $parent = null): bool
-    {
-        $aliases = (array) apply_filters(
-            'fflhub_holosun_brand_aliases',
-            [self::HOLOSUN_BRAND_DEFAULT_ALIAS],
-            $product,
-            $parent
-        );
-
-        $normalized_aliases = [];
-        foreach ($aliases as $alias) {
-            $value = strtolower(trim((string) $alias));
-            if ($value === '') {
-                continue;
-            }
-            $normalized_aliases[$value] = true;
-        }
-
-        if (empty($normalized_aliases)) {
-            $normalized_aliases[self::HOLOSUN_BRAND_DEFAULT_ALIAS] = true;
-        }
-
-        $brand_names = self::brand_names_for_product($product);
-        if (empty($brand_names) && $parent instanceof WC_Product) {
-            $brand_names = self::brand_names_for_product($parent);
-        }
-
-        foreach ($brand_names as $brand_name) {
-            $normalized_brand = strtolower(trim((string) $brand_name));
-            if ($normalized_brand === '') {
-                continue;
-            }
-
-            foreach ($normalized_aliases as $alias => $_true) {
-                if ($alias !== '' && strpos($normalized_brand, $alias) !== false) {
-                    return true;
-                }
-            }
-        }
-
-        // Last-resort fallback: match common storefront product names.
-        $names_to_check = [strtolower(trim((string) $product->get_name()))];
-        if ($parent instanceof WC_Product) {
-            $names_to_check[] = strtolower(trim((string) $parent->get_name()));
-        }
-        foreach ($names_to_check as $candidate_name) {
-            if ($candidate_name === '') {
-                continue;
-            }
-            foreach ($normalized_aliases as $alias => $_true) {
-                if ($alias !== '' && strpos($candidate_name, $alias) !== false) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
     private static function should_force_map_price(WC_Product $product, ?WC_Product $parent = null): bool
     {
         if (self::in_cart_flow()) {
@@ -977,23 +671,6 @@ class MapPriceVisibility
         return self::map_price_for_product($product, $parent) !== null;
     }
 
-    private static function should_force_holosun_msrp_price(WC_Product $product, ?WC_Product $parent = null): bool
-    {
-        if (self::should_show_holosun_price_override($product, $parent)) {
-            return false;
-        }
-
-        if (!Options::get_holosun_image_notice_enabled()) {
-            return false;
-        }
-
-        if (!self::is_holosun_branded_product($product, $parent)) {
-            return false;
-        }
-
-        return self::msrp_price_for_product($product, $parent) !== null;
-    }
-
     private static function should_force_email_quote_map_price(WC_Product $product, ?WC_Product $parent = null): bool
     {
         if (!self::is_email_for_quote_policy($product, $parent)) {
@@ -1001,179 +678,6 @@ class MapPriceVisibility
         }
 
         return self::map_price_for_product($product, $parent) !== null;
-    }
-
-    private static function stored_visible_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
-    {
-        $fixed = self::fixed_price_override_for_product($product, $parent);
-        if ($fixed !== null) {
-            return $fixed;
-        }
-
-        $sale = self::positive_float_or_null($product->get_sale_price());
-        if ($sale !== null) {
-            return $sale;
-        }
-
-        $active = self::positive_float_or_null($product->get_price());
-        if ($active !== null) {
-            return $active;
-        }
-
-        $regular = self::positive_float_or_null($product->get_regular_price());
-        if ($regular !== null) {
-            return $regular;
-        }
-
-        if ($parent instanceof WC_Product) {
-            return self::stored_visible_price_for_product($parent, null);
-        }
-
-        return null;
-    }
-
-    private static function fixed_price_override_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
-    {
-        if (!self::should_show_holosun_price_override($product, $parent)) {
-            return null;
-        }
-
-        $mode = (int) $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
-        $fixed = self::positive_float_or_null($product->get_meta(ProductMeta::FFLHUB_FIXED_PRICE_META, true));
-        if ($mode === ProductMeta::MARKUP_MODE_FIXED_PRICE && $fixed !== null) {
-            return $fixed;
-        }
-
-        if ($parent instanceof WC_Product) {
-            $parent_mode = (int) $parent->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
-            $parent_fixed = self::positive_float_or_null($parent->get_meta(ProductMeta::FFLHUB_FIXED_PRICE_META, true));
-            if ($parent_mode === ProductMeta::MARKUP_MODE_FIXED_PRICE && $parent_fixed !== null) {
-                return $parent_fixed;
-            }
-        }
-
-        return null;
-    }
-
-    private static function stored_regular_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
-    {
-        $regular = self::positive_float_or_null($product->get_regular_price());
-        if ($regular !== null) {
-            return $regular;
-        }
-
-        if ($parent instanceof WC_Product) {
-            return self::positive_float_or_null($parent->get_regular_price());
-        }
-
-        return null;
-    }
-
-    private static function stored_visible_price_html(WC_Product $product, ?WC_Product $parent = null): ?string
-    {
-        $active = self::stored_visible_price_for_product($product, $parent);
-        if ($active === null) {
-            return null;
-        }
-
-        $regular = self::stored_regular_price_for_product($product, $parent);
-        $active_display = self::display_price_for_product($product, $active);
-        $active_html = function_exists('wc_price') ? (string) wc_price($active_display) : (string) $active_display;
-
-        $html = $active_html;
-        if ($regular !== null && $regular > $active) {
-            $regular_display = self::display_price_for_product($product, $regular);
-            $regular_html = function_exists('wc_price') ? (string) wc_price($regular_display) : (string) $regular_display;
-            $html = function_exists('wc_format_sale_price')
-                ? (string) wc_format_sale_price($regular_html, $active_html)
-                : $active_html;
-        }
-
-        if (method_exists($product, 'get_price_suffix')) {
-            $html .= (string) $product->get_price_suffix();
-        }
-
-        return $html;
-    }
-
-    /**
-     * @param array<string,mixed> $data
-     * @return array<string,mixed>
-     */
-    private static function apply_stored_visible_variation_price_data(array $data, WC_Product $variation, ?WC_Product $parent = null): array
-    {
-        $active = self::stored_visible_price_for_product($variation, $parent);
-        if ($active === null) {
-            return $data;
-        }
-
-        $regular = self::stored_regular_price_for_product($variation, $parent) ?? $active;
-        $price_html = self::stored_visible_price_html($variation, $parent);
-        if ($price_html !== null) {
-            $data['price_html'] = $price_html;
-        }
-
-        $active_decimal = function_exists('wc_format_decimal')
-            ? wc_format_decimal($active, function_exists('wc_get_price_decimals') ? wc_get_price_decimals() : 2)
-            : (string) $active;
-        $regular_decimal = function_exists('wc_format_decimal')
-            ? wc_format_decimal($regular, function_exists('wc_get_price_decimals') ? wc_get_price_decimals() : 2)
-            : (string) $regular;
-
-        $data['display_price'] = $active;
-        $data['display_regular_price'] = $regular;
-        $data['price'] = $active_decimal;
-        $data['regular_price'] = $regular_decimal;
-        $data['sale_price'] = ($regular > $active) ? $active_decimal : '';
-
-        return $data;
-    }
-
-    private static function apply_stored_visible_structured_offer($offer, WC_Product $product, ?WC_Product $parent = null)
-    {
-        $active = self::stored_visible_price_for_product($product, $parent);
-        if ($active === null || !is_array($offer)) {
-            return $offer;
-        }
-
-        $price_decimal = function_exists('wc_format_decimal')
-            ? wc_format_decimal($active, function_exists('wc_get_price_decimals') ? wc_get_price_decimals() : 2)
-            : (string) $active;
-
-        foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
-            if (isset($offer[$price_key])) {
-                $offer[$price_key] = $price_decimal;
-            }
-        }
-
-        if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
-            foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
-                if (isset($offer['priceSpecification'][$price_spec_key])) {
-                    $offer['priceSpecification'][$price_spec_key] = $price_decimal;
-                }
-            }
-        }
-
-        return $offer;
-    }
-
-    private static function display_price_for_product(WC_Product $product, float $price): float
-    {
-        if (function_exists('wc_get_price_to_display')) {
-            return (float) wc_get_price_to_display($product, ['price' => $price]);
-        }
-
-        return $price;
-    }
-
-    private static function positive_float_or_null($value): ?float
-    {
-        if (!is_numeric($value)) {
-            return null;
-        }
-
-        $float = (float) $value;
-        return ($float > 0.0) ? $float : null;
     }
 
     private static function map_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
@@ -1188,20 +692,6 @@ class MapPriceVisibility
         }
 
         return $map;
-    }
-
-    private static function msrp_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
-    {
-        $msrp = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true);
-        if ($msrp <= 0.0 && $parent instanceof WC_Product) {
-            $msrp = (float) $parent->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true);
-        }
-
-        if ($msrp <= 0.0) {
-            return null;
-        }
-
-        return $msrp;
     }
 
     private static function map_price_html(WC_Product $product, ?WC_Product $parent = null): ?string
@@ -1221,50 +711,6 @@ class MapPriceVisibility
         }
 
         return (string) $display_price;
-    }
-
-    private static function msrp_price_html(WC_Product $product, ?WC_Product $parent = null): ?string
-    {
-        $msrp = self::msrp_price_for_product($product, $parent);
-        if (!is_numeric($msrp) || (float) $msrp <= 0.0) {
-            return null;
-        }
-
-        $display_price = (float) $msrp;
-        if (function_exists('wc_get_price_to_display')) {
-            $display_price = (float) wc_get_price_to_display($product, ['price' => (float) $msrp]);
-        }
-
-        if (function_exists('wc_price')) {
-            return (string) wc_price($display_price);
-        }
-
-        return (string) $display_price;
-    }
-
-    /**
-     * @return array{message:string,email:string,phone:string,footer:string}
-     */
-    private static function holosun_notice_parts_for_product(?WC_Product $product = null): array
-    {
-        $message = 'Unfortunately, Holosun has placed us on the Do Not Sell List with no prior contact or warning. This is depsite the fact that we are in full compliance of all policies set forth by them down to the T. If you would like, you can file a compliant by contacting them at:';
-        $email = 'info@holosun.com';
-        $phone = '909 594 2888';
-        $footer = 'If you choose to file a complaint, please be respectful and kind. Strong dealer-brand relationships matter just as much as customer relationships, and a professional tone helps everyone work toward a better outcome.';
-
-        if ($product instanceof WC_Product) {
-            $message = (string) apply_filters('fflhub_holosun_brand_notice_text', $message, $product);
-            $email = (string) apply_filters('fflhub_holosun_brand_notice_email', $email, $product);
-            $phone = (string) apply_filters('fflhub_holosun_brand_notice_phone', $phone, $product);
-            $footer = (string) apply_filters('fflhub_holosun_brand_notice_footer', $footer, $product);
-        }
-
-        return [
-            'message' => trim($message),
-            'email' => trim($email),
-            'phone' => trim($phone),
-            'footer' => trim($footer),
-        ];
     }
 
     private static function is_product_surface_page(): bool
@@ -1484,9 +930,7 @@ class MapPriceVisibility
         $upc = self::quote_product_upc($product);
         $product_name = self::truncate_quote_job_value((string) $product->get_name(), 255);
         $submitted_at = (string) current_time('mysql', true);
-        $random_delay_minutes = self::quote_email_should_use_random_delay($product)
-            ? self::preferred_quote_delay_minutes()
-            : 0;
+        $random_delay_minutes = 0;
 
         if (self::has_recent_duplicate_quote_job_values($table_name, $first_name, $last_name, $email, $upc, $product_name)) {
             return true;
@@ -1521,38 +965,6 @@ class MapPriceVisibility
         );
 
         return $inserted === 1;
-    }
-
-    private static function quote_email_should_use_random_delay(WC_Product $product): bool
-    {
-        $upc = self::quote_product_upc($product);
-
-        return self::is_holosun_branded_product($product, null)
-            || HolosunProductDetector::is_holosun_product($product)
-            || ($upc !== '' && HolosunProductDetector::is_holosun_upc($upc));
-    }
-
-    /**
-     * Generate a 3-7 minute delay biased toward values closer to 3.
-     */
-    private static function preferred_quote_delay_minutes(): int
-    {
-        $min = 3;
-        $max = 7;
-        $choices = ($max - $min) + 1; // inclusive count
-
-        // Uniform [0,1), squared to bias toward 0 (lower delays).
-        $u = (float) wp_rand(0, 999999) / 1000000.0;
-        $biased = $u * $u;
-        $offset = (int) floor($biased * $choices);
-        if ($offset < 0) {
-            $offset = 0;
-        }
-        if ($offset >= $choices) {
-            $offset = $choices - 1;
-        }
-
-        return $min + $offset;
     }
 
     private static function has_recent_duplicate_quote_job(
@@ -1879,81 +1291,6 @@ class MapPriceVisibility
         }
 
         return (int) $mode_raw === ProductMeta::MARKUP_MODE_MAP_PRICE;
-    }
-
-    /**
-     * @return array<int,string>
-     */
-    private static function brand_names_for_product(WC_Product $product): array
-    {
-        $product_id = (int) $product->get_id();
-        if ($product_id <= 0) {
-            return [];
-        }
-
-        if (isset(self::$brand_names_by_product_id[$product_id])) {
-            return self::$brand_names_by_product_id[$product_id];
-        }
-
-        $names = [];
-
-        foreach (self::BRAND_TAXONOMY_CANDIDATES as $taxonomy) {
-            if (!taxonomy_exists($taxonomy)) {
-                continue;
-            }
-
-            $terms = wp_get_post_terms($product_id, $taxonomy, ['fields' => 'names']);
-            if (is_wp_error($terms) || !is_array($terms)) {
-                continue;
-            }
-
-            foreach ($terms as $term_name) {
-                $name = trim((string) $term_name);
-                if ($name === '') {
-                    continue;
-                }
-
-                $names[$name] = $name;
-            }
-        }
-
-        // Fallback: support stores using non-standard brand taxonomies.
-        if (empty($names)) {
-            $taxonomies = get_object_taxonomies('product', 'names');
-            if (is_array($taxonomies)) {
-                foreach ($taxonomies as $taxonomy) {
-                    $taxonomy = (string) $taxonomy;
-                    if ($taxonomy === '') {
-                        continue;
-                    }
-                    if (in_array($taxonomy, self::BRAND_TAXONOMY_CANDIDATES, true)) {
-                        continue;
-                    }
-                    if (stripos($taxonomy, 'brand') === false) {
-                        continue;
-                    }
-                    if (!taxonomy_exists($taxonomy)) {
-                        continue;
-                    }
-
-                    $terms = wp_get_post_terms($product_id, $taxonomy, ['fields' => 'names']);
-                    if (is_wp_error($terms) || !is_array($terms)) {
-                        continue;
-                    }
-
-                    foreach ($terms as $term_name) {
-                        $name = trim((string) $term_name);
-                        if ($name === '') {
-                            continue;
-                        }
-                        $names[$name] = $name;
-                    }
-                }
-            }
-        }
-
-        self::$brand_names_by_product_id[$product_id] = array_values($names);
-        return self::$brand_names_by_product_id[$product_id];
     }
 
 }

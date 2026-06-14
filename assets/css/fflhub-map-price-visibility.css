@@ -91,26 +91,6 @@
   outline-offset: 2px;
 }
 
-.single-product .fflhub-holosun-image-notice {
-  margin: 14px 0 0;
-  padding: 12px 14px;
-  border: 1px solid #2b2e33;
-  border-radius: 5px;
-  background: #f6f7f7;
-  color: #1f2328;
-  font-size: var(--wp--preset--font-size--x-small, 16px);
-  line-height: 1.4;
-}
-
-.single-product .fflhub-holosun-image-notice p {
-  margin: 0;
-}
-
-.single-product .fflhub-holosun-image-notice .fflhub-holosun-image-notice-contact {
-  margin-top: 8px;
-  padding-left: 20px;
-}
-
 html.fflhub-quote-modal-open,
 body.fflhub-quote-modal-open {
   overflow: hidden;
