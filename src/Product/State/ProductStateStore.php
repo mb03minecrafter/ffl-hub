@@ -17,6 +17,9 @@ final class ProductStateStore
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
+    /** @var array<int,array<string,mixed>|null> */
+    private static array $row_cache_by_product_id = [];
+
     public static function table_name(): string
     {
         global $wpdb;
@@ -340,6 +343,151 @@ final class ProductStateStore
     }
 
     /**
+     * @return array<string,mixed>|null
+     */
+    private static function get_row_for_product(int $product_id): ?array
+    {
+        global $wpdb;
+
+        if ($product_id <= 0 || !$wpdb) {
+            return null;
+        }
+
+        if (array_key_exists($product_id, self::$row_cache_by_product_id)) {
+            return self::$row_cache_by_product_id[$product_id];
+        }
+
+        $table = self::table_name();
+        $row = $wpdb->get_row(
+            $wpdb->prepare("SELECT * FROM {$table} WHERE product_id = %d LIMIT 1", $product_id), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            ARRAY_A
+        );
+
+        self::$row_cache_by_product_id[$product_id] = is_array($row) ? $row : null;
+        return self::$row_cache_by_product_id[$product_id];
+    }
+
+    public static function is_active_product(int $product_id): bool
+    {
+        return self::get_status_for_product($product_id) === 'active';
+    }
+
+    public static function get_upc_for_product(int $product_id): ?string
+    {
+        return self::string_column_for_product($product_id, 'upc');
+    }
+
+    public static function get_status_for_product(int $product_id): ?string
+    {
+        return self::string_column_for_product($product_id, 'status');
+    }
+
+    public static function get_stock_status_for_product(int $product_id): ?string
+    {
+        return self::string_column_for_product($product_id, 'stock_status');
+    }
+
+    public static function get_qty_for_product(int $product_id): ?int
+    {
+        return self::int_column_for_product($product_id, 'qty');
+    }
+
+    public static function get_map_visibility_policy_for_product(int $product_id): ?string
+    {
+        return self::string_column_for_product($product_id, 'map_visibility_policy');
+    }
+
+    public static function get_map_applicable_for_product(int $product_id): bool
+    {
+        return self::bool_column_for_product($product_id, 'map_applicable');
+    }
+
+    public static function get_map_price_for_product(int $product_id): ?float
+    {
+        return self::float_column_for_product($product_id, 'map_price');
+    }
+
+    public static function get_computed_sell_price_for_product(int $product_id): ?float
+    {
+        return self::float_column_for_product($product_id, 'computed_sell_price');
+    }
+
+    public static function get_public_regular_price_for_product(int $product_id): ?float
+    {
+        return self::float_column_for_product($product_id, 'public_regular_price');
+    }
+
+    public static function get_public_sale_price_for_product(int $product_id): ?float
+    {
+        return self::float_column_for_product($product_id, 'public_sale_price');
+    }
+
+    public static function get_stock_oos_override_for_product(int $product_id): bool
+    {
+        return self::bool_column_for_product($product_id, 'stock_oos_override');
+    }
+
+    public static function get_local_stock_override_qty_for_product(int $product_id): ?int
+    {
+        return self::int_column_for_product($product_id, 'local_stock_override_qty');
+    }
+
+    public static function clear_product_cache(int $product_id): void
+    {
+        if ($product_id <= 0) {
+            return;
+        }
+
+        unset(self::$row_cache_by_product_id[$product_id]);
+    }
+
+    private static function string_column_for_product(int $product_id, string $column): ?string
+    {
+        $row = self::get_row_for_product($product_id);
+        if (!is_array($row) || !array_key_exists($column, $row)) {
+            return null;
+        }
+
+        $value = trim((string) $row[$column]);
+        return ($value === '') ? null : $value;
+    }
+
+    private static function int_column_for_product(int $product_id, string $column): ?int
+    {
+        $row = self::get_row_for_product($product_id);
+        if (!is_array($row) || !array_key_exists($column, $row)) {
+            return null;
+        }
+
+        $value = $row[$column];
+        if ($value === null || trim((string) $value) === '' || !is_numeric($value)) {
+            return null;
+        }
+
+        return (int) $value;
+    }
+
+    private static function float_column_for_product(int $product_id, string $column): ?float
+    {
+        $row = self::get_row_for_product($product_id);
+        if (!is_array($row) || !array_key_exists($column, $row)) {
+            return null;
+        }
+
+        $value = $row[$column];
+        if ($value === null || trim((string) $value) === '' || !is_numeric($value)) {
+            return null;
+        }
+
+        return (float) $value;
+    }
+
+    private static function bool_column_for_product(int $product_id, string $column): bool
+    {
+        return (int) (self::int_column_for_product($product_id, $column) ?? 0) === 1;
+    }
+
+    /**
      * @return array<string,mixed>
      */
     public static function backfill_from_product_meta(int $batch_size = self::DEFAULT_BATCH_SIZE): array
@@ -545,6 +693,8 @@ final class ProductStateStore
                 'message' => 'Product_state update failed: ' . (string) $wpdb->last_error,
             ];
         }
+
+        self::clear_product_cache($product_id);
 
         return [
             'ok' => true,
@@ -1152,7 +1302,12 @@ final class ProductStateStore
             $row['updated_at'] = $now;
 
             $ok = $wpdb->insert($table, $row, self::formats_for_row($row));
-            return ($ok === false) ? "Insert failed for product #{$product_id}: {$wpdb->last_error}" : 'inserted';
+            if ($ok === false) {
+                return "Insert failed for product #{$product_id}: {$wpdb->last_error}";
+            }
+
+            self::clear_product_cache($product_id);
+            return 'inserted';
         }
 
         $row['updated_at'] = $now;
@@ -1164,7 +1319,12 @@ final class ProductStateStore
             ['%d']
         );
 
-        return ($ok === false) ? "Update failed for product #{$product_id}: {$wpdb->last_error}" : 'updated';
+        if ($ok === false) {
+            return "Update failed for product #{$product_id}: {$wpdb->last_error}";
+        }
+
+        self::clear_product_cache($product_id);
+        return 'updated';
     }
 
     /**

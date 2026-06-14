@@ -2,6 +2,7 @@
 
 namespace FFLHub\Product;
 
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
 use FFLHub\Settings\Options;
@@ -13,6 +14,7 @@ if (!defined('ABSPATH')) {
 
 class MapPriceVisibility
 {
+    private const MAP_POLICY_NONE = 'none';
     private const EMAIL_FOR_QUOTE_FORM_ACTION = 'fflhub_email_for_quote_submit';
     private const QUOTE_SUBMISSION_DEDUPE_TTL_SECONDS = 180;
 
@@ -99,90 +101,50 @@ class MapPriceVisibility
         );
     }
 
-    private static function is_fflhub_managed(WC_Product $product, ?WC_Product $parent = null): bool
-    {
-        $val = $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
-
-        // variations may not carry the flag; allow parent to control
-        if (($val === '' || $val === null) && $parent instanceof WC_Product) {
-            $val = $parent->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
-        }
-
-        if (function_exists('wc_string_to_bool')) {
-            return wc_string_to_bool((string) $val);
-        }
-
-        // Fallback: treat common truthy values as true
-        return in_array((string) $val, ['1', 'true', 'yes', 'on'], true) || $val === true;
-    }
-
     /**
      * Hide Email-for-Quote flows when the product is out of stock.
      */
     private static function is_out_of_stock_for_quote(WC_Product $product): bool
     {
-        if (self::has_local_stock_override_stock($product)) {
+        $state_product_id = self::state_product_id($product, null);
+        if ($state_product_id <= 0) {
+            return true;
+        }
+
+        $local_qty = ProductStateStore::get_local_stock_override_qty_for_product($state_product_id);
+        if ($local_qty !== null && $local_qty > 0) {
             return false;
         }
 
-        $stock_status = strtolower(trim((string) $product->get_stock_status()));
+        if (ProductStateStore::get_stock_oos_override_for_product($state_product_id)) {
+            return true;
+        }
+
+        $stock_status = strtolower(trim((string) ProductStateStore::get_stock_status_for_product($state_product_id)));
         if ($stock_status === 'outofstock') {
             return true;
         }
 
-        if (method_exists($product, 'is_in_stock') && !$product->is_in_stock()) {
-            return true;
-        }
-
-        return self::is_truthy_value($product->get_meta(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true));
-    }
-
-    private static function has_local_stock_override_stock(WC_Product $product): bool
-    {
-        if (!self::is_truthy_value($product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true))) {
-            return false;
-        }
-
-        $qty = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
-        return is_numeric($qty) && (int) $qty > 0;
-    }
-
-    /**
-     * @param mixed $value
-     */
-    private static function is_truthy_value($value): bool
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        $raw = strtolower(trim((string) $value));
-        return in_array($raw, ['1', 'true', 'yes', 'y', 'on'], true);
+        $qty = ProductStateStore::get_qty_for_product($state_product_id);
+        return $qty !== null && $qty <= 0;
     }
 
     private static function is_map_restricted(WC_Product $product, ?WC_Product $parent = null): bool
     {
-        // Only enforce MAP hiding on FFLHub-managed products
-        if (!self::is_fflhub_managed($product, $parent)) {
+        if (self::map_policy_for_product($product, $parent) === self::MAP_POLICY_NONE) {
             return false;
         }
 
-        // MAP: prefer variation meta, fallback to parent meta
-        $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
-        if ($map <= 0.0 && $parent instanceof WC_Product) {
-            $map = (float) $parent->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
-        }
-        if ($map <= 0.0) {
+        if (!self::has_product_level_map_policy_requirements($product, $parent)) {
             return false;
         }
 
-        // Current sell price (what would normally be displayed)
-        $price = (float) $product->get_price();
-        if ($price <= 0.0) {
+        $map = self::map_price_for_product($product, $parent);
+        $price = self::sell_price_for_map_check($product, $parent);
+        if ($map === null || $price === null || $price <= 0.0) {
             return false;
         }
 
-        // Price below MAP => hide advertised price
         return $price < $map;
     }
 
@@ -219,27 +181,15 @@ class MapPriceVisibility
             return $price_html;
         }
 
-        if (self::should_force_email_quote_map_price($product, null)) {
+        if (self::should_show_map_price($product, null)) {
             $map_html = self::map_price_html($product, null);
             if ($map_html !== null) {
                 return $map_html;
             }
-        }
-
-        if (self::should_force_map_price($product, null)) {
-            $map_html = self::map_price_html($product, null);
-            if ($map_html !== null) {
-                return $map_html;
-            }
-        }
-
-        // Fallback: if MAP is unavailable, keep Woo regular/sale rendering unchanged.
-        if (self::is_email_for_quote_policy($product, null)) {
-            return $price_html;
         }
 
         if (!self::should_hide_price($product, null)) {
-            return $price_html;
+            return self::public_price_html($product, null) ?? $price_html;
         }
 
         return '<span class="fflhub-map-hidden-price">' . esc_html(self::hidden_text($product, null)) . '</span>';
@@ -253,59 +203,12 @@ class MapPriceVisibility
 
         $parent_product = ($parent instanceof WC_Product) ? $parent : null;
 
-        if (self::should_force_email_quote_map_price($variation, $parent_product)) {
-            $map = self::map_price_for_product($variation, $parent_product);
-            $map_html = self::map_price_html($variation, $parent_product);
-
-            if ($map_html !== null) {
-                $data['price_html'] = $map_html;
-            }
-
-            if (is_numeric($map) && (float) $map > 0.0) {
-                $map_value = (float) $map;
-                $map_decimal = function_exists('wc_format_decimal')
-                    ? wc_format_decimal($map_value, wc_get_price_decimals())
-                    : (string) $map_value;
-                $data['display_price'] = $map_value;
-                $data['display_regular_price'] = $map_value;
-                $data['price'] = $map_decimal;
-                $data['regular_price'] = $map_decimal;
-                $data['sale_price'] = '';
-            }
-
-            return $data;
-        }
-
-        if (self::should_force_map_price($variation, $parent_product)) {
-            $map = self::map_price_for_product($variation, $parent_product);
-            $map_html = self::map_price_html($variation, $parent_product);
-
-            if ($map_html !== null) {
-                $data['price_html'] = $map_html;
-            }
-
-            if (is_numeric($map) && (float) $map > 0.0) {
-                $map_value = (float) $map;
-                $map_decimal = function_exists('wc_format_decimal')
-                    ? wc_format_decimal($map_value, wc_get_price_decimals())
-                    : (string) $map_value;
-                $data['display_price'] = $map_value;
-                $data['display_regular_price'] = $map_value;
-                $data['price'] = $map_decimal;
-                $data['regular_price'] = $map_decimal;
-                $data['sale_price'] = '';
-            }
-
-            return $data;
-        }
-
-        // Fallback: if MAP is unavailable, keep Woo variation pricing data unchanged.
-        if (self::is_email_for_quote_policy($variation, $parent_product)) {
-            return $data;
+        if (self::should_show_map_price($variation, $parent_product)) {
+            return self::apply_map_price_to_variation($data, $variation, $parent_product);
         }
 
         if (!self::should_hide_price($variation, $parent_product)) {
-            return $data;
+            return self::apply_public_price_to_variation($data, $variation, $parent_product);
         }
 
         $data['price_html'] = '<span class="fflhub-map-hidden-price">' . esc_html(self::hidden_text($variation, $parent_product)) . '</span>';
@@ -326,63 +229,8 @@ class MapPriceVisibility
             return $offer;
         }
 
-        if (self::should_force_email_quote_map_price($product, null)) {
-            $map = self::map_price_for_product($product, null);
-            if (!is_numeric($map) || (float) $map <= 0.0 || !is_array($offer)) {
-                return $offer;
-            }
-
-            $map_decimal = function_exists('wc_format_decimal')
-                ? wc_format_decimal((float) $map, wc_get_price_decimals())
-                : (string) $map;
-
-            foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
-                if (isset($offer[$price_key])) {
-                    $offer[$price_key] = $map_decimal;
-                }
-            }
-
-            if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
-                foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
-                    if (isset($offer['priceSpecification'][$price_spec_key])) {
-                        $offer['priceSpecification'][$price_spec_key] = $map_decimal;
-                    }
-                }
-            }
-
-            return $offer;
-        }
-
-        if (self::should_force_map_price($product, null)) {
-            $map = self::map_price_for_product($product, null);
-            if (!is_numeric($map) || (float) $map <= 0.0 || !is_array($offer)) {
-                return $offer;
-            }
-
-            $map_decimal = function_exists('wc_format_decimal')
-                ? wc_format_decimal((float) $map, wc_get_price_decimals())
-                : (string) $map;
-
-            foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
-                if (isset($offer[$price_key])) {
-                    $offer[$price_key] = $map_decimal;
-                }
-            }
-
-            if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
-                foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
-                    if (isset($offer['priceSpecification'][$price_spec_key])) {
-                        $offer['priceSpecification'][$price_spec_key] = $map_decimal;
-                    }
-                }
-            }
-
-            return $offer;
-        }
-
-        // Fallback: if MAP is unavailable, keep Woo structured offer untouched.
-        if (self::is_email_for_quote_policy($product, null)) {
-            return $offer;
+        if (self::should_show_map_price($product, null)) {
+            return self::apply_map_price_to_structured_offer($offer, $product, null);
         }
 
         if (self::should_hide_price($product, null)) {
@@ -390,7 +238,7 @@ class MapPriceVisibility
             return [];
         }
 
-        return $offer;
+        return self::apply_public_price_to_structured_offer($offer, $product, null);
     }
 
     public static function render_email_for_quote_button(): void
@@ -625,73 +473,43 @@ class MapPriceVisibility
 
     private static function is_email_for_quote_policy(WC_Product $product, ?WC_Product $parent = null): bool
     {
-        if (!self::has_product_level_map_policy_requirements($product, $parent)) {
-            return false;
-        }
-
-        return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_EMAIL_FOR_QUOTE;
+        return self::has_product_level_map_policy_requirements($product, $parent)
+            && self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_EMAIL_FOR_QUOTE;
     }
 
     private static function is_no_email_no_add_to_cart_policy(WC_Product $product, ?WC_Product $parent = null): bool
     {
-        if (!self::has_product_level_map_policy_requirements($product, $parent)) {
-            return false;
-        }
-
-        return self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
+        return self::has_product_level_map_policy_requirements($product, $parent)
+            && self::map_policy_for_product($product, $parent) === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
     }
 
     private static function has_product_level_map_policy_requirements(WC_Product $product, ?WC_Product $parent = null): bool
     {
-        if (!self::is_fflhub_managed($product, $parent)) {
-            return false;
-        }
-
-        if (!self::is_map_price_mode($product, $parent)) {
-            return false;
-        }
-
-        return self::map_price_for_product($product, $parent) !== null;
+        $state_product_id = self::state_product_id($product, $parent);
+        return $state_product_id > 0
+            && ProductStateStore::get_map_applicable_for_product($state_product_id)
+            && ProductStateStore::get_map_price_for_product($state_product_id) !== null;
     }
 
-    private static function should_force_map_price(WC_Product $product, ?WC_Product $parent = null): bool
+    private static function should_show_map_price(WC_Product $product, ?WC_Product $parent = null): bool
     {
         if (self::in_cart_flow()) {
             return false;
         }
 
-        if (!self::is_no_email_no_add_to_cart_policy($product, $parent)) {
-            return false;
-        }
-
-        if (!self::is_fflhub_managed($product, $parent)) {
-            return false;
-        }
-
-        return self::map_price_for_product($product, $parent) !== null;
-    }
-
-    private static function should_force_email_quote_map_price(WC_Product $product, ?WC_Product $parent = null): bool
-    {
-        if (!self::is_email_for_quote_policy($product, $parent)) {
-            return false;
-        }
-
-        return self::map_price_for_product($product, $parent) !== null;
+        return self::is_email_for_quote_policy($product, $parent)
+            || self::is_no_email_no_add_to_cart_policy($product, $parent);
     }
 
     private static function map_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
     {
-        $map = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
-        if ($map <= 0.0 && $parent instanceof WC_Product) {
-            $map = (float) $parent->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true);
-        }
-
-        if ($map <= 0.0) {
+        $state_product_id = self::state_product_id($product, $parent);
+        if ($state_product_id <= 0 || !ProductStateStore::get_map_applicable_for_product($state_product_id)) {
             return null;
         }
 
-        return $map;
+        $map = ProductStateStore::get_map_price_for_product($state_product_id);
+        return ($map !== null && $map > 0.0) ? $map : null;
     }
 
     private static function map_price_html(WC_Product $product, ?WC_Product $parent = null): ?string
@@ -711,6 +529,224 @@ class MapPriceVisibility
         }
 
         return (string) $display_price;
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     * @return array<string,mixed>
+     */
+    private static function apply_map_price_to_variation(array $data, WC_Product $variation, ?WC_Product $parent = null): array
+    {
+        $map = self::map_price_for_product($variation, $parent);
+        $map_html = self::map_price_html($variation, $parent);
+
+        if ($map_html !== null) {
+            $data['price_html'] = $map_html;
+        }
+
+        if ($map !== null && $map > 0.0) {
+            $map_decimal = function_exists('wc_format_decimal')
+                ? wc_format_decimal($map, wc_get_price_decimals())
+                : (string) $map;
+            $data['display_price'] = $map;
+            $data['display_regular_price'] = $map;
+            $data['price'] = $map_decimal;
+            $data['regular_price'] = $map_decimal;
+            $data['sale_price'] = '';
+        }
+
+        return $data;
+    }
+
+    private static function apply_map_price_to_structured_offer($offer, WC_Product $product, ?WC_Product $parent = null)
+    {
+        $map = self::map_price_for_product($product, $parent);
+        if ($map === null || $map <= 0.0 || !is_array($offer)) {
+            return $offer;
+        }
+
+        $map_decimal = function_exists('wc_format_decimal')
+            ? wc_format_decimal($map, wc_get_price_decimals())
+            : (string) $map;
+
+        foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
+            if (isset($offer[$price_key])) {
+                $offer[$price_key] = $map_decimal;
+            }
+        }
+
+        if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
+            foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
+                if (isset($offer['priceSpecification'][$price_spec_key])) {
+                    $offer['priceSpecification'][$price_spec_key] = $map_decimal;
+                }
+            }
+        }
+
+        return $offer;
+    }
+
+    private static function public_price_html(WC_Product $product, ?WC_Product $parent = null): ?string
+    {
+        $prices = self::public_prices_for_product($product, $parent);
+        if ($prices === null) {
+            return null;
+        }
+
+        $active_display = self::display_price($product, $prices['active']);
+        $active_html = function_exists('wc_price') ? (string) wc_price($active_display) : (string) $active_display;
+
+        if ($prices['sale'] !== null && $prices['regular'] > $prices['sale']) {
+            $regular_display = self::display_price($product, $prices['regular']);
+            $regular_html = function_exists('wc_price') ? (string) wc_price($regular_display) : (string) $regular_display;
+            $active_html = function_exists('wc_format_sale_price')
+                ? (string) wc_format_sale_price($regular_html, $active_html)
+                : $active_html;
+        }
+
+        if (method_exists($product, 'get_price_suffix')) {
+            $active_html .= (string) $product->get_price_suffix();
+        }
+
+        return $active_html;
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     * @return array<string,mixed>
+     */
+    private static function apply_public_price_to_variation(array $data, WC_Product $variation, ?WC_Product $parent = null): array
+    {
+        $prices = self::public_prices_for_product($variation, $parent);
+        if ($prices === null) {
+            return $data;
+        }
+
+        $data['price_html'] = self::public_price_html($variation, $parent) ?? ($data['price_html'] ?? '');
+        $data['display_price'] = $prices['active'];
+        $data['display_regular_price'] = $prices['regular'];
+        $data['price'] = self::decimal_price($prices['active']);
+        $data['regular_price'] = self::decimal_price($prices['regular']);
+        $data['sale_price'] = ($prices['sale'] !== null && $prices['regular'] > $prices['sale'])
+            ? self::decimal_price($prices['sale'])
+            : '';
+
+        return $data;
+    }
+
+    private static function apply_public_price_to_structured_offer($offer, WC_Product $product, ?WC_Product $parent = null)
+    {
+        $prices = self::public_prices_for_product($product, $parent);
+        if ($prices === null || !is_array($offer)) {
+            return $offer;
+        }
+
+        $price_decimal = self::decimal_price($prices['active']);
+        foreach (['price', 'lowPrice', 'highPrice'] as $price_key) {
+            if (isset($offer[$price_key])) {
+                $offer[$price_key] = $price_decimal;
+            }
+        }
+
+        if (isset($offer['priceSpecification']) && is_array($offer['priceSpecification'])) {
+            foreach (['price', 'minPrice', 'maxPrice'] as $price_spec_key) {
+                if (isset($offer['priceSpecification'][$price_spec_key])) {
+                    $offer['priceSpecification'][$price_spec_key] = $price_decimal;
+                }
+            }
+        }
+
+        return $offer;
+    }
+
+    /**
+     * @return array{regular:float,sale:?float,active:float}|null
+     */
+    private static function public_prices_for_product(WC_Product $product, ?WC_Product $parent = null): ?array
+    {
+        $state_product_id = self::state_product_id($product, $parent);
+        if ($state_product_id <= 0) {
+            return null;
+        }
+
+        $regular = self::positive_state_price(ProductStateStore::get_public_regular_price_for_product($state_product_id));
+        $sale = self::positive_state_price(ProductStateStore::get_public_sale_price_for_product($state_product_id));
+        if ($regular === null && $sale === null) {
+            return null;
+        }
+
+        if ($regular === null) {
+            $regular = $sale;
+        }
+
+        $active = ($sale !== null && $sale < $regular) ? $sale : $regular;
+
+        return [
+            'regular' => $regular,
+            'sale' => $sale,
+            'active' => $active,
+        ];
+    }
+
+    private static function sell_price_for_map_check(WC_Product $product, ?WC_Product $parent = null): ?float
+    {
+        $state_product_id = self::state_product_id($product, $parent);
+        if ($state_product_id <= 0) {
+            return null;
+        }
+
+        return self::positive_state_price(
+            ProductStateStore::get_computed_sell_price_for_product($state_product_id)
+        ) ?? self::positive_state_price(
+            ProductStateStore::get_public_sale_price_for_product($state_product_id)
+        ) ?? self::positive_state_price(
+            ProductStateStore::get_public_regular_price_for_product($state_product_id)
+        );
+    }
+
+    private static function positive_state_price(?float $price): ?float
+    {
+        return ($price !== null && $price > 0.0) ? $price : null;
+    }
+
+    private static function display_price(WC_Product $product, float $price): float
+    {
+        if (function_exists('wc_get_price_to_display')) {
+            return (float) wc_get_price_to_display($product, ['price' => $price]);
+        }
+
+        return $price;
+    }
+
+    private static function decimal_price(float $price): string
+    {
+        return function_exists('wc_format_decimal')
+            ? wc_format_decimal($price, function_exists('wc_get_price_decimals') ? wc_get_price_decimals() : 2)
+            : (string) $price;
+    }
+
+    private static function state_product_id(WC_Product $product, ?WC_Product $parent = null): int
+    {
+        $product_id = (int) $product->get_id();
+        if ($product_id > 0 && ProductStateStore::is_active_product($product_id)) {
+            return $product_id;
+        }
+
+        if ($parent instanceof WC_Product) {
+            $parent_id = (int) $parent->get_id();
+            if ($parent_id > 0 && ProductStateStore::is_active_product($parent_id)) {
+                return $parent_id;
+            }
+        }
+
+        if (method_exists($product, 'get_parent_id')) {
+            $parent_id = (int) $product->get_parent_id();
+            if ($parent_id > 0 && ProductStateStore::is_active_product($parent_id)) {
+                return $parent_id;
+            }
+        }
+
+        return 0;
     }
 
     private static function is_product_surface_page(): bool
@@ -1044,20 +1080,12 @@ class MapPriceVisibility
 
     private static function quote_product_upc(WC_Product $product): string
     {
-        $meta_keys = [
-            ProductMeta::FFLHUB_UPC_META,
-            '_upc',
-            'upc',
-        ];
-
-        foreach ($meta_keys as $meta_key) {
-            $candidate = trim((string) $product->get_meta($meta_key, true));
-            if ($candidate !== '') {
-                return $candidate;
-            }
+        $state_product_id = self::state_product_id($product, null);
+        if ($state_product_id <= 0) {
+            return '';
         }
 
-        return '';
+        return ProductStateStore::get_upc_for_product($state_product_id) ?? '';
     }
 
     private static function truncate_quote_job_value(string $value, int $max_length): string
@@ -1252,45 +1280,21 @@ class MapPriceVisibility
 
     private static function map_policy_for_product(WC_Product $product, ?WC_Product $parent = null): string
     {
-        $policy = self::normalize_product_map_policy(
-            $product->get_meta(ProductMeta::FFLHUB_MAP_POLICY_META, true)
-        );
-        if ($policy !== Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE) {
+        $state_product_id = self::state_product_id($product, $parent);
+        if ($state_product_id <= 0) {
+            return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+        }
+
+        $policy = strtolower(trim((string) ProductStateStore::get_map_visibility_policy_for_product($state_product_id)));
+        if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
             return $policy;
         }
 
-        if ($parent instanceof WC_Product) {
-            return self::normalize_product_map_policy(
-                $parent->get_meta(ProductMeta::FFLHUB_MAP_POLICY_META, true)
-            );
+        if ($policy === self::MAP_POLICY_NONE) {
+            return self::MAP_POLICY_NONE;
         }
 
         return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
-    }
-
-    private static function normalize_product_map_policy($raw): string
-    {
-        $policy = strtolower(trim((string) $raw));
-
-        if ($policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
-            return Options::MAP_POLICY_EMAIL_FOR_QUOTE;
-        }
-
-        if ($policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
-            return Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART;
-        }
-
-        return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
-    }
-
-    private static function is_map_price_mode(WC_Product $product, ?WC_Product $parent = null): bool
-    {
-        $mode_raw = $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
-        if (($mode_raw === '' || $mode_raw === null) && $parent instanceof WC_Product) {
-            $mode_raw = $parent->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
-        }
-
-        return (int) $mode_raw === ProductMeta::MARKUP_MODE_MAP_PRICE;
     }
 
 }
