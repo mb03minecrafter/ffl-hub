@@ -52,6 +52,7 @@ final class GunDealsFeedGenerator
             'elapsed_ms' => 0,
             'xml_bytes' => 0,
             'feed_snapshot_rows' => 0,
+            'feed_enabled' => Options::get_gundeals_feed_enabled() ? 1 : 0,
         ];
 
         if (!class_exists('\XMLWriter')) {
@@ -99,6 +100,24 @@ final class GunDealsFeedGenerator
         $writer->setIndent(true);
         $writer->startElementNS(null, 'offers', self::XML_NAMESPACE);
 
+        if (!$summary['feed_enabled']) {
+            $summary['warnings'][] = 'Gun.deals feed disabled in FFL Hub settings; generated empty offers feed.';
+            $writer->endElement();
+            $writer->endDocument();
+            $writer->flush();
+            fclose($debug);
+
+            return $this->finalize_generated_feed(
+                $xml_tmp,
+                $debug_tmp,
+                $summary_tmp,
+                $paths,
+                $summary,
+                $snapshot_rows,
+                $started
+            );
+        }
+
         $last_id = 0;
         do {
             $source_rows = $this->query_offer_source_rows($last_id);
@@ -132,6 +151,32 @@ final class GunDealsFeedGenerator
         $writer->flush();
         fclose($debug);
 
+        return $this->finalize_generated_feed(
+            $xml_tmp,
+            $debug_tmp,
+            $summary_tmp,
+            $paths,
+            $summary,
+            $snapshot_rows,
+            $started
+        );
+    }
+
+    /**
+     * @param array{dir:string,xml:string,debug_csv:string,summary_json:string,public_url:string} $paths
+     * @param array<string,mixed> $summary
+     * @param array<int,array<string,mixed>> $snapshot_rows
+     * @return array<string,mixed>
+     */
+    private function finalize_generated_feed(
+        string $xml_tmp,
+        string $debug_tmp,
+        string $summary_tmp,
+        array $paths,
+        array $summary,
+        array $snapshot_rows,
+        float $started
+    ): array {
         $validation = $this->validate_xml($xml_tmp);
         if (!$validation['ok']) {
             throw new \RuntimeException('Generated Gun.deals XML failed validation: ' . $validation['error']);

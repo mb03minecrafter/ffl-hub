@@ -139,6 +139,16 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_GUNDEALS_FEED_ENABLED,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_gundeals_feed_enabled() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_PUBLIC_BRAND_NAME,
             [
                 'type'              => 'string',
