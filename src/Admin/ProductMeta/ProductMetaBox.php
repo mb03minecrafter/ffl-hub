@@ -76,6 +76,8 @@ class ProductMetaBox
             .fflhub-state-editor__title { margin:0; font-size:14px; font-weight:700; }
             .fflhub-state-editor__copy { margin:4px 0 0; max-width:780px; color:#64748b; }
             .fflhub-state-editor__badge { flex:0 0 auto; padding:5px 8px; border-radius:999px; background:#e0f2fe; color:#075985; font-size:11px; font-weight:700; }
+            .fflhub-state-selected-offer { margin:0 0 12px; border:1px solid #bfdbfe; border-left:4px solid #2563eb; border-radius:6px; padding:12px; background:#eff6ff; }
+            .fflhub-state-selected-offer h3 { margin:0 0 8px !important; font-size:13px !important; color:#1e3a8a; }
             .fflhub-state-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; align-items:start; }
             .fflhub-state-card { border:1px solid #cbd5e1 !important; border-radius:6px !important; padding:12px !important; background:#fff !important; box-shadow:0 1px 1px rgba(15,23,42,.04); }
             .fflhub-state-card h3 { display:flex; align-items:center; gap:6px; margin:0 0 10px !important; font-size:13px !important; }
@@ -94,6 +96,19 @@ class ProductMetaBox
             .fflhub-state-output__grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; }
             .fflhub-state-output-chip { background:#fff; border:1px solid #cbd5e1; border-radius:5px; padding:8px; }
             .fflhub-state-output-chip__label { font-size:11px; color:#64748b; margin-bottom:3px; }
+            .fflhub-state-output-chip code { font-size:13px; font-weight:700; }
+            .fflhub-state-output-chip--distributor { border-color:#2563eb; background:#eff6ff; }
+            .fflhub-state-output-chip--distributor code { color:#1d4ed8; }
+            .fflhub-state-output-chip--cost { border-color:#f59e0b; background:#fffbeb; }
+            .fflhub-state-output-chip--cost code { color:#92400e; }
+            .fflhub-state-output-chip--price { border-color:#16a34a; background:#f0fdf4; }
+            .fflhub-state-output-chip--price code { color:#166534; }
+            .fflhub-state-output-chip--success { border-color:#22c55e; background:#f0fdf4; }
+            .fflhub-state-output-chip--success code { color:#166534; }
+            .fflhub-state-output-chip--warning { border-color:#f97316; background:#fff7ed; }
+            .fflhub-state-output-chip--warning code { color:#9a3412; }
+            .fflhub-state-output-chip--danger { border-color:#ef4444; background:#fef2f2; }
+            .fflhub-state-output-chip--danger code { color:#991b1b; }
         </style>';
 
         echo '<div id="fflhub-state-editor" class="fflhub-state-editor" data-map-applicable="' . esc_attr($map_applicable ? '1' : '0') . '">';
@@ -102,11 +117,13 @@ class ProductMetaBox
         echo '<p class="fflhub-state-editor__eyebrow">' . esc_html__('Product State Controls', 'ffl-hub') . '</p>';
         echo '<h3 class="fflhub-state-editor__title">' . esc_html__('Edit the new state row', 'ffl-hub') . '</h3>';
         echo '<p class="fflhub-state-editor__copy">' .
-            esc_html__('These controls write product_state only. Old product meta and Woo prices are left alone until the product_state sync path is enabled.', 'ffl-hub') .
+            esc_html__('These controls write product_state. The product-state sync path can then apply the calculated values back to WooCommerce.', 'ffl-hub') .
             '</p>';
         echo '</div>';
         echo '<span class="fflhub-state-editor__badge">' . esc_html($map_applicable ? __('MAP available', 'ffl-hub') : __('No MAP', 'ffl-hub')) . '</span>';
         echo '</div>';
+
+        self::render_selected_offer_snapshot($row);
 
         echo '<div class="fflhub-state-grid">';
 
@@ -284,18 +301,19 @@ class ProductMetaBox
         echo '<div class="fflhub-state-output">';
         echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Cost And Profit Metrics', 'ffl-hub') . '</h3>';
         echo '<div class="fflhub-state-output__grid">';
-        self::render_state_output_chip(__('Dealer cost', 'ffl-hub'), self::state_money($row['dealer_price'] ?? null));
-        self::render_state_output_chip(__('Shipping cost', 'ffl-hub'), self::state_money($row['shipping_cost'] ?? null));
-        self::render_state_output_chip(__('Dealer + shipping basis', 'ffl-hub'), self::state_money($profit_metrics['dealer_shipping_basis']));
-        self::render_state_output_chip(__('Stored landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null));
-        self::render_state_output_chip(__('Profit basis used', 'ffl-hub'), self::state_money($profit_metrics['cost_basis']));
-        self::render_state_output_chip(__('Computed sell price', 'ffl-hub'), self::state_money($row['computed_sell_price'] ?? null));
+        self::render_state_output_chip(__('Dealer cost', 'ffl-hub'), self::state_money($row['dealer_price'] ?? null), 'cost');
+        self::render_state_output_chip(__('Shipping cost', 'ffl-hub'), self::state_money($row['shipping_cost'] ?? null), self::shipping_chip_tone($row['shipping_cost'] ?? null));
+        self::render_state_output_chip(__('Dealer + shipping basis', 'ffl-hub'), self::state_money($profit_metrics['dealer_shipping_basis']), 'cost');
+        self::render_state_output_chip(__('Stored landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null), 'cost');
+        self::render_state_output_chip(__('Profit basis used', 'ffl-hub'), self::state_money($profit_metrics['cost_basis']), 'cost');
+        self::render_state_output_chip(__('Computed sell price', 'ffl-hub'), self::state_money($row['computed_sell_price'] ?? null), 'price');
         self::render_state_output_chip(
             sprintf(__('Estimated card fee (%s%%)', 'ffl-hub'), $profit_metrics['fee_percent_label']),
-            self::state_money($profit_metrics['processor_fee'])
+            self::state_money($profit_metrics['processor_fee']),
+            'warning'
         );
-        self::render_state_output_chip(__('Estimated net profit', 'ffl-hub'), self::state_money($profit_metrics['net_profit']));
-        self::render_state_output_chip(__('Estimated margin', 'ffl-hub'), self::state_percent($profit_metrics['margin_percent']));
+        self::render_state_output_chip(__('Estimated net profit', 'ffl-hub'), self::state_money($profit_metrics['net_profit']), self::profit_chip_tone($profit_metrics['net_profit']));
+        self::render_state_output_chip(__('Estimated margin', 'ffl-hub'), self::state_percent($profit_metrics['margin_percent']), self::margin_chip_tone($profit_metrics['margin_percent']));
         echo '</div>';
         echo '<p style="margin:8px 0 0;color:#6b7280;">' .
             esc_html__('Net profit uses computed sell price minus dealer + shipping cost basis and estimated card processing fee. Stored landed cost is shown for auditing stale rows, but dealer + shipping wins when dealer cost is present.', 'ffl-hub') .
@@ -305,12 +323,12 @@ class ProductMetaBox
         echo '<div class="fflhub-state-output">';
         echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Calculated Product State Outputs', 'ffl-hub') . '</h3>';
         echo '<div class="fflhub-state-output__grid">';
-        self::render_state_output_chip(__('Computed sell price', 'ffl-hub'), self::state_money($row['computed_sell_price'] ?? null));
-        self::render_state_output_chip(__('MAP applicable', 'ffl-hub'), self::state_yes_no($row['map_applicable'] ?? null));
-        self::render_state_output_chip(__('Public regular', 'ffl-hub'), self::state_money($row['public_regular_price'] ?? null));
-        self::render_state_output_chip(__('Public sale', 'ffl-hub'), self::state_money($row['public_sale_price'] ?? null));
-        self::render_state_output_chip(__('Public/display', 'ffl-hub'), self::state_money(self::derived_public_price($row)));
-        self::render_state_output_chip(__('Has changed', 'ffl-hub'), self::state_yes_no($row['has_changed'] ?? null));
+        self::render_state_output_chip(__('Computed sell price', 'ffl-hub'), self::state_money($row['computed_sell_price'] ?? null), 'price');
+        self::render_state_output_chip(__('MAP applicable', 'ffl-hub'), self::state_yes_no($row['map_applicable'] ?? null), self::truthy_state($row['map_applicable'] ?? null) ? 'warning' : 'neutral');
+        self::render_state_output_chip(__('Public regular', 'ffl-hub'), self::state_money($row['public_regular_price'] ?? null), 'price');
+        self::render_state_output_chip(__('Public sale', 'ffl-hub'), self::state_money($row['public_sale_price'] ?? null), 'price');
+        self::render_state_output_chip(__('Public/display', 'ffl-hub'), self::state_money(self::derived_public_price($row)), 'price');
+        self::render_state_output_chip(__('Has changed', 'ffl-hub'), self::state_yes_no($row['has_changed'] ?? null), self::truthy_state($row['has_changed'] ?? null) ? 'warning' : 'success');
         echo '</div>';
         echo '<p style="margin:8px 0 0;color:#6b7280;">' .
             esc_html__('These outputs refresh after saving the product. They are shown here so you can sanity-check the state row without opening the raw row viewer.', 'ffl-hub') .
@@ -470,12 +488,108 @@ class ProductMetaBox
         return self::state_value($value);
     }
 
-    private static function render_state_output_chip(string $label, string $value): void
+    /**
+     * @param array<string,mixed> $row
+     */
+    private static function render_selected_offer_snapshot(array $row): void
     {
-        echo '<div class="fflhub-state-output-chip">';
-        echo '<div class="fflhub-state-output-chip__label">' . esc_html($label) . '</div>';
-        echo '<code style="font-size:12px;">' . esc_html($value) . '</code>';
+        $stock_status = strtolower(trim((string) ($row['stock_status'] ?? '')));
+        $qty = (int) ($row['qty'] ?? 0);
+        $dropship = self::truthy_state($row['dropship_enabled'] ?? null);
+        $ffl = self::truthy_state($row['ffl_required'] ?? null);
+        $sot = self::truthy_state($row['sot_required'] ?? null);
+
+        echo '<div class="fflhub-state-selected-offer">';
+        echo '<h3>' . esc_html__('Selected Offer Snapshot', 'ffl-hub') . '</h3>';
+        echo '<div class="fflhub-state-output__grid">';
+        self::render_state_output_chip(__('Distributor', 'ffl-hub'), self::state_distributor_label($row), 'distributor');
+        self::render_state_output_chip(__('Distributor item', 'ffl-hub'), self::state_value($row['distributor_product_id'] ?? ($row['distributor_sku'] ?? null)), 'distributor');
+        self::render_state_output_chip(__('Stock', 'ffl-hub'), trim((string) $qty . ' / ' . self::state_value($stock_status)), ($stock_status === 'instock' && $qty > 0) ? 'success' : 'warning');
+        self::render_state_output_chip(__('Dropship', 'ffl-hub'), $dropship ? __('yes', 'ffl-hub') : __('no', 'ffl-hub'), $dropship ? 'success' : 'warning');
+        self::render_state_output_chip(__('FFL / SOT', 'ffl-hub'), ($ffl ? 'FFL' : 'no FFL') . ' / ' . ($sot ? 'SOT' : 'no SOT'), ($sot || $ffl) ? 'warning' : 'neutral');
+        self::render_state_output_chip(__('Dealer cost', 'ffl-hub'), self::state_money($row['dealer_price'] ?? null), 'cost');
+        self::render_state_output_chip(__('Shipping cost', 'ffl-hub'), self::state_money($row['shipping_cost'] ?? null), self::shipping_chip_tone($row['shipping_cost'] ?? null));
+        self::render_state_output_chip(__('Landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null), 'cost');
+        self::render_state_output_chip(__('MAP / MSRP', 'ffl-hub'), self::state_money($row['map_price'] ?? null) . ' / ' . self::state_money($row['msrp'] ?? null), 'price');
         echo '</div>';
+        echo '</div>';
+    }
+
+    private static function render_state_output_chip(string $label, string $value, string $tone = 'neutral'): void
+    {
+        $tone = sanitize_html_class($tone);
+        $class = 'fflhub-state-output-chip';
+        if ($tone !== '' && $tone !== 'neutral') {
+            $class .= ' fflhub-state-output-chip--' . $tone;
+        }
+
+        echo '<div class="' . esc_attr($class) . '">';
+        echo '<div class="fflhub-state-output-chip__label">' . esc_html($label) . '</div>';
+        echo '<code>' . esc_html($value) . '</code>';
+        echo '</div>';
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    private static function state_distributor_label(array $row): string
+    {
+        $dist_id = strtolower(trim((string) ($row['distributor_id'] ?? '')));
+        if ($dist_id === '') {
+            return '-';
+        }
+
+        $labels = self::enabled_distributor_options();
+        $label = trim((string) ($labels[$dist_id] ?? ''));
+
+        return $label !== '' ? $label . ' (' . $dist_id . ')' : $dist_id;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function shipping_chip_tone($value): string
+    {
+        $shipping = self::state_float_or_null($value);
+        if ($shipping === null) {
+            return 'neutral';
+        }
+
+        return $shipping <= 0.0 ? 'success' : 'warning';
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function profit_chip_tone($value): string
+    {
+        $profit = self::state_float_or_null($value);
+        if ($profit === null) {
+            return 'neutral';
+        }
+
+        if ($profit < 0.0) {
+            return 'danger';
+        }
+
+        return $profit >= 5.0 ? 'success' : 'warning';
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function margin_chip_tone($value): string
+    {
+        $margin = self::state_float_or_null($value);
+        if ($margin === null) {
+            return 'neutral';
+        }
+
+        if ($margin < 0.0) {
+            return 'danger';
+        }
+
+        return $margin >= 5.0 ? 'success' : 'warning';
     }
 
     private static function render_product_state_editor_script(): void
