@@ -7,7 +7,7 @@ use FFLHub\FFL\Data\FFLRepository;
 use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use FFLHub\Shipping\USPS\USPSRateHelper;
 use FFLHub\Util\DebugLogUtil;
@@ -177,8 +177,24 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
             $product_id = method_exists($product, 'get_id') ? (int) $product->get_id() : 0;
 
+            $state_row = ProductStateStore::get_row_for_product($product);
+            $state_status = is_array($state_row) ? strtolower(trim((string) ($state_row['status'] ?? ''))) : '';
+            if (!is_array($state_row) || $state_status !== 'active') {
+                $this->log_debug(
+                    sprintf(
+                        'SKIP product_id=%d reason=missing_or_inactive_product_state',
+                        $product_id
+                    )
+                );
+                continue;
+            }
+            $state_product_id = (int) ($state_row['product_id'] ?? 0);
+            if ($state_product_id > 0) {
+                $product_id = $state_product_id;
+            }
+
             // Distributor id (grouping key)
-            $dist_id = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
+            $dist_id = trim((string) ($state_row['distributor_id'] ?? ''));
             if ($dist_id === '') {
                 $this->log_debug(
                     sprintf(
@@ -190,16 +206,16 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             }
 
             // FFL LANE?
-            $ffl_required_raw = $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true);
+            $ffl_required_raw = $state_row['ffl_required'] ?? 0;
             $is_ffl = ! empty($ffl_required_raw) && (string) $ffl_required_raw !== '0';
 
             // Dropship eligibility (default true if unset).
-            $dropship_enabled_raw = $product->get_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true);
+            $dropship_enabled_raw = $state_row['dropship_enabled'] ?? 1;
             $dropship_enabled = $this->to_boolish($dropship_enabled_raw, true);
-            $customer_free_shipping = $this->product_customer_free_shipping_enabled($product);
+            $customer_free_shipping = $this->product_customer_free_shipping_enabled($state_row);
 
             // Dealer cost excludes distributor shipping, which is planned once at the order level.
-            $dealer_cost_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true);
+            $dealer_cost_raw = $state_row['dealer_price'] ?? null;
             $dealer_cost = ($dealer_cost_raw === '' || $dealer_cost_raw === null) ? 0.0 : (float) $dealer_cost_raw;
 
             // Revenue ex-tax, after coupons (Woo line_total includes qty)
@@ -212,18 +228,15 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $qty_for_routing = $qty;
             $local_free_ship_qty = 0;
             $local_free_ship_enabled = $this->to_boolish(
-                $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_FREE_SHIPPING_META, true),
+                $state_row['local_stock_free_shipping'] ?? 0,
                 false
             );
-            $local_stock_override_enabled = $this->to_boolish(
-                $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true),
-                false
-            );
+            $state_local_stock_qty = ProductStateStore::get_local_stock_override_qty_from_row($state_row);
+            $local_stock_override_enabled = $state_local_stock_qty > 0;
 
             if ($local_free_ship_enabled && $local_stock_override_enabled && $product_id > 0) {
                 if (!array_key_exists($product_id, $local_available_by_product)) {
-                    $local_qty_raw = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
-                    $local_available_by_product[$product_id] = max(0, (int) $local_qty_raw);
+                    $local_available_by_product[$product_id] = $state_local_stock_qty;
                 }
 
                 $local_available_qty = max(0, (int) ($local_available_by_product[$product_id] ?? 0));
@@ -249,18 +262,18 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             }
 
             // Distributor lane fee for this line (used as per-lane fee by planner).
-            $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
+            $ship_raw = $state_row['shipping_cost'] ?? null;
             $ship = $this->resolve_distributor_lane_fee($ship_raw, $fallback_ship);
 
             // Per-unit shipping weight in ounces.
-            $weight_raw = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true);
+            $weight_raw = $state_row['shipping_weight_oz'] ?? null;
             $weight_oz  = $this->to_non_negative_float($weight_raw, 0.0);
             $line_weight_oz = $weight_oz * (float) $qty_for_routing;
 
             // Optional dimensions in inches (may be empty for some distributors).
-            $length_raw = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, true);
-            $width_raw  = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, true);
-            $height_raw = $product->get_meta(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, true);
+            $length_raw = $state_row['shipping_length_in'] ?? null;
+            $width_raw  = $state_row['shipping_width_in'] ?? null;
+            $height_raw = $state_row['shipping_height_in'] ?? null;
 
             $length_in = $this->to_non_negative_float($length_raw, 0.0);
             $width_in  = $this->to_non_negative_float($width_raw, 0.0);
@@ -876,18 +889,21 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         return $fee;
     }
 
-    private function product_customer_free_shipping_enabled(WC_Product $product): bool
+    /**
+     * Product-level quote free shipping removes this line's routed shipping from
+     * the customer-charge basis. It does not remove the internal cost from audit.
+     *
+     * @param array<string,mixed> $state_row
+     */
+    private function product_customer_free_shipping_enabled(array $state_row): bool
     {
-        $mode_raw = $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
-        $mode = ($mode_raw === '' && (string) $mode_raw !== '0')
-            ? ProductMeta::MARKUP_MODE_GLOBAL
-            : (int) $mode_raw;
-        if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
+        $policy = strtolower(trim((string) ($state_row['map_visibility_policy'] ?? '')));
+        if ($policy !== Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
             return false;
         }
 
         return $this->to_boolish(
-            $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true),
+            $state_row['quote_free_shipping_override'] ?? 0,
             false
         );
     }
@@ -1444,8 +1460,14 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 continue;
             }
 
-            $dist_id = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
-            if ($dist_id !== '') {
+            $state_row = ProductStateStore::get_row_for_product($product);
+            if (!is_array($state_row)) {
+                continue;
+            }
+
+            $state_status = strtolower(trim((string) ($state_row['status'] ?? '')));
+            $dist_id = trim((string) ($state_row['distributor_id'] ?? ''));
+            if ($state_status === 'active' && $dist_id !== '') {
                 return true;
             }
         }

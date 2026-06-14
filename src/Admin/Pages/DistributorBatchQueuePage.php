@@ -2,19 +2,17 @@
 
 namespace FFLHub\Admin\Pages;
 
-use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOrderLine;
-use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
-use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
-use FFLHub\Product\ProductMeta;
+use FFLHub\Distributor\Offers\DistributorOffersStore;
+use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -31,11 +29,6 @@ final class DistributorBatchQueuePage
     private const DEFAULT_LOW_STOCK_THRESHOLD = 3;
     private const DEFAULT_RETRY_DELAY_SECONDS = 300;
     private const DEFAULT_MAX_ROWS_PER_RUN = 200;
-    private const MANUAL_COMPLETION_STATUSES = [
-        OrderPlacementKeys::JOB_STATUS_MANUAL,
-        OrderPlacementKeys::JOB_STATUS_SUCCESS,
-    ];
-
     private OrderPlacementJobsTable $jobs_table;
     private DistributorHandler $handler;
     private string $page_slug;
@@ -49,7 +42,6 @@ final class DistributorBatchQueuePage
     private string $option_prefix;
     private string $field_prefix;
     private string $cron_hook;
-    private bool $manual_completion_enabled;
 
     /**
      * @param array<string,mixed> $config
@@ -70,7 +62,6 @@ final class DistributorBatchQueuePage
         $this->option_prefix = trim((string) ($config['option_prefix'] ?? ''));
         $this->field_prefix = trim((string) ($config['field_prefix'] ?? $this->option_prefix));
         $this->cron_hook = trim((string) ($config['cron_hook'] ?? ''));
-        $this->manual_completion_enabled = $this->to_boolish($config['manual_completion_enabled'] ?? false);
 
         if ($this->page_slug === '') {
             $this->page_slug = 'fflhub-' . $this->dist_id . '-' . str_replace('_', '-', $this->mode) . '-batch-queue';
@@ -144,11 +135,7 @@ final class DistributorBatchQueuePage
         $action = isset($_POST[$action_field])
             ? sanitize_text_field(wp_unslash((string) $_POST[$action_field]))
             : '';
-        $allowed_actions = [$this->form_action_save_settings(), $this->form_action_force_run()];
-        if ($this->manual_completion_enabled) {
-            $allowed_actions[] = $this->form_action_manual_po();
-        }
-        if (!in_array($action, $allowed_actions, true)) {
+        if (!in_array($action, [$this->form_action_save_settings(), $this->form_action_force_run()], true)) {
             return;
         }
 
@@ -173,9 +160,6 @@ final class DistributorBatchQueuePage
             return;
         }
 
-        if ($this->manual_completion_enabled && $action === $this->form_action_manual_po()) {
-            $this->handle_manual_po_post();
-        }
     }
 
     private function handle_save_settings_post(): void
@@ -243,86 +227,6 @@ final class DistributorBatchQueuePage
             ? __('Force flush enabled and batch run scheduled.', 'ffl-hub')
             : __('Force flush enabled and batch run triggered.', 'ffl-hub');
         $this->redirect_with_notice('success', $msg);
-    }
-
-    private function handle_manual_po_post(): void
-    {
-        if (!$this->manual_completion_enabled || $this->mode !== self::MODE_DEALER) {
-            $this->redirect_with_notice('error', __('Manual completion is not enabled for this batch page.', 'ffl-hub'));
-        }
-
-        $order_id_field = $this->post_field('manual_order_id');
-        $job_key_field = $this->post_field('manual_job_key');
-        $merchant_po_field = $this->post_field('manual_merchant_po');
-
-        $order_id = isset($_POST[$order_id_field]) ? (int) $_POST[$order_id_field] : 0;
-        $job_key = isset($_POST[$job_key_field])
-            ? sanitize_text_field(wp_unslash((string) $_POST[$job_key_field]))
-            : '';
-        $merchant_po_raw = isset($_POST[$merchant_po_field])
-            ? sanitize_text_field(wp_unslash((string) $_POST[$merchant_po_field]))
-            : '';
-        $merchant_po = $this->sanitize_manual_po($merchant_po_raw);
-
-        if ($order_id <= 0 || trim($job_key) === '') {
-            $this->redirect_with_notice('error', __('Missing order or job key. Please try again.', 'ffl-hub'));
-        }
-        if ($merchant_po === '') {
-            $this->redirect_with_notice('error', __('Please enter a valid PO number.', 'ffl-hub'));
-        }
-
-        $order = wc_get_order($order_id);
-        if (!$order || !method_exists($order, 'get_status')) {
-            $this->redirect_with_notice('error', __('Order not found for this row.', 'ffl-hub'));
-        }
-
-        $order_status = strtolower(trim((string) $order->get_status()));
-        if ($order_status !== self::TARGET_WOO_ORDER_STATUS) {
-            $this->redirect_with_notice('error', __('This order is no longer in Processing status.', 'ffl-hub'));
-        }
-
-        $job = OrderPlacementJobsRepository::get_job_for_order($this->jobs_table, $order, $job_key);
-        if (!($job instanceof OrderPlacementJobRow)) {
-            $this->redirect_with_notice('error', __('Job row not found for this order/job key.', 'ffl-hub'));
-        }
-
-        $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) $job->dist_id);
-        if ($dist_id !== $this->dist_id) {
-            $this->redirect_with_notice('error', __('That row belongs to a different distributor.', 'ffl-hub'));
-        }
-
-        if (!OrderPlacementKeysUtil::is_dealer_fulfilled_lane((string) $job->lane_norm())) {
-            $this->redirect_with_notice('error', __('That row is not a dealer-fulfilled job.', 'ffl-hub'));
-        }
-
-        $job_status = strtolower(trim((string) $job->status));
-        if (!in_array($job_status, self::MANUAL_COMPLETION_STATUSES, true)) {
-            $this->redirect_with_notice('error', __('That row is not in a manual/success state.', 'ffl-hub'));
-        }
-
-        $patch = OrderPlacementJobPatch::empty()
-            ->with_status(OrderPlacementKeys::JOB_STATUS_SUCCESS)
-            ->with_field('done_at', gmdate('Y-m-d H:i:s'))
-            ->with_field('merchant_po', $merchant_po)
-            ->with_field('last_error', '')
-            ->with_last_codes([])
-            ->clear_action_and_schedule();
-
-        OrderPlacementJobWriter::apply_patch(
-            $this->jobs_table,
-            (int) $order->get_id(),
-            (string) $job->job_key,
-            $patch
-        );
-
-        $this->redirect_with_notice(
-            'success',
-            __('Updated job #', 'ffl-hub')
-                . (string) ((int) $job->id)
-                . __(' to success with PO ', 'ffl-hub')
-                . $merchant_po
-                . '.'
-        );
     }
 
     private function redirect_with_notice(string $type, string $message): void
@@ -409,11 +313,6 @@ final class DistributorBatchQueuePage
     private function form_action_force_run(): string
     {
         return $this->post_field('force_run');
-    }
-
-    private function form_action_manual_po(): string
-    {
-        return $this->post_field('manual_mark_success');
     }
 
     private function render_settings_form(array $settings): void
@@ -714,16 +613,12 @@ final class DistributorBatchQueuePage
             return [];
         }
 
-        $distributor = $this->get_distributor();
-        if (!($distributor instanceof DistributorBase)) {
-            return [];
-        }
-
         $watch_rows = [];
+        $available_by_upc = [];
         foreach ($demand_by_upc as $upc_key => $requested_qty) {
             $display_upc = (string) ($display_upc_by_key[$upc_key] ?? $upc_key);
             $product_name = (string) ($name_by_key[$upc_key] ?? 'Unknown product');
-            $available = $distributor->get_stock_quantity_by_upc($display_upc);
+            $available = $this->offer_available_quantity_for_upc($display_upc, $available_by_upc);
             $remaining_after_batch = ($available === null) ? null : ((int) $available - (int) $requested_qty);
             $distance_now = ($available === null) ? null : ((int) $available - $threshold);
             $distance_after_batch = ($remaining_after_batch === null) ? null : ((int) $remaining_after_batch - $threshold);
@@ -772,12 +667,6 @@ final class DistributorBatchQueuePage
         });
 
         return $watch_rows;
-    }
-
-    private function get_distributor(): ?DistributorBase
-    {
-        $dist = $this->handler->get_distributor_by_id($this->dist_id);
-        return ($dist instanceof DistributorBase) ? $dist : null;
     }
 
     private function normalize_upc_key(string $upc): string
@@ -962,7 +851,6 @@ final class DistributorBatchQueuePage
             echo '<p>' . esc_html(sprintf(__('No %s line entries found for processing orders.', 'ffl-hub'), $this->mode_label)) . '</p>';
             return;
         }
-        $show_actions = $this->manual_completion_enabled && $this->mode === self::MODE_DEALER;
         ?>
         <h2><?php echo esc_html(sprintf(__('%s Line Entries (Per UPC)', 'ffl-hub'), $this->mode_label)); ?></h2>
         <table class="widefat fixed striped">
@@ -981,9 +869,6 @@ final class DistributorBatchQueuePage
                     <th><?php esc_html_e('Qty', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Unit Cost', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Line Cost', 'ffl-hub'); ?></th>
-                    <?php if ($show_actions) : ?>
-                        <th><?php esc_html_e('Manual PO / Mark Success', 'ffl-hub'); ?></th>
-                    <?php endif; ?>
                 </tr>
             </thead>
             <tbody>
@@ -1019,52 +904,10 @@ final class DistributorBatchQueuePage
                         <td><?php echo esc_html((string) ((int) ($entry['qty'] ?? 0))); ?></td>
                         <td><?php echo esc_html($this->format_money((float) ($entry['unit_cost'] ?? 0.0))); ?></td>
                         <td><?php echo esc_html($this->format_money((float) ($entry['line_cost'] ?? 0.0))); ?></td>
-                        <?php if ($show_actions) : ?>
-                            <td><?php $this->render_manual_po_cell($entry); ?></td>
-                        <?php endif; ?>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
         </table>
-        <?php
-    }
-
-    /**
-     * @param array<string,mixed> $entry
-     */
-    private function render_manual_po_cell(array $entry): void
-    {
-        $status = strtolower(trim((string) ($entry['job_status'] ?? '')));
-        if (!in_array($status, self::MANUAL_COMPLETION_STATUSES, true)) {
-            echo esc_html('-');
-            return;
-        }
-
-        $order_id = (int) ($entry['order_id'] ?? 0);
-        $job_key = (string) ($entry['job_key'] ?? '');
-        $merchant_po = trim((string) ($entry['merchant_po'] ?? ''));
-        ?>
-        <form method="post" action="" class="fflhub-rsr-manual-po-form">
-            <?php wp_nonce_field($this->nonce_action(), $this->post_field('nonce')); ?>
-            <input type="hidden" name="<?php echo esc_attr($this->post_field('action')); ?>" value="<?php echo esc_attr($this->form_action_manual_po()); ?>" />
-            <input type="hidden" name="<?php echo esc_attr($this->post_field('manual_order_id')); ?>" value="<?php echo esc_attr((string) $order_id); ?>" />
-            <input type="hidden" name="<?php echo esc_attr($this->post_field('manual_job_key')); ?>" value="<?php echo esc_attr($job_key); ?>" />
-            <input
-                type="text"
-                name="<?php echo esc_attr($this->post_field('manual_merchant_po')); ?>"
-                value="<?php echo esc_attr($merchant_po); ?>"
-                maxlength="32"
-                placeholder="<?php esc_attr_e('Enter PO', 'ffl-hub'); ?>"
-                class="regular-text fflhub-rsr-manual-po-input" />
-            <button type="submit" class="button button-secondary button-small">
-                <?php esc_html_e('Save + Mark Success', 'ffl-hub'); ?>
-            </button>
-            <?php if ($status === OrderPlacementKeys::JOB_STATUS_SUCCESS) : ?>
-                <div class="fflhub-rsr-manual-po-note">
-                    <?php esc_html_e('Already marked success.', 'ffl-hub'); ?>
-                </div>
-            <?php endif; ?>
-        </form>
         <?php
     }
 
@@ -1138,57 +981,95 @@ final class DistributorBatchQueuePage
 
     private function resolve_distributor_unit_cost_for_upc(string $upc, array &$cache): float
     {
-        $upc = trim($upc);
+        $upc = $this->normalize_upc_key($upc);
         if ($upc === '') {
             return 0.0;
         }
         if (array_key_exists($upc, $cache)) {
             return (float) $cache[$upc];
         }
-        $product_id = $this->find_product_id_by_upc($upc);
-        if ($product_id <= 0) {
-            $cache[$upc] = 0.0;
-            return 0.0;
-        }
-        $product = wc_get_product($product_id);
-        if (!$product) {
-            $cache[$upc] = 0.0;
-            return 0.0;
-        }
-        $dealer_price = $this->to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
-        $true_cost = $this->to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true));
-        $unit_cost = ($dealer_price > 0.0) ? $dealer_price : $true_cost;
-        $cache[$upc] = $unit_cost;
-        return $unit_cost;
+
+        $cache[$upc] = $this->offer_dealer_price_for_upc($upc);
+        return (float) $cache[$upc];
     }
 
     private function find_product_id_by_upc(string $upc): int
     {
-        global $wpdb;
-        $upc = trim($upc);
+        $upc = $this->normalize_upc_key($upc);
         if ($upc === '') {
             return 0;
         }
-        foreach ([ProductMeta::FFLHUB_UPC_META, '_upc', 'upc'] as $meta_key) {
-            $sql = $wpdb->prepare(
-                "SELECT pm.post_id
-                 FROM {$wpdb->postmeta} pm
-                 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-                 WHERE pm.meta_key = %s
-                   AND pm.meta_value = %s
-                   AND p.post_type = 'product'
-                   AND p.post_status IN ('publish', 'private')
-                 ORDER BY pm.post_id DESC
-                 LIMIT 1",
-                $meta_key,
-                $upc
-            );
-            $found_id = (int) $wpdb->get_var($sql);
-            if ($found_id > 0) {
-                return $found_id;
-            }
+        $row = ProductStateStore::get_row_for_upc($upc);
+
+        return is_array($row) ? (int) ($row['product_id'] ?? 0) : 0;
+    }
+
+    private function offer_dealer_price_for_upc(string $upc): float
+    {
+        global $wpdb;
+
+        if (!$wpdb || $upc === '') {
+            return 0.0;
         }
-        return 0;
+
+        DistributorOffersStore::ensure_schema();
+        $table = DistributorOffersStore::table_name();
+        $value = $wpdb->get_var(
+            $wpdb->prepare(
+                "
+                SELECT dealer_price
+                FROM {$table}
+                WHERE upc = %s
+                  AND distributor_id = %s
+                  AND enabled = 1
+                LIMIT 1
+                ",
+                $upc,
+                $this->dist_id
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        return $this->to_non_negative_float($value);
+    }
+
+    /**
+     * @param array<string,int|null> $cache
+     */
+    private function offer_available_quantity_for_upc(string $upc, array &$cache): ?int
+    {
+        global $wpdb;
+
+        $upc = $this->normalize_upc_key($upc);
+        if ($upc === '') {
+            return null;
+        }
+        if (array_key_exists($upc, $cache)) {
+            return $cache[$upc];
+        }
+        if (!$wpdb) {
+            $cache[$upc] = null;
+            return null;
+        }
+
+        DistributorOffersStore::ensure_schema();
+        $table = DistributorOffersStore::table_name();
+        $value = $wpdb->get_var(
+            $wpdb->prepare(
+                "
+                SELECT qty
+                FROM {$table}
+                WHERE upc = %s
+                  AND distributor_id = %s
+                  AND enabled = 1
+                LIMIT 1
+                ",
+                $upc,
+                $this->dist_id
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $cache[$upc] = ($value === null) ? null : max(0, (int) $value);
+        return $cache[$upc];
     }
 
     private function sanitize_dispatch_time(string $value): string
@@ -1198,30 +1079,6 @@ final class DistributorBatchQueuePage
             return self::DEFAULT_DISPATCH_TIME;
         }
         return sprintf('%02d:%02d', (int) ($m[1] ?? 17), (int) ($m[2] ?? 0));
-    }
-
-    private function sanitize_manual_po(string $value): string
-    {
-        $value = strtoupper(trim($value));
-        if ($value === '') {
-            return '';
-        }
-
-        $value = preg_replace('/[^A-Z0-9._-]/', '', $value);
-        if (!is_string($value)) {
-            return '';
-        }
-
-        $value = trim($value);
-        if ($value === '') {
-            return '';
-        }
-
-        if (strlen($value) > 32) {
-            $value = substr($value, 0, 32);
-        }
-
-        return $value;
     }
 
     private function to_non_negative_float($value): float

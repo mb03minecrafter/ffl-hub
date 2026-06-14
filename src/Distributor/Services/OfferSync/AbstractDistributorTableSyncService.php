@@ -103,6 +103,9 @@ abstract class AbstractDistributorTableSyncService
             $result['best_offer_selection'] = ProductBestOfferSelectionService::refresh_changed_upcs();
             if (!empty($result['best_offer_selection']['ok'])) {
                 $result['product_state_best_offer_apply'] = ProductStateBestOfferApplyService::apply_changed_best_offers();
+                if (!empty($result['product_state_best_offer_apply']['ok'])) {
+                    $result['product_state_woo_apply'] = ProductStateWooApplyService::apply_changed_product_state();
+                }
             }
         }
 
@@ -135,6 +138,9 @@ abstract class AbstractDistributorTableSyncService
         $result['best_offer_selection'] = ProductBestOfferSelectionService::refresh_changed_upcs();
         if (!empty($result['best_offer_selection']['ok'])) {
             $result['product_state_best_offer_apply'] = ProductStateBestOfferApplyService::apply_changed_best_offers();
+            if (!empty($result['product_state_best_offer_apply']['ok'])) {
+                $result['product_state_woo_apply'] = ProductStateWooApplyService::apply_changed_product_state();
+            }
         }
 
         return $result;

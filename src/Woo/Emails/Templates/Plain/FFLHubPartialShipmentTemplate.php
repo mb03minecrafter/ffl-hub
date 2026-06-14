@@ -8,8 +8,6 @@ if (!defined('ABSPATH')) {
 /** @var WC_Order $order */
 /** @var \FFLHub\Distributor\Models\PartialShipmentEmailContext $context */
 
-use FFLHub\Product\ProductMeta;
-
 // -----------------------------
 // Build "items in this shipment update" based on job payload UPCs.
 // -----------------------------
@@ -40,10 +38,7 @@ foreach ($order->get_items() as $item_id => $item) {
     $product = $item->get_product();
     if (!($product instanceof WC_Product)) continue;
 
-    $candidate_upcs = [
-        trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true)),
-        trim((string) $product->get_meta('_upc', true)),
-    ];
+    $candidate_upcs = [];
     if (method_exists($product, 'get_global_unique_id')) {
         $candidate_upcs[] = trim((string) $product->get_global_unique_id('edit'));
     }

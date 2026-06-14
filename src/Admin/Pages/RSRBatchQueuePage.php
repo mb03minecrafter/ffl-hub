@@ -2,20 +2,17 @@
 
 namespace FFLHub\Admin\Pages;
 
-use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOrderLine;
-use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Services\Orders\Cron\RSRDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
-use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
-use FFLHub\Product\HolosunProductDetector;
-use FFLHub\Product\ProductMeta;
+use FFLHub\Distributor\Offers\DistributorOffersStore;
+use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -30,7 +27,6 @@ final class RSRBatchQueuePage
 
     private const FORM_ACTION_SAVE_SETTINGS = 'fflhub_rsr_batch_save_settings';
     private const FORM_ACTION_FORCE_RUN = 'fflhub_rsr_batch_force_run';
-    private const FORM_ACTION_HOLOSUN_MANUAL_PO = 'fflhub_rsr_holosun_manual_po';
     private const NONCE_ACTION = 'fflhub_rsr_batch_page_action';
     private const NONCE_FIELD = 'fflhub_rsr_batch_nonce';
 
@@ -99,8 +95,6 @@ final class RSRBatchQueuePage
             <?php $this->render_settings_form($settings); ?>
             <?php $this->render_force_run_box($data, $settings); ?>
             <?php $this->render_summary_cards($data, $settings); ?>
-            <?php $this->render_holosun_manual_totals_table($data); ?>
-            <?php $this->render_holosun_manual_table($data); ?>
             <?php $this->render_low_stock_watch_table($data, $settings); ?>
             <?php $this->render_running_totals_table($data); ?>
             <?php $this->render_entries_table($data); ?>
@@ -118,7 +112,7 @@ final class RSRBatchQueuePage
         $action = isset($_POST['fflhub_rsr_batch_action'])
             ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_rsr_batch_action']))
             : '';
-        if (!in_array($action, [self::FORM_ACTION_SAVE_SETTINGS, self::FORM_ACTION_FORCE_RUN, self::FORM_ACTION_HOLOSUN_MANUAL_PO], true)) {
+        if (!in_array($action, [self::FORM_ACTION_SAVE_SETTINGS, self::FORM_ACTION_FORCE_RUN], true)) {
             return;
         }
 
@@ -134,11 +128,6 @@ final class RSRBatchQueuePage
 
         if ($action === self::FORM_ACTION_SAVE_SETTINGS) {
             $this->handle_save_settings_post();
-            return;
-        }
-
-        if ($action === self::FORM_ACTION_HOLOSUN_MANUAL_PO) {
-            $this->handle_holosun_manual_po_post();
             return;
         }
 
@@ -202,74 +191,6 @@ final class RSRBatchQueuePage
         $this->redirect_with_notice('success', $msg);
     }
 
-    private function handle_holosun_manual_po_post(): void
-    {
-        $order_id = isset($_POST['fflhub_rsr_manual_order_id']) ? (int) $_POST['fflhub_rsr_manual_order_id'] : 0;
-        $job_key = isset($_POST['fflhub_rsr_manual_job_key'])
-            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_rsr_manual_job_key']))
-            : '';
-        $merchant_po = $this->sanitize_manual_po(
-            isset($_POST['fflhub_rsr_manual_merchant_po'])
-                ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_rsr_manual_merchant_po']))
-                : ''
-        );
-
-        if ($order_id <= 0 || trim($job_key) === '') {
-            $this->redirect_with_notice('error', __('Missing order or job key for manual RSR row.', 'ffl-hub'));
-        }
-        if ($merchant_po === '') {
-            $this->redirect_with_notice('error', __('Please enter a valid RSR PO number.', 'ffl-hub'));
-        }
-
-        $order = wc_get_order($order_id);
-        if (!$order || !method_exists($order, 'get_status')) {
-            $this->redirect_with_notice('error', __('Order not found for this RSR row.', 'ffl-hub'));
-        }
-
-        $order_status = strtolower(trim((string) $order->get_status()));
-        if ($order_status !== self::TARGET_WOO_ORDER_STATUS) {
-            $this->redirect_with_notice('error', __('This order is no longer in Processing status.', 'ffl-hub'));
-        }
-
-        $job = OrderPlacementJobsRepository::get_job($this->jobs_table, $order_id, $job_key);
-        if (!($job instanceof OrderPlacementJobRow)) {
-            $this->redirect_with_notice('error', __('RSR job row not found.', 'ffl-hub'));
-        }
-
-        if (strtolower(trim((string) $job->dist_id)) !== self::RSR_DIST_ID) {
-            $this->redirect_with_notice('error', __('That row is not an RSR job.', 'ffl-hub'));
-        }
-        if (!OrderPlacementKeysUtil::is_dealer_fulfilled_lane((string) $job->lane_norm())) {
-            $this->redirect_with_notice('error', __('That RSR row is not a dealer-fulfilled row.', 'ffl-hub'));
-        }
-        if (!$this->job_contains_holosun_line($job)) {
-            $this->redirect_with_notice('error', __('That RSR row is not a Holosun manual row.', 'ffl-hub'));
-        }
-
-        $job_status = strtolower(trim((string) $job->status));
-        if (!in_array($job_status, [OrderPlacementKeys::JOB_STATUS_BATCH_PENDING, OrderPlacementKeys::JOB_STATUS_MANUAL, OrderPlacementKeys::JOB_STATUS_SUCCESS], true)) {
-            $this->redirect_with_notice('error', __('That Holosun RSR row is not ready for manual PO completion yet.', 'ffl-hub'));
-        }
-
-        OrderPlacementJobWriter::apply_patch(
-            $this->jobs_table,
-            $order_id,
-            (string) $job->job_key,
-            OrderPlacementJobPatch::empty()
-                ->with_status(OrderPlacementKeys::JOB_STATUS_SUCCESS)
-                ->with_field('done_at', gmdate('Y-m-d H:i:s'))
-                ->with_field('merchant_po', $merchant_po)
-                ->with_field('last_error', '')
-                ->with_last_codes([])
-                ->clear_action_and_schedule()
-        );
-
-        $this->redirect_with_notice(
-            'success',
-            sprintf(__('Marked RSR Holosun job #%d successful with PO %s.', 'ffl-hub'), (int) $job->id, $merchant_po)
-        );
-    }
-
     private function redirect_with_notice(string $type, string $message): void
     {
         $url = add_query_arg(
@@ -282,26 +203,6 @@ final class RSRBatchQueuePage
         );
         wp_safe_redirect($url);
         exit;
-    }
-
-    private function sanitize_manual_po(string $value): string
-    {
-        $value = strtoupper(trim($value));
-        if ($value === '') {
-            return '';
-        }
-
-        $value = preg_replace('/[^A-Z0-9._-]/', '', $value);
-        if (!is_string($value)) {
-            return '';
-        }
-
-        $value = trim($value);
-        if ($value === '') {
-            return '';
-        }
-
-        return strlen($value) > 32 ? substr($value, 0, 32) : $value;
     }
 
     private function read_notice_from_query(): ?array
@@ -457,16 +358,11 @@ final class RSRBatchQueuePage
         $unit_cost_by_upc = [];
         $totals_by_upc = [];
         $entries = [];
-        $holosun_manual_entries = [];
-        $holosun_manual_totals_by_upc = [];
         $processing_order_ids = [];
         $status_counts = [];
         $total_quantity = 0;
         $line_count = 0;
         $queue_total_cost = 0.0;
-        $holosun_manual_total_quantity = 0;
-        $holosun_manual_line_count = 0;
-        $holosun_manual_total_cost = 0.0;
         $batch_pending_jobs = 0;
         $dispatch_ready_jobs = 0;
         $now_utc_ts = (int) current_time('timestamp', true);
@@ -483,9 +379,6 @@ final class RSRBatchQueuePage
             $processing_order_ids[(int) $job->order_id] = true;
             $job_status = strtolower(trim((string) $job->status));
             $status_counts[$job_status] = (int) ($status_counts[$job_status] ?? 0) + 1;
-            $job_contains_holosun = $this->job_contains_holosun_line($job);
-            $is_holosun_manual_row = $job_contains_holosun
-                && in_array($job_status, [OrderPlacementKeys::JOB_STATUS_MANUAL, OrderPlacementKeys::JOB_STATUS_SUCCESS], true);
             $include_in_queue_totals = ($job_status === OrderPlacementKeys::JOB_STATUS_BATCH_PENDING);
             if ($include_in_queue_totals) {
                 $batch_pending_jobs++;
@@ -521,26 +414,9 @@ final class RSRBatchQueuePage
                     'product_name' => $name,
                     'unit_cost' => $unit_cost,
                     'line_cost' => $line_cost,
-                    'is_holosun_manual_row' => $is_holosun_manual_row,
                     'last_error' => (string) ($job->last_error ?? ''),
                 ];
                 $entries[] = $entry;
-
-                if ($is_holosun_manual_row) {
-                    $holosun_manual_entries[] = $entry;
-                    if (!isset($holosun_manual_totals_by_upc[$upc])) {
-                        $holosun_manual_totals_by_upc[$upc] = ['upc' => $upc, 'product_name' => $name, 'total_qty' => 0, 'line_count' => 0, 'total_estimated_cost' => 0.0];
-                    }
-                    if ($holosun_manual_totals_by_upc[$upc]['product_name'] === 'Unknown product' && $name !== 'Unknown product') {
-                        $holosun_manual_totals_by_upc[$upc]['product_name'] = $name;
-                    }
-                    $holosun_manual_totals_by_upc[$upc]['total_qty'] += $qty;
-                    $holosun_manual_totals_by_upc[$upc]['line_count']++;
-                    $holosun_manual_totals_by_upc[$upc]['total_estimated_cost'] += $line_cost;
-                    $holosun_manual_total_quantity += $qty;
-                    $holosun_manual_line_count++;
-                    $holosun_manual_total_cost += $line_cost;
-                }
 
                 if (!$include_in_queue_totals) {
                     continue;
@@ -595,16 +471,6 @@ final class RSRBatchQueuePage
             return strcmp((string) ($a['upc'] ?? ''), (string) ($b['upc'] ?? ''));
         });
 
-        $holosun_manual_totals_rows = array_values($holosun_manual_totals_by_upc);
-        usort($holosun_manual_totals_rows, static function (array $a, array $b): int {
-            $aq = (int) ($a['total_qty'] ?? 0);
-            $bq = (int) ($b['total_qty'] ?? 0);
-            if ($aq !== $bq) {
-                return ($aq > $bq) ? -1 : 1;
-            }
-            return strcmp((string) ($a['upc'] ?? ''), (string) ($b['upc'] ?? ''));
-        });
-
         $stock_watch_rows = $this->build_stock_watch_rows(
             $batch_pending_demand_by_upc,
             $batch_pending_rows_by_upc,
@@ -624,13 +490,7 @@ final class RSRBatchQueuePage
             'queue_total_cost' => $queue_total_cost,
             'status_counts' => $status_counts,
             'totals_by_upc' => $totals_rows,
-            'holosun_manual_totals_by_upc' => $holosun_manual_totals_rows,
-            'holosun_manual_distinct_upc_count' => count($holosun_manual_totals_rows),
-            'holosun_manual_total_quantity' => $holosun_manual_total_quantity,
-            'holosun_manual_line_count' => $holosun_manual_line_count,
-            'holosun_manual_total_cost' => $holosun_manual_total_cost,
             'stock_watch_rows' => $stock_watch_rows,
-            'holosun_manual_entries' => $holosun_manual_entries,
             'entries' => $entries,
         ];
     }
@@ -664,16 +524,12 @@ final class RSRBatchQueuePage
             return [];
         }
 
-        $rsr = $this->get_rsr_distributor();
-        if (!($rsr instanceof DistributorBase)) {
-            return [];
-        }
-
         $watch_rows = [];
+        $available_by_upc = [];
         foreach ($demand_by_upc as $upc_key => $requested_qty) {
             $display_upc = (string) ($display_upc_by_key[$upc_key] ?? $upc_key);
             $product_name = (string) ($name_by_key[$upc_key] ?? 'Unknown product');
-            $available = $rsr->get_stock_quantity_by_upc($display_upc);
+            $available = $this->offer_available_quantity_for_upc($display_upc, $available_by_upc);
             $remaining_after_batch = ($available === null) ? null : ((int) $available - (int) $requested_qty);
             $distance_now = ($available === null) ? null : ((int) $available - $threshold);
             $distance_after_batch = ($remaining_after_batch === null) ? null : ((int) $remaining_after_batch - $threshold);
@@ -724,12 +580,6 @@ final class RSRBatchQueuePage
         return $watch_rows;
     }
 
-    private function get_rsr_distributor(): ?DistributorBase
-    {
-        $dist = $this->handler->get_distributor_by_id(self::RSR_DIST_ID);
-        return ($dist instanceof DistributorBase) ? $dist : null;
-    }
-
     private function normalize_upc_key(string $upc): string
     {
         $upc = trim($upc);
@@ -754,11 +604,7 @@ final class RSRBatchQueuePage
         $retry = (int) ($status_counts[OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED] ?? 0);
         $failed = (int) ($status_counts[OrderPlacementKeys::JOB_STATUS_FAILED] ?? 0);
         $manual = (int) ($status_counts[OrderPlacementKeys::JOB_STATUS_MANUAL] ?? 0);
-        $holosun_manual_entries = (array) ($data['holosun_manual_entries'] ?? []);
         $queue_total_cost = (float) ($data['queue_total_cost'] ?? 0.0);
-        $holosun_manual_total_quantity = (int) ($data['holosun_manual_total_quantity'] ?? 0);
-        $holosun_manual_distinct_upc_count = (int) ($data['holosun_manual_distinct_upc_count'] ?? 0);
-        $holosun_manual_total_cost = (float) ($data['holosun_manual_total_cost'] ?? 0.0);
         ?>
         <div class="fflhub-rsr-summary-grid">
             <section class="fflhub-rsr-summary-card">
@@ -769,12 +615,6 @@ final class RSRBatchQueuePage
                 <h2><?php esc_html_e('Dealer Jobs', 'ffl-hub'); ?></h2>
                 <div class="fflhub-rsr-metric"><?php echo esc_html((string) ((int) $data['job_count'])); ?></div>
                 <p><?php echo esc_html(sprintf(__('pending=%d, manual=%d, running=%d, scheduled=%d, retry=%d, failed=%d', 'ffl-hub'), $batch_pending, $manual, $running, $scheduled, $retry, $failed)); ?></p>
-            </section>
-            <section class="fflhub-rsr-summary-card is-danger">
-                <h2><?php esc_html_e('Legacy Holosun Manual Rows', 'ffl-hub'); ?></h2>
-                <div class="fflhub-rsr-metric"><?php echo esc_html((string) count($holosun_manual_entries)); ?></div>
-                <p><?php echo esc_html(sprintf(__('Qty: %d | Distinct UPCs: %d | Est. cost: %s', 'ffl-hub'), $holosun_manual_total_quantity, $holosun_manual_distinct_upc_count, $this->format_money($holosun_manual_total_cost))); ?></p>
-                <p><?php esc_html_e('New Holosun rows now use automatic RSR batch ordering.', 'ffl-hub'); ?></p>
             </section>
             <section class="fflhub-rsr-summary-card is-ok">
                 <h2><?php esc_html_e('Queue Totals by UPC', 'ffl-hub'); ?></h2>
@@ -813,104 +653,6 @@ final class RSRBatchQueuePage
                 <?php endforeach; ?>
             </tbody>
         </table>
-        <?php
-    }
-
-    private function render_holosun_manual_totals_table(array $data): void
-    {
-        $rows = (array) ($data['holosun_manual_totals_by_upc'] ?? []);
-        if (empty($rows)) {
-            return;
-        }
-        ?>
-        <h2><?php esc_html_e('Legacy Holosun Manual Totals by UPC', 'ffl-hub'); ?></h2>
-        <table class="widefat fixed striped">
-            <thead><tr><th><?php esc_html_e('UPC', 'ffl-hub'); ?></th><th><?php esc_html_e('Product Name', 'ffl-hub'); ?></th><th><?php esc_html_e('Total Qty', 'ffl-hub'); ?></th><th><?php esc_html_e('Line Entries', 'ffl-hub'); ?></th><th><?php esc_html_e('Est. Distributor Cost', 'ffl-hub'); ?></th></tr></thead>
-            <tbody>
-                <?php foreach ($rows as $row) : ?>
-                    <tr>
-                        <td><code><?php echo esc_html((string) ($row['upc'] ?? '')); ?></code></td>
-                        <td><?php echo esc_html((string) ($row['product_name'] ?? 'Unknown product')); ?></td>
-                        <td><?php echo esc_html((string) ((int) ($row['total_qty'] ?? 0))); ?></td>
-                        <td><?php echo esc_html((string) ((int) ($row['line_count'] ?? 0))); ?></td>
-                        <td><?php echo esc_html($this->format_money((float) ($row['total_estimated_cost'] ?? 0.0))); ?></td>
-                    </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-        <?php
-    }
-
-    private function render_holosun_manual_table(array $data): void
-    {
-        $entries = (array) ($data['holosun_manual_entries'] ?? []);
-        ?>
-        <section class="fflhub-rsr-holosun-manual-box">
-            <h2><?php esc_html_e('Legacy RSR Holosun Manual Order Rows', 'ffl-hub'); ?></h2>
-            <p class="description">
-                <?php esc_html_e('New Holosun dealer-fulfilled RSR rows use automatic RSR batch placement. This section only helps finish older rows already marked manual.', 'ffl-hub'); ?>
-            </p>
-            <?php if (empty($entries)) : ?>
-                <p><?php esc_html_e('No legacy Holosun RSR manual rows found for processing orders.', 'ffl-hub'); ?></p>
-            <?php else : ?>
-                <table class="widefat fixed striped">
-                    <thead>
-                        <tr>
-                            <th><?php esc_html_e('Job ID', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Order', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Status', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Merchant PO', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Product', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Qty', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Line Cost', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Manual PO / Mark Success', 'ffl-hub'); ?></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($entries as $entry) : ?>
-                            <?php
-                            $order_id = (int) ($entry['order_id'] ?? 0);
-                            $job_id = (int) ($entry['job_id'] ?? 0);
-                            $job_key = (string) ($entry['job_key'] ?? '');
-                            $status = strtolower(trim((string) ($entry['job_status'] ?? '')));
-                            $merchant_po = trim((string) ($entry['merchant_po'] ?? ''));
-                            $order_edit_url = admin_url('post.php?post=' . $order_id . '&action=edit');
-                            $status_class = $this->status_class($status);
-                            ?>
-                            <tr>
-                                <td><?php echo esc_html((string) $job_id); ?></td>
-                                <td><?php if ($order_id > 0) : ?><a href="<?php echo esc_url($order_edit_url); ?>"><?php echo esc_html('#' . (string) $order_id); ?></a><?php else : ?>-<?php endif; ?></td>
-                                <td><span class="fflhub-rsr-status-pill <?php echo esc_attr($status_class); ?>"><?php echo esc_html((string) ($entry['job_status'] ?? '')); ?></span></td>
-                                <td><code><?php echo esc_html($merchant_po !== '' ? $merchant_po : '-'); ?></code></td>
-                                <td><code><?php echo esc_html((string) ($entry['upc'] ?? '')); ?></code></td>
-                                <td><?php echo esc_html((string) ($entry['product_name'] ?? 'Unknown product')); ?></td>
-                                <td><?php echo esc_html((string) ((int) ($entry['qty'] ?? 0))); ?></td>
-                                <td><?php echo esc_html($this->format_money((float) ($entry['line_cost'] ?? 0.0))); ?></td>
-                                <td>
-                                    <form method="post" action="" class="fflhub-rsr-manual-po-form">
-                                        <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
-                                        <input type="hidden" name="fflhub_rsr_batch_action" value="<?php echo esc_attr(self::FORM_ACTION_HOLOSUN_MANUAL_PO); ?>" />
-                                        <input type="hidden" name="fflhub_rsr_manual_order_id" value="<?php echo esc_attr((string) $order_id); ?>" />
-                                        <input type="hidden" name="fflhub_rsr_manual_job_key" value="<?php echo esc_attr($job_key); ?>" />
-                                        <input
-                                            type="text"
-                                            name="fflhub_rsr_manual_merchant_po"
-                                            value="<?php echo esc_attr($merchant_po); ?>"
-                                            maxlength="32"
-                                            placeholder="<?php esc_attr_e('Enter RSR PO', 'ffl-hub'); ?>"
-                                            class="regular-text fflhub-rsr-manual-po-input" />
-                                        <button type="submit" class="button button-secondary button-small">
-                                            <?php echo esc_html($status === OrderPlacementKeys::JOB_STATUS_SUCCESS ? __('Update PO', 'ffl-hub') : __('Save + Mark Success', 'ffl-hub')); ?>
-                                        </button>
-                                    </form>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            <?php endif; ?>
-        </section>
         <?php
     }
 
@@ -1016,9 +758,7 @@ final class RSRBatchQueuePage
 
     private function render_entries_table(array $data): void
     {
-        $entries = array_values(array_filter((array) $data['entries'], static function (array $entry): bool {
-            return empty($entry['is_holosun_manual_row']);
-        }));
+        $entries = (array) $data['entries'];
         if (empty($entries)) {
             echo '<p>' . esc_html__('No RSR dealer line entries found for processing orders.', 'ffl-hub') . '</p>';
             return;
@@ -1106,21 +846,6 @@ final class RSRBatchQueuePage
         return $ts <= $now_utc_ts;
     }
 
-    private function job_contains_holosun_line(OrderPlacementJobRow $job): bool
-    {
-        foreach ($job->payload_lines() as $line) {
-            if (!($line instanceof DistributorOrderLine)) {
-                continue;
-            }
-
-            if (HolosunProductDetector::is_holosun_upc((string) $line->upc)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private function resolve_product_name_for_upc(string $upc, array &$cache): string
     {
         $upc = trim($upc);
@@ -1146,57 +871,95 @@ final class RSRBatchQueuePage
 
     private function resolve_distributor_unit_cost_for_upc(string $upc, array &$cache): float
     {
-        $upc = trim($upc);
+        $upc = $this->normalize_upc_key($upc);
         if ($upc === '') {
             return 0.0;
         }
         if (array_key_exists($upc, $cache)) {
             return (float) $cache[$upc];
         }
-        $product_id = $this->find_product_id_by_upc($upc);
-        if ($product_id <= 0) {
-            $cache[$upc] = 0.0;
-            return 0.0;
-        }
-        $product = wc_get_product($product_id);
-        if (!$product) {
-            $cache[$upc] = 0.0;
-            return 0.0;
-        }
-        $dealer_price = $this->to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
-        $true_cost = $this->to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true));
-        $unit_cost = ($dealer_price > 0.0) ? $dealer_price : $true_cost;
-        $cache[$upc] = $unit_cost;
-        return $unit_cost;
+
+        $cache[$upc] = $this->offer_dealer_price_for_upc($upc);
+        return (float) $cache[$upc];
     }
 
     private function find_product_id_by_upc(string $upc): int
     {
-        global $wpdb;
-        $upc = trim($upc);
+        $upc = $this->normalize_upc_key($upc);
         if ($upc === '') {
             return 0;
         }
-        foreach ([ProductMeta::FFLHUB_UPC_META, '_upc', 'upc'] as $meta_key) {
-            $sql = $wpdb->prepare(
-                "SELECT pm.post_id
-                 FROM {$wpdb->postmeta} pm
-                 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-                 WHERE pm.meta_key = %s
-                   AND pm.meta_value = %s
-                   AND p.post_type = 'product'
-                   AND p.post_status IN ('publish', 'private')
-                 ORDER BY pm.post_id DESC
-                 LIMIT 1",
-                $meta_key,
-                $upc
-            );
-            $found_id = (int) $wpdb->get_var($sql);
-            if ($found_id > 0) {
-                return $found_id;
-            }
+        $row = ProductStateStore::get_row_for_upc($upc);
+
+        return is_array($row) ? (int) ($row['product_id'] ?? 0) : 0;
+    }
+
+    private function offer_dealer_price_for_upc(string $upc): float
+    {
+        global $wpdb;
+
+        if (!$wpdb || $upc === '') {
+            return 0.0;
         }
-        return 0;
+
+        DistributorOffersStore::ensure_schema();
+        $table = DistributorOffersStore::table_name();
+        $value = $wpdb->get_var(
+            $wpdb->prepare(
+                "
+                SELECT dealer_price
+                FROM {$table}
+                WHERE upc = %s
+                  AND distributor_id = %s
+                  AND enabled = 1
+                LIMIT 1
+                ",
+                $upc,
+                self::RSR_DIST_ID
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        return $this->to_non_negative_float($value);
+    }
+
+    /**
+     * @param array<string,int|null> $cache
+     */
+    private function offer_available_quantity_for_upc(string $upc, array &$cache): ?int
+    {
+        global $wpdb;
+
+        $upc = $this->normalize_upc_key($upc);
+        if ($upc === '') {
+            return null;
+        }
+        if (array_key_exists($upc, $cache)) {
+            return $cache[$upc];
+        }
+        if (!$wpdb) {
+            $cache[$upc] = null;
+            return null;
+        }
+
+        DistributorOffersStore::ensure_schema();
+        $table = DistributorOffersStore::table_name();
+        $value = $wpdb->get_var(
+            $wpdb->prepare(
+                "
+                SELECT qty
+                FROM {$table}
+                WHERE upc = %s
+                  AND distributor_id = %s
+                  AND enabled = 1
+                LIMIT 1
+                ",
+                $upc,
+                self::RSR_DIST_ID
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $cache[$upc] = ($value === null) ? null : max(0, (int) $value);
+        return $cache[$upc];
     }
 
     private function sanitize_dispatch_time(string $value): string
@@ -1304,7 +1067,7 @@ final class RSRBatchQueuePage
     {
         ?>
         <style>
-            .fflhub-rsr-batch-card,.fflhub-rsr-batch-force-box,.fflhub-rsr-summary-card,.fflhub-rsr-holosun-manual-box{background:#fff;border:1px solid #dcdcde;border-radius:10px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.04);margin:14px 0}
+            .fflhub-rsr-batch-card,.fflhub-rsr-batch-force-box,.fflhub-rsr-summary-card{background:#fff;border:1px solid #dcdcde;border-radius:10px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.04);margin:14px 0}
             .fflhub-rsr-summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:14px 0 18px}
             .fflhub-rsr-summary-card{margin:0}
             .fflhub-rsr-summary-card.is-ok{border-color:#a7f3d0;background:#ecfdf5}

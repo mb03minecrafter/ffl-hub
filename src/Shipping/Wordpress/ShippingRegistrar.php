@@ -2,7 +2,7 @@
 
 namespace FFLHub\Shipping\Wordpress;
 
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Shipping\Methods\FFLHubShippingMethod;
 
 if (!defined('ABSPATH')) exit;
@@ -55,7 +55,7 @@ class ShippingRegistrar
                 $product = $item['data'] ?? null;
 
                 if ($product instanceof \WC_Product) {
-                    $dist_id = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
+                    $dist_id = ProductStateStore::get_primary_distributor_for_product($product);
                     if ($dist_id !== '') {
                         $fflhub_contents[$item_key] = $item;
                         continue;
@@ -216,7 +216,7 @@ class ShippingRegistrar
                 continue;
             }
 
-            $dist_id = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
+            $dist_id = ProductStateStore::get_primary_distributor_for_product($product);
             if ($dist_id !== '') {
                 return 'fflhub';
             }

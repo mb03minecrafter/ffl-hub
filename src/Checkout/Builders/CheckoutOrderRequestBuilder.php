@@ -7,7 +7,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 
 use FFLHub\FFL\Data\FFLRepository;
 use FFLHub\FFL\Data\FFLRowMapper;
@@ -62,33 +62,27 @@ final class CheckoutOrderRequestBuilder
                 continue;
             }
 
-            $product_id = isset($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
-            if ($product_id <= 0) {
-                continue;
-            }
-
-            $product = wc_get_product($product_id);
+            $product = self::product_from_cart_item($cart_item);
             if (!($product instanceof WC_Product)) {
                 continue;
             }
 
-            $managed = (int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
-            if ($managed !== 1) {
+            $state_row = self::active_product_state_row_for_product($product);
+            if (!is_array($state_row)) {
                 continue;
             }
 
-            $ffl_required = ((int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true) === 1);
+            $ffl_required = ((int) ($state_row['ffl_required'] ?? 0) === 1);
             if (!$ffl_required) {
                 continue;
             }
 
-            $dist_id = strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)));
+            $dist_id = strtolower(trim((string) ($state_row['distributor_id'] ?? '')));
             if ($dist_id === '') {
                 continue;
             }
 
-            $upc_raw = trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true));
-            $upc     = self::digits_only($upc_raw);
+            $upc = self::digits_only((string) ($state_row['upc'] ?? ''));
             if ($upc === '') {
                 continue;
             }
@@ -130,37 +124,27 @@ final class CheckoutOrderRequestBuilder
                 continue;
             }
 
-            $product_id = isset($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
-            if ($product_id <= 0) {
-                continue;
-            }
-
-            $product = wc_get_product($product_id);
+            $product = self::product_from_cart_item($cart_item);
             if (!($product instanceof WC_Product)) {
                 continue;
             }
 
-            $managed = (int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
-            if ($managed !== 1) {
+            $state_row = self::active_product_state_row_for_product($product);
+            if (!is_array($state_row)) {
                 continue;
             }
 
-            $dist_id = strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)));
+            $dist_id = strtolower(trim((string) ($state_row['distributor_id'] ?? '')));
             if ($dist_id === '') {
                 continue;
             }
 
-            $upc_raw = trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true));
-            if ($upc_raw === '') {
-                continue;
-            }
-
-            $upc = self::digits_only($upc_raw);
+            $upc = self::digits_only((string) ($state_row['upc'] ?? ''));
             if ($upc === '') {
                 continue;
             }
 
-            $ffl_required = ((int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true) === 1);
+            $ffl_required = ((int) ($state_row['ffl_required'] ?? 0) === 1);
 
             $original_qty = isset($cart_item['quantity']) ? (int) $cart_item['quantity'] : 1;
             $original_qty = max(1, $original_qty);
@@ -178,10 +162,12 @@ final class CheckoutOrderRequestBuilder
 
             $qty = $original_qty;
             $local_take_qty = 0;
-            if (self::local_stock_override_enabled($product)) {
+            $product_id = (int) ($state_row['product_id'] ?? $product->get_id());
+            $state_local_qty = ProductStateStore::get_local_stock_override_qty_from_row($state_row);
+            if ($product_id > 0 && $state_local_qty > 0) {
                 // Only distributor-fulfilled quantity should be sent through distributor validation.
                 if (!isset($local_remaining_by_product[$product_id])) {
-                    $local_remaining_by_product[$product_id] = self::local_stock_override_qty($product);
+                    $local_remaining_by_product[$product_id] = $state_local_qty;
                 }
 
                 $local_available_qty = max(0, (int) ($local_remaining_by_product[$product_id] ?? 0));
@@ -195,7 +181,8 @@ final class CheckoutOrderRequestBuilder
             if (is_callable($debug)) {
                 $debug('cart item picked', [
                     'product_id'    => $product_id,
-                    'managed'       => $managed,
+                    'managed'       => 1,
+                    'state_product_id' => (int) ($state_row['product_id'] ?? 0),
                     'dist_id'       => $dist_id,
                     'upc'           => $upc,
                     'ffl_required'  => $ffl_required ? 1 : 0,
@@ -766,23 +753,17 @@ final class CheckoutOrderRequestBuilder
                 continue;
             }
 
-            $product_id = isset($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
-            if ($product_id <= 0) {
-                continue;
-            }
-
-            $product = wc_get_product($product_id);
+            $product = self::product_from_cart_item($cart_item);
             if (!($product instanceof WC_Product)) {
                 continue;
             }
 
-            $managed = (int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
-            if ($managed !== 1) {
+            $state_row = self::active_product_state_row_for_product($product);
+            if (!is_array($state_row)) {
                 continue;
             }
 
-            $raw  = (string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true);
-            $have = self::digits_only($raw);
+            $have = self::digits_only((string) ($state_row['upc'] ?? ''));
 
             if ($have !== '' && $have === $needle) {
                 return (string) $product->get_name();
@@ -792,37 +773,50 @@ final class CheckoutOrderRequestBuilder
         return null;
     }
 
+    /**
+     * Prefer Woo's cart product object so variation/parent handling matches the
+     * actual cart line. Fall back to product_id lookup for older cart shapes.
+     *
+     * @param array<string,mixed> $cart_item
+     */
+    private static function product_from_cart_item(array $cart_item): ?WC_Product
+    {
+        $product = $cart_item['data'] ?? null;
+        if ($product instanceof WC_Product) {
+            return $product;
+        }
+
+        $product_id = isset($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
+        if ($product_id <= 0) {
+            return null;
+        }
+
+        $product = wc_get_product($product_id);
+        return ($product instanceof WC_Product) ? $product : null;
+    }
+
+    /**
+     * Product state is the new managed-product signal for checkout validation.
+     *
+     * @return array<string,mixed>|null
+     */
+    private static function active_product_state_row_for_product(WC_Product $product): ?array
+    {
+        $row = ProductStateStore::get_row_for_product($product);
+        if (!is_array($row)) {
+            return null;
+        }
+
+        $status = strtolower(trim((string) ($row['status'] ?? '')));
+        return ($status === 'active') ? $row : null;
+    }
+
     /* ---------------- Tiny normalizers ---------------- */
 
     private static function digits_only(string $s): string
     {
         $v = preg_replace('/\D+/', '', $s);
         return is_string($v) ? $v : '';
-    }
-
-    private static function local_stock_override_enabled(WC_Product $product): bool
-    {
-        return self::is_truthy_meta($product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true));
-    }
-
-    private static function local_stock_override_qty(WC_Product $product): int
-    {
-        $raw = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
-        return is_numeric((string) $raw) ? max(0, (int) $raw) : 0;
-    }
-
-    private static function is_truthy_meta(mixed $value): bool
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        if (is_numeric($value)) {
-            return ((float) $value) > 0;
-        }
-
-        $normalized = strtolower(trim((string) $value));
-        return in_array($normalized, ['1', 'yes', 'true', 'on'], true);
     }
 }
 

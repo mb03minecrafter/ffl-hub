@@ -5,17 +5,17 @@ namespace FFLHub\Distributor\Services\Orders\Optimization;
 use WC_Order;
 use WC_Order_Item_Product;
 use WC_Product;
-use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\DistributorProductPayload;
+use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -35,9 +35,9 @@ final class DealerBatchShippingOptimizer
     private const QUERY_LIMIT = 1000;
     private const EPSILON = 0.0001;
 
-    private DistributorHandler $handler;
     private OrderPlacementJobsTable $jobs_table;
     private DealerBatchOptimizerAuditTable $audit_table;
+    private bool $offers_schema_ready = false;
 
     /** @var array<string,DistributorProductPayload|null> */
     private array $payload_cache = [];
@@ -47,7 +47,6 @@ final class DealerBatchShippingOptimizer
         OrderPlacementJobsTable $jobs_table,
         ?DealerBatchOptimizerAuditTable $audit_table = null
     ) {
-        $this->handler = $handler;
         $this->jobs_table = $jobs_table;
         $this->audit_table = $audit_table ?: new DealerBatchOptimizerAuditTable();
     }
@@ -324,11 +323,6 @@ final class DealerBatchShippingOptimizer
         }
 
         if (!Options::is_distributor_enabled($source)) {
-            return null;
-        }
-
-        $source_distributor = $this->handler->get_distributor_by_id($source);
-        if (!($source_distributor instanceof DistributorBase)) {
             return null;
         }
 
@@ -1033,9 +1027,11 @@ final class DealerBatchShippingOptimizer
 
     private function pricing_payload(string $dist_id, string $upc): ?DistributorProductPayload
     {
+        global $wpdb;
+
         $dist_id = OrderPlacementKeysUtil::normalize_dist_id($dist_id);
         $upc = OrderPlacementProductUtil::normalize_upc($upc);
-        if ($dist_id === '' || $upc === '') {
+        if ($dist_id === '' || $upc === '' || !$wpdb) {
             return null;
         }
 
@@ -1044,25 +1040,109 @@ final class DealerBatchShippingOptimizer
             return $this->payload_cache[$key];
         }
 
-        $dist = $this->handler->get_distributor_by_id($dist_id);
-        if (!($dist instanceof DistributorBase)) {
+        if (!$this->offers_schema_ready) {
+            DistributorOffersStore::ensure_schema();
+            $this->offers_schema_ready = true;
+        }
+
+        $table = DistributorOffersStore::table_name();
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                "
+                SELECT
+                    upc,
+                    distributor_id,
+                    distributor_product_id,
+                    distributor_sku,
+                    manufacturer_norm,
+                    qty,
+                    stock_status,
+                    dealer_price,
+                    shipping_cost,
+                    landed_cost,
+                    map_price,
+                    msrp,
+                    ffl_required,
+                    sot_required,
+                    dropship_enabled,
+                    shipping_weight_oz,
+                    shipping_length_in,
+                    shipping_width_in,
+                    shipping_height_in
+                FROM {$table}
+                WHERE upc = %s
+                  AND distributor_id = %s
+                  AND enabled = 1
+                LIMIT 1
+                ",
+                $upc,
+                $dist_id
+            ),
+            ARRAY_A
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if (!is_array($row)) {
             $this->payload_cache[$key] = null;
             return null;
         }
 
-        try {
-            $payload = $dist->get_pricing_payload_by_upc($upc);
-        } catch (\Throwable $e) {
-            $this->log_ctx('pricing_payload_error', [
-                'dist_id' => $dist_id,
-                'upc' => $upc,
-                'error' => $e->getMessage(),
-            ]);
-            $payload = null;
+        $this->payload_cache[$key] = $this->offer_row_to_payload($row);
+        return $this->payload_cache[$key];
+    }
+
+    /**
+     * Adapt the normalized offers row into the payload shape the existing
+     * optimizer already scores. Dealer batch moves compare dealer unit cost;
+     * batch freight savings are calculated separately from distributor
+     * thresholds, so landed_cost is kept as diagnostic/raw data rather than the
+     * candidate price.
+     *
+     * @param array<string,mixed> $row
+     */
+    private function offer_row_to_payload(array $row): DistributorProductPayload
+    {
+        $upc = OrderPlacementProductUtil::normalize_upc((string) ($row['upc'] ?? ''));
+        $sku = trim((string) ($row['distributor_sku'] ?? ''));
+        if ($sku === '') {
+            $sku = trim((string) ($row['distributor_product_id'] ?? ''));
         }
 
-        $this->payload_cache[$key] = ($payload instanceof DistributorProductPayload) ? $payload : null;
-        return $this->payload_cache[$key];
+        $stock_status = strtolower(trim((string) ($row['stock_status'] ?? '')));
+        $qty = max(0, (int) ($row['qty'] ?? 0));
+        if ($stock_status !== 'instock') {
+            $qty = 0;
+        }
+
+        $dealer_price = $this->money((float) ($row['dealer_price'] ?? 0));
+        $shipping_cost = $this->money((float) ($row['shipping_cost'] ?? 0));
+        $landed_cost = $this->money((float) ($row['landed_cost'] ?? 0));
+        if ($landed_cost <= 0.0 && $dealer_price > 0.0) {
+            $landed_cost = $this->money($dealer_price + $shipping_cost);
+        }
+
+        return new DistributorProductPayload(
+            $upc,
+            $sku,
+            '',
+            '',
+            $dealer_price,
+            $this->money((float) ($row['map_price'] ?? 0)),
+            $this->money((float) ($row['msrp'] ?? 0)),
+            $qty,
+            $shipping_cost,
+            $landed_cost,
+            '',
+            (int) ($row['ffl_required'] ?? 0) === 1,
+            (int) ($row['dropship_enabled'] ?? 0) === 1,
+            null,
+            $row,
+            $this->nullable_string($row['shipping_weight_oz'] ?? null),
+            (int) ($row['sot_required'] ?? 0) === 1,
+            $this->nullable_string($row['shipping_length_in'] ?? null),
+            $this->nullable_string($row['shipping_width_in'] ?? null),
+            $this->nullable_string($row['shipping_height_in'] ?? null),
+            $this->nullable_string($row['manufacturer_norm'] ?? null)
+        );
     }
 
     /**
@@ -1099,10 +1179,7 @@ final class DealerBatchShippingOptimizer
                 continue;
             }
 
-            $upc = OrderPlacementProductUtil::normalize_upc((string) $item->get_meta(ProductMeta::FFLHUB_UPC_META, true));
-            if ($upc === '') {
-                $upc = OrderPlacementProductUtil::normalize_upc((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true));
-            }
+            $upc = $this->order_item_upc($item, $product);
             if ($upc === '' || !isset($wanted[$upc]) || isset($context[$upc])) {
                 continue;
             }
@@ -1163,69 +1240,37 @@ final class DealerBatchShippingOptimizer
      */
     private function product_distributor_lock(WC_Product $product): array
     {
-        $enabled = $this->truthy_meta($product->get_meta(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_ENABLED_META, true));
-        $ids = $this->normalize_distributor_lock_ids($product->get_meta(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_IDS_META, true));
-
-        if (!$enabled && $product->is_type('variation')) {
-            $parent_id = (int) $product->get_parent_id();
-            if ($parent_id > 0) {
-                $parent = wc_get_product($parent_id);
-                if ($parent instanceof WC_Product) {
-                    $enabled = $this->truthy_meta($parent->get_meta(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_ENABLED_META, true));
-                    $ids = $this->normalize_distributor_lock_ids($parent->get_meta(ProductMeta::FFLHUB_DISTRIBUTOR_LOCK_IDS_META, true));
-                }
-            }
-        }
+        $ids = ProductStateStore::get_allowed_distributor_ids_for_product($product);
 
         return [
-            'enabled' => $enabled,
+            'enabled' => !empty($ids),
             'ids' => $ids,
         ];
     }
 
-    /**
-     * @param mixed $raw
-     * @return array<int,string>
-     */
-    private function normalize_distributor_lock_ids($raw): array
+    private function order_item_upc(WC_Order_Item_Product $item, WC_Product $product): string
     {
-        if (is_string($raw)) {
-            $decoded = json_decode($raw, true);
-            if (is_array($decoded)) {
-                $raw = $decoded;
-            } else {
-                $raw = preg_split('/[\s,;|]+/', $raw);
+        $upc = OrderPlacementProductUtil::extract_upc_from_product($product);
+        if ($upc !== '') {
+            return $upc;
+        }
+
+        $state_row = ProductStateStore::get_row_for_product($product);
+        if (is_array($state_row)) {
+            $upc = OrderPlacementProductUtil::normalize_upc((string) ($state_row['upc'] ?? ''));
+            if ($upc !== '') {
+                return $upc;
             }
         }
 
-        if (!is_array($raw)) {
-            return [];
-        }
-
-        $ids = [];
-        foreach ($raw as $value) {
-            $id = OrderPlacementKeysUtil::normalize_dist_id((string) $value);
-            if ($id !== '') {
-                $ids[$id] = $id;
+        foreach (['_upc', 'upc', 'UPC'] as $meta_key) {
+            $upc = OrderPlacementProductUtil::normalize_upc((string) $item->get_meta($meta_key, true));
+            if ($upc !== '') {
+                return $upc;
             }
         }
 
-        return array_values($ids);
-    }
-
-    /**
-     * @param mixed $value
-     */
-    private function truthy_meta($value): bool
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-        if (is_numeric($value)) {
-            return ((int) $value) > 0;
-        }
-
-        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'on'], true);
+        return OrderPlacementProductUtil::normalize_upc((string) $item->get_meta('_sku', true));
     }
 
     private function normalize_mysql_datetime_for_query(string $value): string
@@ -1245,6 +1290,13 @@ final class DealerBatchShippingOptimizer
         }
 
         return round(max(0.0, $value), 2);
+    }
+
+    private function nullable_string($value): ?string
+    {
+        $value = trim((string) ($value ?? ''));
+
+        return $value !== '' ? $value : null;
     }
 
     private function rsr_weekend_hold_active(): bool

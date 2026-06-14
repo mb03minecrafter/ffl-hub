@@ -34,7 +34,7 @@ use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Distributor\Services\Orders\Util\DealerShipToResolver;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Order\OrderProfitAuditMeta;
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -1307,9 +1307,17 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             if ($upc !== '') {
                 return $upc;
             }
+
+            $state_row = ProductStateStore::get_row_for_product($product);
+            if (is_array($state_row)) {
+                $upc = OrderPlacementProductUtil::normalize_upc((string) ($state_row['upc'] ?? ''));
+                if ($upc !== '') {
+                    return $upc;
+                }
+            }
         }
 
-        foreach ([ProductMeta::FFLHUB_UPC_META, '_upc', 'upc', 'UPC'] as $meta_key) {
+        foreach (['_upc', 'upc', 'UPC'] as $meta_key) {
             $upc = OrderPlacementProductUtil::normalize_upc((string) $item->get_meta($meta_key, true));
             if ($upc !== '') {
                 return $upc;
@@ -1327,7 +1335,10 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         }
 
         if ($product instanceof WC_Product) {
-            return strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)));
+            $state_row = ProductStateStore::get_row_for_product($product);
+            if (is_array($state_row)) {
+                return strtolower(trim((string) ($state_row['distributor_id'] ?? '')));
+            }
         }
 
         return '';
@@ -1341,7 +1352,10 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         }
 
         if ($product instanceof WC_Product) {
-            $dealer_price = $this->positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
+            $state_row = ProductStateStore::get_row_for_product($product);
+            $dealer_price = is_array($state_row)
+                ? $this->positive_float($state_row['dealer_price'] ?? null)
+                : null;
             if ($dealer_price !== null) {
                 return $dealer_price;
             }

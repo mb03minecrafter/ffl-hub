@@ -18,15 +18,12 @@ use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
 use FFLHub\Admin\Pages\DistributorBatchQueuePage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
-use FFLHub\Admin\Pages\GunDealsPerformancePage;
 use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
 use FFLHub\Admin\Pages\ProductStatePage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
-use FFLHub\Admin\Pages\UpcStockAlertsPage;
 use FFLHub\Admin\Pages\ZandersCreditLimitPage;
-use FFLHub\Admin\Products\GunDealsClickColumns;
 use FFLHub\Admin\ProductMeta\BOMMetaBox;
 use FFLHub\Admin\ProductMeta\OrderFFLPanel;
 use FFLHub\Admin\ProductMeta\ProductMetaBox;
@@ -53,8 +50,6 @@ use FFLHub\Distributor\Services\Orders\Cron\ZandersCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerAuditTable;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
-use FFLHub\Feeds\GunDeals\GunDealsAnalyticsStore;
-use FFLHub\Feeds\GunDeals\GunDealsClickTracker;
 use FFLHub\Feeds\GunDeals\GunDealsFeedCronService;
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
@@ -65,7 +60,6 @@ use FFLHub\Product\CategoryInstaller;
 use FFLHub\Distributor\Services\OfferSync\ProductBestOffersStore;
 use FFLHub\Product\MapPriceVisibility;
 use FFLHub\Product\State\ProductStateStore;
-use FFLHub\Product\StockAlerts\UpcStockAlertCronService;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
 use FFLHub\Settings\Options;
@@ -109,15 +103,12 @@ final class Plugin
     public LipseysCreditLimitPage $lipseys_credit_limit_page;
     public MapPolicyPage $map_policy_page;
     public ProductStatePage $product_state_page;
-    public GunDealsPerformancePage $gundeals_performance_page;
-    public UpcStockAlertsPage $upc_stock_alerts_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public AuthorizeNetOrderRescueButton $authnet_order_rescue_button;
     public OrderCartComplianceMetaBox $order_cart_compliance_metabox;
     public OrderProfitAuditMetaBox $order_profit_audit_metabox;
     public OrderFulfillmentModeBadge $order_fulfillment_mode_badge;
     public ProductDistributorColumns $product_distributor_columns;
-    public GunDealsClickColumns $gundeals_click_columns;
 
     // Frontend-only
     public CheckoutFields $checkout_fields;
@@ -125,7 +116,6 @@ final class Plugin
     // Always-on
     public CartCompliance $cart_compliance;
     private QuoteEmailJobsCronService $quote_email_jobs_cron_service;
-    private UpcStockAlertCronService $upc_stock_alert_cron_service;
     private MailPoetAutoConfirmCronService $mailpoet_auto_confirm_cron_service;
     private GunDealsFeedCronService $gundeals_feed_cron_service;
 
@@ -164,15 +154,12 @@ final class Plugin
         $this->distributor_handler = new DistributorHandler($this->ffl_table);
         $this->distributor_handler->register_runtime_services();
 
-        $this->upc_stock_alert_cron_service = new UpcStockAlertCronService();
-        $this->upc_stock_alert_cron_service->register();
-
         $this->mailpoet_auto_confirm_cron_service = new MailPoetAutoConfirmCronService();
         $this->mailpoet_auto_confirm_cron_service->register();
 
         $this->gundeals_feed_cron_service = new GunDealsFeedCronService();
         $this->gundeals_feed_cron_service->register();
-        GunDealsAnalyticsStore::ensure_schema();
+        self::cleanup_gundeals_analytics_tables_once();
 
         ShippingRegistrar::init();
 
@@ -180,7 +167,6 @@ final class Plugin
         WooShippingLabelCostSync::init();
 
         MapPriceVisibility::init();
-        GunDealsClickTracker::init();
         QuoteCartLinkHandler::init();
 
         $this->cart_compliance = new CartCompliance($this->ffl_table, $this->distributor_handler);
@@ -244,12 +230,6 @@ final class Plugin
             $this->product_state_page = new ProductStatePage();
             $this->product_state_page->register();
 
-            $this->gundeals_performance_page = new GunDealsPerformancePage();
-            $this->gundeals_performance_page->register();
-
-            $this->upc_stock_alerts_page = new UpcStockAlertsPage($this->upc_stock_alert_cron_service);
-            $this->upc_stock_alerts_page->register();
-
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();
 
@@ -267,9 +247,6 @@ final class Plugin
 
             $this->product_distributor_columns = new ProductDistributorColumns();
             $this->product_distributor_columns->register();
-
-            $this->gundeals_click_columns = new GunDealsClickColumns();
-            $this->gundeals_click_columns->register();
 
             $this->ffl_importer_page = new FFLImporterPage($this->ffl_table);
             $this->ffl_importer_page->register();
@@ -326,7 +303,6 @@ final class Plugin
                 'option_prefix' => 'fflhub_zanders_dealer_batch',
                 'field_prefix' => 'fflhub_zanders_dealer_batch_page',
                 'cron_hook' => ZandersDealerBatchCronService::CRON_HOOK,
-                'manual_completion_enabled' => '1',
             ],
             [
                 'page_slug' => 'fflhub-sports-south-dealer-batch-queue',
@@ -408,15 +384,12 @@ final class Plugin
 
         (new DealerBatchOptimizerAuditTable())->createTables();
 
-        $upc_stock_alert_cron = new UpcStockAlertCronService();
-        $upc_stock_alert_cron->on_activation();
-
         $mailpoet_auto_confirm_cron = new MailPoetAutoConfirmCronService();
         $mailpoet_auto_confirm_cron->on_activation();
 
         $gundeals_feed_cron = new GunDealsFeedCronService();
         $gundeals_feed_cron->on_activation();
-        GunDealsAnalyticsStore::ensure_schema();
+        self::cleanup_gundeals_analytics_tables_once(true);
     }
 
     public static function deactivate(): void
@@ -430,14 +403,56 @@ final class Plugin
         $handler = new DistributorHandler($ffl_table);
         $handler->on_deactivate();
 
-        $upc_stock_alert_cron = new UpcStockAlertCronService();
-        $upc_stock_alert_cron->on_deactivation();
-
         $mailpoet_auto_confirm_cron = new MailPoetAutoConfirmCronService();
         $mailpoet_auto_confirm_cron->on_deactivation();
 
         $gundeals_feed_cron = new GunDealsFeedCronService();
         $gundeals_feed_cron->on_deactivation();
+    }
+
+    private static function cleanup_gundeals_analytics_tables_once(bool $force = false): void
+    {
+        $option = 'fflhub_gundeals_analytics_removed_at';
+        if (!$force && (string) get_option($option, '') !== '') {
+            return;
+        }
+
+        if (!$force && !(is_admin() || (defined('WP_CLI') && WP_CLI))) {
+            return;
+        }
+
+        global $wpdb;
+        if (!$wpdb) {
+            return;
+        }
+
+        foreach ([
+            'fflhub_gundeals_click_events',
+            'fflhub_gundeals_click_rollups',
+            'fflhub_gundeals_click_totals',
+            'fflhub_gundeals_feed_snapshots',
+        ] as $suffix) {
+            $table = self::sql_table_name($wpdb->prefix . $suffix);
+            $wpdb->query("DROP TABLE IF EXISTS {$table}");
+        }
+
+        foreach ([
+            'fflhub_gundeals_analytics_schema_version',
+            'fflhub_gundeals_legacy_click_meta_backfilled_at',
+            'fflhub_gundeals_clicks_raw_total',
+            'fflhub_gundeals_clicks_deduped_total',
+            'fflhub_gundeals_clicks_raw_daily',
+            'fflhub_gundeals_clicks_deduped_daily',
+        ] as $old_option) {
+            delete_option($old_option);
+        }
+
+        update_option($option, gmdate('Y-m-d H:i:s'), false);
+    }
+
+    private static function sql_table_name(string $table): string
+    {
+        return '`' . str_replace('`', '``', $table) . '`';
     }
 
     private static function ensure_quote_email_jobs_table(): void

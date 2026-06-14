@@ -693,10 +693,8 @@ final class StressCreateProductsCommand
             'post_type'      => 'product',
             'post_status'    => ['publish', 'draft', 'pending', 'private'],
             'posts_per_page' => 1,
-            'meta_query'     => [[
-                'key'   => \FFLHub\Product\ProductMeta::FFLHUB_UPC_META,
-                'value' => $upc,
-            ]],
+            'meta_key'       => '_global_unique_id',
+            'meta_value'     => $upc,
             'fields'         => 'ids',
         ]);
 

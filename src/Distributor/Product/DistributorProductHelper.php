@@ -11,14 +11,18 @@ use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
+use FFLHub\Distributor\Services\OfferSync\DistributorLookupOfferIngestService;
+use FFLHub\Distributor\Services\OfferSync\ProductBestOfferSelectionService;
+use FFLHub\Distributor\Services\OfferSync\ProductStateBestOfferApplyService;
+use FFLHub\Distributor\Services\OfferSync\ProductStateWooApplyService;
 use FFLHub\Product\CategoryInstaller;
 use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 use WC_Product;
 use WC_Product_Simple;
 use WP_Error;
-use WP_Query;
 
 /**
  * DistributorProductHelper
@@ -28,26 +32,19 @@ use WP_Query;
  *
  * Responsibilities:
  * - Create a draft WooCommerce product for a UPC from a selected distributor payload
- * - Persist "FFLHub snapshot" meta (costs/MAP/MSRP/selected distributor/etc.)
+ * - Seed product_state and normalized distributor_offers for new products
  * - Import images from all distributor offers that match the UPC
  * - Provide pricing helpers (global markup, fixed price, fixed percent)
  * - Provide a distributor lookup wrapper that returns UpcLookupResult|WP_Error
  *
  * Notes / assumptions:
- * - UPC is stored in ProductMeta::FFLHUB_UPC_META and also set as Woo global_unique_id when non-empty.
+ * - UPC is set as Woo global_unique_id when non-empty.
  * - Products are created as "draft" with stock managed.
  * - Pricing uses ceil(base_price) - 0.01 behavior to land on .99-style pricing.
  * - Some methods return WP_Error for admin/UI consumption instead of throwing.
  */
 class DistributorProductHelper
 {
-    /**
-     * Snapshot meta key for persisting the offers map at creation time.
-     *
-     * Stored as JSON so it can be inspected later for debugging, analytics, and
-     * potential auto-switch logic.
-     */
-    private const OFFERS_SNAPSHOT_META_KEY = 'fflhub_offers_snapshot';
     private const CSSI_DISTRIBUTOR_ID = 'cssi';
     private const LIPSEYS_DISTRIBUTOR_ID = 'lipseys';
     private const BRAND_TAXONOMY_CANDIDATES = ['product_brand', 'pa_brand'];
@@ -153,39 +150,14 @@ class DistributorProductHelper
             return self::build_existing_product_response($existing_id);
         }
 
-        // B) Compute initial sell price for product creation.
-        $default_markup_mode = self::default_markup_mode_for_payload($selected_product);
-        $sell_price = self::get_creation_sell_price_from_payload($selected_product, $default_markup_mode);
+        // B) Build a draft Woo shell. Price, stock, and shipping are applied
+        // after the normalized offer/state pipeline selects the best offer.
+        $product = self::build_wc_product_from_payload($upc, $selected_product);
 
-        if ($sell_price === null || $sell_price <= 0) {
-            $error_message = __('Could not compute a valid retail price for this product.', 'ffl-hub');
-            if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-                $error_message = __('MAP Price Quote Required mode requires a valid MAP value for this product.', 'ffl-hub');
-            }
-
-            return new WP_Error(
-                'fflhub_no_price',
-                $error_message
-            );
-        }
-
-        // Keep LAST_COMPUTED as "global markup recommended" even when sell price mode is MAP.
-        $computed_price_for_meta = self::get_recommended_price_from_payload($selected_product);
-        if ($computed_price_for_meta === null || $computed_price_for_meta <= 0) {
-            $computed_price_for_meta = (float) $sell_price;
-        }
-
-        // C) Build WC product core fields (name/desc/sku/price/stock/status)
-        $product = self::build_wc_product_from_payload(
-            $upc,
-            $selected_product,
-            $sell_price
-        );
-
-        // D) Apply categories (prefer Lipsey's category path when available)
+        // C) Apply categories (prefer Lipsey's category path when available).
         self::apply_categories_from_payload($product, $selected_product, $offers);
 
-        // E) Save product and get ID
+        // D) Save product and get ID.
         $product_id = self::save_and_get_id($product);
         if (! $product_id) {
             return new WP_Error(
@@ -194,18 +166,47 @@ class DistributorProductHelper
             );
         }
 
-        // F) Apply FFLHub meta (selected payload snapshot)
-        self::apply_fflhub_meta_from_payload(
-            $product,
+        // E) Seed product_state and normalized offers. This replaces the old
+        // creation-time _fflhub_* product meta snapshot.
+        $state_result = ProductStateStore::create_starter_row_for_product(
+            $product_id,
             $upc,
-            $selected_dist_id,
-            $selected_product,
-            (float) $computed_price_for_meta,
-            $offers
+            [
+                'pricing_mode' => 'global_percent',
+                'pricing_percent' => Options::get_global_markup(),
+                'map_visibility_policy' => self::default_map_policy_for_payload($selected_product),
+            ]
         );
+        if (empty($state_result['ok'])) {
+            return new WP_Error(
+                'fflhub_product_state_seed_failed',
+                (string) ($state_result['message'] ?? __('Could not create product_state row.', 'ffl-hub'))
+            );
+        }
 
-        // NEW: persist an offers snapshot for debugging / future auto-switch logic
-        self::store_offers_snapshot_meta($product, $offers, $selected_dist_id);
+        $offer_result = DistributorLookupOfferIngestService::upsert_lookup_offers($upc, $offers);
+        if (empty($offer_result['ok']) || (int) ($offer_result['offers_upserted'] ?? 0) < 1) {
+            return new WP_Error(
+                'fflhub_offer_seed_failed',
+                __('Could not seed distributor offers for this product.', 'ffl-hub')
+            );
+        }
+
+        $best_result = ProductBestOfferSelectionService::refresh_changed_upcs();
+        if (empty($best_result['ok'])) {
+            return new WP_Error(
+                'fflhub_best_offer_refresh_failed',
+                __('Could not refresh normalized best offer rows.', 'ffl-hub')
+            );
+        }
+
+        $state_apply_result = ProductStateBestOfferApplyService::apply_changed_best_offers();
+        if (empty($state_apply_result['ok'])) {
+            return new WP_Error(
+                'fflhub_product_state_apply_failed',
+                __('Could not apply best offer data into product_state.', 'ffl-hub')
+            );
+        }
 
         // Apply Woo product brand from distributor payload.
         self::sync_product_brand_from_payload($product_id, $selected_product);
@@ -217,7 +218,7 @@ class DistributorProductHelper
             );
         }
 
-        // G) Import images from all distributors (selected distributor marked primary)
+        // F) Import images from all distributors (selected distributor marked primary).
         self::import_images_from_offers(
             $product_id,
             $upc,
@@ -225,15 +226,21 @@ class DistributorProductHelper
             $selected_dist_id
         );
 
-        // Persist meta
-        $product->save();
+        // G) Apply the newly calculated product_state values back into Woo.
+        $woo_apply_result = ProductStateWooApplyService::apply_product_ids([$product_id]);
+        if (empty($woo_apply_result['ok'])) {
+            return new WP_Error(
+                'fflhub_product_state_woo_apply_failed',
+                __('Could not apply product_state values to WooCommerce product.', 'ffl-hub')
+            );
+        }
 
         // H) Return success response
         return self::build_created_product_response($product_id);
     }
 
     /**
-     * Find existing product by UPC meta.
+     * Find existing product by Woo global unique ID.
      *
      * @return int|null Product ID if found, otherwise null
      */
@@ -249,12 +256,8 @@ class DistributorProductHelper
                 'post_type'      => 'product',
                 'post_status'    => ['publish', 'draft', 'pending', 'private'],
                 'posts_per_page' => 1,
-                'meta_query'     => [
-                    [
-                        'key'   => ProductMeta::FFLHUB_UPC_META,
-                        'value' => $upc,
-                    ],
-                ],
+                'meta_key'       => '_global_unique_id',
+                'meta_value'     => $upc,
                 'fields'         => 'ids',
             ]
         );
@@ -295,35 +298,28 @@ class DistributorProductHelper
      */
     private static function build_wc_product_from_payload(
         string $upc,
-        DistributorProductPayload $selected_product,
-        float $recommended_price
+        DistributorProductPayload $selected_product
     ): WC_Product_Simple {
         $product = new WC_Product_Simple();
 
         $name        = (string) ($selected_product->name ?? '');
         $sku         = (string) ($selected_product->sku ?? '');
         $description = (string) ($selected_product->description ?? '');
-        $qty         = (int) ($selected_product->quantity ?? 0);
 
         $name = trim($name);
         $sku  = trim($sku);
 
         $product->set_name($name !== '' ? $name : ($sku !== '' ? $sku : $upc));
         $product->set_description($description);
+        if ($upc !== '' && method_exists($product, 'set_global_unique_id')) {
+            $product->set_global_unique_id($upc);
+        }
 
         self::assign_unique_sku_for_new_product($product, $sku, $upc);
 
-        $prices = self::resolve_regular_and_sale_prices(
-            $recommended_price,
-            $selected_product->map ?? null,
-            $selected_product->msrp ?? null
-        );
-        $product->set_regular_price($prices['regular']);
-        $product->set_sale_price($prices['sale']);
-
         $product->set_manage_stock(true);
-        $product->set_stock_quantity($qty);
-        $product->set_stock_status($qty > 0 ? 'instock' : 'outofstock');
+        $product->set_stock_quantity(0);
+        $product->set_stock_status('outofstock');
 
         $product->set_status('draft');
         $product->set_catalog_visibility('visible');
@@ -494,432 +490,25 @@ class DistributorProductHelper
     }
 
     /**
-     * Write all plugin meta (based on the selected payload).
+     * Mirror product_state shipping dimensions into WooCommerce native shipping fields.
      *
-     * Stores:
-     * - UPC, managed flag, selected distributor id
-     * - LAST_* snapshots: true_cost, dealer_price, MAP, MSRP, computed price, shipping cost
-     * - FFL required flag
-     * - Pricing mode defaults
-     * - LAST_SYNC timestamp
-     *
-     * @param array<string,DistributorOffer> $offers
-     */
-    public static function apply_fflhub_meta_from_payload(
-        WC_Product_Simple $product,
-        string $upc,
-        string $selected_dist_id,
-        DistributorProductPayload $selected_product,
-        float $computed_price_for_meta,
-        array $offers = []
-    ): void {
-        $upc = trim($upc);
-        $selected_dist_id = trim($selected_dist_id);
-
-        $dealer_price = (float) ($selected_product->price ?? 0);
-        $true_cost    = (float) ($selected_product->true_cost ?? 0);
-
-        $map          = (float) ($selected_product->map ?? 0);
-        $msrp         = (float) ($selected_product->msrp ?? 0);
-        $ffl_required = (bool) ($selected_product->ffl_required ?? false);
-        $sot_required = (bool) ($selected_product->sot_required ?? false);
-        $dropship_enabled = (bool) ($selected_product->dropship_enabled ?? true);
-        $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
-        $dims = self::resolve_shipping_dimensions_for_meta($selected_product, $offers);
-
-        $ship_cost = $selected_product->shipping_cost ?? null;
-
-        // Keep global_unique_id (UPC/GTIN-ish) but only set if non-empty
-        if ($upc !== '') {
-            $product->set_global_unique_id($upc);
-        }
-
-        $product->update_meta_data(ProductMeta::FFLHUB_UPC_META, $upc);
-
-        // Store booleans consistently as 1/0
-        $product->update_meta_data(ProductMeta::FFLHUB_MANAGED_META, 1);
-
-        $product->update_meta_data(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id);
-
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_TRUE_COST_META, $true_cost);
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price);
-
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_MAP_META, $map);
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp);
-
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $computed_price_for_meta);
-
-        $product->update_meta_data(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required ? 1 : 0);
-        $product->update_meta_data(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled ? 1 : 0);
-        $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight);
-        $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length']);
-        $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width']);
-        $product->update_meta_data(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height']);
-        self::sync_woo_shipping_from_fflhub_values(
-            $product,
-            $shipping_weight,
-            $dims['length'],
-            $dims['width'],
-            $dims['height']
-        );
-        $product->update_meta_data(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required ? 1 : 0);
-
-        $default_map_policy = self::default_map_policy_for_payload($selected_product);
-        $default_markup_mode = self::default_markup_mode_for_payload($selected_product);
-        $product->update_meta_data(ProductMeta::FFLHUB_MAP_POLICY_META, $default_map_policy);
-        $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_MODE_META, $default_markup_mode);
-        $product->update_meta_data(ProductMeta::FFLHUB_MARKUP_PERCENT_META, 0);
-        $product->update_meta_data(ProductMeta::FFLHUB_FIXED_PRICE_META, '');
-        $product->update_meta_data(ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, 0);
-
-        if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            $product->update_meta_data(
-                ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META,
-                ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED
-            );
-            $product->update_meta_data(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, 0);
-        }
-
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost);
-
-        $product->update_meta_data(ProductMeta::FFLHUB_LAST_SYNC_META, current_time('mysql'));
-    }
-
-    /**
-     * Sync-time update of LAST_* snapshot meta.
-     *
-     * Returns true if ANY snapshot/meta value changed (excluding LAST_SYNC).
-     *
-     * Resilience:
-     * - Normalizes values before compare to avoid float formatting noise.
-     * - Avoids unnecessary writes when values are effectively identical.
-     */
-    public static function update_fflhub_meta_from_payload_for_sync(
-        WC_Product $product,
-        string $selected_dist_id,
-        DistributorProductPayload $selected_product,
-        float $computed_price_for_meta,
-        array $offers = []
-    ): bool {
-        $changed = false;
-
-        $dealer_price = (float) ($selected_product->price ?? 0);
-        $true_cost    = (float) ($selected_product->true_cost ?? 0);
-
-        $map       = (float) ($selected_product->map ?? 0);
-        $msrp      = (float) ($selected_product->msrp ?? 0);
-        $ship_cost = $selected_product->shipping_cost ?? null;
-        $dropship_enabled = ($selected_product->dropship_enabled ?? true) ? 1 : 0;
-        $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
-        $dims = self::resolve_shipping_dimensions_for_meta($selected_product, $offers);
-
-        $ffl_required = ($selected_product->ffl_required ?? false) ? 1 : 0;
-        $sot_required = ($selected_product->sot_required ?? false) ? 1 : 0;
-        $manual_shipping_override = self::is_manual_shipping_override_enabled($product);
-
-        /**
-         * Only update meta if different (string-compare to avoid float noise).
-         *
-         * @param string $key
-         * @param mixed  $new_val
-         * @param int    $precision
-         */
-        $set_meta_if_diff = function (string $key, $new_val, int $precision = 4) use ($product, &$changed): void {
-            $normalize = function ($v) use ($precision): string {
-                if ($v === null) {
-                    return '';
-                }
-
-                if (is_bool($v)) {
-                    return $v ? '1' : '0';
-                }
-
-                if (is_int($v) || is_float($v) || (is_string($v) && is_numeric($v))) {
-                    return (string) wc_format_decimal((float) $v, $precision);
-                }
-
-                return trim((string) $v);
-            };
-
-            $new_norm = $normalize($new_val);
-            $cur_norm = $normalize($product->get_meta($key, true));
-
-            if ($cur_norm !== $new_norm) {
-                DebugLogUtil::log_ctx('FFLHUB_CRON_DEBUG', 'TEST', 'Meta changed', [
-                    'product_id' => $product->get_id(),
-                    'key'        => $key,
-                    'cur'        => $cur_norm,
-                    'new'        => $new_norm,
-                ]);
-                $product->update_meta_data($key, $new_norm);
-                $changed = true;
-            }
-        };
-
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_TRUE_COST_META, $true_cost, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_MAP_META, $map, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $computed_price_for_meta, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id, 0);
-        $set_meta_if_diff(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required, 0);
-        $set_meta_if_diff(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required, 0);
-        $set_meta_if_diff(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled, 0);
-
-        if (!$manual_shipping_override) {
-            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight, 4);
-            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length'], 4);
-            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width'], 4);
-            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height'], 4);
-            if (self::sync_woo_shipping_from_fflhub_values(
-                $product,
-                $shipping_weight,
-                $dims['length'],
-                $dims['width'],
-                $dims['height']
-            )) {
-                $changed = true;
-            }
-        } else {
-            DebugLogUtil::log_ctx(
-                'FFLHUB_CRON_DEBUG',
-                'DistributorProductHelper',
-                'Skipping shipping meta sync because manual shipping override is enabled.',
-                [
-                    'product_id' => $product->get_id(),
-                ]
-            );
-
-            if (self::sync_woo_shipping_from_fflhub_meta($product)) {
-                $changed = true;
-            }
-        }
-
-        return $changed;
-    }
-
-    /**
-     * Sync-time update of FFLHub-only snapshot meta without WC_Product::save().
-     *
-     * Product sync can touch cost/source bookkeeping on every distributor source
-     * switch. Writing those internal fields through Woo CRUD fires product.updated
-     * webhooks, which can flood Action Scheduler for integrations like Klaviyo and
-     * Printful. Use this only when the caller has already determined that no
-     * storefront-facing Woo product fields need a product save.
-     *
-     * @param array<string,array<int,mixed>> $raw_meta
-     * @param array<string,DistributorOffer> $offers
-     * @param string[] $changed_keys
-     */
-    public static function update_fflhub_meta_direct_from_payload_for_sync(
-        int $product_id,
-        array $raw_meta,
-        string $selected_dist_id,
-        DistributorProductPayload $selected_product,
-        float $computed_price_for_meta,
-        array $offers = [],
-        array $changed_keys = []
-    ): bool {
-        if ($product_id <= 0) {
-            return false;
-        }
-
-        $changed = false;
-        $changed_lookup = [];
-        foreach ($changed_keys as $key) {
-            $key = trim((string) $key);
-            if ($key !== '') {
-                $changed_lookup[$key] = true;
-            }
-        }
-
-        $set_meta_if_diff = function (string $key, $new_val, int $precision = 4) use (
-            $product_id,
-            $raw_meta,
-            $changed_lookup,
-            &$changed
-        ): void {
-            if (!empty($changed_lookup) && !isset($changed_lookup[$key])) {
-                return;
-            }
-
-            $new_norm = self::normalize_sync_meta_compare_value($new_val, $precision);
-            $cur_norm = self::normalize_sync_meta_compare_value(
-                self::raw_meta_value_from_cache_array($raw_meta, $key),
-                $precision
-            );
-
-            if ($cur_norm !== $new_norm) {
-                update_post_meta($product_id, $key, $new_norm);
-                $changed = true;
-            }
-        };
-
-        $dealer_price = (float) ($selected_product->price ?? 0);
-        $true_cost    = (float) ($selected_product->true_cost ?? 0);
-        $map          = (float) ($selected_product->map ?? 0);
-        $msrp         = (float) ($selected_product->msrp ?? 0);
-        $ship_cost    = $selected_product->shipping_cost ?? null;
-        $dropship_enabled = ($selected_product->dropship_enabled ?? true) ? 1 : 0;
-        $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
-        $dims = self::resolve_shipping_dimensions_for_meta($selected_product, $offers);
-        $ffl_required = ($selected_product->ffl_required ?? false) ? 1 : 0;
-        $sot_required = ($selected_product->sot_required ?? false) ? 1 : 0;
-        $manual_shipping_override = self::is_truthy_meta_value(
-            self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META)
-        );
-
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_TRUE_COST_META, $true_cost, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_MAP_META, $map, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $computed_price_for_meta, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost, 4);
-        $set_meta_if_diff(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id, 0);
-        $set_meta_if_diff(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required, 0);
-        $set_meta_if_diff(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required, 0);
-        $set_meta_if_diff(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled, 0);
-
-        if (!$manual_shipping_override) {
-            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight, 4);
-            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length'], 4);
-            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width'], 4);
-            $set_meta_if_diff(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height'], 4);
-        }
-
-        return $changed;
-    }
-
-    /**
-     * Compare sync-time payload meta against a primed postmeta snapshot.
-     *
-     * This mirrors update_fflhub_meta_from_payload_for_sync() without hydrating a
-     * WC_Product. The cron uses it to skip Woo CRUD entirely for no-op rows.
-     *
-     * @param array<string,array<int,mixed>> $raw_meta
-     * @param array<string,DistributorOffer> $offers
-     * @return array{changed:bool,keys:array<int,string>}
-     */
-    public static function get_sync_payload_meta_changes_from_raw_meta(
-        array $raw_meta,
-        string $selected_dist_id,
-        DistributorProductPayload $selected_product,
-        float $computed_price_for_meta,
-        array $offers = []
-    ): array {
-        $changes = [];
-
-        $dealer_price = (float) ($selected_product->price ?? 0);
-        $true_cost    = (float) ($selected_product->true_cost ?? 0);
-        $map          = (float) ($selected_product->map ?? 0);
-        $msrp         = (float) ($selected_product->msrp ?? 0);
-        $ship_cost    = $selected_product->shipping_cost ?? null;
-        $dropship_enabled = ($selected_product->dropship_enabled ?? true) ? 1 : 0;
-        $shipping_weight = trim((string) ($selected_product->shipping_weight ?? ''));
-        $dims = self::resolve_shipping_dimensions_for_meta($selected_product, $offers);
-        $ffl_required = ($selected_product->ffl_required ?? false) ? 1 : 0;
-        $sot_required = ($selected_product->sot_required ?? false) ? 1 : 0;
-        $manual_shipping_override = self::is_truthy_meta_value(
-            self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META)
-        );
-
-        $diff_meta = function (string $key, $new_val, int $precision = 4) use ($raw_meta, &$changes): void {
-            $cur_norm = self::normalize_sync_meta_compare_value(
-                self::raw_meta_value_from_cache_array($raw_meta, $key),
-                $precision
-            );
-            $new_norm = self::normalize_sync_meta_compare_value($new_val, $precision);
-
-            if ($cur_norm !== $new_norm) {
-                $changes[] = $key;
-            }
-        };
-
-        $diff_woo_prop = function (string $key, ?string $expected) use ($raw_meta, &$changes): void {
-            if ($expected === null) {
-                return;
-            }
-
-            $current = self::normalized_product_prop(
-                self::raw_meta_value_from_cache_array($raw_meta, $key)
-            );
-
-            if ($current !== $expected) {
-                $changes[] = $key;
-            }
-        };
-
-        $diff_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, $true_cost, 4);
-        $diff_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, $dealer_price, 4);
-        $diff_meta(ProductMeta::FFLHUB_LAST_MAP_META, $map, 4);
-        $diff_meta(ProductMeta::FFLHUB_LAST_MSRP_META, $msrp, 4);
-        $diff_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, $computed_price_for_meta, 4);
-        $diff_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, $ship_cost, 4);
-        $diff_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, $selected_dist_id, 0);
-        $diff_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, $ffl_required, 0);
-        $diff_meta(ProductMeta::FFLHUB_SOT_REQUIRED_META, $sot_required, 0);
-        $diff_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, $dropship_enabled, 0);
-
-        if (!$manual_shipping_override) {
-            $diff_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, $shipping_weight, 4);
-            $diff_meta(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, $dims['length'], 4);
-            $diff_meta(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, $dims['width'], 4);
-            $diff_meta(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, $dims['height'], 4);
-
-            $diff_woo_prop('_weight', self::normalize_woo_weight_from_ounces($shipping_weight));
-            $diff_woo_prop('_length', self::normalize_woo_dimension_from_inches($dims['length']));
-            $diff_woo_prop('_width', self::normalize_woo_dimension_from_inches($dims['width']));
-            $diff_woo_prop('_height', self::normalize_woo_dimension_from_inches($dims['height']));
-        } else {
-            $diff_woo_prop(
-                '_weight',
-                self::normalize_woo_weight_from_ounces(
-                    self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_SHIPPING_WEIGHT_META)
-                )
-            );
-            $diff_woo_prop(
-                '_length',
-                self::normalize_woo_dimension_from_inches(
-                    self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META)
-                )
-            );
-            $diff_woo_prop(
-                '_width',
-                self::normalize_woo_dimension_from_inches(
-                    self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META)
-                )
-            );
-            $diff_woo_prop(
-                '_height',
-                self::normalize_woo_dimension_from_inches(
-                    self::raw_meta_value_from_cache_array($raw_meta, ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META)
-                )
-            );
-        }
-
-        $changes = array_values(array_unique(array_filter(array_map('strval', $changes))));
-
-        return [
-            'changed' => !empty($changes),
-            'keys'    => $changes,
-        ];
-    }
-
-    /**
-     * Mirror FFLHub shipping meta into WooCommerce native shipping fields.
-     *
-     * FFLHub stores weight in ounces. WooCommerce product weight is stored in
-     * the store's configured weight unit, which is usually pounds for this site.
+     * The method name is kept for old callers/scripts, but product_state is now
+     * the authoritative source. Weight is stored in ounces and converted to the
+     * WooCommerce store weight unit.
      */
     public static function sync_woo_shipping_from_fflhub_meta(WC_Product $product): bool
     {
+        $state_row = ProductStateStore::get_row_for_product($product);
+        if (!is_array($state_row)) {
+            return false;
+        }
+
         return self::sync_woo_shipping_from_fflhub_values(
             $product,
-            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true),
-            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, true),
-            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, true),
-            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, true)
+            $state_row['shipping_weight_oz'] ?? '',
+            $state_row['shipping_length_in'] ?? '',
+            $state_row['shipping_width_in'] ?? '',
+            $state_row['shipping_height_in'] ?? ''
         );
     }
 
@@ -1037,69 +626,6 @@ class DistributorProductHelper
     }
 
     /**
-     * Resolve shipping dimensions for meta persistence.
-     *
-     * Strategy:
-     * - Prefer selected payload dimensions when complete (L/W/H present).
-     * - If incomplete, scan other distributor offers for the first complete set.
-     * - If no complete fallback exists, keep selected partial values.
-     *
-     * @param array<string,DistributorOffer> $offers
-     * @return array{length:string,width:string,height:string}
-     */
-    private static function resolve_shipping_dimensions_for_meta(
-        DistributorProductPayload $selected_product,
-        array $offers = []
-    ): array {
-        $selected_len = self::normalize_dimension_value($selected_product->shipping_length_in ?? null);
-        $selected_wid = self::normalize_dimension_value($selected_product->shipping_width_in ?? null);
-        $selected_hei = self::normalize_dimension_value($selected_product->shipping_height_in ?? null);
-
-        if (self::has_complete_dimensions($selected_len, $selected_wid, $selected_hei)) {
-            return [
-                'length' => $selected_len,
-                'width'  => $selected_wid,
-                'height' => $selected_hei,
-            ];
-        }
-
-        foreach ($offers as $offer) {
-            if (!($offer instanceof DistributorOffer)) {
-                continue;
-            }
-
-            $payload = $offer->product ?? null;
-            if (!($payload instanceof DistributorProductPayload)) {
-                continue;
-            }
-
-            $len = self::normalize_dimension_value($payload->shipping_length_in ?? null);
-            $wid = self::normalize_dimension_value($payload->shipping_width_in ?? null);
-            $hei = self::normalize_dimension_value($payload->shipping_height_in ?? null);
-
-            if (self::has_complete_dimensions($len, $wid, $hei)) {
-                return [
-                    'length' => $len,
-                    'width'  => $wid,
-                    'height' => $hei,
-                ];
-            }
-        }
-
-        return [
-            'length' => $selected_len,
-            'width'  => $selected_wid,
-            'height' => $selected_hei,
-        ];
-    }
-
-    private static function normalize_dimension_value($value): string
-    {
-        $v = trim((string) ($value ?? ''));
-        return ($v === '' || strtolower($v) === 'null') ? '' : $v;
-    }
-
-    /**
      * Convert FFLHub ounce weight into Woo's configured product weight unit.
      *
      * @param mixed $value
@@ -1185,52 +711,6 @@ class DistributorProductHelper
         return is_numeric($raw) ? self::format_woo_decimal((float) $raw) : $raw;
     }
 
-    /**
-     * @param array<string,array<int,mixed>> $raw_meta
-     * @return mixed
-     */
-    private static function raw_meta_value_from_cache_array(array $raw_meta, string $key)
-    {
-        if (!isset($raw_meta[$key]) || !is_array($raw_meta[$key]) || $raw_meta[$key] === []) {
-            return '';
-        }
-
-        $value = $raw_meta[$key][0] ?? '';
-        return function_exists('maybe_unserialize') ? maybe_unserialize($value) : $value;
-    }
-
-    /**
-     * Normalize metadata exactly like sync-time product CRUD comparison.
-     *
-     * @param mixed $value
-     */
-    private static function normalize_sync_meta_compare_value($value, int $precision = 4): string
-    {
-        if ($value === null) {
-            return '';
-        }
-
-        if (is_bool($value)) {
-            return $value ? '1' : '0';
-        }
-
-        if (is_int($value) || is_float($value) || (is_string($value) && is_numeric($value))) {
-            return function_exists('wc_format_decimal')
-                ? (string) wc_format_decimal((float) $value, $precision)
-                : number_format((float) $value, max(0, $precision), '.', '');
-        }
-
-        return trim((string) $value);
-    }
-
-    /**
-     * @param mixed $value
-     */
-    private static function is_truthy_meta_value($value): bool
-    {
-        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'y', 'on'], true);
-    }
-
     private static function format_woo_decimal(float $value): string
     {
         $formatted = function_exists('wc_format_decimal')
@@ -1239,11 +719,6 @@ class DistributorProductHelper
 
         $formatted = rtrim(rtrim($formatted, '0'), '.');
         return $formatted === '' ? '0' : $formatted;
-    }
-
-    private static function has_complete_dimensions(string $length, string $width, string $height): bool
-    {
-        return $length !== '' && $width !== '' && $height !== '';
     }
 
     /**
@@ -1453,71 +928,6 @@ class DistributorProductHelper
     }
 
     /**
-     * Store a compact offers snapshot to product meta (JSON).
-     *
-     * This is intended to be small and stable, capturing the "decision context"
-     * at the time of product creation:
-     * - selected distributor id
-     * - key pricing fields per offer (true_cost, MAP/MSRP, qty, etc.)
-     *
-     * @param WC_Product_Simple $product
-     * @param array<string,DistributorOffer> $offers
-     * @param string $selected_dist_id
-     */
-    private static function store_offers_snapshot_meta(
-        WC_Product_Simple $product,
-        array $offers,
-        string $selected_dist_id
-    ): void {
-        $snapshot = [
-            'captured_at'      => current_time('mysql'),
-            'selected_dist_id' => (string) $selected_dist_id,
-            'offers'           => [],
-        ];
-
-        foreach ($offers as $offer) {
-            if (!($offer instanceof DistributorOffer)) {
-                continue;
-            }
-            if (!($offer->product instanceof DistributorProductPayload)) {
-                continue;
-            }
-
-            $p = $offer->product;
-
-            $dist_id = (string) ($offer->distributor_id ?? '');
-            if ($dist_id === '') {
-                continue;
-            }
-
-            $snapshot['offers'][$dist_id] = [
-                'label'         => (string) ($offer->label ?? ''),
-                'true_cost'     => (float) ($p->true_cost ?? 0),
-                'dealer_price'  => (float) ($p->price ?? 0),
-                'map'           => (float) ($p->map ?? 0),
-                'msrp'          => (float) ($p->msrp ?? 0),
-                'shipping_cost' => (float) ($p->shipping_cost ?? 0),
-                'shipping_weight' => (string) ($p->shipping_weight ?? ''),
-                'shipping_length_in' => (string) ($p->shipping_length_in ?? ''),
-                'shipping_width_in'  => (string) ($p->shipping_width_in ?? ''),
-                'shipping_height_in' => (string) ($p->shipping_height_in ?? ''),
-                'brand'         => (string) ($p->brand ?? ''),
-                'qty'           => (int) ($p->quantity ?? 0),
-                'ffl_required'  => ($p->ffl_required ?? false) ? 1 : 0,
-                'sot_required'  => ($p->sot_required ?? false) ? 1 : 0,
-                'sku'           => (string) ($p->sku ?? ''),
-            ];
-        }
-
-        $json = wp_json_encode($snapshot);
-        if (!is_string($json) || $json === '') {
-            $json = '{}';
-        }
-
-        $product->update_meta_data(self::OFFERS_SNAPSHOT_META_KEY, $json);
-    }
-
-    /**
      * Get a UPC lookup result from the DistributorHandler.
      *
      * Returns:
@@ -1646,96 +1056,6 @@ class DistributorProductHelper
     }
 
     /**
-     * Resolve MAP quote real price from product-level MAP real-price settings.
-     *
-     * Returns null when the product is not in MAP quote-required mode, has no MAP base,
-     * or computes to a non-positive value.
-     */
-    public static function get_map_real_price_for_product(WC_Product $product): ?float
-    {
-        $mode_raw = $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
-        $mode = ($mode_raw === '' && (string) $mode_raw !== '0')
-            ? ProductMeta::MARKUP_MODE_GLOBAL
-            : (int) $mode_raw;
-        if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            return null;
-        }
-
-        $map_base_for_mode = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true));
-        if ($map_base_for_mode === null) {
-            return null;
-        }
-
-        $real_mode_raw = $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_MODE_META, true);
-        $real_mode = ($real_mode_raw === '' && (string) $real_mode_raw !== '0')
-            ? ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED
-            : (int) $real_mode_raw;
-        if (!in_array($real_mode, [ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET, ProductMeta::MAP_REAL_PRICE_MODE_PERCENTAGE, ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED, ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT], true)) {
-            $real_mode = ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED;
-        }
-
-        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_RECOMMENDED) {
-            $recommended = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true));
-            if ($recommended === null) {
-                $recommended = self::to_positive_float($product->get_regular_price());
-            }
-            if ($recommended === null) {
-                $recommended = self::to_positive_float($product->get_price());
-            }
-            return $recommended;
-        }
-
-        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_FIXED_OFFSET) {
-            $cost_base = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true));
-            if ($cost_base === null) {
-                $cost_base = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
-            }
-            if ($cost_base === null) {
-                return null;
-            }
-
-            $offset = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_OFFSET_META, true)) ?? 0.0;
-            $real_price = round($cost_base + $offset, 2);
-            return ($real_price > 0.0) ? $real_price : null;
-        }
-
-        if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT) {
-            $cost_base = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true));
-            if ($cost_base === null) {
-                $cost_base = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
-            }
-            if ($cost_base === null) {
-                return null;
-            }
-
-            $shipping_cost = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true)) ?? 0.0;
-            $profit_target = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FIXED_PROFIT_META, true)) ?? 0.0;
-
-            $fee_percent = (float) Options::get_payment_processor_fee_percent();
-            if (!is_finite($fee_percent) || $fee_percent < 0.0) {
-                $fee_percent = 0.0;
-            }
-            $fee_fraction = min(0.99, $fee_percent / 100.0);
-            $denominator = 1.0 - $fee_fraction;
-            if ($denominator <= 0.0) {
-                return null;
-            }
-
-            // Matches the operator script formula:
-            // offset = (target_profit + shipping + (true_cost * fee_fraction)) / (1 - fee_fraction)
-            $offset = ($profit_target + $shipping_cost + ($cost_base * $fee_fraction)) / $denominator;
-            $real_price = round($cost_base + $offset, 2);
-
-            return ($real_price > 0.0) ? $real_price : null;
-        }
-
-        $pct = self::to_non_negative_float($product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_PERCENT_META, true)) ?? 0.0;
-        $discount = $map_base_for_mode * ($pct / 100.0);
-        $real_price = round($map_base_for_mode - $discount, 2);
-        return ($real_price > 0.0) ? $real_price : null;
-    }
-
-    /**
      * Back-compat misspelled method (keep existing callers working).
      *
      * Remove later once you’ve replaced all call sites.
@@ -1745,312 +1065,15 @@ class DistributorProductHelper
         return self::get_recommended_price_from_payload($selected_product);
     }
 
-    /**
-     * Determine default pricing mode for a payload at product creation.
-     *
-     * MAP policy behavior:
-     * - Brand MAP policies are creation defaults only.
-     * - Email/No-cart policies default to MAP Price mode only when payload MAP exists.
-     * - Otherwise defaults to regular global pricing mode.
-     */
-    public static function default_markup_mode_for_payload(DistributorProductPayload $payload): int
-    {
-        $map_policy = self::default_map_policy_for_payload($payload);
-        return ($map_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $map_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART)
-            ? ProductMeta::MARKUP_MODE_MAP_PRICE
-            : ProductMeta::MARKUP_MODE_GLOBAL;
-    }
-
     public static function default_map_policy_for_payload(DistributorProductPayload $payload): string
     {
         $brand = self::canonical_brand_name_from_payload($payload);
-        if ($brand !== '' && self::should_bypass_map_policy_pricing_for_brand($brand)) {
-            return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
-        }
-
-        $map_value = self::to_positive_float($payload->map ?? null);
-        if ($map_value === null) {
-            return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
-        }
-
         $map_policy = ($brand !== '') ? Options::get_map_policy_for_brand($brand) : '';
         if ($map_policy === Options::MAP_POLICY_EMAIL_FOR_QUOTE || $map_policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
             return $map_policy;
         }
 
         return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
-    }
-
-    /**
-     * Resolve initial creation-time sell price for a payload.
-     *
-     * - MAP Price mode: sell price equals payload MAP.
-     * - MAP Price mode without MAP: fall back to the regular recommended price.
-     * - Other modes: use global recommended price
-     */
-    private static function get_creation_sell_price_from_payload(
-        DistributorProductPayload $selected_product,
-        int $default_markup_mode
-    ): ?float {
-        if ($default_markup_mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            return self::resolve_map_mode_sell_price($selected_product->map ?? null, null)
-                ?? self::get_recommended_price_from_payload($selected_product);
-        }
-
-        return self::get_recommended_price_from_payload($selected_product);
-    }
-
-    /**
-     * Derive MAP fixed-profit dollars so net profit equals global markup %
-     * of final sale price after payment fees and shipping.
-     */
-    private static function default_map_fixed_profit_target_from_global_markup(
-        DistributorProductPayload $selected_product
-    ): ?float {
-        $cost_base = (is_numeric($selected_product->true_cost) && (float) $selected_product->true_cost > 0.0)
-            ? (float) $selected_product->true_cost
-            : ((is_numeric($selected_product->price) && (float) $selected_product->price > 0.0)
-                ? (float) $selected_product->price
-                : 0.0);
-        if ($cost_base <= 0.0) {
-            return null;
-        }
-
-        $shipping_cost = self::to_non_negative_float($selected_product->shipping_cost ?? null) ?? 0.0;
-
-        $markup_percent = (float) Options::get_global_markup();
-        if (!is_finite($markup_percent) || $markup_percent < 0.0) {
-            $markup_percent = 0.0;
-        }
-        $margin_fraction = $markup_percent / 100.0;
-
-        $fee_percent = (float) Options::get_payment_processor_fee_percent();
-        if (!is_finite($fee_percent) || $fee_percent < 0.0) {
-            $fee_percent = 0.0;
-        }
-        $fee_fraction = min(0.99, $fee_percent / 100.0);
-
-        $denominator = 1.0 - $fee_fraction - $margin_fraction;
-        if ($denominator <= 0.0) {
-            return null;
-        }
-
-        $profit_target = ($margin_fraction * ($cost_base + $shipping_cost)) / $denominator;
-        if (!is_finite($profit_target) || $profit_target < 0.0) {
-            return null;
-        }
-
-        return round($profit_target, 2);
-    }
-
-    /**
-     * Compute sell price for a given product using its stored pricing settings.
-     *
-     * Modes:
-     * - Fixed price: use stored fixed price
-     * - Global percent / fixed percent: apply percent to base cost
-     *
-     * Base cost preference:
-     * - Prefer payload->true_cost when > 0
-     * - Otherwise use payload->price
-     */
-    public static function compute_sell_price_for_product(int $product_id, DistributorProductPayload $payload): ?float
-    {
-        $settings = self::get_pricing_settings_for_product($product_id);
-
-        if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
-            return $settings['fixed_price'] ?? null;
-        }
-
-        if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            return self::resolve_map_mode_sell_price($payload->map ?? null, null)
-                ?? self::get_recommended_price_from_payload($payload);
-        }
-
-        $pct = $settings['effective_percent'] ?? null;
-        if (!is_numeric($pct) || (float) $pct < 0) {
-            return null;
-        }
-
-        $base = (is_numeric($payload->true_cost) && (float) $payload->true_cost > 0)
-            ? (float) $payload->true_cost
-            : (float) $payload->price;
-
-        if ($base <= 0) {
-            return null;
-        }
-
-        $sell = $base * (1.0 + (float) $pct);
-        $sell = ceil($sell) - 0.01;
-
-        return (float) $sell;
-    }
-
-    /**
-     * Resolve pricing settings for a managed product.
-     *
-     * Returns:
-     * - mode: one of ProductMeta::MARKUP_MODE_*
-     * - percent: the product-level percent (normalized to decimal, e.g. 0.15)
-      * - fixed_price: the fixed price if present
-      * - effective_percent: the percent that will actually be applied (or null for fixed/map modes)
-     *
-     * Normalization rules:
-     * - Percent meta > 1.0 is treated as "15" meaning 15% and converted to 0.15.
-     */
-    public static function get_pricing_settings_for_product(int $product_id): array
-    {
-        $mode_raw = get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_MODE_META, true);
-        $mode     = ($mode_raw === '') ? ProductMeta::MARKUP_MODE_GLOBAL : (int) $mode_raw;
-
-        $percent_meta = get_post_meta($product_id, ProductMeta::FFLHUB_MARKUP_PERCENT_META, true);
-        $fixed_meta   = get_post_meta($product_id, ProductMeta::FFLHUB_FIXED_PRICE_META, true);
-
-        $percent = null;
-        if (is_numeric($percent_meta)) {
-            $p = (float) $percent_meta;
-            if ($p > 1.0) {
-                $p = $p / 100.0;
-            }
-            if ($p >= 0) {
-                $percent = $p;
-            }
-        }
-
-        $fixed_price = null;
-        if (is_numeric($fixed_meta)) {
-            $fp = (float) $fixed_meta;
-            if ($fp > 0) {
-                $fixed_price = $fp;
-            }
-        }
-
-        $effective_percent = null;
-        if ($mode === ProductMeta::MARKUP_MODE_GLOBAL) {
-            $g = (float) Options::get_global_markup();
-            $effective_percent = ($g > 1.0) ? ($g / 100.0) : $g;
-        } elseif ($mode === ProductMeta::MARKUP_MODE_FIXED_PCT) {
-            $effective_percent = $percent;
-        } elseif ($mode === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
-            $effective_percent = null;
-        } elseif ($mode === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            $effective_percent = null;
-        }
-
-        return [
-            'mode'              => $mode,
-            'percent'           => $percent,
-            'fixed_price'       => $fixed_price,
-            'effective_percent' => $effective_percent,
-        ];
-    }
-
-    /**
-     * Query for managed products, ordered by last sync ASC (oldest first).
-     *
-     * @return WP_Query
-     */
-    public static function query_for_managed_products(int $limit)
-    {
-        $limit = (int) $limit;
-
-        $args = [
-            'post_type'      => 'product',
-            'post_status'    => ['publish', 'draft', 'pending', 'private'],
-            'posts_per_page' => $limit > 0 ? $limit : -1,
-            'fields'         => 'ids',
-            'meta_query'     => [
-                [
-                    'key'   => ProductMeta::FFLHUB_MANAGED_META,
-                    'value' => 1,
-                ],
-            ],
-            'meta_key'       => ProductMeta::FFLHUB_LAST_SYNC_META,
-            'orderby'        => 'meta_value',
-            'order'          => 'ASC',
-        ];
-
-        return new WP_Query($args);
-    }
-
-    /**
-     * Apply the stored admin pricing settings to the WooCommerce product price.
-     *
-      * - Fixed price mode: set that value directly
-      * - MAP price mode: set to LAST_MAP meta, otherwise fall through to calculated pricing
-      * - Percent modes: base cost comes from LAST_TRUE_COST else LAST_DEALER_PRICE
-      */
-    public static function apply_admin_pricing_to_woo_product(int $product_id): void
-    {
-        $product = wc_get_product($product_id);
-        if (!($product instanceof WC_Product)) {
-            return;
-        }
-
-        $settings = self::get_pricing_settings_for_product($product_id);
-        $map = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true));
-        $msrp = self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_MSRP_META, true));
-
-        if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_FIXED_PRICE) {
-            $fixed = self::to_positive_float($settings['fixed_price'] ?? null);
-            if ($fixed === null) {
-                return;
-            }
-
-            self::set_sell_price_and_save($product, $fixed, $map, $msrp);
-            return;
-        }
-
-        if (($settings['mode'] ?? null) === ProductMeta::MARKUP_MODE_MAP_PRICE) {
-            $map_price = self::resolve_map_mode_sell_price(
-                $product->get_meta(ProductMeta::FFLHUB_LAST_MAP_META, true),
-                null
-            );
-            if ($map_price !== null) {
-                self::set_sell_price_and_save($product, $map_price, $map, $msrp);
-                return;
-            }
-
-            $global = (float) Options::get_global_markup();
-            $settings['effective_percent'] = ($global > 1.0) ? ($global / 100.0) : $global;
-        }
-
-        $pct = $settings['effective_percent'] ?? null;
-        if (!is_numeric($pct) || (float) $pct < 0) {
-            return;
-        }
-        $pct = (float) $pct;
-
-        $base =
-            self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true))
-            ?? self::to_positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
-
-        if ($base === null) {
-            return;
-        }
-
-        $sell = $base * (1.0 + $pct);
-        $sell = ceil($sell) - 0.01;
-
-        if ($sell <= 0) {
-            return;
-        }
-
-        self::set_sell_price_and_save($product, (float) $sell, $map, $msrp);
-    }
-
-    /**
-     * Convert a value to a non-negative float (>= 0), otherwise null.
-     *
-     * @param mixed $value
-     */
-    private static function to_non_negative_float($value): ?float
-    {
-        if (!is_numeric($value)) {
-            return null;
-        }
-        $f = (float) $value;
-        return $f >= 0 ? $f : null;
     }
 
     /**
@@ -2068,27 +1091,12 @@ class DistributorProductHelper
     }
 
     /**
-     * Resolve MAP mode sell price.
-     *
-     * MAP is the only enforced MAP-mode price. Missing MAP means callers should
-     * fall back to the normal calculated/recommended price.
-     *
-     * @param mixed $map_raw
-     * @param mixed $msrp_raw
-     */
-    private static function resolve_map_mode_sell_price($map_raw, $msrp_raw): ?float
-    {
-        return self::to_positive_float($map_raw);
-    }
-
-    /**
      * Check whether manual shipping override is enabled on a product.
      */
     private static function is_manual_shipping_override_enabled(WC_Product $product): bool
     {
-        $raw = $product->get_meta(ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, true);
-        $normalized = strtolower(trim((string) $raw));
-        return in_array($normalized, ['1', 'true', 'yes', 'y', 'on'], true);
+        $state_row = ProductStateStore::get_row_for_product($product);
+        return is_array($state_row) && ((int) ($state_row['manual_shipping_override'] ?? 0) === 1);
     }
 
     /**
@@ -2404,13 +1412,4 @@ class DistributorProductHelper
         return $s;
     }
 
-    private static function should_bypass_map_policy_pricing_for_brand(string $brand): bool
-    {
-        if (!Options::get_holosun_show_price_override_enabled()) {
-            return false;
-        }
-
-        $normalized = self::normalize_brand_name($brand);
-        return self::brand_alias_key($normalized) === 'holosun';
-    }
 }

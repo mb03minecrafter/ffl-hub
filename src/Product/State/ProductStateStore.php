@@ -349,7 +349,7 @@ final class ProductStateStore
     /**
      * @return array<string,mixed>|null
      */
-    private static function get_row_for_product_id(int $product_id): ?array
+    public static function get_row_for_product_id(int $product_id): ?array
     {
         global $wpdb;
 
@@ -424,6 +424,83 @@ final class ProductStateStore
         return self::get_row_for_product_id($parent_id);
     }
 
+    /**
+     * Create the initial product_state row for a newly created Woo product.
+     *
+     * Product creation now seeds product_state first, then the distributor
+     * offer pipeline fills in the selected offer snapshot and calculated
+     * prices. This starter row intentionally does not read or write old
+     * product meta.
+     *
+     * @param array<string,mixed> $overrides
+     * @return array{ok:bool,status:string,message:string,result?:string}
+     */
+    public static function create_starter_row_for_product(int $product_id, string $upc, array $overrides = []): array
+    {
+        self::ensure_schema();
+
+        $upc = self::normalize_upc($upc);
+        if ($product_id <= 0 || $upc === '') {
+            return [
+                'ok' => false,
+                'status' => 'invalid_input',
+                'message' => 'A valid product ID and UPC are required to create product_state.',
+            ];
+        }
+
+        $pricing_mode = self::admin_pricing_mode($overrides['pricing_mode'] ?? 'global_percent');
+        if ($pricing_mode === 'global_percent') {
+            $pricing_percent = max(0.0, (float) Options::get_global_markup());
+        } elseif ($pricing_mode === 'fixed_percent') {
+            $pricing_percent = max(0.0, self::float_or_null($overrides['pricing_percent'] ?? null) ?? 0.0);
+        } else {
+            $pricing_percent = null;
+        }
+
+        $map_policy = self::admin_map_visibility_policy(
+            $overrides['map_visibility_policy'] ?? Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE,
+            true
+        );
+
+        $row = [
+            'product_id' => $product_id,
+            'upc' => $upc,
+            'qty' => 0,
+            'stock_status' => 'outofstock',
+            'ffl_required' => 0,
+            'sot_required' => 0,
+            'dropship_enabled' => 0,
+            'enabled' => 0,
+            'selection_status' => 'no_offer',
+            'status' => 'active',
+            'pricing_mode' => $pricing_mode,
+            'pricing_percent' => self::money_or_null($pricing_percent, 4),
+            'pricing_fixed_price' => ($pricing_mode === 'fixed_price')
+                ? self::money_or_null(self::float_or_null($overrides['pricing_fixed_price'] ?? null), 4)
+                : null,
+            'pricing_fixed_profit' => ($pricing_mode === 'fixed_profit')
+                ? self::money_or_null(max(0.0, self::float_or_null($overrides['pricing_fixed_profit'] ?? null) ?? 0.0), 4)
+                : null,
+            'map_visibility_policy' => $map_policy,
+            'quote_free_shipping_override' => !empty($overrides['quote_free_shipping_override']) ? 1 : 0,
+            'map_applicable' => 0,
+            'manual_shipping_override' => 0,
+            'stock_oos_override' => 0,
+            'local_stock_free_shipping' => 0,
+            'has_changed' => 0,
+        ];
+
+        $result = self::upsert_row($row);
+        $ok = in_array($result, ['inserted', 'updated'], true);
+
+        return [
+            'ok' => $ok,
+            'status' => $ok ? 'ok' : 'error',
+            'message' => $ok ? 'Product_state starter row saved.' : $result,
+            'result' => $result,
+        ];
+    }
+
     public static function is_active_product(int $product_id): bool
     {
         return self::get_status_for_product($product_id) === 'active';
@@ -484,9 +561,153 @@ final class ProductStateStore
         return self::bool_column_for_product($product_id, 'stock_oos_override');
     }
 
+    public static function get_primary_distributor_for_product(WC_Product $product): string
+    {
+        $row = self::get_row_for_product($product);
+        if (!self::row_is_active($row)) {
+            return '';
+        }
+
+        return strtolower(trim((string) ($row['distributor_id'] ?? '')));
+    }
+
+    public static function get_ffl_required_for_product(WC_Product $product): bool
+    {
+        $row = self::get_row_for_product($product);
+        if (!self::row_is_active($row)) {
+            return false;
+        }
+
+        return ((int) ($row['ffl_required'] ?? 0) === 1);
+    }
+
     public static function get_local_stock_override_qty_for_product(int $product_id): ?int
     {
         return self::int_column_for_product($product_id, 'local_stock_override_qty');
+    }
+
+    /**
+     * Local stock is enabled by quantity, not by the old separate meta flag.
+     *
+     * @param array<string,mixed>|null $row
+     */
+    public static function get_local_stock_override_qty_from_row(?array $row): int
+    {
+        if (!is_array($row)) {
+            return 0;
+        }
+
+        return max(0, (int) ($row['local_stock_override_qty'] ?? 0));
+    }
+
+    /**
+     * Distributor locks are stored as product_state.allowed_distributors_json.
+     * An empty list means no lock is active.
+     *
+     * @return string[]
+     */
+    public static function get_allowed_distributor_ids_for_product(WC_Product $product): array
+    {
+        return self::get_allowed_distributor_ids_from_row(self::get_row_for_product($product));
+    }
+
+    /**
+     * @param array<string,mixed>|null $row
+     * @return string[]
+     */
+    public static function get_allowed_distributor_ids_from_row(?array $row): array
+    {
+        if (!self::row_is_active($row)) {
+            return [];
+        }
+
+        return self::normalize_distributor_ids($row['allowed_distributors_json'] ?? null);
+    }
+
+    /**
+     * @param array<string,mixed>|null $row
+     */
+    private static function row_is_active(?array $row): bool
+    {
+        return is_array($row) && strtolower(trim((string) ($row['status'] ?? ''))) === 'active';
+    }
+
+    /**
+     * Decrement the product_state local-stock override for the row represented by
+     * this Woo product. Variations intentionally reuse get_row_for_product() so a
+     * parent-backed state row is decremented in the same way it is read.
+     *
+     * @return array{ok:bool,status:string,product_id:int,before:?int,after:?int,updated:int,error?:string}
+     */
+    public static function decrement_local_stock_override_qty_for_product(WC_Product $product, int $qty): array
+    {
+        global $wpdb;
+
+        $out = [
+            'ok' => false,
+            'status' => 'skipped',
+            'product_id' => 0,
+            'before' => null,
+            'after' => null,
+            'updated' => 0,
+        ];
+
+        $qty = max(0, $qty);
+        if ($qty < 1 || !$wpdb) {
+            return $out;
+        }
+
+        $row = self::get_row_for_product($product);
+        if (!is_array($row)) {
+            $out['status'] = 'missing_product_state';
+            return $out;
+        }
+
+        $product_id = (int) ($row['product_id'] ?? 0);
+        if ($product_id <= 0) {
+            $out['status'] = 'invalid_product_state_product_id';
+            return $out;
+        }
+
+        $before = self::get_local_stock_override_qty_from_row($row);
+        $after = max(0, $before - $qty);
+
+        $out['product_id'] = $product_id;
+        $out['before'] = $before;
+        $out['after'] = $after;
+
+        if ($after === $before) {
+            $out['ok'] = true;
+            $out['status'] = 'unchanged';
+            return $out;
+        }
+
+        $updated = $wpdb->update(
+            self::table_name(),
+            [
+                'local_stock_override_qty' => $after,
+                'updated_at' => current_time('mysql'),
+                'has_changed' => 1,
+            ],
+            ['product_id' => $product_id],
+            ['%d', '%s', '%d'],
+            ['%d']
+        );
+
+        if ($updated === false) {
+            $out['status'] = 'update_failed';
+            $out['error'] = (string) $wpdb->last_error;
+            return $out;
+        }
+
+        self::clear_product_cache($product_id);
+        self::clear_product_cache((int) $product->get_id());
+
+        $out['ok'] = true;
+        $out['status'] = 'ok';
+        $out['updated'] = (int) $updated;
+
+        return $out;
     }
 
     public static function clear_product_cache(int $product_id): void
@@ -1297,7 +1518,7 @@ final class ProductStateStore
             return null;
         }
 
-        // Match DistributorProductHelper::get_map_real_price_for_product():
+        // Match the legacy MAP fixed-profit formula:
         // price = true/dealer cost + ((profit + shipping + cost fee) / (1 - fee)).
         $offset = ($profit + max(0.0, $shipping) + ($cost_base * $fee_fraction)) / $denominator;
         $price = round($cost_base + $offset, 2);

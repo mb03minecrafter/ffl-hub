@@ -18,7 +18,7 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Checkout\Builders\CheckoutOrderRequestBuilder;
 
 use FFLHub\FFL\Tables\FFLTable;
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Util\DebugLogUtil;
 
 final class CartCompliance
@@ -797,23 +797,34 @@ final class CartCompliance
             $product_id = isset($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
             $variation_id = isset($cart_item['variation_id']) ? (int) $cart_item['variation_id'] : 0;
             $qty = isset($cart_item['quantity']) ? max(0, (int) $cart_item['quantity']) : 0;
-            $product = $product_id > 0 ? wc_get_product($product_id) : null;
+            $product = $cart_item['data'] ?? null;
+            if (!($product instanceof \WC_Product)) {
+                $lookup_id = $variation_id > 0 ? $variation_id : $product_id;
+                $product = $lookup_id > 0 ? wc_get_product($lookup_id) : null;
+            }
 
             if (!($product instanceof \WC_Product)) {
                 continue;
             }
+
+            $state_row = ProductStateStore::get_row_for_product($product);
+            $state_active = is_array($state_row)
+                && strtolower(trim((string) ($state_row['status'] ?? ''))) === 'active';
+            $local_stock_qty = ProductStateStore::get_local_stock_override_qty_from_row(
+                $state_active ? $state_row : null
+            );
 
             $rows[] = [
                 'product_id' => $product_id,
                 'variation_id' => $variation_id,
                 'qty' => $qty,
                 'name' => self::log_text((string) $product->get_name(), 120),
-                'managed' => (int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true),
-                'dist' => strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true))),
-                'upc' => preg_replace('/\D+/', '', (string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true)),
-                'ffl_required' => (int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true),
-                'local_stock_override' => (int) $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true),
-                'local_stock_qty' => (string) $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true),
+                'managed' => $state_active ? 1 : 0,
+                'dist' => $state_active ? strtolower(trim((string) ($state_row['distributor_id'] ?? ''))) : '',
+                'upc' => $state_active ? preg_replace('/\D+/', '', (string) ($state_row['upc'] ?? '')) : '',
+                'ffl_required' => ($state_active && (int) ($state_row['ffl_required'] ?? 0) === 1) ? 1 : 0,
+                'local_stock_override' => $local_stock_qty > 0 ? 1 : 0,
+                'local_stock_qty' => (string) $local_stock_qty,
                 'stock_status' => (string) $product->get_stock_status(),
                 'stock_qty' => $product->get_stock_quantity(),
             ];

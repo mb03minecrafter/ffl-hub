@@ -9,8 +9,6 @@ if (!defined('ABSPATH')) {
 /** @var WC_Email $email */
 /** @var \FFLHub\Distributor\Models\PartialShipmentEmailContext $context */
 
-use FFLHub\Product\ProductMeta;
-
 // -----------------------------
 // Brand palette (matches your Frost override CSS)
 // -----------------------------
@@ -62,10 +60,7 @@ foreach ($order->get_items() as $item_id => $item) {
         continue;
     }
 
-    $candidate_upcs = [
-        trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true)),
-        trim((string) $product->get_meta('_upc', true)),
-    ];
+    $candidate_upcs = [];
     if (method_exists($product, 'get_global_unique_id')) {
         $candidate_upcs[] = trim((string) $product->get_global_unique_id('edit'));
     }

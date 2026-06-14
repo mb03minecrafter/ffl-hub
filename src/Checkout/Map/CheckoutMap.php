@@ -2,7 +2,7 @@
 
 namespace FFLHub\Checkout\Map;
 
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 
 if (! defined('ABSPATH')) {
     exit;
@@ -200,30 +200,38 @@ class CheckoutMap
         }
 
         foreach ($cart as $cart_item) {
-            $product_id   = ! empty($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
-            $variation_id = ! empty($cart_item['variation_id']) ? (int) $cart_item['variation_id'] : 0;
+            $product = self::product_from_cart_item(is_array($cart_item) ? $cart_item : array());
+            if (! $product instanceof \WC_Product) {
+                continue;
+            }
 
-            // Check variation first (most specific), then parent product.
-            foreach (array($variation_id, $product_id) as $id) {
-                if (! $id) {
-                    continue;
-                }
-
-                $product = wc_get_product($id);
-                if (! $product) {
-                    continue;
-                }
-
-                $ffl_required = $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true);
-
-                // Accept common stored forms: 1, "1", true, "yes"
-                if (wc_string_to_bool((string) $ffl_required) || (string) $ffl_required === '1') {
-                    $cached_result = true;
-                    break 2;
-                }
+            if (ProductStateStore::get_ffl_required_for_product($product)) {
+                $cached_result = true;
+                break;
             }
         }
 
         return $cached_result;
+    }
+
+    /**
+     * @param array<string,mixed> $cart_item
+     */
+    private static function product_from_cart_item(array $cart_item): ?\WC_Product
+    {
+        $product = $cart_item['data'] ?? null;
+        if ($product instanceof \WC_Product) {
+            return $product;
+        }
+
+        $variation_id = ! empty($cart_item['variation_id']) ? (int) $cart_item['variation_id'] : 0;
+        $product_id = ! empty($cart_item['product_id']) ? (int) $cart_item['product_id'] : 0;
+        $lookup_id = $variation_id > 0 ? $variation_id : $product_id;
+        if ($lookup_id <= 0) {
+            return null;
+        }
+
+        $product = wc_get_product($lookup_id);
+        return ($product instanceof \WC_Product) ? $product : null;
     }
 }

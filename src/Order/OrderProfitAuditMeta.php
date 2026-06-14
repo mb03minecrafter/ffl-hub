@@ -2,7 +2,7 @@
 
 namespace FFLHub\Order;
 
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use WC_Order;
 use WC_Order_Item_Product;
@@ -224,9 +224,8 @@ final class OrderProfitAuditMeta
             $product = $item->get_product();
             $product_id = ($product instanceof WC_Product) ? (int) $product->get_id() : (int) $item->get_product_id();
             $sku = ($product instanceof WC_Product) ? (string) $product->get_sku() : '';
-            $dist_id = ($product instanceof WC_Product)
-                ? strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)))
-                : '';
+            $product_state = ($product instanceof WC_Product) ? ProductStateStore::get_row_for_product($product) : null;
+            $dist_id = strtolower(trim((string) ($product_state['distributor_id'] ?? '')));
             $saved_dist_id = strtolower(trim((string) $item->get_meta(self::ORDER_ITEM_SOURCE_DISTRIBUTOR_META, true)));
             if ($saved_dist_id !== '') {
                 $dist_id = $saved_dist_id;
@@ -243,12 +242,12 @@ final class OrderProfitAuditMeta
                 }
             }
 
-            if (!$is_refunded_order && $unit_cost === null && $product instanceof WC_Product) {
-                $dealer_price = self::positive_float($product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true));
+            if (!$is_refunded_order && $unit_cost === null) {
+                $dealer_price = self::positive_float($product_state['dealer_price'] ?? null);
 
                 if ($dealer_price !== null) {
                     $unit_cost = $dealer_price;
-                    $unit_cost_source = ProductMeta::FFLHUB_LAST_DEALER_PRICE_META;
+                    $unit_cost_source = 'product_state.dealer_price';
                 }
             }
 

@@ -25,7 +25,6 @@ use FFLHub\Distributor\Services\Orders\Shipping\Cron\DealerFulfilledCronService;
 use FFLHub\Distributor\Services\Orders\Shipping\Cron\ShippingCronService;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsSchema;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
-use FFLHub\Distributor\Services\ProductSync\DistributorProductSyncCronService;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -38,7 +37,6 @@ use FFLHub\Util\DebugLogUtil;
  * - Persist + apply enable/disable state per distributor.
  * - Delegate distributor activation/deactivation to each distributor's services.
  * - Own and register cross-distributor services:
- *   - Product sync cron (managed products inventory/price sync)
  *   - Order placement pipeline (jobs table + orchestrator + cron)
  *   - Shipping polling pipeline (cron)
  *   - Order trash/delete hooks (non-cron service)
@@ -55,11 +53,6 @@ class DistributorHandler
      * @var array<string, DistributorBase>
      */
     private array $distributors = [];
-
-    // ---------------------------------------------------------------------
-    // Cross-distributor services: product sync
-    // ---------------------------------------------------------------------
-    private DistributorProductSyncCronService $productSyncCronService;
 
     // ---------------------------------------------------------------------
     // Cross-distributor services: order placement + shipping polling
@@ -104,6 +97,8 @@ class DistributorHandler
     private const LOG_PREFIX  = '[DistributorHandler]';
     private const PRODUCT_TABLE_SCHEMA_OPTION = 'fflhub_distributor_product_tables_schema_version';
     private const PRODUCT_TABLE_SCHEMA_VERSION = 'zanders_manufacturer_norm_v1';
+    private const LEGACY_PRODUCT_SYNC_HOOK = 'fflhub_sync_managed_products';
+    private const LEGACY_PRODUCT_SYNC_GROUP = 'fflhub_product_sync';
 
     public function __construct(FFLTable $ffl_table)
     {
@@ -138,9 +133,6 @@ class DistributorHandler
         $log_step('register_distributors', [
             'distributor_count' => count($this->distributors),
         ]);
-
-        $this->productSyncCronService = new DistributorProductSyncCronService($this);
-        $log_step('new DistributorProductSyncCronService');
 
         $this->orderSchema = new OrderPlacementJobsSchema();
         $log_step('new OrderPlacementJobsSchema');
@@ -287,8 +279,7 @@ class DistributorHandler
             }
         }
 
-        // Cross-distributor services.
-        $this->productSyncCronService->on_activation();
+        $this->unschedule_legacy_product_sync_actions();
 
         // Jobs table must exist before cron runners operate.
         $this->ordering_jobs_table->createTables();
@@ -326,7 +317,7 @@ class DistributorHandler
             }
         }
 
-        $this->productSyncCronService->on_deactivation();
+        $this->unschedule_legacy_product_sync_actions();
         $this->orderShippingCronService->on_deactivation();
         $this->orderDealerFulfilledCronService->on_deactivation();
         $this->orderPlacementCronService->on_deactivation();
@@ -362,8 +353,7 @@ class DistributorHandler
             }
         }
 
-        // Cross-distributor services.
-        $this->productSyncCronService->register();
+        $this->unschedule_legacy_product_sync_actions();
 
         $this->orderPlacementOrchestratorService->register();
         $this->orderShippingCronService->register();
@@ -380,6 +370,32 @@ class DistributorHandler
         $this->zandersCaRelayBatchCronService->register();
 
         $this->orderTrashJobsService->register();
+    }
+
+    private function unschedule_legacy_product_sync_actions(): void
+    {
+        if (!function_exists('as_unschedule_all_actions')) {
+            return;
+        }
+
+        try {
+            as_unschedule_all_actions(
+                self::LEGACY_PRODUCT_SYNC_HOOK,
+                [],
+                self::LEGACY_PRODUCT_SYNC_GROUP
+            );
+        } catch (\Throwable $e) {
+            DebugLogUtil::log_ctx(
+                'FFLHUB_CRON_DEBUG',
+                '[FFLHub][DistributorHandler]',
+                'Legacy managed product sync unschedule failed.',
+                [
+                    'hook' => self::LEGACY_PRODUCT_SYNC_HOOK,
+                    'group' => self::LEGACY_PRODUCT_SYNC_GROUP,
+                    'error' => $e->getMessage(),
+                ]
+            );
+        }
     }
 
     private function ensure_product_table_schema_current(): void

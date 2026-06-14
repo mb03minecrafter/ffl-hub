@@ -51,7 +51,6 @@ final class GunDealsFeedGenerator
             'warnings' => [],
             'elapsed_ms' => 0,
             'xml_bytes' => 0,
-            'feed_snapshot_rows' => 0,
             'feed_enabled' => Options::get_gundeals_feed_enabled() ? 1 : 0,
         ];
 
@@ -94,8 +93,6 @@ final class GunDealsFeedGenerator
             'last_stock_update',
         ]);
 
-        $snapshot_rows = [];
-
         $writer->startDocument('1.0', 'UTF-8');
         $writer->setIndent(true);
         $writer->startElementNS(null, 'offers', self::XML_NAMESPACE);
@@ -113,7 +110,6 @@ final class GunDealsFeedGenerator
                 $summary_tmp,
                 $paths,
                 $summary,
-                $snapshot_rows,
                 $started
             );
         }
@@ -141,7 +137,6 @@ final class GunDealsFeedGenerator
 
                 $this->write_offer($writer, $row);
                 $summary['offers_written']++;
-                $snapshot_rows[] = $row;
                 $this->write_debug_row($debug, $row);
             }
         } while ($source_count === self::BATCH_SIZE);
@@ -157,7 +152,6 @@ final class GunDealsFeedGenerator
             $summary_tmp,
             $paths,
             $summary,
-            $snapshot_rows,
             $started
         );
     }
@@ -165,7 +159,6 @@ final class GunDealsFeedGenerator
     /**
      * @param array{dir:string,xml:string,debug_csv:string,summary_json:string,public_url:string} $paths
      * @param array<string,mixed> $summary
-     * @param array<int,array<string,mixed>> $snapshot_rows
      * @return array<string,mixed>
      */
     private function finalize_generated_feed(
@@ -174,7 +167,6 @@ final class GunDealsFeedGenerator
         string $summary_tmp,
         array $paths,
         array $summary,
-        array $snapshot_rows,
         float $started
     ): array {
         $validation = $this->validate_xml($xml_tmp);
@@ -186,9 +178,6 @@ final class GunDealsFeedGenerator
         $summary['finished_at_utc'] = gmdate('c');
         $summary['elapsed_ms'] = number_format((microtime(true) - $started) * 1000.0, 2, '.', '');
         $summary['xml_bytes'] = is_file($xml_tmp) ? (int) filesize($xml_tmp) : 0;
-        $summary['feed_snapshot_rows'] = count($snapshot_rows);
-
-        GunDealsAnalyticsStore::replace_feed_snapshot($summary['finished_at_utc'], $snapshot_rows);
 
         $this->write_summary_json($summary_tmp, $summary);
 

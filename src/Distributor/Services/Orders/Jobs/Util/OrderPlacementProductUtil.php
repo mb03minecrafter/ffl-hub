@@ -3,7 +3,6 @@
 namespace FFLHub\Distributor\Services\Orders\Jobs\Util;
 
 use WC_Product;
-use FFLHub\Product\ProductMeta;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -51,26 +50,13 @@ final class OrderPlacementProductUtil
     /**
      * Extract a UPC for order placement from a WC_Product.
      *
-     * Preference order:
-     *  1) get_global_unique_id() (if available)
-     *  2) ProductMeta::FFLHUB_UPC_META
-     *
      * Returns digits-only UPC or '' if not found/invalid.
      */
     public static function extract_upc_from_product(WC_Product $product): string
     {
-        $upc_raw = '';
-
-        // Some WC versions / product types expose this.
-        if (method_exists($product, 'get_global_unique_id')) {
-            $upc_raw = trim((string) $product->get_global_unique_id());
-        }
-
-        if ($upc_raw === '') {
-            $upc_raw = trim((string) $product->get_meta(ProductMeta::FFLHUB_UPC_META, true));
-        }
-
-        return self::normalize_upc($upc_raw);
+        return method_exists($product, 'get_global_unique_id')
+            ? self::normalize_upc((string) $product->get_global_unique_id())
+            : '';
     }
 
 

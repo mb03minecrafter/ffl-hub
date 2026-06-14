@@ -5,7 +5,6 @@ use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
 use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Plugin;
-use FFLHub\Product\ProductMeta;
 
 if (!defined('ABSPATH')) {
     fwrite(STDERR, "This script must be run through wp eval-file.\n");
@@ -152,13 +151,8 @@ function fflhub_bulk_find_product_id_by_upc(string $upc): ?int
         'post_status' => ['publish', 'draft', 'pending', 'private', 'future'],
         'fields' => 'ids',
         'numberposts' => 1,
-        'meta_query' => [
-            [
-                'key' => ProductMeta::FFLHUB_UPC_META,
-                'value' => $upc,
-                'compare' => '=',
-            ],
-        ],
+        'meta_key' => '_global_unique_id',
+        'meta_value' => $upc,
     ]);
 
     if (is_array($ids) && !empty($ids)) {

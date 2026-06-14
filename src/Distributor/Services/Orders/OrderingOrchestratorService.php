@@ -6,7 +6,7 @@ use WC_Order;
 use WC_Product;
 use WC_Order_Item_Product;
 
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
 use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
@@ -255,27 +255,22 @@ final class OrderingOrchestratorService
                 }
             }
 
-            $managed = (int) $product->get_meta(ProductMeta::FFLHUB_MANAGED_META, true);
-            if ($managed !== 1) {
+            $state_row = ProductStateStore::get_row_for_product($product);
+            $state_status = is_array($state_row) ? strtolower(trim((string) ($state_row['status'] ?? ''))) : '';
+            if (!is_array($state_row) || $state_status !== 'active') {
                 $seen['not_managed']++;
                 continue;
             }
 
-            $ffl_required = ((int) $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true) === 1);
-            $dropship_enabled = $this->to_boolish(
-                $product->get_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true),
-                true
-            );
-            $weight_oz = $this->to_non_negative_float(
-                $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true),
-                0.0
-            );
-            $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
+            $ffl_required = ((int) ($state_row['ffl_required'] ?? 0) === 1);
+            $dropship_enabled = $this->to_boolish($state_row['dropship_enabled'] ?? 1, true);
+            $weight_oz = $this->to_non_negative_float($state_row['shipping_weight_oz'] ?? null, 0.0);
+            $ship_raw = $state_row['shipping_cost'] ?? null;
             $dist_lane_fee = $this->resolve_distributor_lane_fee($ship_raw);
             if ($this->to_non_negative_float($ship_raw, 0.0) <= 0.0 && $dist_lane_fee > 0.0) {
                 $this->log_ctx('shipping_lane_fee_fallback_applied', [
                     'order_id'   => $oid,
-                    'product_id' => (int) $product->get_id(),
+                    'product_id' => (int) ($state_row['product_id'] ?? $product->get_id()),
                     'ship_raw'   => (string) $ship_raw,
                     'lane_fee'   => $dist_lane_fee,
                 ]);
@@ -283,16 +278,20 @@ final class OrderingOrchestratorService
 
             $item_id = (int) $item->get_id();
             $line_id = ($item_id > 0) ? ('oi_' . (string) $item_id) : ('oi_idx_' . (string) $seen['items_iterated']);
-            $product_id = (int) $product->get_id();
-            $upc = OrderPlacementProductUtil::extract_upc_from_product($product);
+            $product_id = (int) ($state_row['product_id'] ?? $product->get_id());
+            if ($product_id <= 0) {
+                $product_id = (int) $product->get_id();
+            }
+            $upc = OrderPlacementProductUtil::normalize_upc((string) ($state_row['upc'] ?? ''));
             $line_upc = $upc !== '' ? $upc : $this->fallback_local_identifier($product);
             $line_name = trim((string) $product->get_name());
 
             $line_qty_for_routing = $qty;
-            $local_enabled = $this->is_local_stock_override_enabled($product);
+            $state_local_qty = ProductStateStore::get_local_stock_override_qty_from_row($state_row);
+            $local_enabled = $state_local_qty > 0;
             if ($local_enabled) {
                 if (!isset($local_available_by_product[$product_id])) {
-                    $local_available_by_product[$product_id] = $this->get_local_stock_override_qty($product);
+                    $local_available_by_product[$product_id] = $state_local_qty;
                 }
 
                 $available_local_qty = max(0, (int) ($local_available_by_product[$product_id] ?? 0));
@@ -335,7 +334,7 @@ final class OrderingOrchestratorService
                 continue;
             }
 
-            $dist_raw = (string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true);
+            $dist_raw = (string) ($state_row['distributor_id'] ?? '');
             $dist_id  = OrderPlacementKeysUtil::normalize_dist_id($dist_raw);
             if ($dist_id === '') {
                 $seen['missing_dist']++;
@@ -801,12 +800,17 @@ final class OrderingOrchestratorService
             return $out;
         }
 
-        $local_before = $this->get_local_stock_override_qty($product);
-        $local_after = max(0, $local_before - $qty);
+        $state_decrement = ProductStateStore::decrement_local_stock_override_qty_for_product($product, $qty);
+        if (empty($state_decrement['ok'])) {
+            $out['status'] = 'product_state_local_stock_update_failed';
+            $out['error'] = (string) ($state_decrement['error'] ?? $state_decrement['status'] ?? 'unknown');
+            return $out;
+        }
+
+        $local_before = max(0, (int) ($state_decrement['before'] ?? 0));
+        $local_after = max(0, (int) ($state_decrement['after'] ?? $local_before));
         $out['local_override_before'] = $local_before;
         $out['local_override_after'] = $local_after;
-
-        $product->update_meta_data(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, $local_after);
 
         $managing_stock = $product->managing_stock();
         $out['woo_manage_stock'] = $managing_stock ? 1 : 0;
@@ -832,17 +836,6 @@ final class OrderingOrchestratorService
         }
 
         return $out;
-    }
-
-    private function is_local_stock_override_enabled(WC_Product $product): bool
-    {
-        return $this->to_boolish($product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_ENABLED_META, true), false);
-    }
-
-    private function get_local_stock_override_qty(WC_Product $product): int
-    {
-        $raw = $product->get_meta(ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true);
-        return is_numeric((string) $raw) ? max(0, (int) $raw) : 0;
     }
 
     private function fallback_local_identifier(WC_Product $product): string

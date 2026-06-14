@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Admin\Products;
 
 use FFLHub\Distributor\Core\DistributorRegistry;
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -24,45 +24,14 @@ final class ProductDistributorColumns
 
     private const DROPSHIP_FILTER_ENABLED = 'enabled';
     private const DROPSHIP_FILTER_DISABLED = 'disabled';
-
-    /**
-     * @var string[]
-     */
-    private const DROPSHIP_ENABLED_VALUES = ['1', 'yes', 'true', 'on', 'Y', 'YES', 'TRUE', 'ON'];
-
-    /**
-     * @var string[]
-     */
-    private const DROPSHIP_DISABLED_VALUES = ['0', 'no', 'false', 'off', 'N', 'NO', 'FALSE', 'OFF'];
-
-    /**
-     * @var array<string,string>
-     */
-    private const LEGACY_DIST_MAP = [
-        '0' => 'RSR',
-        '1' => "Lipsey's",
-        '2' => 'Zanders',
-        '3' => 'CSSI',
-        '4' => "Davidson's",
-    ];
-
-    /**
-     * @var array<string,string>
-     */
-    private const LEGACY_DIST_CODE_BY_SLUG = [
-        'rsr' => '0',
-        'lipseys' => '1',
-        'zanders' => '2',
-        'cssi' => '3',
-        'davidsons' => '4',
-    ];
+    private const STATE_JOIN_ALIAS = 'fflhub_product_state_columns';
 
     public function register(): void
     {
         add_filter('manage_edit-product_columns', [$this, 'inject_columns'], 25);
         add_action('manage_product_posts_custom_column', [$this, 'render_column'], 20, 2);
         add_action('restrict_manage_posts', [$this, 'render_filter_controls']);
-        add_action('pre_get_posts', [$this, 'apply_list_filters']);
+        add_filter('posts_clauses', [$this, 'apply_list_filter_clauses'], 20, 2);
         add_action('admin_head', [$this, 'render_admin_styles']);
     }
 
@@ -102,12 +71,12 @@ final class ProductDistributorColumns
         }
 
         if ($column_name === self::COL_DIST_PRICE) {
-            $this->render_money_meta($post_id, ProductMeta::FFLHUB_LAST_DEALER_PRICE_META);
+            $this->render_money_state($post_id, 'dealer_price', 'is-price', 'dashicons-tag');
             return;
         }
 
         if ($column_name === self::COL_SHIPPING) {
-            $this->render_money_meta($post_id, ProductMeta::FFLHUB_LAST_SHIPPING_COST_META);
+            $this->render_money_state($post_id, 'shipping_cost', 'is-ship', 'dashicons-admin-site-alt3');
             return;
         }
 
@@ -188,84 +157,63 @@ final class ProductDistributorColumns
         echo '</select>';
     }
 
-    public function apply_list_filters(\WP_Query $query): void
+    /**
+     * @param array<string,string> $clauses
+     * @return array<string,string>
+     */
+    public function apply_list_filter_clauses(array $clauses, \WP_Query $query): array
     {
         if (!is_admin() || !$query->is_main_query()) {
-            return;
+            return $clauses;
         }
 
         global $pagenow;
         if ($pagenow !== 'edit.php') {
-            return;
+            return $clauses;
         }
 
         $post_type = (string) $query->get('post_type');
         if ($post_type !== 'product') {
-            return;
+            return $clauses;
         }
 
         $dist_filter = $this->requested_distributor_filter();
         $drop_filter = $this->requested_dropship_filter();
 
         if ($dist_filter === '' && $drop_filter === '') {
-            return;
+            return $clauses;
         }
 
-        $meta_query = $query->get('meta_query');
-        if (!is_array($meta_query)) {
-            $meta_query = [];
+        global $wpdb;
+        if (!$wpdb) {
+            return $clauses;
         }
 
+        $alias = self::STATE_JOIN_ALIAS;
+        $table = $this->sql_table_name(ProductStateStore::table_name());
+        $posts_table = $this->sql_table_name($wpdb->posts);
+
+        if (strpos((string) ($clauses['join'] ?? ''), " {$alias} ") === false) {
+            $clauses['join'] = (string) ($clauses['join'] ?? '')
+                . " INNER JOIN {$table} AS {$alias} ON {$alias}.product_id = {$posts_table}.ID";
+        }
+
+        $where = [];
         if ($dist_filter !== '') {
-            $dist_values = $this->distributor_meta_values_for_filter($dist_filter);
-            if (count($dist_values) === 1) {
-                $meta_query[] = [
-                    'key' => ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META,
-                    'value' => $dist_values[0],
-                    'compare' => '=',
-                ];
-            } else {
-                $or = ['relation' => 'OR'];
-                foreach ($dist_values as $value) {
-                    $or[] = [
-                        'key' => ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META,
-                        'value' => $value,
-                        'compare' => '=',
-                    ];
-                }
-                $meta_query[] = $or;
-            }
+            $where[] = $wpdb->prepare("{$alias}.distributor_id = %s", $dist_filter);
         }
 
         if ($drop_filter === self::DROPSHIP_FILTER_ENABLED) {
-            $meta_query[] = [
-                'key' => ProductMeta::FFLHUB_DROPSHIP_ENABLED_META,
-                'value' => self::DROPSHIP_ENABLED_VALUES,
-                'compare' => 'IN',
-            ];
+            $where[] = "{$alias}.dropship_enabled = 1";
         } elseif ($drop_filter === self::DROPSHIP_FILTER_DISABLED) {
-            $meta_query[] = [
-                'relation' => 'OR',
-                [
-                    'key' => ProductMeta::FFLHUB_DROPSHIP_ENABLED_META,
-                    'compare' => 'NOT EXISTS',
-                ],
-                [
-                    'key' => ProductMeta::FFLHUB_DROPSHIP_ENABLED_META,
-                    'value' => '',
-                    'compare' => '=',
-                ],
-                [
-                    'key' => ProductMeta::FFLHUB_DROPSHIP_ENABLED_META,
-                    'value' => self::DROPSHIP_DISABLED_VALUES,
-                    'compare' => 'IN',
-                ],
-            ];
+            $where[] = "{$alias}.dropship_enabled = 0";
         }
 
-        if (!empty($meta_query)) {
-            $query->set('meta_query', $meta_query);
+        if (!empty($where)) {
+            $clauses['where'] = (string) ($clauses['where'] ?? '') . ' AND ' . implode(' AND ', $where);
         }
+
+        return $clauses;
     }
 
     /**
@@ -279,16 +227,14 @@ final class ProductDistributorColumns
         $columns[self::COL_DISTRIBUTOR] = __('Distributor', 'ffl-hub');
     }
 
-    private function render_money_meta(int $post_id, string $meta_key): void
+    private function render_money_state(int $post_id, string $column, string $pill_class, string $icon_class): void
     {
-        $raw = get_post_meta($post_id, $meta_key, true);
+        $row = $this->product_state_row($post_id);
+        $raw = is_array($row) ? ($row[$column] ?? null) : null;
         if ($raw === '' || $raw === null || !is_numeric($raw)) {
             echo '<span class="fflhub-product-empty">&mdash;</span>';
             return;
         }
-
-        $pill_class = ($meta_key === ProductMeta::FFLHUB_LAST_SHIPPING_COST_META) ? 'is-ship' : 'is-price';
-        $icon_class = ($meta_key === ProductMeta::FFLHUB_LAST_SHIPPING_COST_META) ? 'dashicons-admin-site-alt3' : 'dashicons-tag';
 
         $value = (float) $raw;
         $money_html = '';
@@ -306,8 +252,8 @@ final class ProductDistributorColumns
 
     private function render_dropship_badge(int $post_id): void
     {
-        $raw = strtolower(trim((string) get_post_meta($post_id, ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true)));
-        if ($raw === '') {
+        $row = $this->product_state_row($post_id);
+        if (!is_array($row) || !array_key_exists('dropship_enabled', $row)) {
             echo '<span class="fflhub-product-pill is-unknown" title="' . esc_attr__('Drop-ship status has not been set yet.', 'ffl-hub') . '">'
                 . '<span class="dashicons dashicons-minus"></span>'
                 . esc_html__('Unknown', 'ffl-hub')
@@ -315,7 +261,7 @@ final class ProductDistributorColumns
             return;
         }
 
-        $is_enabled = in_array($raw, ['1', 'yes', 'true', 'on'], true);
+        $is_enabled = ((int) ($row['dropship_enabled'] ?? 0) === 1);
         if ($is_enabled) {
             echo '<span class="fflhub-product-pill is-on" title="' . esc_attr__('Drop-ship is enabled for this product.', 'ffl-hub') . '">'
                 . '<span class="dashicons dashicons-yes-alt"></span>'
@@ -332,7 +278,8 @@ final class ProductDistributorColumns
 
     private function render_distributor_label(int $post_id): void
     {
-        $raw = trim((string) get_post_meta($post_id, ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true));
+        $row = $this->product_state_row($post_id);
+        $raw = is_array($row) ? trim((string) ($row['distributor_id'] ?? '')) : '';
         if ($raw === '') {
             echo '<span class="fflhub-product-empty">&mdash;</span>';
             return;
@@ -351,16 +298,21 @@ final class ProductDistributorColumns
             return '';
         }
 
-        if (isset(self::LEGACY_DIST_MAP[$normalized])) {
-            return self::LEGACY_DIST_MAP[$normalized];
-        }
-
         $module = DistributorRegistry::get_module_by_id($normalized);
         if ($module !== null) {
             return $module->label();
         }
 
         return strtoupper($normalized);
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    private function product_state_row(int $post_id): ?array
+    {
+        $row = ProductStateStore::get_row_for_product_id($post_id);
+        return is_array($row) ? $row : null;
     }
 
     /**
@@ -423,21 +375,8 @@ final class ProductDistributorColumns
         return '';
     }
 
-    /**
-     * @return string[]
-     */
-    private function distributor_meta_values_for_filter(string $dist_slug): array
+    private function sql_table_name(string $table): string
     {
-        $values = [$dist_slug];
-
-        if (isset(self::LEGACY_DIST_CODE_BY_SLUG[$dist_slug])) {
-            $values[] = self::LEGACY_DIST_CODE_BY_SLUG[$dist_slug];
-        }
-
-        $values[] = strtoupper($dist_slug);
-        $values[] = strtolower($dist_slug);
-
-        $values = array_values(array_unique(array_filter($values, static fn(string $v): bool => $v !== '')));
-        return $values;
+        return '`' . str_replace('`', '``', $table) . '`';
     }
 }

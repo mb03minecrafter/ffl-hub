@@ -5,11 +5,12 @@ namespace FFLHub\Admin\Pages;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
 use FFLHub\Distributor\Models\OrderPlacementJobRow;
+use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 
 if (! defined('ABSPATH')) {
@@ -582,68 +583,49 @@ final class DavidsonsFailedJobsPage
             return (float) $unit_cost_by_upc[$upc];
         }
 
-        $product_id = $this->find_product_id_by_upc($upc);
-        if ($product_id <= 0) {
-            $unit_cost_by_upc[$upc] = 0.0;
-            return 0.0;
-        }
+        $unit_cost_by_upc[$upc] = $this->offer_dealer_price_for_upc($upc);
 
-        $product = wc_get_product($product_id);
-        if (!$product) {
-            $unit_cost_by_upc[$upc] = 0.0;
-            return 0.0;
-        }
-
-        $dealer_price = $this->to_non_negative_float(
-            $product->get_meta(ProductMeta::FFLHUB_LAST_DEALER_PRICE_META, true)
-        );
-        $true_cost = $this->to_non_negative_float(
-            $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true)
-        );
-
-        $unit_cost = ($dealer_price > 0.0) ? $dealer_price : $true_cost;
-        $unit_cost_by_upc[$upc] = $unit_cost;
-
-        return $unit_cost;
+        return (float) $unit_cost_by_upc[$upc];
     }
 
     private function find_product_id_by_upc(string $upc): int
     {
-        global $wpdb;
-
         $upc = trim($upc);
         if ($upc === '') {
             return 0;
         }
 
-        $meta_keys = [
-            ProductMeta::FFLHUB_UPC_META,
-            '_upc',
-            'upc',
-        ];
+        $row = ProductStateStore::get_row_for_upc($upc);
 
-        foreach ($meta_keys as $meta_key) {
-            $sql = $wpdb->prepare(
-                "SELECT pm.post_id
-                 FROM {$wpdb->postmeta} pm
-                 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-                 WHERE pm.meta_key = %s
-                   AND pm.meta_value = %s
-                   AND p.post_type = 'product'
-                   AND p.post_status IN ('publish', 'private')
-                 ORDER BY pm.post_id DESC
-                 LIMIT 1",
-                $meta_key,
-                $upc
-            );
+        return is_array($row) ? (int) ($row['product_id'] ?? 0) : 0;
+    }
 
-            $found_id = (int) $wpdb->get_var($sql);
-            if ($found_id > 0) {
-                return $found_id;
-            }
+    private function offer_dealer_price_for_upc(string $upc): float
+    {
+        global $wpdb;
+
+        if (!$wpdb || $upc === '') {
+            return 0.0;
         }
 
-        return 0;
+        DistributorOffersStore::ensure_schema();
+        $table = DistributorOffersStore::table_name();
+        $value = $wpdb->get_var(
+            $wpdb->prepare(
+                "
+                SELECT dealer_price
+                FROM {$table}
+                WHERE upc = %s
+                  AND distributor_id = %s
+                  AND enabled = 1
+                LIMIT 1
+                ",
+                $upc,
+                self::DAVIDSONS_DIST_ID
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        return $this->to_non_negative_float($value);
     }
 
     /**
