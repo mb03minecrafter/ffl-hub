@@ -5,6 +5,7 @@ namespace FFLHub\Product\State;
 
 use FFLHub\Product\ProductMeta;
 use FFLHub\Settings\Options;
+use WC_Product;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -19,6 +20,9 @@ final class ProductStateStore
 
     /** @var array<int,array<string,mixed>|null> */
     private static array $row_cache_by_product_id = [];
+
+    /** @var array<string,array<string,mixed>|null> */
+    private static array $row_cache_by_upc = [];
 
     public static function table_name(): string
     {
@@ -345,7 +349,7 @@ final class ProductStateStore
     /**
      * @return array<string,mixed>|null
      */
-    private static function get_row_for_product(int $product_id): ?array
+    private static function get_row_for_product_id(int $product_id): ?array
     {
         global $wpdb;
 
@@ -364,7 +368,60 @@ final class ProductStateStore
         );
 
         self::$row_cache_by_product_id[$product_id] = is_array($row) ? $row : null;
+        self::seed_upc_cache_from_row(self::$row_cache_by_product_id[$product_id]);
+
         return self::$row_cache_by_product_id[$product_id];
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    public static function get_row_for_upc(string $upc): ?array
+    {
+        global $wpdb;
+
+        $upc = self::normalize_upc($upc);
+        if ($upc === '' || !$wpdb) {
+            return null;
+        }
+
+        if (array_key_exists($upc, self::$row_cache_by_upc)) {
+            return self::$row_cache_by_upc[$upc];
+        }
+
+        $table = self::table_name();
+        $row = $wpdb->get_row(
+            $wpdb->prepare("SELECT * FROM {$table} WHERE upc = %s LIMIT 1", $upc), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            ARRAY_A
+        );
+
+        self::$row_cache_by_upc[$upc] = is_array($row) ? $row : null;
+        self::seed_product_cache_from_row(self::$row_cache_by_upc[$upc]);
+
+        return self::$row_cache_by_upc[$upc];
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    public static function get_row_for_product(WC_Product $product): ?array
+    {
+        $product_id = (int) $product->get_id();
+        if ($product_id <= 0) {
+            return null;
+        }
+
+        $row = self::get_row_for_product_id($product_id);
+        if (is_array($row)) {
+            return $row;
+        }
+
+        $parent_id = (int) $product->get_parent_id();
+        if ($parent_id <= 0 || $parent_id === $product_id) {
+            return null;
+        }
+
+        return self::get_row_for_product_id($parent_id);
     }
 
     public static function is_active_product(int $product_id): bool
@@ -438,12 +495,20 @@ final class ProductStateStore
             return;
         }
 
+        $row = self::$row_cache_by_product_id[$product_id] ?? null;
+        if (is_array($row)) {
+            $upc = self::normalize_upc((string) ($row['upc'] ?? ''));
+            if ($upc !== '') {
+                unset(self::$row_cache_by_upc[$upc]);
+            }
+        }
+
         unset(self::$row_cache_by_product_id[$product_id]);
     }
 
     private static function string_column_for_product(int $product_id, string $column): ?string
     {
-        $row = self::get_row_for_product($product_id);
+        $row = self::get_row_for_product_id($product_id);
         if (!is_array($row) || !array_key_exists($column, $row)) {
             return null;
         }
@@ -454,7 +519,7 @@ final class ProductStateStore
 
     private static function int_column_for_product(int $product_id, string $column): ?int
     {
-        $row = self::get_row_for_product($product_id);
+        $row = self::get_row_for_product_id($product_id);
         if (!is_array($row) || !array_key_exists($column, $row)) {
             return null;
         }
@@ -469,7 +534,7 @@ final class ProductStateStore
 
     private static function float_column_for_product(int $product_id, string $column): ?float
     {
-        $row = self::get_row_for_product($product_id);
+        $row = self::get_row_for_product_id($product_id);
         if (!is_array($row) || !array_key_exists($column, $row)) {
             return null;
         }
@@ -485,6 +550,43 @@ final class ProductStateStore
     private static function bool_column_for_product(int $product_id, string $column): bool
     {
         return (int) (self::int_column_for_product($product_id, $column) ?? 0) === 1;
+    }
+
+    private static function normalize_upc(string $upc): string
+    {
+        $upc = preg_replace('/\D+/', '', trim($upc));
+
+        return is_string($upc) ? $upc : '';
+    }
+
+    /**
+     * @param array<string,mixed>|null $row
+     */
+    private static function seed_product_cache_from_row(?array $row): void
+    {
+        if (!is_array($row)) {
+            return;
+        }
+
+        $product_id = (int) ($row['product_id'] ?? 0);
+        if ($product_id > 0) {
+            self::$row_cache_by_product_id[$product_id] = $row;
+        }
+    }
+
+    /**
+     * @param array<string,mixed>|null $row
+     */
+    private static function seed_upc_cache_from_row(?array $row): void
+    {
+        if (!is_array($row)) {
+            return;
+        }
+
+        $upc = self::normalize_upc((string) ($row['upc'] ?? ''));
+        if ($upc !== '') {
+            self::$row_cache_by_upc[$upc] = $row;
+        }
     }
 
     /**

@@ -3,10 +3,8 @@
 namespace FFLHub\Distributor\Services\Cron;
 
 use FFLHub\Checkout\QuoteCartLinkHandler;
-use FFLHub\Distributor\Product\DistributorProductHelper;
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
-use FFLHub\Product\HolosunProductDetector;
-use FFLHub\Product\ProductMeta;
+use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
 use FFLHub\Settings\Options;
@@ -27,10 +25,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     public const CRON_HOOK = 'fflhub_quote_email_jobs_poll';
 
     private const BATCH_LIMIT = 100;
-    private const CANDIDATE_SCAN_LIMIT = 500;
     private const DEBUG_CONST = 'FFLHUB_DEBUG_QUOTE_EMAIL_CRON';
     private const LOG_PREFIX = '[FFLHub][QuoteEmailCron]';
-    private const BUSINESS_HOURS_TZ = 'America/Chicago';
     private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;
 
     private QuoteEmailJobsTable $jobs_table;
@@ -69,29 +65,20 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $table_name = $this->jobs_table->get_table_name();
         $now_utc = (string) current_time('mysql', true);
         $limit = max(1, (int) self::BATCH_LIMIT);
-        $candidate_limit = max($limit, (int) self::CANDIDATE_SCAN_LIMIT);
-        $force_no_delay = self::force_no_delay_mode();
-        $hours_ctx = self::business_hours_context();
 
         self::debug_ctx('run start', [
             'table' => $table_name,
             'now_utc' => $now_utc,
             'limit' => $limit,
-            'candidate_scan_limit' => $candidate_limit,
-            'force_no_delay' => $force_no_delay ? 1 : 0,
-            'business_hours_open' => !empty($hours_ctx['is_open']) ? 1 : 0,
-            'business_hours_now_local' => (string) ($hours_ctx['now_local'] ?? ''),
-            'business_hours_tz' => self::BUSINESS_HOURS_TZ,
-            'business_hours_applies_to' => 'holosun_random_delay_only',
         ]);
 
         $sql = $wpdb->prepare(
-            "SELECT id, request_first_name, request_last_name, request_email, quote_upc, quote_product_name, submitted_at, random_delay_minutes, email_sent
+            "SELECT id, request_first_name, request_last_name, request_email, quote_upc, quote_product_name, submitted_at, email_sent
              FROM {$table_name}
              WHERE email_sent = 0
-             ORDER BY CASE WHEN random_delay_minutes = 0 THEN 0 ELSE 1 END ASC, submitted_at ASC, id ASC
+             ORDER BY submitted_at ASC, id ASC
              LIMIT %d",
-            $candidate_limit
+            $limit
         );
 
         $candidate_jobs = $wpdb->get_results($sql, ARRAY_A);
@@ -107,44 +94,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return;
         }
 
-        $due_jobs = [];
-        $deferred_counts = [];
-        $due_counts = [];
-        $candidate_rows_seen = 0;
-
-        foreach ($candidate_jobs as $candidate_job_row) {
-            $candidate_rows_seen++;
-            if (!is_array($candidate_job_row)) {
-                $deferred_counts['invalid_row'] = (int) ($deferred_counts['invalid_row'] ?? 0) + 1;
-                self::debug_ctx('skip candidate row: invalid row type', ['row_index' => $candidate_rows_seen]);
-                continue;
-            }
-
-            $due_ctx = $this->quote_job_due_context($candidate_job_row, $now_utc, $force_no_delay, $hours_ctx);
-            $reason = (string) ($due_ctx['reason'] ?? 'unknown');
-
-            if (empty($due_ctx['is_due'])) {
-                $deferred_counts[$reason] = (int) ($deferred_counts[$reason] ?? 0) + 1;
-                continue;
-            }
-
-            $candidate_job_row['_fflhub_quote_is_holosun'] = !empty($due_ctx['is_holosun']) ? 1 : 0;
-            $due_counts[$reason] = (int) ($due_counts[$reason] ?? 0) + 1;
-            $due_jobs[] = $candidate_job_row;
-
-            if (count($due_jobs) >= $limit) {
-                break;
-            }
-        }
-
-        if (empty($due_jobs)) {
-            self::debug_ctx('run complete: no due jobs', [
-                'candidate_rows_seen' => $candidate_rows_seen,
-                'candidate_rows_available' => count($candidate_jobs),
-                'deferred_counts' => $deferred_counts,
-            ]);
-            return;
-        }
+        $due_jobs = $candidate_jobs;
+        $candidate_rows_seen = count($candidate_jobs);
 
         $rows_seen = 0;
         $rows_sent = 0;
@@ -174,125 +125,12 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         self::debug_ctx('run complete', [
             'candidate_rows_seen' => $candidate_rows_seen,
             'candidate_rows_available' => count($candidate_jobs),
-            'due_counts' => $due_counts,
-            'deferred_counts' => $deferred_counts,
             'rows_seen' => $rows_seen,
             'rows_sent' => $rows_sent,
             'rows_skipped' => $rows_skipped,
             'status_counts' => $status_counts,
             'elapsed_ms' => round((microtime(true) - $run_started) * 1000, 2),
         ]);
-    }
-
-    /**
-     * @param array<string,mixed> $job_row
-     * @param array<string,mixed> $hours_ctx
-     *
-     * @return array{is_due:bool,is_holosun:bool,reason:string}
-     */
-    private function quote_job_due_context(array $job_row, string $now_utc, bool $force_no_delay, array $hours_ctx): array
-    {
-        $is_holosun = $this->job_row_is_holosun_quote($job_row);
-
-        if ($force_no_delay) {
-            return [
-                'is_due' => true,
-                'is_holosun' => $is_holosun,
-                'reason' => 'force_no_delay',
-            ];
-        }
-
-        if (!$is_holosun) {
-            return [
-                'is_due' => true,
-                'is_holosun' => false,
-                'reason' => 'non_holosun_instant',
-            ];
-        }
-
-        if (!$this->job_row_random_delay_due($job_row, $now_utc)) {
-            return [
-                'is_due' => false,
-                'is_holosun' => true,
-                'reason' => 'holosun_random_delay_pending',
-            ];
-        }
-
-        return [
-            'is_due' => true,
-            'is_holosun' => true,
-            'reason' => 'holosun_random_delay_due',
-        ];
-    }
-
-    /**
-     * @param array<string,mixed> $job_row
-     */
-    private function job_row_is_holosun_quote(array $job_row): bool
-    {
-        $quote_upc = trim((string) ($job_row['quote_upc'] ?? ''));
-        if ($quote_upc !== '' && HolosunProductDetector::is_holosun_upc($quote_upc)) {
-            return true;
-        }
-
-        $quote_product_name = trim((string) ($job_row['quote_product_name'] ?? ''));
-        if ($this->quote_text_looks_holosun($quote_product_name)) {
-            return true;
-        }
-
-        $product_id = 0;
-        if ($quote_upc !== '') {
-            $product_id = $this->find_product_id_by_upc($quote_upc);
-        }
-        if ($product_id <= 0 && $quote_product_name !== '') {
-            $product_id = $this->find_product_id_by_exact_name($quote_product_name);
-        }
-        if ($product_id <= 0) {
-            return false;
-        }
-
-        $product = wc_get_product($product_id);
-        return ($product instanceof WC_Product) && HolosunProductDetector::is_holosun_product($product);
-    }
-
-    private function quote_text_looks_holosun(string $value): bool
-    {
-        $value = strtolower(trim($value));
-        if ($value === '') {
-            return false;
-        }
-
-        return strpos($value, 'holosun') !== false || strpos($value, 'holoson') !== false;
-    }
-
-    /**
-     * @param array<string,mixed> $job_row
-     */
-    private function job_row_random_delay_due(array $job_row, string $now_utc): bool
-    {
-        $submitted_at = trim((string) ($job_row['submitted_at'] ?? ''));
-        if ($submitted_at === '') {
-            return true;
-        }
-
-        $delay_minutes = max(0, (int) ($job_row['random_delay_minutes'] ?? 0));
-
-        try {
-            $utc = new \DateTimeZone('UTC');
-            $submitted = new \DateTimeImmutable($submitted_at, $utc);
-            $now = new \DateTimeImmutable($now_utc, $utc);
-            $due_at = $submitted->modify('+' . $delay_minutes . ' minutes');
-        } catch (\Throwable $e) {
-            self::debug_ctx('random delay parse failed; treating job as due', [
-                'submitted_at' => $submitted_at,
-                'now_utc' => $now_utc,
-                'delay_minutes' => $delay_minutes,
-                'error' => $e->getMessage(),
-            ]);
-            return true;
-        }
-
-        return $due_at->getTimestamp() <= $now->getTimestamp();
     }
 
     /**
@@ -353,8 +191,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
                 : 'blocked_name_warning_failed';
         }
 
-        $product = $this->resolve_product_from_job_row($job_row);
-        if (!($product instanceof WC_Product)) {
+        $product_context = $this->resolve_product_context_from_job_row($job_row);
+        if (!is_array($product_context)) {
             self::debug_ctx('skip job: product not resolved', [
                 'job_id' => $job_id,
                 'quote_upc' => $quote_upc,
@@ -363,7 +201,10 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return 'skip_product_not_found';
         }
 
-        $pricing = $this->quote_coupon_pricing_for_product($product);
+        $product = $product_context['product'];
+        $state_row = $product_context['state_row'];
+
+        $pricing = $this->quote_coupon_pricing_for_product($product, $state_row);
         $coupon_amount = (float) ($pricing['difference'] ?? 0.0);
         if ($coupon_amount <= 0.0) {
             self::debug_ctx('skip job: coupon amount not positive', [
@@ -374,12 +215,12 @@ final class QuoteEmailJobsCronService extends AbstractCronService
                 'listed_sale_price' => (float) ($pricing['listed_sale_price'] ?? 0.0),
                 'listed_source' => (string) ($pricing['listed_source'] ?? 'unknown'),
                 'difference' => (float) ($pricing['difference'] ?? 0.0),
-                'markup_mode' => (int) $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true),
+                'pricing_mode' => is_array($state_row) ? (string) ($state_row['pricing_mode'] ?? '') : '',
             ]);
             return 'skip_coupon_amount_not_positive';
         }
 
-        $coupon_payload = $this->create_or_refresh_quote_coupon($job_row, $product, $coupon_amount);
+        $coupon_payload = $this->create_or_refresh_quote_coupon($job_row, $product, $state_row, $coupon_amount);
         if (!is_array($coupon_payload) || empty($coupon_payload['code'])) {
             self::debug_ctx('skip job: coupon creation failed', [
                 'job_id' => $job_id,
@@ -389,7 +230,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return 'skip_coupon_creation_failed';
         }
 
-        $context = $this->build_quote_email_context($job_row, $product, $coupon_payload);
+        $context = $this->build_quote_email_context($job_row, $product, $state_row, $coupon_payload);
         if (!($context instanceof QuoteOfferEmailContext)) {
             self::debug_ctx('skip job: context build failed', [
                 'job_id' => $job_id,
@@ -428,7 +269,11 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         return 'sent';
     }
 
-    private function resolve_product_from_job_row(array $job_row): ?WC_Product
+    /**
+     * @param array<string,mixed> $job_row
+     * @return array{product:WC_Product,state_row:array<string,mixed>}|null
+     */
+    private function resolve_product_context_from_job_row(array $job_row): ?array
     {
         $upc = trim((string) ($job_row['quote_upc'] ?? ''));
         $product_name = trim((string) ($job_row['quote_product_name'] ?? ''));
@@ -451,48 +296,63 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         $product = wc_get_product($product_id);
+        if (!($product instanceof WC_Product)) {
+            return null;
+        }
+
+        $state_row = ProductStateStore::get_row_for_product($product);
+        if (!is_array($state_row)) {
+            self::debug_ctx('product resolved but product state row missing', [
+                'product_id' => $product_id,
+                'upc' => $upc,
+                'product_name' => $product_name,
+            ]);
+            return null;
+        }
+
         self::debug_ctx('resolved product', [
             'product_id' => $product_id,
             'upc' => $upc,
             'product_name' => $product_name,
         ]);
-        return ($product instanceof WC_Product) ? $product : null;
+        return [
+            'product' => $product,
+            'state_row' => $state_row,
+        ];
     }
 
     private function find_product_id_by_upc(string $upc): int
     {
         global $wpdb;
 
-        $upc = trim($upc);
+        $upc = self::normalize_upc($upc);
         if ($upc === '') {
             return 0;
         }
 
-        $meta_keys = [
-            ProductMeta::FFLHUB_UPC_META,
-            '_upc',
-            'upc',
-        ];
+        $state_table = ProductStateStore::table_name();
+        $product_id = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT product_id FROM {$state_table} WHERE upc = %s LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $upc
+        ));
 
-        foreach ($meta_keys as $meta_key) {
-            $sql = $wpdb->prepare(
-                "SELECT pm.post_id
-                 FROM {$wpdb->postmeta} pm
-                 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-                 WHERE pm.meta_key = %s
-                   AND pm.meta_value = %s
-                   AND p.post_type = 'product'
-                   AND p.post_status IN ('publish', 'private')
-                 ORDER BY pm.post_id DESC
-                 LIMIT 1",
-                $meta_key,
-                $upc
-            );
+        if ($product_id <= 0) {
+            return 0;
+        }
 
-            $found_id = (int) $wpdb->get_var($sql);
-            if ($found_id > 0) {
-                return $found_id;
-            }
+        $sql = $wpdb->prepare(
+            "SELECT ID
+             FROM {$wpdb->posts}
+             WHERE ID = %d
+               AND post_type = 'product'
+               AND post_status IN ('publish', 'private')
+             LIMIT 1",
+            $product_id
+        );
+
+        $found_id = (int) $wpdb->get_var($sql);
+        if ($found_id > 0) {
+            return $found_id;
         }
 
         return 0;
@@ -521,20 +381,14 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         return (int) $wpdb->get_var($sql);
     }
 
-    private function compute_coupon_amount_for_product(WC_Product $product): float
-    {
-        $pricing = $this->quote_coupon_pricing_for_product($product);
-        $difference = (float) ($pricing['difference'] ?? 0.0);
-        return ($difference > 0.0) ? $difference : 0.0;
-    }
-
     /**
+     * @param array<string,mixed> $state_row
      * @return array{recommended:float,listed_sale_price:float,listed_source:string,difference:float}
      */
-    private function quote_coupon_pricing_for_product(WC_Product $product): array
+    private function quote_coupon_pricing_for_product(WC_Product $product, array $state_row): array
     {
-        $recommended = $this->recommended_price_for_product($product);
-        $listed_details = $this->listed_sale_price_details_for_product($product);
+        $recommended = $this->recommended_price_for_product($product, $state_row);
+        $listed_details = $this->listed_sale_price_details_for_product($product, $state_row);
         $listed_sale_price = (float) ($listed_details['listed_sale_price'] ?? 0.0);
         $listed_source = (string) ($listed_details['source'] ?? 'unknown');
         if ($recommended <= 0.0 || $listed_sale_price <= 0.0) {
@@ -557,9 +411,10 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
     /**
      * @param array<string,mixed> $job_row
+     * @param array<string,mixed> $state_row
      * @return array<string,mixed>|null
      */
-    private function create_or_refresh_quote_coupon(array $job_row, WC_Product $product, float $coupon_amount): ?array
+    private function create_or_refresh_quote_coupon(array $job_row, WC_Product $product, array $state_row, float $coupon_amount): ?array
     {
         $email = sanitize_email((string) ($job_row['request_email'] ?? ''));
         if ($email === '' || !is_email($email)) {
@@ -572,7 +427,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         }
 
         $coupon = new \WC_Coupon();
-        $customer_free_shipping = $this->map_real_price_free_shipping_override_enabled($product);
+        $customer_free_shipping = $this->map_real_price_free_shipping_override_enabled($state_row);
 
         $expires_ts = (int) current_time('timestamp', true) + (48 * HOUR_IN_SECONDS);
         $product_name = (string) $product->get_name();
@@ -584,7 +439,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             'coupon_amount' => $coupon_amount,
             'recipient_email' => $email,
             'expires_ts' => $expires_ts,
-            'customer_free_shipping_product_meta' => $customer_free_shipping ? 1 : 0,
+            'customer_free_shipping_product_state' => $customer_free_shipping ? 1 : 0,
             'coupon_free_shipping' => $customer_free_shipping ? 1 : 0,
         ]);
 
@@ -682,9 +537,10 @@ final class QuoteEmailJobsCronService extends AbstractCronService
 
     /**
      * @param array<string,mixed> $job_row
+     * @param array<string,mixed> $state_row
      * @param array<string,mixed> $coupon_payload
      */
-    private function build_quote_email_context(array $job_row, WC_Product $product, array $coupon_payload): ?QuoteOfferEmailContext
+    private function build_quote_email_context(array $job_row, WC_Product $product, array $state_row, array $coupon_payload): ?QuoteOfferEmailContext
     {
         $recipient = sanitize_email((string) ($job_row['request_email'] ?? ''));
         if ($recipient === '' || !is_email($recipient)) {
@@ -698,7 +554,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $rep_index = ($job_id > 0) ? ($job_id % $rep_count) : 0;
 
         $first_name = trim((string) ($job_row['request_first_name'] ?? ''));
-        $resolved_upc_product_name = $this->resolve_upc_validated_product_name_for_job($job_row, $product);
+        $resolved_upc_product_name = $this->resolve_upc_validated_product_name_for_job($job_row, $product, $state_row);
         $product_name = ($resolved_upc_product_name !== '')
             ? $resolved_upc_product_name
             : (string) __('requested product', 'ffl-hub');
@@ -714,9 +570,9 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $quote_cart_url = QuoteCartLinkHandler::build_url((int) $product->get_id(), $coupon_code, 'checkout');
 
         $coupon_amount = (float) ($coupon_payload['amount'] ?? 0.0);
-        $final_price_amount = $this->final_price_amount_for_product($product, $coupon_amount);
+        $final_price_amount = $this->final_price_amount_for_product($product, $state_row, $coupon_amount);
         $final_price_display = $this->final_price_display_for_amount($final_price_amount);
-        $shipping_phrase = $this->shipping_phrase_for_quote_product($product, $final_price_amount);
+        $shipping_phrase = $this->shipping_phrase_for_quote_product($state_row, $final_price_amount);
 
         $subject = (string) __('Email Quote Ready', 'ffl-hub');
         $rep_name = $rep_names[$rep_index] ?? Options::default_quote_email_rep_names();
@@ -766,8 +622,9 @@ final class QuoteEmailJobsCronService extends AbstractCronService
      * an empty string so callers can safely fall back to a generic subject/body label.
      *
      * @param array<string,mixed> $job_row
+     * @param array<string,mixed> $state_row
      */
-    private function resolve_upc_validated_product_name_for_job(array $job_row, WC_Product $product): string
+    private function resolve_upc_validated_product_name_for_job(array $job_row, WC_Product $product, array $state_row): string
     {
         $name = trim((string) $product->get_name());
         if ($name === '') {
@@ -779,40 +636,30 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return $name;
         }
 
-        return $this->product_matches_quote_upc($product, $quote_upc) ? $name : '';
+        return $this->product_matches_quote_upc($state_row, $quote_upc) ? $name : '';
     }
 
-    private function product_matches_quote_upc(WC_Product $product, string $quote_upc): bool
+    /**
+     * @param array<string,mixed> $state_row
+     */
+    private function product_matches_quote_upc(array $state_row, string $quote_upc): bool
     {
-        $quote_upc = trim($quote_upc);
+        $quote_upc = self::normalize_upc($quote_upc);
         if ($quote_upc === '') {
             return false;
         }
 
-        $meta_keys = [
-            ProductMeta::FFLHUB_UPC_META,
-            '_upc',
-            'upc',
-        ];
+        $product_upc = self::normalize_upc((string) ($state_row['upc'] ?? ''));
 
-        foreach ($meta_keys as $meta_key) {
-            $value = trim((string) $product->get_meta($meta_key, true));
-            if ($value !== '' && $value === $quote_upc) {
-                return true;
-            }
-        }
-
-        return false;
+        return $product_upc !== '' && $product_upc === $quote_upc;
     }
 
-    private function recommended_price_for_product(WC_Product $product): float
+    /**
+     * @param array<string,mixed> $state_row
+     */
+    private function recommended_price_for_product(WC_Product $product, array $state_row): float
     {
-        $map_real_price = DistributorProductHelper::get_map_real_price_for_product($product);
-        if (is_numeric($map_real_price) && (float) $map_real_price > 0.0) {
-            return (float) $map_real_price;
-        }
-
-        $recommended = (float) $product->get_meta(ProductMeta::FFLHUB_LAST_COMPUTED_PRICE_META, true);
+        $recommended = $this->to_non_negative_float($state_row['computed_sell_price'] ?? null, 0.0);
         if ($recommended <= 0.0) {
             $recommended = (float) $product->get_regular_price();
         }
@@ -823,17 +670,37 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         return ($recommended > 0.0) ? $recommended : 0.0;
     }
 
-    private function listed_sale_price_for_product(WC_Product $product): float
+    /**
+     * @param array<string,mixed> $state_row
+     */
+    private function listed_sale_price_for_product(WC_Product $product, array $state_row): float
     {
-        $details = $this->listed_sale_price_details_for_product($product);
+        $details = $this->listed_sale_price_details_for_product($product, $state_row);
         return (float) ($details['listed_sale_price'] ?? 0.0);
     }
 
     /**
+     * @param array<string,mixed> $state_row
      * @return array{listed_sale_price:float,source:string}
      */
-    private function listed_sale_price_details_for_product(WC_Product $product): array
+    private function listed_sale_price_details_for_product(WC_Product $product, array $state_row): array
     {
+        $state_sale_price = $this->to_non_negative_float($state_row['public_sale_price'] ?? null, 0.0);
+        if ($state_sale_price > 0.0) {
+            return [
+                'listed_sale_price' => $state_sale_price,
+                'source' => 'product_state_public_sale_price',
+            ];
+        }
+
+        $state_regular_price = $this->to_non_negative_float($state_row['public_regular_price'] ?? null, 0.0);
+        if ($state_regular_price > 0.0) {
+            return [
+                'listed_sale_price' => $state_regular_price,
+                'source' => 'product_state_public_regular_price',
+            ];
+        }
+
         $sale_price = (float) $product->get_sale_price();
         if ($sale_price > 0.0) {
             return [
@@ -864,11 +731,14 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         ];
     }
 
-    private function final_price_amount_for_product(WC_Product $product, float $coupon_amount): float
+    /**
+     * @param array<string,mixed> $state_row
+     */
+    private function final_price_amount_for_product(WC_Product $product, array $state_row, float $coupon_amount): float
     {
-        $final_price = $this->recommended_price_for_product($product);
+        $final_price = $this->recommended_price_for_product($product, $state_row);
         if ($final_price <= 0.0) {
-            $listed_sale_price = $this->listed_sale_price_for_product($product);
+            $listed_sale_price = $this->listed_sale_price_for_product($product, $state_row);
             if ($listed_sale_price > 0.0 && $coupon_amount > 0.0) {
                 $derived = round($listed_sale_price - $coupon_amount, 2);
                 if ($derived > 0.0) {
@@ -889,22 +759,28 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         return wp_strip_all_tags(wc_price($final_price));
     }
 
-    private function shipping_phrase_for_quote_product(WC_Product $product, float $line_revenue): string
+    /**
+     * @param array<string,mixed> $state_row
+     */
+    private function shipping_phrase_for_quote_product(array $state_row, float $line_revenue): string
     {
-        $is_free_shipping = $this->is_free_shipping_for_quote_product($product, $line_revenue);
+        $is_free_shipping = $this->is_free_shipping_for_quote_product($state_row, $line_revenue);
 
         return $is_free_shipping
             ? __('with free shipping', 'ffl-hub')
             : __('+ shipping', 'ffl-hub');
     }
 
-    private function is_free_shipping_for_quote_product(WC_Product $product, float $line_revenue): bool
+    /**
+     * @param array<string,mixed> $state_row
+     */
+    private function is_free_shipping_for_quote_product(array $state_row, float $line_revenue): bool
     {
-        if ($this->map_real_price_free_shipping_override_enabled($product)) {
+        if ($this->map_real_price_free_shipping_override_enabled($state_row)) {
             return true;
         }
 
-        $shipping_cost_total = $this->estimate_shipping_cost_total_for_quote_product($product);
+        $shipping_cost_total = $this->estimate_shipping_cost_total_for_quote_product($state_row);
         if ($shipping_cost_total <= 0.0) {
             return true;
         }
@@ -918,10 +794,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             $f = 0.99;
         }
 
-        $true_cost = $this->to_non_negative_float(
-            $product->get_meta(ProductMeta::FFLHUB_LAST_TRUE_COST_META, true),
-            0.0
-        );
+        $true_cost = $this->to_non_negative_float($state_row['landed_cost'] ?? null, 0.0);
         $profit_net_total = ($line_revenue - $true_cost) * (1.0 - $f);
 
         $customer_charge = 0.0;
@@ -962,48 +835,41 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         return max(0.0, min($percent_threshold, $penny_profit_threshold));
     }
 
-    private function map_real_price_free_shipping_override_enabled(WC_Product $product): bool
+    /**
+     * @param array<string,mixed> $state_row
+     */
+    private function map_real_price_free_shipping_override_enabled(array $state_row): bool
     {
-        $mode_raw = $product->get_meta(ProductMeta::FFLHUB_MARKUP_MODE_META, true);
-        $mode = ($mode_raw === '' && (string) $mode_raw !== '0')
-            ? ProductMeta::MARKUP_MODE_GLOBAL
-            : (int) $mode_raw;
-        if ($mode !== ProductMeta::MARKUP_MODE_MAP_PRICE) {
+        $policy = strtolower(trim((string) ($state_row['map_visibility_policy'] ?? '')));
+        if ($policy !== Options::MAP_POLICY_EMAIL_FOR_QUOTE) {
             return false;
         }
 
-        return $this->to_boolish(
-            $product->get_meta(ProductMeta::FFLHUB_MAP_REAL_PRICE_FREE_SHIPPING_OVERRIDE_META, true),
-            false
-        );
+        return $this->to_boolish($state_row['quote_free_shipping_override'] ?? null, false);
     }
 
-    private function estimate_shipping_cost_total_for_quote_product(WC_Product $product): float
+    /**
+     * @param array<string,mixed> $state_row
+     */
+    private function estimate_shipping_cost_total_for_quote_product(array $state_row): float
     {
         $shipping_settings = $this->shipping_method_settings_snapshot();
         $fallback_ship = (float) ($shipping_settings['fallback_shipping'] ?? 15.0);
 
-        $dist_id = strtolower(trim((string) $product->get_meta(ProductMeta::FFLHUB_SOURCE_DISTRIBUTOR_META, true)));
+        $dist_id = strtolower(trim((string) ($state_row['distributor_id'] ?? '')));
         if ($dist_id === '') {
             return max(0.0, $fallback_ship);
         }
 
-        $ffl_required_raw = $product->get_meta(ProductMeta::FFLHUB_FFL_REQUIRED_META, true);
-        $ffl_required = !empty($ffl_required_raw) && (string) $ffl_required_raw !== '0';
-        $dropship_enabled = $this->to_boolish(
-            $product->get_meta(ProductMeta::FFLHUB_DROPSHIP_ENABLED_META, true),
-            true
-        );
+        $ffl_required = $this->to_boolish($state_row['ffl_required'] ?? null, false);
+        $dropship_enabled = $this->to_boolish($state_row['dropship_enabled'] ?? null, true);
 
-        $ship_raw = $product->get_meta(ProductMeta::FFLHUB_LAST_SHIPPING_COST_META, true);
+        $ship_raw = $state_row['shipping_cost'] ?? null;
         $dist_lane_fee = $this->to_non_negative_float($ship_raw, $fallback_ship);
         if ($dist_lane_fee <= 0.0) {
             $dist_lane_fee = max(0.0, $fallback_ship);
         }
-        $weight_oz = $this->to_non_negative_float(
-            $product->get_meta(ProductMeta::FFLHUB_SHIPPING_WEIGHT_META, true),
-            0.0
-        );
+        $weight_oz = $this->to_non_negative_float($state_row['shipping_weight_oz'] ?? null, 0.0);
 
         $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan([
             [
@@ -1085,6 +951,13 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         ];
 
         return $snapshot;
+    }
+
+    private static function normalize_upc(string $upc): string
+    {
+        $upc = preg_replace('/\D+/', '', trim($upc));
+
+        return is_string($upc) ? $upc : '';
     }
 
     /**
@@ -1289,38 +1162,6 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $first = strtolower(trim($first_name));
         $last = strtolower(trim($last_name));
         return ($first === 'dennis' && $last === 'joe');
-    }
-
-    private static function force_no_delay_mode(): bool
-    {
-        return defined('FFLHUB_QUOTE_EMAIL_FORCE_NO_DELAY') && (bool) constant('FFLHUB_QUOTE_EMAIL_FORCE_NO_DELAY');
-    }
-
-    /**
-     * @return array{is_open:bool,now_local:string,hour_local:int}
-     */
-    private static function business_hours_context(): array
-    {
-        try {
-            $tz = new \DateTimeZone(self::BUSINESS_HOURS_TZ);
-        } catch (\Throwable $e) {
-            return [
-                'is_open' => true,
-                'now_local' => '',
-                'hour_local' => -1,
-            ];
-        }
-
-        $now_local = new \DateTimeImmutable('now', $tz);
-        $hour_local = (int) $now_local->format('G');
-
-        return [
-            // Quote emails may send 24/7; customer-facing messaging still says
-            // requests are reviewed during business hours.
-            'is_open' => true,
-            'now_local' => $now_local->format('Y-m-d H:i:s T'),
-            'hour_local' => $hour_local,
-        ];
     }
 
     private static function debug(string $message): void
