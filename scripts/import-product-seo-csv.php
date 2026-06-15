@@ -357,7 +357,12 @@ foreach ($rows as $index => $row) {
         }
     }
 
-    if ($commit && $post_changed) {
+    $needs_product_save = ($post_changed || $meta_updates > 0);
+    if ($commit && $needs_product_save) {
+        if (!$post_changed) {
+            $post_update['post_title'] = (string) $post->post_title;
+        }
+
         $updated = wp_update_post(wp_slash($post_update), true);
         if (is_wp_error($updated)) {
             $stats['errors']++;
@@ -404,7 +409,7 @@ foreach ($rows as $index => $row) {
     if ($post_changed || $meta_updates > 0 || $image_alt_changed) {
         $stats['changed_products']++;
     }
-    if ($post_changed) {
+    if ($needs_product_save) {
         $stats['post_updates']++;
     }
     $stats['yoast_meta_updates'] += $meta_updates;
