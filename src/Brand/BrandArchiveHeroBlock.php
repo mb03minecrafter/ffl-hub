@@ -20,9 +20,16 @@ use WP_Term;
  */
 final class BrandArchiveHeroBlock
 {
+    private const HERO_IMAGE_META_KEY = 'fflhub_archive_hero_image_id';
+
     public static function init(): void
     {
         add_action('init', [self::class, 'register']);
+        add_action('product_tag_add_form_fields', [self::class, 'render_product_tag_add_field']);
+        add_action('product_tag_edit_form_fields', [self::class, 'render_product_tag_edit_field']);
+        add_action('created_product_tag', [self::class, 'save_product_tag_hero_image']);
+        add_action('edited_product_tag', [self::class, 'save_product_tag_hero_image']);
+        add_action('admin_enqueue_scripts', [self::class, 'enqueue_admin_assets']);
     }
 
     public static function register(): void
@@ -35,7 +42,7 @@ final class BrandArchiveHeroBlock
             'api_version'     => 2,
             'title'           => __('FFLHub Brand Archive Hero', 'ffl-hub'),
             'category'        => 'widgets',
-            'description'     => __('Displays the current WooCommerce brand title, description, product count, and optional brand thumbnail.', 'ffl-hub'),
+            'description'     => __('Displays the current WooCommerce product brand or tag title, description, product count, and optional archive hero image.', 'ffl-hub'),
             'render_callback' => [self::class, 'render'],
             'supports'        => [
                 'align' => ['wide', 'full'],
@@ -50,7 +57,7 @@ final class BrandArchiveHeroBlock
     public static function render(array $attributes = []): string
     {
         $term = get_queried_object();
-        if (!$term instanceof WP_Term || $term->taxonomy !== 'product_brand') {
+        if (!$term instanceof WP_Term || !in_array($term->taxonomy, ['product_brand', 'product_tag'], true)) {
             return '';
         }
 
@@ -59,9 +66,9 @@ final class BrandArchiveHeroBlock
             return '';
         }
 
-        $description = trim((string) term_description((int) $term->term_id, 'product_brand'));
+        $description = trim((string) term_description((int) $term->term_id, $term->taxonomy));
         $count = max(0, (int) $term->count);
-        $thumbnail_id = self::brand_thumbnail_id($term);
+        $thumbnail_id = self::archive_thumbnail_id($term);
         $image_url = $thumbnail_id > 0 ? (string) wp_get_attachment_image_url($thumbnail_id, 'full') : '';
         $image_alt = $thumbnail_id > 0 ? trim((string) get_post_meta($thumbnail_id, '_wp_attachment_image_alt', true)) : '';
         if ($image_alt === '') {
@@ -105,9 +112,9 @@ final class BrandArchiveHeroBlock
         return self::styles() . (string) ob_get_clean();
     }
 
-    private static function brand_thumbnail_id(WP_Term $term): int
+    private static function archive_thumbnail_id(WP_Term $term): int
     {
-        foreach (['thumbnail_id', 'brand_thumbnail_id', 'product_brand_thumbnail_id'] as $key) {
+        foreach ([self::HERO_IMAGE_META_KEY, 'thumbnail_id', 'brand_thumbnail_id', 'product_brand_thumbnail_id'] as $key) {
             $value = get_term_meta((int) $term->term_id, $key, true);
             $id = absint($value);
             if ($id > 0) {
@@ -116,6 +123,148 @@ final class BrandArchiveHeroBlock
         }
 
         return 0;
+    }
+
+    public static function render_product_tag_add_field(string $taxonomy): void
+    {
+        if ($taxonomy !== 'product_tag' || !self::can_manage_product_tags()) {
+            return;
+        }
+
+        wp_nonce_field('fflhub_product_tag_hero_image', 'fflhub_product_tag_hero_image_nonce');
+        ?>
+        <div class="form-field term-fflhub-archive-hero-image-wrap">
+            <label for="fflhub_archive_hero_image_id"><?php echo esc_html__('Archive hero image', 'ffl-hub'); ?></label>
+            <input type="hidden" id="fflhub_archive_hero_image_id" name="fflhub_archive_hero_image_id" value="" />
+            <div class="fflhub-tax-hero-image-preview"></div>
+            <button type="button" class="button fflhub-tax-hero-image-upload"><?php echo esc_html__('Select image', 'ffl-hub'); ?></button>
+            <button type="button" class="button fflhub-tax-hero-image-remove"><?php echo esc_html__('Remove image', 'ffl-hub'); ?></button>
+            <p><?php echo esc_html__('Optional image used by the product tag archive hero template.', 'ffl-hub'); ?></p>
+        </div>
+        <?php
+    }
+
+    public static function render_product_tag_edit_field(WP_Term $term): void
+    {
+        if ($term->taxonomy !== 'product_tag' || !self::can_manage_product_tags()) {
+            return;
+        }
+
+        $image_id = absint(get_term_meta((int) $term->term_id, self::HERO_IMAGE_META_KEY, true));
+        $image_url = $image_id > 0 ? (string) wp_get_attachment_image_url($image_id, 'medium') : '';
+
+        wp_nonce_field('fflhub_product_tag_hero_image', 'fflhub_product_tag_hero_image_nonce');
+        ?>
+        <tr class="form-field term-fflhub-archive-hero-image-wrap">
+            <th scope="row">
+                <label for="fflhub_archive_hero_image_id"><?php echo esc_html__('Archive hero image', 'ffl-hub'); ?></label>
+            </th>
+            <td>
+                <input type="hidden" id="fflhub_archive_hero_image_id" name="fflhub_archive_hero_image_id" value="<?php echo esc_attr((string) $image_id); ?>" />
+                <div class="fflhub-tax-hero-image-preview">
+                    <?php if ($image_url !== '') : ?>
+                        <img src="<?php echo esc_url($image_url); ?>" alt="" />
+                    <?php endif; ?>
+                </div>
+                <button type="button" class="button fflhub-tax-hero-image-upload"><?php echo esc_html__('Select image', 'ffl-hub'); ?></button>
+                <button type="button" class="button fflhub-tax-hero-image-remove"><?php echo esc_html__('Remove image', 'ffl-hub'); ?></button>
+                <p class="description"><?php echo esc_html__('Optional image used by the product tag archive hero template.', 'ffl-hub'); ?></p>
+            </td>
+        </tr>
+        <?php
+    }
+
+    public static function save_product_tag_hero_image(int $term_id): void
+    {
+        if (!self::can_manage_product_tags()) {
+            return;
+        }
+
+        $nonce = isset($_POST['fflhub_product_tag_hero_image_nonce'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_product_tag_hero_image_nonce']))
+            : '';
+        if ($nonce === '' || !wp_verify_nonce($nonce, 'fflhub_product_tag_hero_image')) {
+            return;
+        }
+
+        $image_id = isset($_POST['fflhub_archive_hero_image_id'])
+            ? absint(wp_unslash((string) $_POST['fflhub_archive_hero_image_id']))
+            : 0;
+
+        if ($image_id > 0) {
+            update_term_meta($term_id, self::HERO_IMAGE_META_KEY, $image_id);
+        } else {
+            delete_term_meta($term_id, self::HERO_IMAGE_META_KEY);
+        }
+    }
+
+    public static function enqueue_admin_assets(string $hook_suffix): void
+    {
+        if (!in_array($hook_suffix, ['edit-tags.php', 'term.php'], true)) {
+            return;
+        }
+
+        $taxonomy = isset($_GET['taxonomy']) ? sanitize_key((string) wp_unslash($_GET['taxonomy'])) : '';
+        if ($taxonomy !== 'product_tag' || !self::can_manage_product_tags()) {
+            return;
+        }
+
+        wp_enqueue_media();
+        wp_enqueue_script('jquery');
+        wp_add_inline_script('jquery', self::admin_script());
+        wp_register_style('fflhub-product-tag-hero-admin', false, [], FFLHUB_PLUGIN_VERSION);
+        wp_enqueue_style('fflhub-product-tag-hero-admin');
+        wp_add_inline_style('fflhub-product-tag-hero-admin', self::admin_styles());
+    }
+
+    private static function can_manage_product_tags(): bool
+    {
+        $taxonomy = get_taxonomy('product_tag');
+        $cap = $taxonomy && isset($taxonomy->cap->edit_terms)
+            ? (string) $taxonomy->cap->edit_terms
+            : 'manage_product_terms';
+
+        return current_user_can($cap);
+    }
+
+    private static function admin_script(): string
+    {
+        return <<<'JS'
+jQuery(function($) {
+    var frame;
+    $('.fflhub-tax-hero-image-upload').on('click', function(e) {
+        e.preventDefault();
+        var $wrap = $(this).closest('.term-fflhub-archive-hero-image-wrap');
+        if (frame) {
+            frame.open();
+            frame.off('select');
+        } else {
+            frame = wp.media({
+                title: 'Select archive hero image',
+                button: { text: 'Use this image' },
+                multiple: false
+            });
+        }
+        frame.on('select', function() {
+            var attachment = frame.state().get('selection').first().toJSON();
+            $wrap.find('#fflhub_archive_hero_image_id').val(attachment.id || '');
+            $wrap.find('.fflhub-tax-hero-image-preview').html('<img src="' + (attachment.sizes && attachment.sizes.medium ? attachment.sizes.medium.url : attachment.url) + '" alt="" />');
+        });
+        frame.open();
+    });
+    $('.fflhub-tax-hero-image-remove').on('click', function(e) {
+        e.preventDefault();
+        var $wrap = $(this).closest('.term-fflhub-archive-hero-image-wrap');
+        $wrap.find('#fflhub_archive_hero_image_id').val('');
+        $wrap.find('.fflhub-tax-hero-image-preview').empty();
+    });
+});
+JS;
+    }
+
+    private static function admin_styles(): string
+    {
+        return '.fflhub-tax-hero-image-preview{margin:8px 0 10px}.fflhub-tax-hero-image-preview img{display:block;max-width:220px;height:auto;border:1px solid #ccd0d4;background:#fff}.fflhub-tax-hero-image-remove{margin-left:6px}';
     }
 
     private static function styles(): string
