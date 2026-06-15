@@ -62,16 +62,29 @@ final class FFLRowMapper
     /**
      * Normalize an FFL number consistently across the system.
      *
-     * Current behavior:
-     * - Trim whitespace
-     * - Uppercase
-     *
-     * IMPORTANT:
-     * - This must stay in sync with how FFL numbers are stored in the DB.
+     * Checkout can receive either the raw license number from the picker or a
+     * browser/session-restored display label such as "FFL Number 1-23-...".
+     * Store and validate only the canonical license number used by the FFL DB.
      */
     public static function normalize_ffl_number(string $ffl_number): string
     {
-        return strtoupper(trim($ffl_number));
+        $value = strtoupper(trim($ffl_number));
+        if ($value === '') {
+            return '';
+        }
+
+        if (preg_match('/\b(\d-\d{2}-\d{3}-\d{2}-[A-Z0-9]{2}-\d{5})\b/', $value, $matches)) {
+            return $matches[1];
+        }
+
+        $compact = preg_replace('/[^A-Z0-9]/', '', $value);
+        $compact = is_string($compact) ? $compact : '';
+
+        if (preg_match('/^(\d)(\d{2})(\d{3})(\d{2})([A-Z0-9]{2})(\d{5})$/', $compact, $matches)) {
+            return implode('-', array_slice($matches, 1));
+        }
+
+        return '';
     }
 
     /**

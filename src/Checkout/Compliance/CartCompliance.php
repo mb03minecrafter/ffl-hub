@@ -17,6 +17,7 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 
 use FFLHub\Checkout\Builders\CheckoutOrderRequestBuilder;
 
+use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Util\DebugLogUtil;
@@ -922,16 +923,16 @@ final class CartCompliance
             );
 
             if ($receiving_ffl_number === null && $request_ffl_raw !== null) {
-                $from_request = strtoupper(trim((string) $request_ffl_raw));
-                if ($from_request !== '' && preg_match('/^[A-Z0-9-]+$/', $from_request)) {
+                $from_request = FFLRowMapper::normalize_ffl_number((string) $request_ffl_raw);
+                if ($from_request !== '') {
                     $receiving_ffl_number = $from_request;
                     $resolved_from_request = true;
                 }
             }
 
             if ($receiving_ffl_number === null && $order instanceof \WC_Order) {
-                $from_order = strtoupper(trim((string) $order->get_meta(self::ORDER_META_KEY_RECEIVING_FFL, true)));
-                if ($from_order !== '' && preg_match('/^[A-Z0-9-]+$/', $from_order)) {
+                $from_order = FFLRowMapper::normalize_ffl_number((string) $order->get_meta(self::ORDER_META_KEY_RECEIVING_FFL, true));
+                if ($from_order !== '') {
                     $receiving_ffl_number = $from_order;
                     $resolved_from_order = true;
                 }

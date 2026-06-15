@@ -496,20 +496,16 @@ final class CheckoutOrderRequestBuilder
             ]);
         }
 
-        $val = strtoupper(trim((string) $raw));
-        if ($val !== '' && preg_match('/^[A-Z0-9-]+$/', $val)) {
-            return $val;
-        }
-
-        return null;
+        $val = FFLRowMapper::normalize_ffl_number((string) $raw);
+        return $val !== '' ? $val : null;
     }
 
     public static function get_session_receiving_ffl_number(string $session_key): ?string
     {
         $raw = self::get_session_receiving_ffl_number_raw($session_key);
-        $v   = strtoupper(trim((string) $raw));
+        $v   = FFLRowMapper::normalize_ffl_number((string) $raw);
 
-        return ($v !== '' && preg_match('/^[A-Z0-9-]+$/', $v)) ? $v : null;
+        return $v !== '' ? $v : null;
     }
 
     public static function get_session_receiving_ffl_number_raw(string $session_key): mixed
@@ -530,9 +526,9 @@ final class CheckoutOrderRequestBuilder
             return;
         }
 
-        $ffl_number = strtoupper(trim((string) $ffl_number));
+        $ffl_number = FFLRowMapper::normalize_ffl_number((string) $ffl_number);
 
-        if ($ffl_number === '' || !preg_match('/^[A-Z0-9-]+$/', $ffl_number)) {
+        if ($ffl_number === '') {
             if (is_callable($debug)) {
                 $debug('ffl session persist: clearing', ['incoming' => self::dbg_val($ffl_number)]);
             }
