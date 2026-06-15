@@ -234,7 +234,7 @@ final class CheckoutFields
                     'data-fflhub-receiving-ffl-input' => '1',
                 ],
                 'sanitize_callback' => static function ($value) {
-                    return sanitize_text_field((string) $value);
+                    return FFLRowMapper::normalize_ffl_number((string) $value);
                 },
 
                 // ❌ No validate_callback here. We validate in woocommerce_after_checkout_validation.
