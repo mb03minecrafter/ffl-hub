@@ -13,6 +13,20 @@ if (!defined('ABSPATH')) {
 final class ProductBestOfferSelectionService
 {
     /**
+     * Distributor MAP feeds we do not trust as a fallback source.
+     *
+     * These distributors may still win the selected offer on cost/stock, but
+     * when their own selected row has no valid MAP we do not borrow MAP values
+     * from these distributors to fill the selected product's MAP field.
+     */
+    private const MAP_FALLBACK_IGNORED_DISTRIBUTORS = [
+        'cssi',
+        'davidsons',
+        'kinseys',
+        'orion',
+    ];
+
+    /**
      * Refresh best-offer rows for UPCs whose normalized distributor offers changed.
      *
      * @return array<string,mixed>
@@ -126,12 +140,13 @@ final class ProductBestOfferSelectionService
         $result['stage'] = 'best_offer_upsert';
 
         $t_map = microtime(true);
+        $map_fallback_ignored_ids = "'" . implode("', '", array_map('esc_sql', self::MAP_FALLBACK_IGNORED_DISTRIBUTORS)) . "'";
         $map_inserted = $wpdb->query("
             INSERT INTO {$map_table} (upc, map_price, msrp)
             SELECT
                 d.upc,
                 MAX(CASE
-                    WHEN o.distributor_id <> 'davidsons'
+                    WHEN o.distributor_id NOT IN ({$map_fallback_ignored_ids})
                         AND o.map_price IS NOT NULL
                         AND o.map_price > 0
                     THEN o.map_price
