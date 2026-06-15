@@ -13,11 +13,10 @@ if (!defined('ABSPATH')) {
 final class ProductBestOfferSelectionService
 {
     /**
-     * Distributor MAP feeds we do not trust as a fallback source.
+     * Distributor MAP feeds we do not trust for product-state MAP resolution.
      *
      * These distributors may still win the selected offer on cost/stock, but
-     * when their own selected row has no valid MAP we do not borrow MAP values
-     * from these distributors to fill the selected product's MAP field.
+     * their MAP values are ignored when building the selected best-offer row.
      */
     private const MAP_FALLBACK_IGNORED_DISTRIBUTORS = [
         'cssi',
@@ -246,7 +245,13 @@ final class ProductBestOfferSelectionService
                 o.dealer_price,
                 o.shipping_cost,
                 o.landed_cost,
-                COALESCE(NULLIF(o.map_price, 0), dm.map_price) AS map_price,
+                CASE
+                    WHEN o.distributor_id NOT IN ({$map_fallback_ignored_ids})
+                        AND o.map_price IS NOT NULL
+                        AND o.map_price > 0
+                    THEN o.map_price
+                    ELSE dm.map_price
+                END AS map_price,
                 COALESCE(NULLIF(o.msrp, 0), dm.msrp) AS msrp,
                 COALESCE(o.ffl_required, 0) AS ffl_required,
                 COALESCE(o.sot_required, 0) AS sot_required,
