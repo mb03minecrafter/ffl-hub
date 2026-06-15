@@ -85,7 +85,6 @@ final class BrandArchiveHeroBlock
                 <img class="fflhub-brand-hero__image" src="<?php echo esc_url($image_url); ?>" alt="<?php echo esc_attr($image_alt); ?>" loading="eager" decoding="async" />
             <?php endif; ?>
             <div class="fflhub-brand-hero__inner">
-                <div class="fflhub-brand-hero__eyebrow"><?php echo esc_html__('Brand', 'ffl-hub'); ?></div>
                 <h1 class="fflhub-brand-hero__title"><?php echo esc_html($title); ?></h1>
                 <?php if ($description !== '') : ?>
                     <div class="fflhub-brand-hero__description">
@@ -127,7 +126,6 @@ final class BrandArchiveHeroBlock
 .fflhub-brand-hero__image{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
 .fflhub-brand-hero__inner{box-sizing:border-box;width:min(1400px,calc(100% - 40px));margin:0 auto;padding:clamp(38px,6vw,82px) 0}
 .fflhub-brand-hero.has-brand-image .fflhub-brand-hero__inner{display:flex;min-height:320px;flex-direction:column;justify-content:center}
-.fflhub-brand-hero__eyebrow{margin:0 0 10px;font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#b89142}
 .fflhub-brand-hero__title{max-width:900px;margin:0;font-size:clamp(38px,5vw,72px);font-weight:800;line-height:1.02;letter-spacing:0;color:inherit}
 .fflhub-brand-hero__description{max-width:860px;margin-top:18px;font-size:clamp(16px,1.4vw,20px);line-height:1.65;color:inherit}
 .fflhub-brand-hero.has-no-brand-image .fflhub-brand-hero__description{color:#34383d}
