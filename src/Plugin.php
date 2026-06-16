@@ -30,6 +30,7 @@ use FFLHub\Admin\ProductMeta\ProductMetaBox;
 use FFLHub\Admin\WPCronWarning;
 use FFLHub\BOM\Tables\BOMSchema;
 use FFLHub\BOM\Tables\BOMTable;
+use FFLHub\Brand\ArchiveFaqBlock;
 use FFLHub\Brand\BrandArchiveHeroBlock;
 use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
@@ -139,6 +140,7 @@ final class Plugin
         SettingsRegistrar::init();
         ActionSchedulerWebRunnerGuard::init();
         BrandArchiveHeroBlock::init();
+        ArchiveFaqBlock::init();
 
         $this->ffl_table_schema = new FFLSchema();
 
