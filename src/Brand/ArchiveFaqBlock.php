@@ -37,6 +37,7 @@ final class ArchiveFaqBlock
         }
 
         add_action('admin_enqueue_scripts', [self::class, 'enqueue_admin_assets']);
+        add_filter('wpseo_schema_graph', [self::class, 'add_yoast_schema'], 20, 2);
     }
 
     public static function register(): void
@@ -96,6 +97,83 @@ final class ArchiveFaqBlock
     }
 
     /**
+     * Add term FAQ rows to Yoast's schema graph as a FAQPage node.
+     *
+     * Yoast renders the final JSON-LD graph. We only append a small node when
+     * the current archive term has visible FAQ content, so the HTML FAQ and the
+     * structured data stay sourced from the same term meta.
+     *
+     * @param array<int,array<string,mixed>> $graph
+     * @param mixed                          $context Yoast Meta_Tags_Context.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public static function add_yoast_schema(array $graph, $context): array
+    {
+        $term = self::current_archive_term();
+        if (!$term instanceof WP_Term) {
+            return $graph;
+        }
+
+        $items = self::faq_items((int) $term->term_id);
+        if (empty($items) || self::graph_has_faq_page($graph)) {
+            return $graph;
+        }
+
+        $canonical = self::schema_canonical_url($term, $context);
+        if ($canonical === '') {
+            return $graph;
+        }
+
+        $faq_id = trailingslashit($canonical) . '#faq';
+        $main_entity = [];
+        foreach ($items as $index => $item) {
+            $question_id = $faq_id . '-question-' . ($index + 1);
+            $main_entity[] = [
+                '@type' => 'Question',
+                '@id' => $question_id,
+                'name' => $item['question'],
+                'acceptedAnswer' => [
+                    '@type' => 'Answer',
+                    'text' => wp_kses_post(wpautop($item['answer'])),
+                ],
+            ];
+        }
+
+        $piece = [
+            '@type' => 'FAQPage',
+            '@id' => $faq_id,
+            'url' => $canonical,
+            'name' => sprintf('%s FAQ', $term->name),
+            'mainEntity' => $main_entity,
+        ];
+
+        $webpage_id = self::webpage_id_from_graph($graph);
+        if ($webpage_id !== '') {
+            $piece['isPartOf'] = ['@id' => $webpage_id];
+        }
+
+        $language = trim((string) get_bloginfo('language'));
+        if ($language !== '') {
+            $piece['inLanguage'] = $language;
+        }
+
+        $graph[] = $piece;
+
+        return $graph;
+    }
+
+    private static function current_archive_term(): ?WP_Term
+    {
+        $term = get_queried_object();
+        if (!$term instanceof WP_Term || !in_array($term->taxonomy, self::SUPPORTED_TAXONOMIES, true)) {
+            return null;
+        }
+
+        return $term;
+    }
+
+    /**
      * @return array<int,array{question:string,answer:string}>
      */
     private static function faq_items(int $term_id): array
@@ -125,6 +203,64 @@ final class ArchiveFaqBlock
         }
 
         return $out;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $graph
+     */
+    private static function graph_has_faq_page(array $graph): bool
+    {
+        foreach ($graph as $piece) {
+            if (!is_array($piece) || !isset($piece['@type'])) {
+                continue;
+            }
+
+            $types = is_array($piece['@type']) ? $piece['@type'] : [(string) $piece['@type']];
+            if (in_array('FAQPage', $types, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $graph
+     */
+    private static function webpage_id_from_graph(array $graph): string
+    {
+        foreach ($graph as $piece) {
+            if (!is_array($piece) || empty($piece['@id']) || empty($piece['@type'])) {
+                continue;
+            }
+
+            $types = is_array($piece['@type']) ? $piece['@type'] : [(string) $piece['@type']];
+            if (in_array('WebPage', $types, true) || in_array('CollectionPage', $types, true)) {
+                return (string) $piece['@id'];
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param mixed $context Yoast Meta_Tags_Context.
+     */
+    private static function schema_canonical_url(WP_Term $term, $context): string
+    {
+        if (is_object($context) && isset($context->canonical) && is_string($context->canonical)) {
+            $canonical = trim($context->canonical);
+            if ($canonical !== '') {
+                return $canonical;
+            }
+        }
+
+        $link = get_term_link($term);
+        if (is_wp_error($link)) {
+            return '';
+        }
+
+        return (string) $link;
     }
 
     public static function render_add_field(string $taxonomy): void
