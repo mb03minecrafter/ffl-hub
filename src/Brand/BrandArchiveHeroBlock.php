@@ -21,10 +21,12 @@ use WP_Term;
 final class BrandArchiveHeroBlock
 {
     private const HERO_IMAGE_META_KEY = 'fflhub_archive_hero_image_id';
+    private const SUPPORTED_TAXONOMIES = ['product_brand', 'product_tag', 'product_cat'];
 
     public static function init(): void
     {
         add_action('init', [self::class, 'register']);
+        add_filter('wpseo_sitemap_urlimages_term', [self::class, 'add_sitemap_term_images'], 10, 2);
         add_action('product_tag_add_form_fields', [self::class, 'render_product_tag_add_field']);
         add_action('product_tag_edit_form_fields', [self::class, 'render_product_tag_edit_field']);
         add_action('created_product_tag', [self::class, 'save_product_tag_hero_image']);
@@ -57,7 +59,7 @@ final class BrandArchiveHeroBlock
     public static function render(array $attributes = []): string
     {
         $term = get_queried_object();
-        if (!$term instanceof WP_Term || !in_array($term->taxonomy, ['product_brand', 'product_tag'], true)) {
+        if (!$term instanceof WP_Term || !in_array($term->taxonomy, self::SUPPORTED_TAXONOMIES, true)) {
             return '';
         }
 
@@ -112,6 +114,47 @@ final class BrandArchiveHeroBlock
         return self::styles() . (string) ob_get_clean();
     }
 
+    /**
+     * Yoast only scans taxonomy descriptions for sitemap images. Our archive
+     * images live in term meta/templates, so we explicitly pass one primary
+     * archive image into Yoast's taxonomy sitemap image list.
+     *
+     * @param array<int,array<string,string>> $images
+     *
+     * @return array<int,array<string,string>>
+     */
+    public static function add_sitemap_term_images(array $images, int $term_id): array
+    {
+        $term = get_term($term_id);
+        if (!$term instanceof WP_Term || !in_array($term->taxonomy, self::SUPPORTED_TAXONOMIES, true)) {
+            return $images;
+        }
+
+        $image_id = self::archive_thumbnail_id($term);
+        if ($image_id <= 0) {
+            $image_id = self::first_product_thumbnail_id($term);
+        }
+
+        if ($image_id <= 0) {
+            return $images;
+        }
+
+        $image_url = wp_get_attachment_image_url($image_id, 'full');
+        if (!is_string($image_url) || $image_url === '') {
+            return $images;
+        }
+
+        foreach ($images as $image) {
+            if (isset($image['src']) && $image['src'] === $image_url) {
+                return $images;
+            }
+        }
+
+        $images[] = ['src' => $image_url];
+
+        return $images;
+    }
+
     private static function archive_thumbnail_id(WP_Term $term): int
     {
         foreach ([self::HERO_IMAGE_META_KEY, 'thumbnail_id', 'brand_thumbnail_id', 'product_brand_thumbnail_id'] as $key) {
@@ -123,6 +166,34 @@ final class BrandArchiveHeroBlock
         }
 
         return 0;
+    }
+
+    private static function first_product_thumbnail_id(WP_Term $term): int
+    {
+        $product_ids = get_posts([
+            'fields'         => 'ids',
+            'meta_key'       => '_thumbnail_id',
+            'no_found_rows'  => true,
+            'order'          => 'ASC',
+            'orderby'        => 'menu_order title',
+            'post_status'    => 'publish',
+            'post_type'      => 'product',
+            'posts_per_page' => 1,
+            'tax_query'      => [
+                [
+                    'field'            => 'term_id',
+                    'include_children' => $term->taxonomy === 'product_cat',
+                    'taxonomy'         => $term->taxonomy,
+                    'terms'            => [(int) $term->term_id],
+                ],
+            ],
+        ]);
+
+        if (!is_array($product_ids) || $product_ids === []) {
+            return 0;
+        }
+
+        return absint(get_post_thumbnail_id((int) $product_ids[0]));
     }
 
     public static function render_product_tag_add_field(string $taxonomy): void
