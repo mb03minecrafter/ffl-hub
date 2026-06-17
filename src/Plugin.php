@@ -32,6 +32,7 @@ use FFLHub\BOM\Tables\BOMSchema;
 use FFLHub\BOM\Tables\BOMTable;
 use FFLHub\Brand\ArchiveFaqBlock;
 use FFLHub\Brand\BrandArchiveHeroBlock;
+use FFLHub\Brand\ProductCollectionRewrite;
 use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Fields\CheckoutFields;
@@ -139,6 +140,7 @@ final class Plugin
         // -----------------------------------------------------------------
         SettingsRegistrar::init();
         ActionSchedulerWebRunnerGuard::init();
+        ProductCollectionRewrite::init();
         BrandArchiveHeroBlock::init();
         ArchiveFaqBlock::init();
 
