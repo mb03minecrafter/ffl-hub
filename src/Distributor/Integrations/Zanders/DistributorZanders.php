@@ -668,10 +668,11 @@ class DistributorZanders extends DistributorBase
     //END OF ORDERING SECTION
 
     /**
-     * Zanders CA drop-ship orders must be handled manually.
+     * Zanders CA non-FFL drop-ship orders must be handled manually.
      *
-     * Dealer-fulfilled orders are intentionally not blocked here because they
-     * ship to the dealer first, not directly to the CA recipient/transfer FFL.
+     * FFL drop-ship orders are allowed because the shipment goes to the
+     * transfer FFL, not directly to the CA consumer. Dealer-fulfilled orders
+     * are also not blocked here because they ship to the dealer first.
      *
      * @param array<int,string> $external_ids
      */
@@ -681,11 +682,11 @@ class DistributorZanders extends DistributorBase
         array $external_ids
     ): ?DistributorOrderResult {
         $lane = strtolower(trim((string) $lane));
-        if ($lane !== 'direct_ship_non_ffl' && $lane !== 'direct_ship_ffl') {
+        if ($lane !== 'direct_ship_non_ffl') {
             return null;
         }
 
-        $ship_to = ($lane === 'direct_ship_ffl') ? $request->ship_to_ffl : $request->ship_to_customer;
+        $ship_to = $request->ship_to_customer;
         $state = ($ship_to instanceof DistributorShipTo)
             ? strtoupper(trim((string) $ship_to->state))
             : strtoupper(trim((string) $request->dest_state));
@@ -695,7 +696,7 @@ class DistributorZanders extends DistributorBase
         }
 
         return DistributorOrderResult::manual(
-            'Zanders CA drop-ship order blocked: a manual order must be placed for CA drop orders.',
+            'Zanders CA non-FFL drop-ship order blocked: a manual order must be placed for CA non-FFL drop orders.',
             [
                 DistributorOrderResult::REASON_MANUAL_REQUIRED,
                 'ZANDERS_CA_DROP_SHIP_MANUAL_REQUIRED',
