@@ -560,8 +560,48 @@ jQuery(function($) {
             return out;
         }
 
+        function normalizePastedText(text) {
+            return String(text || '')
+                .replace(/\r\n/g, '\n')
+                .replace(/\r/g, '\n')
+                .replace(/\u00c2\u00a0/g, ' ')
+                .replace(/\u00a0/g, ' ')
+                .replace(/\\u00a0/g, ' ')
+                .replace(/u00a0/g, ' ')
+                .replace(/\t/g, ' ');
+        }
+
+        function htmlFromDefinitionLines(lines) {
+            var nonEmpty = lines.map(function(line) {
+                return line.trim();
+            }).filter(Boolean);
+
+            if (nonEmpty.length < 2) {
+                return '';
+            }
+
+            var items = [];
+            for (var i = 0; i < nonEmpty.length; i++) {
+                var match = nonEmpty[i].match(/^([^:]{2,90}):\s+(.+)$/);
+                if (!match) {
+                    return '';
+                }
+
+                items.push(
+                    '<li><strong>' + escapeHtml(match[1].trim()) + ':</strong> ' + escapeHtml(match[2].trim()) + '</li>'
+                );
+            }
+
+            return '<ul>' + items.join('') + '</ul>';
+        }
+
         function htmlFromPlainTextList(text) {
-            var lines = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+            var lines = normalizePastedText(text).split('\n');
+            var definitionList = htmlFromDefinitionLines(lines);
+            if (definitionList) {
+                return definitionList;
+            }
+
             var out = '';
             var listType = '';
             var items = [];
@@ -582,7 +622,7 @@ jQuery(function($) {
 
             lines.forEach(function(line) {
                 var trimmed = line.trim();
-                var bullet = trimmed.match(/^[-*•]\s+(.+)$/);
+                var bullet = trimmed.match(/^[-*\u2022]\s+(.+)$/);
                 var numbered = trimmed.match(/^\d+[.)]\s+(.+)$/);
 
                 if (bullet || numbered) {
