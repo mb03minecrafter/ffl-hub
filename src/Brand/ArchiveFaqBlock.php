@@ -84,7 +84,7 @@ final class ArchiveFaqBlock
                         <details class="fflhub-archive-faq__item">
                             <summary class="fflhub-archive-faq__question"><?php echo esc_html($item['question']); ?></summary>
                             <div class="fflhub-archive-faq__answer">
-                                <?php echo wp_kses_post(wpautop($item['answer'])); ?>
+                                <?php echo self::format_answer_html($item['answer']); ?>
                             </div>
                         </details>
                     <?php endforeach; ?>
@@ -135,7 +135,7 @@ final class ArchiveFaqBlock
                 'name' => $item['question'],
                 'acceptedAnswer' => [
                     '@type' => 'Answer',
-                    'text' => wp_kses_post(wpautop($item['answer'])),
+                    'text' => self::format_answer_html($item['answer']),
                 ],
             ];
         }
@@ -340,9 +340,16 @@ final class ArchiveFaqBlock
             <textarea
                 class="widefat fflhub-archive-faq-admin__answer"
                 name="<?php echo esc_attr($base . '[answer]'); ?>"
-                rows="3"
+                rows="6"
                 placeholder="<?php echo esc_attr__('Answer', 'ffl-hub'); ?>"
             ><?php echo esc_textarea($answer); ?></textarea>
+            <div class="fflhub-archive-faq-admin__tools" aria-label="<?php echo esc_attr__('FAQ answer formatting tools', 'ffl-hub'); ?>">
+                <button type="button" class="button fflhub-archive-faq-admin__format" data-format="bold"><?php echo esc_html__('Bold', 'ffl-hub'); ?></button>
+                <button type="button" class="button fflhub-archive-faq-admin__format" data-format="paragraph"><?php echo esc_html__('Paragraph break', 'ffl-hub'); ?></button>
+            </div>
+            <p class="description fflhub-archive-faq-admin__hint">
+                <?php echo esc_html__('Use blank lines between paragraphs. Select text and click Bold, or type **bold text**.', 'ffl-hub'); ?>
+            </p>
             <button type="button" class="button-link-delete fflhub-archive-faq-admin__remove"><?php echo esc_html__('Remove', 'ffl-hub'); ?></button>
         </div>
         <?php
@@ -422,6 +429,24 @@ final class ArchiveFaqBlock
         return current_user_can($cap);
     }
 
+    private static function format_answer_html(string $answer): string
+    {
+        $answer = self::apply_light_formatting($answer);
+
+        return wp_kses_post(wpautop($answer));
+    }
+
+    private static function apply_light_formatting(string $answer): string
+    {
+        $answer = str_replace(["\r\n", "\r"], "\n", $answer);
+
+        return (string) preg_replace(
+            '/(?<!\\\\)(\\*\\*|__)([^\\n<>][\\s\\S]*?[^\\n<>])\\1/',
+            '<strong>$2</strong>',
+            $answer
+        );
+    }
+
     private static function admin_script(): string
     {
         return <<<'JS'
@@ -442,6 +467,40 @@ jQuery(function($) {
             e.preventDefault();
             $(this).closest('.fflhub-archive-faq-admin__row').remove();
         });
+
+        $wrap.on('click', '.fflhub-archive-faq-admin__format', function(e) {
+            e.preventDefault();
+            var format = String($(this).data('format') || '');
+            var textarea = $(this).closest('.fflhub-archive-faq-admin__row').find('.fflhub-archive-faq-admin__answer').get(0);
+            if (!textarea) {
+                return;
+            }
+
+            textarea.focus();
+            var start = textarea.selectionStart || 0;
+            var end = textarea.selectionEnd || 0;
+            var value = textarea.value || '';
+            var selected = value.substring(start, end);
+            var insert = '';
+            var cursorOffset = 0;
+
+            if (format === 'bold') {
+                insert = '<strong>' + (selected || 'bold text') + '</strong>';
+                cursorOffset = selected ? insert.length : 8;
+            } else if (format === 'paragraph') {
+                insert = '\n\n';
+                cursorOffset = insert.length;
+            }
+
+            if (!insert) {
+                return;
+            }
+
+            textarea.value = value.substring(0, start) + insert + value.substring(end);
+            var cursor = start + cursorOffset;
+            textarea.setSelectionRange(cursor, cursor);
+            $(textarea).trigger('change');
+        });
     });
 });
 JS;
@@ -449,7 +508,7 @@ JS;
 
     private static function admin_styles(): string
     {
-        return '.fflhub-archive-faq-admin__row{position:relative;margin:0 0 12px;padding:12px;border:1px solid #ccd0d4;background:#fff}.fflhub-archive-faq-admin__question{margin-bottom:8px}.fflhub-archive-faq-admin__answer{display:block;margin-bottom:8px}.fflhub-archive-faq-admin__add{margin-top:2px}';
+        return '.fflhub-archive-faq-admin__row{position:relative;margin:0 0 14px;padding:12px;border:1px solid #ccd0d4;background:#fff}.fflhub-archive-faq-admin__question{margin-bottom:8px}.fflhub-archive-faq-admin__answer{display:block;margin-bottom:8px;min-height:118px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,\"Liberation Mono\",\"Courier New\",monospace}.fflhub-archive-faq-admin__tools{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 6px}.fflhub-archive-faq-admin__hint{margin:0 0 8px}.fflhub-archive-faq-admin__add{margin-top:2px}';
     }
 
     private static function styles(): string
