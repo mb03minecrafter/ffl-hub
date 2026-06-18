@@ -491,6 +491,130 @@ jQuery(function($) {
         var $wrap = $(this);
         var $rows = $wrap.find('.fflhub-archive-faq-admin__rows');
 
+        function escapeHtml(value) {
+            return String(value || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function normalizeInlineHtml(node) {
+            var out = '';
+
+            $(node).contents().each(function() {
+                if (this.nodeType === 3) {
+                    out += escapeHtml(this.nodeValue || '');
+                    return;
+                }
+
+                if (this.nodeType !== 1) {
+                    return;
+                }
+
+                var tag = String(this.nodeName || '').toLowerCase();
+                var inner = normalizeInlineHtml(this);
+
+                if (tag === 'strong' || tag === 'b') {
+                    out += '<strong>' + inner + '</strong>';
+                } else if (tag === 'em' || tag === 'i') {
+                    out += '<em>' + inner + '</em>';
+                } else if (tag === 'a') {
+                    var href = String($(this).attr('href') || '').replace(/"/g, '&quot;');
+                    out += href ? '<a href="' + href + '">' + inner + '</a>' : inner;
+                } else if (tag === 'br') {
+                    out += '<br>';
+                } else {
+                    out += inner;
+                }
+            });
+
+            return out;
+        }
+
+        function normalizeListHtml(list) {
+            var tag = String(list.nodeName || '').toLowerCase() === 'ol' ? 'ol' : 'ul';
+            var items = '';
+
+            $(list).children('li').each(function() {
+                items += '<li>' + normalizeInlineHtml(this).trim() + '</li>';
+            });
+
+            return items ? '<' + tag + '>' + items + '</' + tag + '>' : '';
+        }
+
+        function htmlFromClipboardList(html) {
+            var parsed = $('<div>').html(html || '');
+            var lists = parsed.find('ul,ol');
+            var out = '';
+
+            if (!lists.length) {
+                return '';
+            }
+
+            lists.each(function() {
+                out += normalizeListHtml(this);
+            });
+
+            return out;
+        }
+
+        function htmlFromPlainTextList(text) {
+            var lines = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+            var out = '';
+            var listType = '';
+            var items = [];
+
+            function flushList() {
+                if (!items.length) {
+                    return;
+                }
+
+                out += '<' + listType + '>';
+                items.forEach(function(item) {
+                    out += '<li>' + escapeHtml(item) + '</li>';
+                });
+                out += '</' + listType + '>';
+                items = [];
+                listType = '';
+            }
+
+            lines.forEach(function(line) {
+                var trimmed = line.trim();
+                var bullet = trimmed.match(/^[-*•]\s+(.+)$/);
+                var numbered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+
+                if (bullet || numbered) {
+                    var type = numbered ? 'ol' : 'ul';
+                    if (listType && listType !== type) {
+                        flushList();
+                    }
+                    listType = type;
+                    items.push((bullet ? bullet[1] : numbered[1]).trim());
+                    return;
+                }
+
+                flushList();
+                if (trimmed) {
+                    out += '<p>' + escapeHtml(trimmed) + '</p>';
+                }
+            });
+
+            flushList();
+
+            return out;
+        }
+
+        function insertAtCursor(textarea, html) {
+            var value = textarea.value || '';
+            var start = textarea.selectionStart || 0;
+            var end = textarea.selectionEnd || 0;
+            textarea.value = value.substring(0, start) + html + value.substring(end);
+            textarea.setSelectionRange(start + html.length, start + html.length);
+            $(textarea).trigger('change');
+        }
+
         function initializeQuicktags($row) {
             if (!window.quicktags) {
                 return;
@@ -522,6 +646,25 @@ jQuery(function($) {
         $wrap.on('click', '.fflhub-archive-faq-admin__remove', function(e) {
             e.preventDefault();
             $(this).closest('.fflhub-archive-faq-admin__row').remove();
+        });
+
+        $wrap.on('paste', 'textarea.fflhub-archive-faq-admin__answer', function(e) {
+            var clipboard = e.originalEvent && e.originalEvent.clipboardData ? e.originalEvent.clipboardData : null;
+            if (!clipboard) {
+                return;
+            }
+
+            var html = htmlFromClipboardList(clipboard.getData('text/html'));
+            if (!html) {
+                html = htmlFromPlainTextList(clipboard.getData('text/plain'));
+            }
+
+            if (!html) {
+                return;
+            }
+
+            e.preventDefault();
+            insertAtCursor(this, html);
         });
     });
 });
