@@ -378,14 +378,21 @@ final class ArchiveFaqBlock
             ? wp_unslash($_POST[self::FIELD_NAME])
             : [];
         $items = [];
+        $submitted_content = false;
 
         foreach ($raw_rows as $row) {
             if (!is_array($row)) {
                 continue;
             }
 
-            $question = sanitize_text_field((string) ($row['question'] ?? ''));
-            $answer = wp_kses_post((string) ($row['answer'] ?? ''));
+            $raw_question = (string) ($row['question'] ?? '');
+            $raw_answer = (string) ($row['answer'] ?? '');
+            if (trim($raw_question) !== '' || trim(wp_strip_all_tags($raw_answer)) !== '') {
+                $submitted_content = true;
+            }
+
+            $question = sanitize_text_field($raw_question);
+            $answer = wp_kses_post($raw_answer);
             $question = trim($question);
             $answer = trim($answer);
             if ($question === '' || $answer === '') {
@@ -399,6 +406,10 @@ final class ArchiveFaqBlock
         }
 
         if (empty($items)) {
+            if ($submitted_content && get_term_meta($term_id, self::META_KEY, true) !== '') {
+                return;
+            }
+
             delete_term_meta($term_id, self::META_KEY);
             return;
         }
@@ -417,10 +428,7 @@ final class ArchiveFaqBlock
             return;
         }
 
-        if (function_exists('wp_enqueue_editor')) {
-            wp_enqueue_editor();
-        }
-
+        wp_enqueue_script('quicktags');
         wp_enqueue_script('jquery');
         wp_add_inline_script('jquery', self::admin_script());
         wp_register_style('fflhub-archive-faq-admin', false, [], FFLHUB_PLUGIN_VERSION);
@@ -453,11 +461,7 @@ final class ArchiveFaqBlock
             'quicktags' => [
                 'buttons' => 'strong,em,link,ul,ol,li,close',
             ],
-            'tinymce' => [
-                'toolbar1' => 'formatselect,bold,italic,bullist,numlist,link,unlink,undo,redo',
-                'toolbar2' => '',
-                'block_formats' => 'Paragraph=p;Heading 3=h3;Heading 4=h4',
-            ],
+            'tinymce' => false,
         ];
     }
 
@@ -486,39 +490,22 @@ jQuery(function($) {
     $('.fflhub-archive-faq-admin').each(function() {
         var $wrap = $(this);
         var $rows = $wrap.find('.fflhub-archive-faq-admin__rows');
-        var editorSettings = {
-            tinymce: {
-                toolbar1: 'formatselect,bold,italic,bullist,numlist,link,unlink,undo,redo',
-                toolbar2: '',
-                block_formats: 'Paragraph=p;Heading 3=h3;Heading 4=h4'
-            },
-            quicktags: {
-                buttons: 'strong,em,link,ul,ol,li,close'
-            },
-            mediaButtons: false
-        };
 
-        function initializeEditor($row) {
-            if (!window.wp || !wp.editor || !wp.editor.initialize) {
+        function initializeQuicktags($row) {
+            if (!window.quicktags) {
                 return;
             }
 
             var $textarea = $row.find('textarea.fflhub-archive-faq-admin__answer');
             var id = $textarea.attr('id');
             if (id) {
-                wp.editor.initialize(id, editorSettings);
-            }
-        }
-
-        function removeEditor($row) {
-            if (!window.wp || !wp.editor || !wp.editor.remove) {
-                return;
-            }
-
-            var $textarea = $row.find('textarea.fflhub-archive-faq-admin__answer');
-            var id = $textarea.attr('id');
-            if (id) {
-                wp.editor.remove(id);
+                quicktags({
+                    id: id,
+                    buttons: 'strong,em,link,ul,ol,li,close'
+                });
+                if (window.QTags && QTags._buttonsInit) {
+                    QTags._buttonsInit();
+                }
             }
         }
 
@@ -529,21 +516,13 @@ jQuery(function($) {
             $wrap.attr('data-next-index', String(index + 1));
             var $row = $(html);
             $rows.append($row);
-            initializeEditor($row);
+            initializeQuicktags($row);
         });
 
         $wrap.on('click', '.fflhub-archive-faq-admin__remove', function(e) {
             e.preventDefault();
-            var $row = $(this).closest('.fflhub-archive-faq-admin__row');
-            removeEditor($row);
-            $row.remove();
+            $(this).closest('.fflhub-archive-faq-admin__row').remove();
         });
-    });
-
-    $('form').on('submit', function() {
-        if (window.tinyMCE && tinyMCE.triggerSave) {
-            tinyMCE.triggerSave();
-        }
     });
 });
 JS;
