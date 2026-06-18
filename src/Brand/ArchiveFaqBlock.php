@@ -457,8 +457,41 @@ final class ArchiveFaqBlock
     {
         $answer = str_replace(["\r\n", "\r"], "\n", $answer);
         $answer = str_replace(['\\u00a0', 'u00a0', "\xc2\xa0"], ' ', $answer);
+        $answer = (string) preg_replace('/\x{00A0}/u', ' ', $answer);
 
-        return (string) preg_replace('/\x{00A0}/u', ' ', $answer);
+        return self::normalize_bullet_styled_lists($answer);
+    }
+
+    private static function normalize_bullet_styled_lists(string $html): string
+    {
+        return (string) preg_replace_callback(
+            '/<ol\\b([^>]*)>(.*?)<\\/ol>/is',
+            static function (array $match): string {
+                $attributes = strtolower((string) ($match[1] ?? ''));
+                $classes = '';
+                if (preg_match('/class\\s*=\\s*"([^"]*)"/is', $attributes, $class_match)) {
+                    $classes = strtolower((string) ($class_match[1] ?? ''));
+                } elseif (preg_match("/class\\s*=\\s*'([^']*)'/is", $attributes, $class_match)) {
+                    $classes = strtolower((string) ($class_match[1] ?? ''));
+                }
+
+                if ($classes === '') {
+                    return $match[0];
+                }
+
+                $looks_like_bullets = str_contains($classes, 'bullet')
+                    || str_contains($classes, 'unordered')
+                    || preg_match('/(^|\\s)u-list-[^\\s]*-b(\\s|$)/', $classes) === 1
+                    || preg_match('/(^|\\s)[^\\s]*-bullets?(\\s|$)/', $classes) === 1;
+
+                if (!$looks_like_bullets) {
+                    return $match[0];
+                }
+
+                return '<ul>' . (string) ($match[2] ?? '') . '</ul>';
+            },
+            $html
+        );
     }
 
     /**
@@ -579,13 +612,33 @@ jQuery(function($) {
                 toolbar1: 'formatselect,bold,italic,bullist,numlist,link,unlink,undo,redo',
                 toolbar2: '',
                 block_formats: 'Paragraph=p;Heading 3=h3;Heading 4=h4',
-                paste_as_text: false
+                paste_as_text: false,
+                paste_preprocess: function(plugin, args) {
+                    args.content = normalizeBulletStyledLists(args.content || '');
+                }
             },
             quicktags: {
                 buttons: 'strong,em,link,ul,ol,li,close'
             },
             mediaButtons: false
         };
+
+        function normalizeBulletStyledLists(html) {
+            return String(html || '').replace(/<ol\b([^>]*)>([\s\S]*?)<\/ol>/gi, function(full, attrs, inner) {
+                var classMatch = String(attrs || '').match(/class\s*=\s*(["'])(.*?)\1/i);
+                if (!classMatch) {
+                    return full;
+                }
+
+                var classes = String(classMatch[2] || '').toLowerCase();
+                var looksLikeBullets = classes.indexOf('bullet') !== -1
+                    || classes.indexOf('unordered') !== -1
+                    || /(^|\s)u-list-[^\s]*-b(\s|$)/.test(classes)
+                    || /(^|\s)[^\s]*-bullets?(\s|$)/.test(classes);
+
+                return looksLikeBullets ? '<ul>' + inner + '</ul>' : full;
+            });
+        }
 
         function initializeEditor($row) {
             if (!window.wp || !wp.editor || !wp.editor.initialize) {
