@@ -398,9 +398,10 @@ final class ArchiveFaqBlock
 
             $raw_question = (string) ($row['question'] ?? '');
             $raw_answer = self::normalize_submitted_answer((string) ($row['answer'] ?? ''));
+            $normalized_row = self::normalize_submitted_row($raw_question, $raw_answer);
 
-            $question = sanitize_text_field($raw_question);
-            $answer = wp_kses_post($raw_answer);
+            $question = sanitize_text_field($normalized_row['question']);
+            $answer = self::sanitize_answer_html($normalized_row['answer']);
             $question = trim($question);
             $answer = trim($answer);
             if ($question === '' || $answer === '') {
@@ -458,6 +459,70 @@ final class ArchiveFaqBlock
         $answer = str_replace(['\\u00a0', 'u00a0', "\xc2\xa0"], ' ', $answer);
 
         return (string) preg_replace('/\x{00A0}/u', ' ', $answer);
+    }
+
+    /**
+     * @return array{question:string,answer:string}
+     */
+    private static function normalize_submitted_row(string $question, string $answer): array
+    {
+        $question = trim($question);
+        $answer = trim($answer);
+
+        if ($answer === '') {
+            return [
+                'question' => $question,
+                'answer' => $answer,
+            ];
+        }
+
+        if (!preg_match('/<h([1-6])\\b[^>]*>(.*?)<\\/h\\1>/is', $answer, $match)) {
+            return [
+                'question' => $question,
+                'answer' => $answer,
+            ];
+        }
+
+        $heading_text = trim(wp_strip_all_tags((string) $match[2]));
+        if ($heading_text === '') {
+            return [
+                'question' => $question,
+                'answer' => $answer,
+            ];
+        }
+
+        $answer_without_heading = trim((string) preg_replace('/<h([1-6])\\b[^>]*>.*?<\\/h\\1>/is', '', $answer, 1));
+
+        return [
+            'question' => $question !== '' ? $question : $heading_text,
+            'answer' => $answer_without_heading,
+        ];
+    }
+
+    private static function sanitize_answer_html(string $answer): string
+    {
+        $allowed = [
+            'p' => [],
+            'br' => [],
+            'strong' => [],
+            'b' => [],
+            'em' => [],
+            'i' => [],
+            'ul' => [],
+            'ol' => [],
+            'li' => [],
+            'a' => [
+                'href' => true,
+                'title' => true,
+                'target' => true,
+                'rel' => true,
+            ],
+        ];
+
+        $answer = wp_kses($answer, $allowed);
+        $answer = preg_replace('/<li>\\s*<p>(.*?)<\\/p>\\s*<\\/li>/is', '<li>$1</li>', $answer);
+
+        return trim((string) $answer);
     }
 
     /**
