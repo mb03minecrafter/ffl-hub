@@ -23,6 +23,7 @@ final class ArchiveFaqBlock
     private const NONCE_ACTION = 'fflhub_archive_faq';
     private const NONCE_FIELD = 'fflhub_archive_faq_nonce';
     private const FIELD_NAME = 'fflhub_archive_faq_items';
+    private const CLEAR_FIELD = 'fflhub_archive_faq_clear';
     private const SUPPORTED_TAXONOMIES = ['product_brand', 'product_tag'];
 
     public static function init(): void
@@ -294,6 +295,11 @@ final class ArchiveFaqBlock
             <td>
                 <?php self::render_admin_rows(self::faq_items((int) $term->term_id)); ?>
                 <p class="description"><?php echo esc_html__('Optional FAQ entries shown below the product collection on this archive page.', 'ffl-hub'); ?></p>
+                <label class="fflhub-archive-faq-admin__clear">
+                    <input type="checkbox" name="<?php echo esc_attr(self::CLEAR_FIELD); ?>" value="1" />
+                    <?php echo esc_html__('Clear all FAQ rows on save', 'ffl-hub'); ?>
+                </label>
+                <p class="description"><?php echo esc_html__('FAQ rows are only deleted when this box is checked. This protects pasted editor content from accidentally clearing the whole FAQ.', 'ffl-hub'); ?></p>
             </td>
         </tr>
         <?php
@@ -377,8 +383,13 @@ final class ArchiveFaqBlock
         $raw_rows = isset($_POST[self::FIELD_NAME]) && is_array($_POST[self::FIELD_NAME])
             ? wp_unslash($_POST[self::FIELD_NAME])
             : [];
+        $clear_faq = isset($_POST[self::CLEAR_FIELD]) && (string) wp_unslash($_POST[self::CLEAR_FIELD]) === '1';
+        if ($clear_faq) {
+            delete_term_meta($term_id, self::META_KEY);
+            return;
+        }
+
         $items = [];
-        $submitted_content = false;
 
         foreach ($raw_rows as $row) {
             if (!is_array($row)) {
@@ -386,10 +397,7 @@ final class ArchiveFaqBlock
             }
 
             $raw_question = (string) ($row['question'] ?? '');
-            $raw_answer = (string) ($row['answer'] ?? '');
-            if (trim($raw_question) !== '' || trim(wp_strip_all_tags($raw_answer)) !== '') {
-                $submitted_content = true;
-            }
+            $raw_answer = self::normalize_submitted_answer((string) ($row['answer'] ?? ''));
 
             $question = sanitize_text_field($raw_question);
             $answer = wp_kses_post($raw_answer);
@@ -406,11 +414,6 @@ final class ArchiveFaqBlock
         }
 
         if (empty($items)) {
-            if ($submitted_content && get_term_meta($term_id, self::META_KEY, true) !== '') {
-                return;
-            }
-
-            delete_term_meta($term_id, self::META_KEY);
             return;
         }
 
@@ -447,6 +450,14 @@ final class ArchiveFaqBlock
             : 'manage_product_terms';
 
         return current_user_can($cap);
+    }
+
+    private static function normalize_submitted_answer(string $answer): string
+    {
+        $answer = str_replace(["\r\n", "\r"], "\n", $answer);
+        $answer = str_replace(['\\u00a0', 'u00a0', "\xc2\xa0"], ' ', $answer);
+
+        return (string) preg_replace('/\x{00A0}/u', ' ', $answer);
     }
 
     /**
@@ -557,6 +568,10 @@ jQuery(function($) {
         }
 
         function ensureEditorContentBeforeSubmit(e) {
+            if ($wrap.closest('form').find('input[name="fflhub_archive_faq_clear"]:checked').length) {
+                return;
+            }
+
             syncEditors();
 
             var suspicious = false;
@@ -599,7 +614,7 @@ JS;
 
     private static function admin_styles(): string
     {
-        return '.fflhub-archive-faq-admin__row{position:relative;margin:0 0 16px;padding:12px;border:1px solid #ccd0d4;background:#fff}.fflhub-archive-faq-admin__question{margin-bottom:8px}.fflhub-archive-faq-admin__editor{margin-bottom:6px}.fflhub-archive-faq-admin__editor .wp-editor-wrap{max-width:900px}.fflhub-archive-faq-admin__answer{display:block;margin-bottom:8px;min-height:150px}.fflhub-archive-faq-admin__hint{margin:0 0 8px}.fflhub-archive-faq-admin__add{margin-top:2px}';
+        return '.fflhub-archive-faq-admin__row{position:relative;margin:0 0 16px;padding:12px;border:1px solid #ccd0d4;background:#fff}.fflhub-archive-faq-admin__question{margin-bottom:8px}.fflhub-archive-faq-admin__editor{margin-bottom:6px}.fflhub-archive-faq-admin__editor .wp-editor-wrap{max-width:900px}.fflhub-archive-faq-admin__answer{display:block;margin-bottom:8px;min-height:150px}.fflhub-archive-faq-admin__hint{margin:0 0 8px}.fflhub-archive-faq-admin__add{margin-top:2px}.fflhub-archive-faq-admin__clear{display:inline-flex;align-items:center;gap:6px;margin:10px 0 2px;padding:8px 10px;border:1px solid #d63638;background:#fff7f7;color:#8a2424}';
     }
 
     private static function styles(): string
