@@ -428,7 +428,10 @@ final class ArchiveFaqBlock
             return;
         }
 
-        wp_enqueue_script('quicktags');
+        if (function_exists('wp_enqueue_editor')) {
+            wp_enqueue_editor();
+        }
+
         wp_enqueue_script('jquery');
         wp_add_inline_script('jquery', self::admin_script());
         wp_register_style('fflhub-archive-faq-admin', false, [], FFLHUB_PLUGIN_VERSION);
@@ -461,7 +464,12 @@ final class ArchiveFaqBlock
             'quicktags' => [
                 'buttons' => 'strong,em,link,ul,ol,li,close',
             ],
-            'tinymce' => false,
+            'tinymce' => [
+                'toolbar1' => 'formatselect,bold,italic,bullist,numlist,link,unlink,undo,redo',
+                'toolbar2' => '',
+                'block_formats' => 'Paragraph=p;Heading 3=h3;Heading 4=h4',
+                'paste_as_text' => false,
+            ],
         ];
     }
 
@@ -490,186 +498,79 @@ jQuery(function($) {
     $('.fflhub-archive-faq-admin').each(function() {
         var $wrap = $(this);
         var $rows = $wrap.find('.fflhub-archive-faq-admin__rows');
+        var editorSettings = {
+            tinymce: {
+                toolbar1: 'formatselect,bold,italic,bullist,numlist,link,unlink,undo,redo',
+                toolbar2: '',
+                block_formats: 'Paragraph=p;Heading 3=h3;Heading 4=h4',
+                paste_as_text: false
+            },
+            quicktags: {
+                buttons: 'strong,em,link,ul,ol,li,close'
+            },
+            mediaButtons: false
+        };
 
-        function escapeHtml(value) {
-            return String(value || '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#039;');
-        }
-
-        function normalizeInlineHtml(node) {
-            var out = '';
-
-            $(node).contents().each(function() {
-                if (this.nodeType === 3) {
-                    out += escapeHtml(this.nodeValue || '');
-                    return;
-                }
-
-                if (this.nodeType !== 1) {
-                    return;
-                }
-
-                var tag = String(this.nodeName || '').toLowerCase();
-                var inner = normalizeInlineHtml(this);
-
-                if (tag === 'strong' || tag === 'b') {
-                    out += '<strong>' + inner + '</strong>';
-                } else if (tag === 'em' || tag === 'i') {
-                    out += '<em>' + inner + '</em>';
-                } else if (tag === 'a') {
-                    var href = String($(this).attr('href') || '').replace(/"/g, '&quot;');
-                    out += href ? '<a href="' + href + '">' + inner + '</a>' : inner;
-                } else if (tag === 'br') {
-                    out += '<br>';
-                } else {
-                    out += inner;
-                }
-            });
-
-            return out;
-        }
-
-        function normalizeListHtml(list) {
-            var tag = String(list.nodeName || '').toLowerCase() === 'ol' ? 'ol' : 'ul';
-            var items = '';
-
-            $(list).children('li').each(function() {
-                items += '<li>' + normalizeInlineHtml(this).trim() + '</li>';
-            });
-
-            return items ? '<' + tag + '>' + items + '</' + tag + '>' : '';
-        }
-
-        function htmlFromClipboardList(html) {
-            var parsed = $('<div>').html(html || '');
-            var lists = parsed.find('ul,ol');
-            var out = '';
-
-            if (!lists.length) {
-                return '';
-            }
-
-            lists.each(function() {
-                out += normalizeListHtml(this);
-            });
-
-            return out;
-        }
-
-        function normalizePastedText(text) {
-            return String(text || '')
-                .replace(/\r\n/g, '\n')
-                .replace(/\r/g, '\n')
-                .replace(/\u00c2\u00a0/g, ' ')
-                .replace(/\u00a0/g, ' ')
-                .replace(/\\u00a0/g, ' ')
-                .replace(/u00a0/g, ' ')
-                .replace(/\t/g, ' ');
-        }
-
-        function htmlFromDefinitionLines(lines) {
-            var nonEmpty = lines.map(function(line) {
-                return line.trim();
-            }).filter(Boolean);
-
-            if (nonEmpty.length < 2) {
-                return '';
-            }
-
-            var items = [];
-            for (var i = 0; i < nonEmpty.length; i++) {
-                var match = nonEmpty[i].match(/^([^:]{2,90}):\s+(.+)$/);
-                if (!match) {
-                    return '';
-                }
-
-                items.push(
-                    '<li><strong>' + escapeHtml(match[1].trim()) + ':</strong> ' + escapeHtml(match[2].trim()) + '</li>'
-                );
-            }
-
-            return '<ul>' + items.join('') + '</ul>';
-        }
-
-        function htmlFromPlainTextList(text) {
-            var lines = normalizePastedText(text).split('\n');
-            var definitionList = htmlFromDefinitionLines(lines);
-            if (definitionList) {
-                return definitionList;
-            }
-
-            var out = '';
-            var listType = '';
-            var items = [];
-
-            function flushList() {
-                if (!items.length) {
-                    return;
-                }
-
-                out += '<' + listType + '>';
-                items.forEach(function(item) {
-                    out += '<li>' + escapeHtml(item) + '</li>';
-                });
-                out += '</' + listType + '>';
-                items = [];
-                listType = '';
-            }
-
-            lines.forEach(function(line) {
-                var trimmed = line.trim();
-                var bullet = trimmed.match(/^[-*\u2022]\s+(.+)$/);
-                var numbered = trimmed.match(/^\d+[.)]\s+(.+)$/);
-
-                if (bullet || numbered) {
-                    var type = numbered ? 'ol' : 'ul';
-                    if (listType && listType !== type) {
-                        flushList();
-                    }
-                    listType = type;
-                    items.push((bullet ? bullet[1] : numbered[1]).trim());
-                    return;
-                }
-
-                flushList();
-                if (trimmed) {
-                    out += '<p>' + escapeHtml(trimmed) + '</p>';
-                }
-            });
-
-            flushList();
-
-            return out;
-        }
-
-        function insertAtCursor(textarea, html) {
-            var value = textarea.value || '';
-            var start = textarea.selectionStart || 0;
-            var end = textarea.selectionEnd || 0;
-            textarea.value = value.substring(0, start) + html + value.substring(end);
-            textarea.setSelectionRange(start + html.length, start + html.length);
-            $(textarea).trigger('change');
-        }
-
-        function initializeQuicktags($row) {
-            if (!window.quicktags) {
+        function initializeEditor($row) {
+            if (!window.wp || !wp.editor || !wp.editor.initialize) {
                 return;
             }
 
             var $textarea = $row.find('textarea.fflhub-archive-faq-admin__answer');
             var id = $textarea.attr('id');
             if (id) {
-                quicktags({
-                    id: id,
-                    buttons: 'strong,em,link,ul,ol,li,close'
-                });
-                if (window.QTags && QTags._buttonsInit) {
-                    QTags._buttonsInit();
+                wp.editor.initialize(id, editorSettings);
+            }
+        }
+
+        function removeEditor($row) {
+            if (!window.wp || !wp.editor || !wp.editor.remove) {
+                return;
+            }
+
+            var $textarea = $row.find('textarea.fflhub-archive-faq-admin__answer');
+            var id = $textarea.attr('id');
+            if (id) {
+                wp.editor.remove(id);
+            }
+        }
+
+        function syncEditors() {
+            $wrap.find('textarea.fflhub-archive-faq-admin__answer').each(function() {
+                var id = $(this).attr('id');
+                if (!id || !window.tinyMCE) {
+                    return;
                 }
+
+                var editor = tinyMCE.get(id);
+                if (editor && !editor.isHidden()) {
+                    this.value = editor.getContent({ format: 'html' });
+                }
+            });
+        }
+
+        function hasVisibleEditorContent(value) {
+            return String(value || '')
+                .replace(/<[^>]*>/g, '')
+                .replace(/&nbsp;/g, ' ')
+                .trim() !== '';
+        }
+
+        function ensureEditorContentBeforeSubmit(e) {
+            syncEditors();
+
+            var suspicious = false;
+            $wrap.find('.fflhub-archive-faq-admin__row').each(function() {
+                var question = String($(this).find('.fflhub-archive-faq-admin__question').val() || '').trim();
+                var answer = String($(this).find('textarea.fflhub-archive-faq-admin__answer').val() || '');
+                if (question && !hasVisibleEditorContent(answer)) {
+                    suspicious = true;
+                }
+            });
+
+            if (suspicious) {
+                e.preventDefault();
+                alert('One or more FAQ questions has an empty answer. Please click into the FAQ answer editor and try saving again.');
             }
         }
 
@@ -680,32 +581,17 @@ jQuery(function($) {
             $wrap.attr('data-next-index', String(index + 1));
             var $row = $(html);
             $rows.append($row);
-            initializeQuicktags($row);
+            initializeEditor($row);
         });
 
         $wrap.on('click', '.fflhub-archive-faq-admin__remove', function(e) {
             e.preventDefault();
-            $(this).closest('.fflhub-archive-faq-admin__row').remove();
+            var $row = $(this).closest('.fflhub-archive-faq-admin__row');
+            removeEditor($row);
+            $row.remove();
         });
 
-        $wrap.on('paste', 'textarea.fflhub-archive-faq-admin__answer', function(e) {
-            var clipboard = e.originalEvent && e.originalEvent.clipboardData ? e.originalEvent.clipboardData : null;
-            if (!clipboard) {
-                return;
-            }
-
-            var html = htmlFromClipboardList(clipboard.getData('text/html'));
-            if (!html) {
-                html = htmlFromPlainTextList(clipboard.getData('text/plain'));
-            }
-
-            if (!html) {
-                return;
-            }
-
-            e.preventDefault();
-            insertAtCursor(this, html);
-        });
+        $wrap.closest('form').on('submit', ensureEditorContentBeforeSubmit);
     });
 });
 JS;
