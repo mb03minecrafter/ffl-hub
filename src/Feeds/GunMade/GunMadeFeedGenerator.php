@@ -15,7 +15,6 @@ final class GunMadeFeedGenerator
 {
     private const DEBUG_CONST = 'FFLHUB_GUNMADE_FEED_DEBUG';
     private const LOG_PREFIX = '[FFLHub][GunMadeFeed]';
-    private const STORE_ID = 'online';
     private const CONDITION = 'new';
     private const FREE_SHIPPING_LABEL = 'FREE SHIPPING';
     private const COMPETITOR_FEE_LABEL = 'NO SALES TAX/FEES';
@@ -244,7 +243,6 @@ final class GunMadeFeedGenerator
             'model' => $this->resolve_model($source_row),
             'upc' => $this->resolve_upc_from_row($source_row),
             'mfg_number' => $this->resolve_mfg_number($source_row),
-            'store_id' => self::STORE_ID,
             'price' => $price > 0.0 ? number_format($price, 2, '.', '') : '',
             'priced_below_map' => $price_below_map,
             'add_to_cart_for_price' => $price_below_map && $policy === Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE,
@@ -728,7 +726,6 @@ final class GunMadeFeedGenerator
 
         $writer->startElement('locations');
         $writer->startElement('location');
-        $this->write_text_element($writer, 'storeId', (string) $row['store_id']);
         $this->write_text_element($writer, 'price', (string) $row['price']);
         $this->write_bool_element($writer, 'pricedBelowMAP', (bool) $row['priced_below_map']);
         $this->write_bool_element($writer, 'addToCartForPrice', (bool) $row['add_to_cart_for_price']);
