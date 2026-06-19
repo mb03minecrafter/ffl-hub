@@ -24,6 +24,7 @@ final class ArchiveFaqBlock
     private const NONCE_FIELD = 'fflhub_archive_faq_nonce';
     private const FIELD_NAME = 'fflhub_archive_faq_items';
     private const PAYLOAD_FIELD = 'fflhub_archive_faq_payload';
+    private const CLIENT_DEBUG_FIELD = 'fflhub_archive_faq_client_debug';
     private const CLEAR_FIELD = 'fflhub_archive_faq_clear';
     private const SUPPORTED_TAXONOMIES = ['product_brand', 'product_tag'];
 
@@ -317,6 +318,7 @@ final class ArchiveFaqBlock
         ?>
         <div class="fflhub-archive-faq-admin" data-next-index="<?php echo esc_attr((string) count($rows)); ?>">
             <input type="hidden" class="fflhub-archive-faq-admin__payload" name="<?php echo esc_attr(self::PAYLOAD_FIELD); ?>" value="" />
+            <textarea class="fflhub-archive-faq-admin__client-debug" name="<?php echo esc_attr(self::CLIENT_DEBUG_FIELD); ?>" hidden></textarea>
             <div class="fflhub-archive-faq-admin__rows">
                 <?php foreach ($rows as $index => $item) : ?>
                     <?php self::render_admin_row((int) $index, $item['question'], $item['answer']); ?>
@@ -371,7 +373,26 @@ final class ArchiveFaqBlock
     public static function save(int $term_id): void
     {
         $taxonomy = isset($_POST['taxonomy']) ? sanitize_key((string) wp_unslash($_POST['taxonomy'])) : '';
+        self::debug_log('save.start', [
+            'term_id' => $term_id,
+            'taxonomy' => $taxonomy,
+            'user_id' => get_current_user_id(),
+            'post_keys' => array_keys($_POST),
+            'has_payload' => isset($_POST[self::PAYLOAD_FIELD]),
+            'payload' => self::debug_string(isset($_POST[self::PAYLOAD_FIELD]) ? (string) wp_unslash($_POST[self::PAYLOAD_FIELD]) : ''),
+            'has_legacy_rows' => isset($_POST[self::FIELD_NAME]),
+            'legacy_rows_is_array' => isset($_POST[self::FIELD_NAME]) && is_array($_POST[self::FIELD_NAME]),
+            'has_client_debug' => isset($_POST[self::CLIENT_DEBUG_FIELD]),
+            'client_debug' => self::debug_string(isset($_POST[self::CLIENT_DEBUG_FIELD]) ? (string) wp_unslash($_POST[self::CLIENT_DEBUG_FIELD]) : '', 1200),
+        ]);
+
         if (!in_array($taxonomy, self::SUPPORTED_TAXONOMIES, true) || !self::can_manage_taxonomy($taxonomy)) {
+            self::debug_log('save.abort.taxonomy_or_capability', [
+                'term_id' => $term_id,
+                'taxonomy' => $taxonomy,
+                'supported' => in_array($taxonomy, self::SUPPORTED_TAXONOMIES, true),
+                'can_manage' => $taxonomy !== '' ? self::can_manage_taxonomy($taxonomy) : false,
+            ]);
             return;
         }
 
@@ -379,35 +400,88 @@ final class ArchiveFaqBlock
             ? sanitize_text_field(wp_unslash((string) $_POST[self::NONCE_FIELD]))
             : '';
         if ($nonce === '' || !wp_verify_nonce($nonce, self::NONCE_ACTION)) {
+            self::debug_log('save.abort.nonce', [
+                'term_id' => $term_id,
+                'nonce_present' => $nonce !== '',
+                'nonce_verify' => $nonce !== '' ? wp_verify_nonce($nonce, self::NONCE_ACTION) : false,
+            ]);
             return;
         }
 
         $raw_rows = self::submitted_rows_from_payload();
+        self::debug_log('save.payload_decoded', [
+            'term_id' => $term_id,
+            'payload_rows' => count($raw_rows),
+        ]);
         if (empty($raw_rows) && isset($_POST[self::FIELD_NAME]) && is_array($_POST[self::FIELD_NAME])) {
             $raw_rows = wp_unslash($_POST[self::FIELD_NAME]);
+            self::debug_log('save.legacy_rows_used', [
+                'term_id' => $term_id,
+                'legacy_rows' => count($raw_rows),
+            ]);
         }
         $clear_faq = isset($_POST[self::CLEAR_FIELD]) && (string) wp_unslash($_POST[self::CLEAR_FIELD]) === '1';
         if ($clear_faq) {
             delete_term_meta($term_id, self::META_KEY);
+            self::debug_log('save.clear_requested', [
+                'term_id' => $term_id,
+            ]);
             return;
         }
 
         $items = [];
 
-        foreach ($raw_rows as $row) {
+        foreach ($raw_rows as $row_index => $row) {
             if (!is_array($row)) {
+                self::debug_log('save.row.skip.not_array', [
+                    'term_id' => $term_id,
+                    'row_index' => $row_index,
+                    'type' => gettype($row),
+                ]);
                 continue;
             }
 
             $raw_question = (string) ($row['question'] ?? '');
-            $raw_answer = self::normalize_submitted_answer((string) ($row['answer'] ?? ''));
+            $submitted_answer = (string) ($row['answer'] ?? '');
+            self::debug_log('save.row.raw', [
+                'term_id' => $term_id,
+                'row_index' => $row_index,
+                'question' => self::debug_string($raw_question),
+                'answer' => self::debug_string($submitted_answer),
+            ]);
+
+            $raw_answer = self::normalize_submitted_answer($submitted_answer);
+            self::debug_log('save.row.normalized_answer', [
+                'term_id' => $term_id,
+                'row_index' => $row_index,
+                'answer' => self::debug_string($raw_answer),
+            ]);
+
             $normalized_row = self::normalize_submitted_row($raw_question, $raw_answer);
+            self::debug_log('save.row.normalized_row', [
+                'term_id' => $term_id,
+                'row_index' => $row_index,
+                'question' => self::debug_string($normalized_row['question']),
+                'answer' => self::debug_string($normalized_row['answer']),
+            ]);
 
             $question = sanitize_text_field($normalized_row['question']);
             $answer = self::sanitize_answer_html($normalized_row['answer']);
             $question = trim($question);
             $answer = trim($answer);
+            self::debug_log('save.row.sanitized', [
+                'term_id' => $term_id,
+                'row_index' => $row_index,
+                'question' => self::debug_string($question),
+                'answer' => self::debug_string($answer),
+            ]);
             if ($question === '' || $answer === '') {
+                self::debug_log('save.row.skip.empty_after_sanitize', [
+                    'term_id' => $term_id,
+                    'row_index' => $row_index,
+                    'question_empty' => $question === '',
+                    'answer_empty' => $answer === '',
+                ]);
                 continue;
             }
 
@@ -418,10 +492,23 @@ final class ArchiveFaqBlock
         }
 
         if (empty($items)) {
+            self::debug_log('save.abort.no_items', [
+                'term_id' => $term_id,
+                'raw_rows' => is_array($raw_rows) ? count($raw_rows) : null,
+            ]);
             return;
         }
 
-        update_term_meta($term_id, self::META_KEY, wp_json_encode(array_slice($items, 0, 30)));
+        $encoded = wp_json_encode(array_slice($items, 0, 30));
+        $updated = update_term_meta($term_id, self::META_KEY, $encoded);
+        self::debug_log('save.updated_meta', [
+            'term_id' => $term_id,
+            'items' => count($items),
+            'stored_items' => min(count($items), 30),
+            'encoded' => self::debug_string((string) $encoded),
+            'update_result' => is_wp_error($updated) ? $updated->get_error_message() : $updated,
+            'stored_after' => self::debug_string((string) get_term_meta($term_id, self::META_KEY, true), 500),
+        ]);
     }
 
     /**
@@ -443,12 +530,20 @@ final class ArchiveFaqBlock
 
         $decoded = json_decode($payload, true);
         if (!is_array($decoded)) {
+            self::debug_log('payload.decode_failed', [
+                'payload' => self::debug_string($payload, 500),
+                'json_error' => json_last_error_msg(),
+            ]);
             return [];
         }
 
         $rows = [];
-        foreach ($decoded as $row) {
+        foreach ($decoded as $index => $row) {
             if (!is_array($row)) {
+                self::debug_log('payload.row_skip.not_array', [
+                    'row_index' => $index,
+                    'type' => gettype($row),
+                ]);
                 continue;
             }
 
@@ -459,6 +554,55 @@ final class ArchiveFaqBlock
         }
 
         return $rows;
+    }
+
+    /**
+     * Keep FAQ save debugging out of the database and easy to tail while the
+     * term editor is being tested with pasted content.
+     *
+     * @param array<string,mixed> $context
+     */
+    private static function debug_log(string $event, array $context = []): void
+    {
+        static $request_id = null;
+        if ($request_id === null) {
+            $request_id = substr(md5((string) microtime(true) . '|' . (string) wp_rand()), 0, 12);
+        }
+
+        $line = [
+            'ts' => gmdate('c'),
+            'request_id' => $request_id,
+            'event' => $event,
+            'context' => $context,
+        ];
+
+        $json = wp_json_encode($line, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if (!is_string($json) || $json === '') {
+            $json = '{"event":"' . esc_js($event) . '","encode_error":"' . esc_js(json_last_error_msg()) . '"}';
+        }
+
+        error_log('[FFLHub Archive FAQ] ' . $json);
+
+        if (defined('WP_CONTENT_DIR')) {
+            $path = trailingslashit((string) WP_CONTENT_DIR) . 'fflhub-archive-faq-debug.log';
+            @file_put_contents($path, $json . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+    }
+
+    /**
+     * @return array{len:int,sha1:string,snippet:string}
+     */
+    private static function debug_string(string $value, int $snippet_length = 300): array
+    {
+        $value = wp_check_invalid_utf8($value, true);
+        $snippet = substr($value, 0, max(0, $snippet_length));
+        $snippet = str_replace(["\r\n", "\r", "\n"], ['\\n', '\\n', '\\n'], $snippet);
+
+        return [
+            'len' => strlen($value),
+            'sha1' => sha1($value),
+            'snippet' => $snippet,
+        ];
     }
 
     public static function enqueue_admin_assets(string $hook_suffix): void
@@ -719,6 +863,7 @@ jQuery(function($) {
     $('.fflhub-archive-faq-admin').each(function() {
         var $wrap = $(this);
         var $rows = $wrap.find('.fflhub-archive-faq-admin__rows');
+        var $clientDebug = $wrap.find('.fflhub-archive-faq-admin__client-debug');
         var editorSettings = {
             tinymce: {
                 toolbar1: 'formatselect,bold,italic,bullist,numlist,link,unlink,undo,redo',
@@ -726,7 +871,14 @@ jQuery(function($) {
                 block_formats: 'Paragraph=p;Heading 3=h3;Heading 4=h4',
                 paste_as_text: false,
                 paste_preprocess: function(plugin, args) {
+                    var before = args.content || '';
                     args.content = cleanPastedFaqContent(args.content || '');
+                    clientDebug('tinymce.paste_preprocess', {
+                        before_len: before.length,
+                        after_len: args.content.length,
+                        before_snippet: before.substring(0, 250),
+                        after_snippet: args.content.substring(0, 250)
+                    });
                 }
             },
             quicktags: {
@@ -734,6 +886,41 @@ jQuery(function($) {
             },
             mediaButtons: false
         };
+
+        function clientDebug(event, data) {
+            if (!$clientDebug.length) {
+                return;
+            }
+
+            var current = String($clientDebug.val() || '');
+            var entry = '';
+            try {
+                entry = JSON.stringify({
+                    ts: new Date().toISOString(),
+                    event: event,
+                    data: data || {}
+                });
+            } catch (e) {
+                entry = JSON.stringify({
+                    ts: new Date().toISOString(),
+                    event: event,
+                    data: { encode_error: String(e && e.message ? e.message : e) }
+                });
+            }
+
+            current += (current ? "\n" : '') + entry;
+            if (current.length > 30000) {
+                current = current.substring(current.length - 30000);
+            }
+
+            $clientDebug.val(current);
+        }
+
+        clientDebug('admin.init', {
+            rows: $wrap.find('.fflhub-archive-faq-admin__row').length,
+            has_tinymce: !!window.tinyMCE,
+            has_wp_editor: !!(window.wp && wp.editor)
+        });
 
         function normalizeClipboardSpaces(value) {
             return String(value || '')
@@ -855,7 +1042,15 @@ jQuery(function($) {
 
             editor.fflhubArchiveFaqPasteBound = true;
             editor.on('PastePreProcess', function(args) {
+                var before = args.content || '';
                 args.content = cleanPastedFaqContent(args.content || '');
+                clientDebug('tinymce.bound_paste_preprocess', {
+                    editor_id: editor.id || '',
+                    before_len: before.length,
+                    after_len: args.content.length,
+                    before_snippet: before.substring(0, 250),
+                    after_snippet: args.content.substring(0, 250)
+                });
             });
         }
 
@@ -886,6 +1081,7 @@ jQuery(function($) {
             var $textarea = $row.find('textarea.fflhub-archive-faq-admin__answer');
             var id = $textarea.attr('id');
             if (id) {
+                clientDebug('editor.initialize', { id: id });
                 wp.editor.initialize(id, editorSettings);
                 setTimeout(bindPasteCleanup, 50);
             }
@@ -899,6 +1095,7 @@ jQuery(function($) {
             var $textarea = $row.find('textarea.fflhub-archive-faq-admin__answer');
             var id = $textarea.attr('id');
             if (id) {
+                clientDebug('editor.remove', { id: id });
                 wp.editor.remove(id);
             }
         }
@@ -917,6 +1114,11 @@ jQuery(function($) {
                 var editor = tinyMCE.get(id);
                 if (editor && !editor.isHidden()) {
                     this.value = editor.getContent({ format: 'html' });
+                    clientDebug('editor.sync', {
+                        id: id,
+                        value_len: String(this.value || '').length,
+                        value_snippet: String(this.value || '').substring(0, 250)
+                    });
                 }
             });
         }
@@ -938,13 +1140,26 @@ jQuery(function($) {
             var rows = [];
             $wrap.find('.fflhub-archive-faq-admin__row').each(function() {
                 var $row = $(this);
+                var answer = answerForRow($row);
                 rows.push({
                     question: String($row.find('.fflhub-archive-faq-admin__question').val() || ''),
-                    answer: answerForRow($row)
+                    answer: answer
                 });
             });
 
-            $wrap.find('.fflhub-archive-faq-admin__payload').val(JSON.stringify(rows));
+            var payload = JSON.stringify(rows);
+            $wrap.find('.fflhub-archive-faq-admin__payload').val(payload);
+            clientDebug('payload.build', {
+                rows: rows.map(function(row) {
+                    return {
+                        question_len: String(row.question || '').length,
+                        answer_len: String(row.answer || '').length,
+                        answer_snippet: String(row.answer || '').substring(0, 250)
+                    };
+                }),
+                payload_len: payload.length,
+                payload_snippet: payload.substring(0, 500)
+            });
         }
 
         function hasVisibleEditorContent(value) {
@@ -956,9 +1171,11 @@ jQuery(function($) {
 
         function ensureEditorContentBeforeSubmit(e) {
             if ($wrap.closest('form').find('input[name="fflhub_archive_faq_clear"]:checked').length) {
+                clientDebug('submit.skip_clear_checked', {});
                 return;
             }
 
+            clientDebug('submit.start', {});
             syncEditors();
             buildPayload();
 
@@ -972,9 +1189,16 @@ jQuery(function($) {
             });
 
             if (suspicious) {
+                clientDebug('submit.blocked_suspicious_empty_answer', {});
                 e.preventDefault();
                 alert('One or more FAQ questions has an empty answer. Please click into the FAQ answer editor and try saving again.');
+                return;
             }
+
+            clientDebug('submit.allowed', {
+                client_debug_len: String($clientDebug.val() || '').length,
+                payload_len: String($wrap.find('.fflhub-archive-faq-admin__payload').val() || '').length
+            });
         }
 
         $wrap.on('click', '.fflhub-archive-faq-admin__add', function(e) {
@@ -984,12 +1208,17 @@ jQuery(function($) {
             $wrap.attr('data-next-index', String(index + 1));
             var $row = $(html);
             $rows.append($row);
+            clientDebug('row.add', { index: index });
             initializeEditor($row);
         });
 
         $wrap.on('click', '.fflhub-archive-faq-admin__remove', function(e) {
             e.preventDefault();
             var $row = $(this).closest('.fflhub-archive-faq-admin__row');
+            clientDebug('row.remove', {
+                question_len: String($row.find('.fflhub-archive-faq-admin__question').val() || '').length,
+                answer_len: answerForRow($row).length
+            });
             removeEditor($row);
             $row.remove();
         });
@@ -1004,6 +1233,14 @@ jQuery(function($) {
             var html = clipboard.getData('text/html');
             var text = clipboard.getData('text/plain');
             var insert = cleanPastedFaqContent(html || text || '');
+            clientDebug('textarea.paste', {
+                html_len: String(html || '').length,
+                text_len: String(text || '').length,
+                insert_len: String(insert || '').length,
+                html_snippet: String(html || '').substring(0, 250),
+                text_snippet: String(text || '').substring(0, 250),
+                insert_snippet: String(insert || '').substring(0, 250)
+            });
             if (!insert) {
                 return;
             }
