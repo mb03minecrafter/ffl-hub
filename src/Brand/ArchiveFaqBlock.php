@@ -874,17 +874,7 @@ jQuery(function($) {
                 toolbar1: 'formatselect,bold,italic,bullist,numlist,link,unlink,undo,redo',
                 toolbar2: '',
                 block_formats: 'Paragraph=p;Heading 3=h3;Heading 4=h4',
-                paste_as_text: false,
-                paste_preprocess: function(plugin, args) {
-                    var before = args.content || '';
-                    args.content = cleanPastedFaqContent(args.content || '');
-                    clientDebug('tinymce.paste_preprocess', {
-                        before_len: before.length,
-                        after_len: args.content.length,
-                        before_snippet: before.substring(0, 250),
-                        after_snippet: args.content.substring(0, 250)
-                    });
-                }
+                paste_as_text: false
             },
             quicktags: {
                 buttons: 'strong,em,link,ul,ol,li,close'
@@ -927,157 +917,6 @@ jQuery(function($) {
             has_wp_editor: !!(window.wp && wp.editor)
         });
 
-        function normalizeClipboardSpaces(value) {
-            return String(value || '')
-                .replace(/\\u00a0/g, ' ')
-                .replace(/u00a0/g, ' ')
-                .replace(/\u00a0/g, ' ');
-        }
-
-        function plainTextToHtml(text) {
-            var lines = normalizeClipboardSpaces(text)
-                .replace(/\r\n/g, '\n')
-                .replace(/\r/g, '\n')
-                .split('\n')
-                .map(function(line) {
-                    return line.replace(/\s+/g, ' ').trim();
-                })
-                .filter(Boolean);
-            if (!lines.length) {
-                return '';
-            }
-
-            var html = '';
-            var listType = '';
-            var listItems = [];
-
-            function flushList() {
-                if (!listType || !listItems.length) {
-                    listType = '';
-                    listItems = [];
-                    return;
-                }
-
-                html += '<' + listType + '>' + listItems.map(function(item) {
-                    return '<li>' + $('<div>').text(item).html() + '</li>';
-                }).join('') + '</' + listType + '>';
-                listType = '';
-                listItems = [];
-            }
-
-            lines.forEach(function(line) {
-                var bullet = line.match(/^([•*\-])\s+(.*)$/);
-                var numbered = line.match(/^(\d+[.)])\s+(.*)$/);
-                if (bullet) {
-                    if (listType && listType !== 'ul') {
-                        flushList();
-                    }
-                    listType = 'ul';
-                    listItems.push(bullet[2]);
-                    return;
-                }
-                if (numbered) {
-                    if (listType && listType !== 'ol') {
-                        flushList();
-                    }
-                    listType = 'ol';
-                    listItems.push(numbered[2]);
-                    return;
-                }
-
-                flushList();
-                html += '<p>' + $('<div>').text(line).html() + '</p>';
-            });
-
-            flushList();
-            return html;
-        }
-
-        function cleanPastedFaqContent(content) {
-            content = normalizeClipboardSpaces(content)
-                .replace(/<!--[\s\S]*?-->/g, '')
-                .replace(/<script[\s\S]*?<\/script>/gi, '')
-                .replace(/<style[\s\S]*?<\/style>/gi, '')
-                .replace(/<meta[\s\S]*?>/gi, '');
-
-            if (!/<[a-z][\s\S]*>/i.test(content)) {
-                return plainTextToHtml(content);
-            }
-
-            var $scratch = $('<div>').html(content);
-            $scratch.find('ol').each(function() {
-                var className = String(this.className || '').toLowerCase();
-                if (/(^|\s)u-list-[^\s]*-b(\s|$)/.test(className) || className.indexOf('bullet') !== -1 || className.indexOf('unordered') !== -1) {
-                    var $ul = $('<ul>').html($(this).html());
-                    $(this).replaceWith($ul);
-                }
-            });
-
-            $scratch.find('*').each(function() {
-                var tag = this.tagName.toLowerCase();
-                var allowed = ['p', 'br', 'strong', 'b', 'em', 'i', 'a', 'ul', 'ol', 'li', 'h3', 'h4', 'div', 'span'];
-                if (allowed.indexOf(tag) === -1) {
-                    $(this).replaceWith($(this).contents());
-                    return;
-                }
-
-                $.each(Array.prototype.slice.call(this.attributes), function(_, attr) {
-                    var name = attr.name.toLowerCase();
-                    if (tag === 'a' && (name === 'href' || name === 'title' || name === 'target' || name === 'rel')) {
-                        return;
-                    }
-                    this.ownerElement.removeAttribute(attr.name);
-                });
-            });
-
-            $scratch.find('b').each(function() {
-                $(this).replaceWith($('<strong>').html($(this).html()));
-            });
-            $scratch.find('i').each(function() {
-                $(this).replaceWith($('<em>').html($(this).html()));
-            });
-
-            return $scratch.html();
-        }
-
-        function bindPasteCleanupToEditor(editor) {
-            if (!editor || editor.fflhubArchiveFaqPasteBound) {
-                return;
-            }
-
-            editor.fflhubArchiveFaqPasteBound = true;
-            editor.on('PastePreProcess', function(args) {
-                var before = args.content || '';
-                args.content = cleanPastedFaqContent(args.content || '');
-                clientDebug('tinymce.bound_paste_preprocess', {
-                    editor_id: editor.id || '',
-                    before_len: before.length,
-                    after_len: args.content.length,
-                    before_snippet: before.substring(0, 250),
-                    after_snippet: args.content.substring(0, 250)
-                });
-            });
-        }
-
-        function bindPasteCleanup() {
-            if (!window.tinyMCE) {
-                return;
-            }
-
-            if (tinyMCE.editors && tinyMCE.editors.length) {
-                $.each(tinyMCE.editors, function(_, editor) {
-                    bindPasteCleanupToEditor(editor);
-                });
-            }
-
-            if (!tinyMCE.fflhubArchiveFaqAddEditorBound && tinyMCE.on) {
-                tinyMCE.fflhubArchiveFaqAddEditorBound = true;
-                tinyMCE.on('AddEditor', function(event) {
-                    bindPasteCleanupToEditor(event.editor);
-                });
-            }
-        }
-
         function initializeEditor($row) {
             if (!window.wp || !wp.editor || !wp.editor.initialize) {
                 return;
@@ -1088,7 +927,6 @@ jQuery(function($) {
             if (id) {
                 clientDebug('editor.initialize', { id: id });
                 wp.editor.initialize(id, editorSettings);
-                setTimeout(bindPasteCleanup, 50);
             }
         }
 
@@ -1228,37 +1066,6 @@ jQuery(function($) {
             $row.remove();
         });
 
-        $wrap.on('paste', 'textarea.fflhub-archive-faq-admin__answer', function(e) {
-            var event = e.originalEvent || e;
-            var clipboard = event.clipboardData || window.clipboardData;
-            if (!clipboard) {
-                return;
-            }
-
-            var html = clipboard.getData('text/html');
-            var text = clipboard.getData('text/plain');
-            var insert = cleanPastedFaqContent(html || text || '');
-            clientDebug('textarea.paste', {
-                html_len: String(html || '').length,
-                text_len: String(text || '').length,
-                insert_len: String(insert || '').length,
-                html_snippet: String(html || '').substring(0, 250),
-                text_snippet: String(text || '').substring(0, 250),
-                insert_snippet: String(insert || '').substring(0, 250)
-            });
-            if (!insert) {
-                return;
-            }
-
-            e.preventDefault();
-            var start = this.selectionStart || 0;
-            var end = this.selectionEnd || 0;
-            var current = String(this.value || '');
-            this.value = current.substring(0, start) + insert + current.substring(end);
-            this.selectionStart = this.selectionEnd = start + insert.length;
-        });
-
-        bindPasteCleanup();
         $wrap.closest('form').on('submit', ensureEditorContentBeforeSubmit);
     });
 });
