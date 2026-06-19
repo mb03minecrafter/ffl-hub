@@ -500,7 +500,12 @@ final class ArchiveFaqBlock
         }
 
         $encoded = wp_json_encode(array_slice($items, 0, 30));
-        $updated = update_term_meta($term_id, self::META_KEY, $encoded);
+        /*
+         * Term meta is unslashed by WordPress before storage. Since this value
+         * is a JSON string, it must be pre-slashed or answer text containing a
+         * literal quote will be stored as invalid JSON and disappear on reload.
+         */
+        $updated = update_term_meta($term_id, self::META_KEY, wp_slash((string) $encoded));
         self::debug_log('save.updated_meta', [
             'term_id' => $term_id,
             'items' => count($items),
