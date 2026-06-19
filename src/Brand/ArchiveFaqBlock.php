@@ -534,25 +534,14 @@ final class ArchiveFaqBlock
 
     private static function sanitize_answer_html(string $answer): string
     {
-        $allowed = [
-            'p' => [],
-            'br' => [],
-            'strong' => [],
-            'b' => [],
-            'em' => [],
-            'i' => [],
-            'ul' => [],
-            'ol' => [],
-            'li' => [],
-            'a' => [
-                'href' => true,
-                'title' => true,
-                'target' => true,
-                'rel' => true,
-            ],
-        ];
-
-        $answer = wp_kses($answer, $allowed);
+        /*
+         * FAQ answers are normal WordPress rich text. Use the same broad post
+         * sanitizer WordPress relies on for post content instead of a tiny
+         * custom whitelist; pasted content from docs/pages often includes
+         * wrappers, headings, list markup, and safe attributes that should not
+         * make the saved FAQ row collapse to empty.
+         */
+        $answer = wp_kses_post($answer);
         $answer = preg_replace('/<li>\\s*<p>(.*?)<\\/p>\\s*<\\/li>/is', '<li>$1</li>', $answer);
 
         return trim((string) $answer);
@@ -612,33 +601,13 @@ jQuery(function($) {
                 toolbar1: 'formatselect,bold,italic,bullist,numlist,link,unlink,undo,redo',
                 toolbar2: '',
                 block_formats: 'Paragraph=p;Heading 3=h3;Heading 4=h4',
-                paste_as_text: false,
-                paste_preprocess: function(plugin, args) {
-                    args.content = normalizeBulletStyledLists(args.content || '');
-                }
+                paste_as_text: false
             },
             quicktags: {
                 buttons: 'strong,em,link,ul,ol,li,close'
             },
             mediaButtons: false
         };
-
-        function normalizeBulletStyledLists(html) {
-            return String(html || '').replace(/<ol\b([^>]*)>([\s\S]*?)<\/ol>/gi, function(full, attrs, inner) {
-                var classMatch = String(attrs || '').match(/class\s*=\s*(["'])(.*?)\1/i);
-                if (!classMatch) {
-                    return full;
-                }
-
-                var classes = String(classMatch[2] || '').toLowerCase();
-                var looksLikeBullets = classes.indexOf('bullet') !== -1
-                    || classes.indexOf('unordered') !== -1
-                    || /(^|\s)u-list-[^\s]*-b(\s|$)/.test(classes)
-                    || /(^|\s)[^\s]*-bullets?(\s|$)/.test(classes);
-
-                return looksLikeBullets ? '<ul>' + inner + '</ul>' : full;
-            });
-        }
 
         function initializeEditor($row) {
             if (!window.wp || !wp.editor || !wp.editor.initialize) {
