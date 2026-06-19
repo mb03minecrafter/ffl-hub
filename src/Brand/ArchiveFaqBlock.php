@@ -23,6 +23,7 @@ final class ArchiveFaqBlock
     private const NONCE_ACTION = 'fflhub_archive_faq';
     private const NONCE_FIELD = 'fflhub_archive_faq_nonce';
     private const FIELD_NAME = 'fflhub_archive_faq_items';
+    private const PAYLOAD_FIELD = 'fflhub_archive_faq_payload';
     private const CLEAR_FIELD = 'fflhub_archive_faq_clear';
     private const SUPPORTED_TAXONOMIES = ['product_brand', 'product_tag'];
 
@@ -315,6 +316,7 @@ final class ArchiveFaqBlock
         $rows[] = ['question' => '', 'answer' => ''];
         ?>
         <div class="fflhub-archive-faq-admin" data-next-index="<?php echo esc_attr((string) count($rows)); ?>">
+            <input type="hidden" class="fflhub-archive-faq-admin__payload" name="<?php echo esc_attr(self::PAYLOAD_FIELD); ?>" value="" />
             <div class="fflhub-archive-faq-admin__rows">
                 <?php foreach ($rows as $index => $item) : ?>
                     <?php self::render_admin_row((int) $index, $item['question'], $item['answer']); ?>
@@ -380,9 +382,10 @@ final class ArchiveFaqBlock
             return;
         }
 
-        $raw_rows = isset($_POST[self::FIELD_NAME]) && is_array($_POST[self::FIELD_NAME])
-            ? wp_unslash($_POST[self::FIELD_NAME])
-            : [];
+        $raw_rows = self::submitted_rows_from_payload();
+        if (empty($raw_rows) && isset($_POST[self::FIELD_NAME]) && is_array($_POST[self::FIELD_NAME])) {
+            $raw_rows = wp_unslash($_POST[self::FIELD_NAME]);
+        }
         $clear_faq = isset($_POST[self::CLEAR_FIELD]) && (string) wp_unslash($_POST[self::CLEAR_FIELD]) === '1';
         if ($clear_faq) {
             delete_term_meta($term_id, self::META_KEY);
@@ -421,6 +424,43 @@ final class ArchiveFaqBlock
         update_term_meta($term_id, self::META_KEY, wp_json_encode(array_slice($items, 0, 30)));
     }
 
+    /**
+     * The WordPress term edit screen can fail to sync dynamically-initialized
+     * rich editors back into their nested textarea names. The admin script
+     * writes a flat JSON payload immediately before submit, and the save path
+     * prefers that payload when present.
+     *
+     * @return array<int,array{question?:string,answer?:string}>
+     */
+    private static function submitted_rows_from_payload(): array
+    {
+        $payload = isset($_POST[self::PAYLOAD_FIELD])
+            ? (string) wp_unslash($_POST[self::PAYLOAD_FIELD])
+            : '';
+        if ($payload === '') {
+            return [];
+        }
+
+        $decoded = json_decode($payload, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($decoded as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $rows[] = [
+                'question' => (string) ($row['question'] ?? ''),
+                'answer' => (string) ($row['answer'] ?? ''),
+            ];
+        }
+
+        return $rows;
+    }
+
     public static function enqueue_admin_assets(string $hook_suffix): void
     {
         if (!in_array($hook_suffix, ['edit-tags.php', 'term.php'], true)) {
@@ -455,6 +495,7 @@ final class ArchiveFaqBlock
 
     private static function normalize_submitted_answer(string $answer): string
     {
+        $answer = wp_check_invalid_utf8($answer, true);
         $answer = str_replace(["\r\n", "\r"], "\n", $answer);
         $answer = str_replace(['\\u00a0', 'u00a0', "\xc2\xa0"], ' ', $answer);
         $answer = (string) preg_replace('/\x{00A0}/u', ' ', $answer);
@@ -510,10 +551,7 @@ final class ArchiveFaqBlock
         }
 
         if (!preg_match('/<h([1-6])\\b[^>]*>(.*?)<\\/h\\1>/is', $answer, $match)) {
-            return [
-                'question' => $question,
-                'answer' => $answer,
-            ];
+            return self::normalize_plain_text_question_row($question, $answer);
         }
 
         $heading_text = trim(wp_strip_all_tags((string) $match[2]));
@@ -530,6 +568,91 @@ final class ArchiveFaqBlock
             'question' => $question !== '' ? $question : $heading_text,
             'answer' => $answer_without_heading,
         ];
+    }
+
+    /**
+     * Pasting from ChatGPT, Notepad, or a rendered page often lands as one blob
+     * in the answer editor. When the question field is blank, treat the first
+     * visible line as the FAQ question and keep the remaining lines as the
+     * answer. Typed rows with a filled question field keep their answer exactly
+     * as submitted.
+     *
+     * @return array{question:string,answer:string}
+     */
+    private static function normalize_plain_text_question_row(string $question, string $answer): array
+    {
+        if ($question !== '') {
+            return [
+                'question' => $question,
+                'answer' => $answer,
+            ];
+        }
+
+        $lines = self::visible_answer_lines($answer);
+        if (count($lines) < 2) {
+            return [
+                'question' => $question,
+                'answer' => $answer,
+            ];
+        }
+
+        return [
+            'question' => $lines[0],
+            'answer' => self::plain_lines_to_answer_html(array_slice($lines, 1)),
+        ];
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private static function visible_answer_lines(string $answer): array
+    {
+        $text = preg_replace('/<\\/?(p|div|h[1-6]|li|ul|ol)\\b[^>]*>/i', "\n", $answer);
+        $text = preg_replace('/<br\\s*\\/?>/i', "\n", (string) $text);
+        $text = html_entity_decode(wp_strip_all_tags((string) $text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = str_replace(["\r\n", "\r"], "\n", $text);
+        $text = str_replace(['\\u00a0', 'u00a0', "\xc2\xa0"], ' ', $text);
+
+        $lines = [];
+        foreach (explode("\n", (string) $text) as $line) {
+            $line = trim((string) preg_replace('/\\s+/u', ' ', $line));
+            if ($line !== '') {
+                $lines[] = $line;
+            }
+        }
+
+        return $lines;
+    }
+
+    /**
+     * @param array<int,string> $lines
+     */
+    private static function plain_lines_to_answer_html(array $lines): string
+    {
+        $lines = array_values(array_filter(array_map('trim', $lines), static fn (string $line): bool => $line !== ''));
+        if (empty($lines)) {
+            return '';
+        }
+
+        $looks_like_list = count($lines) > 1;
+        foreach ($lines as $line) {
+            if (!preg_match('/^([\\x{2022}*\\-]|\\d+[.)])\\s+/u', $line) && !str_contains($line, ':')) {
+                $looks_like_list = false;
+                break;
+            }
+        }
+
+        if ($looks_like_list) {
+            $items = [];
+            foreach ($lines as $line) {
+                $line = (string) preg_replace('/^([\\x{2022}*\\-]|\\d+[.)])\\s+/u', '', $line);
+                $items[] = '<li>' . esc_html($line) . '</li>';
+            }
+
+            return '<ul>' . implode('', $items) . '</ul>';
+        }
+
+        return wpautop(esc_html(implode("\n\n", $lines)));
     }
 
     private static function sanitize_answer_html(string $answer): string
@@ -601,13 +724,159 @@ jQuery(function($) {
                 toolbar1: 'formatselect,bold,italic,bullist,numlist,link,unlink,undo,redo',
                 toolbar2: '',
                 block_formats: 'Paragraph=p;Heading 3=h3;Heading 4=h4',
-                paste_as_text: false
+                paste_as_text: false,
+                paste_preprocess: function(plugin, args) {
+                    args.content = cleanPastedFaqContent(args.content || '');
+                }
             },
             quicktags: {
                 buttons: 'strong,em,link,ul,ol,li,close'
             },
             mediaButtons: false
         };
+
+        function normalizeClipboardSpaces(value) {
+            return String(value || '')
+                .replace(/\\u00a0/g, ' ')
+                .replace(/u00a0/g, ' ')
+                .replace(/\u00a0/g, ' ');
+        }
+
+        function plainTextToHtml(text) {
+            var lines = normalizeClipboardSpaces(text)
+                .replace(/\r\n/g, '\n')
+                .replace(/\r/g, '\n')
+                .split('\n')
+                .map(function(line) {
+                    return line.replace(/\s+/g, ' ').trim();
+                })
+                .filter(Boolean);
+            if (!lines.length) {
+                return '';
+            }
+
+            var html = '';
+            var listType = '';
+            var listItems = [];
+
+            function flushList() {
+                if (!listType || !listItems.length) {
+                    listType = '';
+                    listItems = [];
+                    return;
+                }
+
+                html += '<' + listType + '>' + listItems.map(function(item) {
+                    return '<li>' + $('<div>').text(item).html() + '</li>';
+                }).join('') + '</' + listType + '>';
+                listType = '';
+                listItems = [];
+            }
+
+            lines.forEach(function(line) {
+                var bullet = line.match(/^([•*\-])\s+(.*)$/);
+                var numbered = line.match(/^(\d+[.)])\s+(.*)$/);
+                if (bullet) {
+                    if (listType && listType !== 'ul') {
+                        flushList();
+                    }
+                    listType = 'ul';
+                    listItems.push(bullet[2]);
+                    return;
+                }
+                if (numbered) {
+                    if (listType && listType !== 'ol') {
+                        flushList();
+                    }
+                    listType = 'ol';
+                    listItems.push(numbered[2]);
+                    return;
+                }
+
+                flushList();
+                html += '<p>' + $('<div>').text(line).html() + '</p>';
+            });
+
+            flushList();
+            return html;
+        }
+
+        function cleanPastedFaqContent(content) {
+            content = normalizeClipboardSpaces(content)
+                .replace(/<!--[\s\S]*?-->/g, '')
+                .replace(/<script[\s\S]*?<\/script>/gi, '')
+                .replace(/<style[\s\S]*?<\/style>/gi, '')
+                .replace(/<meta[\s\S]*?>/gi, '');
+
+            if (!/<[a-z][\s\S]*>/i.test(content)) {
+                return plainTextToHtml(content);
+            }
+
+            var $scratch = $('<div>').html(content);
+            $scratch.find('ol').each(function() {
+                var className = String(this.className || '').toLowerCase();
+                if (/(^|\s)u-list-[^\s]*-b(\s|$)/.test(className) || className.indexOf('bullet') !== -1 || className.indexOf('unordered') !== -1) {
+                    var $ul = $('<ul>').html($(this).html());
+                    $(this).replaceWith($ul);
+                }
+            });
+
+            $scratch.find('*').each(function() {
+                var tag = this.tagName.toLowerCase();
+                var allowed = ['p', 'br', 'strong', 'b', 'em', 'i', 'a', 'ul', 'ol', 'li', 'h3', 'h4', 'div', 'span'];
+                if (allowed.indexOf(tag) === -1) {
+                    $(this).replaceWith($(this).contents());
+                    return;
+                }
+
+                $.each(Array.prototype.slice.call(this.attributes), function(_, attr) {
+                    var name = attr.name.toLowerCase();
+                    if (tag === 'a' && (name === 'href' || name === 'title' || name === 'target' || name === 'rel')) {
+                        return;
+                    }
+                    this.ownerElement.removeAttribute(attr.name);
+                });
+            });
+
+            $scratch.find('b').each(function() {
+                $(this).replaceWith($('<strong>').html($(this).html()));
+            });
+            $scratch.find('i').each(function() {
+                $(this).replaceWith($('<em>').html($(this).html()));
+            });
+
+            return $scratch.html();
+        }
+
+        function bindPasteCleanupToEditor(editor) {
+            if (!editor || editor.fflhubArchiveFaqPasteBound) {
+                return;
+            }
+
+            editor.fflhubArchiveFaqPasteBound = true;
+            editor.on('PastePreProcess', function(args) {
+                args.content = cleanPastedFaqContent(args.content || '');
+            });
+        }
+
+        function bindPasteCleanup() {
+            if (!window.tinyMCE) {
+                return;
+            }
+
+            if (tinyMCE.editors && tinyMCE.editors.length) {
+                $.each(tinyMCE.editors, function(_, editor) {
+                    bindPasteCleanupToEditor(editor);
+                });
+            }
+
+            if (!tinyMCE.fflhubArchiveFaqAddEditorBound && tinyMCE.on) {
+                tinyMCE.fflhubArchiveFaqAddEditorBound = true;
+                tinyMCE.on('AddEditor', function(event) {
+                    bindPasteCleanupToEditor(event.editor);
+                });
+            }
+        }
 
         function initializeEditor($row) {
             if (!window.wp || !wp.editor || !wp.editor.initialize) {
@@ -618,6 +887,7 @@ jQuery(function($) {
             var id = $textarea.attr('id');
             if (id) {
                 wp.editor.initialize(id, editorSettings);
+                setTimeout(bindPasteCleanup, 50);
             }
         }
 
@@ -634,6 +904,10 @@ jQuery(function($) {
         }
 
         function syncEditors() {
+            if (window.tinyMCE && tinyMCE.triggerSave) {
+                tinyMCE.triggerSave();
+            }
+
             $wrap.find('textarea.fflhub-archive-faq-admin__answer').each(function() {
                 var id = $(this).attr('id');
                 if (!id || !window.tinyMCE) {
@@ -645,6 +919,32 @@ jQuery(function($) {
                     this.value = editor.getContent({ format: 'html' });
                 }
             });
+        }
+
+        function answerForRow($row) {
+            var $textarea = $row.find('textarea.fflhub-archive-faq-admin__answer');
+            var id = $textarea.attr('id');
+            if (id && window.tinyMCE) {
+                var editor = tinyMCE.get(id);
+                if (editor && !editor.isHidden()) {
+                    return editor.getContent({ format: 'html' });
+                }
+            }
+
+            return String($textarea.val() || '');
+        }
+
+        function buildPayload() {
+            var rows = [];
+            $wrap.find('.fflhub-archive-faq-admin__row').each(function() {
+                var $row = $(this);
+                rows.push({
+                    question: String($row.find('.fflhub-archive-faq-admin__question').val() || ''),
+                    answer: answerForRow($row)
+                });
+            });
+
+            $wrap.find('.fflhub-archive-faq-admin__payload').val(JSON.stringify(rows));
         }
 
         function hasVisibleEditorContent(value) {
@@ -660,11 +960,12 @@ jQuery(function($) {
             }
 
             syncEditors();
+            buildPayload();
 
             var suspicious = false;
             $wrap.find('.fflhub-archive-faq-admin__row').each(function() {
                 var question = String($(this).find('.fflhub-archive-faq-admin__question').val() || '').trim();
-                var answer = String($(this).find('textarea.fflhub-archive-faq-admin__answer').val() || '');
+                var answer = answerForRow($(this));
                 if (question && !hasVisibleEditorContent(answer)) {
                     suspicious = true;
                 }
@@ -693,6 +994,29 @@ jQuery(function($) {
             $row.remove();
         });
 
+        $wrap.on('paste', 'textarea.fflhub-archive-faq-admin__answer', function(e) {
+            var event = e.originalEvent || e;
+            var clipboard = event.clipboardData || window.clipboardData;
+            if (!clipboard) {
+                return;
+            }
+
+            var html = clipboard.getData('text/html');
+            var text = clipboard.getData('text/plain');
+            var insert = cleanPastedFaqContent(html || text || '');
+            if (!insert) {
+                return;
+            }
+
+            e.preventDefault();
+            var start = this.selectionStart || 0;
+            var end = this.selectionEnd || 0;
+            var current = String(this.value || '');
+            this.value = current.substring(0, start) + insert + current.substring(end);
+            this.selectionStart = this.selectionEnd = start + insert.length;
+        });
+
+        bindPasteCleanup();
         $wrap.closest('form').on('submit', ensureEditorContentBeforeSubmit);
     });
 });
