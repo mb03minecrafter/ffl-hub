@@ -1891,6 +1891,7 @@ class AdminPage
             'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
             'pretty_random_email_quotes_enabled' => Options::get_pretty_random_email_quotes_enabled() ? '1' : '0',
             'gundeals_feed_enabled' => Options::get_gundeals_feed_enabled() ? '1' : '0',
+            'gunmade_feed_enabled' => Options::get_gunmade_feed_enabled() ? '1' : '0',
             'public_brand_name' => Options::get_public_brand_name(),
             'quote_email_rep_names' => Options::get_quote_email_rep_names_text(),
             'quote_email_team_signature' => Options::get_quote_email_team_signature(),
@@ -1961,6 +1962,7 @@ class AdminPage
         $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
         $pretty_random_email_quotes_enabled = ((string) ($settings['pretty_random_email_quotes_enabled'] ?? '1') === '1');
         $gundeals_feed_enabled = ((string) ($settings['gundeals_feed_enabled'] ?? '1') === '1');
+        $gunmade_feed_enabled = ((string) ($settings['gunmade_feed_enabled'] ?? '1') === '1');
         $public_brand_name = (string) ($settings['public_brand_name'] ?? Options::default_public_brand_name());
         $quote_email_rep_names = (string) ($settings['quote_email_rep_names'] ?? Options::default_quote_email_rep_names());
         $quote_email_team_signature = (string) ($settings['quote_email_team_signature'] ?? Options::default_quote_email_team_signature());
@@ -2239,6 +2241,27 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'Enabled: generate the normal Gun.deals product feed. Disabled: generate a valid empty feed with zero offers.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_gunmade_feed_enabled"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Gunmade feed enabled', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_gunmade_feed_enabled" value="0" />
+                    <input
+                        id="fflhub_gunmade_feed_enabled"
+                        name="fflhub_gunmade_feed_enabled"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($gunmade_feed_enabled); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Enabled: generate the normal Gunmade product feed. Disabled: generate a valid empty feed with zero products.',
                             'ffl-hub'
                         ); ?>
                     </p>

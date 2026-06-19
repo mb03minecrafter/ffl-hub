@@ -54,6 +54,8 @@ use FFLHub\Distributor\Services\Orders\Cron\ZandersDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerAuditTable;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
 use FFLHub\Feeds\GunDeals\GunDealsFeedCronService;
+use FFLHub\Feeds\GunMade\GunMadeFeedCronService;
+use FFLHub\Feeds\GunMade\GunMadeFeedEndpoint;
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
@@ -121,6 +123,7 @@ final class Plugin
     private QuoteEmailJobsCronService $quote_email_jobs_cron_service;
     private MailPoetAutoConfirmCronService $mailpoet_auto_confirm_cron_service;
     private GunDealsFeedCronService $gundeals_feed_cron_service;
+    private GunMadeFeedCronService $gunmade_feed_cron_service;
 
     public static function instance(): self
     {
@@ -143,6 +146,7 @@ final class Plugin
         ProductCollectionRewrite::init();
         BrandArchiveHeroBlock::init();
         ArchiveFaqBlock::init();
+        GunMadeFeedEndpoint::init();
 
         $this->ffl_table_schema = new FFLSchema();
 
@@ -165,6 +169,8 @@ final class Plugin
 
         $this->gundeals_feed_cron_service = new GunDealsFeedCronService();
         $this->gundeals_feed_cron_service->register();
+        $this->gunmade_feed_cron_service = new GunMadeFeedCronService();
+        $this->gunmade_feed_cron_service->register();
         self::cleanup_gundeals_analytics_tables_once();
 
         ShippingRegistrar::init();
@@ -395,6 +401,8 @@ final class Plugin
 
         $gundeals_feed_cron = new GunDealsFeedCronService();
         $gundeals_feed_cron->on_activation();
+        $gunmade_feed_cron = new GunMadeFeedCronService();
+        $gunmade_feed_cron->on_activation();
         self::cleanup_gundeals_analytics_tables_once(true);
     }
 
@@ -414,6 +422,8 @@ final class Plugin
 
         $gundeals_feed_cron = new GunDealsFeedCronService();
         $gundeals_feed_cron->on_deactivation();
+        $gunmade_feed_cron = new GunMadeFeedCronService();
+        $gunmade_feed_cron->on_deactivation();
     }
 
     private static function cleanup_gundeals_analytics_tables_once(bool $force = false): void

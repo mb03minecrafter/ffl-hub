@@ -47,6 +47,7 @@ final class Options
     public const OPTION_TEST_ORDER_DEBUG_ENABLED      = 'fflhub_test_order_debug_enabled';
     public const OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = 'fflhub_pretty_random_email_quotes_enabled';
     public const OPTION_GUNDEALS_FEED_ENABLED         = 'fflhub_gundeals_feed_enabled';
+    public const OPTION_GUNMADE_FEED_ENABLED          = 'fflhub_gunmade_feed_enabled';
     public const OPTION_PUBLIC_BRAND_NAME             = 'fflhub_public_brand_name';
     public const OPTION_QUOTE_EMAIL_REP_NAMES         = 'fflhub_quote_email_rep_names';
     public const OPTION_QUOTE_EMAIL_TEAM_SIGNATURE    = 'fflhub_quote_email_team_signature';
@@ -102,6 +103,7 @@ final class Options
     private const DEFAULT_TEST_ORDER_DEBUG_ENABLED      = true;
     private const DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = true;
     private const DEFAULT_GUNDEALS_FEED_ENABLED         = true;
+    private const DEFAULT_GUNMADE_FEED_ENABLED          = true;
     private const DEFAULT_PUBLIC_BRAND_NAME             = '';
     private const DEFAULT_QUOTE_EMAIL_REP_NAMES         = '';
     private const DEFAULT_QUOTE_EMAIL_TEAM_SIGNATURE    = '';
@@ -262,6 +264,11 @@ final class Options
         return self::DEFAULT_GUNDEALS_FEED_ENABLED;
     }
 
+    public static function default_gunmade_feed_enabled(): bool
+    {
+        return self::DEFAULT_GUNMADE_FEED_ENABLED;
+    }
+
     public static function default_public_brand_name(): string
     {
         return self::site_name_fallback();
@@ -420,6 +427,10 @@ final class Options
 
         if (get_option(self::OPTION_GUNDEALS_FEED_ENABLED, null) === null) {
             add_option(self::OPTION_GUNDEALS_FEED_ENABLED, self::DEFAULT_GUNDEALS_FEED_ENABLED ? '1' : '0');
+        }
+
+        if (get_option(self::OPTION_GUNMADE_FEED_ENABLED, null) === null) {
+            add_option(self::OPTION_GUNMADE_FEED_ENABLED, self::DEFAULT_GUNMADE_FEED_ENABLED ? '1' : '0');
         }
 
         if (get_option(self::OPTION_PUBLIC_BRAND_NAME, null) === null) {
@@ -1014,6 +1025,14 @@ final class Options
         return ((string) get_option(
             self::OPTION_GUNDEALS_FEED_ENABLED,
             self::DEFAULT_GUNDEALS_FEED_ENABLED ? '1' : '0'
+        )) === '1';
+    }
+
+    public static function get_gunmade_feed_enabled(): bool
+    {
+        return ((string) get_option(
+            self::OPTION_GUNMADE_FEED_ENABLED,
+            self::DEFAULT_GUNMADE_FEED_ENABLED ? '1' : '0'
         )) === '1';
     }
 
