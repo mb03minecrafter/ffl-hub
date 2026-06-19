@@ -158,11 +158,16 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         ]);
 
         if ($job_id <= 0 || $recipient === '' || !is_email($recipient)) {
+            $marked = ($job_id > 0) ? $this->mark_job_email_sent($job_id) : false;
             self::debug_ctx('skip job: invalid recipient/job id', [
                 'job_id' => $job_id,
                 'recipient' => $recipient,
+                'marked_sent' => $marked ? 1 : 0,
             ]);
-            return 'skip_invalid_recipient_or_job_id';
+
+            return $marked
+                ? 'skip_invalid_recipient_or_job_id_marked'
+                : 'skip_invalid_recipient_or_job_id_mark_failed';
         }
 
         if ($this->is_blocked_request_name($request_first_name, $request_last_name)) {
