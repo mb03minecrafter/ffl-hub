@@ -153,6 +153,12 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         ];
 
         try {
+            // Consume one-shot force-flush requests at the start of a real cron pass, even
+            // if the queue is empty. Otherwise a force request made against an empty queue
+            // can linger and accidentally flush the next day's first batch row early.
+            $force_flush = $this->consume_force_flush();
+            $run_stats['force_flush'] = $force_flush ? 1 : 0;
+
             $run_stats['optimizer_preflight'] = $this->maybe_run_global_dealer_batch_optimizer_preflight($run_id);
 
             // Resolve runtime controls once per run for consistent behavior.
@@ -335,6 +341,44 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                 return;
             }
 
+            // The configured dispatch time is the hard gate for all automated aggregate
+            // dealer/relay placement. This intentionally runs before low-stock partitioning:
+            // a batch_pending row can be due in the DB before the dispatch window opens, but
+            // it must not place early unless an operator explicitly requested force flush.
+            $dispatch_block_reason = $force_flush ? '' : $this->current_dispatch_block_reason();
+            $dispatch_due = $force_flush || $this->is_dispatch_window_open();
+            $run_stats['dispatch_due'] = $dispatch_due ? 1 : 0;
+
+            if ($dispatch_block_reason !== '') {
+                $run_stats['dispatch_blocked_rows'] = count($eligible_entries);
+                $this->log_ctx('dispatch_blocked', [
+                    'run_id' => $run_id,
+                    'reason' => $dispatch_block_reason,
+                    'rows' => count($eligible_entries),
+                    'priority_flushed_rows' => 0,
+                    'next_dispatch_utc' => $this->next_dispatch_boundary_utc_mysql(),
+                ]);
+                $run_status = 'dispatch_blocked';
+                return;
+            }
+
+            if (!$dispatch_due) {
+                $this->log_ctx('batch_gate', [
+                    'run_id' => $run_id,
+                    'priority_rows' => 0,
+                    'scheduled_rows' => count($eligible_entries),
+                    'scheduled_ready_rows' => 0,
+                    'deferred_post_window_rows' => 0,
+                    'priority_flushed_rows' => 0,
+                    'force_flush' => 0,
+                    'dispatch_due' => 0,
+                    'reason' => 'before_dispatch_time',
+                    'next_dispatch_utc' => $this->next_dispatch_boundary_utc_mysql(),
+                ]);
+                $run_status = 'holding_until_dispatch';
+                return;
+            }
+
             // Build total demand per UPC across ALL eligible rows in this run.
             $demand_by_upc = $this->build_demand_by_upc($eligible_entries);
             // Resolve current stock once per demanded UPC.
@@ -391,30 +435,6 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                 }
             }
 
-            $dispatch_block_reason = $this->current_dispatch_block_reason();
-            if ($dispatch_block_reason !== '' && !empty($batch_candidates)) {
-                $next_dispatch_utc = $this->next_dispatch_boundary_utc_mysql();
-                $this->defer_candidates_until_next_dispatch_window($batch_candidates, $next_dispatch_utc);
-                $run_stats['dispatch_blocked_rows'] = count($batch_candidates);
-                $run_stats['priority_flushed_rows'] = $priority_flushed_rows;
-                $this->log_ctx('dispatch_blocked', [
-                    'run_id' => $run_id,
-                    'reason' => $dispatch_block_reason,
-                    'rows' => count($batch_candidates),
-                    'priority_flushed_rows' => $priority_flushed_rows,
-                    'next_dispatch_utc' => $next_dispatch_utc,
-                ]);
-                $run_status = $priority_flushed_rows > 0
-                    ? 'priority_flushed_dispatch_blocked'
-                    : 'dispatch_blocked';
-                return;
-            }
-
-            // Force flush is one-shot: consume the flag this run, then evaluate dispatch gate.
-            $force_flush = $this->consume_force_flush();
-            $dispatch_due = $force_flush || $this->is_dispatch_window_open();
-            $run_stats['force_flush'] = $force_flush ? 1 : 0;
-            $run_stats['dispatch_due'] = $dispatch_due ? 1 : 0;
             $run_stats['priority_flushed_rows'] = $priority_flushed_rows;
 
             $scheduled_candidates = $batch_candidates;

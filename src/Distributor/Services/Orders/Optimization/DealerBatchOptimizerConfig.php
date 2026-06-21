@@ -21,6 +21,7 @@ final class DealerBatchOptimizerConfig
     public const DEFAULT_RETRY_DELAY_SECONDS = 300;
     public const DEFAULT_MAX_ROWS_PER_RUN = 200;
 
+    private const FORCE_FLUSH_TTL_SECONDS = 3600;
     private const DEFAULT_FREE_SHIPPING_THRESHOLD = 1000.0;
     private const DEFAULT_PAID_SHIPPING_COST = 1.0;
     private const DEFAULT_PAID_SHIPPING_COST_BY_DISTRIBUTOR = [
@@ -98,7 +99,7 @@ final class DealerBatchOptimizerConfig
 
     public static function force_flush_requested(): bool
     {
-        return self::truthy(get_option(self::dealer_batch_option_name('force_flush'), '0'), false);
+        return self::force_flush_token() !== '';
     }
 
     public static function mark_force_flush_requested(): void
@@ -108,8 +109,8 @@ final class DealerBatchOptimizerConfig
 
     public static function consume_force_flush_for_option_prefix(string $distributor_option_prefix): bool
     {
-        $raw = trim((string) get_option(self::dealer_batch_option_name('force_flush'), '0'));
-        if (!self::truthy($raw, false)) {
+        $raw = self::force_flush_token();
+        if ($raw === '') {
             return false;
         }
 
@@ -156,7 +157,20 @@ final class DealerBatchOptimizerConfig
 
     public static function force_flush_token(): string
     {
-        return trim((string) get_option(self::dealer_batch_option_name('force_flush'), '0'));
+        $token = trim((string) get_option(self::dealer_batch_option_name('force_flush'), '0'));
+        if (!self::truthy($token, false)) {
+            return '';
+        }
+
+        if (is_numeric($token)) {
+            $requested_at = (int) $token;
+            if ($requested_at > 0 && (time() - $requested_at) <= self::FORCE_FLUSH_TTL_SECONDS) {
+                return $token;
+            }
+        }
+
+        update_option(self::dealer_batch_option_name('force_flush'), '0', false);
+        return '';
     }
 
     public static function claim_pre_dispatch_optimizer_token(string $token): bool
