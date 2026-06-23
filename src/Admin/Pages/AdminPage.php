@@ -1892,6 +1892,7 @@ class AdminPage
             'pretty_random_email_quotes_enabled' => Options::get_pretty_random_email_quotes_enabled() ? '1' : '0',
             'gundeals_feed_enabled' => Options::get_gundeals_feed_enabled() ? '1' : '0',
             'gunmade_feed_enabled' => Options::get_gunmade_feed_enabled() ? '1' : '0',
+            'prefer_dropship_best_offers_enabled' => Options::get_prefer_dropship_best_offers_enabled() ? '1' : '0',
             'public_brand_name' => Options::get_public_brand_name(),
             'quote_email_rep_names' => Options::get_quote_email_rep_names_text(),
             'quote_email_team_signature' => Options::get_quote_email_team_signature(),
@@ -1963,6 +1964,7 @@ class AdminPage
         $pretty_random_email_quotes_enabled = ((string) ($settings['pretty_random_email_quotes_enabled'] ?? '1') === '1');
         $gundeals_feed_enabled = ((string) ($settings['gundeals_feed_enabled'] ?? '1') === '1');
         $gunmade_feed_enabled = ((string) ($settings['gunmade_feed_enabled'] ?? '1') === '1');
+        $prefer_dropship_best_offers_enabled = ((string) ($settings['prefer_dropship_best_offers_enabled'] ?? '1') === '1');
         $public_brand_name = (string) ($settings['public_brand_name'] ?? Options::default_public_brand_name());
         $quote_email_rep_names = (string) ($settings['quote_email_rep_names'] ?? Options::default_quote_email_rep_names());
         $quote_email_team_signature = (string) ($settings['quote_email_team_signature'] ?? Options::default_quote_email_team_signature());
@@ -2262,6 +2264,27 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'Enabled: generate the normal Gunmade product feed. Disabled: generate a valid empty feed with zero products.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_prefer_dropship_best_offers_enabled"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Prefer dropship best offers', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_prefer_dropship_best_offers_enabled" value="0" />
+                    <input
+                        id="fflhub_prefer_dropship_best_offers_enabled"
+                        name="fflhub_prefer_dropship_best_offers_enabled"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($prefer_dropship_best_offers_enabled); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'Enabled: best-offer selection prefers in-stock dropship offers before comparing landed cost. Disabled: best-offer selection ignores dropship preference and falls back to stock status, then landed cost.',
                             'ffl-hub'
                         ); ?>
                     </p>

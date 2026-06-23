@@ -5,6 +5,7 @@ namespace FFLHub\Distributor\Services\OfferSync;
 
 use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Product\State\ProductStateStore;
+use FFLHub\Settings\Options;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -44,6 +45,7 @@ final class ProductBestOfferSelectionService
         $result['clear_flags_elapsed_ms'] = '0.00';
         $result['missing_product_state_upcs'] = 0;
         $result['msrp_rows'] = 0;
+        $result['prefer_dropship_best_offers'] = Options::get_prefer_dropship_best_offers_enabled() ? 1 : 0;
         $result['errors'] = [];
 
         if (!$wpdb) {
@@ -200,6 +202,19 @@ final class ProductBestOfferSelectionService
             OR NOT ({$best_offers_table}.selection_status <=> VALUES(selection_status))
         ";
 
+        $prefer_dropship = Options::get_prefer_dropship_best_offers_enabled();
+        $better_cost_condition = $prefer_dropship
+            ? "
+                            better.dropship_enabled > o.dropship_enabled
+                            OR (
+                                better.dropship_enabled = o.dropship_enabled
+                                AND better.landed_cost < o.landed_cost
+                            )
+            "
+            : "
+                            better.landed_cost < o.landed_cost
+            ";
+
         $t_upsert = microtime(true);
         $upserted = $wpdb->query("
             INSERT INTO {$best_offers_table} (
@@ -305,11 +320,7 @@ final class ProductBestOfferSelectionService
                         AND o.stock_status = 'instock'
                         AND o.qty > 0
                         AND (
-                            better.dropship_enabled > o.dropship_enabled
-                            OR (
-                                better.dropship_enabled = o.dropship_enabled
-                                AND better.landed_cost < o.landed_cost
-                            )
+{$better_cost_condition}
                         )
                     )
                     OR (
@@ -322,11 +333,7 @@ final class ProductBestOfferSelectionService
                             AND o.qty > 0
                         )
                         AND (
-                            better.dropship_enabled > o.dropship_enabled
-                            OR (
-                                better.dropship_enabled = o.dropship_enabled
-                                AND better.landed_cost < o.landed_cost
-                            )
+{$better_cost_condition}
                         )
                     )
                )
