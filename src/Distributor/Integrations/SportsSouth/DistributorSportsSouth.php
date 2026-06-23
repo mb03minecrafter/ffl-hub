@@ -118,13 +118,6 @@ final class DistributorSportsSouth extends DistributorBase
             return null;
         }
 
-        if (strtolower(trim((string) ($request->lane ?? ''))) === 'direct_ship_ffl') {
-            return DistributorOrderValidationResult::block(
-                'Sports South direct firearm fulfillment is not enabled; route FFL items through dealer-fulfilled batch ordering.',
-                ['SPORTS_SOUTH_DIRECT_FFL_NOT_ENABLED']
-            );
-        }
-
         return $this->require_ffl_shipto_if_ffl_lines($request, 'SPORTS_SOUTH');
     }
 
@@ -406,25 +399,7 @@ final class DistributorSportsSouth extends DistributorBase
             'external_ids_before' => $external_ids,
         ]);
 
-        if ($lane === 'direct_ship_ffl') {
-            $result = DistributorOrderResult::block_fatal(
-                'Sports South direct firearm fulfillment is not enabled; use dealer-fulfilled Sports South batch ordering.',
-                [DistributorOrderResult::REASON_FATAL_NOT_IMPLEMENTED],
-                [],
-                0,
-                '',
-                $external_ids
-            );
-            $this->profile('Sports South lane placement blocked', $t0, [
-                'trace_id' => $trace_id,
-                'lane' => $lane,
-                'result' => self::summarize_order_result($result),
-            ]);
-
-            return $result;
-        }
-
-        if ($lane !== 'dealer_fulfilled' && $lane !== 'direct_ship_non_ffl') {
+        if ($lane !== 'dealer_fulfilled' && $lane !== 'direct_ship_non_ffl' && $lane !== 'direct_ship_ffl') {
             $result = DistributorOrderResult::block_fatal(
                 'Sports South: unsupported lane "' . $lane . '".',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
@@ -600,6 +575,11 @@ final class DistributorSportsSouth extends DistributorBase
             return $failure;
         }
 
+        $ffl_notice_sent = false;
+        if ($lane === 'direct_ship_ffl') {
+            $ffl_notice_sent = $this->send_ffl_email_notice($request, $po, $ssOrderNumber, $details);
+        }
+
         $result = DistributorOrderResult::ok(
             'Sports South ' . $this->lane_label($lane) . ' order submitted.',
             $external_ids,
@@ -607,6 +587,7 @@ final class DistributorSportsSouth extends DistributorBase
                 'po' => $po,
                 'sports_south_order_number' => $ssOrderNumber,
                 'item_count' => count($details),
+                'ffl_notice_sent' => $ffl_notice_sent ? 1 : 0,
             ]
         );
         $this->profile('Sports South lane placement complete', $t0, [
@@ -759,14 +740,21 @@ final class DistributorSportsSouth extends DistributorBase
             ]);
         }
 
-        if (!($request->ship_to_customer instanceof DistributorShipTo)) {
+        $ship_to = $request->ship_to_customer;
+        if ($lane === 'direct_ship_ffl') {
+            $ship_to = $request->ship_to_ffl;
+        }
+
+        if (!($ship_to instanceof DistributorShipTo)) {
             return DistributorOrderResult::block_fatal(
-                'Sports South fulfillment: missing ship_to_customer.',
+                $lane === 'direct_ship_ffl'
+                    ? 'Sports South FFL fulfillment: missing ship_to_ffl.'
+                    : 'Sports South fulfillment: missing ship_to_customer.',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
             );
         }
 
-        $shipCheck = self::validate_shipto_minimum($request->ship_to_customer);
+        $shipCheck = self::validate_shipto_minimum($ship_to);
         if (empty($shipCheck['ok'])) {
             return DistributorOrderResult::block_fatal(
                 'Sports South fulfillment: ' . (string) ($shipCheck['message'] ?? 'Invalid ship-to.'),
@@ -775,14 +763,195 @@ final class DistributorSportsSouth extends DistributorBase
             );
         }
 
-        if (self::extract_digits($request->ship_to_customer->phone) === '') {
+        if (self::extract_digits($ship_to->phone) === '') {
             return DistributorOrderResult::block_fatal(
                 'Sports South fulfillment: ship-to phone is required.',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
             );
         }
 
-        return array_merge($header, $this->build_ship_to_header_params($request->ship_to_customer));
+        return array_merge($header, $this->build_ship_to_header_params($ship_to));
+    }
+
+    /**
+     * Sports South accepts the FFL order through the regular order endpoint,
+     * but still requires the FFL paperwork/info to be emailed manually.
+     *
+     * @param array<int,array<string,string>> $details
+     */
+    private function send_ffl_email_notice(
+        DistributorOrderRequest $request,
+        string $po,
+        string $sportsSouthOrderNumber,
+        array $details
+    ): bool {
+        if (!function_exists('wp_mail')) {
+            $this->log('Sports South FFL notice email skipped: wp_mail unavailable.', [
+                'po' => $po,
+                'sports_south_order_number' => $sportsSouthOrderNumber,
+            ]);
+            return false;
+        }
+
+        $recipient_candidates = preg_split('/[,;\s]+/', Options::get_batch_order_notification_email()) ?: [];
+
+        /** @var mixed $filtered */
+        $filtered = apply_filters(
+            'fflhub_sports_south_ffl_notice_recipients',
+            $recipient_candidates,
+            $request,
+            $po,
+            $sportsSouthOrderNumber
+        );
+
+        $recipient_candidates = [];
+        if (is_string($filtered)) {
+            $recipient_candidates = preg_split('/[,;\s]+/', $filtered) ?: [];
+        } elseif (is_array($filtered)) {
+            $recipient_candidates = $filtered;
+        }
+
+        $recipients = [];
+        foreach ($recipient_candidates as $candidate) {
+            $email = sanitize_email((string) $candidate);
+            if ($email !== '' && is_email($email)) {
+                $recipients[$email] = true;
+            }
+        }
+
+        if (empty($recipients)) {
+            $this->log('Sports South FFL notice email skipped: no recipients.', [
+                'po' => $po,
+                'sports_south_order_number' => $sportsSouthOrderNumber,
+            ]);
+            return false;
+        }
+
+        $subject = sprintf(
+            '[FFL Hub] Sports South FFL info required - PO %s',
+            $po !== '' ? $po : $sportsSouthOrderNumber
+        );
+
+        $body = $this->build_ffl_email_notice_body($request, $po, $sportsSouthOrderNumber, $details);
+
+        /** @var mixed $subject_filtered */
+        $subject_filtered = apply_filters(
+            'fflhub_sports_south_ffl_notice_subject',
+            $subject,
+            $request,
+            $po,
+            $sportsSouthOrderNumber
+        );
+        if (is_string($subject_filtered) && trim($subject_filtered) !== '') {
+            $subject = trim($subject_filtered);
+        }
+
+        /** @var mixed $body_filtered */
+        $body_filtered = apply_filters(
+            'fflhub_sports_south_ffl_notice_body',
+            $body,
+            $request,
+            $po,
+            $sportsSouthOrderNumber,
+            $details
+        );
+        if (is_string($body_filtered) && trim($body_filtered) !== '') {
+            $body = $body_filtered;
+        }
+
+        $sent = wp_mail(array_keys($recipients), $subject, $body, ['Content-Type: text/plain; charset=UTF-8']);
+        $this->log($sent ? 'Sports South FFL notice email sent.' : 'Sports South FFL notice email failed.', [
+            'po' => $po,
+            'sports_south_order_number' => $sportsSouthOrderNumber,
+            'recipient_count' => count($recipients),
+        ]);
+
+        return (bool) $sent;
+    }
+
+    /**
+     * @param array<int,array<string,string>> $details
+     */
+    private function build_ffl_email_notice_body(
+        DistributorOrderRequest $request,
+        string $po,
+        string $sportsSouthOrderNumber,
+        array $details
+    ): string {
+        $ffl = $request->ship_to_ffl;
+        $customer = $request->ship_to_customer;
+
+        $lines = [
+            'Sports South FFL dropship order submitted.',
+            '',
+            'Action required: Sports South requires the receiving FFL info/documentation to be emailed to them manually.',
+            '',
+            'Merchant PO: ' . ($po !== '' ? $po : '-'),
+            'Sports South Order Number: ' . ($sportsSouthOrderNumber !== '' ? $sportsSouthOrderNumber : '-'),
+            'Receiving FFL Number: ' . ($request->receiving_ffl_number !== '' ? $request->receiving_ffl_number : '-'),
+            '',
+            'Receiving FFL:',
+        ];
+
+        if ($ffl instanceof DistributorShipTo) {
+            $lines = array_merge($lines, $this->format_ship_to_notice_lines($ffl));
+        } else {
+            $lines[] = '  -';
+        }
+
+        $lines[] = '';
+        $lines[] = 'Customer:';
+        $lines = array_merge($lines, $this->format_ship_to_notice_lines($customer));
+
+        $lines[] = '';
+        $lines[] = 'Items:';
+        foreach ($details as $detail) {
+            $item = trim((string) ($detail['SSItemNumber'] ?? ''));
+            $qty = trim((string) ($detail['Quantity'] ?? ''));
+            $upc = trim((string) ($detail['CustomerItemNumber'] ?? ''));
+            $desc = trim((string) ($detail['CustomerItemDescription'] ?? ''));
+
+            $lines[] = sprintf(
+                '  - SSItemNumber: %s | Qty: %s | UPC: %s | %s',
+                $item !== '' ? $item : '-',
+                $qty !== '' ? $qty : '-',
+                $upc !== '' ? $upc : '-',
+                $desc !== '' ? $desc : '-'
+            );
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function format_ship_to_notice_lines(DistributorShipTo $ship): array
+    {
+        $name = trim((string) $ship->name);
+        $company = trim((string) $ship->company);
+        $address2 = trim((string) $ship->address2);
+
+        $lines = [
+            '  Name: ' . ($name !== '' ? $name : '-'),
+            '  Company: ' . ($company !== '' ? $company : '-'),
+            '  Address 1: ' . (trim((string) $ship->address1) !== '' ? trim((string) $ship->address1) : '-'),
+        ];
+
+        if ($address2 !== '') {
+            $lines[] = '  Address 2: ' . $address2;
+        }
+
+        $lines[] = '  City/State/ZIP: ' . trim(sprintf(
+            '%s, %s %s',
+            trim((string) $ship->city) !== '' ? trim((string) $ship->city) : '-',
+            trim((string) $ship->state) !== '' ? trim((string) $ship->state) : '-',
+            trim((string) $ship->zip) !== '' ? trim((string) $ship->zip) : '-'
+        ));
+        $lines[] = '  Phone: ' . (trim((string) $ship->phone) !== '' ? trim((string) $ship->phone) : '-');
+        $lines[] = '  Email: ' . (trim((string) $ship->email) !== '' ? trim((string) $ship->email) : '-');
+
+        return $lines;
     }
 
     /**
@@ -933,6 +1102,9 @@ final class DistributorSportsSouth extends DistributorBase
         }
         if ($lane === 'direct_ship_non_ffl') {
             return 'customer fulfillment';
+        }
+        if ($lane === 'direct_ship_ffl') {
+            return 'FFL fulfillment';
         }
 
         return 'order';
