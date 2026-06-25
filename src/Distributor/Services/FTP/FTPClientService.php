@@ -16,6 +16,7 @@ if (!defined('ABSPATH')) {
  *  - get_remote_mtime() (MDTM)
  *  - get_remote_size() (SIZE)
  *  - download_file()
+ *  - upload_file()
  *  - download_zip_file() (ZipArchive only)
  */
 class FTPClientService
@@ -213,6 +214,17 @@ class FTPClientService
         return $this->download_file_internal($remote_path, $local_path);
     }
 
+    public function upload_file(string $local_path, string $remote_path, bool $use_temp_file = true): bool
+    {
+        if (!$this->is_connected()) {
+            $this->set_error('upload_file() called but FTP connection is not available.');
+            $this->log_debug($this->log_prefix . ' upload_file() called but FTP connection is not available.');
+            return false;
+        }
+
+        return $this->upload_file_internal($local_path, $remote_path, $use_temp_file);
+    }
+
     public function download_zip_file(
         string $remote_path,
         string $local_zip_path,
@@ -301,6 +313,79 @@ class FTPClientService
             $this->log_debug($this->log_prefix . ' failed to rename tmp file to ' . $local_path);
             return false;
         }
+
+        return true;
+    }
+
+    private function upload_file_internal(string $local_path, string $remote_path, bool $use_temp_file): bool
+    {
+        $local_path = trim($local_path);
+        $remote_path = trim($remote_path);
+
+        if ($local_path === '' || $remote_path === '') {
+            $this->set_error('upload_file() requires a local path and remote path.');
+            $this->log_debug($this->log_prefix . ' upload_file() missing local or remote path.');
+            return false;
+        }
+
+        if (!is_file($local_path) || !is_readable($local_path)) {
+            $this->set_error('Local upload file is missing or unreadable: ' . $local_path);
+            $this->log_debug($this->log_prefix . ' local upload file missing or unreadable: ' . $local_path);
+            return false;
+        }
+
+        $target_path = $use_temp_file ? $remote_path . '.tmp' : $remote_path;
+        $start = microtime(true);
+
+        /** @var \FTP\Connection|resource $connection */
+        $connection = $this->conn;
+
+        $success = @ftp_put($connection, $target_path, $local_path, FTP_BINARY);
+        $elapsed = microtime(true) - $start;
+
+        if (!$success) {
+            $this->set_error(sprintf('ftp_put failed for remote %s', $target_path));
+            $this->log_debug(
+                sprintf(
+                    '%s ftp_put failed for local %s -> remote %s (host %s, user %s)',
+                    $this->log_prefix,
+                    $local_path,
+                    $target_path,
+                    $this->host,
+                    $this->username
+                )
+            );
+            return false;
+        }
+
+        if ($use_temp_file && !@ftp_rename($connection, $target_path, $remote_path)) {
+            @ftp_delete($connection, $target_path);
+            $this->set_error(sprintf('ftp_rename failed for remote %s -> %s', $target_path, $remote_path));
+            $this->log_debug(
+                sprintf(
+                    '%s ftp_rename failed for uploaded temp file %s -> %s',
+                    $this->log_prefix,
+                    $target_path,
+                    $remote_path
+                )
+            );
+            return false;
+        }
+
+        $size_bytes = (int) filesize($local_path);
+        $size_mb = $size_bytes / 1048576;
+        $mbps = $size_mb / max($elapsed, 0.000001);
+
+        $this->log_debug(
+            sprintf(
+                '%s uploaded %.2f MB in %.2f s (%.2f MB/s) to %s',
+                $this->log_prefix,
+                $size_mb,
+                $elapsed,
+                $mbps,
+                $remote_path
+            )
+        );
 
         return true;
     }
