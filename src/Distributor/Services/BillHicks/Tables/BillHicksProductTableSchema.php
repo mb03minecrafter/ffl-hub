@@ -50,6 +50,7 @@ final class BillHicksProductTableSchema implements ProductSchemaInterface
             'product_name' => 'VARCHAR(255) NULL',
             'product_description' => 'TEXT NULL',
             'manufacturer' => 'VARCHAR(255) NULL',
+            'manufacturer_norm' => 'VARCHAR(191) NOT NULL DEFAULT \'\'',
             'model' => 'VARCHAR(255) NULL',
             'caliber_gauge' => 'VARCHAR(64) NULL',
             'item_type' => 'VARCHAR(128) NULL',
@@ -63,7 +64,7 @@ final class BillHicksProductTableSchema implements ProductSchemaInterface
             'shipping_height' => 'DECIMAL(10,2) NULL',
             'ffl_required' => 'TINYINT(1) NOT NULL DEFAULT 0',
             'sot_required' => 'TINYINT(1) NOT NULL DEFAULT 0',
-            'dropship_enabled' => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'dropship_enabled' => 'TINYINT(1) NOT NULL DEFAULT 1',
             'dropship_block_reason' => 'VARCHAR(255) NULL',
 
             // Feed metadata
@@ -79,11 +80,13 @@ final class BillHicksProductTableSchema implements ProductSchemaInterface
             'PRIMARY KEY (upc)',
             'KEY bill_hicks_item_number (bill_hicks_item_number)',
             'KEY manufacturer (manufacturer)',
+            'KEY manufacturer_norm (manufacturer_norm)',
             'KEY manufacturer_number (manufacturer_number)',
             'KEY item_type (item_type)',
             'KEY category (category)',
             'KEY ffl_required (ffl_required)',
             'KEY sot_required (sot_required)',
+            'KEY dropship_enabled (dropship_enabled)',
         ];
     }
 

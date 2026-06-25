@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
+use FFLHub\Distributor\Services\BillHicks\BillHicksFulfillmentPolicy;
 use FFLHub\Distributor\Services\BillHicks\BillHicksServices;
 use FFLHub\Distributor\Services\BillHicks\Cron\BillHicksInventoryCronService;
 use FFLHub\Distributor\Services\BillHicks\Cron\BillHicksProductCronService;
@@ -93,18 +94,18 @@ final class BillHicksModule implements DistributorModuleInterface
             'product_feed_remote_path' => [
                 'label'       => 'Product Feed Remote Path',
                 'type'        => 'text',
-                'placeholder' => '/path/to/product-feed.csv',
+                'placeholder' => '/DeerfordDefense/Feeds/BHC_Catalog.csv',
                 'description' => 'Remote path for the full Bill Hicks catalog/product feed.',
-                'default'     => '',
+                'default'     => '/DeerfordDefense/Feeds/BHC_Catalog.csv',
             ],
             'inventory_feed_remote_path' => [
                 'label'       => 'Inventory Feed Remote Path',
                 'type'        => 'text',
-                'placeholder' => '/path/to/inventory-feed.csv',
+                'placeholder' => '/DeerfordDefense/Feeds/BHC_inventory.csv',
                 'description' => 'Remote path for the Bill Hicks inventory/pricing feed.',
-                'default'     => '',
+                'default'     => '/DeerfordDefense/Feeds/BHC_inventory.csv',
             ],
-        ];
+        ] + BillHicksFulfillmentPolicy::settings_schema_fields();
     }
 
     public function build_distributor(): DistributorBase
