@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorOrderResult;
+use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
@@ -22,6 +23,43 @@ use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
  */
 final class DistributorBillHicks extends DistributorBase
 {
+    protected function supports_remote_validation(): bool
+    {
+        return false;
+    }
+
+    /**
+     * @param array<string,int> $required_by_upc
+     * @return array<string,mixed>
+     */
+    protected function validation_local_options(
+        DistributorOrderRequest $request,
+        array $required_by_upc,
+        bool $local_only
+    ): array {
+        $lane = $this->infer_lane_and_ffl_enforcement($request);
+
+        return [
+            'label' => 'Bill Hicks validation (local)',
+            'max_unique' => 100,
+            'inventory_keys' => ['inventory_quantity'],
+            'unknown_qty_blocks' => true,
+            'code_prefix' => 'BILL_HICKS',
+            'lane' => $lane['lane'],
+            'enforce_ffl_required' => $lane['enforce_ffl_required'],
+            'ffl_required_row_keys' => ['ffl_required'],
+        ];
+    }
+
+    protected function validation_precheck_invariants(DistributorOrderRequest $request, bool $local_only): ?DistributorOrderValidationResult
+    {
+        if (strtolower(trim((string) ($request->lane ?? ''))) === 'dealer_fulfilled') {
+            return null;
+        }
+
+        return $this->require_ffl_shipto_if_ffl_lines($request, 'BILL_HICKS');
+    }
+
     public function get_product_by_upc(string $upc): ?DistributorProductPayload
     {
         return $this->build_payload_from_local_row($upc, true);
