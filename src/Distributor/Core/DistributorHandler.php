@@ -9,6 +9,7 @@ if (!defined('ABSPATH')) {
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
+use FFLHub\Distributor\Services\OfferSync\DistributorOfferDisableService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
@@ -223,20 +224,31 @@ class DistributorHandler
 
         // Retrieve distributor instance.
         $dist = $this->distributors[$id] ?? null;
-        if (!$dist) {
-            return;
+        if ($dist) {
+            $services = $dist->get_services();
+            if ($services) {
+                // Hard start/stop cron + runtime services for this distributor.
+                if ($enabled) {
+                    $services->on_activate();
+                } else {
+                    $services->on_deactivate();
+                }
+            }
         }
 
-        $services = $dist->get_services();
-        if (!$services) {
-            return;
-        }
-
-        // Hard start/stop cron + runtime services for this distributor.
-        if ($enabled) {
-            $services->on_activate();
-        } else {
-            $services->on_deactivate();
+        if (!$enabled) {
+            $result = DistributorOfferDisableService::disable_distributor($id);
+            DebugLogUtil::log_ctx(
+                'FFLHUB_CRON_DEBUG',
+                '[FFLHub][DistributorHandler]',
+                'Disabled distributor normalized offers.',
+                [
+                    'distributor_id' => $id,
+                    'offers_disabled' => (int) ($result['offers_disabled'] ?? 0),
+                    'ok' => !empty($result['ok']) ? 1 : 0,
+                    'errors' => !empty($result['errors']) ? (array) $result['errors'] : [],
+                ]
+            );
         }
     }
 
