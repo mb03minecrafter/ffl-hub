@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
+use FFLHub\Distributor\Integrations\BillHicks\BillHicksModule;
 use FFLHub\Distributor\Integrations\CSSI\CSSIModule;
 use FFLHub\Distributor\Integrations\Davidsons\DavidsonsModule;
 use FFLHub\Distributor\Integrations\Kinseys\KinseysModule;
@@ -47,7 +48,8 @@ final class DistributorRegistry
             new SportsSouthModule(),
             new MGEModule(),
             new CSSIModule(),
-            new DavidsonsModule()
+            new DavidsonsModule(),
+            new BillHicksModule(),
         ];
     }
 
