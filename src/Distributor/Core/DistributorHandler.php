@@ -10,6 +10,7 @@ use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\UpcLookupResult;
 use FFLHub\Distributor\Services\OfferSync\DistributorOfferDisableService;
+use FFLHub\Distributor\Services\OfferSync\DistributorOfferEnableService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
@@ -236,7 +237,28 @@ class DistributorHandler
             }
         }
 
-        if (!$enabled) {
+        if ($enabled) {
+            $result = DistributorOfferEnableService::enable_distributor($id);
+            DebugLogUtil::log_ctx(
+                'FFLHUB_CRON_DEBUG',
+                '[FFLHub][DistributorHandler]',
+                'Enabled distributor normalized offers.',
+                [
+                    'distributor_id' => $id,
+                    'ok' => !empty($result['ok']) ? 1 : 0,
+                    'supported' => !empty($result['supported']) ? 1 : 0,
+                    'skipped' => !empty($result['skipped']) ? 1 : 0,
+                    'skip_reason' => (string) ($result['skip_reason'] ?? ''),
+                    'source_live_table' => (string) ($result['source_live_table'] ?? ''),
+                    'live_rows_present' => !empty($result['live_rows_present']) ? 1 : 0,
+                    'inserted_missing_offers' => (int) ($result['normalizer_result']['inserted_missing_offers'] ?? 0),
+                    'updated_changed_offers' => (int) ($result['normalizer_result']['updated_changed_offers'] ?? 0),
+                    'stale_disabled' => (int) ($result['normalizer_result']['stale_disabled'] ?? 0),
+                    'elapsed_ms' => (string) ($result['elapsed_ms'] ?? '0.00'),
+                    'errors' => !empty($result['errors']) ? (array) $result['errors'] : [],
+                ]
+            );
+        } else {
             $result = DistributorOfferDisableService::disable_distributor($id);
             DebugLogUtil::log_ctx(
                 'FFLHUB_CRON_DEBUG',
