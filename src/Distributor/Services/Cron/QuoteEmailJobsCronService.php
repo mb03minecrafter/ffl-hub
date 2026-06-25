@@ -28,6 +28,9 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     private const DEBUG_CONST = 'FFLHUB_DEBUG_QUOTE_EMAIL_CRON';
     private const LOG_PREFIX = '[FFLHub][QuoteEmailCron]';
     private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;
+    private const BLOCKED_QUOTE_EMAILS = [
+        'richard.smith9299@yahoo.com',
+    ];
 
     private QuoteEmailJobsTable $jobs_table;
 
@@ -168,6 +171,30 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return $marked
                 ? 'skip_invalid_recipient_or_job_id_marked'
                 : 'skip_invalid_recipient_or_job_id_mark_failed';
+        }
+
+        if ($this->is_blocked_request_email($recipient)) {
+            $warning_sent = $this->send_quote_processing_block_warning_email(
+                $job_row,
+                $recipient,
+                'blocked_email_prohibited'
+            );
+            $marked = $this->mark_job_email_sent($job_id);
+
+            self::debug_ctx('blocked job: request email disallowed', [
+                'job_id' => $job_id,
+                'recipient' => $recipient,
+                'warning_sent' => $warning_sent ? 1 : 0,
+                'marked_sent' => $marked ? 1 : 0,
+            ]);
+
+            if (!$marked) {
+                return 'blocked_email_mark_failed';
+            }
+
+            return $warning_sent
+                ? 'blocked_email'
+                : 'blocked_email_warning_failed';
         }
 
         if ($this->is_blocked_request_name($request_first_name, $request_last_name)) {
@@ -1167,6 +1194,23 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         $first = strtolower(trim($first_name));
         $last = strtolower(trim($last_name));
         return ($first === 'dennis' && $last === 'joe');
+    }
+
+    private function is_blocked_request_email(string $email): bool
+    {
+        $email = strtolower(trim(sanitize_email($email)));
+        if ($email === '') {
+            return false;
+        }
+
+        $blocked_emails = (array) apply_filters('fflhub_blocked_quote_emails', self::BLOCKED_QUOTE_EMAILS);
+        foreach ($blocked_emails as $blocked_email) {
+            if ($email === strtolower(trim(sanitize_email((string) $blocked_email)))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static function debug(string $message): void

@@ -17,6 +17,9 @@ class MapPriceVisibility
     private const MAP_POLICY_NONE = 'none';
     private const EMAIL_FOR_QUOTE_FORM_ACTION = 'fflhub_email_for_quote_submit';
     private const QUOTE_SUBMISSION_DEDUPE_TTL_SECONDS = 180;
+    private const BLOCKED_QUOTE_EMAILS = [
+        'richard.smith9299@yahoo.com',
+    ];
 
     public static function init(): void
     {
@@ -365,6 +368,19 @@ class MapPriceVisibility
         if (self::is_blocked_quote_name($first_name, $last_name)) {
             self::send_quote_block_warning_email(
                 'blocked_name_dennis_joe',
+                [
+                    'first_name' => $first_name,
+                    'last_name' => $last_name,
+                    'email' => $email,
+                    'product_id' => (int) $product->get_id(),
+                    'product_name' => (string) $product->get_name(),
+                ]
+            );
+            self::redirect_with_quote_status($redirect_url, 'invalid_request');
+        }
+        if (self::is_blocked_quote_email($email)) {
+            self::send_quote_block_warning_email(
+                'blocked_email_prohibited',
                 [
                     'first_name' => $first_name,
                     'last_name' => $last_name,
@@ -1136,6 +1152,23 @@ class MapPriceVisibility
         $first = strtolower(trim(sanitize_text_field($first_name)));
         $last = strtolower(trim(sanitize_text_field($last_name)));
         return ($first === 'dennis' && $last === 'joe');
+    }
+
+    private static function is_blocked_quote_email(string $email): bool
+    {
+        $email = strtolower(trim(sanitize_email($email)));
+        if ($email === '') {
+            return false;
+        }
+
+        $blocked_emails = (array) apply_filters('fflhub_blocked_quote_emails', self::BLOCKED_QUOTE_EMAILS);
+        foreach ($blocked_emails as $blocked_email) {
+            if ($email === strtolower(trim(sanitize_email((string) $blocked_email)))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
