@@ -21,6 +21,7 @@ final class CheckoutActivityPage
     private const DEFAULT_HOURS = 6;
     private const MAX_HOURS = 168;
     private const MAX_SESSIONS = 500;
+    private const DISPLAY_TIMEZONE = 'America/Chicago';
 
     public function register(): void
     {
@@ -182,6 +183,7 @@ final class CheckoutActivityPage
             'coupons' => $this->session_list($data, 'applied_coupons'),
             'chosen_shipping_methods' => $this->session_list($data, 'chosen_shipping_methods'),
             'ffl_number' => isset($data['fflhub_receiving_ffl_number']) ? (string) $data['fflhub_receiving_ffl_number'] : '',
+            'notices' => $this->session_notices($data),
         ];
     }
 
@@ -242,6 +244,50 @@ final class CheckoutActivityPage
 
         $value = trim((string) $value);
         return $value === '' ? [] : [$value];
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     * @return array<int,array{type:string,message:string}>
+     */
+    private function session_notices(array $data): array
+    {
+        if (!isset($data['wc_notices'])) {
+            return [];
+        }
+
+        $raw_notices = maybe_unserialize($data['wc_notices']);
+        if (!is_array($raw_notices)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($raw_notices as $type => $notices) {
+            $type = sanitize_key((string) $type);
+            $type = $type !== '' ? $type : 'notice';
+            $notices = is_array($notices) ? $notices : [$notices];
+
+            foreach ($notices as $notice) {
+                $message = '';
+                if (is_array($notice)) {
+                    $message = isset($notice['notice']) ? (string) $notice['notice'] : '';
+                } elseif (is_scalar($notice)) {
+                    $message = (string) $notice;
+                }
+
+                $message = trim(wp_strip_all_tags($message));
+                if ($message === '') {
+                    continue;
+                }
+
+                $out[] = [
+                    'type' => $type,
+                    'message' => $message,
+                ];
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -337,12 +383,20 @@ final class CheckoutActivityPage
         $items = 0;
         $with_email = 0;
         $with_ffl = 0;
+        $with_errors = 0;
 
         foreach ($rows as $row) {
             $total_value += (float) $row['cart_total'];
             $items += (int) $row['item_count'];
             $with_email += (string) $row['email'] !== '' ? 1 : 0;
             $with_ffl += (string) $row['ffl_number'] !== '' ? 1 : 0;
+            $notices = isset($row['notices']) && is_array($row['notices']) ? $row['notices'] : [];
+            foreach ($notices as $notice) {
+                if (is_array($notice) && (string) ($notice['type'] ?? '') === 'error') {
+                    $with_errors++;
+                    break;
+                }
+            }
         }
 
         return [
@@ -351,6 +405,7 @@ final class CheckoutActivityPage
             'total_value' => $total_value,
             'with_email' => $with_email,
             'with_ffl' => $with_ffl,
+            'with_errors' => $with_errors,
         ];
     }
 
@@ -384,6 +439,7 @@ final class CheckoutActivityPage
             <div><strong><?php echo esc_html((string) $stats['items']); ?></strong><span><?php esc_html_e('items in carts', 'ffl-hub'); ?></span></div>
             <div><strong><?php echo esc_html((string) $stats['with_email']); ?></strong><span><?php esc_html_e('with email', 'ffl-hub'); ?></span></div>
             <div><strong><?php echo esc_html((string) $stats['with_ffl']); ?></strong><span><?php esc_html_e('with selected FFL', 'ffl-hub'); ?></span></div>
+            <div><strong><?php echo esc_html((string) $stats['with_errors']); ?></strong><span><?php esc_html_e('with checkout errors', 'ffl-hub'); ?></span></div>
         </div>
         <?php
     }
@@ -414,9 +470,9 @@ final class CheckoutActivityPage
                 <?php foreach ($rows as $row) : ?>
                     <tr>
                         <td>
-                            <strong><?php echo esc_html(wp_date('M j, g:i a', (int) $row['last_activity'])); ?></strong>
+                            <strong><?php echo esc_html($this->format_local_time((int) $row['last_activity'])); ?></strong>
                             <br />
-                            <span class="description"><?php echo esc_html(sprintf(__('expires %s', 'ffl-hub'), wp_date('M j, g:i a', (int) $row['expires_at']))); ?></span>
+                            <span class="description"><?php echo esc_html(sprintf(__('expires %s', 'ffl-hub'), $this->format_local_time((int) $row['expires_at']))); ?></span>
                         </td>
                         <td>
                             <strong><?php echo esc_html((string) $row['customer_label']); ?></strong>
@@ -485,6 +541,23 @@ final class CheckoutActivityPage
      */
     private function render_signals(array $row): void
     {
+        $has_output = false;
+        $notices = isset($row['notices']) && is_array($row['notices']) ? $row['notices'] : [];
+        foreach ($notices as $notice) {
+            if (!is_array($notice)) {
+                continue;
+            }
+            $type = sanitize_html_class((string) ($notice['type'] ?? 'notice'));
+            $message = trim((string) ($notice['message'] ?? ''));
+            if ($message === '') {
+                continue;
+            }
+
+            $label = $type === 'error' ? __('Error: ', 'ffl-hub') : __('Notice: ', 'ffl-hub');
+            echo '<div class="fflhub-checkout-notice fflhub-checkout-notice-' . esc_attr($type) . '">' . esc_html($label . $message) . '</div>';
+            $has_output = true;
+        }
+
         $signals = [];
         if (!empty($row['coupons'])) {
             $signals[] = __('Coupons: ', 'ffl-hub') . implode(', ', (array) $row['coupons']);
@@ -496,7 +569,7 @@ final class CheckoutActivityPage
             $signals[] = __('FFL: ', 'ffl-hub') . (string) $row['ffl_number'];
         }
 
-        if (empty($signals)) {
+        if (empty($signals) && !$has_output) {
             echo '<span class="description">' . esc_html__('Cart only', 'ffl-hub') . '</span>';
             return;
         }
@@ -517,6 +590,22 @@ final class CheckoutActivityPage
         }
 
         return substr($session_key, 0, 8) . '...' . substr($session_key, -5);
+    }
+
+    private function format_local_time(int $timestamp): string
+    {
+        return wp_date('M j, g:i a T', $timestamp, $this->display_timezone());
+    }
+
+    private function display_timezone(): \DateTimeZone
+    {
+        static $timezone = null;
+
+        if (!$timezone instanceof \DateTimeZone) {
+            $timezone = new \DateTimeZone(self::DISPLAY_TIMEZONE);
+        }
+
+        return $timezone;
     }
 
     private function inline_css(): string
@@ -558,6 +647,16 @@ final class CheckoutActivityPage
                 margin-top: 10px;
                 padding-top: 10px;
                 border-top: 1px solid #f0f0f1;
+            }
+            .fflhub-checkout-notice {
+                border-left: 3px solid #72aee6;
+                margin: 0 0 6px;
+                padding-left: 7px;
+            }
+            .fflhub-checkout-notice-error {
+                border-left-color: #d63638;
+                color: #8a2424;
+                font-weight: 600;
             }
         ';
     }
