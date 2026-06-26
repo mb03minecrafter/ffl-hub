@@ -17,6 +17,7 @@ if (!defined('ABSPATH')) {
  * -----------
  * 1) Job-runner friendly control-plane:
  *    - OK              => mark job success (or continue pipeline)
+ *    - SUBMITTED       => external order submitted; wait for async acknowledgement
  *    - MANUAL          => stop automatic retries; wait for human/manual completion
  *    - BLOCK_RETRYABLE => retry with backoff (transient failure)
  *    - BLOCK_FATAL     => stop retrying (needs human / data fix)
@@ -48,6 +49,9 @@ final class DistributorOrderResult
 
     /** Success */
     const CODE_OK = 'OK';
+
+    /** Submitted to an async distributor workflow; await later acknowledgement */
+    const CODE_SUBMITTED = 'SUBMITTED';
 
     /** Manual handling required (terminal for automation; handled by ops/admin flow) */
     const CODE_MANUAL = 'MANUAL';
@@ -82,6 +86,7 @@ final class DistributorOrderResult
 
     // Meta / control-plane (optional usage)
     const REASON_MANUAL_REQUIRED = 'MANUAL_REQUIRED';
+    const REASON_SUBMITTED_AWAITING_ACK = 'SUBMITTED_AWAITING_ACK';
     const REASON_CANCELLED = 'CANCELLED';
     const REASON_DRY_RUN   = 'DRY_RUN';
 
@@ -89,7 +94,7 @@ final class DistributorOrderResult
     public $ok;
 
     /**
-     * Primary result code: OK | MANUAL | BLOCK_RETRYABLE | BLOCK_FATAL
+     * Primary result code: OK | SUBMITTED | MANUAL | BLOCK_RETRYABLE | BLOCK_FATAL
      *
      * NOTE:
      * This is what your job runner should branch on for control flow.
@@ -237,6 +242,37 @@ final class DistributorOrderResult
     {
         // OK typically has no reason codes; keep codes[] empty by default.
         return new self(true, self::CODE_OK, (string) $message, array(), 0, '', $details, $external_order_ids);
+    }
+
+    /**
+     * Async submitted result.
+     *
+     * Use for workflows where we successfully transmitted the order request,
+     * but the distributor posts a later acknowledgement/shipment file instead
+     * of returning a final order id synchronously.
+     *
+     * @param string $message
+     * @param string[] $external_order_ids
+     * @param array<string,mixed> $details
+     * @param string[] $codes
+     * @return self
+     */
+    public static function submitted($message, array $external_order_ids = array(), array $details = array(), array $codes = array())
+    {
+        if (empty($codes)) {
+            $codes = array(self::REASON_SUBMITTED_AWAITING_ACK);
+        }
+
+        return new self(
+            true,
+            self::CODE_SUBMITTED,
+            (string) $message,
+            $codes,
+            0,
+            '',
+            $details,
+            $external_order_ids
+        );
     }
 
     /**
@@ -394,6 +430,16 @@ final class DistributorOrderResult
     public function is_manual()
     {
         return ($this->code === self::CODE_MANUAL);
+    }
+
+    /**
+     * True if this result indicates an async distributor acknowledgement is pending.
+     *
+     * @return bool
+     */
+    public function is_submitted()
+    {
+        return ($this->code === self::CODE_SUBMITTED);
     }
 
     /**

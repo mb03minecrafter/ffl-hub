@@ -196,6 +196,16 @@ final class OrderPlacementJobStateMachine
             return ['action' => 'continue'];
         }
 
+        if ($or->code === DistributorOrderResult::CODE_SUBMITTED) {
+            return $this->submitted_and_exit(
+                $jobs_table,
+                $order,
+                $job_key,
+                (string) ($or->message ?? ''),
+                $codes
+            );
+        }
+
         if ($or->code === DistributorOrderResult::CODE_MANUAL) {
             return $this->manual_and_exit(
                 $jobs_table,
@@ -409,6 +419,39 @@ final class OrderPlacementJobStateMachine
         OrderPlacementJobLifeCycle::mark_job_manual($jobs_table, $order, $job_key, $message);
 
         return ['action' => 'exit', 'reason' => 'manual'];
+    }
+
+    /**
+     * Mark a job as async-submitted and waiting for distributor acknowledgement.
+     *
+     * @param string[] $codes Normalized codes.
+     * @return array{action:'exit', reason:string}
+     */
+    private function submitted_and_exit(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $message,
+        array $codes
+    ): array {
+        $job_key = OrderPlacementKeysUtil::normalize_job_key((string) $job_key);
+        if ($job_key === '') {
+            return ['action' => 'exit', 'reason' => 'invalid_job_key'];
+        }
+
+        /** @var string[] $codes */
+        $codes = OrderPlacementProductUtil::normalize_external_ids($codes);
+        $message = trim((string) $message);
+
+        OrderPlacementJobLifeCycle::mark_job_awaiting_ack(
+            $jobs_table,
+            $order,
+            $job_key,
+            $message !== '' ? $message : 'Submitted; awaiting distributor acknowledgement.',
+            $codes
+        );
+
+        return ['action' => 'exit', 'reason' => 'awaiting_ack'];
     }
 
     /**

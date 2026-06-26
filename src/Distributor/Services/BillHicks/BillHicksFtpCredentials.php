@@ -10,6 +10,9 @@ if (!defined('ABSPATH')) {
 
 final class BillHicksFtpCredentials
 {
+    public const EDI_OUTBOUND_REMOTE_DIR = '/DeerfordDefense/To BHC';
+    public const EDI_INBOUND_REMOTE_DIR = '/DeerfordDefense/From BHC';
+
     /**
      * @return array{
      *   credentials:array{host:string,username:string,password:string,use_ssl:bool,port:int}|null,
@@ -50,17 +53,22 @@ final class BillHicksFtpCredentials
 
     public static function edi_order_outbound_remote_dir(): string
     {
-        return self::normalize_remote_dir((string) Options::get_distributor_option('bill_hicks', 'edi_order_outbound_remote_dir', ''));
+        return self::normalize_remote_dir((string) Options::get_distributor_option('bill_hicks', 'edi_order_outbound_remote_dir', self::EDI_OUTBOUND_REMOTE_DIR));
     }
 
     public static function edi_ack_inbound_remote_dir(): string
     {
-        return self::normalize_remote_dir((string) Options::get_distributor_option('bill_hicks', 'edi_ack_inbound_remote_dir', ''));
+        return self::normalize_remote_dir((string) Options::get_distributor_option('bill_hicks', 'edi_ack_inbound_remote_dir', self::EDI_INBOUND_REMOTE_DIR));
     }
 
     public static function edi_asn_inbound_remote_dir(): string
     {
-        return self::normalize_remote_dir((string) Options::get_distributor_option('bill_hicks', 'edi_asn_inbound_remote_dir', ''));
+        return self::normalize_remote_dir((string) Options::get_distributor_option('bill_hicks', 'edi_asn_inbound_remote_dir', self::EDI_INBOUND_REMOTE_DIR));
+    }
+
+    public static function edi_inbound_remote_dir(): string
+    {
+        return self::normalize_remote_dir((string) Options::get_distributor_option('bill_hicks', 'edi_inbound_remote_dir', self::EDI_INBOUND_REMOTE_DIR));
     }
 
     /**

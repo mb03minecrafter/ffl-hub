@@ -10,6 +10,7 @@ use FFLHub\Distributor\Contracts\DistributorModuleInterface;
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Services\BillHicks\BillHicksFulfillmentPolicy;
 use FFLHub\Distributor\Services\BillHicks\BillHicksServices;
+use FFLHub\Distributor\Services\BillHicks\Cron\BillHicksEdiInboundCronService;
 use FFLHub\Distributor\Services\BillHicks\Cron\BillHicksInventoryCronService;
 use FFLHub\Distributor\Services\BillHicks\Cron\BillHicksProductCronService;
 use FFLHub\Distributor\Services\BillHicks\Tables\BillHicksProductTableSchema;
@@ -116,63 +117,63 @@ final class BillHicksModule implements DistributorModuleInterface
                 'label'       => 'EDI Default Ship Method',
                 'type'        => 'text',
                 'placeholder' => 'UPSF',
-                'description' => 'Ship method code written into Bill Hicks 850 order headers.',
+                'description' => 'Fallback ship method code. The 850 builder normally derives UPSH/UPS/UPSR from the Bill Hicks catalog category.',
                 'default'     => 'UPSF',
             ],
             'edi_ftp_host' => [
-                'label'       => 'EDI FTP Host',
+                'label'       => 'Legacy EDI FTP Host',
                 'type'        => 'text',
                 'placeholder' => '',
-                'description' => 'Hostname for Bill Hicks EDI order/ack/shipment FTP exchange.',
+                'description' => 'Legacy setting. Bill Hicks EDI now uses the main feed FTP credentials above.',
                 'default'     => '',
             ],
             'edi_ftp_port' => [
-                'label'       => 'EDI FTP Port',
+                'label'       => 'Legacy EDI FTP Port',
                 'type'        => 'text',
                 'placeholder' => '21',
-                'description' => 'Port for Bill Hicks EDI FTP/FTPS connections.',
+                'description' => 'Legacy setting. Bill Hicks EDI now uses the main feed FTP credentials above.',
                 'default'     => '21',
             ],
             'edi_ftp_username' => [
-                'label'       => 'EDI FTP Username',
+                'label'       => 'Legacy EDI FTP Username',
                 'type'        => 'text',
                 'placeholder' => '',
-                'description' => 'Username for Bill Hicks EDI order/ack/shipment FTP exchange.',
+                'description' => 'Legacy setting. Bill Hicks EDI now uses the main feed FTP credentials above.',
                 'default'     => '',
             ],
             'edi_ftp_password' => [
-                'label'       => 'EDI FTP Password',
+                'label'       => 'Legacy EDI FTP Password',
                 'type'        => 'password',
                 'placeholder' => '',
-                'description' => 'Password for Bill Hicks EDI order/ack/shipment FTP exchange.',
+                'description' => 'Legacy setting. Bill Hicks EDI now uses the main feed FTP credentials above.',
                 'default'     => '',
             ],
             'edi_ftp_use_ssl' => [
-                'label'       => 'EDI Use FTPS (SSL)',
+                'label'       => 'Legacy EDI Use FTPS (SSL)',
                 'type'        => 'checkbox',
-                'description' => 'Connect to the Bill Hicks EDI FTP server using FTPS/SSL.',
+                'description' => 'Legacy setting. Bill Hicks EDI now uses the main feed FTP credentials above.',
                 'default'     => '0',
             ],
             'edi_order_outbound_remote_dir' => [
                 'label'       => 'EDI Outbound Order Directory',
                 'type'        => 'text',
-                'placeholder' => '',
+                'placeholder' => '/DeerfordDefense/To BHC',
                 'description' => 'Remote FTP directory where generated 850 order .txt files are uploaded.',
-                'default'     => '',
+                'default'     => '/DeerfordDefense/To BHC',
             ],
             'edi_ack_inbound_remote_dir' => [
                 'label'       => 'EDI 855 Ack Directory',
                 'type'        => 'text',
-                'placeholder' => '',
+                'placeholder' => '/DeerfordDefense/From BHC',
                 'description' => 'Remote FTP directory where Bill Hicks places 855 purchase order acknowledgement files.',
-                'default'     => '',
+                'default'     => '/DeerfordDefense/From BHC',
             ],
             'edi_asn_inbound_remote_dir' => [
                 'label'       => 'EDI 856 ASN Directory',
                 'type'        => 'text',
-                'placeholder' => '',
+                'placeholder' => '/DeerfordDefense/From BHC',
                 'description' => 'Remote FTP directory where Bill Hicks places 856 advance shipping notice files.',
-                'default'     => '',
+                'default'     => '/DeerfordDefense/From BHC',
             ],
         ] + BillHicksFulfillmentPolicy::settings_schema_fields();
     }
@@ -188,11 +189,13 @@ final class BillHicksModule implements DistributorModuleInterface
 
         $product_cron = new BillHicksProductCronService($table);
         $inventory_cron = new BillHicksInventoryCronService($table);
+        $edi_inbound_cron = new BillHicksEdiInboundCronService();
 
         $services = new BillHicksServices(
             $table,
             $product_cron,
-            $inventory_cron
+            $inventory_cron,
+            $edi_inbound_cron
         );
 
         return new DistributorBillHicks($this, $services);

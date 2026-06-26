@@ -639,6 +639,31 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             return;
         }
 
+        if ($result->code === DistributorOrderResult::CODE_SUBMITTED) {
+            // Async path: stamp snapshots/IDs/PO and hold each row until the distributor posts an acknowledgement.
+            foreach ($batch_candidates as $entry) {
+                /** @var OrderPlacementJobRow $job */
+                $job = $entry['job'];
+                /** @var WC_Order $order */
+                $order = $entry['order'];
+                $job_key = (string) $job->job_key_norm();
+
+                $snapshot = OrderPlacementSnapshotUtil::place_snapshot($result, $job->ctx((int) $job->attempts + 1));
+                OrderPlacementJobSnapshotsStore::set_job_place_result($this->jobs_table, $order, $job_key, $snapshot);
+                OrderPlacementJobIdentifiersStore::set_job_merchant_po($this->jobs_table, $order, $job_key, $po, true);
+                OrderPlacementJobIdentifiersStore::set_job_external_order_ids($this->jobs_table, $order, $job_key, (array) $result->external_order_ids, true);
+                OrderPlacementJobLifeCycle::mark_job_awaiting_ack(
+                    $this->jobs_table,
+                    $order,
+                    $job_key,
+                    (string) $result->message,
+                    (array) $result->codes
+                );
+            }
+
+            return;
+        }
+
         if ($result->code === DistributorOrderResult::CODE_BLOCK_RETRYABLE) {
             // Retryable path: send all rows back to batch_pending with a delayed next_run_at.
             $next_retry = OrderPlacementTimeUtil::unix_to_mysql_utc(time() + max(30, $retry_delay_seconds));

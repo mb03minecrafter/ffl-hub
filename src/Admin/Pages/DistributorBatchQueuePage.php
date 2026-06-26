@@ -880,6 +880,8 @@ final class DistributorBatchQueuePage
                     $status_class = 'fflhub-rsr-status-neutral';
                     if ($status === OrderPlacementKeys::JOB_STATUS_BATCH_PENDING) {
                         $status_class = 'fflhub-rsr-status-pending';
+                    } elseif ($status === OrderPlacementKeys::JOB_STATUS_AWAITING_ACK) {
+                        $status_class = 'fflhub-rsr-status-pending';
                     } elseif ($status === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
                         $status_class = 'fflhub-rsr-status-success';
                     } elseif ($status === OrderPlacementKeys::JOB_STATUS_FAILED) {

@@ -15,6 +15,7 @@ if (!defined('ABSPATH')) {
  *  - ftp_connect / ftp_ssl_connect
  *  - get_remote_mtime() (MDTM)
  *  - get_remote_size() (SIZE)
+ *  - list_files() (NLST)
  *  - download_file()
  *  - upload_file()
  *  - download_zip_file() (ZipArchive only)
@@ -201,6 +202,47 @@ class FTPClientService
 
         $s = @ftp_size($connection, $remote_path);
         return (is_int($s) && $s >= 0) ? $s : -1;
+    }
+
+    /**
+     * List file names/paths under a remote directory.
+     *
+     * @return string[]
+     */
+    public function list_files(string $remote_dir): array
+    {
+        if (!$this->is_connected()) {
+            $this->set_error('list_files() called but FTP connection is not available.');
+            $this->log_debug($this->log_prefix . ' list_files() called but FTP connection is not available.');
+            return [];
+        }
+
+        $remote_dir = trim($remote_dir);
+        if ($remote_dir === '') {
+            $this->set_error('list_files() requires a remote directory.');
+            $this->log_debug($this->log_prefix . ' list_files() missing remote directory.');
+            return [];
+        }
+
+        /** @var \FTP\Connection|resource $connection */
+        $connection = $this->conn;
+
+        $files = @ftp_nlist($connection, $remote_dir);
+        if (!is_array($files)) {
+            $this->set_error(sprintf('ftp_nlist failed for remote directory %s', $remote_dir));
+            $this->log_debug($this->log_prefix . ' ftp_nlist failed for remote directory ' . $remote_dir);
+            return [];
+        }
+
+        $out = [];
+        foreach ($files as $file) {
+            $file = trim((string) $file);
+            if ($file !== '' && $file !== '.' && $file !== '..') {
+                $out[] = $file;
+            }
+        }
+
+        return $out;
     }
 
     public function download_file(string $remote_path, string $local_path): bool

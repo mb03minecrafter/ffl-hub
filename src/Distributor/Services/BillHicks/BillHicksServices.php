@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Services\BillHicks\Cron\BillHicksInventoryCronService;
+use FFLHub\Distributor\Services\BillHicks\Cron\BillHicksEdiInboundCronService;
 use FFLHub\Distributor\Services\BillHicks\Cron\BillHicksProductCronService;
 use FFLHub\Distributor\Services\DistributorServicesBase;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
@@ -21,12 +22,14 @@ final class BillHicksServices extends DistributorServicesBase
     public function __construct(
         DoubleBufferedProductTable $fulfillmentTable,
         BillHicksProductCronService $productCron,
-        BillHicksInventoryCronService $inventoryCron
+        BillHicksInventoryCronService $inventoryCron,
+        BillHicksEdiInboundCronService $ediInboundCron
     ) {
         parent::__construct(
             $fulfillmentTable,
             $productCron,
-            $inventoryCron
+            $inventoryCron,
+            $ediInboundCron
         );
     }
 

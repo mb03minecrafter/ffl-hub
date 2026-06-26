@@ -53,15 +53,11 @@ final class BillHicksEdiOrderFileBuilder
         $errors = [];
 
         $customer_number = $this->clean_field(BillHicksFtpCredentials::edi_customer_number());
-        $ship_method = $this->clean_field(BillHicksFtpCredentials::edi_default_ship_method());
         $po_number = $this->sanitize_po((string) $request->merchant_order_id);
+        $ship_method = '';
 
         if ($customer_number === '') {
             $errors[] = 'Missing Bill Hicks EDI customer number.';
-        }
-
-        if ($ship_method === '') {
-            $errors[] = 'Missing Bill Hicks EDI ship method.';
         }
 
         if ($po_number === '') {
@@ -96,6 +92,7 @@ final class BillHicksEdiOrderFileBuilder
 
         $rows_by_upc = $this->bill_hicks_rows_for_lines($lines);
         $line_rows = [];
+        $line_ship_methods = [];
         foreach ($lines as $line) {
             $upc = trim((string) $line->upc);
             $row = $rows_by_upc[$upc] ?? null;
@@ -121,6 +118,11 @@ final class BillHicksEdiOrderFileBuilder
                 $errors[] = sprintf('Bill Hicks distributor price is missing for UPC %s.', $upc);
             }
 
+            $line_ship_method = $this->ship_method_for_product_row($row);
+            if ($line_ship_method !== '') {
+                $line_ship_methods[$line_ship_method] = $line_ship_method;
+            }
+
             $line_rows[] = [
                 'L',
                 $item_number,
@@ -128,6 +130,17 @@ final class BillHicksEdiOrderFileBuilder
                 (string) max(1, (int) $line->quantity),
                 $price,
             ];
+        }
+
+        if (count($line_ship_methods) === 1) {
+            $ship_method = (string) reset($line_ship_methods);
+        } elseif (count($line_ship_methods) > 1) {
+            $errors[] = sprintf(
+                'Bill Hicks EDI file builder received mixed ship methods (%s). Split these into separate files.',
+                implode(', ', array_values($line_ship_methods))
+            );
+        } elseif (empty($errors)) {
+            $errors[] = 'Unable to determine Bill Hicks EDI ship method from product rows.';
         }
 
         if (!empty($errors) || !$ship_to instanceof DistributorShipTo) {
@@ -344,6 +357,49 @@ final class BillHicksEdiOrderFileBuilder
         }
 
         return number_format((float) $raw, 2, '.', '');
+    }
+
+    /**
+     * Bill Hicks wants the shipping method on the file header, not on each line.
+     * The catalog category code is the most reliable source we have:
+     * - pistols/revolvers: UPSH
+     * - rifles/shotguns/SBR/SBS/barreled actions: UPS
+     * - accessories, ammo, magazines, suppressors, and other non-long-gun rows: UPSR
+     *
+     * @param array<string,mixed> $row
+     */
+    private function ship_method_for_product_row(array $row): string
+    {
+        $category_code = strtoupper(trim((string) ($row['category'] ?? '')));
+        $item_type = strtoupper(trim((string) ($row['item_type'] ?? '')));
+
+        if (in_array($category_code, ['H602', 'H603'], true) || $this->contains_any($item_type, ['PISTOL', 'REVOLVER', 'HANDGUN'])) {
+            return 'UPSH';
+        }
+
+        if (in_array($category_code, ['H600', 'H601', 'H605', 'H607', 'H608'], true)) {
+            return 'UPS';
+        }
+
+        if ($this->contains_any($item_type, ['RIFLE', 'SHOTGUN', 'LONG GUN', 'LONGGUN', 'BARRELED ACTION'])) {
+            return 'UPS';
+        }
+
+        return 'UPSR';
+    }
+
+    /**
+     * @param string[] $needles
+     */
+    private function contains_any(string $haystack, array $needles): bool
+    {
+        foreach ($needles as $needle) {
+            if ($needle !== '' && strpos($haystack, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function build_filename(string $po_number, string $lane): string

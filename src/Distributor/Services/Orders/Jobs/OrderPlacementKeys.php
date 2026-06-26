@@ -58,6 +58,7 @@ final class OrderPlacementKeys
     public const JOB_STATUS_FAILED          = 'failed';
     public const JOB_STATUS_RETRY_SCHEDULED = 'retry_scheduled';
     public const JOB_STATUS_BATCH_PENDING   = 'batch_pending';
+    public const JOB_STATUS_AWAITING_ACK    = 'awaiting_ack';
     public const JOB_STATUS_PAUSED = 'paused';
 
     /* ===================== Action Scheduler ===================== */

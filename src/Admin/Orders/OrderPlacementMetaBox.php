@@ -1449,6 +1449,7 @@ final class OrderPlacementMetaBox
         if ($s === 'running')   return 'warning';
         if ($s === 'scheduled') return 'info';
         if ($s === strtolower(OrderPlacementKeys::JOB_STATUS_BATCH_PENDING)) return 'info';
+        if ($s === strtolower(OrderPlacementKeys::JOB_STATUS_AWAITING_ACK)) return 'info';
         if ($s === 'queued')    return 'muted';
         if ($s === strtolower(OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED)) return 'warning';
 

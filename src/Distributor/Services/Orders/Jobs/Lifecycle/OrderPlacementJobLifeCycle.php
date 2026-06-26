@@ -397,6 +397,35 @@ final class OrderPlacementJobLifeCycle
     }
 
     /**
+     * Transition job row to AWAITING_ACK (non-terminal async hold).
+     *
+     * Bill Hicks uploads an 850 file first, then posts a later 855
+     * acknowledgement. This state parks the job between those two events
+     * without retrying or marking the order successful too early.
+     *
+     * @param array<int,string> $codes
+     */
+    public static function mark_job_awaiting_ack(
+        OrderPlacementJobsTable $jobs_table,
+        WC_Order $order,
+        string $job_key,
+        string $message = '',
+        array $codes = []
+    ): void {
+        /** @var string[] $codes_norm */
+        $codes_norm = OrderPlacementProductUtil::normalize_external_ids($codes);
+
+        $patch = OrderPlacementJobPatch::empty()
+            ->with_status(OrderPlacementKeys::JOB_STATUS_AWAITING_ACK)
+            ->with_last_step('place')
+            ->with_last_error((string) $message)
+            ->with_last_codes($codes_norm)
+            ->clear_action_and_schedule();
+
+        OrderPlacementJobWriter::apply_patch_for_order($jobs_table, $order, $job_key, $patch);
+    }
+
+    /**
      * Transition job row to FAILED (terminal).
      *
      * Writes:

@@ -69,6 +69,7 @@ final class OrderPlacementJobRunner
         if (
             $existing_status === OrderPlacementKeys::JOB_STATUS_SUCCESS
             || $existing_status === OrderPlacementKeys::JOB_STATUS_MANUAL
+            || $existing_status === OrderPlacementKeys::JOB_STATUS_AWAITING_ACK
         ) {
             return;
         }

@@ -13,6 +13,9 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
+use FFLHub\Distributor\Services\BillHicks\BillHicksEdiFtpExchange;
+use FFLHub\Distributor\Services\BillHicks\BillHicksEdiStore;
+use FFLHub\Distributor\Services\BillHicks\BillHicksServices;
 
 /**
  * Bill Hicks runtime distributor.
@@ -129,15 +132,100 @@ final class DistributorBillHicks extends DistributorBase
 
     public function place_order(DistributorOrderRequest $request): DistributorOrderResult
     {
-        return DistributorOrderResult::manual(
-            'Bill Hicks ordering is not implemented yet.',
-            [DistributorOrderResult::REASON_MANUAL_REQUIRED]
+        if (!($this->services instanceof BillHicksServices)) {
+            return DistributorOrderResult::block_fatal(
+                'Bill Hicks services not available; cannot build EDI 850 order file.',
+                [DistributorOrderResult::REASON_FATAL_SERVICES_MISSING]
+            );
+        }
+
+        $lane = strtolower(trim((string) $request->lane));
+        $lines = $request->valid_lines();
+        $builder = $this->services->get_edi_order_file_builder();
+        $built = $builder->build_order_file($request, $lane, $lines);
+
+        if (empty($built['ok'])) {
+            return DistributorOrderResult::block_fatal(
+                'Bill Hicks EDI 850 build failed: ' . implode('; ', (array) ($built['errors'] ?? [])),
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST, DistributorOrderResult::REASON_FATAL_MAPPING],
+                [
+                    'po' => (string) ($built['po_number'] ?? $request->merchant_order_id),
+                    'errors' => (array) ($built['errors'] ?? []),
+                    'line_count' => (int) ($built['line_count'] ?? 0),
+                    'lane' => $lane,
+                ]
+            );
+        }
+
+        $uploads = wp_upload_dir();
+        $local_dir = trailingslashit((string) ($uploads['basedir'] ?? '')) . 'fflhub-bill-hicks-edi/outbound';
+        $write = $builder->write_content_to_file(
+            (string) ($built['content'] ?? ''),
+            $local_dir,
+            (string) ($built['filename'] ?? '')
+        );
+
+        if (empty($write['ok'])) {
+            return DistributorOrderResult::block_retryable(
+                'Bill Hicks EDI 850 local write failed: ' . (string) ($write['error'] ?? ''),
+                [DistributorOrderResult::REASON_RETRY_UNKNOWN],
+                [
+                    'po' => (string) ($built['po_number'] ?? ''),
+                    'filename' => (string) ($built['filename'] ?? ''),
+                    'local_dir' => $local_dir,
+                ]
+            );
+        }
+
+        $upload = (new BillHicksEdiFtpExchange())->upload_order_file(
+            (string) ($write['path'] ?? ''),
+            (string) ($built['filename'] ?? '')
+        );
+
+        if (empty($upload['ok'])) {
+            $error = (string) ($upload['error'] ?? 'Bill Hicks EDI FTP upload failed.');
+            $details = [
+                'po' => (string) ($built['po_number'] ?? ''),
+                'filename' => (string) ($built['filename'] ?? ''),
+                'local_path' => (string) ($write['path'] ?? ''),
+                'remote_path' => (string) ($upload['remote_path'] ?? ''),
+                'error' => $error,
+            ];
+
+            if (stripos($error, 'credential') !== false) {
+                return DistributorOrderResult::block_fatal(
+                    $error,
+                    [DistributorOrderResult::REASON_FATAL_MISSING_CREDS],
+                    $details
+                );
+            }
+
+            return DistributorOrderResult::block_retryable(
+                $error,
+                [DistributorOrderResult::REASON_RETRY_UPSTREAM],
+                $details
+            );
+        }
+
+        return DistributorOrderResult::submitted(
+            'Bill Hicks 850 uploaded; awaiting 855 acknowledgement.',
+            [],
+            [
+                'po' => (string) ($built['po_number'] ?? ''),
+                'filename' => (string) ($built['filename'] ?? ''),
+                'local_path' => (string) ($write['path'] ?? ''),
+                'remote_path' => (string) ($upload['remote_path'] ?? ''),
+                'line_count' => (int) ($built['line_count'] ?? 0),
+                'destination' => (string) ($built['destination'] ?? ''),
+                'ship_method' => (string) ($built['ship_method'] ?? ''),
+                'lane' => $lane,
+            ]
         );
     }
 
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
     {
-        return null;
+        return (new BillHicksEdiStore())->get_shipment_by_po($po_number);
     }
 
     private function build_payload_from_local_row(string $upc, bool $include_images): ?DistributorProductPayload
