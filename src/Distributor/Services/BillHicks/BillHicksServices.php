@@ -16,6 +16,8 @@ use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
  */
 final class BillHicksServices extends DistributorServicesBase
 {
+    private ?BillHicksEdiOrderFileBuilder $ediOrderFileBuilder = null;
+
     public function __construct(
         DoubleBufferedProductTable $fulfillmentTable,
         BillHicksProductCronService $productCron,
@@ -26,5 +28,14 @@ final class BillHicksServices extends DistributorServicesBase
             $productCron,
             $inventoryCron
         );
+    }
+
+    public function get_edi_order_file_builder(): BillHicksEdiOrderFileBuilder
+    {
+        if (!$this->ediOrderFileBuilder instanceof BillHicksEdiOrderFileBuilder) {
+            $this->ediOrderFileBuilder = new BillHicksEdiOrderFileBuilder($this->get_fulfillment_table());
+        }
+
+        return $this->ediOrderFileBuilder;
     }
 }
