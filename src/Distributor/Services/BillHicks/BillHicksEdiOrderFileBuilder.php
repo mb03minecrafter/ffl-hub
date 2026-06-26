@@ -49,6 +49,7 @@ final class BillHicksEdiOrderFileBuilder
     public function build_order_file(DistributorOrderRequest $request, string $lane, array $lines): array
     {
         $lane = strtolower(trim($lane));
+        $dealer_fulfilled = ($lane === 'dealer_fulfilled');
         $lines = $this->valid_lines($lines);
         $errors = [];
 
@@ -68,24 +69,27 @@ final class BillHicksEdiOrderFileBuilder
             $errors[] = 'No valid Bill Hicks EDI order lines were provided.';
         }
 
-        if ($lane === 'dealer_fulfilled') {
-            $errors[] = 'Bill Hicks EDI file builder needs a direct-ship lane; dealer_fulfilled has no configured Bill Hicks ship-to destination.';
-        }
-
         $line_flags = $this->line_ffl_flags($lines);
-        if (count($line_flags) > 1) {
+        if (!$dealer_fulfilled && count($line_flags) > 1) {
             $errors[] = 'Bill Hicks EDI file builder received mixed FFL and non-FFL lines. Split these into separate files.';
         }
 
-        $ffl_required = isset($line_flags[0]) && $line_flags[0] === 1;
-        $ship_to = $this->resolve_ship_to($request, $ffl_required);
+        // Dealer-batch files ship to our configured dealer address, so they do
+        // not need a customer transfer FFL on the 850 header. Direct-ship FFL
+        // lanes still require the receiving FFL destination and FFL number.
+        $ffl_required = !$dealer_fulfilled && isset($line_flags[0]) && $line_flags[0] === 1;
+        $ship_to = $this->resolve_ship_to($request, $ffl_required, $dealer_fulfilled);
         if (!$ship_to instanceof DistributorShipTo) {
-            $errors[] = $ffl_required
-                ? 'Missing FFL ship-to destination for Bill Hicks FFL order file.'
-                : 'Missing customer ship-to destination for Bill Hicks non-FFL order file.';
+            if ($dealer_fulfilled) {
+                $errors[] = 'Missing dealer ship-to destination for Bill Hicks dealer batch order file.';
+            } elseif ($ffl_required) {
+                $errors[] = 'Missing FFL ship-to destination for Bill Hicks FFL order file.';
+            } else {
+                $errors[] = 'Missing customer ship-to destination for Bill Hicks non-FFL order file.';
+            }
         }
 
-        $ffl_number = $ffl_required ? trim((string) $request->receiving_ffl_number) : '';
+        $ffl_number = (!$dealer_fulfilled && $ffl_required) ? trim((string) $request->receiving_ffl_number) : '';
         if ($ffl_required && $ffl_number === '') {
             $errors[] = 'Missing receiving FFL number for Bill Hicks FFL order file.';
         }
@@ -132,14 +136,8 @@ final class BillHicksEdiOrderFileBuilder
             ];
         }
 
-        if (count($line_ship_methods) === 1) {
-            $ship_method = (string) reset($line_ship_methods);
-        } elseif (count($line_ship_methods) > 1) {
-            $errors[] = sprintf(
-                'Bill Hicks EDI file builder received mixed ship methods (%s). Split these into separate files.',
-                implode(', ', array_values($line_ship_methods))
-            );
-        } elseif (empty($errors)) {
+        $ship_method = $this->ship_method_for_file($line_ship_methods);
+        if ($ship_method === '' && empty($errors)) {
             $errors[] = 'Unable to determine Bill Hicks EDI ship method from product rows.';
         }
 
@@ -253,8 +251,12 @@ final class BillHicksEdiOrderFileBuilder
         return array_values($flags);
     }
 
-    private function resolve_ship_to(DistributorOrderRequest $request, bool $ffl_required): ?DistributorShipTo
+    private function resolve_ship_to(DistributorOrderRequest $request, bool $ffl_required, bool $dealer_fulfilled): ?DistributorShipTo
     {
+        if ($dealer_fulfilled) {
+            return $request->ship_to_customer instanceof DistributorShipTo ? $request->ship_to_customer : null;
+        }
+
         if ($ffl_required) {
             return $request->ship_to_ffl instanceof DistributorShipTo ? $request->ship_to_ffl : null;
         }
@@ -386,6 +388,30 @@ final class BillHicksEdiOrderFileBuilder
         }
 
         return 'UPSR';
+    }
+
+    /**
+     * Bill Hicks has one ship-method field on the 850 header. If a dealer
+     * batch mixes product types, use the most restrictive method needed by
+     * any line so the full file remains orderable.
+     *
+     * @param array<string,string> $methods
+     */
+    private function ship_method_for_file(array $methods): string
+    {
+        if (isset($methods['UPSH'])) {
+            return 'UPSH';
+        }
+
+        if (isset($methods['UPS'])) {
+            return 'UPS';
+        }
+
+        if (isset($methods['UPSR'])) {
+            return 'UPSR';
+        }
+
+        return '';
     }
 
     /**

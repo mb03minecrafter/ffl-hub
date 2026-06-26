@@ -18,6 +18,7 @@ final class DealerBatchCronRegistry
     public static function hooks_by_distributor(): array
     {
         return [
+            'bill_hicks'   => BillHicksDealerBatchCronService::CRON_HOOK,
             'rsr'          => RSRDealerBatchCronService::CRON_HOOK,
             'lipseys'      => LipseysDealerBatchCronService::CRON_HOOK,
             'orion'        => OrionDealerBatchCronService::CRON_HOOK,

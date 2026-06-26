@@ -46,6 +46,7 @@ use FFLHub\Checkout\QuoteCartLinkHandler;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Distributor\Services\Cron\QuoteEmailJobsCronService;
+use FFLHub\Distributor\Services\Orders\Cron\BillHicksDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\SportsSouthCaRelayBatchCronService;
@@ -295,6 +296,19 @@ final class Plugin
     private function distributor_batch_queue_page_configs(): array
     {
         return [
+            [
+                'page_slug' => 'fflhub-bill-hicks-dealer-batch-queue',
+                'menu_title' => 'Bill Hicks Dealer Batch Queue',
+                'page_title' => 'Bill Hicks Dealer Batch Queue',
+                'description' => 'Per-line-item UPC queue view for Bill Hicks dealer-fulfilled rows on Processing orders.',
+                'dist_id' => 'bill_hicks',
+                'dist_label' => 'Bill Hicks',
+                'mode' => 'dealer',
+                'mode_label' => 'Dealer Batch',
+                'option_prefix' => 'fflhub_bill_hicks_dealer_batch',
+                'field_prefix' => 'fflhub_bill_hicks_dealer_batch_page',
+                'cron_hook' => BillHicksDealerBatchCronService::CRON_HOOK,
+            ],
             [
                 'page_slug' => 'fflhub-lipseys-dealer-batch-queue',
                 'menu_title' => "Lipsey's Dealer Batch Queue",

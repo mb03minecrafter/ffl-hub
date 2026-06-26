@@ -80,7 +80,7 @@ final class DealerBatchOptimizerPage
         <div style="max-width:1100px;background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:16px 18px;margin:16px 0;">
             <h2 style="margin-top:0;"><?php esc_html_e('How This Page Works', 'ffl-hub'); ?></h2>
             <p>
-                <?php esc_html_e('Dealer-batch ordering is centralized here for the batch-enabled dealer-fulfilled distributors: RSR, Lipsey\'s, Orion, Sports South, and Zanders. CA relay batches keep their own timing because that is a different fulfillment flow.', 'ffl-hub'); ?>
+                <?php esc_html_e('Dealer-batch ordering is centralized here for the batch-enabled dealer-fulfilled distributors: Bill Hicks, RSR, Lipsey\'s, Orion, Sports South, and Zanders. CA relay batches keep their own timing because that is a different fulfillment flow.', 'ffl-hub'); ?>
             </p>
             <p>
                 <?php esc_html_e('The shipping optimizer runs before a dealer-batch cron builds its final distributor order. It looks across pending dealer-batch jobs and may move a whole job row from one eligible distributor batch to another only when the item cost stays the same and the move improves free-shipping coverage.', 'ffl-hub'); ?>
@@ -129,7 +129,7 @@ final class DealerBatchOptimizerPage
                     </tr>
                     <tr>
                         <td><strong><?php esc_html_e('Estimated paid inbound shipping cost', 'ffl-hub'); ?></strong></td>
-                        <td><?php esc_html_e('Estimated inbound freight cost when that distributor has an active below-threshold batch. Empty distributors are not counted. If left at zero, known distributors use conservative defaults such as RSR $10 and Sports South $8.95.', 'ffl-hub'); ?></td>
+                        <td><?php esc_html_e('Estimated inbound freight cost when that distributor has an active below-threshold batch. Empty distributors are not counted. If left at zero, known distributors use conservative defaults such as Bill Hicks $15, RSR $10, and Sports South $8.95.', 'ffl-hub'); ?></td>
                     </tr>
                 </tbody>
             </table>
@@ -137,7 +137,7 @@ final class DealerBatchOptimizerPage
             <h3><?php esc_html_e('Shipping Optimization Rules', 'ffl-hub'); ?></h3>
             <ol>
                 <li><?php esc_html_e('Only active pending dealer-batch rows are considered. Direct customer drop-ship, CA relay, manual-only, failed, cancelled, refunded, already-submitted, and already-PO-stamped rows are not moved.', 'ffl-hub'); ?></li>
-                <li><?php esc_html_e('Only RSR, Lipsey\'s, Orion, Sports South, and Zanders are eligible. CSSI, MGE, Davidson\'s, and disabled distributors are not optimizer targets.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Only Bill Hicks, RSR, Lipsey\'s, Orion, Sports South, and Zanders are eligible. CSSI, MGE, Davidson\'s, and disabled distributors are not optimizer targets.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('Product distributor locks are respected. If a product is locked, the target distributor must be in the product\'s allowed distributor lock list.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('The target distributor must carry the same UPC, have a distributor SKU available, and have enough stock for the whole moved job row.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('Item cost cannot increase. The source and target distributor prices must match after normal two-decimal money rounding, and both must be tied for the lowest eligible dealer-batch cost for that UPC.', 'ffl-hub'); ?></li>
@@ -265,7 +265,7 @@ final class DealerBatchOptimizerPage
                 </td></tr>
                 <tr><th scope="row"><?php esc_html_e('Dispatch time (Central)', 'ffl-hub'); ?></th><td>
                     <input type="text" class="regular-text" name="<?php echo esc_attr(DealerBatchOptimizerConfig::dealer_batch_option_name('dispatch_time')); ?>" value="<?php echo esc_attr($dispatch_time); ?>" placeholder="17:00" />
-                    <p class="description"><?php esc_html_e('Central time used by RSR, Lipsey\'s, Orion, Sports South, and Zanders dealer batches.', 'ffl-hub'); ?></p>
+                    <p class="description"><?php esc_html_e('Central time used by Bill Hicks, RSR, Lipsey\'s, Orion, Sports South, and Zanders dealer batches.', 'ffl-hub'); ?></p>
                 </td></tr>
                 <tr><th scope="row"><?php esc_html_e('Low stock threshold', 'ffl-hub'); ?></th><td>
                     <input type="number" min="0" step="1" class="small-text" name="<?php echo esc_attr(DealerBatchOptimizerConfig::dealer_batch_option_name('low_stock_threshold')); ?>" value="<?php echo esc_attr((string) $low_stock_threshold); ?>" />

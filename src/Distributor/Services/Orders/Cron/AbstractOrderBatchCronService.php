@@ -2041,6 +2041,16 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             return DealerShipToResolver::resolve_relay();
         }
 
+        // Dealer batches are inbound distributor orders. Use the configured
+        // dealer ship-to address so EDI/file-based distributors do not ship an
+        // aggregate batch to the first customer in the queue.
+        $dealer_ship_to = DealerShipToResolver::resolve();
+        if ($dealer_ship_to instanceof DistributorShipTo) {
+            return $dealer_ship_to;
+        }
+
+        // Fallback keeps older installs operational until the dealer ship-to
+        // setting is filled in.
         /** @var WC_Order $first_order */
         $first_order = $batch_candidates[0]['order'];
         return DistributorShipTo::from_order_shipping_fallback_billing($first_order);

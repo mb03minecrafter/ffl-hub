@@ -262,7 +262,7 @@ final class RSRBatchQueuePage
         <section class="fflhub-rsr-batch-card">
             <h2><?php esc_html_e('Central Dealer Batch Settings', 'ffl-hub'); ?></h2>
             <p>
-                <?php esc_html_e('Dealer-batch timing is shared across RSR, Lipsey\'s, Orion, Sports South, and Zanders. Edit dispatch time, stock threshold, retry delay, row limits, and optimizer thresholds from the central optimizer page.', 'ffl-hub'); ?>
+                <?php esc_html_e('Dealer-batch timing is shared across Bill Hicks, RSR, Lipsey\'s, Orion, Sports South, and Zanders. Edit dispatch time, stock threshold, retry delay, row limits, and optimizer thresholds from the central optimizer page.', 'ffl-hub'); ?>
             </p>
             <p>
                 <strong><?php esc_html_e('Dispatch time:', 'ffl-hub'); ?></strong>

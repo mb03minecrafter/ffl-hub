@@ -25,6 +25,7 @@ final class DealerBatchOptimizerConfig
     private const DEFAULT_FREE_SHIPPING_THRESHOLD = 1000.0;
     private const DEFAULT_PAID_SHIPPING_COST = 1.0;
     private const DEFAULT_PAID_SHIPPING_COST_BY_DISTRIBUTOR = [
+        'bill_hicks'   => 15.0,
         'rsr'          => 10.0,
         'sports_south' => 8.95,
     ];
