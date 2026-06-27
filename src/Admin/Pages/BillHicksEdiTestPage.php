@@ -10,6 +10,7 @@ use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorShipTo;
 use FFLHub\Distributor\Services\BillHicks\BillHicksFtpCredentials;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Settings\Options;
 
 if (!defined('ABSPATH')) {
@@ -61,7 +62,6 @@ final class BillHicksEdiTestPage
         $result = $this->maybe_handle_upload();
         $configs = self::test_case_configs();
         $posted_cases = $this->posted_cases();
-        $run_id = gmdate('Ymd-His');
         ?>
         <div class="wrap fflhub-bhc-edi-test">
             <?php $this->render_styles(); ?>
@@ -91,7 +91,7 @@ final class BillHicksEdiTestPage
                 <?php wp_nonce_field(self::NONCE_ACTION, 'fflhub_bhc_edi_test_nonce'); ?>
 
                 <?php foreach ($configs as $key => $config) : ?>
-                    <?php $this->render_test_case_card($key, $config, $run_id, is_array($posted_cases[$key] ?? null) ? $posted_cases[$key] : []); ?>
+                    <?php $this->render_test_case_card($key, $config, is_array($posted_cases[$key] ?? null) ? $posted_cases[$key] : []); ?>
                 <?php endforeach; ?>
 
                 <div class="fflhub-bhc-confirm">
@@ -119,7 +119,7 @@ final class BillHicksEdiTestPage
                 'label' => 'Pistol FFL Drop Ship',
                 'description' => 'Single firearm line. Ships to the receiving FFL and should resolve to UPSH from the BHC catalog row.',
                 'lane' => 'direct_ship_ffl',
-                'po_prefix' => 'TEST-BHC-PISTOL',
+                'po_split_index' => 1,
                 'line_count' => 1,
                 'line_ffl_fixed' => true,
                 'ship_to_label' => 'Customer / buyer contact',
@@ -130,7 +130,7 @@ final class BillHicksEdiTestPage
                 'label' => 'Long Gun FFL Drop Ship',
                 'description' => 'Single firearm line. Ships to the receiving FFL and should resolve to UPS from the BHC catalog row.',
                 'lane' => 'direct_ship_ffl',
-                'po_prefix' => 'TEST-BHC-LONGGUN',
+                'po_split_index' => 2,
                 'line_count' => 1,
                 'line_ffl_fixed' => true,
                 'ship_to_label' => 'Customer / buyer contact',
@@ -141,7 +141,7 @@ final class BillHicksEdiTestPage
                 'label' => 'Accessory Drop Ship',
                 'description' => 'Single non-FFL line. Ships to the customer and should resolve to UPSR from the BHC catalog row.',
                 'lane' => 'direct_ship_non_ffl',
-                'po_prefix' => 'TEST-BHC-ACCESSORY',
+                'po_split_index' => 1,
                 'line_count' => 1,
                 'line_ffl_fixed' => false,
                 'ship_to_label' => 'Customer ship-to',
@@ -152,7 +152,7 @@ final class BillHicksEdiTestPage
                 'label' => 'Dealer-Fulfilled Batch',
                 'description' => 'Batch-shaped file using dealer_fulfilled lane. No receiving FFL is sent; the file ships to the dealer address entered below.',
                 'lane' => 'dealer_fulfilled',
-                'po_prefix' => 'TEST-BHC-DEALER',
+                'po_split_index' => 1,
                 'line_count' => 3,
                 'line_ffl_fixed' => null,
                 'ship_to_label' => 'Dealer ship-to',
@@ -166,10 +166,10 @@ final class BillHicksEdiTestPage
      * @param array<string,mixed> $config
      * @param array<string,mixed> $posted
      */
-    private function render_test_case_card(string $key, array $config, string $run_id, array $posted): void
+    private function render_test_case_card(string $key, array $config, array $posted): void
     {
         $field = static fn(string $name): string => 'cases[' . $key . '][' . $name . ']';
-        $po = $this->posted_value($posted, 'po', (string) ($config['po_prefix'] ?? 'TEST-BHC') . '-' . $run_id);
+        $po = $this->posted_value($posted, 'po', $this->default_test_po($config));
         $notes = $this->posted_value($posted, 'notes', 'FFLHub Bill Hicks EDI test: ' . (string) ($config['label'] ?? $key));
         $line_count = max(1, (int) ($config['line_count'] ?? 1));
         $posted_lines = is_array($posted['lines'] ?? null) ? $posted['lines'] : [];
@@ -566,6 +566,25 @@ final class BillHicksEdiTestPage
     private function clean_text(string $value): string
     {
         return trim(sanitize_text_field($value));
+    }
+
+    /**
+     * Keep default test POs close to production POs:
+     * FH-{DIST}-{order_id}-{lane_code}{split}
+     *
+     * Since there is no real Woo order id on this page, TEST occupies the
+     * order-id slot while still preserving the production prefix, distributor,
+     * lane code, and split suffix shape.
+     *
+     * @param array<string,mixed> $config
+     */
+    private function default_test_po(array $config): string
+    {
+        $lane = (string) ($config['lane'] ?? '');
+        $lane_code = OrderPlacementKeysUtil::lane_code($lane);
+        $split_index = max(1, (int) ($config['po_split_index'] ?? 1));
+
+        return sprintf('FH-BILL_HICKS-TEST-%s%d', $lane_code, $split_index);
     }
 
     /**
