@@ -213,7 +213,7 @@ final class Plugin
             $this->checkout_activity_page = new CheckoutActivityPage();
             $this->checkout_activity_page->register();
 
-            $this->bill_hicks_edi_test_page = new BillHicksEdiTestPage($this->distributor_handler);
+            $this->bill_hicks_edi_test_page = new BillHicksEdiTestPage($this->distributor_handler, $this->ffl_table);
             $this->bill_hicks_edi_test_page->register();
 
             $this->dealer_batch_optimizer_page = new DealerBatchOptimizerPage(

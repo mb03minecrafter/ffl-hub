@@ -2,6 +2,7 @@
 
 namespace FFLHub\Admin\Pages;
 
+use FFLHub\Checkout\Builders\CheckoutOrderRequestBuilder;
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOrderLine;
@@ -11,6 +12,7 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorShipTo;
 use FFLHub\Distributor\Services\BillHicks\BillHicksFtpCredentials;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
+use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Settings\Options;
 
 if (!defined('ABSPATH')) {
@@ -30,10 +32,12 @@ final class BillHicksEdiTestPage
     private const ACTION_UPLOAD = 'fflhub_bill_hicks_edi_test_upload';
 
     private DistributorHandler $handler;
+    private FFLTable $ffl_table;
 
-    public function __construct(DistributorHandler $handler)
+    public function __construct(DistributorHandler $handler, FFLTable $ffl_table)
     {
         $this->handler = $handler;
+        $this->ffl_table = $ffl_table;
     }
 
     public function register(): void
@@ -122,8 +126,7 @@ final class BillHicksEdiTestPage
                 'po_split_index' => 1,
                 'line_count' => 1,
                 'line_ffl_fixed' => true,
-                'ship_to_label' => 'Customer / buyer contact',
-                'ffl_label' => 'Receiving FFL ship-to',
+                'ffl_label' => 'Receiving FFL',
                 'requires_ffl_ship_to' => true,
             ],
             'long_gun_direct_ffl' => [
@@ -133,8 +136,7 @@ final class BillHicksEdiTestPage
                 'po_split_index' => 2,
                 'line_count' => 1,
                 'line_ffl_fixed' => true,
-                'ship_to_label' => 'Customer / buyer contact',
-                'ffl_label' => 'Receiving FFL ship-to',
+                'ffl_label' => 'Receiving FFL',
                 'requires_ffl_ship_to' => true,
             ],
             'accessory_direct_non_ffl' => [
@@ -224,16 +226,18 @@ final class BillHicksEdiTestPage
                 <?php endfor; ?>
             </div>
 
-            <?php $this->render_ship_to_fields($key, 'ship_to', (string) ($config['ship_to_label'] ?? 'Ship-to'), is_array($posted['ship_to'] ?? null) ? $posted['ship_to'] : []); ?>
-
             <?php if (!empty($config['requires_ffl_ship_to'])) : ?>
                 <div class="fflhub-bhc-ffl-panel">
                     <label class="fflhub-bhc-ffl-number">
                         <?php esc_html_e('Receiving FFL number', 'ffl-hub'); ?>
                         <input type="text" name="<?php echo esc_attr($field('ffl_number')); ?>" value="<?php echo esc_attr($this->posted_value($posted, 'ffl_number', '')); ?>" placeholder="5-76-000-00-0X-00000" />
                     </label>
-                    <?php $this->render_ship_to_fields($key, 'ffl_ship_to', (string) ($config['ffl_label'] ?? 'Receiving FFL'), is_array($posted['ffl_ship_to'] ?? null) ? $posted['ffl_ship_to'] : []); ?>
+                    <p class="description">
+                        <?php esc_html_e('The FFL ship-to address is resolved from the FFL table, matching the production order runner path.', 'ffl-hub'); ?>
+                    </p>
                 </div>
+            <?php else : ?>
+                <?php $this->render_ship_to_fields($key, 'ship_to', (string) ($config['ship_to_label'] ?? 'Ship-to'), is_array($posted['ship_to'] ?? null) ? $posted['ship_to'] : []); ?>
             <?php endif; ?>
         </section>
         <?php
@@ -462,19 +466,28 @@ final class BillHicksEdiTestPage
         }
 
         $lines = $this->read_lines($posted, $config, $errors);
-        $ship_to = $this->read_ship_to(is_array($posted['ship_to'] ?? null) ? $posted['ship_to'] : [], (string) ($config['ship_to_label'] ?? 'Ship-to'), $errors);
         $ffl_ship_to = null;
         $ffl_number = '';
+        $ship_to = null;
 
         if (!empty($config['requires_ffl_ship_to'])) {
             $ffl_number = $this->clean_text((string) ($posted['ffl_number'] ?? ''));
             if ($ffl_number === '') {
                 $errors[] = 'Missing receiving FFL number for ' . (string) ($config['label'] ?? $key) . '.';
             }
-            $ffl_ship_to = $this->read_ship_to(is_array($posted['ffl_ship_to'] ?? null) ? $posted['ffl_ship_to'] : [], (string) ($config['ffl_label'] ?? 'Receiving FFL'), $errors);
+            $ffl_ship_to = $this->resolve_ffl_ship_to($ffl_number, (string) ($config['label'] ?? $key), $errors);
+            if ($ffl_ship_to instanceof DistributorShipTo) {
+                $ship_to = $this->test_customer_ship_to_for_ffl($ffl_ship_to);
+            }
+        } else {
+            $ship_to = $this->read_ship_to(
+                is_array($posted['ship_to'] ?? null) ? $posted['ship_to'] : [],
+                (string) ($config['ship_to_label'] ?? 'Ship-to'),
+                $errors
+            );
         }
 
-        if (!empty($errors)) {
+        if (!empty($errors) || !$ship_to instanceof DistributorShipTo) {
             return ['ok' => false, 'errors' => $errors];
         }
 
@@ -561,6 +574,50 @@ final class BillHicksEdiTestPage
         }
 
         return new DistributorShipTo($name, $company, $address1, $address2, $city, $state, $zip, $phone, $email);
+    }
+
+    /**
+     * Resolve a receiving FFL exactly like the order runner does after it reads
+     * the selected FFL number from Woo order meta.
+     *
+     * @param string[] $errors
+     */
+    private function resolve_ffl_ship_to(string $ffl_number, string $label, array &$errors): ?DistributorShipTo
+    {
+        $ffl_number = $this->clean_text($ffl_number);
+        if ($ffl_number === '') {
+            return null;
+        }
+
+        $ship_to = CheckoutOrderRequestBuilder::build_ship_to_ffl_or_null(
+            $this->ffl_table,
+            $ffl_number,
+            function (string $message = '', array $context = []): void {
+                // Keep the admin test page quiet; validation errors are shown below the form.
+            }
+        );
+
+        if (!$ship_to instanceof DistributorShipTo) {
+            $errors[] = $label . ': unable to resolve receiving FFL from the FFL table.';
+            return null;
+        }
+
+        return $ship_to;
+    }
+
+    private function test_customer_ship_to_for_ffl(DistributorShipTo $ffl_ship_to): DistributorShipTo
+    {
+        return new DistributorShipTo(
+            'FFLHub Bill Hicks Test Customer',
+            '',
+            $ffl_ship_to->address1,
+            $ffl_ship_to->address2,
+            $ffl_ship_to->city,
+            $ffl_ship_to->state,
+            $ffl_ship_to->zip,
+            $ffl_ship_to->phone,
+            ''
+        );
     }
 
     private function clean_text(string $value): string
