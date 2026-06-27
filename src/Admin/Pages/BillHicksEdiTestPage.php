@@ -2,13 +2,15 @@
 
 namespace FFLHub\Admin\Pages;
 
+use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\DistributorOrderRequest;
+use FFLHub\Distributor\Models\DistributorOrderResult;
+use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorShipTo;
-use FFLHub\Distributor\Services\BillHicks\BillHicksEdiFtpExchange;
 use FFLHub\Distributor\Services\BillHicks\BillHicksFtpCredentials;
-use FFLHub\Distributor\Services\BillHicks\BillHicksServices;
+use FFLHub\Settings\Options;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -66,7 +68,7 @@ final class BillHicksEdiTestPage
             <h1><?php esc_html_e('Bill Hicks EDI Test Orders', 'ffl-hub'); ?></h1>
             <p>
                 <?php esc_html_e(
-                    'Build and upload explicit Bill Hicks 850 test files. This page does not create Woo orders or order-job rows.',
+                    'Build explicit Bill Hicks test requests, run the real Bill Hicks validation/place_order path, and upload 850 test files. This page does not create Woo orders or order-job rows.',
                     'ffl-hub'
                 ); ?>
             </p>
@@ -313,9 +315,13 @@ final class BillHicksEdiTestPage
             return $this->error_result(['Upload confirmation is required before sending Bill Hicks test files.']);
         }
 
-        $services = $this->bill_hicks_services();
-        if (!$services instanceof BillHicksServices) {
-            return $this->error_result(['Bill Hicks services are not available. Make sure the Bill Hicks module is installed and enabled.']);
+        if (!Options::is_distributor_enabled('bill_hicks')) {
+            return $this->error_result(['Bill Hicks is disabled. Enable the distributor before sending Bill Hicks test files.']);
+        }
+
+        $distributor = $this->bill_hicks_distributor();
+        if (!$distributor instanceof DistributorBase) {
+            return $this->error_result(['Bill Hicks distributor is not available. Make sure the Bill Hicks module is installed and enabled.']);
         }
 
         $cases = isset($_POST['cases']) && is_array($_POST['cases'])
@@ -333,11 +339,6 @@ final class BillHicksEdiTestPage
             return $this->error_result(['Enable at least one Bill Hicks EDI test case before uploading.']);
         }
 
-        $builder = $services->get_edi_order_file_builder();
-        $exchange = new BillHicksEdiFtpExchange();
-        $uploads = wp_upload_dir();
-        $local_dir = trailingslashit((string) ($uploads['basedir'] ?? '')) . 'fflhub-bill-hicks-edi/test-outbound';
-
         $rows = [];
         $all_ok = true;
         foreach ($enabled as $key => $config) {
@@ -350,59 +351,86 @@ final class BillHicksEdiTestPage
 
             /** @var DistributorOrderRequest $request */
             $request = $prepared['request'];
-            /** @var DistributorOrderLine[] $lines */
-            $lines = $prepared['lines'];
-            $built = $builder->build_order_file($request, (string) ($config['lane'] ?? ''), $lines);
-            if (empty($built['ok'])) {
+
+            $validation = $distributor->validate_order_request($request, true);
+            if (!$validation instanceof DistributorOrderValidationResult) {
                 $all_ok = false;
                 $rows[] = $this->case_result_row(
                     $config,
-                    (string) ($built['po_number'] ?? $request->merchant_order_id),
-                    (string) ($built['filename'] ?? ''),
+                    $request->merchant_order_id,
                     '',
                     '',
-                    (string) ($built['ship_method'] ?? ''),
-                    (int) ($built['line_count'] ?? 0),
+                    '',
+                    '',
+                    count($request->valid_lines()),
                     false,
-                    (array) ($built['errors'] ?? [])
+                    ['Bill Hicks validation returned an invalid result.'],
+                    '',
+                    '',
+                    '',
+                    ''
                 );
                 continue;
             }
 
-            $write = $builder->write_content_to_file(
-                (string) ($built['content'] ?? ''),
-                $local_dir,
-                (string) ($built['filename'] ?? '')
-            );
-            if (empty($write['ok'])) {
+            if (empty($validation->ok)) {
                 $all_ok = false;
                 $rows[] = $this->case_result_row(
                     $config,
-                    (string) ($built['po_number'] ?? ''),
-                    (string) ($built['filename'] ?? ''),
-                    (string) ($write['path'] ?? ''),
+                    $request->merchant_order_id,
                     '',
-                    (string) ($built['ship_method'] ?? ''),
-                    (int) ($built['line_count'] ?? 0),
+                    '',
+                    '',
+                    '',
+                    count($request->valid_lines()),
                     false,
-                    [(string) ($write['error'] ?? 'Local write failed.')]
+                    [(string) $validation->message],
+                    (string) $validation->code,
+                    (string) $validation->message,
+                    '',
+                    ''
                 );
                 continue;
             }
 
-            $upload = $exchange->upload_order_file((string) ($write['path'] ?? ''), (string) ($built['filename'] ?? ''));
-            $ok = !empty($upload['ok']);
+            $order_result = $distributor->place_order($request);
+            if (!$order_result instanceof DistributorOrderResult) {
+                $all_ok = false;
+                $rows[] = $this->case_result_row(
+                    $config,
+                    $request->merchant_order_id,
+                    '',
+                    '',
+                    '',
+                    '',
+                    count($request->valid_lines()),
+                    false,
+                    ['Bill Hicks place_order returned an invalid result.'],
+                    (string) $validation->code,
+                    (string) $validation->message,
+                    '',
+                    ''
+                );
+                continue;
+            }
+
+            $ok = !empty($order_result->ok);
             $all_ok = $all_ok && $ok;
+            $details = is_array($order_result->details) ? $order_result->details : [];
             $rows[] = $this->case_result_row(
                 $config,
-                (string) ($built['po_number'] ?? ''),
-                (string) ($built['filename'] ?? ''),
-                (string) ($write['path'] ?? ''),
-                (string) ($upload['remote_path'] ?? ''),
-                (string) ($built['ship_method'] ?? ''),
-                (int) ($built['line_count'] ?? 0),
+                (string) ($details['po'] ?? $request->merchant_order_id),
+                (string) ($details['filename'] ?? ''),
+                (string) ($details['local_path'] ?? ''),
+                (string) ($details['remote_path'] ?? ''),
+                (string) ($details['ship_method'] ?? ''),
+                (int) ($details['line_count'] ?? count($request->valid_lines())),
                 $ok,
-                $ok ? [] : [(string) ($upload['error'] ?? 'FTP upload failed.')]
+                $ok ? [] : [(string) $order_result->message],
+                (string) $validation->code,
+                (string) $validation->message,
+                (string) $order_result->code,
+                (string) $order_result->message
             );
         }
 
@@ -412,15 +440,10 @@ final class BillHicksEdiTestPage
         ];
     }
 
-    private function bill_hicks_services(): ?BillHicksServices
+    private function bill_hicks_distributor(): ?DistributorBase
     {
         $distributor = $this->handler->get_distributor_by_id('bill_hicks');
-        if (!$distributor) {
-            return null;
-        }
-
-        $services = $distributor->get_services();
-        return $services instanceof BillHicksServices ? $services : null;
+        return $distributor instanceof DistributorBase ? $distributor : null;
     }
 
     /**
@@ -585,7 +608,11 @@ final class BillHicksEdiTestPage
         string $ship_method,
         int $line_count,
         bool $ok,
-        array $errors
+        array $errors,
+        string $validation_code = '',
+        string $validation_message = '',
+        string $place_code = '',
+        string $place_message = ''
     ): array {
         return [
             'label' => (string) ($config['label'] ?? ''),
@@ -597,6 +624,10 @@ final class BillHicksEdiTestPage
             'line_count' => $line_count,
             'ok' => $ok,
             'errors' => $errors,
+            'validation_code' => $validation_code,
+            'validation_message' => $validation_message,
+            'place_code' => $place_code,
+            'place_message' => $place_message,
         ];
     }
 
@@ -619,6 +650,10 @@ final class BillHicksEdiTestPage
                     'line_count' => 0,
                     'ok' => false,
                     'errors' => $errors,
+                    'validation_code' => '',
+                    'validation_message' => '',
+                    'place_code' => '',
+                    'place_message' => '',
                 ],
             ],
         ];
@@ -651,6 +686,8 @@ final class BillHicksEdiTestPage
                     <th><?php esc_html_e('File', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Ship Method', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Lines', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Validation', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Place Result', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Local / Remote', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Errors', 'ffl-hub'); ?></th>
                 </tr>
@@ -664,6 +701,14 @@ final class BillHicksEdiTestPage
                         <td><?php echo esc_html((string) ($row['filename'] ?? '')); ?></td>
                         <td><?php echo esc_html((string) ($row['ship_method'] ?? '')); ?></td>
                         <td><?php echo esc_html((string) (int) ($row['line_count'] ?? 0)); ?></td>
+                        <td>
+                            <strong><?php echo esc_html((string) ($row['validation_code'] ?? '')); ?></strong><br />
+                            <?php echo esc_html((string) ($row['validation_message'] ?? '')); ?>
+                        </td>
+                        <td>
+                            <strong><?php echo esc_html((string) ($row['place_code'] ?? '')); ?></strong><br />
+                            <?php echo esc_html((string) ($row['place_message'] ?? '')); ?>
+                        </td>
                         <td>
                             <code><?php echo esc_html((string) ($row['local_path'] ?? '')); ?></code><br />
                             <code><?php echo esc_html((string) ($row['remote_path'] ?? '')); ?></code>
