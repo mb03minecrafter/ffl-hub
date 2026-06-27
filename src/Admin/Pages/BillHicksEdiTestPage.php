@@ -12,6 +12,7 @@ use FFLHub\Distributor\Models\DistributorOrderValidationResult;
 use FFLHub\Distributor\Models\DistributorShipTo;
 use FFLHub\Distributor\Services\BillHicks\BillHicksFtpCredentials;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
+use FFLHub\Distributor\Services\Orders\Util\DealerShipToResolver;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Settings\Options;
 
@@ -152,14 +153,14 @@ final class BillHicksEdiTestPage
             ],
             'dealer_fulfilled_batch' => [
                 'label' => 'Dealer-Fulfilled Batch',
-                'description' => 'Batch-shaped file using dealer_fulfilled lane. No receiving FFL is sent; the file ships to the dealer address entered below.',
+                'description' => 'Batch-shaped file using dealer_fulfilled lane. No receiving FFL is sent; the file ships to the configured dealer ship-to address.',
                 'lane' => 'dealer_fulfilled',
                 'po_split_index' => 1,
                 'line_count' => 3,
                 'line_ffl_fixed' => null,
-                'ship_to_label' => 'Dealer ship-to',
                 'ffl_label' => '',
                 'requires_ffl_ship_to' => false,
+                'requires_dealer_ship_to' => true,
             ],
         ];
     }
@@ -234,6 +235,15 @@ final class BillHicksEdiTestPage
                     </label>
                     <p class="description">
                         <?php esc_html_e('The FFL ship-to address is resolved from the FFL table, matching the production order runner path.', 'ffl-hub'); ?>
+                    </p>
+                </div>
+            <?php elseif (!empty($config['requires_dealer_ship_to'])) : ?>
+                <div class="fflhub-bhc-ffl-panel">
+                    <p>
+                        <strong><?php esc_html_e('Dealer ship-to', 'ffl-hub'); ?></strong>
+                    </p>
+                    <p class="description">
+                        <?php esc_html_e('The dealer-fulfilled batch test uses the configured dealer ship-to address, matching the production dealer batch runner.', 'ffl-hub'); ?>
                     </p>
                 </div>
             <?php else : ?>
@@ -479,6 +489,8 @@ final class BillHicksEdiTestPage
             if ($ffl_ship_to instanceof DistributorShipTo) {
                 $ship_to = $this->test_customer_ship_to_for_ffl($ffl_ship_to);
             }
+        } elseif (!empty($config['requires_dealer_ship_to'])) {
+            $ship_to = $this->resolve_dealer_ship_to((string) ($config['label'] ?? $key), $errors);
         } else {
             $ship_to = $this->read_ship_to(
                 is_array($posted['ship_to'] ?? null) ? $posted['ship_to'] : [],
@@ -574,6 +586,23 @@ final class BillHicksEdiTestPage
         }
 
         return new DistributorShipTo($name, $company, $address1, $address2, $city, $state, $zip, $phone, $email);
+    }
+
+    /**
+     * Resolve dealer-batch destination the same way the production dealer batch
+     * runner does before it builds a dealer_fulfilled DistributorOrderRequest.
+     *
+     * @param string[] $errors
+     */
+    private function resolve_dealer_ship_to(string $label, array &$errors): ?DistributorShipTo
+    {
+        $ship_to = DealerShipToResolver::resolve();
+        if (!$ship_to instanceof DistributorShipTo) {
+            $errors[] = $label . ': unable to resolve the configured dealer ship-to address.';
+            return null;
+        }
+
+        return $ship_to;
     }
 
     /**
