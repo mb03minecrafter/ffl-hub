@@ -12,6 +12,7 @@ use FFLHub\Admin\Orders\OrderFulfillmentModeBadge;
 use FFLHub\Admin\Orders\OrderCartComplianceMetaBox;
 use FFLHub\Admin\Orders\OrderProfitAuditMetaBox;
 use FFLHub\Admin\Pages\AdminPage;
+use FFLHub\Admin\Pages\BillHicksEdiTestPage;
 use FFLHub\Admin\Pages\CheckoutActivityPage;
 use FFLHub\Admin\Pages\DavidsonsFailedJobsPage;
 use FFLHub\Admin\Pages\DealerBatchOptimizerPage;
@@ -103,6 +104,7 @@ final class Plugin
     public DealerBatchOptimizerPage $dealer_batch_optimizer_page;
     public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
     public CheckoutActivityPage $checkout_activity_page;
+    public BillHicksEdiTestPage $bill_hicks_edi_test_page;
     public DavidsonsFailedJobsPage $davidsons_failed_jobs_page;
     public RSRBatchQueuePage $rsr_batch_queue_page;
     /** @var DistributorBatchQueuePage[] */
@@ -210,6 +212,9 @@ final class Plugin
 
             $this->checkout_activity_page = new CheckoutActivityPage();
             $this->checkout_activity_page->register();
+
+            $this->bill_hicks_edi_test_page = new BillHicksEdiTestPage($this->distributor_handler);
+            $this->bill_hicks_edi_test_page->register();
 
             $this->dealer_batch_optimizer_page = new DealerBatchOptimizerPage(
                 $this->distributor_handler->ordering_jobs_table,
