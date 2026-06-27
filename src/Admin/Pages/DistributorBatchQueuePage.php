@@ -370,6 +370,9 @@ final class DistributorBatchQueuePage
             <p>
                 <?php esc_html_e('Dealer-batch timing is shared across Bill Hicks, RSR, Lipsey\'s, Orion, Sports South, and Zanders. Edit dispatch time, stock threshold, retry delay, row limits, and optimizer thresholds from the central optimizer page.', 'ffl-hub'); ?>
             </p>
+            <p class="description">
+                <?php esc_html_e('All dealer-batch placement is held on Saturdays and Sundays. Weekend rows wait until the next weekday dispatch window.', 'ffl-hub'); ?>
+            </p>
             <p>
                 <strong><?php esc_html_e('Dispatch time:', 'ffl-hub'); ?></strong>
                 <?php echo esc_html((string) ($settings['dispatch_time'] ?? self::DEFAULT_DISPATCH_TIME)); ?>
@@ -936,8 +939,9 @@ final class DistributorBatchQueuePage
             <h3><?php esc_html_e('Batch Flow', 'ffl-hub'); ?></h3>
             <ul style="list-style:disc;margin-left:18px;">
                 <li><?php echo esc_html(sprintf(__('Batch mode controls whether eligible %s %s rows are queued as batch_pending for grouped placement.', 'ffl-hub'), $this->dist_label, strtolower($this->mode_label))); ?></li>
-                <li><?php echo esc_html(sprintf(__('Dispatch time is %s Central time. Rows wait until that window unless force flush is enabled.', 'ffl-hub'), $dispatch_time)); ?></li>
-                <li><?php esc_html_e('Force Flush + Run Now sets a one-time force flag and schedules the batch cron immediately.', 'ffl-hub'); ?></li>
+                <li><?php echo esc_html(sprintf(__('Dispatch time is %s Central time on weekdays. Rows wait until that window unless force flush is enabled.', 'ffl-hub'), $dispatch_time)); ?></li>
+                <li><?php esc_html_e('Saturday and Sunday rows are held until the next weekday dispatch window.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Force Flush + Run Now sets a one-time force flag and schedules the batch cron immediately. It can bypass the weekday clock, but not the weekend hold.', 'ffl-hub'); ?></li>
                 <li><?php echo esc_html(sprintf(__('Retry Delay (%d sec) and Max Rows Per Run (%d) bound how aggressively each cron run processes queue entries.', 'ffl-hub'), $retry_delay, $max_rows)); ?></li>
                 <li><?php esc_html_e('The queue tables above show both aggregated UPC demand and raw per-line entries so you can audit exactly what will be sent.', 'ffl-hub'); ?></li>
             </ul>

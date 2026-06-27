@@ -167,7 +167,7 @@ final class RSRModule implements DistributorModuleInterface
                 'label'       => 'Dealer Batch Dispatch Time',
                 'type'        => 'text',
                 'placeholder' => '17:00',
-                'description' => 'Weekday local dispatch time in 24-hour HH:MM format. RSR scheduled dealer batches are held on Saturdays and Sundays, but low-stock priority rows can still place immediately. Example: 17:00.',
+                'description' => 'Weekday local dispatch time in 24-hour HH:MM format. Dealer batches are held on Saturdays and Sundays. Example: 17:00.',
                 'default'     => '17:00',
             ],
             'dealer_batch_low_stock_threshold' => [

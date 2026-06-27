@@ -341,12 +341,14 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                 return;
             }
 
-            // The configured dispatch time is the hard gate for all automated aggregate
-            // dealer/relay placement. This intentionally runs before low-stock partitioning:
+            // Weekdays plus the configured dispatch time are the hard gates for
+            // all automated aggregate dealer/relay placement. This intentionally
+            // runs before low-stock partitioning:
             // a batch_pending row can be due in the DB before the dispatch window opens, but
             // it must not place early unless an operator explicitly requested force flush.
-            $dispatch_block_reason = $force_flush ? '' : $this->current_dispatch_block_reason();
-            $dispatch_due = $force_flush || $this->is_dispatch_window_open();
+            // Force flush may bypass the clock on weekdays, but never the weekend hold.
+            $dispatch_block_reason = $this->current_dispatch_block_reason();
+            $dispatch_due = $dispatch_block_reason === '' && ($force_flush || $this->is_dispatch_window_open());
             $run_stats['dispatch_due'] = $dispatch_due ? 1 : 0;
 
             if ($dispatch_block_reason !== '') {
@@ -1869,12 +1871,13 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
 
     protected function is_dispatch_day_allowed(\DateTimeImmutable $local_time): bool
     {
-        return true;
+        $day_of_week = (int) $local_time->format('N');
+        return $day_of_week >= 1 && $day_of_week <= 5;
     }
 
     protected function dispatch_day_block_reason(\DateTimeImmutable $local_time): string
     {
-        return 'dispatch_day_not_allowed';
+        return 'dealer_batch_weekend_hold';
     }
 
     private function mark_scheduled_flush_attempt(string $now_mysql_utc): void

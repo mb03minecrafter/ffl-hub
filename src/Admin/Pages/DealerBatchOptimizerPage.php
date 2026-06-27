@@ -105,7 +105,7 @@ final class DealerBatchOptimizerPage
                     </tr>
                     <tr>
                         <td><strong><?php esc_html_e('Dispatch time (Central)', 'ffl-hub'); ?></strong></td>
-                        <td><?php esc_html_e('The daily scheduled dispatch window in America/Chicago time. Normal dealer-batch rows wait until this time unless force flush is requested. Low-stock priority rows may still flush earlier according to the batch engine rules.', 'ffl-hub'); ?></td>
+                        <td><?php esc_html_e('The weekday scheduled dispatch window in America/Chicago time. Dealer-batch rows are held on Saturdays and Sundays. Force flush can bypass the clock on a weekday, but not the weekend hold.', 'ffl-hub'); ?></td>
                     </tr>
                     <tr>
                         <td><strong><?php esc_html_e('Low stock threshold', 'ffl-hub'); ?></strong></td>
@@ -121,7 +121,7 @@ final class DealerBatchOptimizerPage
                     </tr>
                     <tr>
                         <td><strong><?php esc_html_e('Force flush token', 'ffl-hub'); ?></strong></td>
-                        <td><?php esc_html_e('Requests a one-pass force flush. Each dealer-batch distributor can consume the token once, which lets all batch distributors flush without needing separate per-distributor force flags.', 'ffl-hub'); ?></td>
+                        <td><?php esc_html_e('Requests a one-pass force flush. Each dealer-batch distributor can consume the token once, which lets all batch distributors flush without needing separate per-distributor force flags. Weekend hold still applies.', 'ffl-hub'); ?></td>
                     </tr>
                     <tr>
                         <td><strong><?php esc_html_e('Free shipping threshold', 'ffl-hub'); ?></strong></td>

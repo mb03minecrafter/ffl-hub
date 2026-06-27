@@ -186,7 +186,7 @@ final class RSRBatchQueuePage
             ? __('Force flush enabled and batch run scheduled.', 'ffl-hub')
             : __('Force flush enabled and batch run triggered.', 'ffl-hub');
         if ($this->is_weekend_hold_active()) {
-            $msg = __('Force flush enabled. RSR weekend hold is active, so non-priority queued rows will flush at the next weekday dispatch time.', 'ffl-hub');
+            $msg = __('Force flush enabled. Weekend hold is active, so queued dealer-batch rows will wait until the next weekday dispatch time.', 'ffl-hub');
         }
         $this->redirect_with_notice('success', $msg);
     }
@@ -276,7 +276,7 @@ final class RSRBatchQueuePage
                 <?php echo esc_html((string) ((int) ($settings['max_rows_per_run'] ?? self::DEFAULT_MAX_ROWS_PER_RUN))); ?>
             </p>
             <p class="description">
-                <?php esc_html_e('RSR scheduled dealer batch placement is still held on Saturdays and Sundays. Low-stock priority rows can place immediately.', 'ffl-hub'); ?>
+                <?php esc_html_e('Dealer batch placement is held on Saturdays and Sundays for every batch-enabled distributor.', 'ffl-hub'); ?>
             </p>
             <p>
                 <a class="button button-secondary" href="<?php echo esc_url($settings_url); ?>">
@@ -301,7 +301,7 @@ final class RSRBatchQueuePage
                     <?php
                     echo esc_html(
                         sprintf(
-                            __('Non-priority RSR batch rows will not be placed again until %s. Low-stock priority rows can still place immediately.', 'ffl-hub'),
+                            __('Dealer-batch rows will not be placed again until %s.', 'ffl-hub'),
                             (string) ($settings['next_allowed_dispatch_label'] ?? '')
                         )
                     );
@@ -823,9 +823,9 @@ final class RSRBatchQueuePage
             <h3><?php esc_html_e('Batch Flow', 'ffl-hub'); ?></h3>
             <ul style="list-style:disc;margin-left:18px;">
                 <li><?php esc_html_e('Batch mode controls whether eligible RSR dealer rows are queued as batch_pending for grouped placement.', 'ffl-hub'); ?></li>
-                <li><?php echo esc_html(sprintf(__('Dispatch time is %s Central time. Rows wait until that window unless force flush is enabled.', 'ffl-hub'), $dispatch_time)); ?></li>
-                <li><?php esc_html_e('RSR scheduled batch placement is blocked on Saturdays and Sundays; low-stock priority rows can still place immediately.', 'ffl-hub'); ?></li>
-                <li><?php esc_html_e('Force Flush + Run Now sets a one-time force flag and schedules the batch cron immediately.', 'ffl-hub'); ?></li>
+                <li><?php echo esc_html(sprintf(__('Dispatch time is %s Central time on weekdays. Rows wait until that window unless force flush is enabled.', 'ffl-hub'), $dispatch_time)); ?></li>
+                <li><?php esc_html_e('Saturday and Sunday dealer-batch placement is blocked for every batch-enabled distributor.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Force Flush + Run Now sets a one-time force flag and schedules the batch cron immediately. It can bypass the weekday clock, but not the weekend hold.', 'ffl-hub'); ?></li>
                 <li><?php echo esc_html(sprintf(__('Retry Delay (%d sec) and Max Rows Per Run (%d) bound how aggressively each cron run processes queue entries.', 'ffl-hub'), $retry_delay, $max_rows)); ?></li>
                 <li><?php esc_html_e('The queue tables above show both aggregated UPC demand and raw per-line entries so you can audit exactly what will be sent.', 'ffl-hub'); ?></li>
             </ul>
