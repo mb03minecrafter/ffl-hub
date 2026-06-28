@@ -356,7 +356,7 @@ final class CollectionCarouselBlock
             $image_id = self::first_product_thumbnail_id($term);
         }
 
-        $description = self::description_excerpt($term);
+        $description = self::seo_meta_excerpt($term);
         ?>
         <a class="fflhub-collection-carousel__card" href="<?php echo esc_url((string) $link); ?>">
             <span class="fflhub-collection-carousel__media">
@@ -448,6 +448,57 @@ final class CollectionCarouselBlock
         }
 
         return wp_html_excerpt($description, 130, '...');
+    }
+
+    private static function seo_meta_excerpt(WP_Term $term): string
+    {
+        $description = self::yoast_meta_description($term);
+        if ($description === '') {
+            return self::description_excerpt($term);
+        }
+
+        return wp_html_excerpt(trim(wp_strip_all_tags($description)), 150, '...');
+    }
+
+    private static function yoast_meta_description(WP_Term $term): string
+    {
+        foreach (['_yoast_wpseo_metadesc', 'wpseo_metadesc', '_yoast_wpseo_desc', 'wpseo_desc'] as $key) {
+            $value = trim((string) get_term_meta((int) $term->term_id, $key, true));
+            if ($value !== '') {
+                return self::replace_yoast_vars($value, $term);
+            }
+        }
+
+        $meta = get_option('wpseo_taxonomy_meta');
+        if (!is_array($meta) || empty($meta[$term->taxonomy]) || !is_array($meta[$term->taxonomy])) {
+            return '';
+        }
+
+        $term_meta = $meta[$term->taxonomy][(int) $term->term_id] ?? null;
+        if (!is_array($term_meta)) {
+            return '';
+        }
+
+        foreach (['wpseo_desc', 'wpseo_metadesc', 'metadesc'] as $key) {
+            $value = trim((string) ($term_meta[$key] ?? ''));
+            if ($value !== '') {
+                return self::replace_yoast_vars($value, $term);
+            }
+        }
+
+        return '';
+    }
+
+    private static function replace_yoast_vars(string $value, WP_Term $term): string
+    {
+        if (function_exists('wpseo_replace_vars')) {
+            $replaced = wpseo_replace_vars($value, $term);
+            if (is_string($replaced) && trim($replaced) !== '') {
+                return trim($replaced);
+            }
+        }
+
+        return $value;
     }
 
     private static function enqueue_frontend_assets(): void

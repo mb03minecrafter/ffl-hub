@@ -103,7 +103,7 @@
                             }
                         }),
                         el(ToggleControl, {
-                            label: 'Show descriptions',
+                            label: 'Show SEO meta descriptions',
                             checked: attrs.showDescription !== false,
                             onChange: function(value) {
                                 setAttributes({ showDescription: !!value });

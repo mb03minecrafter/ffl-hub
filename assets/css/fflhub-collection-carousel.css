@@ -39,7 +39,12 @@
     padding: 2px 2px 16px;
     scroll-behavior: smooth;
     scroll-snap-type: x mandatory;
-    scrollbar-width: thin;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.fflhub-collection-carousel__track::-webkit-scrollbar {
+    display: none;
 }
 
 .fflhub-collection-carousel__card {
