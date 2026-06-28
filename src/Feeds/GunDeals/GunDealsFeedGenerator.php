@@ -237,6 +237,8 @@ final class GunDealsFeedGenerator
             throw new \RuntimeException('WordPress database connection is unavailable.');
         }
 
+        ProductStateStore::ensure_schema();
+
         $posts = $wpdb->posts;
         $product_state = ProductStateStore::table_name();
         $term_relationships = $wpdb->term_relationships;
@@ -259,7 +261,7 @@ final class GunDealsFeedGenerator
                 COALESCE(CAST(ps.source_offer_normalized_at AS CHAR), CAST(ps.selected_at AS CHAR)) AS last_stock_update,
                 CAST(ps.landed_cost AS CHAR) AS true_cost,
                 CAST(ps.dealer_price AS CHAR) AS dealer_price,
-                CAST(ps.map_price AS CHAR) AS map_price,
+                CAST(ps.effective_map_price AS CHAR) AS map_price,
                 CAST(ps.msrp AS CHAR) AS msrp,
                 CAST(ps.computed_sell_price AS CHAR) AS computed_price,
                 CAST(COALESCE(ps.map_applicable, 0) AS CHAR) AS map_applicable,

@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 final class ProductStateStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_state_schema_version';
-    private const SCHEMA_VERSION = '8';
+    private const SCHEMA_VERSION = '9';
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
@@ -83,8 +83,11 @@ final class ProductStateStore
                 pricing_fixed_price DECIMAL(12,4) DEFAULT NULL,
                 pricing_fixed_profit DECIMAL(12,4) DEFAULT NULL,
                 map_visibility_policy VARCHAR(32) DEFAULT NULL,
+                map_override_mode VARCHAR(32) NOT NULL DEFAULT 'auto',
+                map_override_price DECIMAL(12,4) DEFAULT NULL,
                 quote_free_shipping_override TINYINT(1) NOT NULL DEFAULT 0,
                 computed_sell_price DECIMAL(12,4) DEFAULT NULL,
+                effective_map_price DECIMAL(12,4) DEFAULT NULL,
                 map_applicable TINYINT(1) NOT NULL DEFAULT 0,
                 public_regular_price DECIMAL(12,4) DEFAULT NULL,
                 public_sale_price DECIMAL(12,4) DEFAULT NULL,
@@ -113,6 +116,7 @@ final class ProductStateStore
         self::drop_legacy_columns($table);
         self::ensure_column_order($table);
         self::ensure_indexes($table);
+        self::ensure_map_override_defaults($table);
 
         update_option(self::SCHEMA_OPTION, self::SCHEMA_VERSION, false);
     }
@@ -166,6 +170,92 @@ final class ProductStateStore
             $placement = ($after === null) ? ' FIRST' : " AFTER {$after}";
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN {$definition}{$placement}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
+    }
+
+    private static function ensure_map_override_defaults(string $table): void
+    {
+        global $wpdb;
+
+        $wpdb->query("
+            UPDATE {$table}
+            SET map_override_mode = 'auto'
+            WHERE map_override_mode IS NULL
+               OR map_override_mode = ''
+               OR map_override_mode NOT IN ('auto', 'manual_price', 'force_no_map')
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $wpdb->query("
+            UPDATE {$table}
+            SET effective_map_price = CASE
+                    WHEN map_override_mode = 'force_no_map' THEN NULL
+                    WHEN map_override_mode = 'manual_price'
+                        AND map_override_price IS NOT NULL
+                        AND map_override_price > 0
+                    THEN map_override_price
+                    ELSE map_price
+                END,
+                map_applicable = CASE
+                    WHEN (
+                        CASE
+                            WHEN map_override_mode = 'force_no_map' THEN NULL
+                            WHEN map_override_mode = 'manual_price'
+                                AND map_override_price IS NOT NULL
+                                AND map_override_price > 0
+                            THEN map_override_price
+                            ELSE map_price
+                        END
+                    ) IS NOT NULL
+                    AND (
+                        CASE
+                            WHEN map_override_mode = 'force_no_map' THEN NULL
+                            WHEN map_override_mode = 'manual_price'
+                                AND map_override_price IS NOT NULL
+                                AND map_override_price > 0
+                            THEN map_override_price
+                            ELSE map_price
+                        END
+                    ) > 0
+                    THEN 1
+                    ELSE 0
+                END
+            WHERE NOT (
+                    effective_map_price <=> CASE
+                        WHEN map_override_mode = 'force_no_map' THEN NULL
+                        WHEN map_override_mode = 'manual_price'
+                            AND map_override_price IS NOT NULL
+                            AND map_override_price > 0
+                        THEN map_override_price
+                        ELSE map_price
+                    END
+                AND map_applicable <=> CASE
+                    WHEN (
+                        CASE
+                            WHEN map_override_mode = 'force_no_map' THEN NULL
+                            WHEN map_override_mode = 'manual_price'
+                                AND map_override_price IS NOT NULL
+                                AND map_override_price > 0
+                            THEN map_override_price
+                            ELSE map_price
+                        END
+                    ) IS NOT NULL
+                    AND (
+                        CASE
+                            WHEN map_override_mode = 'force_no_map' THEN NULL
+                            WHEN map_override_mode = 'manual_price'
+                                AND map_override_price IS NOT NULL
+                                AND map_override_price > 0
+                            THEN map_override_price
+                            ELSE map_price
+                        END
+                    ) > 0
+                    THEN 1
+                    ELSE 0
+                END
+            )
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        self::$row_cache_by_product_id = [];
+        self::$row_cache_by_upc = [];
     }
 
     private static function drop_legacy_columns(string $table): void
@@ -287,8 +377,11 @@ final class ProductStateStore
             'pricing_fixed_price' => 'pricing_fixed_price DECIMAL(12,4) DEFAULT NULL',
             'pricing_fixed_profit' => 'pricing_fixed_profit DECIMAL(12,4) DEFAULT NULL',
             'map_visibility_policy' => 'map_visibility_policy VARCHAR(32) DEFAULT NULL',
+            'map_override_mode' => "map_override_mode VARCHAR(32) NOT NULL DEFAULT 'auto'",
+            'map_override_price' => 'map_override_price DECIMAL(12,4) DEFAULT NULL',
             'quote_free_shipping_override' => 'quote_free_shipping_override TINYINT(1) NOT NULL DEFAULT 0',
             'computed_sell_price' => 'computed_sell_price DECIMAL(12,4) DEFAULT NULL',
+            'effective_map_price' => 'effective_map_price DECIMAL(12,4) DEFAULT NULL',
             'map_applicable' => 'map_applicable TINYINT(1) NOT NULL DEFAULT 0',
             'public_regular_price' => 'public_regular_price DECIMAL(12,4) DEFAULT NULL',
             'public_sale_price' => 'public_sale_price DECIMAL(12,4) DEFAULT NULL',
@@ -482,6 +575,9 @@ final class ProductStateStore
                 ? self::money_or_null(max(0.0, self::float_or_null($overrides['pricing_fixed_profit'] ?? null) ?? 0.0), 4)
                 : null,
             'map_visibility_policy' => $map_policy,
+            'map_override_mode' => 'auto',
+            'map_override_price' => null,
+            'effective_map_price' => null,
             'quote_free_shipping_override' => !empty($overrides['quote_free_shipping_override']) ? 1 : 0,
             'map_applicable' => 0,
             'manual_shipping_override' => 0,
@@ -533,12 +629,23 @@ final class ProductStateStore
 
     public static function get_map_applicable_for_product(int $product_id): bool
     {
-        return self::bool_column_for_product($product_id, 'map_applicable');
+        return self::get_map_price_for_product($product_id) !== null;
     }
 
     public static function get_map_price_for_product(int $product_id): ?float
     {
-        return self::float_column_for_product($product_id, 'map_price');
+        $row = self::get_row_for_product_id($product_id);
+        if (!is_array($row)) {
+            return null;
+        }
+
+        $effective_map_price = self::effective_map_price(
+            self::nullable_string($row['map_price'] ?? null),
+            self::admin_map_override_mode($row['map_override_mode'] ?? 'auto'),
+            self::float_or_null($row['map_override_price'] ?? null)
+        );
+
+        return ($effective_map_price !== null && $effective_map_price > 0.0) ? $effective_map_price : null;
     }
 
     public static function get_computed_sell_price_for_product(int $product_id): ?float
@@ -923,9 +1030,20 @@ final class ProductStateStore
             ? max(0.0, self::float_or_null($raw['pricing_fixed_profit'] ?? null) ?? 0.0)
             : null;
 
-        $map_applicable = self::float_or_null($row['map_price'] ?? null) !== null
-            && (float) $row['map_price'] > 0.0;
-        $visibility_policy = self::admin_map_visibility_policy($raw['map_visibility_policy'] ?? '', $map_applicable);
+        $map_override_mode = self::admin_map_override_mode($raw['map_override_mode'] ?? ($row['map_override_mode'] ?? 'auto'));
+        $map_override_price = ($map_override_mode === 'manual_price')
+            ? self::float_or_null($raw['map_override_price'] ?? null)
+            : null;
+        $effective_map_price = self::effective_map_price(
+            self::nullable_string($row['map_price'] ?? null),
+            $map_override_mode,
+            $map_override_price
+        );
+        $map_applicable = $effective_map_price !== null && $effective_map_price > 0.0;
+        $raw_visibility_policy = self::nullable_string($raw['map_visibility_policy'] ?? null)
+            ?? self::nullable_string($row['map_visibility_policy'] ?? null)
+            ?? '';
+        $visibility_policy = self::admin_map_visibility_policy($raw_visibility_policy, $map_applicable);
 
         $computed_sell_price = self::computed_sell_price(
             $pricing_mode,
@@ -935,7 +1053,7 @@ final class ProductStateStore
             self::nullable_string($row['dealer_price'] ?? null),
             self::nullable_string($row['shipping_cost'] ?? null),
             self::nullable_string($row['landed_cost'] ?? null),
-            self::nullable_string($row['map_price'] ?? null),
+            self::nullable_string($effective_map_price),
             $row['computed_sell_price'] ?? null,
             get_post_meta($product_id, '_regular_price', true),
             get_post_meta($product_id, '_price', true)
@@ -943,7 +1061,7 @@ final class ProductStateStore
 
         $public_prices = self::public_price_fields(
             $computed_sell_price,
-            self::nullable_string($row['map_price'] ?? null),
+            self::nullable_string($effective_map_price),
             self::nullable_string($row['msrp'] ?? null),
             $visibility_policy,
             $map_applicable,
@@ -968,6 +1086,9 @@ final class ProductStateStore
             'pricing_fixed_price' => self::money_or_null($fixed_price, 4),
             'pricing_fixed_profit' => self::money_or_null($fixed_profit, 4),
             'map_visibility_policy' => $visibility_policy,
+            'map_override_mode' => $map_override_mode,
+            'map_override_price' => self::money_or_null($map_override_price, 4),
+            'effective_map_price' => self::money_or_null($effective_map_price, 4),
             'quote_free_shipping_override' => !empty($raw['quote_free_shipping_override']) ? 1 : 0,
             'computed_sell_price' => self::money_or_null($computed_sell_price, 4),
             'map_applicable' => $map_applicable ? 1 : 0,
@@ -1100,6 +1221,9 @@ final class ProductStateStore
             'shipping_cost' => $shipping_cost,
             'landed_cost' => $landed_cost,
             'map_price' => $map_price,
+            'map_override_mode' => 'auto',
+            'map_override_price' => null,
+            'effective_map_price' => $map_price,
             'msrp' => $msrp,
             'ffl_required' => $ffl_required,
             'sot_required' => $sot_required,
@@ -1555,6 +1679,28 @@ final class ProductStateStore
         ], true) ? $policy : Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
     }
 
+    private static function admin_map_override_mode($raw): string
+    {
+        $mode = strtolower(trim((string) $raw));
+        return in_array($mode, ['auto', 'manual_price', 'force_no_map'], true) ? $mode : 'auto';
+    }
+
+    private static function effective_map_price(?string $raw_map_price, string $override_mode, ?float $override_price): ?float
+    {
+        if ($override_mode === 'force_no_map') {
+            return null;
+        }
+
+        if ($override_mode === 'manual_price') {
+            return ($override_price !== null && $override_price > 0.0)
+                ? round($override_price, 4)
+                : null;
+        }
+
+        $map = self::float_or_null($raw_map_price);
+        return ($map !== null && $map > 0.0) ? round($map, 4) : null;
+    }
+
     private static function admin_nullable_absint($raw): ?int
     {
         $raw = trim((string) $raw);
@@ -1669,6 +1815,9 @@ final class ProductStateStore
             'shipping_cost' => '%f',
             'landed_cost' => '%f',
             'map_price' => '%f',
+            'map_override_mode' => '%s',
+            'map_override_price' => '%f',
+            'effective_map_price' => '%f',
             'msrp' => '%f',
             'ffl_required' => '%d',
             'sot_required' => '%d',

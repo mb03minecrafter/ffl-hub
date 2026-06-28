@@ -210,6 +210,8 @@ final class ProductStateBestOfferApplyService
     {
         $computed_sell_price = ProductStatePricingSql::computed_sell_price_expr('ps', 'b');
         $effective_map_policy = ProductStatePricingSql::effective_map_policy_expr('ps', 'b');
+        $effective_map_price = ProductStatePricingSql::effective_map_price_expr('ps', 'b');
+        $map_applicable = ProductStatePricingSql::map_applicable_expr('ps', 'b');
         $public_regular_price = ProductStatePricingSql::public_regular_price_expr('ps', 'b', $computed_sell_price, $effective_map_policy);
         $public_sale_price = ProductStatePricingSql::public_sale_price_expr('ps', 'b', $computed_sell_price, $effective_map_policy);
         $global_percent = self::global_percent_literal();
@@ -232,6 +234,7 @@ final class ProductStateBestOfferApplyService
                 ps.shipping_cost = b.shipping_cost,
                 ps.landed_cost = b.landed_cost,
                 ps.map_price = b.map_price,
+                ps.effective_map_price = {$effective_map_price},
                 ps.msrp = b.msrp,
                 ps.ffl_required = b.ffl_required,
                 ps.sot_required = b.sot_required,
@@ -250,10 +253,7 @@ final class ProductStateBestOfferApplyService
                     ELSE ps.pricing_percent
                 END,
                 ps.computed_sell_price = {$computed_sell_price},
-                ps.map_applicable = CASE
-                    WHEN b.map_price IS NOT NULL AND b.map_price > 0 THEN 1
-                    ELSE 0
-                END,
+                ps.map_applicable = {$map_applicable},
                 ps.public_regular_price = {$public_regular_price},
                 ps.public_sale_price = {$public_sale_price},
                 ps.updated_at = NOW(),
@@ -266,6 +266,8 @@ final class ProductStateBestOfferApplyService
     {
         $computed_sell_price = ProductStatePricingSql::computed_sell_price_expr('ps', 'ps');
         $effective_map_policy = ProductStatePricingSql::effective_map_policy_expr('ps', 'ps');
+        $effective_map_price = ProductStatePricingSql::effective_map_price_expr('ps', 'ps');
+        $map_applicable = ProductStatePricingSql::map_applicable_expr('ps', 'ps');
         $public_regular_price = ProductStatePricingSql::public_regular_price_expr('ps', 'ps', $computed_sell_price, $effective_map_policy);
         $public_sale_price = ProductStatePricingSql::public_sale_price_expr('ps', 'ps', $computed_sell_price, $effective_map_policy);
         $global_percent = self::global_percent_literal();
@@ -275,17 +277,11 @@ final class ProductStateBestOfferApplyService
                 ELSE ps.pricing_percent
             END
         ";
-        $map_applicable = "
-            CASE
-                WHEN ps.map_price IS NOT NULL AND ps.map_price > 0 THEN 1
-                ELSE 0
-            END
-        ";
-
         return "
             UPDATE {$product_state_table} ps
             SET
                 ps.pricing_percent = {$pricing_percent},
+                ps.effective_map_price = {$effective_map_price},
                 ps.computed_sell_price = {$computed_sell_price},
                 ps.map_applicable = {$map_applicable},
                 ps.public_regular_price = {$public_regular_price},
@@ -294,6 +290,7 @@ final class ProductStateBestOfferApplyService
                 ps.has_changed = 1
             WHERE NOT (
                     ps.pricing_percent <=> {$pricing_percent}
+                AND ps.effective_map_price <=> {$effective_map_price}
                 AND ps.computed_sell_price <=> {$computed_sell_price}
                 AND ps.map_applicable <=> {$map_applicable}
                 AND ps.public_regular_price <=> {$public_regular_price}

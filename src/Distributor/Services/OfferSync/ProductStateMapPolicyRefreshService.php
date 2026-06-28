@@ -162,7 +162,8 @@ final class ProductStateMapPolicyRefreshService
 
         $computed_sell_price = ProductStatePricingSql::computed_sell_price_expr('ps', 'ps');
         $target_policy = self::target_policy_expr('ps', 'm');
-        $map_applicable = self::map_applicable_expr('ps');
+        $effective_map_price = ProductStatePricingSql::effective_map_price_expr('ps', 'ps');
+        $map_applicable = ProductStatePricingSql::map_applicable_expr('ps', 'ps');
         $public_regular_price = ProductStatePricingSql::public_regular_price_expr('ps', 'ps', $computed_sell_price, $target_policy);
         $public_sale_price = ProductStatePricingSql::public_sale_price_expr('ps', 'ps', $computed_sell_price, $target_policy);
 
@@ -177,6 +178,7 @@ final class ProductStateMapPolicyRefreshService
                     ELSE ps.pricing_percent
                 END,
                 ps.map_visibility_policy = {$target_policy},
+                ps.effective_map_price = {$effective_map_price},
                 ps.computed_sell_price = {$computed_sell_price},
                 ps.map_applicable = {$map_applicable},
                 ps.public_regular_price = {$public_regular_price},
@@ -186,6 +188,7 @@ final class ProductStateMapPolicyRefreshService
             WHERE ps.status = 'active'
               AND NOT (
                     ps.map_visibility_policy <=> {$target_policy}
+                AND ps.effective_map_price <=> {$effective_map_price}
                 AND ps.computed_sell_price <=> {$computed_sell_price}
                 AND ps.map_applicable <=> {$map_applicable}
                 AND ps.public_regular_price <=> {$public_regular_price}
@@ -254,16 +257,6 @@ final class ProductStateMapPolicyRefreshService
     {
         return "
             {$policy_alias}.policy
-        ";
-    }
-
-    private static function map_applicable_expr(string $state_alias): string
-    {
-        return "
-            CASE
-                WHEN {$state_alias}.map_price IS NOT NULL AND {$state_alias}.map_price > 0 THEN 1
-                ELSE 0
-            END
         ";
     }
 

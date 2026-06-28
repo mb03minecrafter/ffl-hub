@@ -62,6 +62,7 @@ class ProductMetaBox
 
         $pricing_mode = self::state_value_raw($row['pricing_mode'] ?? 'global_percent', 'global_percent');
         $map_policy = self::state_value_raw($row['map_visibility_policy'] ?? 'none', 'none');
+        $map_override_mode = self::state_value_raw($row['map_override_mode'] ?? 'auto', 'auto');
         $status = self::state_value_raw($row['status'] ?? 'active', 'active');
         $enabled_distributors = self::enabled_distributor_options();
         $allowed_distributor_ids = self::normalize_distributor_lock_ids($row['allowed_distributors_json'] ?? '');
@@ -241,6 +242,39 @@ class ProductMetaBox
 
         echo '<div class="fflhub-state-card">';
         echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('MAP Visibility', 'ffl-hub') . '</h3>';
+        echo '<div class="fflhub-state-field">';
+        echo '<span class="fflhub-state-label">' . esc_html__('MAP source values', 'ffl-hub') . '</span>';
+        echo '<code style="display:block;font-size:13px;">' .
+            esc_html(sprintf(
+                __('Raw: %1$s | Effective: %2$s', 'ffl-hub'),
+                self::state_money($row['map_price'] ?? null),
+                self::state_money($row['effective_map_price'] ?? null)
+            )) .
+            '</code>';
+        echo '<span class="fflhub-state-field__hint">' .
+            esc_html__('Raw MAP is what the selected offer supplied. Effective MAP is what product_state uses after override rules.', 'ffl-hub') .
+            '</span>';
+        echo '</div>';
+        echo '<div class="fflhub-state-field">';
+        echo '<label>' . esc_html__('MAP override mode', 'ffl-hub') . '</label>';
+        echo '<select id="fflhub_state_map_override_mode" name="fflhub_state_map_override_mode">';
+        foreach (self::product_state_map_override_mode_options() as $value => $label) {
+            echo '<option value="' . esc_attr($value) . '" ' . selected($map_override_mode, $value, false) . '>' . esc_html($label) . '</option>';
+        }
+        echo '</select>';
+        echo '<span class="fflhub-state-field__hint">' .
+            esc_html__('Auto preserves distributor/source MAP behavior. Manual forces a specific MAP. Force no MAP ignores stale distributor MAP for this product.', 'ffl-hub') .
+            '</span>';
+        echo '</div>';
+        echo '<div class="fflhub-state-field" data-map-override-field="manual_price">';
+        echo '<label>' . esc_html__('Manual MAP price', 'ffl-hub') . '</label>';
+        echo '<input type="number" step="0.01" min="0" id="fflhub_state_map_override_price" name="fflhub_state_map_override_price" value="' .
+            esc_attr(self::state_decimal_for_input($row['map_override_price'] ?? null)) .
+            '" />';
+        echo '<span class="fflhub-state-field__hint">' .
+            esc_html__('Used only when MAP override mode is Manual MAP Price.', 'ffl-hub') .
+            '</span>';
+        echo '</div>';
         echo '<div class="fflhub-state-field" data-map-field="visibility">';
         echo '<label>' . esc_html__('Visibility policy', 'ffl-hub') . '</label>';
         echo '<select id="fflhub_state_map_visibility_policy" name="fflhub_state_map_visibility_policy">';
@@ -324,6 +358,7 @@ class ProductMetaBox
         echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Calculated Product State Outputs', 'ffl-hub') . '</h3>';
         echo '<div class="fflhub-state-output__grid">';
         self::render_state_output_chip(__('Computed sell price', 'ffl-hub'), self::state_money($row['computed_sell_price'] ?? null), 'price');
+        self::render_state_output_chip(__('Effective MAP', 'ffl-hub'), self::state_money($row['effective_map_price'] ?? null), self::truthy_state($row['map_applicable'] ?? null) ? 'warning' : 'neutral');
         self::render_state_output_chip(__('MAP applicable', 'ffl-hub'), self::state_yes_no($row['map_applicable'] ?? null), self::truthy_state($row['map_applicable'] ?? null) ? 'warning' : 'neutral');
         self::render_state_output_chip(__('Public regular', 'ffl-hub'), self::state_money($row['public_regular_price'] ?? null), 'price');
         self::render_state_output_chip(__('Public sale', 'ffl-hub'), self::state_money($row['public_sale_price'] ?? null), 'price');
@@ -405,18 +440,23 @@ class ProductMetaBox
                 'landed_cost',
                 'map_price',
                 'msrp',
-                'computed_sell_price',
-                'public_regular_price',
-                'public_sale_price',
             ],
             __('Pricing Rules', 'ffl-hub') => [
                 'pricing_mode',
                 'pricing_percent',
                 'pricing_fixed_price',
                 'pricing_fixed_profit',
-                'map_applicable',
                 'map_visibility_policy',
+                'map_override_mode',
+                'map_override_price',
                 'quote_free_shipping_override',
+            ],
+            __('Calculated Outputs', 'ffl-hub') => [
+                'computed_sell_price',
+                'effective_map_price',
+                'map_applicable',
+                'public_regular_price',
+                'public_sale_price',
             ],
             __('Overrides / Sync', 'ffl-hub') => [
                 'manual_shipping_override',
@@ -460,6 +500,8 @@ class ProductMetaBox
             'shipping_cost',
             'landed_cost',
             'map_price',
+            'map_override_price',
+            'effective_map_price',
             'msrp',
             'computed_sell_price',
             'public_regular_price',
@@ -510,7 +552,8 @@ class ProductMetaBox
         self::render_state_output_chip(__('Dealer cost', 'ffl-hub'), self::state_money($row['dealer_price'] ?? null), 'cost');
         self::render_state_output_chip(__('Shipping cost', 'ffl-hub'), self::state_money($row['shipping_cost'] ?? null), self::shipping_chip_tone($row['shipping_cost'] ?? null));
         self::render_state_output_chip(__('Landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null), 'cost');
-        self::render_state_output_chip(__('MAP / MSRP', 'ffl-hub'), self::state_money($row['map_price'] ?? null) . ' / ' . self::state_money($row['msrp'] ?? null), 'price');
+        self::render_state_output_chip(__('Raw / Effective MAP', 'ffl-hub'), self::state_money($row['map_price'] ?? null) . ' / ' . self::state_money($row['effective_map_price'] ?? null), 'price');
+        self::render_state_output_chip(__('MSRP', 'ffl-hub'), self::state_money($row['msrp'] ?? null), 'price');
         echo '</div>';
         echo '</div>';
     }
@@ -604,6 +647,8 @@ class ProductMetaBox
 
                 var pricingMode = root.querySelector('#fflhub_state_pricing_mode');
                 var mapPolicy = root.querySelector('#fflhub_state_map_visibility_policy');
+                var mapOverrideMode = root.querySelector('#fflhub_state_map_override_mode');
+                var mapOverridePrice = root.querySelector('#fflhub_state_map_override_price');
                 var localQty = root.querySelector('input[name="fflhub_state_local_stock_override_qty"]');
                 var distEnabled = root.querySelector('#fflhub_state_allowed_distributors_enabled');
                 var mapApplicable = root.getAttribute('data-map-applicable') === '1';
@@ -628,18 +673,37 @@ class ProductMetaBox
                     return !isNaN(parsed) && parsed > 0;
                 }
 
+                function effectiveMapApplicable() {
+                    var mode = mapOverrideMode ? mapOverrideMode.value : 'auto';
+                    if (mode === 'force_no_map') {
+                        return false;
+                    }
+
+                    if (mode === 'manual_price') {
+                        var parsed = parseFloat(mapOverridePrice ? mapOverridePrice.value || '0' : '0');
+                        return !isNaN(parsed) && parsed > 0;
+                    }
+
+                    return mapApplicable;
+                }
+
                 function refreshStateEditorControls() {
                     var mode = pricingMode ? pricingMode.value : '';
+                    var hasEffectiveMap = effectiveMapApplicable();
                     root.querySelectorAll('[data-pricing-field]').forEach(function (field) {
                         setFieldEnabled(field, field.getAttribute('data-pricing-field') === mode);
                     });
 
+                    root.querySelectorAll('[data-map-override-field="manual_price"]').forEach(function (field) {
+                        setFieldEnabled(field, mapOverrideMode && mapOverrideMode.value === 'manual_price');
+                    });
+
                     root.querySelectorAll('[data-map-field="visibility"]').forEach(function (field) {
-                        setFieldEnabled(field, mapApplicable);
+                        setFieldEnabled(field, hasEffectiveMap);
                     });
 
                     root.querySelectorAll('[data-map-field="quote_free_shipping"]').forEach(function (field) {
-                        setFieldEnabled(field, mapApplicable && mapPolicy && mapPolicy.value === 'email_for_quote');
+                        setFieldEnabled(field, hasEffectiveMap && mapPolicy && mapPolicy.value === 'email_for_quote');
                     });
 
                     root.querySelectorAll('[data-local-stock-field="free_shipping"]').forEach(function (field) {
@@ -651,7 +715,7 @@ class ProductMetaBox
                     });
                 }
 
-                [pricingMode, mapPolicy, localQty, distEnabled].forEach(function (control) {
+                [pricingMode, mapPolicy, mapOverrideMode, mapOverridePrice, localQty, distEnabled].forEach(function (control) {
                     if (!control) {
                         return;
                     }
@@ -843,6 +907,8 @@ class ProductMetaBox
             'pricing_fixed_price' => self::sanitize_state_decimal_post('fflhub_state_pricing_fixed_price'),
             'pricing_fixed_profit' => self::sanitize_state_decimal_post('fflhub_state_pricing_fixed_profit'),
             'map_visibility_policy' => self::sanitize_state_text_post('fflhub_state_map_visibility_policy'),
+            'map_override_mode' => self::sanitize_state_text_post('fflhub_state_map_override_mode'),
+            'map_override_price' => self::sanitize_state_decimal_post('fflhub_state_map_override_price'),
             'quote_free_shipping_override' => isset($_POST['fflhub_state_quote_free_shipping_override']) ? 1 : 0,
             'manual_shipping_override' => isset($_POST['fflhub_state_manual_shipping_override']) ? 1 : 0,
             'stock_oos_override' => isset($_POST['fflhub_state_stock_oos_override']) ? 1 : 0,
@@ -917,6 +983,18 @@ class ProductMetaBox
             Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE => __('Add to Cart for Price', 'ffl-hub'),
             Options::MAP_POLICY_EMAIL_FOR_QUOTE => __('Email for Quote', 'ffl-hub'),
             Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART => __('No Email, No Add to Cart', 'ffl-hub'),
+        ];
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private static function product_state_map_override_mode_options(): array
+    {
+        return [
+            'auto' => __('Auto - use selected offer MAP', 'ffl-hub'),
+            'manual_price' => __('Manual MAP Price', 'ffl-hub'),
+            'force_no_map' => __('Force No MAP', 'ffl-hub'),
         ];
     }
 

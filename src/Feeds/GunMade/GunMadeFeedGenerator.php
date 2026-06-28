@@ -151,6 +151,8 @@ final class GunMadeFeedGenerator
             throw new \RuntimeException('WordPress database connection is unavailable.');
         }
 
+        ProductStateStore::ensure_schema();
+
         $posts = $wpdb->posts;
         $product_state = ProductStateStore::table_name();
         $term_relationships = $wpdb->term_relationships;
@@ -172,7 +174,7 @@ final class GunMadeFeedGenerator
                 CAST(ps.computed_sell_price AS CHAR) AS computed_sell_price,
                 CAST(ps.public_regular_price AS CHAR) AS public_regular_price,
                 CAST(ps.public_sale_price AS CHAR) AS public_sale_price,
-                CAST(ps.map_price AS CHAR) AS map_price,
+                CAST(ps.effective_map_price AS CHAR) AS map_price,
                 CAST(COALESCE(ps.map_applicable, 0) AS CHAR) AS map_applicable,
                 ps.map_visibility_policy,
                 CAST(ps.shipping_cost AS CHAR) AS shipping_cost,

@@ -22,6 +22,7 @@ final class ProductStatePricingSql
     {
         $pricing_percent = self::pricing_percent_expr($state_alias);
         $cost_without_shipping = self::cost_base_without_shipping_expr($offer_alias);
+        $map_price = self::effective_map_price_expr($state_alias, $offer_alias);
         $shipping = "GREATEST(COALESCE({$offer_alias}.shipping_cost, 0.0000), 0.0000)";
         $fee_fraction = self::payment_fee_fraction_literal();
         $denominator = self::payment_fee_denominator_literal();
@@ -49,9 +50,9 @@ final class ProductStatePricingSql
                 )
 
                 WHEN {$state_alias}.pricing_mode = 'map_price'
-                    AND {$offer_alias}.map_price IS NOT NULL
-                    AND {$offer_alias}.map_price > 0
-                THEN ROUND({$offer_alias}.map_price, 2)
+                    AND {$map_price} IS NOT NULL
+                    AND {$map_price} > 0
+                THEN ROUND({$map_price}, 2)
 
                 WHEN {$state_alias}.pricing_mode IN ('global_percent', 'fixed_percent')
                     AND {$pricing_percent} IS NOT NULL
@@ -70,24 +71,26 @@ final class ProductStatePricingSql
         string $computed_sell_price,
         string $effective_map_policy
     ): string {
+        $map_price = self::effective_map_price_expr($state_alias, $offer_alias);
+
         return "
             CASE
-                WHEN {$offer_alias}.map_price IS NOT NULL
-                    AND {$offer_alias}.map_price > 0
+                WHEN {$map_price} IS NOT NULL
+                    AND {$map_price} > 0
                     AND {$effective_map_policy} IN ('" . esc_sql(Options::MAP_POLICY_EMAIL_FOR_QUOTE) . "', '" . esc_sql(Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) . "')
                 THEN CASE
                     WHEN {$offer_alias}.msrp IS NOT NULL
-                        AND {$offer_alias}.msrp > {$offer_alias}.map_price
+                        AND {$offer_alias}.msrp > {$map_price}
                     THEN ROUND({$offer_alias}.msrp, 2)
-                    ELSE ROUND({$offer_alias}.map_price, 2)
+                    ELSE ROUND({$map_price}, 2)
                 END
 
                 WHEN {$computed_sell_price} IS NULL OR {$computed_sell_price} <= 0
                 THEN {$state_alias}.public_regular_price
 
-                WHEN {$offer_alias}.map_price IS NOT NULL
-                    AND {$offer_alias}.map_price > {$computed_sell_price}
-                THEN ROUND({$offer_alias}.map_price, 2)
+                WHEN {$map_price} IS NOT NULL
+                    AND {$map_price} > {$computed_sell_price}
+                THEN ROUND({$map_price}, 2)
 
                 WHEN {$offer_alias}.msrp IS NOT NULL
                     AND {$offer_alias}.msrp > {$computed_sell_price}
@@ -104,18 +107,20 @@ final class ProductStatePricingSql
         string $computed_sell_price,
         string $effective_map_policy
     ): string {
+        $map_price = self::effective_map_price_expr($state_alias, $offer_alias);
+
         return "
             CASE
-                WHEN {$offer_alias}.map_price IS NOT NULL
-                    AND {$offer_alias}.map_price > 0
+                WHEN {$map_price} IS NOT NULL
+                    AND {$map_price} > 0
                     AND {$effective_map_policy} IN ('" . esc_sql(Options::MAP_POLICY_EMAIL_FOR_QUOTE) . "', '" . esc_sql(Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) . "')
-                THEN ROUND({$offer_alias}.map_price, 2)
+                THEN ROUND({$map_price}, 2)
 
                 WHEN {$computed_sell_price} IS NULL OR {$computed_sell_price} <= 0
                 THEN {$state_alias}.public_sale_price
 
-                WHEN {$offer_alias}.map_price IS NOT NULL
-                    AND {$offer_alias}.map_price > {$computed_sell_price}
+                WHEN {$map_price} IS NOT NULL
+                    AND {$map_price} > {$computed_sell_price}
                 THEN ROUND({$computed_sell_price}, 2)
 
                 WHEN {$offer_alias}.msrp IS NOT NULL
@@ -123,6 +128,32 @@ final class ProductStatePricingSql
                 THEN ROUND({$computed_sell_price}, 2)
 
                 ELSE NULL
+            END
+        ";
+    }
+
+    public static function effective_map_price_expr(string $state_alias, string $offer_alias): string
+    {
+        return "
+            CASE
+                WHEN {$state_alias}.map_override_mode = 'force_no_map' THEN NULL
+                WHEN {$state_alias}.map_override_mode = 'manual_price'
+                    AND {$state_alias}.map_override_price IS NOT NULL
+                    AND {$state_alias}.map_override_price > 0
+                THEN {$state_alias}.map_override_price
+                ELSE {$offer_alias}.map_price
+            END
+        ";
+    }
+
+    public static function map_applicable_expr(string $state_alias, string $offer_alias): string
+    {
+        $map_price = self::effective_map_price_expr($state_alias, $offer_alias);
+
+        return "
+            CASE
+                WHEN {$map_price} IS NOT NULL AND {$map_price} > 0 THEN 1
+                ELSE 0
             END
         ";
     }
