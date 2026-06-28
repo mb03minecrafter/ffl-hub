@@ -209,7 +209,7 @@ final class CollectionCarouselBlock
         $attributes['taxonomy'] = taxonomy_exists((string) $attributes['taxonomy'])
             ? (string) $attributes['taxonomy']
             : 'product_tag';
-        $attributes['perPage'] = max(1, min(30, absint($attributes['perPage'])));
+        $attributes['perPage'] = max(1, min(100, absint($attributes['perPage'])));
         $attributes['orderBy'] = in_array((string) $attributes['orderBy'], ['count', 'name', 'slug', 'term_id', 'include'], true)
             ? (string) $attributes['orderBy']
             : 'count';
@@ -228,7 +228,7 @@ final class CollectionCarouselBlock
         $include = self::parse_include_list((string) $attributes['include'], (string) $attributes['taxonomy']);
 
         $query_number = $include === []
-            ? min(100, max((int) $attributes['perPage'], (int) $attributes['perPage'] * 4))
+            ? min(300, max((int) $attributes['perPage'], (int) $attributes['perPage'] * 4))
             : 0;
 
         $args = [

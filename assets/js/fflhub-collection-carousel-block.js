@@ -65,7 +65,7 @@
                         el(RangeControl, {
                             label: 'Collections shown',
                             min: 1,
-                            max: 30,
+                            max: 100,
                             value: attrs.perPage || 12,
                             onChange: function(value) {
                                 setAttributes({ perPage: value || 12 });
