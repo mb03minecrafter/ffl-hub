@@ -36,6 +36,7 @@ use FFLHub\Brand\ArchiveFaqBlock;
 use FFLHub\Brand\BrandArchiveHeroBlock;
 use FFLHub\Brand\CollectionCarouselBlock;
 use FFLHub\Brand\ProductCollectionRewrite;
+use FFLHub\Content\BlogPostCarouselBlock;
 use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
 use FFLHub\Checkout\Fields\CheckoutFields;
@@ -153,6 +154,7 @@ final class Plugin
         BrandArchiveHeroBlock::init();
         ArchiveFaqBlock::init();
         CollectionCarouselBlock::init();
+        BlogPostCarouselBlock::init();
         GunMadeFeedEndpoint::init();
 
         $this->ffl_table_schema = new FFLSchema();
