@@ -34,6 +34,7 @@ use FFLHub\BOM\Tables\BOMSchema;
 use FFLHub\BOM\Tables\BOMTable;
 use FFLHub\Brand\ArchiveFaqBlock;
 use FFLHub\Brand\BrandArchiveHeroBlock;
+use FFLHub\Brand\CollectionCarouselBlock;
 use FFLHub\Brand\ProductCollectionRewrite;
 use FFLHub\Checkout\Compliance\CartCompliance;
 use FFLHub\Checkout\Compliance\FFLRequiredCartExtension;
@@ -151,6 +152,7 @@ final class Plugin
         ProductCollectionRewrite::init();
         BrandArchiveHeroBlock::init();
         ArchiveFaqBlock::init();
+        CollectionCarouselBlock::init();
         GunMadeFeedEndpoint::init();
 
         $this->ffl_table_schema = new FFLSchema();
