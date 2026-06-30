@@ -315,8 +315,16 @@ final class BillHicksEdiStore
         $raw_rows = [];
 
         foreach ($rows as $row) {
-            $tracking[] = (string) ($row['tracking_number'] ?? '');
-            $invoices[] = (string) ($row['bhc_order_number'] ?? '');
+            $tracking_number = trim((string) ($row['tracking_number'] ?? ''));
+            if ($tracking_number === '' || isset($tracking[$tracking_number])) {
+                continue;
+            }
+
+            $tracking[$tracking_number] = $tracking_number;
+            $invoice_number = trim((string) ($row['bhc_order_number'] ?? ''));
+            if ($invoice_number !== '') {
+                $invoices[$invoice_number] = $invoice_number;
+            }
             if ($carrier === '') {
                 $carrier = trim((string) ($row['carrier'] ?? ''));
             }
@@ -325,8 +333,8 @@ final class BillHicksEdiStore
         }
 
         return new DistributorShipment(
-            $tracking,
-            $invoices,
+            array_values($tracking),
+            array_values($invoices),
             $carrier !== '' ? $carrier : null,
             null,
             [
@@ -418,6 +426,143 @@ final class BillHicksEdiStore
         }
 
         return $touched;
+    }
+
+    /**
+     * Re-apply previously stored 855 acknowledgements to Bill Hicks jobs that
+     * are still parked at awaiting_ack.
+     *
+     * This covers the edge case where an inbound ACK file is ingested before the
+     * corresponding job row reaches awaiting_ack, or where the ACK application
+     * failed after the file was already recorded as processed.
+     */
+    public function reconcile_stored_acks_to_waiting_jobs(int $limit = 200): int
+    {
+        global $wpdb;
+
+        $this->ensure_tables();
+
+        $limit = max(1, min(1000, (int) $limit));
+        $jobs_table = new OrderPlacementJobsTable(new OrderPlacementJobsSchema());
+        $jobs_name = $jobs_table->get_table_name();
+
+        $waiting_pos = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT merchant_po
+                 FROM {$jobs_name}
+                 WHERE dist_id = %s
+                   AND status = %s
+                   AND merchant_po IS NOT NULL
+                   AND merchant_po <> ''
+                 GROUP BY merchant_po
+                 ORDER BY MIN(updated_at) ASC
+                 LIMIT %d",
+                'bill_hicks',
+                OrderPlacementKeys::JOB_STATUS_AWAITING_ACK,
+                $limit
+            )
+        );
+
+        if (!is_array($waiting_pos) || empty($waiting_pos)) {
+            return 0;
+        }
+
+        $pos = [];
+        foreach ($waiting_pos as $po) {
+            $po = trim((string) $po);
+            if ($po !== '') {
+                $pos[$po] = $po;
+            }
+        }
+
+        if (empty($pos)) {
+            return 0;
+        }
+
+        $placeholders = implode(', ', array_fill(0, count($pos), '%s'));
+        $acks_table = $this->acks_table();
+        $sql = "
+            SELECT a.merchant_po, a.bhc_order_number, a.quantity_ordered,
+                   a.quantity_committed, a.ack_status, a.raw_json
+            FROM {$acks_table} a
+            INNER JOIN (
+                SELECT merchant_po, MAX(id) AS latest_id
+                FROM {$acks_table}
+                WHERE merchant_po IN ({$placeholders})
+                GROUP BY merchant_po
+            ) latest ON latest.latest_id = a.id
+            ORDER BY a.id ASC
+        ";
+
+        $acks = $wpdb->get_results($wpdb->prepare($sql, array_values($pos)), ARRAY_A);
+        if (!is_array($acks) || empty($acks)) {
+            return 0;
+        }
+
+        $touched = 0;
+        foreach ($acks as $ack) {
+            if (!is_array($ack)) {
+                continue;
+            }
+
+            $po = trim((string) ($ack['merchant_po'] ?? ''));
+            if ($po === '') {
+                continue;
+            }
+
+            $touched += $this->apply_ack_to_jobs($po, $this->stored_ack_row_to_group($ack));
+        }
+
+        return $touched;
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @return array{ordered:int,committed:int,external_ids:string[],rows:array<int,array<string,string>>,status:string}
+     */
+    private function stored_ack_row_to_group(array $row): array
+    {
+        $ordered = $this->int_field($row['quantity_ordered'] ?? '');
+        $committed = $this->int_field($row['quantity_committed'] ?? '');
+        $status = strtolower(trim((string) ($row['ack_status'] ?? '')));
+        if (!in_array($status, ['accepted', 'partial', 'rejected'], true)) {
+            $status = 'partial';
+            if ($ordered > 0 && $committed >= $ordered) {
+                $status = 'accepted';
+            } elseif ($committed <= 0) {
+                $status = 'rejected';
+            }
+        }
+
+        $raw_rows = [];
+        $external_ids = [];
+        $decoded = json_decode((string) ($row['raw_json'] ?? ''), true);
+        if (is_array($decoded)) {
+            foreach ($decoded as $maybe_row) {
+                if (!is_array($maybe_row)) {
+                    continue;
+                }
+
+                $raw_rows[] = $maybe_row;
+                $ext = trim((string) ($maybe_row['BHC Order Number'] ?? ''));
+                if ($ext !== '') {
+                    $external_ids[$ext] = $ext;
+                }
+            }
+        }
+
+        $stored_ext = trim((string) ($row['bhc_order_number'] ?? ''));
+        if ($stored_ext !== '') {
+            $external_ids[$stored_ext] = $stored_ext;
+        }
+
+        return [
+            'ordered' => $ordered,
+            'committed' => $committed,
+            'external_ids' => array_values($external_ids),
+            'rows' => $raw_rows,
+            'status' => $status,
+        ];
     }
 
     private function files_table(): string

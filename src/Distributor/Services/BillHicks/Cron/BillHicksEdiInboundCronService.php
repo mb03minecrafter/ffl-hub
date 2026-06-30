@@ -64,6 +64,7 @@ final class BillHicksEdiInboundCronService extends AbstractCronService
             'acks' => 0,
             'shipments' => 0,
             'ack_jobs_touched' => 0,
+            'stored_ack_jobs_touched' => 0,
             'errors' => 0,
         ];
 
@@ -159,6 +160,7 @@ final class BillHicksEdiInboundCronService extends AbstractCronService
             }
         }
 
+        $stats['stored_ack_jobs_touched'] = $store->reconcile_stored_acks_to_waiting_jobs();
         $stats['elapsed_ms'] = (int) round((microtime(true) - $started) * 1000);
         $this->log('run complete', $stats);
     }
