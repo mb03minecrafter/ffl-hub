@@ -299,7 +299,7 @@ final class DistributorOrion extends DistributorBase
 
         $po = $this->sanitize_and_truncate_po((string) $request->merchant_order_id, 32);
         if ($po === '') {
-            $po = 'ORION-' . gmdate('YmdHis');
+            $po = 'ORION' . gmdate('YmdHis');
         }
 
         $order_items_json = wp_json_encode($items, JSON_UNESCAPED_SLASHES);

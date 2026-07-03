@@ -75,7 +75,7 @@ final class SportsSouthInvoicesClient
      */
     public function test_credentials(string $fakePo): array
     {
-        $fakePo = trim($fakePo) !== '' ? trim($fakePo) : 'FFLHUBTEST' . gmdate('YmdHis');
+        $fakePo = trim($fakePo) !== '' ? trim($fakePo) : 'SSTEST' . gmdate('YmdHis');
         $resp = $this->post_operation('GetTrackingByPo', [
             'PONumber' => $fakePo,
         ]);

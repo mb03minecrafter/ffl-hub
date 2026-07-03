@@ -222,7 +222,7 @@ class AdminPage
             ]);
         }
 
-        $fake_order = 'FFLHUBTEST' . gmdate('YmdHis') . (string) wp_rand(100, 999);
+        $fake_order = 'ZANDERSTEST' . gmdate('YmdHis') . (string) wp_rand(100, 999);
         $verify_tls = (bool) apply_filters('fflhub_zanders_verify_tls', true);
         $timeout = (int) apply_filters('fflhub_zanders_credential_test_timeout_sec', 30);
 
@@ -829,7 +829,7 @@ class AdminPage
                 );
                 $res = $client->test_credentials($fake_order_number);
             } else {
-                $fake_po = 'FFLHUBSS' . gmdate('ymdHis') . (string) wp_rand(100, 999);
+                $fake_po = 'SSTEST' . gmdate('ymdHis') . (string) wp_rand(100, 999);
                 $client = new SportsSouthInvoicesClient(
                     $customer,
                     $username,
@@ -1222,9 +1222,9 @@ class AdminPage
             ];
         }
 
-        $fake_po = RSRDirectConnectAPI::sanitize_rsr_po('FFLHUB' . gmdate('ymdHis') . (string) wp_rand(100, 999));
+        $fake_po = RSRDirectConnectAPI::sanitize_rsr_po('RSRTEST' . gmdate('ymdHis') . (string) wp_rand(100, 999));
         if ($fake_po === '') {
-            $fake_po = 'FFLHUBTEST';
+            $fake_po = 'RSRTEST';
         }
 
         $timeout = max(10, (int) apply_filters('fflhub_rsr_credential_test_timeout_sec', 30));

@@ -857,9 +857,11 @@ class DistributorRSR extends DistributorBase
      * Infer lane from our merchant PO format.
      *
      * Expected examples:
-     * - FH-RSR-2245-N1 => direct_ship_non_ffl
-     * - FH-RSR-2245-F1 => direct_ship_ffl
-     * - FH-RSR-2245-D1 => dealer_fulfilled
+     * - RSR2245N1 => direct_ship_non_ffl
+     * - RSR2245F1 => direct_ship_ffl
+     * - RSR2245D1 => dealer_fulfilled
+     *
+     * Historical dashed examples such as FH-RSR-2245-N1 are still supported.
      *
      * Falls back to direct_ship_non_ffl for unknown formats to preserve
      * previous behavior (dropship credentials).
@@ -868,6 +870,16 @@ class DistributorRSR extends DistributorBase
     {
         $po = strtoupper(trim($po));
         if ($po === '') {
+            return 'direct_ship_non_ffl';
+        }
+
+        if (preg_match('/([NFD])\d+$/', $po, $m)) {
+            if ($m[1] === 'F') {
+                return 'direct_ship_ffl';
+            }
+            if ($m[1] === 'D') {
+                return 'dealer_fulfilled';
+            }
             return 'direct_ship_non_ffl';
         }
 

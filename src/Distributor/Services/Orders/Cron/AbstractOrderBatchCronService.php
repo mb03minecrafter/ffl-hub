@@ -1896,19 +1896,19 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     private function build_batch_po(array $batch_candidates): string
     {
         // Keep each order token short so the final PO stays <= 22 chars.
-        $prefix = strtoupper(trim($this->get_po_prefix()));
+        $prefix = $this->sanitize_po_segment((string) $this->get_po_prefix());
         if ($prefix === '') {
             $prefix = 'BCHX';
         }
 
         if (empty($batch_candidates)) {
-            return $prefix . '-' . gmdate('mdHi') . '-' . (string) wp_rand(1000, 9999);
+            return $prefix . gmdate('mdHi') . (string) wp_rand(1000, 9999);
         }
 
         $first = $this->batch_po_segment_from_candidate($batch_candidates[0]);
         $last = $this->batch_po_segment_from_candidate($batch_candidates[count($batch_candidates) - 1]);
 
-        return $prefix . '-' . $first . '-' . $last;
+        return $prefix . $first . $last;
     }
 
     /**
@@ -1944,16 +1944,14 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     private function sanitize_po_segment(string $raw): string
     {
         $raw = strtoupper($raw);
-        $raw = preg_replace('/[^A-Z0-9\-]+/', '-', $raw);
+        $raw = preg_replace('/[^A-Z0-9]+/', '', $raw);
         $raw = is_string($raw) ? $raw : '';
-        $raw = preg_replace('/\-{2,}/', '-', $raw);
-        $raw = is_string($raw) ? trim($raw, '-') : '';
 
         if ($raw === '') {
             return 'NA';
         }
 
-        // 4 + 1 + 8 + 1 + 8 = 22 max total for "{PFX}-{first}-{last}".
+        // 4 + 8 + 8 = 20 max total for "{PFX}{first}{last}".
         if (strlen($raw) > 8) {
             $raw = substr($raw, -8);
         }

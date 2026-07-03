@@ -742,7 +742,7 @@ abstract class DistributorBase implements DistributorInterface
     /**
      * Convenience: sanitize then truncate a merchant PO.
      */
-    protected function sanitize_and_truncate_po(string $po, int $max, string $allowed_regex = '/[^A-Z0-9\-]/'): string
+    protected function sanitize_and_truncate_po(string $po, int $max, string $allowed_regex = '/[^A-Z0-9]/'): string
     {
         $po = $this->sanitize_po($po, $allowed_regex, true);
         return self::truncate_string($po, $max);
@@ -2015,12 +2015,12 @@ abstract class DistributorBase implements DistributorInterface
      * - Keep only characters that are broadly accepted across distributor APIs.
      * - Do NOT re-shape the string (no dash insertion, no truncation).
      *
-     * Default allowed chars: A-Z, 0-9, dash.
+     * Default allowed chars: A-Z and 0-9 only.
      * Override allowed pattern per distributor if needed.
      */
     protected function sanitize_po(
         string $s,
-        string $allowed_regex = '/[^A-Z0-9\-]/',
+        string $allowed_regex = '/[^A-Z0-9]/',
         bool $uppercase = true
     ): string {
         $s = trim($s);

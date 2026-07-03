@@ -656,7 +656,7 @@ final class BillHicksEdiTestPage
 
     /**
      * Keep default test POs close to production POs:
-     * FH-{DIST}-{order_id}-{lane_code}{split}
+     * BILLHICKSTEST{lane_code}{split}
      *
      * Since there is no real Woo order id on this page, TEST occupies the
      * order-id slot while still preserving the production prefix, distributor,
@@ -670,7 +670,7 @@ final class BillHicksEdiTestPage
         $lane_code = OrderPlacementKeysUtil::lane_code($lane);
         $split_index = max(1, (int) ($config['po_split_index'] ?? 1));
 
-        return sprintf('FH-BILL_HICKS-TEST-%s%d', $lane_code, $split_index);
+        return sprintf('BILLHICKSTEST%s%d', $lane_code, $split_index);
     }
 
     /**

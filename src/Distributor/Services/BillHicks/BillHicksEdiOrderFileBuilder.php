@@ -345,8 +345,8 @@ final class BillHicksEdiOrderFileBuilder
     private function sanitize_po(string $po): string
     {
         $po = $this->clean_field($po);
-        $po = preg_replace('/[^A-Za-z0-9 \-]+/', '-', $po);
-        $po = is_string($po) ? trim($po, ' -') : '';
+        $po = preg_replace('/[^A-Za-z0-9]+/', '', $po);
+        $po = is_string($po) ? trim($po) : '';
 
         return $po !== '' ? substr($po, 0, 40) : '';
     }

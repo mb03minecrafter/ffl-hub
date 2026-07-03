@@ -498,11 +498,8 @@ final class RSRDirectConnectAPI
             return '';
         }
 
-        $po = preg_replace('/[^A-Za-z0-9 \-]+/', '-', $po);
+        $po = preg_replace('/[^A-Za-z0-9]+/', '', $po);
         $po = is_string($po) ? $po : '';
-
-        $po = preg_replace('/\s+/', ' ', $po);
-        $po = is_string($po) ? trim($po) : '';
 
         return self::truncate_po($po);
     }

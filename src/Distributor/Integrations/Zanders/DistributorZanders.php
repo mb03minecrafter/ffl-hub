@@ -716,9 +716,11 @@ class DistributorZanders extends DistributorBase
      * Decide which Zanders credential lane to use from our merchant PO encoding.
      *
      * Expected examples:
-     *   FH-ZANDERS-6722-N1  => direct_ship_non_ffl
-     *   FH-ZANDERS-6722-F1  => direct_ship_ffl
-     *   FH-ZANDERS-6722-D1  => dealer_fulfilled
+     *   ZANDERS6722N1  => direct_ship_non_ffl
+     *   ZANDERS6722F1  => direct_ship_ffl
+     *   ZANDERS6722D1  => dealer_fulfilled
+     *
+     * Historical dashed examples such as FH-ZANDERS-6722-N1 are still supported.
      *
      * Fallback: direct_ship_non_ffl (safe default) unless we explicitly detect ffl.
      */
@@ -730,7 +732,17 @@ class DistributorZanders extends DistributorBase
             return 'direct_ship_non_ffl';
         }
 
-        // Split on '-' and look at the last token
+        if (preg_match('/([NFD])\d+$/', $po, $m)) {
+            if ($m[1] === 'F') {
+                return 'direct_ship_ffl';
+            }
+            if ($m[1] === 'D') {
+                return 'dealer_fulfilled';
+            }
+            return 'direct_ship_non_ffl';
+        }
+
+        // Split on '-' and look at the last token for historical PO values.
         $parts = preg_split('/-+/', $po);
         $last  = is_array($parts) && !empty($parts) ? strtoupper((string) end($parts)) : '';
 

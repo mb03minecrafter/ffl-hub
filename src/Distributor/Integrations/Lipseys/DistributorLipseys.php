@@ -742,7 +742,7 @@ class DistributorLipseys extends DistributorBase
 
         $base_po = self::sanitize_po((string) $request->merchant_order_id);
         if ($base_po === '') {
-            $base_po = 'FFLHUB';
+            $base_po = 'LIPSEYS' . gmdate('ymdHis');
         }
 
         /** @var DistributorShipTo $customer */

@@ -963,7 +963,7 @@ final class DistributorCSSI extends DistributorBase
 
     private function build_cssi_po(string $po): string
     {
-        $sanitized = $this->sanitize_and_truncate_po($po, 24, '/[^A-Z0-9\-_]/');
+        $sanitized = $this->sanitize_and_truncate_po($po, 24);
         if ($sanitized === '') {
             $sanitized = 'WC' . gmdate('YmdHis');
         }

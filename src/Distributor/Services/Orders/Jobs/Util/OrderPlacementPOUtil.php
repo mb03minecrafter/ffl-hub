@@ -22,7 +22,8 @@ final class OrderPlacementPOUtil
 {
 
 
-    //build merchant PO from job row, this PO MUST BE UNIQUE within a 6 month period, this ensures we build a unique PO by using order number, dist, etc
+    // Build merchant PO from job row. It must stay unique within a 6 month
+    // window, so use distributor + order id + lane code + split index.
     public static function build_merchant_po(
         OrderPlacementJobRow $job,
         int $split_index = 1
@@ -45,7 +46,7 @@ final class OrderPlacementPOUtil
             $i = 1;
         }
 
-        $po = sprintf('FH-%s-%d-%s%d', $dist, $order_id, $lane_code, $i);
+        $po = sprintf('%s%d%s%d', $dist, $order_id, $lane_code, $i);
         return self::sanitize_po($po, 22);
     }
 
@@ -54,14 +55,8 @@ final class OrderPlacementPOUtil
         $po = trim($po);
         if ($po === '') return '';
 
-        $po = preg_replace('/[^A-Za-z0-9 \-]+/', '-', $po);
+        $po = preg_replace('/[^A-Za-z0-9]+/', '', $po);
         $po = is_string($po) ? $po : '';
-
-        $po = preg_replace('/\s+/', ' ', $po);
-        $po = is_string($po) ? trim($po) : '';
-
-        $po = preg_replace('/\-{2,}/', '-', $po);
-        $po = is_string($po) ? trim($po, '-') : '';
 
         if ($max_len > 0 && strlen($po) > $max_len) {
             $po = substr($po, 0, $max_len);

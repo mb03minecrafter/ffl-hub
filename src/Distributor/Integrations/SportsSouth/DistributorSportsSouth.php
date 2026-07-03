@@ -437,7 +437,7 @@ final class DistributorSportsSouth extends DistributorBase
 
         $po = $this->sanitize_and_truncate_po((string) $request->merchant_order_id, 32);
         if ($po === '') {
-            $po = 'SS-' . gmdate('YmdHis');
+            $po = 'SS' . gmdate('YmdHis');
         }
 
         $header = $this->build_header_params($request, $lane, $po);

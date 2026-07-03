@@ -285,7 +285,7 @@ final class DavidsonsFailedJobsPage
             return '';
         }
 
-        $value = preg_replace('/[^A-Z0-9._-]/', '', $value);
+        $value = preg_replace('/[^A-Z0-9]/', '', $value);
         if (!is_string($value)) {
             return '';
         }
