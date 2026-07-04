@@ -111,6 +111,21 @@ class ZandersProductImporterService
         '2 SISTERS MAGNETIC GUN REST',
     ];
 
+    /**
+     * Some Zanders brand restrictions apply to firearms, not accessories.
+     *
+     * These manufacturers stay on the restricted list, but non-FFL rows under
+     * these brands can still dropship. The restriction pass uses this list to
+     * block their firearms while preserving accessory fulfillment.
+     */
+    private const FFL_ONLY_RESTRICTED_DROP_SHIP_MANUFACTURERS = [
+        'BERETTA FIREARMS',
+        'HK/HECKLER & KOCH FIREARMS',
+        'RUGER FIREARMS',
+        'S&W FIREARMS',
+        'SPRINGFIELD FIREARMS',
+    ];
+
     public function __construct(DoubleBufferedProductTable $table)
     {
         $this->table = $table;
@@ -573,7 +588,8 @@ class ZandersProductImporterService
             }
 
             $manufacturer = isset($row['manufacturer']) ? trim((string) $row['manufacturer']) : '';
-            if ($this->is_restricted_drop_ship_manufacturer($manufacturer)) {
+            $ffl_required = !empty($row['ffl_required']) && (string) $row['ffl_required'] !== '0';
+            if ($this->should_block_restricted_drop_ship_manufacturer($manufacturer, $ffl_required)) {
                 $row['dropship_enabled'] = '0';
                 $row['dropship_block_reason'] = 'restricted_manufacturer';
                 $restricted_marked++;
@@ -645,7 +661,7 @@ class ZandersProductImporterService
 
         $alias_table = self::quote_identifier($this->get_restricted_alias_table_name());
         $total_start = microtime(true);
-        $additional_where = $this->sig_approved_non_sot_exclusion_where_sql();
+        $additional_where = $this->restricted_dropship_exclusion_where_sql();
         $manufacturer_match_norm = ZandersManufacturerNormalizer::sql_expression('s.manufacturer_norm');
 
         $exact = $this->run_restricted_alias_update(
@@ -710,6 +726,32 @@ class ZandersProductImporterService
             AND NOT (
                 COALESCE(s.sot_required, 0) = 0
                 AND s.manufacturer_norm = 'SIG SAUER'
+            )
+        ";
+    }
+
+    /**
+     * Extra guards for the restricted-manufacturer update.
+     *
+     * This SQL runs inside the restricted alias update where:
+     * - s is the Zanders product table alias
+     * - r is the restricted manufacturer alias table alias
+     */
+    private function restricted_dropship_exclusion_where_sql(): string
+    {
+        return $this->sig_approved_non_sot_exclusion_where_sql()
+            . $this->non_ffl_brand_accessory_exclusion_where_sql();
+    }
+
+    private function non_ffl_brand_accessory_exclusion_where_sql(): string
+    {
+        $canonical = array_map('esc_sql', self::FFL_ONLY_RESTRICTED_DROP_SHIP_MANUFACTURERS);
+        $canonical_sql = "'" . implode("', '", $canonical) . "'";
+
+        return "
+            AND NOT (
+                COALESCE(s.ffl_required, 0) = 0
+                AND r.canonical_manufacturer IN ({$canonical_sql})
             )
         ";
     }
@@ -948,14 +990,42 @@ KEY idx_restricted_lookup (distributor, active, match_type, alias_norm)
     /**
      * Is a manufacturer restricted for drop ship?
      */
+    private function should_block_restricted_drop_ship_manufacturer(string $manufacturer, bool $ffl_required): bool
+    {
+        if (!$this->is_restricted_drop_ship_manufacturer($manufacturer)) {
+            return false;
+        }
+
+        if (!$ffl_required && $this->is_ffl_only_restricted_drop_ship_manufacturer($manufacturer)) {
+            return false;
+        }
+
+        return true;
+    }
+
     private function is_restricted_drop_ship_manufacturer(string $manufacturer): bool
+    {
+        return $this->manufacturer_matches_any($manufacturer, self::RESTRICTED_DROP_SHIP_MANUFACTURERS);
+    }
+
+    private function is_ffl_only_restricted_drop_ship_manufacturer(string $manufacturer): bool
+    {
+        return $this->manufacturer_matches_any($manufacturer, self::FFL_ONLY_RESTRICTED_DROP_SHIP_MANUFACTURERS);
+    }
+
+    /**
+     * Is a manufacturer in a normalized manufacturer list?
+     *
+     * @param string[] $manufacturers
+     */
+    private function manufacturer_matches_any(string $manufacturer, array $manufacturers): bool
     {
         $m_norm = $this->normalize_mfr_key($manufacturer);
         if ($m_norm === '') {
             return false;
         }
 
-        foreach (self::RESTRICTED_DROP_SHIP_MANUFACTURERS as $raw) {
+        foreach ($manufacturers as $raw) {
             $r_norm = $this->normalize_mfr_key((string) $raw);
             if ($r_norm === '') {
                 continue;
