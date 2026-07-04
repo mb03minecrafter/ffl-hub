@@ -26,6 +26,7 @@ final class SportsSouthFulfillmentPolicy
      * @var string[]
      */
     private const NO_FULFILLMENT_MANUFACTURERS = [
+        'BERETTA',
         'BERETTAUSA',
         'FN',
         'FNAMERICA',
@@ -33,6 +34,7 @@ final class SportsSouthFulfillmentPolicy
         'FNHUSA',
         'GLOCK',
         'GLOCKINC',
+        'HANDK',
         'HK',
         'HECKLERKOCH',
         'HECKLERANDKOCH',
@@ -43,7 +45,10 @@ final class SportsSouthFulfillmentPolicy
         'OUTDOOREDGE',
         'RUGER',
         'STURMRUGER',
+        'STURMRUGERANDCO',
         'STURMRUGERCO',
+        'SANDW',
+        'SMITHANDWESSON',
         'SMITHWESSON',
         'SPRINGFIELD',
         'SPRINGFIELDARMORY',
@@ -64,6 +69,32 @@ final class SportsSouthFulfillmentPolicy
         'POLYMER80',
         'HEAVYMETALHEVISHOT',
         'HEVISHOT',
+    ];
+
+    /**
+     * These Sports South manufacturer restrictions are firearm-only.
+     *
+     * Sports South can fulfill non-FFL accessories for these brands, but their
+     * FFL rows remain blocked by the no-fulfillment manufacturer policy.
+     *
+     * @var string[]
+     */
+    private const FFL_ONLY_NO_FULFILLMENT_MANUFACTURERS = [
+        'BERETTA',
+        'BERETTAUSA',
+        'HANDK',
+        'HK',
+        'HECKLERKOCH',
+        'HECKLERANDKOCH',
+        'RUGER',
+        'STURMRUGER',
+        'STURMRUGERANDCO',
+        'STURMRUGERCO',
+        'SANDW',
+        'SMITHANDWESSON',
+        'SMITHWESSON',
+        'SPRINGFIELD',
+        'SPRINGFIELDARMORY',
     ];
 
     private const FACTORY_SETTING_PREFIX = 'factory_approval_';
@@ -162,7 +193,10 @@ final class SportsSouthFulfillmentPolicy
             return $row;
         }
 
-        if (self::matches_any($manufacturer, self::NO_FULFILLMENT_MANUFACTURERS)) {
+        if (
+            self::matches_any($manufacturer, self::NO_FULFILLMENT_MANUFACTURERS)
+            && !self::is_allowed_non_ffl_brand_accessory($manufacturer, $row)
+        ) {
             return self::block($row, self::BLOCK_REASON_NO_FULFILLMENT);
         }
 
@@ -233,6 +267,21 @@ final class SportsSouthFulfillmentPolicy
         }
 
         return false;
+    }
+
+    /**
+     * Allow non-firearm accessories for firearm brands whose restrictions do
+     * not apply to non-FFL rows.
+     *
+     * @param array<string,mixed> $row
+     */
+    private static function is_allowed_non_ffl_brand_accessory(string $manufacturer, array $row): bool
+    {
+        if (!self::matches_any($manufacturer, self::FFL_ONLY_NO_FULFILLMENT_MANUFACTURERS)) {
+            return false;
+        }
+
+        return ((int) ($row['ffl_required'] ?? 0)) !== 1;
     }
 
     private static function factory_approval_group_for_manufacturer(string $manufacturer): ?string
