@@ -45,6 +45,9 @@ final class ProductBestOfferSelectionService
         $result['clear_flags_elapsed_ms'] = '0.00';
         $result['missing_product_state_upcs'] = 0;
         $result['msrp_rows'] = 0;
+        $result['shipping_measurement_rows'] = 0;
+        $result['shipping_weight_rows'] = 0;
+        $result['shipping_dimension_rows'] = 0;
         $result['prefer_dropship_best_offers'] = Options::get_prefer_dropship_best_offers_enabled() ? 1 : 0;
         $result['errors'] = [];
 
@@ -63,12 +66,15 @@ final class ProductBestOfferSelectionService
         $product_state_table = ProductStateStore::table_name();
         $temp_table = 'tmp_fflhub_best_offer_dirty_upcs';
         $map_table = 'tmp_fflhub_best_offer_dirty_maps';
+        $shipping_measurements_table = 'tmp_fflhub_best_offer_dirty_shipping_measurements';
         $charset = $wpdb->get_charset_collate();
         $result['temp_table'] = $temp_table;
         $result['map_temp_table'] = $map_table;
+        $result['shipping_measurements_temp_table'] = $shipping_measurements_table;
 
         $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$temp_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$map_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$shipping_measurements_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $created = $wpdb->query("
             CREATE TEMPORARY TABLE {$temp_table} (
@@ -95,6 +101,23 @@ final class ProductBestOfferSelectionService
         if ($map_created === false) {
             $result['ok'] = false;
             $result['errors'][] = 'Failed to create dirty UPC MAP temp table: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $shipping_measurements_created = $wpdb->query("
+            CREATE TEMPORARY TABLE {$shipping_measurements_table} (
+                upc VARCHAR(32) NOT NULL,
+                shipping_weight_oz DECIMAL(10,3) DEFAULT NULL,
+                shipping_length_in DECIMAL(10,3) DEFAULT NULL,
+                shipping_width_in DECIMAL(10,3) DEFAULT NULL,
+                shipping_height_in DECIMAL(10,3) DEFAULT NULL,
+                PRIMARY KEY (upc)
+            ) ENGINE=MEMORY {$charset}
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if ($shipping_measurements_created === false) {
+            $result['ok'] = false;
+            $result['errors'][] = 'Failed to create dirty UPC shipping measurement temp table: ' . (string) $wpdb->last_error;
             return self::finish_result($result, $started);
         }
 
@@ -174,6 +197,92 @@ final class ProductBestOfferSelectionService
         $msrp_rows = $wpdb->get_var("SELECT COUNT(*) FROM {$map_table} WHERE msrp IS NOT NULL"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $result['map_rows'] = is_numeric($map_rows) ? (int) $map_rows : 0;
         $result['msrp_rows'] = is_numeric($msrp_rows) ? (int) $msrp_rows : 0;
+
+        // Build one dirty-UPC measurement lookup, mirroring the MAP/MSRP
+        // fallback shape above. The selected offer still controls cost,
+        // stock, and distributor choice; this table only fills blank shipping
+        // measurements from sibling offers when the winner lacks them.
+        //
+        // Weight can safely fall back independently. Dimensions are selected as
+        // a complete length/width/height set from one offer, so we do not build
+        // impossible boxes by mixing dimensions from different distributors.
+        $t_shipping_measurements = microtime(true);
+        $shipping_measurements_inserted = $wpdb->query("
+            INSERT INTO {$shipping_measurements_table} (
+                upc,
+                shipping_weight_oz,
+                shipping_length_in,
+                shipping_width_in,
+                shipping_height_in
+            )
+            SELECT
+                d.upc,
+                MAX(CASE
+                    WHEN o.shipping_weight_oz IS NOT NULL
+                        AND o.shipping_weight_oz > 0
+                    THEN o.shipping_weight_oz
+                    ELSE NULL
+                END) AS shipping_weight_oz,
+                CAST(SUBSTRING_INDEX(GROUP_CONCAT(CASE
+                    WHEN o.shipping_length_in IS NOT NULL
+                        AND o.shipping_length_in > 0
+                        AND o.shipping_width_in IS NOT NULL
+                        AND o.shipping_width_in > 0
+                        AND o.shipping_height_in IS NOT NULL
+                        AND o.shipping_height_in > 0
+                    THEN o.shipping_length_in
+                    ELSE NULL
+                END ORDER BY (o.shipping_length_in * o.shipping_width_in * o.shipping_height_in) DESC SEPARATOR ','), ',', 1) AS DECIMAL(10,3)) AS shipping_length_in,
+                CAST(SUBSTRING_INDEX(GROUP_CONCAT(CASE
+                    WHEN o.shipping_length_in IS NOT NULL
+                        AND o.shipping_length_in > 0
+                        AND o.shipping_width_in IS NOT NULL
+                        AND o.shipping_width_in > 0
+                        AND o.shipping_height_in IS NOT NULL
+                        AND o.shipping_height_in > 0
+                    THEN o.shipping_width_in
+                    ELSE NULL
+                END ORDER BY (o.shipping_length_in * o.shipping_width_in * o.shipping_height_in) DESC SEPARATOR ','), ',', 1) AS DECIMAL(10,3)) AS shipping_width_in,
+                CAST(SUBSTRING_INDEX(GROUP_CONCAT(CASE
+                    WHEN o.shipping_length_in IS NOT NULL
+                        AND o.shipping_length_in > 0
+                        AND o.shipping_width_in IS NOT NULL
+                        AND o.shipping_width_in > 0
+                        AND o.shipping_height_in IS NOT NULL
+                        AND o.shipping_height_in > 0
+                    THEN o.shipping_height_in
+                    ELSE NULL
+                END ORDER BY (o.shipping_length_in * o.shipping_width_in * o.shipping_height_in) DESC SEPARATOR ','), ',', 1) AS DECIMAL(10,3)) AS shipping_height_in
+            FROM {$temp_table} d
+            INNER JOIN {$offers_table} o
+                ON o.upc = d.upc
+               AND o.enabled = 1
+            GROUP BY d.upc
+            HAVING shipping_weight_oz IS NOT NULL
+                OR shipping_length_in IS NOT NULL
+                OR shipping_width_in IS NOT NULL
+                OR shipping_height_in IS NOT NULL
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $result['shipping_measurements_elapsed_ms'] = number_format((microtime(true) - $t_shipping_measurements) * 1000.0, 2, '.', '');
+        if ($shipping_measurements_inserted === false) {
+            $result['ok'] = false;
+            $result['errors'][] = 'Failed to build dirty UPC shipping measurement lookup: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $shipping_measurement_rows = $wpdb->get_var("SELECT COUNT(*) FROM {$shipping_measurements_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $shipping_weight_rows = $wpdb->get_var("SELECT COUNT(*) FROM {$shipping_measurements_table} WHERE shipping_weight_oz IS NOT NULL"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $shipping_dimension_rows = $wpdb->get_var("
+            SELECT COUNT(*)
+            FROM {$shipping_measurements_table}
+            WHERE shipping_length_in IS NOT NULL
+               OR shipping_width_in IS NOT NULL
+               OR shipping_height_in IS NOT NULL
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $result['shipping_measurement_rows'] = is_numeric($shipping_measurement_rows) ? (int) $shipping_measurement_rows : 0;
+        $result['shipping_weight_rows'] = is_numeric($shipping_weight_rows) ? (int) $shipping_weight_rows : 0;
+        $result['shipping_dimension_rows'] = is_numeric($shipping_dimension_rows) ? (int) $shipping_dimension_rows : 0;
 
         $best_offer_changed_sql = "
             NOT ({$best_offers_table}.product_id <=> VALUES(product_id))
@@ -279,10 +388,47 @@ final class ProductBestOfferSelectionService
                     ELSE o.enabled
                 END AS enabled,
                 1 AS has_changed,
-                o.shipping_weight_oz,
-                o.shipping_length_in,
-                o.shipping_width_in,
-                o.shipping_height_in,
+                -- Prefer the selected offer's weight. Fall back to the
+                -- pre-aggregated sibling-offer lookup only when the selected
+                -- value is missing or zero.
+                CASE
+                    WHEN o.shipping_weight_oz IS NOT NULL
+                        AND o.shipping_weight_oz > 0
+                    THEN o.shipping_weight_oz
+                    ELSE sm.shipping_weight_oz
+                END AS shipping_weight_oz,
+                -- Prefer the selected offer's complete dimension set. If any
+                -- dimension is missing, use the complete sibling-offer set.
+                CASE
+                    WHEN o.shipping_length_in IS NOT NULL
+                        AND o.shipping_length_in > 0
+                        AND o.shipping_width_in IS NOT NULL
+                        AND o.shipping_width_in > 0
+                        AND o.shipping_height_in IS NOT NULL
+                        AND o.shipping_height_in > 0
+                    THEN o.shipping_length_in
+                    ELSE sm.shipping_length_in
+                END AS shipping_length_in,
+                CASE
+                    WHEN o.shipping_length_in IS NOT NULL
+                        AND o.shipping_length_in > 0
+                        AND o.shipping_width_in IS NOT NULL
+                        AND o.shipping_width_in > 0
+                        AND o.shipping_height_in IS NOT NULL
+                        AND o.shipping_height_in > 0
+                    THEN o.shipping_width_in
+                    ELSE sm.shipping_width_in
+                END AS shipping_width_in,
+                CASE
+                    WHEN o.shipping_length_in IS NOT NULL
+                        AND o.shipping_length_in > 0
+                        AND o.shipping_width_in IS NOT NULL
+                        AND o.shipping_width_in > 0
+                        AND o.shipping_height_in IS NOT NULL
+                        AND o.shipping_height_in > 0
+                    THEN o.shipping_height_in
+                    ELSE sm.shipping_height_in
+                END AS shipping_height_in,
                 o.source_updated_at,
                 o.normalized_at AS source_offer_normalized_at,
                 CASE
@@ -297,6 +443,8 @@ final class ProductBestOfferSelectionService
                AND ps.status = 'active'
             LEFT JOIN {$map_table} dm
                 ON dm.upc = ps.upc
+            LEFT JOIN {$shipping_measurements_table} sm
+                ON sm.upc = ps.upc
             LEFT JOIN {$offers_table} o
                 ON o.upc = ps.upc
                AND o.enabled = 1
