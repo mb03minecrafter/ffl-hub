@@ -74,9 +74,9 @@ final class DealerBatchShippingOptimizer
                 return;
             }
 
-            $registry_ids = DealerBatchCronRegistry::distributor_ids();
+            $optimizer_ids = DealerBatchOptimizerConfig::optimizer_distributor_ids();
             $config = DealerBatchOptimizerConfig::optimizer_distributor_config();
-            $state = $this->build_state($jobs, $registry_ids);
+            $state = $this->build_state($jobs, $optimizer_ids);
             $before = [
                 'subtotals' => $state['subtotals'],
                 'estimated_paid_shipping' => $this->estimated_paid_shipping_total($state['subtotals'], $config),
@@ -93,7 +93,7 @@ final class DealerBatchShippingOptimizer
             }
 
             $persisted = $this->persist_moves($run_id, $moves);
-            $after_state = $this->build_state($this->load_plannable_dealer_batch_jobs($horizon_mysql_utc), $registry_ids);
+            $after_state = $this->build_state($this->load_plannable_dealer_batch_jobs($horizon_mysql_utc), $optimizer_ids);
             $after = [
                 'subtotals' => $after_state['subtotals'],
                 'estimated_paid_shipping' => $this->estimated_paid_shipping_total($after_state['subtotals'], $config),
@@ -224,7 +224,7 @@ final class DealerBatchShippingOptimizer
 
     /**
      * @param OrderPlacementJobRow[] $jobs
-     * @param string[] $registry_ids
+     * @param string[] $optimizer_ids
      * @return array{
      *   jobs:OrderPlacementJobRow[],
      *   subtotals:array<string,float>,
@@ -233,14 +233,14 @@ final class DealerBatchShippingOptimizer
      *   movable:array<int,array<string,mixed>>
      * }
      */
-    private function build_state(array $jobs, array $registry_ids): array
+    private function build_state(array $jobs, array $optimizer_ids): array
     {
         $subtotals = [];
         $demand = [];
         $stock = [];
         $movable = [];
 
-        foreach ($registry_ids as $dist_id) {
+        foreach ($optimizer_ids as $dist_id) {
             $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) $dist_id);
             if ($dist_id === '') {
                 continue;
@@ -283,7 +283,7 @@ final class DealerBatchShippingOptimizer
         }
 
         foreach ($jobs as $job) {
-            $candidate = $this->build_movable_candidate($job, $registry_ids, $demand, $stock);
+            $candidate = $this->build_movable_candidate($job, $optimizer_ids, $demand, $stock);
             if (is_array($candidate)) {
                 $movable[(int) $job->id] = $candidate;
             }
@@ -301,14 +301,14 @@ final class DealerBatchShippingOptimizer
     }
 
     /**
-     * @param string[] $registry_ids
+     * @param string[] $optimizer_ids
      * @param array<string,array<string,int>> $demand
      * @param array<string,array<string,int>> $stock
      * @return array<string,mixed>|null
      */
     private function build_movable_candidate(
         OrderPlacementJobRow $job,
-        array $registry_ids,
+        array $optimizer_ids,
         array $demand,
         array &$stock
     ): ?array {
@@ -362,7 +362,7 @@ final class DealerBatchShippingOptimizer
                 return null;
             }
 
-            $line_targets = $this->eligible_targets_for_line($source, $upc, $qty, (bool) $line->ffl_required, $registry_ids, $stock);
+            $line_targets = $this->eligible_targets_for_line($source, $upc, $qty, (bool) $line->ffl_required, $optimizer_ids, $stock);
             if (empty($line_targets)) {
                 return null;
             }
@@ -410,7 +410,7 @@ final class DealerBatchShippingOptimizer
     }
 
     /**
-     * @param string[] $registry_ids
+     * @param string[] $optimizer_ids
      * @param array<string,array<string,int>> $stock
      * @return array<string,DistributorProductPayload>
      */
@@ -419,15 +419,15 @@ final class DealerBatchShippingOptimizer
         string $upc,
         int $qty,
         bool $ffl_required,
-        array $registry_ids,
+        array $optimizer_ids,
         array &$stock
     ): array {
         $offers = [];
         $lowest = null;
 
-        foreach ($registry_ids as $dist_id) {
+        foreach ($optimizer_ids as $dist_id) {
             $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) $dist_id);
-            if ($dist_id === '' || !DealerBatchCronRegistry::supports_distributor($dist_id)) {
+            if ($dist_id === '' || !in_array($dist_id, $optimizer_ids, true)) {
                 continue;
             }
             if (!Options::is_distributor_enabled($dist_id)) {
@@ -875,37 +875,81 @@ final class DealerBatchShippingOptimizer
                 }
 
                 $payload = $this->optimized_payload($job, $move, $run_id, $old_job_key, $new_job_key);
-                $updated = $wpdb->query($wpdb->prepare(
-                    "
-                    UPDATE {$table}
-                    SET
-                        job_key = %s,
-                        dist_id = %s,
-                        lane = %s,
-                        payload_json = %s,
-                        updated_at = %s
-                    WHERE
-                        id = %d
-                        AND dist_id = %s
-                        AND job_key = %s
-                        AND lane = %s
-                        AND status = %s
-                        AND (merchant_po IS NULL OR merchant_po = '')
-                        AND (external_order_id IS NULL OR external_order_id = '')
-                        AND (external_order_ids_json IS NULL OR external_order_ids_json = '' OR external_order_ids_json = '[]')
-                    LIMIT 1
-                    ",
-                    $new_job_key,
-                    $target,
-                    OrderPlacementKeysUtil::LANE_DEALER_FULFILLED,
-                    (string) wp_json_encode($payload),
-                    gmdate('Y-m-d H:i:s'),
-                    (int) $job->id,
-                    $source,
-                    $old_job_key,
-                    OrderPlacementKeysUtil::LANE_DEALER_FULFILLED,
-                    OrderPlacementKeys::JOB_STATUS_BATCH_PENDING
-                ));
+                if (DealerBatchOptimizerConfig::is_manual_only_optimizer_target($target)) {
+                    $updated = $wpdb->query($wpdb->prepare(
+                        "
+                        UPDATE {$table}
+                        SET
+                            job_key = %s,
+                            dist_id = %s,
+                            lane = %s,
+                            status = %s,
+                            payload_json = %s,
+                            action_id = NULL,
+                            next_run_at = NULL,
+                            last_step = %s,
+                            last_error = %s,
+                            last_codes_json = %s,
+                            updated_at = %s
+                        WHERE
+                            id = %d
+                            AND dist_id = %s
+                            AND job_key = %s
+                            AND lane = %s
+                            AND status = %s
+                            AND (merchant_po IS NULL OR merchant_po = '')
+                            AND (external_order_id IS NULL OR external_order_id = '')
+                            AND (external_order_ids_json IS NULL OR external_order_ids_json = '' OR external_order_ids_json = '[]')
+                        LIMIT 1
+                        ",
+                        $new_job_key,
+                        $target,
+                        OrderPlacementKeysUtil::LANE_DEALER_FULFILLED,
+                        OrderPlacementKeys::JOB_STATUS_MANUAL,
+                        (string) wp_json_encode($payload),
+                        'place',
+                        $this->manual_only_target_message($target),
+                        (string) wp_json_encode([$this->manual_only_target_reason_code($target)]),
+                        gmdate('Y-m-d H:i:s'),
+                        (int) $job->id,
+                        $source,
+                        $old_job_key,
+                        OrderPlacementKeysUtil::LANE_DEALER_FULFILLED,
+                        OrderPlacementKeys::JOB_STATUS_BATCH_PENDING
+                    ));
+                } else {
+                    $updated = $wpdb->query($wpdb->prepare(
+                        "
+                        UPDATE {$table}
+                        SET
+                            job_key = %s,
+                            dist_id = %s,
+                            lane = %s,
+                            payload_json = %s,
+                            updated_at = %s
+                        WHERE
+                            id = %d
+                            AND dist_id = %s
+                            AND job_key = %s
+                            AND lane = %s
+                            AND status = %s
+                            AND (merchant_po IS NULL OR merchant_po = '')
+                            AND (external_order_id IS NULL OR external_order_id = '')
+                            AND (external_order_ids_json IS NULL OR external_order_ids_json = '' OR external_order_ids_json = '[]')
+                        LIMIT 1
+                        ",
+                        $new_job_key,
+                        $target,
+                        OrderPlacementKeysUtil::LANE_DEALER_FULFILLED,
+                        (string) wp_json_encode($payload),
+                        gmdate('Y-m-d H:i:s'),
+                        (int) $job->id,
+                        $source,
+                        $old_job_key,
+                        OrderPlacementKeysUtil::LANE_DEALER_FULFILLED,
+                        OrderPlacementKeys::JOB_STATUS_BATCH_PENDING
+                    ));
+                }
 
                 if ($updated !== 1) {
                     continue;
@@ -923,6 +967,26 @@ final class DealerBatchShippingOptimizer
         }
 
         return $persisted;
+    }
+
+    private function manual_only_target_message(string $dist_id): string
+    {
+        $dist_id = OrderPlacementKeysUtil::normalize_dist_id($dist_id);
+        if ($dist_id === 'davidsons') {
+            return "Davidson's requires manual ordering. Enter the merchant PO on the Davidson's Manual Order Status page.";
+        }
+
+        return 'Optimized target requires manual distributor ordering.';
+    }
+
+    private function manual_only_target_reason_code(string $dist_id): string
+    {
+        $dist_id = OrderPlacementKeysUtil::normalize_dist_id($dist_id);
+        if ($dist_id === 'davidsons') {
+            return 'DAVIDSONS_MANUAL_REQUIRED';
+        }
+
+        return 'OPTIMIZER_MANUAL_TARGET';
     }
 
     /**
@@ -1017,11 +1081,16 @@ final class DealerBatchShippingOptimizer
             return;
         }
 
+        $suffix = DealerBatchOptimizerConfig::is_manual_only_optimizer_target((string) ($move['target'] ?? ''))
+            ? ' The target distributor is manual-only, so the job row was marked manual for operator handling.'
+            : '';
+
         $order->add_order_note(sprintf(
-            'FFLHub dealer-batch optimizer moved job %d from %s to %s for equal-cost paid-shipping optimization.',
+            'FFLHub dealer-batch optimizer moved job %d from %s to %s for equal-cost paid-shipping optimization.%s',
             (int) ($move['job_id'] ?? 0),
             $old_job_key,
-            $new_job_key
+            $new_job_key,
+            $suffix
         ));
     }
 

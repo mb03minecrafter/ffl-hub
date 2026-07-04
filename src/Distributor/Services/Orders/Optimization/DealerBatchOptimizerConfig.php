@@ -26,8 +26,12 @@ final class DealerBatchOptimizerConfig
     private const DEFAULT_PAID_SHIPPING_COST = 1.0;
     private const DEFAULT_PAID_SHIPPING_COST_BY_DISTRIBUTOR = [
         'bill_hicks'   => 15.0,
+        'davidsons'    => 13.0,
         'rsr'          => 10.0,
         'sports_south' => 8.95,
+    ];
+    private const MANUAL_ONLY_OPTIMIZER_DISTRIBUTORS = [
+        'davidsons',
     ];
 
     private function __construct()
@@ -205,12 +209,41 @@ final class DealerBatchOptimizerConfig
     }
 
     /**
+     * @return string[]
+     */
+    public static function optimizer_distributor_ids(): array
+    {
+        $ids = [];
+
+        foreach (array_merge(DealerBatchCronRegistry::distributor_ids(), self::MANUAL_ONLY_OPTIMIZER_DISTRIBUTORS) as $dist_id) {
+            $dist_id = self::normalize_dist_id((string) $dist_id);
+            if ($dist_id === '') {
+                continue;
+            }
+
+            $ids[$dist_id] = $dist_id;
+        }
+
+        return array_values($ids);
+    }
+
+    public static function is_manual_only_optimizer_target(string $dist_id): bool
+    {
+        $dist_id = self::normalize_dist_id($dist_id);
+        if ($dist_id === '') {
+            return false;
+        }
+
+        return in_array($dist_id, self::MANUAL_ONLY_OPTIMIZER_DISTRIBUTORS, true);
+    }
+
+    /**
      * @return array<string,array{threshold:float,penalty:float}>
      */
     public static function optimizer_distributor_config(): array
     {
         $out = [];
-        foreach (DealerBatchCronRegistry::distributor_ids() as $dist_id) {
+        foreach (self::optimizer_distributor_ids() as $dist_id) {
             $dist_id = self::normalize_dist_id($dist_id);
             if ($dist_id === '') {
                 continue;
@@ -237,7 +270,7 @@ final class DealerBatchOptimizerConfig
         self::add_default(self::optimizer_option_name('enabled'), '0');
         self::add_default(self::optimizer_option_name('last_pre_dispatch_token'), '');
 
-        foreach (DealerBatchCronRegistry::distributor_ids() as $dist_id) {
+        foreach (self::optimizer_distributor_ids() as $dist_id) {
             self::add_default(
                 self::free_shipping_threshold_option_name((string) $dist_id),
                 (string) self::DEFAULT_FREE_SHIPPING_THRESHOLD
