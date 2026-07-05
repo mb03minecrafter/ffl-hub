@@ -7,19 +7,21 @@ if (!defined('ABSPATH')) {
 }
 
 use FFLHub\Distributor\Core\DistributorBase;
+use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorOrderResult;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 use FFLHub\Distributor\Services\SigDropshipApproval;
+use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
 /**
  * Davidson's runtime distributor.
  *
  * Rules:
- * - Ordering is manual-only (API placement intentionally blocked).
+ * - Ordering is manual-handoff-only: dealer batch dispatch emails the items to order.
  * - Shipment lookup by PO is not supported (manual flow).
  * - Validation is local-table only (no remote validation API).
  * - Product lookup is fulfilled from local Davidson's table by UPC.
@@ -97,9 +99,28 @@ final class DistributorDavidsons extends DistributorBase
 
     public function place_order(DistributorOrderRequest $request): DistributorOrderResult
     {
+        if ($this->is_dealer_batch_manual_handoff_request($request)) {
+            $sent = $this->send_dealer_batch_manual_order_email($request);
+            if (!$sent) {
+                return DistributorOrderResult::block_retryable(
+                    "Davidson's manual order email could not be sent; batch row(s) will retry.",
+                    [DistributorOrderResult::REASON_RETRY_UNKNOWN],
+                    [
+                        'merchant_order_id' => (string) $request->merchant_order_id,
+                        'line_count' => count($request->valid_lines()),
+                    ]
+                );
+            }
+        }
+
         return DistributorOrderResult::manual(
-            "Davidson's requires manual ordering. Enter the merchant PO on the Davidson's Manual Order Status page.",
-            [DistributorOrderResult::REASON_MANUAL_REQUIRED]
+            "Davidson's manual order handoff created. Enter the merchant PO on the Davidson's Manual Order Status page after ordering.",
+            [DistributorOrderResult::REASON_MANUAL_REQUIRED],
+            [
+                'merchant_order_id' => (string) $request->merchant_order_id,
+                'line_count' => count($request->valid_lines()),
+                'email_sent' => $this->is_dealer_batch_manual_handoff_request($request) ? 1 : 0,
+            ]
         );
     }
 
@@ -234,6 +255,173 @@ final class DistributorDavidsons extends DistributorBase
         }
 
         return $candidates;
+    }
+
+    private function is_dealer_batch_manual_handoff_request(DistributorOrderRequest $request): bool
+    {
+        return strtolower(trim((string) $request->lane)) === 'dealer_fulfilled'
+            && trim((string) $request->merchant_order_id) !== ''
+            && !empty($request->valid_lines());
+    }
+
+    private function send_dealer_batch_manual_order_email(DistributorOrderRequest $request): bool
+    {
+        if (!function_exists('wp_mail')) {
+            return false;
+        }
+
+        $recipients = $this->manual_order_email_recipients();
+        if (empty($recipients)) {
+            return false;
+        }
+
+        $subject = '[FFLHub] Davidson\'s manual dealer batch ready: ' . trim((string) $request->merchant_order_id);
+        $sent = wp_mail(
+            $recipients,
+            $subject,
+            $this->manual_order_email_body($request),
+            ['Content-Type: text/html; charset=UTF-8']
+        );
+
+        return (bool) $sent;
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function manual_order_email_recipients(): array
+    {
+        $raw = Options::get_batch_order_notification_email();
+        $raw = apply_filters('fflhub_batch_order_notification_recipients', $raw);
+
+        if (is_string($raw)) {
+            $parts = preg_split('/[,;\s]+/', $raw);
+            $raw = is_array($parts) ? $parts : [];
+        }
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $emails = [];
+        foreach ($raw as $email) {
+            $email = trim((string) $email);
+            if ($email !== '' && is_email($email)) {
+                $emails[] = $email;
+            }
+        }
+
+        return array_values(array_unique($emails));
+    }
+
+    private function manual_order_email_body(DistributorOrderRequest $request): string
+    {
+        $lines = $request->valid_lines();
+        $payloads = $this->get_pricing_payloads_by_upcs(array_map(
+            static fn($line): string => $line instanceof DistributorOrderLine ? (string) $line->upc : '',
+            $lines
+        ));
+
+        $admin_url = function_exists('admin_url')
+            ? admin_url('admin.php?page=fflhub-davidsons-manual-order-status')
+            : '';
+
+        return '<div style="font-family:Arial,sans-serif;color:#1d2327;line-height:1.45;">'
+            . '<h2 style="margin:0 0 12px;border-left:6px solid #2271b1;padding-left:10px;">Davidson\'s Manual Dealer Batch</h2>'
+            . '<p>This Davidson\'s dealer batch is ready to order manually. After placing the order, use the Davidson\'s Manual Order Status page to enter/confirm the merchant PO.</p>'
+            . $this->manual_order_summary_table($request)
+            . $this->manual_order_ship_to_block($request)
+            . '<h3 style="margin:20px 0 8px;">Items To Order</h3>'
+            . $this->manual_order_lines_table($lines, $payloads)
+            . ($admin_url !== '' ? '<p><a href="' . esc_url($admin_url) . '">Open Davidson\'s Manual Order Status</a></p>' : '')
+            . '</div>';
+    }
+
+    private function manual_order_summary_table(DistributorOrderRequest $request): string
+    {
+        $qty = 0;
+        foreach ($request->valid_lines() as $line) {
+            $qty += $line->quantity;
+        }
+
+        return $this->manual_order_key_value_table([
+            'Distributor' => "Davidson's",
+            'Merchant PO' => trim((string) $request->merchant_order_id),
+            'Line count' => (string) count($request->valid_lines()),
+            'Total quantity' => (string) $qty,
+            'Lane' => trim((string) $request->lane),
+            'Notes' => trim((string) $request->notes),
+        ]);
+    }
+
+    private function manual_order_ship_to_block(DistributorOrderRequest $request): string
+    {
+        $ship_to = $request->ship_to_customer;
+        $lines = array_filter([
+            trim($ship_to->name),
+            trim($ship_to->company),
+            trim($ship_to->address1),
+            trim($ship_to->address2),
+            trim($ship_to->city . ', ' . $ship_to->state . ' ' . $ship_to->zip),
+            trim($ship_to->phone),
+            trim($ship_to->email),
+        ]);
+
+        return '<h3 style="margin:20px 0 8px;">Dealer Ship-To</h3>'
+            . '<div style="border:1px solid #dcdcde;background:#fbfbfc;padding:10px;max-width:760px;">'
+            . implode('<br>', array_map('esc_html', $lines))
+            . '</div>';
+    }
+
+    /**
+     * @param array<string,string> $rows
+     */
+    private function manual_order_key_value_table(array $rows): string
+    {
+        $html = '<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:760px;">';
+        foreach ($rows as $label => $value) {
+            $html .= '<tr>'
+                . '<th align="left" style="border:1px solid #dcdcde;background:#f6f7f7;padding:8px;width:170px;">' . esc_html($label) . '</th>'
+                . '<td style="border:1px solid #dcdcde;padding:8px;">' . esc_html($value !== '' ? $value : '-') . '</td>'
+                . '</tr>';
+        }
+        return $html . '</table>';
+    }
+
+    /**
+     * @param array<int,DistributorOrderLine> $lines
+     * @param array<string,\FFLHub\Distributor\Models\DistributorProductPayload> $payloads
+     */
+    private function manual_order_lines_table(array $lines, array $payloads): string
+    {
+        $html = '<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:980px;">'
+            . '<thead><tr>'
+            . '<th align="left" style="border:1px solid #dcdcde;background:#f6f7f7;padding:8px;">UPC</th>'
+            . '<th align="left" style="border:1px solid #dcdcde;background:#f6f7f7;padding:8px;">Davidson\'s Item #</th>'
+            . '<th align="left" style="border:1px solid #dcdcde;background:#f6f7f7;padding:8px;">Product</th>'
+            . '<th align="right" style="border:1px solid #dcdcde;background:#f6f7f7;padding:8px;">Qty</th>'
+            . '<th align="right" style="border:1px solid #dcdcde;background:#f6f7f7;padding:8px;">Dealer Cost</th>'
+            . '<th align="left" style="border:1px solid #dcdcde;background:#f6f7f7;padding:8px;">FFL</th>'
+            . '</tr></thead><tbody>';
+
+        foreach ($lines as $line) {
+            $upc = trim((string) $line->upc);
+            $lookup_upc = $this->normalize_upc($upc) ?? $upc;
+            $payload = $payloads[$lookup_upc] ?? $payloads[$upc] ?? null;
+            $name = $payload ? trim((string) $payload->name) : '';
+            $sku = $payload ? trim((string) $payload->sku) : '';
+            $price = $payload ? (float) $payload->price : 0.0;
+
+            $html .= '<tr>'
+                . '<td style="border:1px solid #dcdcde;padding:8px;">' . esc_html($upc) . '</td>'
+                . '<td style="border:1px solid #dcdcde;padding:8px;">' . esc_html($sku !== '' ? $sku : '-') . '</td>'
+                . '<td style="border:1px solid #dcdcde;padding:8px;">' . esc_html($name !== '' ? $name : '-') . '</td>'
+                . '<td align="right" style="border:1px solid #dcdcde;padding:8px;">' . esc_html((string) max(1, (int) $line->quantity)) . '</td>'
+                . '<td align="right" style="border:1px solid #dcdcde;padding:8px;">' . esc_html($price > 0.0 ? '$' . number_format($price, 2) : '-') . '</td>'
+                . '<td style="border:1px solid #dcdcde;padding:8px;">' . esc_html($line->ffl_required ? 'Yes' : 'No') . '</td>'
+                . '</tr>';
+        }
+
+        return $html . '</tbody></table>';
     }
 
     /**

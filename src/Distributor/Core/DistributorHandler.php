@@ -13,6 +13,7 @@ use FFLHub\Distributor\Services\OfferSync\DistributorOfferDisableService;
 use FFLHub\Distributor\Services\OfferSync\DistributorOfferEnableService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\BillHicksDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\DavidsonsDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\OrderingCronService;
 use FFLHub\Distributor\Services\Orders\Cron\OrionCaRelayBatchCronService;
@@ -73,6 +74,7 @@ class DistributorHandler
     private DealerFulfilledCronService $orderDealerFulfilledCronService;
     private OrderingCronService $orderPlacementCronService;
     private BillHicksDealerBatchCronService $billHicksDealerBatchCronService;
+    private DavidsonsDealerBatchCronService $davidsonsDealerBatchCronService;
     private RSRDealerBatchCronService $rsrDealerBatchCronService;
     private LipseysDealerBatchCronService $lipseysDealerBatchCronService;
     private OrionDealerBatchCronService $orionDealerBatchCronService;
@@ -152,6 +154,9 @@ class DistributorHandler
 
         $this->billHicksDealerBatchCronService = new BillHicksDealerBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
         $log_step('new BillHicksDealerBatchCronService');
+
+        $this->davidsonsDealerBatchCronService = new DavidsonsDealerBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
+        $log_step('new DavidsonsDealerBatchCronService');
 
         $this->rsrDealerBatchCronService = new RSRDealerBatchCronService($this, $this->ordering_jobs_table, $this->ffl_table);
         $log_step('new RSRDealerBatchCronService');
@@ -327,6 +332,7 @@ class DistributorHandler
         $this->orderDealerFulfilledCronService->on_activation();
         $this->orderPlacementCronService->on_activation();
         $this->billHicksDealerBatchCronService->on_activation();
+        $this->davidsonsDealerBatchCronService->on_activation();
         $this->rsrDealerBatchCronService->on_activation();
         $this->lipseysDealerBatchCronService->on_activation();
         $this->orionDealerBatchCronService->on_activation();
@@ -362,6 +368,7 @@ class DistributorHandler
         $this->orderDealerFulfilledCronService->on_deactivation();
         $this->orderPlacementCronService->on_deactivation();
         $this->billHicksDealerBatchCronService->on_deactivation();
+        $this->davidsonsDealerBatchCronService->on_deactivation();
         $this->rsrDealerBatchCronService->on_deactivation();
         $this->lipseysDealerBatchCronService->on_deactivation();
         $this->orionDealerBatchCronService->on_deactivation();
@@ -401,6 +408,7 @@ class DistributorHandler
         $this->orderDealerFulfilledCronService->register();
         $this->orderPlacementCronService->register();
         $this->billHicksDealerBatchCronService->register();
+        $this->davidsonsDealerBatchCronService->register();
         $this->rsrDealerBatchCronService->register();
         $this->lipseysDealerBatchCronService->register();
         $this->orionDealerBatchCronService->register();

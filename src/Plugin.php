@@ -50,6 +50,7 @@ use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Distributor\Services\Cron\QuoteEmailJobsCronService;
 use FFLHub\Distributor\Services\Orders\Cron\BillHicksDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\DavidsonsDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\SportsSouthCaRelayBatchCronService;
@@ -317,6 +318,19 @@ final class Plugin
                 'option_prefix' => 'fflhub_bill_hicks_dealer_batch',
                 'field_prefix' => 'fflhub_bill_hicks_dealer_batch_page',
                 'cron_hook' => BillHicksDealerBatchCronService::CRON_HOOK,
+            ],
+            [
+                'page_slug' => 'fflhub-davidsons-dealer-batch-queue',
+                'menu_title' => "Davidson's Dealer Batch Queue",
+                'page_title' => "Davidson's Dealer Batch Queue",
+                'description' => "Per-line-item UPC queue view for Davidson's dealer-fulfilled rows on Processing orders. When the batch fires, FFLHub emails the manual order list and then moves rows to Davidson's Manual Order Status.",
+                'dist_id' => 'davidsons',
+                'dist_label' => "Davidson's",
+                'mode' => 'dealer',
+                'mode_label' => 'Dealer Batch',
+                'option_prefix' => 'fflhub_davidsons_dealer_batch',
+                'field_prefix' => 'fflhub_davidsons_dealer_batch_page',
+                'cron_hook' => DavidsonsDealerBatchCronService::CRON_HOOK,
             ],
             [
                 'page_slug' => 'fflhub-lipseys-dealer-batch-queue',

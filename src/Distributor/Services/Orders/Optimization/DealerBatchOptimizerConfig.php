@@ -30,9 +30,7 @@ final class DealerBatchOptimizerConfig
         'rsr'          => 10.0,
         'sports_south' => 8.95,
     ];
-    private const MANUAL_ONLY_OPTIMIZER_DISTRIBUTORS = [
-        'davidsons',
-    ];
+    private const MANUAL_ONLY_OPTIMIZER_DISTRIBUTORS = [];
 
     private function __construct()
     {

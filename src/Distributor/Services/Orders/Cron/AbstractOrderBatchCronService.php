@@ -666,6 +666,13 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             return;
         }
 
+        if (
+            $result->code === DistributorOrderResult::CODE_MANUAL
+            && $this->handle_manual_aggregate_result($result, $batch_candidates, $aggregate_lines, $ship_to, $po, $batch_kind, $run_id)
+        ) {
+            return;
+        }
+
         if ($result->code === DistributorOrderResult::CODE_BLOCK_RETRYABLE) {
             // Retryable path: send all rows back to batch_pending with a delayed next_run_at.
             $next_retry = OrderPlacementTimeUtil::unix_to_mysql_utc(time() + max(30, $retry_delay_seconds));
@@ -695,6 +702,29 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             $job = $entry['job'];
             $this->dispatch_single_row_now($order, (string) $job->job_key_norm());
         }
+    }
+
+    /**
+     * Optional distributor-specific handling for aggregate MANUAL results.
+     *
+     * Default behavior preserves the historical fallback path: aggregate manual
+     * or fatal outcomes are decomposed into single-row placement attempts. A
+     * subclass can return true when a MANUAL aggregate result is itself the
+     * desired terminal handoff.
+     *
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates
+     * @param array<int,DistributorOrderLine> $aggregate_lines
+     */
+    protected function handle_manual_aggregate_result(
+        DistributorOrderResult $result,
+        array $batch_candidates,
+        array $aggregate_lines,
+        ?DistributorShipTo $ship_to,
+        string $po,
+        string $batch_kind,
+        string $run_id
+    ): bool {
+        return false;
     }
 
     /**

@@ -80,7 +80,7 @@ final class DealerBatchOptimizerPage
         <div style="max-width:1100px;background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:16px 18px;margin:16px 0;">
             <h2 style="margin-top:0;"><?php esc_html_e('How This Page Works', 'ffl-hub'); ?></h2>
             <p>
-                <?php esc_html_e('Dealer-batch ordering is centralized here for the batch-enabled dealer-fulfilled distributors: Bill Hicks, RSR, Lipsey\'s, Orion, Sports South, and Zanders. Davidson\'s is optimizer-eligible as a manual-only target. CA relay batches keep their own timing because that is a different fulfillment flow.', 'ffl-hub'); ?>
+                <?php esc_html_e('Dealer-batch ordering is centralized here for the batch-enabled dealer-fulfilled distributors: Bill Hicks, Davidson\'s, RSR, Lipsey\'s, Orion, Sports South, and Zanders. Davidson\'s batch dispatch sends a manual-order email and then moves the rows to the Davidson\'s Manual Order Status workflow. CA relay batches keep their own timing because that is a different fulfillment flow.', 'ffl-hub'); ?>
             </p>
             <p>
                 <?php esc_html_e('The shipping optimizer runs before a dealer-batch cron builds its final distributor order. It looks across pending dealer-batch jobs and may move a whole job row from one eligible distributor batch to another only when the item cost stays the same and the move improves free-shipping coverage.', 'ffl-hub'); ?>
@@ -137,8 +137,8 @@ final class DealerBatchOptimizerPage
             <h3><?php esc_html_e('Shipping Optimization Rules', 'ffl-hub'); ?></h3>
             <ol>
                 <li><?php esc_html_e('Only active pending dealer-batch source rows are considered. Direct customer drop-ship, CA relay, already-manual, failed, cancelled, refunded, already-submitted, and already-PO-stamped rows are not moved.', 'ffl-hub'); ?></li>
-                <li><?php esc_html_e('Only Bill Hicks, RSR, Lipsey\'s, Orion, Sports South, Zanders, and manual-only Davidson\'s are optimizer targets. CSSI, MGE, and disabled distributors are not optimizer targets.', 'ffl-hub'); ?></li>
-                <li><?php esc_html_e('If a row is optimized to Davidson\'s, it is immediately marked manual and shown on the Davidson\'s Manual Order Status page; no Davidson\'s automated order is submitted.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Only Bill Hicks, Davidson\'s, RSR, Lipsey\'s, Orion, Sports South, and Zanders are optimizer targets. CSSI, MGE, and disabled distributors are not optimizer targets.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('If a row is optimized to Davidson\'s, it stays batch pending until the Davidson\'s dealer-batch cron fires. That cron emails the manual order list, stamps the batch PO, and then shows the rows on the Davidson\'s Manual Order Status page.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('Product distributor locks are respected. If a product is locked, the target distributor must be in the product\'s allowed distributor lock list.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('The target distributor must carry the same UPC, have a distributor SKU available, and have enough stock for the whole moved job row.', 'ffl-hub'); ?></li>
                 <li><?php esc_html_e('Item cost cannot increase. The source and target distributor prices must match after normal two-decimal money rounding, and both must be tied for the lowest eligible dealer-batch cost for that UPC.', 'ffl-hub'); ?></li>
