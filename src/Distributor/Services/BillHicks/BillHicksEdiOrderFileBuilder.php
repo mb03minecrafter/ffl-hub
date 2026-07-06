@@ -20,6 +20,8 @@ use FFLHub\Distributor\Services\Tables\DistributorTableInterface;
  */
 final class BillHicksEdiOrderFileBuilder
 {
+    private const MAX_NOTES_LENGTH = 30;
+
     private DistributorTableInterface $product_table;
 
     public function __construct(DistributorTableInterface $product_table)
@@ -309,7 +311,19 @@ final class BillHicksEdiOrderFileBuilder
             $parts[] = $request_notes;
         }
 
-        return $this->clean_field(implode(' ', $parts));
+        $notes = $this->clean_field(implode(' ', $parts));
+        if (strlen($notes) <= self::MAX_NOTES_LENGTH) {
+            return $notes;
+        }
+
+        // BHC's parser rejects long notes. Prefer the compact contact note over
+        // truncating into the appended Woo/customer context.
+        $contact_note = $this->clean_field((string) ($parts[0] ?? ''));
+        if ($contact_note !== '' && strlen($contact_note) <= self::MAX_NOTES_LENGTH) {
+            return $contact_note;
+        }
+
+        return substr($notes, 0, self::MAX_NOTES_LENGTH);
     }
 
     /**
