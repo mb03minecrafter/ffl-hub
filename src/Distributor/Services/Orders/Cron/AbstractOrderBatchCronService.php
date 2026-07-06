@@ -2036,7 +2036,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     /**
      * @param array<string,mixed> $ctx
      */
-    private function log_ctx(string $msg, array $ctx): void
+    protected function log_ctx(string $msg, array $ctx): void
     {
         DebugLogUtil::log_ctx(self::DEBUG_CONST, $this->get_log_prefix(), $msg, $ctx);
     }
