@@ -398,8 +398,10 @@ final class GunMadeFeedGenerator
         }
 
         $fee_fraction = $this->payment_fee_fraction();
-        $true_cost = $this->to_non_negative_float($row['landed_cost'] ?? null, 0.0);
-        $profit_net_total = ($line_revenue * (1.0 - $fee_fraction)) - $true_cost;
+        // Match checkout: dealer cost excludes distributor freight, which is
+        // evaluated separately as the shipping cost that may be absorbed.
+        $dealer_cost = $this->to_non_negative_float($row['dealer_price'] ?? null, 0.0);
+        $profit_net_total = ($line_revenue * (1.0 - $fee_fraction)) - $dealer_cost;
         $free_threshold = $this->free_shipping_cost_threshold(
             $profit_net_total,
             Options::get_free_shipping_max_profit_spend_percent()
