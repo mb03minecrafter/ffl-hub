@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Distributor\Services\OfferSync\ProductStatePricingSql;
+use FFLHub\Distributor\Services\OfferSync\ProductStateWooApplyService;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 
@@ -48,6 +49,7 @@ final class ProductStateBulkPricingPage
 
         $filters = $this->read_filters_from_request($_GET);
         $fixed_profit = $this->read_fixed_profit_from_request($_GET, 5.0);
+        $apply_woo_now = $this->read_apply_woo_now_from_request($_GET, true);
         $brand_options = $this->brand_options();
         $map_policy_options = $this->map_policy_options();
         $match_count = $this->matching_count($filters);
@@ -61,7 +63,7 @@ final class ProductStateBulkPricingPage
             </p>
 
             <?php $this->render_result($result); ?>
-            <?php $this->render_filter_form($filters, $fixed_profit, $brand_options, $map_policy_options, $match_count); ?>
+            <?php $this->render_filter_form($filters, $fixed_profit, $apply_woo_now, $brand_options, $map_policy_options, $match_count); ?>
             <?php $this->render_preview_table($preview_rows, $match_count); ?>
             <?php $this->render_styles(); ?>
         </div>
@@ -94,7 +96,8 @@ final class ProductStateBulkPricingPage
 
         $filters = $this->read_filters_from_request($_POST);
         $fixed_profit = $this->read_fixed_profit_from_request($_POST, 5.0);
-        $result = $this->apply_fixed_profit($filters, $fixed_profit);
+        $apply_woo_now = $this->read_apply_woo_now_from_request($_POST, true);
+        $result = $this->apply_fixed_profit($filters, $fixed_profit, $apply_woo_now);
         set_transient($this->result_transient_key(), $result, 5 * MINUTE_IN_SECONDS);
 
         $redirect_args = [
@@ -102,6 +105,7 @@ final class ProductStateBulkPricingPage
             'brand_id' => $filters['brand_id'],
             'map_policy' => $filters['map_policy'],
             'fixed_profit' => number_format($fixed_profit, 2, '.', ''),
+            'apply_woo_now' => $apply_woo_now ? '1' : '0',
             'ran' => self::FORM_ACTION,
         ];
 
@@ -113,7 +117,7 @@ final class ProductStateBulkPricingPage
      * @param array<string,mixed> $filters
      * @return array<string,mixed>
      */
-    private function apply_fixed_profit(array $filters, float $fixed_profit): array
+    private function apply_fixed_profit(array $filters, float $fixed_profit, bool $apply_woo_now): array
     {
         global $wpdb;
 
@@ -128,6 +132,8 @@ final class ProductStateBulkPricingPage
             'matched_rows' => 0,
             'pricing_control_rows' => 0,
             'recalculated_rows' => 0,
+            'apply_woo_now' => $apply_woo_now ? 1 : 0,
+            'woo_apply' => null,
             'pricing_control_elapsed_ms' => '0.00',
             'recalculation_elapsed_ms' => '0.00',
             'elapsed_ms' => '0.00',
@@ -196,6 +202,16 @@ final class ProductStateBulkPricingPage
         }
 
         $result['recalculated_rows'] = is_numeric($recalc_rows) ? (int) $recalc_rows : 0;
+
+        if ($apply_woo_now) {
+            $result['stage'] = 'woo_apply';
+            $result['woo_apply'] = ProductStateWooApplyService::apply_product_ids($this->matching_product_ids($filters));
+            if (empty($result['woo_apply']['ok'])) {
+                $result['ok'] = false;
+                $result['errors'][] = 'Product state updated, but Woo apply reported errors.';
+            }
+        }
+
         $result['stage'] = 'complete';
 
         return $this->finish_result($result, $started);
@@ -267,6 +283,18 @@ final class ProductStateBulkPricingPage
         }
 
         return max(0.0, (float) $raw);
+    }
+
+    /**
+     * @param array<string,mixed> $source
+     */
+    private function read_apply_woo_now_from_request(array $source, bool $default): bool
+    {
+        if (!array_key_exists('apply_woo_now', $source)) {
+            return $default;
+        }
+
+        return (string) $source['apply_woo_now'] === '1';
     }
 
     /**
@@ -351,6 +379,29 @@ final class ProductStateBulkPricingPage
 
     /**
      * @param array<string,mixed> $filters
+     * @return int[]
+     */
+    private function matching_product_ids(array $filters): array
+    {
+        global $wpdb;
+
+        if (!$wpdb) {
+            return [];
+        }
+
+        $table = ProductStateStore::table_name();
+        $where = $this->where_sql($filters, 'ps');
+        $sql = $this->prepare_sql(
+            "SELECT ps.product_id FROM {$table} ps WHERE {$where['sql']} ORDER BY ps.product_id ASC",
+            $where['params']
+        );
+        $ids = $wpdb->get_col($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        return array_values(array_unique(array_filter(array_map('intval', is_array($ids) ? $ids : []))));
+    }
+
+    /**
+     * @param array<string,mixed> $filters
      * @return array<int,array<string,mixed>>
      */
     private function preview_rows(array $filters): array
@@ -363,11 +414,13 @@ final class ProductStateBulkPricingPage
 
         $table = ProductStateStore::table_name();
         $posts = $wpdb->posts;
+        $postmeta = $wpdb->postmeta;
         $where = $this->where_sql($filters, 'ps');
         $sql = "
             SELECT
                 ps.product_id,
                 p.post_title,
+                p.post_status,
                 ps.upc,
                 (
                     SELECT GROUP_CONCAT(DISTINCT t_brand.name ORDER BY t_brand.name SEPARATOR ', ')
@@ -381,19 +434,55 @@ final class ProductStateBulkPricingPage
                 ) AS woo_brand,
                 ps.manufacturer_norm,
                 ps.map_visibility_policy,
+                ps.map_price,
+                ps.effective_map_price,
+                ps.map_applicable,
                 ps.pricing_mode,
                 ps.pricing_percent,
                 ps.pricing_fixed_price,
                 ps.pricing_fixed_profit,
+                ps.distributor_id,
+                ps.distributor_product_id,
+                ps.qty,
+                ps.stock_status,
                 ps.dealer_price,
                 ps.shipping_cost,
+                ps.landed_cost,
                 ps.computed_sell_price,
                 ps.public_regular_price,
                 ps.public_sale_price,
-                ps.has_changed
+                ps.ffl_required,
+                ps.sot_required,
+                ps.dropship_enabled,
+                ps.has_changed,
+                ps.woo_synced_at,
+                pm_sku.meta_value AS woo_sku,
+                pm_regular.meta_value AS woo_regular_price,
+                pm_sale.meta_value AS woo_sale_price,
+                pm_price.meta_value AS woo_active_price,
+                pm_stock.meta_value AS woo_stock_qty,
+                pm_stock_status.meta_value AS woo_stock_status
             FROM {$table} ps
             LEFT JOIN {$posts} p
                 ON p.ID = ps.product_id
+            LEFT JOIN {$postmeta} pm_sku
+                ON pm_sku.post_id = ps.product_id
+               AND pm_sku.meta_key = '_sku'
+            LEFT JOIN {$postmeta} pm_regular
+                ON pm_regular.post_id = ps.product_id
+               AND pm_regular.meta_key = '_regular_price'
+            LEFT JOIN {$postmeta} pm_sale
+                ON pm_sale.post_id = ps.product_id
+               AND pm_sale.meta_key = '_sale_price'
+            LEFT JOIN {$postmeta} pm_price
+                ON pm_price.post_id = ps.product_id
+               AND pm_price.meta_key = '_price'
+            LEFT JOIN {$postmeta} pm_stock
+                ON pm_stock.post_id = ps.product_id
+               AND pm_stock.meta_key = '_stock'
+            LEFT JOIN {$postmeta} pm_stock_status
+                ON pm_stock_status.post_id = ps.product_id
+               AND pm_stock_status.meta_key = '_stock_status'
             WHERE {$where['sql']}
             ORDER BY woo_brand ASC, ps.product_id ASC
             LIMIT %d
@@ -460,7 +549,7 @@ final class ProductStateBulkPricingPage
      * @param array<int,string> $brand_options
      * @param array<string,string> $map_policy_options
      */
-    private function render_filter_form(array $filters, float $fixed_profit, array $brand_options, array $map_policy_options, int $match_count): void
+    private function render_filter_form(array $filters, float $fixed_profit, bool $apply_woo_now, array $brand_options, array $map_policy_options, int $match_count): void
     {
         ?>
         <div class="fflhub-pricing-panel">
@@ -495,6 +584,12 @@ final class ProductStateBulkPricingPage
                     <input type="number" min="0" step="0.01" name="fixed_profit" value="<?php echo esc_attr(number_format($fixed_profit, 2, '.', '')); ?>" />
                 </label>
 
+                <label class="fflhub-pricing-check">
+                    <input type="hidden" name="apply_woo_now" value="0" />
+                    <input type="checkbox" name="apply_woo_now" value="1" <?php checked($apply_woo_now); ?> />
+                    <span><?php esc_html_e('Save matching Woo products after apply', 'ffl-hub'); ?></span>
+                </label>
+
                 <?php submit_button(__('Preview Rows', 'ffl-hub'), 'secondary', 'submit', false); ?>
             </form>
 
@@ -509,6 +604,7 @@ final class ProductStateBulkPricingPage
                 <input type="hidden" name="brand_id" value="<?php echo esc_attr((string) (int) $filters['brand_id']); ?>" />
                 <input type="hidden" name="map_policy" value="<?php echo esc_attr($filters['map_policy']); ?>" />
                 <input type="hidden" name="fixed_profit" value="<?php echo esc_attr(number_format($fixed_profit, 2, '.', '')); ?>" />
+                <input type="hidden" name="apply_woo_now" value="<?php echo esc_attr($apply_woo_now ? '1' : '0'); ?>" />
                 <?php
                 $apply_attrs = [
                     'onclick' => "return confirm('Apply fixed-profit pricing to the currently filtered product_state rows? This marks product_state rows changed but does not directly write Woo prices.');",
@@ -542,33 +638,53 @@ final class ProductStateBulkPricingPage
                     <th><?php esc_html_e('Product', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Woo Brand', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('MAP Policy', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Offer', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('MAP', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Pricing', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Cost', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Computed', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Changed', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Product State Output', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Real Woo Row', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Sync', 'ffl-hub'); ?></th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($rows)) : ?>
                     <tr>
-                        <td colspan="8"><?php esc_html_e('No matching rows.', 'ffl-hub'); ?></td>
+                        <td colspan="10"><?php esc_html_e('No matching rows.', 'ffl-hub'); ?></td>
                     </tr>
                 <?php else : ?>
                     <?php foreach ($rows as $row) : ?>
                         <tr>
                             <td>
-                                <strong><?php echo esc_html((string) ($row['post_title'] ?? '')); ?></strong><br />
+                                <a href="<?php echo esc_url(get_edit_post_link((int) ($row['product_id'] ?? 0), '')); ?>">
+                                    <strong><?php echo esc_html((string) ($row['post_title'] ?? '')); ?></strong>
+                                </a><br />
                                 <code>#<?php echo esc_html((string) (int) ($row['product_id'] ?? 0)); ?></code>
+                                <?php echo $this->pill((string) ($row['post_status'] ?? ''), 'neutral'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                             </td>
-                            <td><code><?php echo esc_html((string) ($row['upc'] ?? '')); ?></code></td>
+                            <td>
+                                <code><?php echo esc_html((string) ($row['upc'] ?? '')); ?></code><br />
+                                <span class="fflhub-muted"><?php echo esc_html('SKU ' . ((string) ($row['woo_sku'] ?? '') !== '' ? (string) $row['woo_sku'] : '-')); ?></span>
+                            </td>
                             <td>
                                 <?php echo esc_html((string) ($row['woo_brand'] ?? '')); ?><br />
                                 <span class="fflhub-muted">
                                     <?php echo esc_html('Source ' . (string) ($row['manufacturer_norm'] ?? '')); ?>
                                 </span>
                             </td>
-                            <td><?php echo esc_html($this->map_policy_label((string) ($row['map_visibility_policy'] ?? ''))); ?></td>
+                            <td>
+                                <?php echo $this->pill((string) ($row['distributor_id'] ?? '-'), 'dist'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?><br />
+                                <span class="fflhub-muted"><?php echo esc_html((string) ($row['distributor_product_id'] ?? '')); ?></span><br />
+                                <?php echo $this->pill((string) ($row['stock_status'] ?? '-'), ((string) ($row['stock_status'] ?? '') === 'instock') ? 'good' : 'bad'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                                <span class="fflhub-muted"><?php echo esc_html('Qty ' . (string) (int) ($row['qty'] ?? 0)); ?></span>
+                            </td>
+                            <td>
+                                <?php echo esc_html($this->map_policy_label((string) ($row['map_visibility_policy'] ?? ''))); ?><br />
+                                <span class="fflhub-muted">
+                                    <?php echo esc_html('Raw ' . $this->money($row['map_price'] ?? null) . ' / Effective ' . $this->money($row['effective_map_price'] ?? null)); ?>
+                                </span><br />
+                                <?php echo $this->pill(!empty($row['map_applicable']) ? 'MAP applies' : 'No MAP', !empty($row['map_applicable']) ? 'warn' : 'neutral'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                            </td>
                             <td>
                                 <?php echo esc_html($this->pricing_mode_label((string) ($row['pricing_mode'] ?? ''))); ?><br />
                                 <span class="fflhub-muted">
@@ -577,15 +693,31 @@ final class ProductStateBulkPricingPage
                             </td>
                             <td>
                                 <?php echo esc_html('Dealer ' . $this->money($row['dealer_price'] ?? null)); ?><br />
-                                <?php echo esc_html('Ship ' . $this->money($row['shipping_cost'] ?? null)); ?>
+                                <?php echo esc_html('Ship ' . $this->money($row['shipping_cost'] ?? null)); ?><br />
+                                <span class="fflhub-muted"><?php echo esc_html('Landed ' . $this->money($row['landed_cost'] ?? null)); ?></span>
                             </td>
                             <td>
                                 <?php echo esc_html('Sell ' . $this->money($row['computed_sell_price'] ?? null)); ?><br />
+                                <?php echo esc_html('Regular ' . $this->money($row['public_regular_price'] ?? null)); ?><br />
+                                <?php echo esc_html('Sale ' . $this->money($row['public_sale_price'] ?? null)); ?>
+                            </td>
+                            <td>
+                                <?php echo esc_html('Active ' . $this->money($row['woo_active_price'] ?? null)); ?><br />
+                                <?php echo esc_html('Regular ' . $this->money($row['woo_regular_price'] ?? null)); ?><br />
+                                <?php echo esc_html('Sale ' . $this->money($row['woo_sale_price'] ?? null)); ?><br />
                                 <span class="fflhub-muted">
-                                    <?php echo esc_html('Regular ' . $this->money($row['public_regular_price'] ?? null) . ' / Sale ' . $this->money($row['public_sale_price'] ?? null)); ?>
+                                    <?php echo esc_html('Stock ' . ((string) ($row['woo_stock_qty'] ?? '') !== '' ? (string) $row['woo_stock_qty'] : '-') . ' / ' . ((string) ($row['woo_stock_status'] ?? '') !== '' ? (string) $row['woo_stock_status'] : '-')); ?>
                                 </span>
                             </td>
-                            <td><?php echo !empty($row['has_changed']) ? esc_html__('Yes', 'ffl-hub') : esc_html__('No', 'ffl-hub'); ?></td>
+                            <td>
+                                <?php echo !empty($row['has_changed']) ? $this->pill('Changed', 'warn') : $this->pill('Synced', 'good'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?><br />
+                                <span class="fflhub-muted">
+                                    <?php echo esc_html('Woo synced ' . ((string) ($row['woo_synced_at'] ?? '') !== '' ? (string) $row['woo_synced_at'] : '-')); ?>
+                                </span><br />
+                                <?php echo $this->pill(!empty($row['dropship_enabled']) ? 'Dropship' : 'No dropship', !empty($row['dropship_enabled']) ? 'good' : 'bad'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                                <?php echo !empty($row['ffl_required']) ? $this->pill('FFL', 'warn') : ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                                <?php echo !empty($row['sot_required']) ? $this->pill('SOT', 'bad') : ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>
@@ -620,6 +752,13 @@ final class ProductStateBulkPricingPage
                 <li><?php echo esc_html(sprintf('Matched rows: %d', (int) ($result['matched_rows'] ?? 0))); ?></li>
                 <li><?php echo esc_html(sprintf('Pricing controls changed: %d', (int) ($result['pricing_control_rows'] ?? 0))); ?></li>
                 <li><?php echo esc_html(sprintf('Outputs recalculated: %d', (int) ($result['recalculated_rows'] ?? 0))); ?></li>
+                <li><?php echo esc_html(sprintf('Saved Woo products now: %s', !empty($result['apply_woo_now']) ? 'yes' : 'no')); ?></li>
+                <?php if (is_array($result['woo_apply'] ?? null)) : ?>
+                    <li><?php echo esc_html(sprintf('Woo products processed: %d', (int) ($result['woo_apply']['products_processed'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Woo products saved: %d', (int) ($result['woo_apply']['woo_products_saved'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Product state flags cleared: %d', (int) ($result['woo_apply']['product_state_flags_cleared'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Woo apply runtime: %s ms', (string) ($result['woo_apply']['elapsed_ms'] ?? '0.00'))); ?></li>
+                <?php endif; ?>
                 <li><?php echo esc_html(sprintf('Controls runtime: %s ms', (string) ($result['pricing_control_elapsed_ms'] ?? '0.00'))); ?></li>
                 <li><?php echo esc_html(sprintf('Recalculation runtime: %s ms', (string) ($result['recalculation_elapsed_ms'] ?? '0.00'))); ?></li>
                 <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
@@ -697,6 +836,21 @@ final class ProductStateBulkPricingPage
         return $float === null ? '-' : '$' . number_format($float, 2, '.', '');
     }
 
+    private function pill(string $label, string $tone): string
+    {
+        $label = trim($label);
+        if ($label === '') {
+            return '';
+        }
+
+        $allowed = ['good', 'warn', 'bad', 'dist', 'neutral'];
+        if (!in_array($tone, $allowed, true)) {
+            $tone = 'neutral';
+        }
+
+        return '<span class="fflhub-price-pill is-' . esc_attr($tone) . '">' . esc_html($label) . '</span>';
+    }
+
     private function float_or_null($value): ?float
     {
         if ($value === null || $value === '') {
@@ -755,11 +909,18 @@ final class ProductStateBulkPricingPage
                 align-items: flex-end;
                 gap: 12px;
             }
-            .fflhub-pricing-form label {
+            .fflhub-pricing-form label:not(.fflhub-pricing-check) {
                 display: flex;
                 flex-direction: column;
                 gap: 4px;
                 min-width: 220px;
+                font-weight: 600;
+            }
+            .fflhub-pricing-check {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                min-height: 30px;
                 font-weight: 600;
             }
             .fflhub-pricing-form select,
@@ -782,9 +943,45 @@ final class ProductStateBulkPricingPage
             .fflhub-pricing-preview td,
             .fflhub-pricing-preview th {
                 vertical-align: top;
+                line-height: 1.45;
             }
             .fflhub-muted {
                 color: #646970;
+            }
+            .fflhub-price-pill {
+                display: inline-flex;
+                align-items: center;
+                min-height: 20px;
+                margin: 2px 4px 2px 0;
+                padding: 1px 7px;
+                border-radius: 999px;
+                border: 1px solid #c3c4c7;
+                background: #f6f7f7;
+                color: #1d2327;
+                font-size: 11px;
+                font-weight: 700;
+                line-height: 18px;
+                white-space: nowrap;
+            }
+            .fflhub-price-pill.is-good {
+                border-color: #8bc58a;
+                background: #edfaef;
+                color: #0a5f1f;
+            }
+            .fflhub-price-pill.is-warn {
+                border-color: #e7bd50;
+                background: #fff8e5;
+                color: #6f4e00;
+            }
+            .fflhub-price-pill.is-bad {
+                border-color: #e28b8b;
+                background: #fceeee;
+                color: #8a1f1f;
+            }
+            .fflhub-price-pill.is-dist {
+                border-color: #72aee6;
+                background: #eef6fc;
+                color: #0a4b78;
             }
         </style>
         <?php
