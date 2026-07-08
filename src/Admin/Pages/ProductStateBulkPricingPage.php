@@ -59,7 +59,7 @@ final class ProductStateBulkPricingPage
         <div class="wrap fflhub-bulk-pricing">
             <h1><?php esc_html_e('FFLHub Bulk Product Pricing', 'ffl-hub'); ?></h1>
             <p class="description">
-                <?php esc_html_e('Filter product_state rows by WooCommerce brand and MAP visibility policy, then bulk-set their pricing controls. This updates product_state only, recalculates product_state pricing outputs, and marks changed rows for the Woo apply step.', 'ffl-hub'); ?>
+                <?php esc_html_e('Filter product_state rows by WooCommerce brand, MAP policy, dropship status, and FFL status, then bulk-set their pricing controls. This updates product_state, recalculates product_state pricing outputs, and can immediately save matching Woo products.', 'ffl-hub'); ?>
             </p>
 
             <?php $this->render_result($result); ?>
@@ -105,6 +105,7 @@ final class ProductStateBulkPricingPage
             'brand_id' => $filters['brand_id'],
             'map_policy' => $filters['map_policy'],
             'dropship_status' => $filters['dropship_status'],
+            'ffl_status' => $filters['ffl_status'],
             'fixed_profit' => number_format($fixed_profit, 2, '.', ''),
             'apply_woo_now' => $apply_woo_now ? '1' : '0',
             'ran' => self::FORM_ACTION,
@@ -130,6 +131,7 @@ final class ProductStateBulkPricingPage
             'brand_label' => $this->brand_label((int) $filters['brand_id']),
             'map_policy' => $filters['map_policy'],
             'dropship_status' => $filters['dropship_status'],
+            'ffl_status' => $filters['ffl_status'],
             'fixed_profit' => number_format($fixed_profit, 4, '.', ''),
             'matched_rows' => 0,
             'pricing_control_rows' => 0,
@@ -148,7 +150,7 @@ final class ProductStateBulkPricingPage
             return $this->finish_result($result, $started);
         }
 
-        if ((int) $filters['brand_id'] <= 0 && $filters['map_policy'] === '' && $filters['dropship_status'] === '') {
+        if (!$this->has_active_filter($filters)) {
             $result['ok'] = false;
             $result['errors'][] = 'Choose at least one filter before applying a bulk pricing change.';
             return $this->finish_result($result, $started);
@@ -251,7 +253,7 @@ final class ProductStateBulkPricingPage
 
     /**
      * @param array<string,mixed> $source
-     * @return array{brand_id:int,map_policy:string,dropship_status:string}
+     * @return array{brand_id:int,map_policy:string,dropship_status:string,ffl_status:string}
      */
     private function read_filters_from_request(array $source): array
     {
@@ -264,6 +266,9 @@ final class ProductStateBulkPricingPage
         $dropship_status = isset($source['dropship_status'])
             ? sanitize_text_field(wp_unslash((string) $source['dropship_status']))
             : '';
+        $ffl_status = isset($source['ffl_status'])
+            ? sanitize_text_field(wp_unslash((string) $source['ffl_status']))
+            : '';
 
         if (!array_key_exists($map_policy, $this->map_policy_options())) {
             $map_policy = '';
@@ -271,11 +276,15 @@ final class ProductStateBulkPricingPage
         if (!array_key_exists($dropship_status, $this->dropship_status_options())) {
             $dropship_status = '';
         }
+        if (!array_key_exists($ffl_status, $this->ffl_status_options())) {
+            $ffl_status = '';
+        }
 
         return [
             'brand_id' => $brand_id,
             'map_policy' => trim($map_policy),
             'dropship_status' => trim($dropship_status),
+            'ffl_status' => trim($ffl_status),
         ];
     }
 
@@ -376,6 +385,18 @@ final class ProductStateBulkPricingPage
             '' => __('All dropship statuses', 'ffl-hub'),
             'enabled' => __('Dropship enabled', 'ffl-hub'),
             'disabled' => __('Dropship disabled', 'ffl-hub'),
+        ];
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function ffl_status_options(): array
+    {
+        return [
+            '' => __('All FFL statuses', 'ffl-hub'),
+            'required' => __('FFL required', 'ffl-hub'),
+            'not_required' => __('No FFL required', 'ffl-hub'),
         ];
     }
 
@@ -552,10 +573,28 @@ final class ProductStateBulkPricingPage
             $conditions[] = "COALESCE({$alias}.dropship_enabled, 0) = 0";
         }
 
+        $ffl_status = trim((string) ($filters['ffl_status'] ?? ''));
+        if ($ffl_status === 'required') {
+            $conditions[] = "COALESCE({$alias}.ffl_required, 0) = 1";
+        } elseif ($ffl_status === 'not_required') {
+            $conditions[] = "COALESCE({$alias}.ffl_required, 0) = 0";
+        }
+
         return [
             'sql' => implode(' AND ', $conditions),
             'params' => $params,
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $filters
+     */
+    private function has_active_filter(array $filters): bool
+    {
+        return (int) ($filters['brand_id'] ?? 0) > 0
+            || trim((string) ($filters['map_policy'] ?? '')) !== ''
+            || trim((string) ($filters['dropship_status'] ?? '')) !== ''
+            || trim((string) ($filters['ffl_status'] ?? '')) !== '';
     }
 
     /**
@@ -619,6 +658,17 @@ final class ProductStateBulkPricingPage
                 </label>
 
                 <label>
+                    <span><?php esc_html_e('FFL status', 'ffl-hub'); ?></span>
+                    <select name="ffl_status">
+                        <?php foreach ($this->ffl_status_options() as $value => $label) : ?>
+                            <option value="<?php echo esc_attr($value); ?>" <?php selected($filters['ffl_status'], $value); ?>>
+                                <?php echo esc_html($label); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+
+                <label>
                     <span><?php esc_html_e('Fixed profit', 'ffl-hub'); ?></span>
                     <input type="number" min="0" step="0.01" name="fixed_profit" value="<?php echo esc_attr(number_format($fixed_profit, 2, '.', '')); ?>" />
                 </label>
@@ -643,18 +693,19 @@ final class ProductStateBulkPricingPage
                 <input type="hidden" name="brand_id" value="<?php echo esc_attr((string) (int) $filters['brand_id']); ?>" />
                 <input type="hidden" name="map_policy" value="<?php echo esc_attr($filters['map_policy']); ?>" />
                 <input type="hidden" name="dropship_status" value="<?php echo esc_attr($filters['dropship_status']); ?>" />
+                <input type="hidden" name="ffl_status" value="<?php echo esc_attr($filters['ffl_status']); ?>" />
                 <input type="hidden" name="fixed_profit" value="<?php echo esc_attr(number_format($fixed_profit, 2, '.', '')); ?>" />
                 <input type="hidden" name="apply_woo_now" value="<?php echo esc_attr($apply_woo_now ? '1' : '0'); ?>" />
                 <?php
                 $apply_attrs = [
                     'onclick' => "return confirm('Apply fixed-profit pricing to the currently filtered product_state rows? This marks product_state rows changed but does not directly write Woo prices.');",
                 ];
-                if ((int) $filters['brand_id'] <= 0 && $filters['map_policy'] === '' && $filters['dropship_status'] === '') {
+                if (!$this->has_active_filter($filters)) {
                     $apply_attrs['disabled'] = 'disabled';
                 }
                 submit_button(__('Apply Fixed Profit to Filtered Rows', 'ffl-hub'), 'primary', 'submit', false, $apply_attrs);
                 ?>
-                <?php if ((int) $filters['brand_id'] <= 0 && $filters['map_policy'] === '' && $filters['dropship_status'] === '') : ?>
+                <?php if (!$this->has_active_filter($filters)) : ?>
                     <p class="description"><?php esc_html_e('Choose at least one filter before applying a bulk change.', 'ffl-hub'); ?></p>
                 <?php endif; ?>
             </form>
@@ -672,97 +723,133 @@ final class ProductStateBulkPricingPage
         <p class="description">
             <?php echo esc_html(sprintf('Showing up to %d matching rows.', self::PREVIEW_LIMIT)); ?>
         </p>
-        <table class="widefat striped fflhub-pricing-preview">
-            <thead>
-                <tr>
-                    <th><?php esc_html_e('Product', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Woo Brand', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Offer', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('MAP', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Pricing', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Cost', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Product State Output', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Real Woo Row', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Sync', 'ffl-hub'); ?></th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (empty($rows)) : ?>
-                    <tr>
-                        <td colspan="10"><?php esc_html_e('No matching rows.', 'ffl-hub'); ?></td>
-                    </tr>
-                <?php else : ?>
-                    <?php foreach ($rows as $row) : ?>
-                        <tr>
-                            <td>
-                                <a href="<?php echo esc_url(get_edit_post_link((int) ($row['product_id'] ?? 0), '')); ?>">
-                                    <strong><?php echo esc_html((string) ($row['post_title'] ?? '')); ?></strong>
-                                </a><br />
-                                <code>#<?php echo esc_html((string) (int) ($row['product_id'] ?? 0)); ?></code>
+        <?php if (empty($rows)) : ?>
+            <div class="fflhub-pricing-empty"><?php esc_html_e('No matching rows.', 'ffl-hub'); ?></div>
+        <?php else : ?>
+            <div class="fflhub-pricing-card-list">
+                <?php foreach ($rows as $row) : ?>
+                    <?php
+                    $product_id = (int) ($row['product_id'] ?? 0);
+                    $edit_link = $product_id > 0 ? get_edit_post_link($product_id, '') : '';
+                    $stock_status = (string) ($row['stock_status'] ?? '-');
+                    $woo_stock_qty = (string) ($row['woo_stock_qty'] ?? '');
+                    $woo_stock_status = (string) ($row['woo_stock_status'] ?? '');
+                    $woo_sku = (string) ($row['woo_sku'] ?? '');
+                    $manufacturer_norm = (string) ($row['manufacturer_norm'] ?? '');
+                    $pricing_summary = $this->pricing_value_summary($row);
+                    ?>
+                    <article class="fflhub-pricing-card">
+                        <header class="fflhub-pricing-card-header">
+                            <div class="fflhub-pricing-card-title-wrap">
+                                <h3 class="fflhub-pricing-card-title">
+                                    <?php if ($edit_link) : ?>
+                                        <a href="<?php echo esc_url($edit_link); ?>"><?php echo esc_html((string) ($row['post_title'] ?? '')); ?></a>
+                                    <?php else : ?>
+                                        <?php echo esc_html((string) ($row['post_title'] ?? '')); ?>
+                                    <?php endif; ?>
+                                </h3>
+                                <div class="fflhub-pricing-card-meta">
+                                    <code><?php echo esc_html('#' . (string) $product_id); ?></code>
+                                    <code><?php echo esc_html((string) ($row['upc'] ?? '')); ?></code>
+                                    <span><?php echo esc_html('SKU ' . ($woo_sku !== '' ? $woo_sku : '-')); ?></span>
+                                    <span><?php echo esc_html('Woo brand: ' . ((string) ($row['woo_brand'] ?? '') !== '' ? (string) $row['woo_brand'] : '-')); ?></span>
+                                    <span><?php echo esc_html('Source: ' . ($manufacturer_norm !== '' ? $manufacturer_norm : '-')); ?></span>
+                                </div>
+                            </div>
+                            <div class="fflhub-pricing-card-flags">
                                 <?php echo $this->pill((string) ($row['post_status'] ?? ''), 'neutral'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-                            </td>
-                            <td>
-                                <code><?php echo esc_html((string) ($row['upc'] ?? '')); ?></code><br />
-                                <span class="fflhub-muted"><?php echo esc_html('SKU ' . ((string) ($row['woo_sku'] ?? '') !== '' ? (string) $row['woo_sku'] : '-')); ?></span>
-                            </td>
-                            <td>
-                                <?php echo esc_html((string) ($row['woo_brand'] ?? '')); ?><br />
-                                <span class="fflhub-muted">
-                                    <?php echo esc_html('Source ' . (string) ($row['manufacturer_norm'] ?? '')); ?>
-                                </span>
-                            </td>
-                            <td>
-                                <?php echo $this->pill((string) ($row['distributor_id'] ?? '-'), 'dist'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?><br />
-                                <span class="fflhub-muted"><?php echo esc_html((string) ($row['distributor_product_id'] ?? '')); ?></span><br />
-                                <?php echo $this->pill((string) ($row['stock_status'] ?? '-'), ((string) ($row['stock_status'] ?? '') === 'instock') ? 'good' : 'bad'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-                                <span class="fflhub-muted"><?php echo esc_html('Qty ' . (string) (int) ($row['qty'] ?? 0)); ?></span>
-                            </td>
-                            <td>
-                                <?php echo esc_html($this->map_policy_label((string) ($row['map_visibility_policy'] ?? ''))); ?><br />
-                                <span class="fflhub-muted">
-                                    <?php echo esc_html('Raw ' . $this->money($row['map_price'] ?? null) . ' / Effective ' . $this->money($row['effective_map_price'] ?? null)); ?>
-                                </span><br />
-                                <?php echo $this->pill(!empty($row['map_applicable']) ? 'MAP applies' : 'No MAP', !empty($row['map_applicable']) ? 'warn' : 'neutral'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-                            </td>
-                            <td>
-                                <?php echo esc_html($this->pricing_mode_label((string) ($row['pricing_mode'] ?? ''))); ?><br />
-                                <span class="fflhub-muted">
-                                    <?php echo esc_html($this->pricing_value_summary($row)); ?>
-                                </span>
-                            </td>
-                            <td>
-                                <?php echo esc_html('Dealer ' . $this->money($row['dealer_price'] ?? null)); ?><br />
-                                <?php echo esc_html('Ship ' . $this->money($row['shipping_cost'] ?? null)); ?><br />
-                                <span class="fflhub-muted"><?php echo esc_html('Landed ' . $this->money($row['landed_cost'] ?? null)); ?></span>
-                            </td>
-                            <td>
-                                <?php echo esc_html('Sell ' . $this->money($row['computed_sell_price'] ?? null)); ?><br />
-                                <?php echo esc_html('Regular ' . $this->money($row['public_regular_price'] ?? null)); ?><br />
-                                <?php echo esc_html('Sale ' . $this->money($row['public_sale_price'] ?? null)); ?>
-                            </td>
-                            <td>
-                                <?php echo esc_html('Active ' . $this->money($row['woo_active_price'] ?? null)); ?><br />
-                                <?php echo esc_html('Regular ' . $this->money($row['woo_regular_price'] ?? null)); ?><br />
-                                <?php echo esc_html('Sale ' . $this->money($row['woo_sale_price'] ?? null)); ?><br />
-                                <span class="fflhub-muted">
-                                    <?php echo esc_html('Stock ' . ((string) ($row['woo_stock_qty'] ?? '') !== '' ? (string) $row['woo_stock_qty'] : '-') . ' / ' . ((string) ($row['woo_stock_status'] ?? '') !== '' ? (string) $row['woo_stock_status'] : '-')); ?>
-                                </span>
-                            </td>
-                            <td>
-                                <?php echo !empty($row['has_changed']) ? $this->pill('Changed', 'warn') : $this->pill('Synced', 'good'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?><br />
-                                <span class="fflhub-muted">
-                                    <?php echo esc_html('Woo synced ' . ((string) ($row['woo_synced_at'] ?? '') !== '' ? (string) $row['woo_synced_at'] : '-')); ?>
-                                </span><br />
+                                <?php echo !empty($row['has_changed']) ? $this->pill('Changed', 'warn') : $this->pill('Synced', 'good'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                 <?php echo $this->pill(!empty($row['dropship_enabled']) ? 'Dropship' : 'No dropship', !empty($row['dropship_enabled']) ? 'good' : 'bad'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                 <?php echo !empty($row['ffl_required']) ? $this->pill('FFL', 'warn') : ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                 <?php echo !empty($row['sot_required']) ? $this->pill('SOT', 'bad') : ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </tbody>
-        </table>
+                            </div>
+                        </header>
+
+                        <div class="fflhub-pricing-card-grid">
+                            <section class="fflhub-pricing-metric-panel is-offer">
+                                <h4><?php esc_html_e('Selected Offer', 'ffl-hub'); ?></h4>
+                                <dl>
+                                    <dt><?php esc_html_e('Distributor', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo $this->pill((string) ($row['distributor_id'] ?? '-'), 'dist'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></dd>
+                                    <dt><?php esc_html_e('Product ID', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html((string) ($row['distributor_product_id'] ?? '-')); ?></dd>
+                                    <dt><?php esc_html_e('Stock', 'ffl-hub'); ?></dt>
+                                    <dd>
+                                        <?php echo $this->pill($stock_status, $stock_status === 'instock' ? 'good' : 'bad'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                                        <span><?php echo esc_html('Qty ' . (string) (int) ($row['qty'] ?? 0)); ?></span>
+                                    </dd>
+                                </dl>
+                            </section>
+
+                            <section class="fflhub-pricing-metric-panel">
+                                <h4><?php esc_html_e('MAP', 'ffl-hub'); ?></h4>
+                                <dl>
+                                    <dt><?php esc_html_e('Policy', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->map_policy_label((string) ($row['map_visibility_policy'] ?? ''))); ?></dd>
+                                    <dt><?php esc_html_e('Raw', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->money($row['map_price'] ?? null)); ?></dd>
+                                    <dt><?php esc_html_e('Effective', 'ffl-hub'); ?></dt>
+                                    <dd>
+                                        <?php echo esc_html($this->money($row['effective_map_price'] ?? null)); ?>
+                                        <?php echo $this->pill(!empty($row['map_applicable']) ? 'Applies' : 'No MAP', !empty($row['map_applicable']) ? 'warn' : 'neutral'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                                    </dd>
+                                </dl>
+                            </section>
+
+                            <section class="fflhub-pricing-metric-panel">
+                                <h4><?php esc_html_e('Pricing Control', 'ffl-hub'); ?></h4>
+                                <dl>
+                                    <dt><?php esc_html_e('Mode', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->pricing_mode_label((string) ($row['pricing_mode'] ?? ''))); ?></dd>
+                                    <dt><?php esc_html_e('Value', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($pricing_summary !== '' ? $pricing_summary : '-'); ?></dd>
+                                </dl>
+                            </section>
+
+                            <section class="fflhub-pricing-metric-panel is-cost">
+                                <h4><?php esc_html_e('Cost Basis', 'ffl-hub'); ?></h4>
+                                <dl>
+                                    <dt><?php esc_html_e('Dealer', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->money($row['dealer_price'] ?? null)); ?></dd>
+                                    <dt><?php esc_html_e('Shipping', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->money($row['shipping_cost'] ?? null)); ?></dd>
+                                    <dt><?php esc_html_e('Landed', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->money($row['landed_cost'] ?? null)); ?></dd>
+                                </dl>
+                            </section>
+
+                            <section class="fflhub-pricing-metric-panel is-state">
+                                <h4><?php esc_html_e('Product State Output', 'ffl-hub'); ?></h4>
+                                <dl>
+                                    <dt><?php esc_html_e('Sell', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->money($row['computed_sell_price'] ?? null)); ?></dd>
+                                    <dt><?php esc_html_e('Regular', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->money($row['public_regular_price'] ?? null)); ?></dd>
+                                    <dt><?php esc_html_e('Sale', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->money($row['public_sale_price'] ?? null)); ?></dd>
+                                </dl>
+                            </section>
+
+                            <section class="fflhub-pricing-metric-panel is-woo">
+                                <h4><?php esc_html_e('Real Woo Row', 'ffl-hub'); ?></h4>
+                                <dl>
+                                    <dt><?php esc_html_e('Active', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->money($row['woo_active_price'] ?? null)); ?></dd>
+                                    <dt><?php esc_html_e('Regular', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->money($row['woo_regular_price'] ?? null)); ?></dd>
+                                    <dt><?php esc_html_e('Sale', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->money($row['woo_sale_price'] ?? null)); ?></dd>
+                                    <dt><?php esc_html_e('Stock', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html(($woo_stock_qty !== '' ? $woo_stock_qty : '-') . ' / ' . ($woo_stock_status !== '' ? $woo_stock_status : '-')); ?></dd>
+                                    <dt><?php esc_html_e('Synced', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html((string) ($row['woo_synced_at'] ?? '') !== '' ? (string) $row['woo_synced_at'] : '-'); ?></dd>
+                                </dl>
+                            </section>
+                        </div>
+                    </article>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
         <?php if ($match_count > self::PREVIEW_LIMIT) : ?>
             <p class="description">
                 <?php echo esc_html(sprintf('%d additional rows match this filter.', $match_count - self::PREVIEW_LIMIT)); ?>
@@ -789,6 +876,7 @@ final class ProductStateBulkPricingPage
                 <li><?php echo esc_html(sprintf('Brand filter: %s', (string) (($result['brand_label'] ?? '') ?: 'All'))); ?></li>
                 <li><?php echo esc_html(sprintf('MAP policy filter: %s', $this->map_policy_label((string) ($result['map_policy'] ?? '')))); ?></li>
                 <li><?php echo esc_html(sprintf('Dropship filter: %s', $this->dropship_status_label((string) ($result['dropship_status'] ?? '')))); ?></li>
+                <li><?php echo esc_html(sprintf('FFL filter: %s', $this->ffl_status_label((string) ($result['ffl_status'] ?? '')))); ?></li>
                 <li><?php echo esc_html(sprintf('Fixed profit: $%s', (string) ($result['fixed_profit'] ?? '0.0000'))); ?></li>
                 <li><?php echo esc_html(sprintf('Matched rows: %d', (int) ($result['matched_rows'] ?? 0))); ?></li>
                 <li><?php echo esc_html(sprintf('Pricing controls changed: %d', (int) ($result['pricing_control_rows'] ?? 0))); ?></li>
@@ -826,6 +914,12 @@ final class ProductStateBulkPricingPage
     {
         $options = $this->dropship_status_options();
         return $options[$status] ?? ($status !== '' ? $status : __('All dropship statuses', 'ffl-hub'));
+    }
+
+    private function ffl_status_label(string $status): string
+    {
+        $options = $this->ffl_status_options();
+        return $options[$status] ?? ($status !== '' ? $status : __('All FFL statuses', 'ffl-hub'));
     }
 
     private function brand_label(int $term_id): string
@@ -943,11 +1037,12 @@ final class ProductStateBulkPricingPage
         ?>
         <style>
             .fflhub-pricing-panel {
-                max-width: 1160px;
+                max-width: 1320px;
                 margin: 18px 0;
                 padding: 16px;
                 background: #fff;
                 border: 1px solid #dcdcde;
+                border-radius: 8px;
             }
             .fflhub-pricing-form,
             .fflhub-pricing-apply {
@@ -984,13 +1079,122 @@ final class ProductStateBulkPricingPage
                 font-size: 20px;
                 margin-right: 6px;
             }
-            .fflhub-pricing-preview {
-                max-width: 1160px;
+            .fflhub-pricing-empty,
+            .fflhub-pricing-card-list {
+                max-width: 1320px;
             }
-            .fflhub-pricing-preview td,
-            .fflhub-pricing-preview th {
-                vertical-align: top;
-                line-height: 1.45;
+            .fflhub-pricing-empty {
+                padding: 18px;
+                background: #fff;
+                border: 1px solid #dcdcde;
+                border-radius: 8px;
+            }
+            .fflhub-pricing-card-list {
+                display: grid;
+                gap: 14px;
+            }
+            .fflhub-pricing-card {
+                padding: 16px;
+                background: #fff;
+                border: 1px solid #dcdcde;
+                border-radius: 8px;
+                box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+            }
+            .fflhub-pricing-card-header {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 18px;
+                margin-bottom: 14px;
+                padding-bottom: 12px;
+                border-bottom: 1px solid #f0f0f1;
+            }
+            .fflhub-pricing-card-title-wrap {
+                min-width: 0;
+            }
+            .fflhub-pricing-card-title {
+                margin: 0 0 8px;
+                font-size: 16px;
+                line-height: 1.35;
+            }
+            .fflhub-pricing-card-title a {
+                text-decoration: none;
+            }
+            .fflhub-pricing-card-title a:hover {
+                text-decoration: underline;
+            }
+            .fflhub-pricing-card-meta,
+            .fflhub-pricing-card-flags {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 6px 10px;
+            }
+            .fflhub-pricing-card-meta {
+                color: #646970;
+                font-size: 12px;
+            }
+            .fflhub-pricing-card-meta code {
+                font-size: 12px;
+            }
+            .fflhub-pricing-card-flags {
+                justify-content: flex-end;
+                min-width: 210px;
+            }
+            .fflhub-pricing-card-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+                gap: 12px;
+            }
+            .fflhub-pricing-metric-panel {
+                padding: 12px;
+                min-height: 132px;
+                background: #f6f7f7;
+                border: 1px solid #dcdcde;
+                border-radius: 7px;
+            }
+            .fflhub-pricing-metric-panel.is-offer {
+                background: #eef6fc;
+                border-color: #b8d6ed;
+            }
+            .fflhub-pricing-metric-panel.is-cost {
+                background: #fff8e5;
+                border-color: #ead18a;
+            }
+            .fflhub-pricing-metric-panel.is-state {
+                background: #edfaef;
+                border-color: #b7dcb8;
+            }
+            .fflhub-pricing-metric-panel.is-woo {
+                background: #f4f1fb;
+                border-color: #cec3e6;
+            }
+            .fflhub-pricing-metric-panel h4 {
+                margin: 0 0 10px;
+                color: #50575e;
+                font-size: 11px;
+                line-height: 1.2;
+                letter-spacing: 0.03em;
+                text-transform: uppercase;
+            }
+            .fflhub-pricing-metric-panel dl {
+                display: grid;
+                grid-template-columns: minmax(76px, auto) 1fr;
+                gap: 7px 10px;
+                margin: 0;
+            }
+            .fflhub-pricing-metric-panel dt {
+                color: #646970;
+                font-size: 12px;
+                line-height: 1.35;
+            }
+            .fflhub-pricing-metric-panel dd {
+                margin: 0;
+                color: #1d2327;
+                font-size: 13px;
+                font-weight: 650;
+                line-height: 1.35;
+                overflow-wrap: anywhere;
             }
             .fflhub-muted {
                 color: #646970;
@@ -1029,6 +1233,16 @@ final class ProductStateBulkPricingPage
                 border-color: #72aee6;
                 background: #eef6fc;
                 color: #0a4b78;
+            }
+            @media (max-width: 782px) {
+                .fflhub-pricing-card-header {
+                    display: block;
+                }
+                .fflhub-pricing-card-flags {
+                    justify-content: flex-start;
+                    min-width: 0;
+                    margin-top: 10px;
+                }
             }
         </style>
         <?php
