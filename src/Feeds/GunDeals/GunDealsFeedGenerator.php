@@ -581,9 +581,6 @@ final class GunDealsFeedGenerator
         }
 
         $dist_lane_fee = $this->resolve_distributor_lane_fee($row['shipping_cost'] ?? null, $fallback_ship);
-        if ($dist_lane_fee <= 0.0) {
-            $dist_lane_fee = max(0.0, $fallback_ship);
-        }
 
         $weight_oz = $this->to_non_negative_float($row['shipping_weight_oz'] ?? null, 0.0);
         $length_in = $this->to_non_negative_float($row['shipping_length_in'] ?? null, 0.0);

@@ -439,9 +439,6 @@ final class GunMadeFeedGenerator
         }
 
         $dist_lane_fee = $this->resolve_distributor_lane_fee($row['shipping_cost'] ?? null, $fallback_ship);
-        if ($dist_lane_fee <= 0.0) {
-            $dist_lane_fee = max(0.0, $fallback_ship);
-        }
 
         $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan([
             [
