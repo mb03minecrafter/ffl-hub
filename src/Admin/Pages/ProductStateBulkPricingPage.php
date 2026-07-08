@@ -57,7 +57,7 @@ final class ProductStateBulkPricingPage
         <div class="wrap fflhub-bulk-pricing">
             <h1><?php esc_html_e('FFLHub Bulk Product Pricing', 'ffl-hub'); ?></h1>
             <p class="description">
-                <?php esc_html_e('Filter product_state rows by normalized brand and MAP visibility policy, then bulk-set their pricing controls. This updates product_state only, recalculates product_state pricing outputs, and marks changed rows for the Woo apply step.', 'ffl-hub'); ?>
+                <?php esc_html_e('Filter product_state rows by WooCommerce brand and MAP visibility policy, then bulk-set their pricing controls. This updates product_state only, recalculates product_state pricing outputs, and marks changed rows for the Woo apply step.', 'ffl-hub'); ?>
             </p>
 
             <?php $this->render_result($result); ?>
@@ -99,7 +99,7 @@ final class ProductStateBulkPricingPage
 
         $redirect_args = [
             'page' => self::PAGE_SLUG,
-            'brand' => $filters['brand'],
+            'brand_id' => $filters['brand_id'],
             'map_policy' => $filters['map_policy'],
             'fixed_profit' => number_format($fixed_profit, 2, '.', ''),
             'ran' => self::FORM_ACTION,
@@ -121,7 +121,8 @@ final class ProductStateBulkPricingPage
         $result = [
             'ok' => true,
             'stage' => 'fixed_profit_apply',
-            'brand' => $filters['brand'],
+            'brand_id' => $filters['brand_id'],
+            'brand_label' => $this->brand_label((int) $filters['brand_id']),
             'map_policy' => $filters['map_policy'],
             'fixed_profit' => number_format($fixed_profit, 4, '.', ''),
             'matched_rows' => 0,
@@ -139,7 +140,7 @@ final class ProductStateBulkPricingPage
             return $this->finish_result($result, $started);
         }
 
-        if ($filters['brand'] === '' && $filters['map_policy'] === '') {
+        if ((int) $filters['brand_id'] <= 0 && $filters['map_policy'] === '') {
             $result['ok'] = false;
             $result['errors'][] = 'Choose at least one filter before applying a bulk pricing change.';
             return $this->finish_result($result, $started);
@@ -232,13 +233,13 @@ final class ProductStateBulkPricingPage
 
     /**
      * @param array<string,mixed> $source
-     * @return array{brand:string,map_policy:string}
+     * @return array{brand_id:int,map_policy:string}
      */
     private function read_filters_from_request(array $source): array
     {
-        $brand = isset($source['brand'])
-            ? sanitize_text_field(wp_unslash((string) $source['brand']))
-            : '';
+        $brand_id = isset($source['brand_id'])
+            ? absint($source['brand_id'])
+            : 0;
         $map_policy = isset($source['map_policy'])
             ? sanitize_text_field(wp_unslash((string) $source['map_policy']))
             : '';
@@ -248,7 +249,7 @@ final class ProductStateBulkPricingPage
         }
 
         return [
-            'brand' => trim($brand),
+            'brand_id' => $brand_id,
             'map_policy' => trim($map_policy),
         ];
     }
@@ -269,7 +270,7 @@ final class ProductStateBulkPricingPage
     }
 
     /**
-     * @return array<string,string>
+     * @return array<int,string>
      */
     private function brand_options(): array
     {
@@ -281,23 +282,34 @@ final class ProductStateBulkPricingPage
         }
 
         $table = ProductStateStore::table_name();
-        $rows = $wpdb->get_col("
-            SELECT DISTINCT manufacturer_norm
-            FROM {$table}
-            WHERE status = 'active'
-              AND manufacturer_norm IS NOT NULL
-              AND manufacturer_norm <> ''
-            ORDER BY manufacturer_norm ASC
+        $rows = $wpdb->get_results("
+            SELECT
+                t.term_id,
+                t.name,
+                COUNT(DISTINCT ps.product_id) AS product_count
+            FROM {$wpdb->terms} t
+            INNER JOIN {$wpdb->term_taxonomy} tt
+                ON tt.term_id = t.term_id
+               AND tt.taxonomy = 'product_brand'
+            INNER JOIN {$wpdb->term_relationships} tr
+                ON tr.term_taxonomy_id = tt.term_taxonomy_id
+            INNER JOIN {$table} ps
+                ON ps.product_id = tr.object_id
+               AND ps.status = 'active'
+            GROUP BY t.term_id, t.name
+            ORDER BY t.name ASC
         "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         if (!is_array($rows)) {
             return $options;
         }
 
-        foreach ($rows as $brand) {
-            $brand = trim((string) $brand);
-            if ($brand !== '') {
-                $options[$brand] = $brand;
+        foreach ($rows as $row) {
+            $term_id = isset($row->term_id) ? (int) $row->term_id : 0;
+            $name = isset($row->name) ? trim((string) $row->name) : '';
+            $count = isset($row->product_count) ? (int) $row->product_count : 0;
+            if ($term_id > 0 && $name !== '') {
+                $options[$term_id] = sprintf('%s (%d)', $name, $count);
             }
         }
 
@@ -357,6 +369,16 @@ final class ProductStateBulkPricingPage
                 ps.product_id,
                 p.post_title,
                 ps.upc,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT t_brand.name ORDER BY t_brand.name SEPARATOR ', ')
+                    FROM {$wpdb->term_relationships} tr_brand
+                    INNER JOIN {$wpdb->term_taxonomy} tt_brand
+                        ON tt_brand.term_taxonomy_id = tr_brand.term_taxonomy_id
+                       AND tt_brand.taxonomy = 'product_brand'
+                    INNER JOIN {$wpdb->terms} t_brand
+                        ON t_brand.term_id = tt_brand.term_id
+                    WHERE tr_brand.object_id = ps.product_id
+                ) AS woo_brand,
                 ps.manufacturer_norm,
                 ps.map_visibility_policy,
                 ps.pricing_mode,
@@ -373,7 +395,7 @@ final class ProductStateBulkPricingPage
             LEFT JOIN {$posts} p
                 ON p.ID = ps.product_id
             WHERE {$where['sql']}
-            ORDER BY ps.manufacturer_norm ASC, ps.product_id ASC
+            ORDER BY woo_brand ASC, ps.product_id ASC
             LIMIT %d
         ";
         $params = array_merge($where['params'], [self::PREVIEW_LIMIT]);
@@ -392,10 +414,19 @@ final class ProductStateBulkPricingPage
         $conditions = ["{$alias}.status = 'active'"];
         $params = [];
 
-        $brand = trim((string) ($filters['brand'] ?? ''));
-        if ($brand !== '') {
-            $conditions[] = "{$alias}.manufacturer_norm = %s";
-            $params[] = $brand;
+        $brand_id = (int) ($filters['brand_id'] ?? 0);
+        if ($brand_id > 0) {
+            global $wpdb;
+            $conditions[] = "EXISTS (
+                SELECT 1
+                FROM {$wpdb->term_relationships} tr_brand_filter
+                INNER JOIN {$wpdb->term_taxonomy} tt_brand_filter
+                    ON tt_brand_filter.term_taxonomy_id = tr_brand_filter.term_taxonomy_id
+                   AND tt_brand_filter.taxonomy = 'product_brand'
+                   AND tt_brand_filter.term_id = %d
+                WHERE tr_brand_filter.object_id = {$alias}.product_id
+            )";
+            $params[] = $brand_id;
         }
 
         $map_policy = trim((string) ($filters['map_policy'] ?? ''));
@@ -426,7 +457,7 @@ final class ProductStateBulkPricingPage
 
     /**
      * @param array<string,mixed> $filters
-     * @param array<string,string> $brand_options
+     * @param array<int,string> $brand_options
      * @param array<string,string> $map_policy_options
      */
     private function render_filter_form(array $filters, float $fixed_profit, array $brand_options, array $map_policy_options, int $match_count): void
@@ -438,10 +469,10 @@ final class ProductStateBulkPricingPage
 
                 <label>
                     <span><?php esc_html_e('Brand', 'ffl-hub'); ?></span>
-                    <select name="brand">
+                    <select name="brand_id">
                         <option value=""><?php esc_html_e('All brands', 'ffl-hub'); ?></option>
                         <?php foreach ($brand_options as $value => $label) : ?>
-                            <option value="<?php echo esc_attr($value); ?>" <?php selected($filters['brand'], $value); ?>>
+                            <option value="<?php echo esc_attr((string) $value); ?>" <?php selected((int) $filters['brand_id'], (int) $value); ?>>
                                 <?php echo esc_html($label); ?>
                             </option>
                         <?php endforeach; ?>
@@ -475,19 +506,19 @@ final class ProductStateBulkPricingPage
             <form method="post" action="" class="fflhub-pricing-apply">
                 <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
                 <input type="hidden" name="fflhub_bulk_pricing_action" value="<?php echo esc_attr(self::FORM_ACTION); ?>" />
-                <input type="hidden" name="brand" value="<?php echo esc_attr($filters['brand']); ?>" />
+                <input type="hidden" name="brand_id" value="<?php echo esc_attr((string) (int) $filters['brand_id']); ?>" />
                 <input type="hidden" name="map_policy" value="<?php echo esc_attr($filters['map_policy']); ?>" />
                 <input type="hidden" name="fixed_profit" value="<?php echo esc_attr(number_format($fixed_profit, 2, '.', '')); ?>" />
                 <?php
                 $apply_attrs = [
                     'onclick' => "return confirm('Apply fixed-profit pricing to the currently filtered product_state rows? This marks product_state rows changed but does not directly write Woo prices.');",
                 ];
-                if ($filters['brand'] === '' && $filters['map_policy'] === '') {
+                if ((int) $filters['brand_id'] <= 0 && $filters['map_policy'] === '') {
                     $apply_attrs['disabled'] = 'disabled';
                 }
                 submit_button(__('Apply Fixed Profit to Filtered Rows', 'ffl-hub'), 'primary', 'submit', false, $apply_attrs);
                 ?>
-                <?php if ($filters['brand'] === '' && $filters['map_policy'] === '') : ?>
+                <?php if ((int) $filters['brand_id'] <= 0 && $filters['map_policy'] === '') : ?>
                     <p class="description"><?php esc_html_e('Choose at least one filter before applying a bulk change.', 'ffl-hub'); ?></p>
                 <?php endif; ?>
             </form>
@@ -510,7 +541,7 @@ final class ProductStateBulkPricingPage
                 <tr>
                     <th><?php esc_html_e('Product', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
-                    <th><?php esc_html_e('Brand', 'ffl-hub'); ?></th>
+                    <th><?php esc_html_e('Woo Brand', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('MAP Policy', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Pricing', 'ffl-hub'); ?></th>
                     <th><?php esc_html_e('Cost', 'ffl-hub'); ?></th>
@@ -531,7 +562,12 @@ final class ProductStateBulkPricingPage
                                 <code>#<?php echo esc_html((string) (int) ($row['product_id'] ?? 0)); ?></code>
                             </td>
                             <td><code><?php echo esc_html((string) ($row['upc'] ?? '')); ?></code></td>
-                            <td><?php echo esc_html((string) ($row['manufacturer_norm'] ?? '')); ?></td>
+                            <td>
+                                <?php echo esc_html((string) ($row['woo_brand'] ?? '')); ?><br />
+                                <span class="fflhub-muted">
+                                    <?php echo esc_html('Source ' . (string) ($row['manufacturer_norm'] ?? '')); ?>
+                                </span>
+                            </td>
                             <td><?php echo esc_html($this->map_policy_label((string) ($row['map_visibility_policy'] ?? ''))); ?></td>
                             <td>
                                 <?php echo esc_html($this->pricing_mode_label((string) ($row['pricing_mode'] ?? ''))); ?><br />
@@ -578,7 +614,7 @@ final class ProductStateBulkPricingPage
             <p><strong><?php esc_html_e('Bulk pricing update complete.', 'ffl-hub'); ?></strong></p>
             <ul style="list-style:disc;margin-left:20px;">
                 <li><?php echo esc_html(sprintf('Stage: %s', (string) ($result['stage'] ?? ''))); ?></li>
-                <li><?php echo esc_html(sprintf('Brand filter: %s', (string) ($result['brand'] ?: 'All'))); ?></li>
+                <li><?php echo esc_html(sprintf('Brand filter: %s', (string) (($result['brand_label'] ?? '') ?: 'All'))); ?></li>
                 <li><?php echo esc_html(sprintf('MAP policy filter: %s', $this->map_policy_label((string) ($result['map_policy'] ?? '')))); ?></li>
                 <li><?php echo esc_html(sprintf('Fixed profit: $%s', (string) ($result['fixed_profit'] ?? '0.0000'))); ?></li>
                 <li><?php echo esc_html(sprintf('Matched rows: %d', (int) ($result['matched_rows'] ?? 0))); ?></li>
@@ -604,6 +640,20 @@ final class ProductStateBulkPricingPage
     {
         $options = $this->map_policy_options();
         return $options[$policy] ?? ($policy !== '' ? $policy : __('All MAP policies', 'ffl-hub'));
+    }
+
+    private function brand_label(int $term_id): string
+    {
+        if ($term_id <= 0 || !function_exists('get_term')) {
+            return '';
+        }
+
+        $term = get_term($term_id, 'product_brand');
+        if (!$term || is_wp_error($term)) {
+            return '';
+        }
+
+        return (string) $term->name;
     }
 
     private function pricing_mode_label(string $mode): string
