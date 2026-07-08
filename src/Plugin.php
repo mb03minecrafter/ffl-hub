@@ -22,6 +22,7 @@ use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
 use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
+use FFLHub\Admin\Pages\ProductStateBulkPricingPage;
 use FFLHub\Admin\Pages\ProductStatePage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
@@ -116,6 +117,7 @@ final class Plugin
     public LipseysCreditLimitPage $lipseys_credit_limit_page;
     public MapPolicyPage $map_policy_page;
     public ProductStatePage $product_state_page;
+    public ProductStateBulkPricingPage $product_state_bulk_pricing_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public AuthorizeNetOrderRescueButton $authnet_order_rescue_button;
     public OrderCartComplianceMetaBox $order_cart_compliance_metabox;
@@ -257,6 +259,9 @@ final class Plugin
 
             $this->product_state_page = new ProductStatePage();
             $this->product_state_page->register();
+
+            $this->product_state_bulk_pricing_page = new ProductStateBulkPricingPage();
+            $this->product_state_bulk_pricing_page->register();
 
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();
