@@ -59,7 +59,7 @@ final class ProductStateBulkPricingPage
         <div class="wrap fflhub-bulk-pricing">
             <h1><?php esc_html_e('FFLHub Bulk Product Pricing', 'ffl-hub'); ?></h1>
             <p class="description">
-                <?php esc_html_e('Filter product_state rows by WooCommerce brand, MAP policy, dropship status, and FFL status, then bulk-set their pricing controls. This updates product_state, recalculates product_state pricing outputs, and can immediately save matching Woo products.', 'ffl-hub'); ?>
+                <?php esc_html_e('Filter product_state rows by WooCommerce brand, MAP policy, effective MAP price, dropship status, and FFL status, then bulk-set their pricing controls. This updates product_state, recalculates product_state pricing outputs, and can immediately save matching Woo products.', 'ffl-hub'); ?>
             </p>
 
             <?php $this->render_result($result); ?>
@@ -104,6 +104,7 @@ final class ProductStateBulkPricingPage
             'page' => self::PAGE_SLUG,
             'brand_id' => $filters['brand_id'],
             'map_policy' => $filters['map_policy'],
+            'map_price_status' => $filters['map_price_status'],
             'dropship_status' => $filters['dropship_status'],
             'ffl_status' => $filters['ffl_status'],
             'fixed_profit' => number_format($fixed_profit, 2, '.', ''),
@@ -130,6 +131,7 @@ final class ProductStateBulkPricingPage
             'brand_id' => $filters['brand_id'],
             'brand_label' => $this->brand_label((int) $filters['brand_id']),
             'map_policy' => $filters['map_policy'],
+            'map_price_status' => $filters['map_price_status'],
             'dropship_status' => $filters['dropship_status'],
             'ffl_status' => $filters['ffl_status'],
             'fixed_profit' => number_format($fixed_profit, 4, '.', ''),
@@ -253,7 +255,7 @@ final class ProductStateBulkPricingPage
 
     /**
      * @param array<string,mixed> $source
-     * @return array{brand_id:int,map_policy:string,dropship_status:string,ffl_status:string}
+     * @return array{brand_id:int,map_policy:string,map_price_status:string,dropship_status:string,ffl_status:string}
      */
     private function read_filters_from_request(array $source): array
     {
@@ -262,6 +264,9 @@ final class ProductStateBulkPricingPage
             : 0;
         $map_policy = isset($source['map_policy'])
             ? sanitize_text_field(wp_unslash((string) $source['map_policy']))
+            : '';
+        $map_price_status = isset($source['map_price_status'])
+            ? sanitize_text_field(wp_unslash((string) $source['map_price_status']))
             : '';
         $dropship_status = isset($source['dropship_status'])
             ? sanitize_text_field(wp_unslash((string) $source['dropship_status']))
@@ -273,6 +278,9 @@ final class ProductStateBulkPricingPage
         if (!array_key_exists($map_policy, $this->map_policy_options())) {
             $map_policy = '';
         }
+        if (!array_key_exists($map_price_status, $this->map_price_status_options())) {
+            $map_price_status = '';
+        }
         if (!array_key_exists($dropship_status, $this->dropship_status_options())) {
             $dropship_status = '';
         }
@@ -283,6 +291,7 @@ final class ProductStateBulkPricingPage
         return [
             'brand_id' => $brand_id,
             'map_policy' => trim($map_policy),
+            'map_price_status' => trim($map_price_status),
             'dropship_status' => trim($dropship_status),
             'ffl_status' => trim($ffl_status),
         ];
@@ -385,6 +394,18 @@ final class ProductStateBulkPricingPage
             '' => __('All dropship statuses', 'ffl-hub'),
             'enabled' => __('Dropship enabled', 'ffl-hub'),
             'disabled' => __('Dropship disabled', 'ffl-hub'),
+        ];
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function map_price_status_options(): array
+    {
+        return [
+            '' => __('All MAP price statuses', 'ffl-hub'),
+            'has_map' => __('Has effective MAP price', 'ffl-hub'),
+            'no_map' => __('No effective MAP price', 'ffl-hub'),
         ];
     }
 
@@ -566,6 +587,13 @@ final class ProductStateBulkPricingPage
             $params[] = $map_policy;
         }
 
+        $map_price_status = trim((string) ($filters['map_price_status'] ?? ''));
+        if ($map_price_status === 'has_map') {
+            $conditions[] = "{$alias}.effective_map_price IS NOT NULL AND {$alias}.effective_map_price > 0";
+        } elseif ($map_price_status === 'no_map') {
+            $conditions[] = "({$alias}.effective_map_price IS NULL OR {$alias}.effective_map_price <= 0)";
+        }
+
         $dropship_status = trim((string) ($filters['dropship_status'] ?? ''));
         if ($dropship_status === 'enabled') {
             $conditions[] = "COALESCE({$alias}.dropship_enabled, 0) = 1";
@@ -593,6 +621,7 @@ final class ProductStateBulkPricingPage
     {
         return (int) ($filters['brand_id'] ?? 0) > 0
             || trim((string) ($filters['map_policy'] ?? '')) !== ''
+            || trim((string) ($filters['map_price_status'] ?? '')) !== ''
             || trim((string) ($filters['dropship_status'] ?? '')) !== ''
             || trim((string) ($filters['ffl_status'] ?? '')) !== '';
     }
@@ -647,6 +676,17 @@ final class ProductStateBulkPricingPage
                 </label>
 
                 <label>
+                    <span><?php esc_html_e('MAP price', 'ffl-hub'); ?></span>
+                    <select name="map_price_status">
+                        <?php foreach ($this->map_price_status_options() as $value => $label) : ?>
+                            <option value="<?php echo esc_attr($value); ?>" <?php selected($filters['map_price_status'], $value); ?>>
+                                <?php echo esc_html($label); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+
+                <label>
                     <span><?php esc_html_e('Dropship status', 'ffl-hub'); ?></span>
                     <select name="dropship_status">
                         <?php foreach ($this->dropship_status_options() as $value => $label) : ?>
@@ -692,6 +732,7 @@ final class ProductStateBulkPricingPage
                 <input type="hidden" name="fflhub_bulk_pricing_action" value="<?php echo esc_attr(self::FORM_ACTION); ?>" />
                 <input type="hidden" name="brand_id" value="<?php echo esc_attr((string) (int) $filters['brand_id']); ?>" />
                 <input type="hidden" name="map_policy" value="<?php echo esc_attr($filters['map_policy']); ?>" />
+                <input type="hidden" name="map_price_status" value="<?php echo esc_attr($filters['map_price_status']); ?>" />
                 <input type="hidden" name="dropship_status" value="<?php echo esc_attr($filters['dropship_status']); ?>" />
                 <input type="hidden" name="ffl_status" value="<?php echo esc_attr($filters['ffl_status']); ?>" />
                 <input type="hidden" name="fixed_profit" value="<?php echo esc_attr(number_format($fixed_profit, 2, '.', '')); ?>" />
@@ -875,6 +916,7 @@ final class ProductStateBulkPricingPage
                 <li><?php echo esc_html(sprintf('Stage: %s', (string) ($result['stage'] ?? ''))); ?></li>
                 <li><?php echo esc_html(sprintf('Brand filter: %s', (string) (($result['brand_label'] ?? '') ?: 'All'))); ?></li>
                 <li><?php echo esc_html(sprintf('MAP policy filter: %s', $this->map_policy_label((string) ($result['map_policy'] ?? '')))); ?></li>
+                <li><?php echo esc_html(sprintf('MAP price filter: %s', $this->map_price_status_label((string) ($result['map_price_status'] ?? '')))); ?></li>
                 <li><?php echo esc_html(sprintf('Dropship filter: %s', $this->dropship_status_label((string) ($result['dropship_status'] ?? '')))); ?></li>
                 <li><?php echo esc_html(sprintf('FFL filter: %s', $this->ffl_status_label((string) ($result['ffl_status'] ?? '')))); ?></li>
                 <li><?php echo esc_html(sprintf('Fixed profit: $%s', (string) ($result['fixed_profit'] ?? '0.0000'))); ?></li>
@@ -914,6 +956,12 @@ final class ProductStateBulkPricingPage
     {
         $options = $this->dropship_status_options();
         return $options[$status] ?? ($status !== '' ? $status : __('All dropship statuses', 'ffl-hub'));
+    }
+
+    private function map_price_status_label(string $status): string
+    {
+        $options = $this->map_price_status_options();
+        return $options[$status] ?? ($status !== '' ? $status : __('All MAP price statuses', 'ffl-hub'));
     }
 
     private function ffl_status_label(string $status): string
