@@ -110,7 +110,7 @@
                             }
                         }),
                         el(ToggleControl, {
-                            label: 'Show product counts',
+                            label: 'Show product count text',
                             checked: attrs.showCount !== false,
                             onChange: function(value) {
                                 setAttributes({ showCount: !!value });

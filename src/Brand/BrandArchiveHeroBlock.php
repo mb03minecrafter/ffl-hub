@@ -13,10 +13,10 @@ use WP_Term;
 /**
  * Dynamic block for WooCommerce product brand archive headers.
  *
- * Core archive blocks can render the brand title and description, but they do
- * not know how to use Woo's brand thumbnail term meta. This block keeps the
- * Site Editor template clean while letting the brand admin screen own the SEO
- * copy and optional hero image.
+ * Core archive blocks can render the archive title and description, but they do
+ * not know how to use Woo's brand/tag thumbnail term meta. These blocks keep
+ * the Site Editor template clean while letting the term admin screen own the
+ * SEO copy and optional hero image.
  */
 final class BrandArchiveHeroBlock
 {
@@ -44,8 +44,20 @@ final class BrandArchiveHeroBlock
             'api_version'     => 2,
             'title'           => __('FFLHub Brand Archive Hero', 'ffl-hub'),
             'category'        => 'widgets',
-            'description'     => __('Displays the current WooCommerce product brand or tag title, description, product count, and optional archive hero image.', 'ffl-hub'),
+            'description'     => __('Displays the current WooCommerce product brand or tag title and optional archive hero image.', 'ffl-hub'),
             'render_callback' => [self::class, 'render'],
+            'supports'        => [
+                'align' => ['wide', 'full'],
+                'html'  => false,
+            ],
+        ]);
+
+        register_block_type('fflhub/archive-term-copy', [
+            'api_version'     => 2,
+            'title'           => __('FFLHub Archive Term Copy', 'ffl-hub'),
+            'category'        => 'widgets',
+            'description'     => __('Displays the current WooCommerce product brand or tag description below the product collection.', 'ffl-hub'),
+            'render_callback' => [self::class, 'render_term_copy'],
             'supports'        => [
                 'align' => ['wide', 'full'],
                 'html'  => false,
@@ -68,7 +80,6 @@ final class BrandArchiveHeroBlock
             return '';
         }
 
-        $description = trim((string) term_description((int) $term->term_id, $term->taxonomy));
         $count = max(0, (int) $term->count);
         $thumbnail_id = self::archive_thumbnail_id($term);
         $image_url = $thumbnail_id > 0 ? (string) wp_get_attachment_image_url($thumbnail_id, 'full') : '';
@@ -84,7 +95,7 @@ final class BrandArchiveHeroBlock
         ];
 
         $style = $has_image
-            ? 'background-image:linear-gradient(90deg,rgba(0,0,0,.82),rgba(0,0,0,.56),rgba(0,0,0,.18)),url(' . esc_url($image_url) . ');'
+            ? 'background-image:linear-gradient(90deg,rgba(0,0,0,.78),rgba(0,0,0,.48),rgba(0,0,0,.16)),url(' . esc_url($image_url) . ');'
             : '';
 
         ob_start();
@@ -95,11 +106,6 @@ final class BrandArchiveHeroBlock
             <?php endif; ?>
             <div class="fflhub-brand-hero__inner">
                 <h1 class="fflhub-brand-hero__title"><?php echo esc_html($title); ?></h1>
-                <?php if ($description !== '') : ?>
-                    <div class="fflhub-brand-hero__description">
-                        <?php echo wp_kses_post($description); ?>
-                    </div>
-                <?php endif; ?>
                 <div class="fflhub-brand-hero__meta">
                     <?php
                     printf(
@@ -112,6 +118,33 @@ final class BrandArchiveHeroBlock
         </section>
         <?php
         return self::styles() . (string) ob_get_clean();
+    }
+
+    /**
+     * @param array<string,mixed> $attributes
+     */
+    public static function render_term_copy(array $attributes = []): string
+    {
+        $term = get_queried_object();
+        if (!$term instanceof WP_Term || !in_array($term->taxonomy, self::SUPPORTED_TAXONOMIES, true)) {
+            return '';
+        }
+
+        $description = trim((string) term_description((int) $term->term_id, $term->taxonomy));
+        if ($description === '') {
+            return '';
+        }
+
+        ob_start();
+        ?>
+        <section class="fflhub-archive-copy alignwide">
+            <div class="fflhub-archive-copy__inner">
+                <?php echo wp_kses_post($description); ?>
+            </div>
+        </section>
+        <?php
+
+        return self::copy_styles() . (string) ob_get_clean();
     }
 
     /**
@@ -341,18 +374,30 @@ JS;
     private static function styles(): string
     {
         return '<style>
-.fflhub-brand-hero{position:relative;overflow:hidden;margin:0 0 var(--wp--preset--spacing--40,2rem);border-bottom:1px solid rgba(0,0,0,.08);background:#f3f5f7;color:#101214}
-.fflhub-brand-hero.has-brand-image{min-height:320px;background-position:center;background-size:cover;color:#fff;border-bottom:0}
+.fflhub-brand-hero{position:relative;box-sizing:border-box;overflow:hidden;margin:0 0 var(--wp--preset--spacing--40,2rem);border-bottom:1px solid rgba(0,0,0,.08);background:#f3f5f7;color:#101214}
+.fflhub-brand-hero.has-brand-image{min-height:500px;background-position:center;background-size:cover;color:#fff;border-bottom:0}
 .fflhub-brand-hero__image{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
 .fflhub-brand-hero__inner{box-sizing:border-box;width:min(1400px,calc(100% - 40px));margin:0 auto;padding:clamp(38px,6vw,82px) 0}
-.fflhub-brand-hero.has-brand-image .fflhub-brand-hero__inner{display:flex;min-height:320px;flex-direction:column;justify-content:center}
+.fflhub-brand-hero.has-brand-image .fflhub-brand-hero__inner{display:flex;min-height:500px;flex-direction:column;align-items:flex-start;justify-content:flex-start;padding-top:clamp(44px,5vw,74px)}
 .fflhub-brand-hero__title{max-width:900px;margin:0;font-size:clamp(38px,5vw,72px);font-weight:800;line-height:1.02;letter-spacing:0;color:inherit}
-.fflhub-brand-hero__description{max-width:860px;margin-top:18px;font-size:clamp(16px,1.4vw,20px);line-height:1.65;color:inherit}
-.fflhub-brand-hero.has-no-brand-image .fflhub-brand-hero__description{color:#34383d}
-.fflhub-brand-hero__description p{margin:0 0 1em}
-.fflhub-brand-hero__description p:last-child{margin-bottom:0}
-.fflhub-brand-hero__meta{display:inline-flex;width:max-content;margin-top:22px;padding:7px 11px;border:1px solid currentColor;border-radius:4px;font-size:13px;font-weight:700;line-height:1;color:inherit;opacity:.86}
-@media (max-width: 720px){.fflhub-brand-hero__inner{width:min(100% - 28px,1400px);padding:34px 0}.fflhub-brand-hero.has-brand-image{min-height:280px}.fflhub-brand-hero.has-brand-image .fflhub-brand-hero__inner{min-height:280px}}
+.fflhub-brand-hero.has-brand-image .fflhub-brand-hero__title{text-align:left}
+.fflhub-brand-hero__meta{display:inline-flex;width:max-content;margin-top:18px;padding:7px 11px;border:1px solid currentColor;border-radius:4px;font-size:13px;font-weight:700;line-height:1;color:inherit;opacity:.86}
+@media (max-width:720px){.fflhub-brand-hero__inner{width:min(100% - 28px,1400px);padding:34px 0}.fflhub-brand-hero.has-brand-image{min-height:380px}.fflhub-brand-hero.has-brand-image .fflhub-brand-hero__inner{min-height:380px;padding-top:34px}.fflhub-brand-hero.has-brand-image .fflhub-brand-hero__title{max-width:92%}.fflhub-brand-hero__meta{font-size:12px}}
+</style>';
+    }
+
+    private static function copy_styles(): string
+    {
+        return '<style>
+.fflhub-archive-copy{box-sizing:border-box;margin-top:clamp(34px,5vw,72px);margin-bottom:clamp(24px,4vw,48px)}
+.fflhub-archive-copy__inner{box-sizing:border-box;width:min(980px,100%);margin:0 auto;padding:clamp(24px,4vw,42px) 0;border-top:1px solid rgba(0,0,0,.10);color:#252a2f;font-size:clamp(16px,1.25vw,19px);line-height:1.75}
+.fflhub-archive-copy__inner > :first-child{margin-top:0}
+.fflhub-archive-copy__inner > :last-child{margin-bottom:0}
+.fflhub-archive-copy__inner p{margin:0 0 1.15em}
+.fflhub-archive-copy__inner h2,.fflhub-archive-copy__inner h3{margin:1.4em 0 .55em;color:#101214;line-height:1.2}
+.fflhub-archive-copy__inner ul,.fflhub-archive-copy__inner ol{margin:0 0 1.15em 1.35em;padding:0}
+.fflhub-archive-copy__inner li{margin:.35em 0}
+@media (max-width:720px){.fflhub-archive-copy{margin-top:34px}.fflhub-archive-copy__inner{padding:24px 0}}
 </style>';
     }
 }
