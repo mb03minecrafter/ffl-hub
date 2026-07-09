@@ -176,15 +176,13 @@ final class ProductStateWooApplyService
             $changed = true;
         }
 
-        if ((int) ($row['manual_shipping_override'] ?? 0) !== 1) {
-            $changed = DistributorProductHelper::sync_woo_shipping_from_fflhub_values(
-                $product,
-                $row['shipping_weight_oz'] ?? '',
-                $row['shipping_length_in'] ?? '',
-                $row['shipping_width_in'] ?? '',
-                $row['shipping_height_in'] ?? ''
-            ) || $changed;
-        }
+        $changed = DistributorProductHelper::sync_woo_shipping_from_fflhub_values(
+            $product,
+            $row['shipping_weight_oz'] ?? '',
+            $row['shipping_length_in'] ?? '',
+            $row['shipping_width_in'] ?? '',
+            $row['shipping_height_in'] ?? ''
+        ) || $changed;
 
         return $changed;
     }

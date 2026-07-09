@@ -88,6 +88,7 @@ class ProductMetaBox
             .fflhub-state-field label, .fflhub-state-label { display:block; font-weight:700; margin-bottom:4px; }
             .fflhub-state-field input[type=number], .fflhub-state-field select { width:100%; max-width:none; }
             .fflhub-state-field__hint { display:block; margin-top:4px; color:#64748b; }
+            .fflhub-state-mini-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
             .fflhub-state-check { display:flex; gap:8px; align-items:flex-start; }
             .fflhub-state-check strong { display:block; margin-bottom:2px; }
             .fflhub-state-check span span { color:#64748b; }
@@ -180,8 +181,32 @@ class ProductMetaBox
             checked(self::truthy_state($row['manual_shipping_override'] ?? null), true, false) .
             ' />';
         echo '<span><strong>' . esc_html__('Manual shipping override flag', 'ffl-hub') . '</strong><br />' .
-            '<span>' . esc_html__('Preserves the product_state override flag. Offer dimensions and shipping values remain read-only selected-offer data.', 'ffl-hub') . '</span></span>';
+            '<span>' . esc_html__('Use manually entered weight and dimensions instead of distributor-offer shipping measurements.', 'ffl-hub') . '</span></span>';
         echo '</label>';
+        echo '</div>';
+        echo '<div class="fflhub-state-field" data-shipping-override-field="measurements">';
+        echo '<span class="fflhub-state-label">' . esc_html__('Manual shipping measurements', 'ffl-hub') . '</span>';
+        echo '<div class="fflhub-state-mini-grid">';
+        echo '<label>' . esc_html__('Weight oz', 'ffl-hub') .
+            '<input type="number" step="0.001" min="0" name="fflhub_state_manual_shipping_weight_oz" value="' .
+            esc_attr(self::state_decimal_for_input($row['manual_shipping_weight_oz'] ?? null)) .
+            '" /></label>';
+        echo '<label>' . esc_html__('Length in', 'ffl-hub') .
+            '<input type="number" step="0.001" min="0" name="fflhub_state_manual_shipping_length_in" value="' .
+            esc_attr(self::state_decimal_for_input($row['manual_shipping_length_in'] ?? null)) .
+            '" /></label>';
+        echo '<label>' . esc_html__('Width in', 'ffl-hub') .
+            '<input type="number" step="0.001" min="0" name="fflhub_state_manual_shipping_width_in" value="' .
+            esc_attr(self::state_decimal_for_input($row['manual_shipping_width_in'] ?? null)) .
+            '" /></label>';
+        echo '<label>' . esc_html__('Height in', 'ffl-hub') .
+            '<input type="number" step="0.001" min="0" name="fflhub_state_manual_shipping_height_in" value="' .
+            esc_attr(self::state_decimal_for_input($row['manual_shipping_height_in'] ?? null)) .
+            '" /></label>';
+        echo '</div>';
+        echo '<span class="fflhub-state-field__hint">' .
+            esc_html__('Fill all four fields. Product_state uses these as the effective Woo/feed shipping measurements while the override is checked.', 'ffl-hub') .
+            '</span>';
         echo '</div>';
         echo '</div>';
 
@@ -460,8 +485,15 @@ class ProductMetaBox
             ],
             __('Overrides / Sync', 'ffl-hub') => [
                 'manual_shipping_override',
+                'manual_shipping_weight_oz',
+                'manual_shipping_length_in',
+                'manual_shipping_width_in',
+                'manual_shipping_height_in',
                 'allowed_distributors_json',
                 'shipping_weight_oz',
+                'shipping_length_in',
+                'shipping_width_in',
+                'shipping_height_in',
                 'has_changed',
                 'created_at',
                 'updated_at',
@@ -554,8 +586,29 @@ class ProductMetaBox
         self::render_state_output_chip(__('Landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null), 'cost');
         self::render_state_output_chip(__('Raw / Effective MAP', 'ffl-hub'), self::state_money($row['map_price'] ?? null) . ' / ' . self::state_money($row['effective_map_price'] ?? null), 'price');
         self::render_state_output_chip(__('MSRP', 'ffl-hub'), self::state_money($row['msrp'] ?? null), 'price');
+        self::render_state_output_chip(
+            __('Ship weight / box', 'ffl-hub'),
+            trim(self::state_value($row['shipping_weight_oz'] ?? null) . ' oz / ' . self::state_dimensions($row)),
+            self::truthy_state($row['manual_shipping_override'] ?? null) ? 'warning' : 'neutral'
+        );
         echo '</div>';
         echo '</div>';
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    private static function state_dimensions(array $row): string
+    {
+        $length = self::state_value($row['shipping_length_in'] ?? null);
+        $width = self::state_value($row['shipping_width_in'] ?? null);
+        $height = self::state_value($row['shipping_height_in'] ?? null);
+
+        if ($length === '-' && $width === '-' && $height === '-') {
+            return '-';
+        }
+
+        return $length . ' x ' . $width . ' x ' . $height . ' in';
     }
 
     private static function render_state_output_chip(string $label, string $value, string $tone = 'neutral'): void
@@ -650,6 +703,7 @@ class ProductMetaBox
                 var mapOverrideMode = root.querySelector('#fflhub_state_map_override_mode');
                 var mapOverridePrice = root.querySelector('#fflhub_state_map_override_price');
                 var localQty = root.querySelector('input[name="fflhub_state_local_stock_override_qty"]');
+                var manualShippingOverride = root.querySelector('input[name="fflhub_state_manual_shipping_override"]');
                 var distEnabled = root.querySelector('#fflhub_state_allowed_distributors_enabled');
                 var mapApplicable = root.getAttribute('data-map-applicable') === '1';
 
@@ -710,12 +764,16 @@ class ProductMetaBox
                         setFieldEnabled(field, localQtyEnabled());
                     });
 
+                    root.querySelectorAll('[data-shipping-override-field="measurements"]').forEach(function (field) {
+                        setFieldEnabled(field, !!(manualShippingOverride && manualShippingOverride.checked));
+                    });
+
                     root.querySelectorAll('[data-distributor-lock-field="select"]').forEach(function (field) {
                         setFieldEnabled(field, !!(distEnabled && distEnabled.checked));
                     });
                 }
 
-                [pricingMode, mapPolicy, mapOverrideMode, mapOverridePrice, localQty, distEnabled].forEach(function (control) {
+                [pricingMode, mapPolicy, mapOverrideMode, mapOverridePrice, localQty, manualShippingOverride, distEnabled].forEach(function (control) {
                     if (!control) {
                         return;
                     }
@@ -911,6 +969,10 @@ class ProductMetaBox
             'map_override_price' => self::sanitize_state_decimal_post('fflhub_state_map_override_price'),
             'quote_free_shipping_override' => isset($_POST['fflhub_state_quote_free_shipping_override']) ? 1 : 0,
             'manual_shipping_override' => isset($_POST['fflhub_state_manual_shipping_override']) ? 1 : 0,
+            'manual_shipping_weight_oz' => self::sanitize_state_decimal_post('fflhub_state_manual_shipping_weight_oz'),
+            'manual_shipping_length_in' => self::sanitize_state_decimal_post('fflhub_state_manual_shipping_length_in'),
+            'manual_shipping_width_in' => self::sanitize_state_decimal_post('fflhub_state_manual_shipping_width_in'),
+            'manual_shipping_height_in' => self::sanitize_state_decimal_post('fflhub_state_manual_shipping_height_in'),
             'stock_oos_override' => isset($_POST['fflhub_state_stock_oos_override']) ? 1 : 0,
             'local_stock_override_qty' => self::sanitize_state_int_post('fflhub_state_local_stock_override_qty'),
             'local_stock_free_shipping' => isset($_POST['fflhub_state_local_stock_free_shipping']) ? 1 : 0,

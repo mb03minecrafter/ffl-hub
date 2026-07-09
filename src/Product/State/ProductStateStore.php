@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 final class ProductStateStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_state_schema_version';
-    private const SCHEMA_VERSION = '9';
+    private const SCHEMA_VERSION = '10';
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
@@ -92,6 +92,10 @@ final class ProductStateStore
                 public_regular_price DECIMAL(12,4) DEFAULT NULL,
                 public_sale_price DECIMAL(12,4) DEFAULT NULL,
                 manual_shipping_override TINYINT(1) NOT NULL DEFAULT 0,
+                manual_shipping_weight_oz DECIMAL(10,3) DEFAULT NULL,
+                manual_shipping_length_in DECIMAL(10,3) DEFAULT NULL,
+                manual_shipping_width_in DECIMAL(10,3) DEFAULT NULL,
+                manual_shipping_height_in DECIMAL(10,3) DEFAULT NULL,
                 stock_oos_override TINYINT(1) NOT NULL DEFAULT 0,
                 local_stock_override_qty INT UNSIGNED DEFAULT NULL,
                 local_stock_free_shipping TINYINT(1) NOT NULL DEFAULT 0,
@@ -386,6 +390,10 @@ final class ProductStateStore
             'public_regular_price' => 'public_regular_price DECIMAL(12,4) DEFAULT NULL',
             'public_sale_price' => 'public_sale_price DECIMAL(12,4) DEFAULT NULL',
             'manual_shipping_override' => 'manual_shipping_override TINYINT(1) NOT NULL DEFAULT 0',
+            'manual_shipping_weight_oz' => 'manual_shipping_weight_oz DECIMAL(10,3) DEFAULT NULL',
+            'manual_shipping_length_in' => 'manual_shipping_length_in DECIMAL(10,3) DEFAULT NULL',
+            'manual_shipping_width_in' => 'manual_shipping_width_in DECIMAL(10,3) DEFAULT NULL',
+            'manual_shipping_height_in' => 'manual_shipping_height_in DECIMAL(10,3) DEFAULT NULL',
             'stock_oos_override' => 'stock_oos_override TINYINT(1) NOT NULL DEFAULT 0',
             'local_stock_override_qty' => 'local_stock_override_qty INT UNSIGNED DEFAULT NULL',
             'local_stock_free_shipping' => 'local_stock_free_shipping TINYINT(1) NOT NULL DEFAULT 0',
@@ -1079,6 +1087,28 @@ final class ProductStateStore
             $status = 'active';
         }
 
+        $manual_shipping_override = !empty($raw['manual_shipping_override']);
+        $manual_shipping_weight_oz = $manual_shipping_override
+            ? self::admin_positive_decimal($raw['manual_shipping_weight_oz'] ?? null, 3)
+            : null;
+        $manual_shipping_length_in = $manual_shipping_override
+            ? self::admin_positive_decimal($raw['manual_shipping_length_in'] ?? null, 3)
+            : null;
+        $manual_shipping_width_in = $manual_shipping_override
+            ? self::admin_positive_decimal($raw['manual_shipping_width_in'] ?? null, 3)
+            : null;
+        $manual_shipping_height_in = $manual_shipping_override
+            ? self::admin_positive_decimal($raw['manual_shipping_height_in'] ?? null, 3)
+            : null;
+        $manual_shipping_complete = (
+            $manual_shipping_override
+            && $manual_shipping_weight_oz !== null
+            && $manual_shipping_length_in !== null
+            && $manual_shipping_width_in !== null
+            && $manual_shipping_height_in !== null
+        );
+        $source_shipping = self::source_shipping_measurements_for_product($product_id, $row);
+
         $updates = [
             'status' => $status,
             'pricing_mode' => $pricing_mode,
@@ -1094,7 +1124,15 @@ final class ProductStateStore
             'map_applicable' => $map_applicable ? 1 : 0,
             'public_regular_price' => self::money_or_null($public_prices['regular'], 4),
             'public_sale_price' => self::money_or_null($public_prices['sale'], 4),
-            'manual_shipping_override' => !empty($raw['manual_shipping_override']) ? 1 : 0,
+            'manual_shipping_override' => $manual_shipping_override ? 1 : 0,
+            'manual_shipping_weight_oz' => $manual_shipping_weight_oz,
+            'manual_shipping_length_in' => $manual_shipping_length_in,
+            'manual_shipping_width_in' => $manual_shipping_width_in,
+            'manual_shipping_height_in' => $manual_shipping_height_in,
+            'shipping_weight_oz' => $manual_shipping_complete ? $manual_shipping_weight_oz : $source_shipping['shipping_weight_oz'],
+            'shipping_length_in' => $manual_shipping_complete ? $manual_shipping_length_in : $source_shipping['shipping_length_in'],
+            'shipping_width_in' => $manual_shipping_complete ? $manual_shipping_width_in : $source_shipping['shipping_width_in'],
+            'shipping_height_in' => $manual_shipping_complete ? $manual_shipping_height_in : $source_shipping['shipping_height_in'],
             'stock_oos_override' => !empty($raw['stock_oos_override']) ? 1 : 0,
             'local_stock_override_qty' => self::admin_nullable_absint($raw['local_stock_override_qty'] ?? null),
             'local_stock_free_shipping' => !empty($raw['local_stock_free_shipping']) ? 1 : 0,
@@ -1188,6 +1226,7 @@ final class ProductStateStore
         $shipping_length_in = self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_SHIPPING_LENGTH_IN_META, true), 3);
         $shipping_width_in = self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_SHIPPING_WIDTH_IN_META, true), 3);
         $shipping_height_in = self::decimal_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_SHIPPING_HEIGHT_IN_META, true), 3);
+        $manual_shipping_override = self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, true)) ? 1 : 0;
         $stock_qty = self::int_or_null(get_post_meta($product_id, '_stock', true));
         $stock_status = self::text(get_post_meta($product_id, '_stock_status', true), 32);
         $pricing = self::pricing_state_from_product_meta(
@@ -1245,7 +1284,11 @@ final class ProductStateStore
             'quote_free_shipping_override' => $pricing['quote_free_shipping_override'],
             'public_regular_price' => $pricing['public_regular_price'],
             'public_sale_price' => $pricing['public_sale_price'],
-            'manual_shipping_override' => self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_MANUAL_SHIPPING_OVERRIDE_META, true)) ? 1 : 0,
+            'manual_shipping_override' => $manual_shipping_override,
+            'manual_shipping_weight_oz' => $manual_shipping_override ? $shipping_weight_oz : null,
+            'manual_shipping_length_in' => $manual_shipping_override ? $shipping_length_in : null,
+            'manual_shipping_width_in' => $manual_shipping_override ? $shipping_width_in : null,
+            'manual_shipping_height_in' => $manual_shipping_override ? $shipping_height_in : null,
             'stock_oos_override' => self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_STOCK_OOS_OVERRIDE_META, true)) ? 1 : 0,
             'local_stock_override_qty' => $local_stock_enabled ? self::int_or_null(get_post_meta($product_id, ProductMeta::FFLHUB_LOCAL_STOCK_OVERRIDE_QTY_META, true)) : null,
             'local_stock_free_shipping' => ($local_stock_enabled && self::truthy(get_post_meta($product_id, ProductMeta::FFLHUB_LOCAL_STOCK_FREE_SHIPPING_META, true))) ? 1 : 0,
@@ -1711,6 +1754,74 @@ final class ProductStateStore
         return max(0, (int) $raw);
     }
 
+    /**
+     * @param mixed $raw
+     */
+    private static function admin_positive_decimal($raw, int $scale): ?string
+    {
+        $value = self::float_or_null($raw);
+        if ($value === null || $value <= 0.0) {
+            return null;
+        }
+
+        return self::money_or_null($value, $scale);
+    }
+
+    /**
+     * @param array<string,mixed> $fallback_row
+     * @return array{shipping_weight_oz:?string,shipping_length_in:?string,shipping_width_in:?string,shipping_height_in:?string}
+     */
+    private static function source_shipping_measurements_for_product(int $product_id, array $fallback_row): array
+    {
+        global $wpdb;
+
+        $fallback = [
+            'shipping_weight_oz' => self::decimal_or_null($fallback_row['shipping_weight_oz'] ?? null, 3),
+            'shipping_length_in' => self::decimal_or_null($fallback_row['shipping_length_in'] ?? null, 3),
+            'shipping_width_in' => self::decimal_or_null($fallback_row['shipping_width_in'] ?? null, 3),
+            'shipping_height_in' => self::decimal_or_null($fallback_row['shipping_height_in'] ?? null, 3),
+        ];
+
+        if (!$wpdb || $product_id <= 0) {
+            return $fallback;
+        }
+
+        $best_offers_table = (string) ($wpdb->prefix . 'fflhub_product_best_offers');
+        $table_exists = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s',
+                $best_offers_table
+            )
+        );
+        if ($table_exists <= 0) {
+            return $fallback;
+        }
+
+        $source = $wpdb->get_row(
+            $wpdb->prepare(
+                "
+                SELECT shipping_weight_oz, shipping_length_in, shipping_width_in, shipping_height_in
+                FROM {$best_offers_table}
+                WHERE product_id = %d
+                LIMIT 1
+                ",
+                $product_id
+            ),
+            ARRAY_A
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if (!is_array($source)) {
+            return $fallback;
+        }
+
+        return [
+            'shipping_weight_oz' => self::decimal_or_null($source['shipping_weight_oz'] ?? null, 3),
+            'shipping_length_in' => self::decimal_or_null($source['shipping_length_in'] ?? null, 3),
+            'shipping_width_in' => self::decimal_or_null($source['shipping_width_in'] ?? null, 3),
+            'shipping_height_in' => self::decimal_or_null($source['shipping_height_in'] ?? null, 3),
+        ];
+    }
+
     private static function nullable_string($value): ?string
     {
         if ($value === null) {
@@ -1844,6 +1955,10 @@ final class ProductStateStore
             'public_regular_price' => '%f',
             'public_sale_price' => '%f',
             'manual_shipping_override' => '%d',
+            'manual_shipping_weight_oz' => '%f',
+            'manual_shipping_length_in' => '%f',
+            'manual_shipping_width_in' => '%f',
+            'manual_shipping_height_in' => '%f',
             'stock_oos_override' => '%d',
             'local_stock_override_qty' => '%d',
             'local_stock_free_shipping' => '%d',

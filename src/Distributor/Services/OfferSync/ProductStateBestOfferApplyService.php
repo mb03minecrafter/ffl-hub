@@ -215,6 +215,21 @@ final class ProductStateBestOfferApplyService
         $public_regular_price = ProductStatePricingSql::public_regular_price_expr('ps', 'b', $computed_sell_price, $effective_map_policy);
         $public_sale_price = ProductStatePricingSql::public_sale_price_expr('ps', 'b', $computed_sell_price, $effective_map_policy);
         $global_percent = self::global_percent_literal();
+        $manual_shipping_complete = "
+            ps.manual_shipping_override = 1
+            AND ps.manual_shipping_weight_oz IS NOT NULL
+            AND ps.manual_shipping_weight_oz > 0
+            AND ps.manual_shipping_length_in IS NOT NULL
+            AND ps.manual_shipping_length_in > 0
+            AND ps.manual_shipping_width_in IS NOT NULL
+            AND ps.manual_shipping_width_in > 0
+            AND ps.manual_shipping_height_in IS NOT NULL
+            AND ps.manual_shipping_height_in > 0
+        ";
+        $shipping_weight_oz = "CASE WHEN {$manual_shipping_complete} THEN ps.manual_shipping_weight_oz ELSE b.shipping_weight_oz END";
+        $shipping_length_in = "CASE WHEN {$manual_shipping_complete} THEN ps.manual_shipping_length_in ELSE b.shipping_length_in END";
+        $shipping_width_in = "CASE WHEN {$manual_shipping_complete} THEN ps.manual_shipping_width_in ELSE b.shipping_width_in END";
+        $shipping_height_in = "CASE WHEN {$manual_shipping_complete} THEN ps.manual_shipping_height_in ELSE b.shipping_height_in END";
 
         return "
             UPDATE {$product_state_table} ps
@@ -240,10 +255,10 @@ final class ProductStateBestOfferApplyService
                 ps.sot_required = b.sot_required,
                 ps.dropship_enabled = b.dropship_enabled,
                 ps.enabled = b.enabled,
-                ps.shipping_weight_oz = b.shipping_weight_oz,
-                ps.shipping_length_in = b.shipping_length_in,
-                ps.shipping_width_in = b.shipping_width_in,
-                ps.shipping_height_in = b.shipping_height_in,
+                ps.shipping_weight_oz = {$shipping_weight_oz},
+                ps.shipping_length_in = {$shipping_length_in},
+                ps.shipping_width_in = {$shipping_width_in},
+                ps.shipping_height_in = {$shipping_height_in},
                 ps.source_updated_at = b.source_updated_at,
                 ps.source_offer_normalized_at = b.source_offer_normalized_at,
                 ps.selection_status = b.selection_status,
