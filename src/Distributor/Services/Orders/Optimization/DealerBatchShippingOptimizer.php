@@ -335,6 +335,7 @@ final class DealerBatchShippingOptimizer
         $target_sets = null;
         $line_rows = [];
         $subtotal = 0.0;
+        $source_unavailable = false;
 
         foreach ($lines as $line) {
             if (!($line instanceof DistributorOrderLine)) {
@@ -353,7 +354,9 @@ final class DealerBatchShippingOptimizer
             }
 
             $stock[$source][$upc] = max(0, (int) $source_payload->quantity);
-            if ((int) $source_payload->quantity <= $low_stock_threshold || (int) $source_payload->quantity < $qty) {
+            if ((int) $source_payload->quantity < $qty) {
+                $source_unavailable = true;
+            } elseif ((int) $source_payload->quantity <= $low_stock_threshold) {
                 return null;
             }
 
@@ -362,7 +365,43 @@ final class DealerBatchShippingOptimizer
                 return null;
             }
 
-            $line_targets = $this->eligible_targets_for_line($source, $upc, $qty, (bool) $line->ffl_required, $optimizer_ids, $stock);
+            $subtotal += $source_price * (float) $qty;
+            $line_rows[] = [
+                'upc' => $upc,
+                'quantity' => $qty,
+                'unit_cost' => $source_price,
+                'targets' => [],
+                'ffl_required' => (bool) $line->ffl_required,
+                'source_quantity' => max(0, (int) $source_payload->quantity),
+            ];
+        }
+
+        $order_context = $this->resolve_order_context($job, $line_rows);
+        $source_lock_allowed = $this->product_locks_allow_target($line_rows, $order_context, $source);
+        $force_move_reason = '';
+        if (!$source_lock_allowed) {
+            $force_move_reason = 'source_lock_violation';
+        } elseif ($source_unavailable) {
+            $force_move_reason = 'source_unavailable';
+        }
+
+        foreach ($line_rows as &$line_row) {
+            $upc = (string) ($line_row['upc'] ?? '');
+            $qty = max(1, (int) ($line_row['quantity'] ?? 0));
+            $ffl_required = (bool) ($line_row['ffl_required'] ?? false);
+            if ($upc === '') {
+                return null;
+            }
+
+            $line_targets = $this->eligible_targets_for_line(
+                $source,
+                $upc,
+                $qty,
+                $ffl_required,
+                $optimizer_ids,
+                $stock,
+                $force_move_reason !== ''
+            );
             if (empty($line_targets)) {
                 return null;
             }
@@ -376,17 +415,10 @@ final class DealerBatchShippingOptimizer
                 return null;
             }
 
-            $subtotal += $source_price * (float) $qty;
-            $line_rows[] = [
-                'upc' => $upc,
-                'quantity' => $qty,
-                'unit_cost' => $source_price,
-                'targets' => $line_targets,
-                'ffl_required' => (bool) $line->ffl_required,
-            ];
+            $line_row['targets'] = $line_targets;
         }
+        unset($line_row);
 
-        $order_context = $this->resolve_order_context($job, $line_rows);
         $targets = [];
         foreach (array_keys((array) $target_sets) as $target) {
             $target = OrderPlacementKeysUtil::normalize_dist_id((string) $target);
@@ -406,6 +438,7 @@ final class DealerBatchShippingOptimizer
             'subtotal' => $this->money($subtotal),
             'lines' => $line_rows,
             'order_context' => $order_context,
+            'force_move_reason' => $force_move_reason,
         ];
     }
 
@@ -420,7 +453,8 @@ final class DealerBatchShippingOptimizer
         int $qty,
         bool $ffl_required,
         array $optimizer_ids,
-        array &$stock
+        array &$stock,
+        bool $allow_rescue_targets = false
     ): array {
         $offers = [];
         $lowest = null;
@@ -445,7 +479,7 @@ final class DealerBatchShippingOptimizer
             }
 
             $stock[$dist_id][$upc] = max(0, (int) $payload->quantity);
-            if ((int) $payload->quantity < $qty) {
+            if ((int) $payload->quantity < $qty && !($allow_rescue_targets && $dist_id === $source)) {
                 continue;
             }
 
@@ -458,7 +492,7 @@ final class DealerBatchShippingOptimizer
         }
 
         $source_price = $this->money($offers[$source]->price);
-        if (abs($source_price - (float) $lowest) > self::EPSILON) {
+        if (!$allow_rescue_targets && abs($source_price - (float) $lowest) > self::EPSILON) {
             return [];
         }
 
@@ -470,7 +504,7 @@ final class DealerBatchShippingOptimizer
             if ($dist_id === 'rsr' && $source !== 'rsr' && $this->rsr_weekend_hold_active()) {
                 continue;
             }
-            if (abs($this->money($payload->price) - $source_price) > self::EPSILON) {
+            if (!$allow_rescue_targets && abs($this->money($payload->price) - $source_price) > self::EPSILON) {
                 continue;
             }
             if ((bool) $payload->ffl_required !== $ffl_required) {
@@ -506,7 +540,10 @@ final class DealerBatchShippingOptimizer
         $used_job_ids = [];
 
         while (true) {
-            $best = $this->best_single_move($movable, $used_job_ids, $subtotals, $demand, $stock, $config);
+            $best = $this->best_required_move($movable, $used_job_ids, $subtotals, $demand, $stock, $config);
+            if (!is_array($best)) {
+                $best = $this->best_single_move($movable, $used_job_ids, $subtotals, $demand, $stock, $config);
+            }
             if (!is_array($best)) {
                 $best = $this->best_threshold_bundle($movable, $used_job_ids, $subtotals, $demand, $stock, $config);
             }
@@ -534,6 +571,70 @@ final class DealerBatchShippingOptimizer
         }
 
         return $chosen;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $movable
+     * @param array<int,bool> $used_job_ids
+     * @param array<string,float> $subtotals
+     * @param array<string,array<string,int>> $demand
+     * @param array<string,array<string,int>> $stock
+     * @param array<string,array{threshold:float,penalty:float}> $config
+     * @return array<string,mixed>|null
+     */
+    private function best_required_move(
+        array $movable,
+        array $used_job_ids,
+        array $subtotals,
+        array $demand,
+        array $stock,
+        array $config
+    ): ?array {
+        $best = null;
+        $best_shipping = null;
+
+        foreach ($movable as $candidate) {
+            $job = $candidate['job'] ?? null;
+            if (!($job instanceof OrderPlacementJobRow) || isset($used_job_ids[(int) $job->id])) {
+                continue;
+            }
+
+            $reason = trim((string) ($candidate['force_move_reason'] ?? ''));
+            if ($reason === '') {
+                continue;
+            }
+
+            foreach ((array) ($candidate['targets'] ?? []) as $target) {
+                $move = $this->move_from_candidate($candidate, (string) $target, $reason);
+                if (!$this->target_has_capacity($move, $demand, $stock)) {
+                    continue;
+                }
+
+                $after = $subtotals;
+                $this->apply_simulated_move($move, $after, $demand, false);
+                $shipping = $this->estimated_paid_shipping_total($after, $config);
+
+                if (
+                    $best === null
+                    || $shipping < ((float) $best_shipping - self::EPSILON)
+                    || (
+                        abs($shipping - (float) $best_shipping) <= self::EPSILON
+                        && (float) ($move['target_subtotal'] ?? $move['subtotal'] ?? 0.0) < (float) ($best['target_subtotal'] ?? $best['subtotal'] ?? PHP_FLOAT_MAX)
+                    )
+                    || (
+                        abs($shipping - (float) $best_shipping) <= self::EPSILON
+                        && abs((float) ($move['target_subtotal'] ?? $move['subtotal'] ?? 0.0) - (float) ($best['target_subtotal'] ?? $best['subtotal'] ?? 0.0)) <= self::EPSILON
+                        && (int) ($move['job_id'] ?? 0) < (int) ($best['job_id'] ?? PHP_INT_MAX)
+                    )
+                ) {
+                    $move['score'] = $shipping * -1.0;
+                    $best = $move;
+                    $best_shipping = $shipping;
+                }
+            }
+        }
+
+        return $best;
     }
 
     /**
@@ -702,6 +803,23 @@ final class DealerBatchShippingOptimizer
         $job = $candidate['job'];
         $source = (string) ($candidate['source'] ?? '');
         $target = OrderPlacementKeysUtil::normalize_dist_id($target);
+        $target_subtotal = 0.0;
+
+        foreach ((array) ($candidate['lines'] ?? []) as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+
+            $qty = max(1, (int) ($line['quantity'] ?? 0));
+            $targets = is_array($line['targets'] ?? null) ? $line['targets'] : [];
+            $payload = $targets[$target] ?? null;
+            if ($payload instanceof DistributorProductPayload) {
+                $target_subtotal += $this->money($payload->price) * (float) $qty;
+                continue;
+            }
+
+            $target_subtotal += $this->money((float) ($line['unit_cost'] ?? 0.0)) * (float) $qty;
+        }
 
         return [
             'job_id' => (int) $job->id,
@@ -710,6 +828,7 @@ final class DealerBatchShippingOptimizer
             'source' => $source,
             'target' => $target,
             'subtotal' => $this->money((float) ($candidate['subtotal'] ?? 0.0)),
+            'target_subtotal' => $this->money($target_subtotal),
             'lines' => (array) ($candidate['lines'] ?? []),
             'order_context' => is_array($candidate['order_context'] ?? null) ? $candidate['order_context'] : [],
             'reason' => $reason,
@@ -754,13 +873,14 @@ final class DealerBatchShippingOptimizer
         $source = (string) ($move['source'] ?? '');
         $target = (string) ($move['target'] ?? '');
         $subtotal = (float) ($move['subtotal'] ?? 0.0);
+        $target_subtotal = (float) ($move['target_subtotal'] ?? $subtotal);
 
         if ($source === '' || $target === '' || $source === $target || $subtotal <= 0.0) {
             return;
         }
 
         $subtotals[$source] = $this->money(max(0.0, (float) ($subtotals[$source] ?? 0.0) - $subtotal));
-        $subtotals[$target] = $this->money((float) ($subtotals[$target] ?? 0.0) + $subtotal);
+        $subtotals[$target] = $this->money((float) ($subtotals[$target] ?? 0.0) + $target_subtotal);
 
         if (!$apply_demand) {
             return;
