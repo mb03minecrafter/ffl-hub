@@ -182,6 +182,8 @@ final class DistributorBillHicks extends DistributorBase
             (string) ($built['filename'] ?? '')
         );
 
+        $this->append_edi_upload_log($local_dir, $built, $write, $upload, $lane, !empty($upload['ok']));
+
         if (empty($upload['ok'])) {
             $error = (string) ($upload['error'] ?? 'Bill Hicks EDI FTP upload failed.');
             $details = [
@@ -299,5 +301,73 @@ final class DistributorBillHicks extends DistributorBase
             'sot_required' => ['sot_required'],
             'dropship_enabled' => ['dropship_enabled'],
         ];
+    }
+
+    /**
+     * Keep a simple append-only paper trail beside the local 850 copies.
+     *
+     * BHC removes uploaded files after ingesting them, so this log gives us a
+     * local timestamped record of what file we attempted to upload and where.
+     *
+     * @param array<string,mixed> $built
+     * @param array<string,mixed> $write
+     * @param array<string,mixed> $upload
+     */
+    private function append_edi_upload_log(
+        string $local_dir,
+        array $built,
+        array $write,
+        array $upload,
+        string $lane,
+        bool $ok
+    ): void {
+        $local_dir = rtrim(trim($local_dir), "/\\");
+        if ($local_dir === '') {
+            return;
+        }
+
+        if (function_exists('wp_mkdir_p') && !wp_mkdir_p($local_dir)) {
+            return;
+        }
+
+        $line = implode("\t", [
+            'utc=' . gmdate('Y-m-d H:i:s'),
+            'site=' . $this->site_time_for_log(),
+            'status=' . ($ok ? 'uploaded' : 'failed'),
+            'po=' . $this->log_field((string) ($built['po_number'] ?? '')),
+            'filename=' . $this->log_field((string) ($built['filename'] ?? '')),
+            'lane=' . $this->log_field($lane),
+            'ship_method=' . $this->log_field((string) ($built['ship_method'] ?? '')),
+            'line_count=' . (string) (int) ($built['line_count'] ?? 0),
+            'local_path=' . $this->log_field((string) ($write['path'] ?? '')),
+            'remote_path=' . $this->log_field((string) ($upload['remote_path'] ?? '')),
+            'error=' . $this->log_field((string) ($upload['error'] ?? '')),
+        ]);
+
+        $log_path = $local_dir . DIRECTORY_SEPARATOR . 'upload-log.txt';
+        if ((file_exists($log_path) && !is_writable($log_path)) || (!file_exists($log_path) && !is_writable($local_dir))) {
+            return;
+        }
+
+        file_put_contents($log_path, $line . PHP_EOL, FILE_APPEND | LOCK_EX);
+    }
+
+    private function site_time_for_log(): string
+    {
+        if (function_exists('current_time')) {
+            return (string) current_time('mysql');
+        }
+
+        return date('Y-m-d H:i:s');
+    }
+
+    private function log_field(string $value): string
+    {
+        $value = trim($value);
+        $value = preg_replace('/[\t\r\n]+/', ' ', $value);
+        $value = is_string($value) ? $value : '';
+        $value = preg_replace('/\s+/', ' ', $value);
+
+        return is_string($value) ? trim($value) : '';
     }
 }

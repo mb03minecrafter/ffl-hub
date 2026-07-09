@@ -20,7 +20,9 @@ use FFLHub\Distributor\Services\Tables\DistributorTableInterface;
  */
 final class BillHicksEdiOrderFileBuilder
 {
-    private const MAX_NOTES_LENGTH = 30;
+    private const MAX_NOTES_THROUGH_END_LENGTH = 30;
+    private const MAX_PO_LENGTH = 22;
+    private const END_MARKER = 'END';
 
     private DistributorTableInterface $product_table;
 
@@ -148,7 +150,7 @@ final class BillHicksEdiOrderFileBuilder
         }
 
         $destination_name = $this->destination_name($ship_to);
-        $notes = $this->build_notes($request, $ship_to);
+        $notes = $this->build_notes($ffl_number);
 
         $records = [];
         $records[] = [
@@ -180,7 +182,7 @@ final class BillHicksEdiOrderFileBuilder
             $ship_method,
             $notes,
             $ffl_number,
-            'END',
+            self::END_MARKER,
         ];
         $records[] = ['LL', 'Item', 'Description', 'Qty', 'Price'];
         foreach ($line_rows as $row) {
@@ -293,37 +295,30 @@ final class BillHicksEdiOrderFileBuilder
         return $this->clean_field($ship_to->name);
     }
 
-    private function build_notes(DistributorOrderRequest $request, DistributorShipTo $ship_to): string
+    private function build_notes(string $ffl_number): string
     {
-        $parts = [];
+        // BHC's import is sensitive to the header tail that starts at the
+        // notes field and ends at END. Destination/contact data already lives
+        // in dedicated ship-to columns, so keep notes blank unless we later
+        // need a tiny operational code.
+        return $this->truncate_notes_for_header('', $ffl_number);
+    }
 
-        $name = $this->clean_field($ship_to->name);
-        $phone = $this->clean_field($ship_to->phone);
-        if ($name !== '' || $phone !== '') {
-            $label = trim($name . ($phone !== '' ? ' #' . $phone : ''));
-            if ($label !== '') {
-                $parts[] = '(' . $label . ')';
-            }
-        }
+    private function truncate_notes_for_header(string $notes, string $ffl_number): string
+    {
+        $notes = $this->clean_field($notes);
+        $ffl_number = $this->clean_field($ffl_number);
 
-        $request_notes = $this->clean_field((string) $request->notes);
-        if ($request_notes !== '') {
-            $parts[] = $request_notes;
-        }
+        // Count the two tab separators plus the FFL value and END marker.
+        // This keeps "notes<TAB>ffl<TAB>END" inside BHC's 30-character limit.
+        $tail_length = strlen("\t" . $ffl_number . "\t" . self::END_MARKER);
+        $max_notes = max(0, self::MAX_NOTES_THROUGH_END_LENGTH - $tail_length);
 
-        $notes = $this->clean_field(implode(' ', $parts));
-        if (strlen($notes) <= self::MAX_NOTES_LENGTH) {
+        if ($notes === '' || strlen($notes) <= $max_notes) {
             return $notes;
         }
 
-        // BHC's parser rejects long notes. Prefer the compact contact note over
-        // truncating into the appended Woo/customer context.
-        $contact_note = $this->clean_field((string) ($parts[0] ?? ''));
-        if ($contact_note !== '' && strlen($contact_note) <= self::MAX_NOTES_LENGTH) {
-            return $contact_note;
-        }
-
-        return substr($notes, 0, self::MAX_NOTES_LENGTH);
+        return $this->clean_field(substr($notes, 0, $max_notes));
     }
 
     /**
@@ -362,7 +357,7 @@ final class BillHicksEdiOrderFileBuilder
         $po = preg_replace('/[^A-Za-z0-9]+/', '', $po);
         $po = is_string($po) ? trim($po) : '';
 
-        return $po !== '' ? substr($po, 0, 40) : '';
+        return $po !== '' ? substr($po, 0, self::MAX_PO_LENGTH) : '';
     }
 
     private function format_money($value): string
