@@ -208,6 +208,21 @@ class ProductMetaBox
             esc_html__('Fill all four fields. Product_state uses these as the effective Woo/feed shipping measurements while the override is checked.', 'ffl-hub') .
             '</span>';
         echo '</div>';
+
+        echo '<div class="fflhub-state-field">';
+        echo '<span class="fflhub-state-label">' . esc_html__('Effective shipping reference', 'ffl-hub') . '</span>';
+        echo '<div class="fflhub-state-mini-grid">';
+        echo '<span><strong>' . esc_html__('Weight / box', 'ffl-hub') . '</strong><br /><code>' .
+            esc_html(trim(self::state_value($row['shipping_weight_oz'] ?? null) . ' oz / ' . self::state_dimensions($row))) .
+            '</code></span>';
+        echo '<span><strong>' . esc_html__('Estimated USPS Shipping', 'ffl-hub') . '</strong><br /><code>' .
+            esc_html(self::state_estimated_usps_shipping($row['estimated_usps_shipping_cost'] ?? null)) .
+            '</code></span>';
+        echo '</div>';
+        echo '<span class="fflhub-state-field__hint">' .
+            esc_html__('Read-only product_state values. The USPS estimate is internal, formula-based reference data and does not affect checkout or pricing.', 'ffl-hub') .
+            '</span>';
+        echo '</div>';
         echo '</div>';
 
         echo '<div class="fflhub-state-card">';
