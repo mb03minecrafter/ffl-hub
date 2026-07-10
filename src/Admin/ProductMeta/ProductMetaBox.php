@@ -377,8 +377,9 @@ class ProductMetaBox
         echo '<h3 style="margin:0 0 8px;font-size:13px;">' . esc_html__('Cost And Profit Metrics', 'ffl-hub') . '</h3>';
         echo '<div class="fflhub-state-output__grid">';
         self::render_state_output_chip(__('Dealer cost', 'ffl-hub'), self::state_money($row['dealer_price'] ?? null), 'cost');
-        self::render_state_output_chip(__('Shipping cost', 'ffl-hub'), self::state_money($row['shipping_cost'] ?? null), self::shipping_chip_tone($row['shipping_cost'] ?? null));
+        self::render_state_output_chip(__('Distributor shipping', 'ffl-hub'), self::state_money($profit_metrics['distributor_shipping_cost']), self::shipping_chip_tone($profit_metrics['distributor_shipping_cost']));
         self::render_state_output_chip(__('Estimated USPS Shipping', 'ffl-hub'), self::state_estimated_usps_shipping($row['estimated_usps_shipping_cost'] ?? null), self::shipping_chip_tone($row['estimated_usps_shipping_cost'] ?? null));
+        self::render_state_output_chip(__('Shipping cost used', 'ffl-hub'), self::state_money($profit_metrics['shipping_cost_used']), self::shipping_chip_tone($profit_metrics['shipping_cost_used']));
         self::render_state_output_chip(__('Dealer + shipping basis', 'ffl-hub'), self::state_money($profit_metrics['dealer_shipping_basis']), 'cost');
         self::render_state_output_chip(__('Stored landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null), 'cost');
         self::render_state_output_chip(__('Profit basis used', 'ffl-hub'), self::state_money($profit_metrics['cost_basis']), 'cost');
@@ -392,7 +393,7 @@ class ProductMetaBox
         self::render_state_output_chip(__('Estimated margin', 'ffl-hub'), self::state_percent($profit_metrics['margin_percent']), self::margin_chip_tone($profit_metrics['margin_percent']));
         echo '</div>';
         echo '<p style="margin:8px 0 0;color:#6b7280;">' .
-            esc_html__('Net profit uses computed sell price minus dealer + shipping cost basis and estimated card processing fee. Stored landed cost is shown for auditing stale rows, but dealer + shipping wins when dealer cost is present.', 'ffl-hub') .
+            esc_html($profit_metrics['shipping_explanation']) .
             '</p>';
         echo '</div>';
 
@@ -849,17 +850,25 @@ class ProductMetaBox
 
     /**
      * @param array<string,mixed> $row
-     * @return array{dealer_shipping_basis:?float,cost_basis:?float,processor_fee:?float,net_profit:?float,margin_percent:?float,fee_percent_label:string}
+     * @return array{distributor_shipping_cost:?float,shipping_cost_used:?float,dealer_shipping_basis:?float,cost_basis:?float,processor_fee:?float,net_profit:?float,margin_percent:?float,fee_percent_label:string,shipping_explanation:string}
      */
     private static function product_state_profit_metrics(array $row): array
     {
         $dealer = self::state_float_or_null($row['dealer_price'] ?? null);
         $shipping = self::state_float_or_null($row['shipping_cost'] ?? null);
+        $estimated_usps_shipping = self::state_float_or_null($row['estimated_usps_shipping_cost'] ?? null);
         $landed = self::state_float_or_null($row['landed_cost'] ?? null);
         $sell = self::state_float_or_null($row['computed_sell_price'] ?? null);
+        $dropship_enabled = self::truthy_state($row['dropship_enabled'] ?? null);
+        $use_usps_shipping = Options::get_use_product_state_usps_shipping() && !$dropship_enabled;
+
+        $distributor_shipping_cost = $use_usps_shipping ? 0.0 : max(0.0, $shipping ?? 0.0);
+        $shipping_cost_used = $use_usps_shipping
+            ? max(0.0, $estimated_usps_shipping ?? 0.0)
+            : $distributor_shipping_cost;
 
         $dealer_shipping_basis = ($dealer !== null && $dealer > 0.0)
-            ? $dealer + max(0.0, $shipping ?? 0.0)
+            ? $dealer + $shipping_cost_used
             : null;
         $cost_basis = $dealer_shipping_basis ?? (($landed !== null && $landed > 0.0) ? $landed : null);
 
@@ -881,12 +890,17 @@ class ProductMetaBox
         }
 
         return [
+            'distributor_shipping_cost' => $distributor_shipping_cost,
+            'shipping_cost_used' => $shipping_cost_used,
             'dealer_shipping_basis' => $dealer_shipping_basis,
             'cost_basis' => $cost_basis,
             'processor_fee' => $processor_fee,
             'net_profit' => $net_profit,
             'margin_percent' => $margin_percent,
             'fee_percent_label' => number_format($fee_percent, 2, '.', ''),
+            'shipping_explanation' => $use_usps_shipping
+                ? __('Net profit ignores distributor-to-dealer freight and uses the Product State USPS estimate, plus card processing cost. Stored landed cost remains visible for auditing.', 'ffl-hub')
+                : __('Net profit uses dealer cost plus distributor shipping and estimated card processing cost. Stored landed cost remains visible for auditing.', 'ffl-hub'),
         ];
     }
 
