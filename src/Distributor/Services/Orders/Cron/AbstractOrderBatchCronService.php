@@ -9,6 +9,7 @@ use WC_Product;
 
 use FFLHub\Distributor\Core\DistributorBase;
 use FFLHub\Distributor\Core\DistributorHandler;
+use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Models\DistributorOrderRequest;
 use FFLHub\Distributor\Models\DistributorOrderResult;
@@ -946,10 +947,10 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     }
 
     /**
-     * Dealer-fulfilled aggregate orders can earn free inbound freight from the
-     * distributor when the combined dealer-cost batch exceeds the distributor's
-     * freight threshold. This must be applied after successful placement because
-     * the threshold is based on the upstream aggregate batch, not one Woo order.
+     * Reconcile estimated per-order inbound freight with the one aggregate
+     * distributor shipment after successful placement. A qualifying batch
+     * waives inbound freight; a paid batch shares one freight charge across its
+     * contributing rows instead of charging that fee once per Woo order.
      *
      * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates
      */
@@ -964,10 +965,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
 
         $batch_total = $this->dealer_batch_distributor_cost_total($batch_candidates);
         $threshold = DealerBatchOptimizerConfig::free_shipping_threshold($this->get_distributor_id());
-        if ($threshold <= 0.0) {
-            return;
-        }
-        $free_inbound = $batch_total >= $threshold;
+        $free_inbound = $threshold > 0.0 && $batch_total >= $threshold;
 
         $this->log_ctx('dealer_batch_inbound_shipping_rule', [
             'po' => $po,
@@ -980,6 +978,13 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         ]);
 
         if (!$free_inbound) {
+            $this->allocate_paid_dealer_batch_inbound_shipping(
+                $batch_candidates,
+                $po,
+                $batch_kind,
+                $batch_total,
+                $threshold
+            );
             return;
         }
 
@@ -1025,6 +1030,159 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             'adjusted_orders' => $adjusted_orders,
             'waived_total' => $waived_total,
         ]);
+    }
+
+    /**
+     * A paid dealer batch incurs one distributor freight charge, not one charge
+     * per contributing Woo order. Split that charge across the successful job
+     * rows and rewrite only the dealer-inbound portion of each shipping plan.
+     *
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates
+     */
+    private function allocate_paid_dealer_batch_inbound_shipping(
+        array $batch_candidates,
+        string $po,
+        string $batch_kind,
+        float $batch_total,
+        float $threshold
+    ): void {
+        $batch_shipping_cost = $this->dealer_batch_paid_inbound_shipping_cost($batch_candidates);
+
+        /** @var array<int,array{order:WC_Order,row_count:int}> $orders */
+        $orders = [];
+        $row_count = 0;
+        foreach ($batch_candidates as $entry) {
+            $order = $entry['order'] ?? null;
+            if (!($order instanceof WC_Order)) {
+                continue;
+            }
+
+            $order_id = (int) $order->get_id();
+            if ($order_id <= 0) {
+                continue;
+            }
+
+            if (!isset($orders[$order_id])) {
+                if ($this->dealer_inbound_shipping_match_mode($order, $this->get_distributor_id()) === '') {
+                    continue;
+                }
+
+                $orders[$order_id] = [
+                    'order' => $order,
+                    'row_count' => 0,
+                ];
+            }
+
+            $orders[$order_id]['row_count']++;
+            $row_count++;
+        }
+
+        if ($row_count < 1) {
+            return;
+        }
+
+        // Allocate in cents and give any remainder cents to the earliest rows.
+        // Grouping afterward lets multiple batch rows from one Woo order receive
+        // the correct combined share without rewriting that order repeatedly.
+        $total_cents = max(0, (int) round($batch_shipping_cost * 100.0));
+        $base_cents = intdiv($total_cents, $row_count);
+        $remainder_cents = $total_cents % $row_count;
+        $row_index = 0;
+        $allocated_total = 0.0;
+        $adjusted_orders = 0;
+
+        foreach ($orders as $entry) {
+            $order_allocation_cents = 0;
+            for ($i = 0; $i < (int) $entry['row_count']; $i++) {
+                $order_allocation_cents += $base_cents + ($row_index < $remainder_cents ? 1 : 0);
+                $row_index++;
+            }
+
+            $allocated_cost = $order_allocation_cents / 100.0;
+            /** @var WC_Order $order */
+            $order = $entry['order'];
+            $changed = $this->set_paid_dealer_batch_inbound_shipping_for_order(
+                $order,
+                $allocated_cost,
+                $batch_shipping_cost,
+                $row_count,
+                $po,
+                $batch_kind,
+                $batch_total,
+                $threshold
+            );
+
+            if (!$changed) {
+                continue;
+            }
+
+            $allocated_total += $allocated_cost;
+            $adjusted_orders++;
+            OrderProfitAuditMeta::recalculate_order($order, true);
+        }
+
+        $this->log_ctx('dealer_batch_paid_inbound_shipping_allocated', [
+            'po' => $po,
+            'batch_kind' => $batch_kind,
+            'distributor' => $this->get_distributor_id(),
+            'batch_total' => $batch_total,
+            'threshold' => $threshold,
+            'batch_shipping_cost' => $batch_shipping_cost,
+            'batch_rows' => $row_count,
+            'adjusted_orders' => $adjusted_orders,
+            'allocated_total' => $allocated_total,
+        ]);
+    }
+
+    /**
+     * Resolve the one paid freight charge for the aggregate batch from the
+     * current target distributor offers. The maximum handles batches whose
+     * product classes expose different lane fees; the batch pays one lane fee.
+     *
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates
+     */
+    private function dealer_batch_paid_inbound_shipping_cost(array $batch_candidates): float
+    {
+        global $wpdb;
+
+        $upcs = [];
+        foreach ($batch_candidates as $entry) {
+            $lines = $entry['lines'] ?? [];
+            if (!is_array($lines)) {
+                continue;
+            }
+
+            foreach ($lines as $line) {
+                if (!($line instanceof DistributorOrderLine)) {
+                    continue;
+                }
+
+                $upc = OrderPlacementProductUtil::normalize_upc((string) $line->upc);
+                if ($upc !== '') {
+                    $upcs[$upc] = $upc;
+                }
+            }
+        }
+
+        if ($wpdb && !empty($upcs)) {
+            $offers_table = DistributorOffersStore::table_name();
+            $placeholders = implode(',', array_fill(0, count($upcs), '%s'));
+            $params = array_merge([$this->get_distributor_id()], array_values($upcs));
+            $sql = $wpdb->prepare(
+                "SELECT MAX(shipping_cost)
+                 FROM {$offers_table}
+                 WHERE distributor_id = %s
+                   AND enabled = 1
+                   AND upc IN ({$placeholders})",
+                ...$params
+            ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $shipping_cost = $wpdb->get_var($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            if ($shipping_cost !== null && is_numeric($shipping_cost)) {
+                return max(0.0, (float) $shipping_cost);
+            }
+        }
+
+        return max(0.0, DealerBatchOptimizerConfig::shipping_penalty($this->get_distributor_id()));
     }
 
     /**
@@ -1128,6 +1286,192 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
 
             $total += $unit_cost * (float) $take_qty;
             $needed_by_upc[$upc] -= $take_qty;
+        }
+
+        return max(0.0, $total);
+    }
+
+    private function set_paid_dealer_batch_inbound_shipping_for_order(
+        WC_Order $order,
+        float $allocated_cost,
+        float $batch_shipping_cost,
+        int $batch_row_count,
+        string $po,
+        string $batch_kind,
+        float $batch_total,
+        float $threshold
+    ): bool {
+        $dist_id = $this->get_distributor_id();
+        $match_mode = $this->dealer_inbound_shipping_match_mode($order, $dist_id);
+        if ($match_mode === '') {
+            $this->log_ctx('dealer_batch_paid_inbound_shipping_skip', [
+                'order_id' => (int) $order->get_id(),
+                'po' => $po,
+                'distributor' => $dist_id,
+                'reason' => 'no_unambiguous_dealer_inbound_shipping_row',
+            ]);
+            return false;
+        }
+
+        $allocation_written = false;
+        $order_changed = false;
+
+        foreach ($order->get_items('shipping') as $shipping_item) {
+            if (!($shipping_item instanceof WC_Order_Item_Shipping)) {
+                continue;
+            }
+
+            $plan = $this->decode_shipping_meta_array($shipping_item->get_meta('fflhub_shipping_plan', true));
+            $by_dist = (isset($plan['by_dist']) && is_array($plan['by_dist']))
+                ? $plan['by_dist']
+                : $this->decode_shipping_meta_array($shipping_item->get_meta('fflhub_shipping_by_dist', true));
+            if (empty($by_dist)) {
+                continue;
+            }
+
+            $old_distributor_cost_total = $this->sum_shipping_by_dist_cost($by_dist);
+            $item_changed = false;
+
+            foreach ($by_dist as $key => $raw_row) {
+                $row = is_object($raw_row) ? (array) $raw_row : $raw_row;
+                if (!is_array($row) || empty($row['dealer_inbound'])) {
+                    continue;
+                }
+
+                $row_dist_id = strtolower(trim((string) ($row['dist_id'] ?? $key)));
+                $matches = $match_mode === 'current_distributor'
+                    ? $row_dist_id === $dist_id
+                    : true;
+                if (!$matches) {
+                    continue;
+                }
+
+                $row_allocation = $allocation_written ? 0.0 : max(0.0, $allocated_cost);
+                $old_cost = $this->non_negative_float($row['cost'] ?? null) ?? 0.0;
+                $direct_cost = $this->dealer_batch_direct_distributor_shipping_cost($row);
+                $new_cost = max(0.0, $direct_cost + $row_allocation);
+
+                if (!array_key_exists('cost_before_dealer_batch_allocation', $row)) {
+                    $row['cost_before_dealer_batch_allocation'] = $this->money4($old_cost);
+                }
+                $row['dist_id'] = $dist_id;
+                $row['cost'] = $this->money4($new_cost);
+                $row['dealer_inbound_cost_allocated'] = $this->money4($row_allocation);
+                $row['dealer_batch_inbound_shipping_allocated'] = true;
+                $row['dealer_batch_inbound_shipping_po'] = $po;
+                $row['dealer_batch_inbound_shipping_batch_kind'] = $batch_kind;
+                $row['dealer_batch_inbound_shipping_batch_total'] = $this->money4($batch_total);
+                $row['dealer_batch_inbound_shipping_threshold'] = $this->money4($threshold);
+                $row['dealer_batch_inbound_shipping_batch_cost'] = $this->money4($batch_shipping_cost);
+                $row['dealer_batch_inbound_shipping_batch_rows'] = $batch_row_count;
+                $row['dealer_batch_inbound_shipping_updated_at_utc'] = gmdate('Y-m-d H:i:s');
+
+                $by_dist[$key] = $row;
+                $allocation_written = true;
+                $item_changed = true;
+                if (abs($new_cost - $old_cost) > 0.00005 || $row_dist_id !== $dist_id) {
+                    $order_changed = true;
+                }
+            }
+
+            if (!$item_changed) {
+                continue;
+            }
+
+            $new_distributor_cost_total = $this->sum_shipping_by_dist_cost($by_dist);
+            $plan['by_dist'] = $by_dist;
+            $plan['distributor_cost_total'] = $this->money4($new_distributor_cost_total);
+            $plan['total_cost'] = $this->money4(
+                $this->adjust_shipping_plan_total_after_distributor_cost_change(
+                    $plan,
+                    $old_distributor_cost_total,
+                    $new_distributor_cost_total
+                )
+            );
+            $plan['dealer_batch_inbound_shipping_po'] = $po;
+            $plan['dealer_batch_inbound_shipping_batch_total'] = $this->money4($batch_total);
+            $plan['dealer_batch_inbound_shipping_threshold'] = $this->money4($threshold);
+            $plan['dealer_batch_inbound_shipping_batch_cost'] = $this->money4($batch_shipping_cost);
+            $plan['dealer_batch_inbound_shipping_batch_rows'] = $batch_row_count;
+            $plan['dealer_batch_inbound_shipping_allocated_cost'] = $this->money4($allocated_cost);
+            $plan['dealer_batch_inbound_shipping_updated_at_utc'] = gmdate('Y-m-d H:i:s');
+
+            $shipping_item->update_meta_data('fflhub_shipping_plan', wp_json_encode($plan));
+            $shipping_item->update_meta_data('fflhub_shipping_by_dist', wp_json_encode($by_dist));
+            $shipping_item->update_meta_data('fflhub_shipping_cost_total', $plan['total_cost']);
+            $shipping_item->save();
+        }
+
+        if (!$allocation_written) {
+            return false;
+        }
+
+        $order->add_order_note(sprintf(
+            'FFLHub dealer batch allocated $%s of the $%s inbound distributor shipping charge to this order across %d batch row(s) on PO %s.',
+            number_format($allocated_cost, 2, '.', ''),
+            number_format($batch_shipping_cost, 2, '.', ''),
+            $batch_row_count,
+            $po
+        ));
+        $order->save();
+
+        return $order_changed;
+    }
+
+    private function dealer_inbound_shipping_match_mode(WC_Order $order, string $dist_id): string
+    {
+        $current_distributor_rows = 0;
+        $all_dealer_inbound_rows = 0;
+
+        foreach ($order->get_items('shipping') as $shipping_item) {
+            if (!($shipping_item instanceof WC_Order_Item_Shipping)) {
+                continue;
+            }
+
+            $plan = $this->decode_shipping_meta_array($shipping_item->get_meta('fflhub_shipping_plan', true));
+            $by_dist = (isset($plan['by_dist']) && is_array($plan['by_dist']))
+                ? $plan['by_dist']
+                : $this->decode_shipping_meta_array($shipping_item->get_meta('fflhub_shipping_by_dist', true));
+
+            foreach ($by_dist as $key => $raw_row) {
+                $row = is_object($raw_row) ? (array) $raw_row : $raw_row;
+                if (!is_array($row) || empty($row['dealer_inbound'])) {
+                    continue;
+                }
+
+                $all_dealer_inbound_rows++;
+                $row_dist_id = strtolower(trim((string) ($row['dist_id'] ?? $key)));
+                if ($row_dist_id === $dist_id) {
+                    $current_distributor_rows++;
+                }
+            }
+        }
+
+        if ($current_distributor_rows > 0) {
+            return 'current_distributor';
+        }
+
+        // The optimizer may have moved the only dealer lane after checkout,
+        // leaving the shipping-plan distributor label stale. One inbound row is
+        // unambiguous and can safely be relabeled to the distributor that fired.
+        return $all_dealer_inbound_rows === 1 ? 'sole_dealer_inbound' : '';
+    }
+
+    /**
+     * Preserve distributor-paid direct lanes while replacing dealer inbound.
+     *
+     * @param array<string,mixed> $row
+     */
+    private function dealer_batch_direct_distributor_shipping_cost(array $row): float
+    {
+        $fallback_lane_fee = $this->non_negative_float($row['lane_fee'] ?? null) ?? 0.0;
+        $total = 0.0;
+
+        if (!empty($row['direct_home'])) {
+            $total += $this->non_negative_float($row['direct_home_lane_fee'] ?? null) ?? $fallback_lane_fee;
+        }
+        if (!empty($row['direct_ffl'])) {
+            $total += $this->non_negative_float($row['direct_ffl_lane_fee'] ?? null) ?? $fallback_lane_fee;
         }
 
         return max(0.0, $total);
@@ -1354,6 +1698,29 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         }
 
         return max(0.0, $distributor_cost_total);
+    }
+
+    /**
+     * @param array<string,mixed> $plan
+     */
+    private function adjust_shipping_plan_total_after_distributor_cost_change(
+        array $plan,
+        float $old_distributor_cost_total,
+        float $new_distributor_cost_total
+    ): float {
+        $dealer_home = $this->non_negative_float($plan['dealer_outbound_home_cost'] ?? null);
+        $dealer_ffl = $this->non_negative_float($plan['dealer_outbound_ffl_cost'] ?? null);
+
+        if ($dealer_home !== null || $dealer_ffl !== null) {
+            return max(0.0, $new_distributor_cost_total + (float) ($dealer_home ?? 0.0) + (float) ($dealer_ffl ?? 0.0));
+        }
+
+        $existing_total = $this->non_negative_float($plan['total_cost'] ?? null);
+        if ($existing_total !== null) {
+            return max(0.0, $existing_total - $old_distributor_cost_total + $new_distributor_cost_total);
+        }
+
+        return max(0.0, $new_distributor_cost_total);
     }
 
     private function resolve_order_item_product(WC_Order_Item_Product $item): ?WC_Product
