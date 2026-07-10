@@ -108,7 +108,7 @@ final class DealerFulfilledJobsPage
             </p>
 
             <?php $this->render_filters_form($filters); ?>
-            <?php $this->render_jobs_table($jobs); ?>
+            <?php $this->render_shipments($this->group_jobs_by_shipment($jobs)); ?>
         </div>
 <?php
     }
@@ -198,12 +198,10 @@ final class DealerFulfilledJobsPage
 <?php
     }
 
-    /**
-     * @param OrderPlacementJobRow[] $jobs
-     */
-    private function render_jobs_table(array $jobs): void
+    /** @param array<int,array<string,mixed>> $shipments */
+    private function render_shipments(array $shipments): void
     {
-        if (empty($jobs)) {
+        if (empty($shipments)) {
 ?>
             <p><?php esc_html_e('No dealer shipment rows with tracking were found for the selected filters.', 'ffl-hub'); ?></p>
 <?php
@@ -213,60 +211,39 @@ final class DealerFulfilledJobsPage
         <p>
             <?php
             printf(
-                esc_html__('Found %d dealer shipment rows with tracking.', 'ffl-hub'),
-                count($jobs)
+                esc_html__('Found %d dealer shipments with tracking.', 'ffl-hub'),
+                count($shipments)
             );
             ?>
         </p>
         <div class="fflhub-dst-grid">
-            <?php foreach ($jobs as $job) : ?>
+            <?php foreach ($shipments as $shipment) : ?>
                 <?php
-                if (!($job instanceof OrderPlacementJobRow)) {
-                    continue;
-                }
-
-                $order_edit_url     = admin_url('post.php?post=' . (int) $job->order_id . '&action=edit');
-                $merchant_po        = trim((string) ($job->merchant_po ?? ''));
-                $external_order_id  = trim((string) ($job->external_order_id ?? ''));
-                $last_step          = trim((string) ($job->last_step ?? ''));
-                $updated_at         = trim((string) ($job->updated_at ?? ''));
-                $tracking_numbers   = $job->tracking_numbers();
-                $shipping_service   = trim((string) ($job->shipping_service ?? ''));
-                $last_error         = trim((string) ($job->last_error ?? ''));
-                if ($last_error !== '') {
-                    $last_error = wp_html_excerpt($last_error, 220, '...');
-                }
-
-                $status_lc = strtolower(trim((string) $job->status));
-                $status_class = 'fflhub-dst-status-neutral';
-                if ($status_lc === OrderPlacementKeys::JOB_STATUS_SUCCESS) {
-                    $status_class = 'fflhub-dst-status-success';
-                } elseif ($status_lc === OrderPlacementKeys::JOB_STATUS_FAILED) {
-                    $status_class = 'fflhub-dst-status-danger';
-                }
+                $merchant_po = (string) ($shipment['merchant_po'] ?? '');
+                $tracking_numbers = (array) ($shipment['tracking_numbers'] ?? []);
+                $shipping_service = (string) ($shipment['shipping_service'] ?? '');
+                $orders = (array) ($shipment['jobs'] ?? []);
                 ?>
                 <section class="fflhub-dst-card">
                     <header class="fflhub-dst-card-head">
                         <div>
                             <div class="fflhub-dst-title">
-                                <a href="<?php echo esc_url($order_edit_url); ?>">#<?php echo esc_html((string) $job->order_id); ?></a>
+                                <?php echo esc_html((string) ($shipment['dist_id'] ?? '-')); ?>
                             </div>
                             <div class="fflhub-dst-subtitle">
-                                <code><?php echo esc_html((string) $job->job_key); ?></code>
+                                <?php esc_html_e('PO', 'ffl-hub'); ?> <code><?php echo esc_html($merchant_po !== '' ? $merchant_po : '-'); ?></code>
                             </div>
                         </div>
-                        <span class="fflhub-dst-status <?php echo esc_attr($status_class); ?>">
-                            <?php echo esc_html((string) $job->status); ?>
+                        <span class="fflhub-dst-status fflhub-dst-status-success">
+                            <?php echo esc_html(sprintf(_n('%d order', '%d orders', count($orders), 'ffl-hub'), count($orders))); ?>
                         </span>
                     </header>
 
                     <div class="fflhub-dst-meta">
-                        <div><strong><?php esc_html_e('Distributor:', 'ffl-hub'); ?></strong> <?php echo esc_html((string) $job->dist_id); ?></div>
-                        <div><strong><?php esc_html_e('Attempts:', 'ffl-hub'); ?></strong> <?php echo esc_html((string) $job->attempts); ?></div>
-                        <div><strong><?php esc_html_e('Merchant PO:', 'ffl-hub'); ?></strong> <?php echo esc_html($merchant_po !== '' ? $merchant_po : '-'); ?></div>
-                        <div><strong><?php esc_html_e('External Order:', 'ffl-hub'); ?></strong> <?php echo esc_html($external_order_id !== '' ? $external_order_id : '-'); ?></div>
-                        <div><strong><?php esc_html_e('Last Step:', 'ffl-hub'); ?></strong> <?php echo esc_html($last_step !== '' ? $last_step : '-'); ?></div>
-                        <div><strong><?php esc_html_e('Updated (UTC):', 'ffl-hub'); ?></strong> <?php echo esc_html($updated_at !== '' ? $updated_at : '-'); ?></div>
+                        <div><strong><?php esc_html_e('Tracking Numbers:', 'ffl-hub'); ?></strong> <?php echo esc_html((string) count($tracking_numbers)); ?></div>
+                        <div><strong><?php esc_html_e('Service:', 'ffl-hub'); ?></strong> <?php echo esc_html($shipping_service !== '' ? $shipping_service : '-'); ?></div>
+                        <div><strong><?php esc_html_e('Invoices:', 'ffl-hub'); ?></strong> <?php echo esc_html(implode(', ', (array) ($shipment['invoice_numbers'] ?? [])) ?: '-'); ?></div>
+                        <div><strong><?php esc_html_e('Updated (UTC):', 'ffl-hub'); ?></strong> <?php echo esc_html((string) ($shipment['updated_at'] ?? '-')); ?></div>
                     </div>
 
                     <div class="fflhub-dst-links-wrap">
@@ -293,16 +270,80 @@ final class DealerFulfilledJobsPage
                         </ul>
                     </div>
 
-                    <?php if ($last_error !== '') : ?>
-                        <div class="fflhub-dst-error">
-                            <strong><?php esc_html_e('Last Error:', 'ffl-hub'); ?></strong>
-                            <?php echo esc_html($last_error); ?>
-                        </div>
-                    <?php endif; ?>
+                    <div class="fflhub-dst-links-wrap">
+                        <div class="fflhub-dst-links-title"><?php esc_html_e('Associated Orders', 'ffl-hub'); ?></div>
+                        <ul class="fflhub-dst-links">
+                            <?php foreach ($orders as $job) : ?>
+                                <li>
+                                    <a href="<?php echo esc_url(admin_url('post.php?post=' . (int) $job->order_id . '&action=edit')); ?>">
+                                        #<?php echo esc_html((string) $job->order_id); ?>
+                                    </a>
+                                    <code><?php echo esc_html((string) $job->job_key); ?></code>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
                 </section>
             <?php endforeach; ?>
         </div>
 <?php
+    }
+
+    /**
+     * A distributor batch PO may be copied onto several order job rows. Group
+     * those rows into the single inbound shipment they represent.
+     *
+     * @param OrderPlacementJobRow[] $jobs
+     * @return array<int,array<string,mixed>>
+     */
+    private function group_jobs_by_shipment(array $jobs): array
+    {
+        $groups = [];
+        foreach ($jobs as $job) {
+            if (!($job instanceof OrderPlacementJobRow)) {
+                continue;
+            }
+
+            $dist_id = strtolower(trim((string) $job->dist_id));
+            $po = strtoupper(trim((string) ($job->merchant_po ?? '')));
+            $tracking = $job->tracking_numbers();
+            sort($tracking, SORT_STRING);
+            $key = $dist_id . '|' . ($po !== '' ? $po : implode('|', $tracking));
+
+            if (!isset($groups[$key])) {
+                $groups[$key] = [
+                    'dist_id' => (string) $job->dist_id,
+                    'merchant_po' => trim((string) ($job->merchant_po ?? '')),
+                    'tracking_numbers' => [],
+                    'invoice_numbers' => [],
+                    'shipping_services' => [],
+                    'updated_at' => '',
+                    'jobs' => [],
+                ];
+            }
+
+            $groups[$key]['tracking_numbers'] = array_merge($groups[$key]['tracking_numbers'], $tracking);
+            $groups[$key]['invoice_numbers'] = array_merge($groups[$key]['invoice_numbers'], $job->invoice_numbers());
+            $service = trim((string) ($job->shipping_service ?? ''));
+            if ($service !== '') {
+                $groups[$key]['shipping_services'][] = $service;
+            }
+            $updated_at = trim((string) ($job->updated_at ?? ''));
+            if ($updated_at > $groups[$key]['updated_at']) {
+                $groups[$key]['updated_at'] = $updated_at;
+            }
+            $groups[$key]['jobs'][] = $job;
+        }
+
+        foreach ($groups as &$group) {
+            $group['tracking_numbers'] = array_values(array_unique($group['tracking_numbers']));
+            $group['invoice_numbers'] = array_values(array_unique($group['invoice_numbers']));
+            $group['shipping_services'] = array_values(array_unique($group['shipping_services']));
+            $group['shipping_service'] = implode(', ', $group['shipping_services']);
+        }
+        unset($group);
+
+        return array_values($groups);
     }
 
     private static function carrier_for_tracking(string $shipping_service, string $tracking): string

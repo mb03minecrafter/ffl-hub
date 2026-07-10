@@ -152,6 +152,7 @@ final class DealerFulfilledCronService extends AbstractCronService
         }
 
         $stats['eligible'] = count($jobs);
+        $shipment_notifications = [];
 
         foreach ($jobs as $job) {
             $order_id = (int) ($job->order_id ?? 0);
@@ -325,7 +326,8 @@ final class DealerFulfilledCronService extends AbstractCronService
                 $stats['tracking_added']++;
 
                 if ($result instanceof ShippingUpdateResult && $shipment instanceof DistributorShipment) {
-                    $email_sent = $this->send_admin_shipment_email(
+                    $this->queue_shipment_notification(
+                        $shipment_notifications,
                         $order_id,
                         $job_key,
                         $dist_id,
@@ -334,10 +336,6 @@ final class DealerFulfilledCronService extends AbstractCronService
                         $result,
                         $shipment
                     );
-
-                    if ($email_sent) {
-                        $stats['email_fired']++;
-                    }
                 }
             } else {
                 $stats['result_no_changes']++;
@@ -348,6 +346,12 @@ final class DealerFulfilledCronService extends AbstractCronService
                 ]);
             }
 
+        }
+
+        foreach ($shipment_notifications as $notification) {
+            if ($this->send_admin_shipment_email($notification)) {
+                $stats['email_fired']++;
+            }
         }
 
         $this->log_ctx('run_end', [
@@ -390,7 +394,15 @@ final class DealerFulfilledCronService extends AbstractCronService
      * - fflhub_dealer_shipping_alert_subject
      * - fflhub_dealer_shipping_alert_body
      */
-    private function send_admin_shipment_email(
+    /**
+     * Collapse per-order job updates into one notification for the shared
+     * distributor batch PO. Job storage remains independent so each order
+     * retains its shipment audit trail.
+     *
+     * @param array<string,array<string,mixed>> $notifications
+     */
+    private function queue_shipment_notification(
+        array &$notifications,
         int $order_id,
         string $job_key,
         string $dist_id,
@@ -398,10 +410,64 @@ final class DealerFulfilledCronService extends AbstractCronService
         string $po,
         ShippingUpdateResult $result,
         DistributorShipment $shipment
-    ): bool {
+    ): void {
+        $group_key = strtolower(trim($dist_id)) . '|' . strtoupper(trim($po));
+        if (!isset($notifications[$group_key])) {
+            $notifications[$group_key] = [
+                'dist_id' => $dist_id,
+                'lane' => $lane,
+                'po' => $po,
+                'orders' => [],
+                'added_tracking' => [],
+                'all_tracking' => [],
+                'all_invoices' => [],
+                'shipping_services' => [],
+                'shipping_weights' => [],
+                'shipment' => $shipment,
+            ];
+        }
+
+        $notifications[$group_key]['orders'][$order_id . '|' . $job_key] = [
+            'order_id' => $order_id,
+            'job_key' => $job_key,
+        ];
+        $notifications[$group_key]['added_tracking'] = array_merge(
+            $notifications[$group_key]['added_tracking'],
+            $result->added_tracking
+        );
+        $notifications[$group_key]['all_tracking'] = array_merge(
+            $notifications[$group_key]['all_tracking'],
+            $result->all_tracking
+        );
+        $notifications[$group_key]['all_invoices'] = array_merge(
+            $notifications[$group_key]['all_invoices'],
+            $result->all_invoices
+        );
+
+        $service = trim((string) ($shipment->shipping_service ?? ''));
+        if ($service !== '') {
+            $notifications[$group_key]['shipping_services'][] = $service;
+        }
+        $weight = trim((string) ($shipment->shipping_weight ?? ''));
+        if ($weight !== '') {
+            $notifications[$group_key]['shipping_weights'][] = $weight;
+        }
+    }
+
+    /** @param array<string,mixed> $notification */
+    private function send_admin_shipment_email(array $notification): bool
+    {
         if (!function_exists('wp_mail')) {
             return false;
         }
+
+        $dist_id = trim((string) ($notification['dist_id'] ?? ''));
+        $lane = trim((string) ($notification['lane'] ?? ''));
+        $po = trim((string) ($notification['po'] ?? ''));
+        $orders = array_values((array) ($notification['orders'] ?? []));
+        $first_order = (array) ($orders[0] ?? []);
+        $order_id = (int) ($first_order['order_id'] ?? 0);
+        $job_key = (string) ($first_order['job_key'] ?? '');
 
         $recipient_candidates = [];
         $admin_email = trim((string) get_option('admin_email', ''));
@@ -439,38 +505,54 @@ final class DealerFulfilledCronService extends AbstractCronService
             return false;
         }
 
-        $edit_url = function_exists('admin_url')
-            ? admin_url('post.php?post=' . $order_id . '&action=edit')
-            : '';
-
         $subject = sprintf(
-            '[FFL Hub] Dealer shipment update - Order #%d - %s',
-            $order_id,
-            $dist_id !== '' ? $dist_id : '-'
+            '[FFL Hub] Dealer batch shipment - %s - PO %s',
+            $dist_id !== '' ? $dist_id : '-',
+            $po !== '' ? $po : '-'
         );
 
-        $added_tracking = !empty($result->added_tracking) ? implode(', ', $result->added_tracking) : '-';
-        $all_tracking   = !empty($result->all_tracking) ? implode(', ', $result->all_tracking) : '-';
-        $all_invoices   = !empty($result->all_invoices) ? implode(', ', $result->all_invoices) : '-';
-        $shipping_service = trim((string) ($shipment->shipping_service ?? ''));
-        $shipping_weight  = trim((string) ($shipment->shipping_weight ?? ''));
-        $added_tracking_links = $this->build_tracking_link_lines((array) $result->added_tracking, $shipping_service);
-        $all_tracking_links   = $this->build_tracking_link_lines((array) $result->all_tracking, $shipping_service);
+        $added_tracking_values = array_values(array_unique(array_filter(array_map('strval', (array) ($notification['added_tracking'] ?? [])))));
+        $all_tracking_values = array_values(array_unique(array_filter(array_map('strval', (array) ($notification['all_tracking'] ?? [])))));
+        $invoice_values = array_values(array_unique(array_filter(array_map('strval', (array) ($notification['all_invoices'] ?? [])))));
+        $service_values = array_values(array_unique(array_filter(array_map('strval', (array) ($notification['shipping_services'] ?? [])))));
+        $weight_values = array_values(array_unique(array_filter(array_map('strval', (array) ($notification['shipping_weights'] ?? [])))));
+        $shipping_service = implode(', ', $service_values);
+        $added_tracking = !empty($added_tracking_values) ? implode(', ', $added_tracking_values) : '-';
+        $all_tracking = !empty($all_tracking_values) ? implode(', ', $all_tracking_values) : '-';
+        $all_invoices = !empty($invoice_values) ? implode(', ', $invoice_values) : '-';
+        $shipping_weight = !empty($weight_values) ? implode(', ', $weight_values) : '-';
+        $added_tracking_links = $this->build_tracking_link_lines($added_tracking_values, $shipping_service);
+        $all_tracking_links = $this->build_tracking_link_lines($all_tracking_values, $shipping_service);
 
         $body_lines = [
-            'Dealer-fulfilled shipment update detected.',
+            'Dealer-fulfilled batch shipment update detected.',
             '',
-            'Order ID: ' . $order_id,
-            'Job Key: ' . $job_key,
             'Distributor: ' . ($dist_id !== '' ? $dist_id : '-'),
             'Lane: ' . ($lane !== '' ? $lane : '-'),
             'Merchant PO: ' . ($po !== '' ? $po : '-'),
+            'Associated Orders: ' . count($orders),
             'New Tracking: ' . $added_tracking,
             'All Tracking: ' . $all_tracking,
             'Invoices: ' . $all_invoices,
             'Service: ' . ($shipping_service !== '' ? $shipping_service : '-'),
-            'Weight: ' . ($shipping_weight !== '' ? $shipping_weight : '-'),
+            'Weight: ' . $shipping_weight,
         ];
+
+        if (!empty($orders)) {
+            $body_lines[] = 'Orders:';
+            foreach ($orders as $order) {
+                $associated_order_id = (int) ($order['order_id'] ?? 0);
+                $associated_job_key = (string) ($order['job_key'] ?? '');
+                $edit_url = ($associated_order_id > 0 && function_exists('admin_url'))
+                    ? admin_url('post.php?post=' . $associated_order_id . '&action=edit')
+                    : '';
+                $line = '- Order #' . $associated_order_id . ' / Job ' . $associated_job_key;
+                if ($edit_url !== '') {
+                    $line .= ' / ' . $edit_url;
+                }
+                $body_lines[] = $line;
+            }
+        }
 
         if (!empty($added_tracking_links)) {
             $body_lines[] = 'New Tracking Links:';
@@ -486,11 +568,14 @@ final class DealerFulfilledCronService extends AbstractCronService
             }
         }
 
-        if ($edit_url !== '') {
-            $body_lines[] = 'Edit Order: ' . $edit_url;
-        }
-
         $body = implode("\n", $body_lines);
+
+        $result = new ShippingUpdateResult(
+            $added_tracking_values,
+            [],
+            $all_tracking_values,
+            $invoice_values
+        );
 
         /** @var mixed $subject_filtered */
         $subject_filtered = apply_filters(
@@ -517,7 +602,9 @@ final class DealerFulfilledCronService extends AbstractCronService
             $lane,
             $po,
             $result,
-            $shipment
+            ($notification['shipment'] ?? null) instanceof DistributorShipment
+                ? $notification['shipment']
+                : new DistributorShipment()
         );
         if (is_string($body_filtered) && trim($body_filtered) !== '') {
             $body = $body_filtered;
@@ -525,8 +612,7 @@ final class DealerFulfilledCronService extends AbstractCronService
 
         $sent = wp_mail(array_keys($recipients), $subject, $body);
         $this->log_ctx('admin_email_fire', [
-            'order_id'  => $order_id,
-            'job_key'   => $job_key,
+            'orders'    => $orders,
             'dist_id'   => $dist_id,
             'lane'      => $lane,
             'po'        => $po,
