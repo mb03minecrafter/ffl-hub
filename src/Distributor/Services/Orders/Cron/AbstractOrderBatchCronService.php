@@ -1142,6 +1142,18 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             'adjusted_orders' => $adjusted_orders,
             'waived_total' => $waived_total,
         ]);
+
+        // The optimizer can leave the checkout shipping-plan row labeled with
+        // the old distributor. Reconcile any such sole inbound lane to the
+        // successful distributor and force its allocated batch freight to zero.
+        $this->allocate_paid_dealer_batch_inbound_shipping(
+            $batch_candidates,
+            $po,
+            $batch_kind,
+            $batch_total,
+            $threshold,
+            0.0
+        );
     }
 
     /**
@@ -1156,9 +1168,12 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         string $po,
         string $batch_kind,
         float $batch_total,
-        float $threshold
+        float $threshold,
+        ?float $forced_batch_shipping_cost = null
     ): void {
-        $batch_shipping_cost = $this->dealer_batch_paid_inbound_shipping_cost($batch_candidates);
+        $batch_shipping_cost = $forced_batch_shipping_cost !== null
+            ? max(0.0, $forced_batch_shipping_cost)
+            : $this->dealer_batch_paid_inbound_shipping_cost($batch_candidates);
 
         /** @var array<int,array{order:WC_Order,row_count:int}> $orders */
         $orders = [];
