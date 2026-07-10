@@ -285,6 +285,33 @@ class DistributorHandler
     }
 
     /**
+     * Reconcile historical successful dealer batches with current profit-audit
+     * distributor costs and aggregate inbound freight rules.
+     *
+     * @return array<string,array<string,mixed>>
+     */
+    public function backfill_successful_dealer_batch_profit_audits(bool $apply = false): array
+    {
+        $results = [];
+        $services = [
+            $this->billHicksDealerBatchCronService,
+            $this->davidsonsDealerBatchCronService,
+            $this->rsrDealerBatchCronService,
+            $this->lipseysDealerBatchCronService,
+            $this->orionDealerBatchCronService,
+            $this->sportsSouthDealerBatchCronService,
+            $this->zandersDealerBatchCronService,
+        ];
+
+        foreach ($services as $service) {
+            $result = $service->backfill_successful_batch_profit_audit_shipping($apply);
+            $results[(string) ($result['distributor'] ?? get_class($service))] = $result;
+        }
+
+        return $results;
+    }
+
+    /**
      * Get all built distributor instances (enabled or not).
      *
      * @return array<string, DistributorBase>

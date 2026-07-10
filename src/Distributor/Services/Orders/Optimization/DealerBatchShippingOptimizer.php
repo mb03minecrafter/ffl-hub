@@ -15,6 +15,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
@@ -1073,6 +1074,15 @@ final class DealerBatchShippingOptimizer
 
                 if ($updated !== 1) {
                     continue;
+                }
+
+                $order = wc_get_order((int) $job->order_id);
+                if ($order instanceof \WC_Order) {
+                    OrderProfitAuditMeta::apply_distributor_job_lines(
+                        $order,
+                        $target,
+                        isset($payload['lines']) && is_array($payload['lines']) ? $payload['lines'] : []
+                    );
                 }
 
                 $this->record_move_rows($run_id, $move, $old_job_key, $new_job_key);

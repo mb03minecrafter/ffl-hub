@@ -8,6 +8,7 @@ use WC_Order;
 use WC_Order_Item_Product;
 use WC_Order_Item_Shipping;
 use WC_Product;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -145,6 +146,78 @@ final class OrderProfitAuditMeta
         }
 
         return $audit;
+    }
+
+    /**
+     * Apply a job's selected distributor and unit costs to its order items.
+     *
+     * @param array<int,array<string,mixed>> $lines
+     * @return int Number of order items updated.
+     */
+    public static function apply_distributor_job_lines(
+        WC_Order $order,
+        string $dist_id,
+        array $lines,
+        bool $recalculate = true
+    ): int {
+        $dist_id = sanitize_key($dist_id);
+        if ($dist_id === '' || empty($lines)) {
+            return 0;
+        }
+
+        $cost_by_upc = [];
+        foreach ($lines as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+
+            $upc = OrderPlacementProductUtil::normalize_upc((string) ($line['upc'] ?? ''));
+            if ($upc === '') {
+                continue;
+            }
+
+            $cost = self::positive_float($line['target_unit_cost'] ?? null);
+            $cost_by_upc[$upc] = $cost;
+        }
+
+        $updated = 0;
+        foreach ($order->get_items('line_item') as $item) {
+            if (!($item instanceof WC_Order_Item_Product)) {
+                continue;
+            }
+
+            $product = $item->get_product();
+            $upc = $product instanceof WC_Product
+                ? OrderPlacementProductUtil::extract_upc_from_product($product)
+                : '';
+            if ($upc === '') {
+                foreach (['_upc', 'upc', 'UPC', '_sku'] as $meta_key) {
+                    $upc = OrderPlacementProductUtil::normalize_upc((string) $item->get_meta($meta_key, true));
+                    if ($upc !== '') {
+                        break;
+                    }
+                }
+            }
+
+            if ($upc === '' || !array_key_exists($upc, $cost_by_upc)) {
+                continue;
+            }
+
+            $item->update_meta_data(self::ORDER_ITEM_SOURCE_DISTRIBUTOR_META, $dist_id);
+            $cost = $cost_by_upc[$upc];
+            if ($cost !== null) {
+                $item->update_meta_data(self::ORDER_ITEM_UNIT_COST_META, self::money($cost));
+                $item->update_meta_data(self::ORDER_ITEM_UNIT_COST_SOURCE_META, 'dealer_batch_optimizer:' . $dist_id);
+            }
+            $item->save();
+            $updated++;
+        }
+
+        if ($updated > 0 && $recalculate) {
+            self::recalculate_order($order, true);
+        }
+
+        return $updated;
     }
 
     /**

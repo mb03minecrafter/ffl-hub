@@ -706,6 +706,117 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     }
 
     /**
+     * Reapply the current post-batch freight rule to historical successful POs.
+     * A dry run only reports scope; apply mode updates shipping-plan audit meta.
+     *
+     * @return array<string,mixed>
+     */
+    public function backfill_successful_batch_profit_audit_shipping(bool $apply = false): array
+    {
+        global $wpdb;
+
+        $result = [
+            'distributor' => $this->get_distributor_id(),
+            'apply' => $apply ? 1 : 0,
+            'groups_found' => 0,
+            'groups_processed' => 0,
+            'job_rows' => 0,
+            'orders' => 0,
+            'skipped_groups' => 0,
+            'errors' => [],
+        ];
+        if (!$wpdb || $this->is_ca_relay_mode()) {
+            return $result;
+        }
+
+        $table = $this->jobs_table->get_table_name();
+        $dist_id = $this->get_distributor_id();
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT *
+             FROM {$table}
+             WHERE dist_id = %s
+               AND lane = %s
+               AND status = %s
+               AND merchant_po IS NOT NULL
+               AND merchant_po <> ''
+             ORDER BY merchant_po ASC, id ASC",
+            $dist_id,
+            OrderPlacementKeysUtil::LANE_DEALER_FULFILLED,
+            OrderPlacementKeys::JOB_STATUS_SUCCESS
+        ), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if (!is_array($rows)) {
+            $result['errors'][] = (string) $wpdb->last_error;
+            return $result;
+        }
+
+        $groups = [];
+        foreach ($rows as $row) {
+            $po = trim((string) ($row['merchant_po'] ?? ''));
+            if ($po !== '') {
+                $groups[$po][] = $row;
+            }
+        }
+
+        foreach ($groups as $po => $group_rows) {
+            if (count($group_rows) < 2) {
+                continue;
+            }
+            $result['groups_found']++;
+
+            $entries = [];
+            $order_ids = [];
+            foreach ($group_rows as $row) {
+                $job = new OrderPlacementJobRow($row);
+                $order = wc_get_order((int) $job->order_id);
+                $lines = $job->payload_lines();
+                if (!($order instanceof WC_Order) || empty($lines)) {
+                    continue;
+                }
+
+                $entries[] = [
+                    'job' => $job,
+                    'order' => $order,
+                    'lines' => $lines,
+                ];
+                $order_ids[(int) $order->get_id()] = true;
+            }
+
+            if (count($entries) < 2) {
+                $result['skipped_groups']++;
+                continue;
+            }
+
+            $result['groups_processed']++;
+            $result['job_rows'] += count($entries);
+            $result['orders'] += count($order_ids);
+
+            if ($apply) {
+                foreach ($entries as $entry) {
+                    /** @var OrderPlacementJobRow $job */
+                    $job = $entry['job'];
+                    /** @var WC_Order $order */
+                    $order = $entry['order'];
+                    $payload = $job->payload();
+                    OrderProfitAuditMeta::apply_distributor_job_lines(
+                        $order,
+                        $this->get_distributor_id(),
+                        isset($payload['lines']) && is_array($payload['lines']) ? $payload['lines'] : []
+                    );
+                }
+
+                $this->apply_successful_dealer_batch_profit_audit_shipping_rule(
+                    $entries,
+                    (string) $po,
+                    'historical_backfill'
+                );
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * Optional distributor-specific handling for aggregate MANUAL results.
      *
      * Default behavior preserves the historical fallback path: aggregate manual
@@ -1402,7 +1513,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             $shipping_item->save();
         }
 
-        if (!$allocation_written) {
+        if (!$allocation_written || !$order_changed) {
             return false;
         }
 
