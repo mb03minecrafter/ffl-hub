@@ -8,7 +8,7 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Formula-based, zone-agnostic USPS estimate helper for internal admin review.
+ * Fixed-zone, destination-agnostic USPS estimate helper for internal planning.
  *
  * This intentionally does not call USPS. It fills Product State reference data
  * from the selected package measurements; checkout uses that reference only when
@@ -17,12 +17,34 @@ if (!defined('ABSPATH')) {
 final class ProductStateEstimatedUspsShippingService
 {
     private const DEFAULT_BATCH_SIZE = 500;
+    private const DIMENSIONAL_WEIGHT_DIVISOR = 166.0;
+    private const SIGNATURE_FEE = 3.95;
+    private const OVERSIZED_ZONE_6_RATE = 228.67;
+
+    /** USPS Ground Advantage commercial Zone 6 rates effective April 26, 2026. */
+    private const ZONE_6_RATES_BY_POUND = [
+        1 => 9.63, 2 => 11.58, 3 => 13.59, 4 => 15.16, 5 => 15.89,
+        6 => 16.89, 7 => 17.65, 8 => 18.34, 9 => 19.13, 10 => 19.94,
+        11 => 21.28, 12 => 22.20, 13 => 23.16, 14 => 24.14, 15 => 25.13,
+        16 => 26.09, 17 => 26.85, 18 => 27.70, 19 => 28.52, 20 => 30.32,
+        21 => 31.69, 22 => 36.73, 23 => 43.29, 24 => 51.28, 25 => 58.24,
+        26 => 61.73, 27 => 65.24, 28 => 67.49, 29 => 69.69, 30 => 71.88,
+        31 => 74.02, 32 => 76.13, 33 => 78.24, 34 => 80.30, 35 => 82.37,
+        36 => 84.33, 37 => 86.32, 38 => 88.31, 39 => 90.27, 40 => 92.17,
+        41 => 94.08, 42 => 95.94, 43 => 97.79, 44 => 99.60, 45 => 101.39,
+        46 => 103.17, 47 => 104.90, 48 => 106.61, 49 => 108.29, 50 => 109.94,
+        51 => 111.57, 52 => 113.18, 53 => 114.75, 54 => 116.31, 55 => 117.84,
+        56 => 119.32, 57 => 120.81, 58 => 122.23, 59 => 123.67, 60 => 125.04,
+        61 => 126.41, 62 => 127.76, 63 => 129.07, 64 => 130.35, 65 => 131.60,
+        66 => 132.83, 67 => 134.04, 68 => 135.22, 69 => 136.34, 70 => 137.46,
+    ];
 
     /**
      * Calculate the internal estimated USPS shipping cost.
      *
      * Product State stores shipping weight in ounces and dimensions in inches.
-     * The 139 divisor is used only for formula-based dimensional weight.
+     * A fixed Zone 6 benchmark keeps the estimate destination-agnostic while
+     * following USPS commercial weight, dimensional, and nonstandard rules.
      */
     public static function calculate_estimated_usps_shipping_cost(
         $weight_oz,
@@ -40,21 +62,34 @@ final class ProductStateEstimatedUspsShippingService
             return null;
         }
 
-        $rounded_length = (float) ceil($length);
-        $rounded_width = (float) ceil($width);
-        $rounded_height = (float) ceil($height);
-        $dim_weight_lbs = (int) ceil(($rounded_length * $rounded_width * $rounded_height) / 139.0);
+        $rounded_length = self::round_dimension($length);
+        $rounded_width = self::round_dimension($width);
+        $rounded_height = self::round_dimension($height);
+        $dimensions = [$rounded_length, $rounded_width, $rounded_height];
+        rsort($dimensions, SORT_NUMERIC);
 
-        if ($weight < 16.0 && $dim_weight_lbs <= 1) {
-            $base_rate = self::under_one_pound_rate($weight);
+        $length = (float) $dimensions[0];
+        $width = (float) $dimensions[1];
+        $height = (float) $dimensions[2];
+        $volume = $length * $width * $height;
+        $length_plus_girth = $length + (2.0 * ($width + $height));
+
+        if ($length_plus_girth > 108.0) {
+            $base_rate = self::OVERSIZED_ZONE_6_RATE;
+            $dimension_fees = 0.0;
         } else {
-            $actual_weight_lbs = (int) ceil($weight / 16.0);
-            $billable_weight_lbs = max($actual_weight_lbs, $dim_weight_lbs);
-            $base_rate = self::round_up_to_95(4.00 + (1.45 * $billable_weight_lbs));
+            $actual_weight_lbs = max(1, (int) ceil($weight / 16.0));
+            $dim_weight_lbs = $volume > 1728.0
+                ? (int) ceil($volume / self::DIMENSIONAL_WEIGHT_DIVISOR)
+                : 0;
+            $billable_weight_lbs = min(70, max($actual_weight_lbs, $dim_weight_lbs));
+            $base_rate = $weight < 16.0 && $dim_weight_lbs <= 1
+                ? self::under_one_pound_zone_6_rate($weight)
+                : self::ZONE_6_RATES_BY_POUND[$billable_weight_lbs];
+            $dimension_fees = self::dimension_fees($length, $volume);
         }
 
-        $dimension_fees = self::dimension_fees($rounded_length, $rounded_width, $rounded_height);
-        $signature_fee = self::truthy($ffl_required) ? 3.95 : 0.0;
+        $signature_fee = self::truthy($ffl_required) ? self::SIGNATURE_FEE : 0.0;
 
         return round($base_rate + $dimension_fees + $signature_fee, 2);
     }
@@ -177,52 +212,43 @@ final class ProductStateEstimatedUspsShippingService
         return self::finish_result($result, $started);
     }
 
-    private static function under_one_pound_rate(float $weight_oz): float
+    private static function under_one_pound_zone_6_rate(float $weight_oz): float
     {
         if ($weight_oz <= 4.0) {
-            return 4.95;
+            return 6.00;
         }
 
         if ($weight_oz <= 8.0) {
-            return 5.95;
+            return 6.44;
         }
 
         if ($weight_oz <= 12.0) {
-            return 6.95;
+            return 6.74;
         }
 
-        return 7.95;
+        return 7.86;
     }
 
-    private static function dimension_fees(float $length_in, float $width_in, float $height_in): float
+    private static function dimension_fees(float $length_in, float $volume_cubic_in): float
     {
-        $longest = max($length_in, $width_in, $height_in);
-        $volume = $length_in * $width_in * $height_in;
         $fees = 0.0;
 
-        if ($longest > 30.0) {
+        if ($length_in > 30.0) {
             $fees += 10.00;
-        } elseif ($longest > 22.0) {
+        } elseif ($length_in > 22.0) {
             $fees += 4.50;
         }
 
-        if ($volume > 3456.0) {
+        if ($volume_cubic_in > 3456.0) {
             $fees += 21.00;
         }
 
         return $fees;
     }
 
-    private static function round_up_to_95(float $amount): float
+    private static function round_dimension(float $dimension): float
     {
-        $whole = floor($amount);
-        $candidate = $whole + 0.95;
-
-        if ($candidate + 0.00001 < $amount) {
-            $candidate = $whole + 1.95;
-        }
-
-        return round($candidate, 2);
+        return max(1.0, round($dimension, 0, PHP_ROUND_HALF_UP));
     }
 
     private static function positive_float($value): ?float
