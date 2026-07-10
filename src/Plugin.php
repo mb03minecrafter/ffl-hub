@@ -24,6 +24,7 @@ use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
 use FFLHub\Admin\Pages\ProductStateBulkPricingPage;
 use FFLHub\Admin\Pages\ProductStatePage;
+use FFLHub\Admin\Pages\MonthlyProfitAuditPage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
 use FFLHub\Admin\Pages\ZandersCreditLimitPage;
@@ -118,6 +119,7 @@ final class Plugin
     public MapPolicyPage $map_policy_page;
     public ProductStatePage $product_state_page;
     public ProductStateBulkPricingPage $product_state_bulk_pricing_page;
+    public MonthlyProfitAuditPage $monthly_profit_audit_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public AuthorizeNetOrderRescueButton $authnet_order_rescue_button;
     public OrderCartComplianceMetaBox $order_cart_compliance_metabox;
@@ -262,6 +264,9 @@ final class Plugin
 
             $this->product_state_bulk_pricing_page = new ProductStateBulkPricingPage();
             $this->product_state_bulk_pricing_page->register();
+
+            $this->monthly_profit_audit_page = new MonthlyProfitAuditPage();
+            $this->monthly_profit_audit_page->register();
 
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();
