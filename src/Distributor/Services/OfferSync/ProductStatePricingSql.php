@@ -206,7 +206,14 @@ final class ProductStatePricingSql
             CASE
                 WHEN COALESCE({$offer_alias}.dropship_enabled, 0) = 1
                 THEN GREATEST(COALESCE({$offer_alias}.shipping_cost, 0.0000), 0.0000)
-                ELSE GREATEST(COALESCE({$state_alias}.estimated_usps_shipping_cost, 0.0000), 0.0000)
+                ELSE GREATEST(
+                    COALESCE(
+                        {$state_alias}.estimated_usps_shipping_cost,
+                        {$offer_alias}.shipping_cost,
+                        0.0000
+                    ),
+                    0.0000
+                )
             END
         ";
     }

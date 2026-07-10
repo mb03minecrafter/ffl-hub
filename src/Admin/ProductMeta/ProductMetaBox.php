@@ -862,9 +862,12 @@ class ProductMetaBox
         $dropship_enabled = self::truthy_state($row['dropship_enabled'] ?? null);
         $use_usps_shipping = Options::get_use_product_state_usps_shipping() && !$dropship_enabled;
 
-        $distributor_shipping_cost = $use_usps_shipping ? 0.0 : max(0.0, $shipping ?? 0.0);
-        $shipping_cost_used = $use_usps_shipping
-            ? max(0.0, $estimated_usps_shipping ?? 0.0)
+        $has_usps_estimate = $estimated_usps_shipping !== null && $estimated_usps_shipping >= 0.0;
+        $distributor_shipping_cost = ($use_usps_shipping && $has_usps_estimate)
+            ? 0.0
+            : max(0.0, $shipping ?? 0.0);
+        $shipping_cost_used = ($use_usps_shipping && $has_usps_estimate)
+            ? max(0.0, $estimated_usps_shipping)
             : $distributor_shipping_cost;
 
         $dealer_shipping_basis = ($dealer !== null && $dealer > 0.0)
@@ -898,9 +901,11 @@ class ProductMetaBox
             'net_profit' => $net_profit,
             'margin_percent' => $margin_percent,
             'fee_percent_label' => number_format($fee_percent, 2, '.', ''),
-            'shipping_explanation' => $use_usps_shipping
+            'shipping_explanation' => ($use_usps_shipping && $has_usps_estimate)
                 ? __('Net profit ignores distributor-to-dealer freight and uses the Product State USPS estimate, plus card processing cost. Stored landed cost remains visible for auditing.', 'ffl-hub')
-                : __('Net profit uses dealer cost plus distributor shipping and estimated card processing cost. Stored landed cost remains visible for auditing.', 'ffl-hub'),
+                : ($use_usps_shipping
+                    ? __('No Product State USPS estimate is available, so net profit conservatively retains distributor shipping plus card processing cost.', 'ffl-hub')
+                    : __('Net profit uses dealer cost plus distributor shipping and estimated card processing cost. Stored landed cost remains visible for auditing.', 'ffl-hub')),
         ];
     }
 

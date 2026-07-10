@@ -1718,7 +1718,8 @@ final class ProductStateStore
             Options::get_use_product_state_usps_shipping()
             && !self::truthy($row['dropship_enabled'] ?? null)
         ) {
-            return self::nullable_string($row['estimated_usps_shipping_cost'] ?? null) ?? '0';
+            return self::nullable_string($row['estimated_usps_shipping_cost'] ?? null)
+                ?? self::nullable_string($row['shipping_cost'] ?? null);
         }
 
         return self::nullable_string($row['shipping_cost'] ?? null);
