@@ -1061,7 +1061,7 @@ final class ProductStateStore
             $fixed_price,
             $fixed_profit,
             self::nullable_string($row['dealer_price'] ?? null),
-            self::nullable_string($row['shipping_cost'] ?? null),
+            self::fixed_profit_shipping_cost($row),
             self::nullable_string($row['landed_cost'] ?? null),
             self::nullable_string($effective_map_price),
             $row['computed_sell_price'] ?? null,
@@ -1703,6 +1703,25 @@ final class ProductStateStore
         $price = round($cost_base + $offset, 2);
 
         return ($price > 0.0) ? $price : null;
+    }
+
+    /**
+     * Select the shipping expense that fixed-profit pricing must recover.
+     * Dropship offers retain distributor freight; dealer-fulfilled offers use
+     * the Product State USPS estimate when the global USPS mode is enabled.
+     *
+     * @param array<string,mixed> $row
+     */
+    private static function fixed_profit_shipping_cost(array $row): ?string
+    {
+        if (
+            Options::get_use_product_state_usps_shipping()
+            && !self::truthy($row['dropship_enabled'] ?? null)
+        ) {
+            return self::nullable_string($row['estimated_usps_shipping_cost'] ?? null) ?? '0';
+        }
+
+        return self::nullable_string($row['shipping_cost'] ?? null);
     }
 
     private static function payment_fee_fraction(): float

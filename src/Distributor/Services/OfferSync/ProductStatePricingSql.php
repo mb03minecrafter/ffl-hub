@@ -23,7 +23,7 @@ final class ProductStatePricingSql
         $pricing_percent = self::pricing_percent_expr($state_alias);
         $cost_without_shipping = self::cost_base_without_shipping_expr($offer_alias);
         $map_price = self::effective_map_price_expr($state_alias, $offer_alias);
-        $shipping = "GREATEST(COALESCE({$offer_alias}.shipping_cost, 0.0000), 0.0000)";
+        $shipping = self::fixed_profit_shipping_expr($state_alias, $offer_alias);
         $fee_fraction = self::payment_fee_fraction_literal();
         $denominator = self::payment_fee_denominator_literal();
 
@@ -192,6 +192,21 @@ final class ProductStatePricingSql
                 WHEN {$offer_alias}.landed_cost IS NOT NULL AND {$offer_alias}.landed_cost > 0
                 THEN {$offer_alias}.landed_cost
                 ELSE NULL
+            END
+        ";
+    }
+
+    private static function fixed_profit_shipping_expr(string $state_alias, string $offer_alias): string
+    {
+        if (!Options::get_use_product_state_usps_shipping()) {
+            return "GREATEST(COALESCE({$offer_alias}.shipping_cost, 0.0000), 0.0000)";
+        }
+
+        return "
+            CASE
+                WHEN COALESCE({$offer_alias}.dropship_enabled, 0) = 1
+                THEN GREATEST(COALESCE({$offer_alias}.shipping_cost, 0.0000), 0.0000)
+                ELSE GREATEST(COALESCE({$state_alias}.estimated_usps_shipping_cost, 0.0000), 0.0000)
             END
         ";
     }
