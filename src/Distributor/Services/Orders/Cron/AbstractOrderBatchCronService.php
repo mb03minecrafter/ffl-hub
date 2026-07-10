@@ -723,6 +723,8 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             'groups_processed' => 0,
             'job_rows' => 0,
             'orders' => 0,
+            'optimized_jobs_found' => 0,
+            'optimized_jobs_applied' => 0,
             'skipped_groups' => 0,
             'errors' => [],
         ];
@@ -749,6 +751,36 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         if (!is_array($rows)) {
             $result['errors'][] = (string) $wpdb->last_error;
             return $result;
+        }
+
+        // Distributor optimization affects item cost/source even when the job
+        // ultimately fired by itself and therefore has no freight to divide.
+        foreach ($rows as $row) {
+            $job = new OrderPlacementJobRow($row);
+            $payload = $job->payload();
+            $optimizer = isset($payload['dealer_batch_optimizer']) && is_array($payload['dealer_batch_optimizer'])
+                ? $payload['dealer_batch_optimizer']
+                : [];
+            if (trim((string) ($optimizer['optimized_to_distributor_id'] ?? '')) === '') {
+                continue;
+            }
+
+            $result['optimized_jobs_found']++;
+            if (!$apply) {
+                continue;
+            }
+
+            $order = wc_get_order((int) $job->order_id);
+            if (!($order instanceof WC_Order)) {
+                continue;
+            }
+
+            OrderProfitAuditMeta::apply_distributor_job_lines(
+                $order,
+                $this->get_distributor_id(),
+                isset($payload['lines']) && is_array($payload['lines']) ? $payload['lines'] : []
+            );
+            $result['optimized_jobs_applied']++;
         }
 
         $groups = [];
@@ -793,19 +825,6 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             $result['orders'] += count($order_ids);
 
             if ($apply) {
-                foreach ($entries as $entry) {
-                    /** @var OrderPlacementJobRow $job */
-                    $job = $entry['job'];
-                    /** @var WC_Order $order */
-                    $order = $entry['order'];
-                    $payload = $job->payload();
-                    OrderProfitAuditMeta::apply_distributor_job_lines(
-                        $order,
-                        $this->get_distributor_id(),
-                        isset($payload['lines']) && is_array($payload['lines']) ? $payload['lines'] : []
-                    );
-                }
-
                 $this->apply_successful_dealer_batch_profit_audit_shipping_rule(
                     $entries,
                     (string) $po,
