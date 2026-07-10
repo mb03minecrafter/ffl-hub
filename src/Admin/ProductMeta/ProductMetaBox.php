@@ -362,6 +362,7 @@ class ProductMetaBox
         echo '<div class="fflhub-state-output__grid">';
         self::render_state_output_chip(__('Dealer cost', 'ffl-hub'), self::state_money($row['dealer_price'] ?? null), 'cost');
         self::render_state_output_chip(__('Shipping cost', 'ffl-hub'), self::state_money($row['shipping_cost'] ?? null), self::shipping_chip_tone($row['shipping_cost'] ?? null));
+        self::render_state_output_chip(__('Estimated USPS Shipping', 'ffl-hub'), self::state_estimated_usps_shipping($row['estimated_usps_shipping_cost'] ?? null), self::shipping_chip_tone($row['estimated_usps_shipping_cost'] ?? null));
         self::render_state_output_chip(__('Dealer + shipping basis', 'ffl-hub'), self::state_money($profit_metrics['dealer_shipping_basis']), 'cost');
         self::render_state_output_chip(__('Stored landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null), 'cost');
         self::render_state_output_chip(__('Profit basis used', 'ffl-hub'), self::state_money($profit_metrics['cost_basis']), 'cost');
@@ -462,6 +463,7 @@ class ProductMetaBox
             __('Costs / Prices', 'ffl-hub') => [
                 'dealer_price',
                 'shipping_cost',
+                'estimated_usps_shipping_cost',
                 'landed_cost',
                 'map_price',
                 'msrp',
@@ -527,6 +529,10 @@ class ProductMetaBox
 
     private static function state_value_for_column(string $column, $value): string
     {
+        if ($column === 'estimated_usps_shipping_cost') {
+            return self::state_estimated_usps_shipping($value);
+        }
+
         if (in_array($column, [
             'dealer_price',
             'shipping_cost',
@@ -807,6 +813,12 @@ class ProductMetaBox
         }
 
         return '$' . number_format((float) $value, 2, '.', '');
+    }
+
+    private static function state_estimated_usps_shipping($value): string
+    {
+        $formatted = self::state_money($value);
+        return ($formatted === '-') ? __('Not calculated', 'ffl-hub') : $formatted;
     }
 
     private static function state_percent($value): string

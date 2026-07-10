@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 final class ProductStateStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_state_schema_version';
-    private const SCHEMA_VERSION = '10';
+    private const SCHEMA_VERSION = '11';
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
@@ -72,6 +72,7 @@ final class ProductStateStore
                 shipping_length_in DECIMAL(10,3) DEFAULT NULL,
                 shipping_width_in DECIMAL(10,3) DEFAULT NULL,
                 shipping_height_in DECIMAL(10,3) DEFAULT NULL,
+                estimated_usps_shipping_cost DECIMAL(10,2) DEFAULT NULL,
                 source_updated_at DATETIME DEFAULT NULL,
                 source_offer_normalized_at DATETIME DEFAULT NULL,
                 selection_status VARCHAR(32) NOT NULL DEFAULT 'no_offer',
@@ -370,6 +371,7 @@ final class ProductStateStore
             'shipping_length_in' => 'shipping_length_in DECIMAL(10,3) DEFAULT NULL',
             'shipping_width_in' => 'shipping_width_in DECIMAL(10,3) DEFAULT NULL',
             'shipping_height_in' => 'shipping_height_in DECIMAL(10,3) DEFAULT NULL',
+            'estimated_usps_shipping_cost' => 'estimated_usps_shipping_cost DECIMAL(10,2) DEFAULT NULL',
             'source_updated_at' => 'source_updated_at DATETIME DEFAULT NULL',
             'source_offer_normalized_at' => 'source_offer_normalized_at DATETIME DEFAULT NULL',
             'selection_status' => "selection_status VARCHAR(32) NOT NULL DEFAULT 'no_offer'",
@@ -1938,6 +1940,7 @@ final class ProductStateStore
             'shipping_length_in' => '%f',
             'shipping_width_in' => '%f',
             'shipping_height_in' => '%f',
+            'estimated_usps_shipping_cost' => '%f',
             'source_updated_at' => '%s',
             'source_offer_normalized_at' => '%s',
             'selection_status' => '%s',

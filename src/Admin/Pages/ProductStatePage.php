@@ -17,6 +17,7 @@ use FFLHub\Distributor\Services\Zanders\Tables\ZandersProductTableSchema;
 use FFLHub\Distributor\Services\OfferSync\ProductBestOfferSelectionService;
 use FFLHub\Distributor\Services\OfferSync\ProductBestOffersStore;
 use FFLHub\Distributor\Services\OfferSync\ProductStateBestOfferApplyService;
+use FFLHub\Product\State\ProductStateEstimatedUspsShippingService;
 use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
@@ -36,6 +37,7 @@ final class ProductStatePage
     private const ACTION_REFRESH_CHANGED_BEST_OFFERS = 'refresh_changed_best_offers';
     private const ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE = 'collect_changed_best_offers_for_product_state';
     private const ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS = 'recalculate_product_state_outputs';
+    private const ACTION_GENERATE_ESTIMATED_USPS_SHIPPING = 'generate_estimated_usps_shipping';
     private const RESULT_TRANSIENT_PREFIX = 'fflhub_product_state_backfill_result_';
 
     public function register(): void
@@ -83,6 +85,7 @@ final class ProductStatePage
             <?php $this->render_changed_best_offers_card(); ?>
             <?php $this->render_collect_changed_best_offers_for_product_state_card(); ?>
             <?php $this->render_recalculate_product_state_outputs_card(); ?>
+            <?php $this->render_generate_estimated_usps_shipping_card(); ?>
         </div>
         <?php
     }
@@ -100,7 +103,7 @@ final class ProductStatePage
         $action = isset($_POST['fflhub_product_state_action'])
             ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_product_state_action']))
             : '';
-        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS, self::ACTION_NORMALIZE_RSR, self::ACTION_NORMALIZE_LIPSEYS, self::ACTION_NORMALIZE_CSSI, self::ACTION_REFRESH_CHANGED_BEST_OFFERS, self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE, self::ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS], true)) {
+        if (!in_array($action, [self::ACTION_BACKFILL, self::ACTION_NORMALIZE_ZANDERS, self::ACTION_NORMALIZE_RSR, self::ACTION_NORMALIZE_LIPSEYS, self::ACTION_NORMALIZE_CSSI, self::ACTION_REFRESH_CHANGED_BEST_OFFERS, self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE, self::ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS, self::ACTION_GENERATE_ESTIMATED_USPS_SHIPPING], true)) {
             return;
         }
 
@@ -140,9 +143,12 @@ final class ProductStatePage
         } elseif ($action === self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE) {
             $result = ProductStateBestOfferApplyService::apply_changed_best_offers();
             $result['type'] = self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE;
-        } else {
+        } elseif ($action === self::ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS) {
             $result = ProductStateBestOfferApplyService::recalculate_all_outputs();
             $result['type'] = self::ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS;
+        } else {
+            $result = ProductStateEstimatedUspsShippingService::generate_for_product_state();
+            $result['type'] = self::ACTION_GENERATE_ESTIMATED_USPS_SHIPPING;
         }
 
         set_transient($this->result_transient_key(), $result, 5 * MINUTE_IN_SECONDS);
@@ -292,6 +298,23 @@ final class ProductStatePage
         <?php
     }
 
+    private function render_generate_estimated_usps_shipping_card(): void
+    {
+        ?>
+        <div class="postbox" style="max-width: 760px; padding: 16px;">
+            <h2 style="margin-top:0;"><?php esc_html_e('Generate Estimated USPS Shipping', 'ffl-hub'); ?></h2>
+            <p>
+                <?php esc_html_e('Populates the internal product_state estimated USPS shipping field from Product State weight, dimensions, and FFL flag. This is formula-based, zone-agnostic, and does not affect checkout, product pricing, offer selection, or WooCommerce sync.', 'ffl-hub'); ?>
+            </p>
+            <form method="post" action="">
+                <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
+                <input type="hidden" name="fflhub_product_state_action" value="<?php echo esc_attr(self::ACTION_GENERATE_ESTIMATED_USPS_SHIPPING); ?>" />
+                <?php submit_button(__('Generate Estimated USPS Shipping', 'ffl-hub'), 'secondary', 'submit', false); ?>
+            </form>
+        </div>
+        <?php
+    }
+
     /**
      * @param array<string,mixed>|null $result
      */
@@ -324,6 +347,7 @@ final class ProductStatePage
         $is_best_offer_refresh = ($type === self::ACTION_REFRESH_CHANGED_BEST_OFFERS);
         $is_product_state_best_offer_collect = ($type === self::ACTION_COLLECT_CHANGED_BEST_OFFERS_FOR_PRODUCT_STATE);
         $is_product_state_output_recalculation = ($type === self::ACTION_RECALCULATE_PRODUCT_STATE_OUTPUTS);
+        $is_estimated_usps_shipping_generation = ($type === self::ACTION_GENERATE_ESTIMATED_USPS_SHIPPING);
         $has_errors = !empty($result['errors']) && is_array($result['errors']);
         $notice_class = $has_errors ? 'notice-error' : 'notice-success';
         ?>
@@ -382,6 +406,24 @@ final class ProductStatePage
                     <li><?php echo esc_html(sprintf('Product state rows scanned: %d', (int) ($result['total_product_state_rows'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Product state rows updated: %d', (int) ($result['updated_product_state'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Recalculation runtime: %s ms', (string) ($result['recalculate_elapsed_ms'] ?? '0.00'))); ?></li>
+                    <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
+                </ul>
+                <?php if ($has_errors) : ?>
+                    <p><strong><?php esc_html_e('Errors:', 'ffl-hub'); ?></strong></p>
+                    <ul style="list-style:disc;margin-left:20px;">
+                        <?php foreach ($result['errors'] as $message) : ?>
+                            <li><?php echo esc_html((string) $message); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            <?php elseif ($is_estimated_usps_shipping_generation) : ?>
+                <p><strong><?php esc_html_e('Estimated USPS shipping generation complete.', 'ffl-hub'); ?></strong></p>
+                <ul style="list-style:disc;margin-left:20px;">
+                    <li><?php echo esc_html(sprintf('Stage: %s', (string) ($result['stage'] ?? ''))); ?></li>
+                    <li><?php echo esc_html(sprintf('Product state rows scanned: %d', (int) ($result['rows_scanned'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Estimated USPS values updated: %d', (int) ($result['rows_updated'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Skipped missing/invalid shipping data: %d', (int) ($result['rows_skipped'] ?? 0))); ?></li>
+                    <li><?php echo esc_html(sprintf('Unchanged estimates: %d', (int) ($result['rows_unchanged'] ?? 0))); ?></li>
                     <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
                 </ul>
                 <?php if ($has_errors) : ?>
