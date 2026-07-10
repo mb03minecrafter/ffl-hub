@@ -52,6 +52,7 @@ final class GunDealsFeedGenerator
             'elapsed_ms' => 0,
             'xml_bytes' => 0,
             'feed_enabled' => Options::get_gundeals_feed_enabled() ? 1 : 0,
+            'product_state_usps_shipping' => Options::get_use_product_state_usps_shipping() ? 1 : 0,
         ];
 
         if (!class_exists('\XMLWriter')) {
@@ -270,6 +271,7 @@ final class GunDealsFeedGenerator
                 CAST(ps.pricing_fixed_profit AS CHAR) AS map_real_price_fixed_profit,
                 CAST(ps.quote_free_shipping_override AS CHAR) AS map_real_price_free_shipping_override,
                 CAST(ps.shipping_cost AS CHAR) AS shipping_cost,
+                CAST(ps.estimated_usps_shipping_cost AS CHAR) AS estimated_usps_shipping_cost,
                 CAST(ps.shipping_weight_oz AS CHAR) AS shipping_weight_oz,
                 CAST(ps.shipping_length_in AS CHAR) AS shipping_length_in,
                 CAST(ps.shipping_width_in AS CHAR) AS shipping_width_in,
@@ -583,6 +585,11 @@ final class GunDealsFeedGenerator
         }
 
         $dist_lane_fee = $this->resolve_distributor_lane_fee($row['shipping_cost'] ?? null, $fallback_ship);
+        $estimated_usps_shipping = $this->resolve_distributor_lane_fee(
+            $row['estimated_usps_shipping_cost'] ?? null,
+            $fallback_ship
+        );
+        $use_product_state_usps_shipping = Options::get_use_product_state_usps_shipping();
 
         $weight_oz = $this->to_non_negative_float($row['shipping_weight_oz'] ?? null, 0.0);
         $length_in = $this->to_non_negative_float($row['shipping_length_in'] ?? null, 0.0);
@@ -600,11 +607,12 @@ final class GunDealsFeedGenerator
                 'ffl_required' => $ffl_required ? 1 : 0,
                 'dropship_enabled' => $dropship_enabled ? 1 : 0,
                 'dist_lane_fee' => $dist_lane_fee,
+                'dealer_outbound_unit_cost' => $estimated_usps_shipping,
                 'length_in' => $length_in,
                 'width_in' => $width_in,
                 'height_in' => $height_in,
             ],
-        ]);
+        ], $use_product_state_usps_shipping);
 
         return max(0.0, (float) ($plan['total_cost'] ?? 0.0));
     }
