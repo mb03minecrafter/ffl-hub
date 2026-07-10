@@ -1888,6 +1888,7 @@ class AdminPage
             'payment_fee_percent'   => (string) Options::get_payment_processor_fee_percent(),
             'global_markup_percent' => (string) Options::get_global_markup(),
             'free_shipping_max_profit_spend_percent' => (string) Options::get_free_shipping_max_profit_spend_percent(),
+            'use_product_state_usps_shipping' => Options::get_use_product_state_usps_shipping() ? '1' : '0',
             'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
             'pretty_random_email_quotes_enabled' => Options::get_pretty_random_email_quotes_enabled() ? '1' : '0',
             'gundeals_feed_enabled' => Options::get_gundeals_feed_enabled() ? '1' : '0',
@@ -1960,6 +1961,7 @@ class AdminPage
             $settings['free_shipping_max_profit_spend_percent']
             ?? Options::default_free_shipping_max_profit_spend_percent()
         );
+        $use_product_state_usps_shipping = ((string) ($settings['use_product_state_usps_shipping'] ?? '0') === '1');
         $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
         $pretty_random_email_quotes_enabled = ((string) ($settings['pretty_random_email_quotes_enabled'] ?? '1') === '1');
         $gundeals_feed_enabled = ((string) ($settings['gundeals_feed_enabled'] ?? '1') === '1');
@@ -2180,6 +2182,27 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'Percent of net cart profit you are willing to spend to make checkout shipping free. 50 keeps the current half-profit rule. 100 waives shipping as long as at least $0.01 profit remains after eating shipping.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_use_product_state_usps_shipping"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Ignore Distributor to Dealer shipping cost and apply estimated USPS shipping cost', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_use_product_state_usps_shipping" value="0" />
+                    <input
+                        id="fflhub_use_product_state_usps_shipping"
+                        name="fflhub_use_product_state_usps_shipping"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($use_product_state_usps_shipping); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'When enabled, dealer-fulfilled routes ignore distributor inbound freight and use each routed product\'s Product State estimated USPS shipping cost for the dealer-to-customer or dealer-to-FFL leg. Dropship routes continue using distributor freight.',
                             'ffl-hub'
                         ); ?>
                     </p>

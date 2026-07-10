@@ -3,6 +3,7 @@
 namespace FFLHub\Shipping\Wordpress;
 
 use FFLHub\Product\State\ProductStateStore;
+use FFLHub\Settings\Options;
 use FFLHub\Shipping\Methods\FFLHubShippingMethod;
 
 if (!defined('ABSPATH')) exit;
@@ -156,6 +157,7 @@ class ShippingRegistrar
     private static function attach_coupon_shipping_context(array $package): array
     {
         $package['fflhub_free_shipping_coupon_codes'] = implode(',', self::applied_free_shipping_coupon_codes());
+        $package['fflhub_use_product_state_usps_shipping'] = Options::get_use_product_state_usps_shipping() ? '1' : '0';
         return $package;
     }
 

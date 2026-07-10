@@ -39,7 +39,10 @@ final class DealerFulfillmentRoutingPlanner
      * @param array<int, array<string,mixed>> $lines
      * @return array<string,mixed>
      */
-    public static function find_cheapest_plan(array $lines): array
+    public static function find_cheapest_plan(
+        array $lines,
+        bool $use_product_state_usps_shipping = false
+    ): array
     {
         $normalized = self::normalize_lines($lines);
         if (empty($normalized)) {
@@ -78,7 +81,8 @@ final class DealerFulfillmentRoutingPlanner
             $best_cost,
             $best_plan,
             $combinations,
-            $top_candidates
+            $top_candidates,
+            $use_product_state_usps_shipping
         );
 
         $best_assignment_key = self::assignment_key((array) ($best_plan['assignments'] ?? []));
@@ -101,6 +105,7 @@ final class DealerFulfillmentRoutingPlanner
             'combinations_evaluated' => $combinations,
             'best_assignment_key'    => $best_assignment_key,
             'best_formula_total'     => (float) ($best_plan['total_cost'] ?? 0.0),
+            'product_state_usps_shipping' => $use_product_state_usps_shipping ? 1 : 0,
             'top_candidates'         => $top_candidates,
             'alternatives'           => $alternatives,
         ];
@@ -112,7 +117,11 @@ final class DealerFulfillmentRoutingPlanner
      * @param array<string, array<string,mixed>> $lines_by_id
      * @param array<string,string> $assignment
      */
-    private static function score_assignment(array $lines_by_id, array $assignment): array
+    private static function score_assignment(
+        array $lines_by_id,
+        array $assignment,
+        bool $use_product_state_usps_shipping = false
+    ): array
     {
         /** @var array<string, array<string,mixed>> $by_dist */
         $by_dist = [];
@@ -120,6 +129,8 @@ final class DealerFulfillmentRoutingPlanner
 
         $dealer_home_weight_oz = 0.0;
         $dealer_ffl_weight_oz  = 0.0;
+        $dealer_home_estimated_cost = 0.0;
+        $dealer_ffl_estimated_cost = 0.0;
 
         foreach ($lines_by_id as $line_id => $line) {
             $dist_id = (string) $line['dist_id'];
@@ -167,8 +178,10 @@ final class DealerFulfillmentRoutingPlanner
 
                 if ($ffl_required) {
                     $dealer_ffl_weight_oz += $line_weight_oz;
+                    $dealer_ffl_estimated_cost += (float) ($line['dealer_outbound_unit_cost'] ?? 0.0) * (float) $qty;
                 } else {
                     $dealer_home_weight_oz += $line_weight_oz;
+                    $dealer_home_estimated_cost += (float) ($line['dealer_outbound_unit_cost'] ?? 0.0) * (float) $qty;
                 }
 
                 continue;
@@ -210,7 +223,7 @@ final class DealerFulfillmentRoutingPlanner
             $direct_ffl_lane_fee = max(0.0, (float) ($row['direct_ffl_lane_fee'] ?? 0.0));
 
             $cost = 0.0;
-            if (!empty($row['dealer_inbound'])) {
+            if (!empty($row['dealer_inbound']) && !$use_product_state_usps_shipping) {
                 $cost += $dealer_inbound_lane_fee > 0.0 ? $dealer_inbound_lane_fee : $lane_fee;
             }
             if (!empty($row['direct_home'])) {
@@ -226,8 +239,12 @@ final class DealerFulfillmentRoutingPlanner
             $distributor_cost_total += $cost;
         }
 
-        $dealer_outbound_home_cost = self::dealer_outbound_cost($dealer_home_weight_oz);
-        $dealer_outbound_ffl_cost  = self::dealer_outbound_cost($dealer_ffl_weight_oz);
+        $dealer_outbound_home_cost = $use_product_state_usps_shipping
+            ? $dealer_home_estimated_cost
+            : self::dealer_outbound_cost($dealer_home_weight_oz);
+        $dealer_outbound_ffl_cost = $use_product_state_usps_shipping
+            ? $dealer_ffl_estimated_cost
+            : self::dealer_outbound_cost($dealer_ffl_weight_oz);
 
         $total_cost = $distributor_cost_total + $dealer_outbound_home_cost + $dealer_outbound_ffl_cost;
 
@@ -261,11 +278,12 @@ final class DealerFulfillmentRoutingPlanner
         float &$best_cost,
         array &$best_plan,
         int &$combinations,
-        array &$top_candidates
+        array &$top_candidates,
+        bool $use_product_state_usps_shipping = false
     ): void {
         if ($idx >= count($decision_ids)) {
             $combinations++;
-            $plan = self::score_assignment($lines_by_id, $assignment);
+            $plan = self::score_assignment($lines_by_id, $assignment, $use_product_state_usps_shipping);
             $cost = (float) ($plan['total_cost'] ?? INF);
             self::push_top_candidate($top_candidates, $plan, $cost);
 
@@ -298,10 +316,10 @@ final class DealerFulfillmentRoutingPlanner
         $line_id = $decision_ids[$idx];
 
         $assignment[$line_id] = 'direct_ship';
-        self::walk_assignments($decision_ids, $idx + 1, $assignment, $lines_by_id, $best_cost, $best_plan, $combinations, $top_candidates);
+        self::walk_assignments($decision_ids, $idx + 1, $assignment, $lines_by_id, $best_cost, $best_plan, $combinations, $top_candidates, $use_product_state_usps_shipping);
 
         $assignment[$line_id] = 'dealer_fulfilled';
-        self::walk_assignments($decision_ids, $idx + 1, $assignment, $lines_by_id, $best_cost, $best_plan, $combinations, $top_candidates);
+        self::walk_assignments($decision_ids, $idx + 1, $assignment, $lines_by_id, $best_cost, $best_plan, $combinations, $top_candidates, $use_product_state_usps_shipping);
 
         unset($assignment[$line_id]);
     }
@@ -438,6 +456,11 @@ final class DealerFulfillmentRoutingPlanner
             $dist_lane_fee = 0.0;
         }
 
+        $dealer_outbound_unit_cost = (float) ($row['dealer_outbound_unit_cost'] ?? 0.0);
+        if (!is_finite($dealer_outbound_unit_cost) || $dealer_outbound_unit_cost < 0.0) {
+            $dealer_outbound_unit_cost = 0.0;
+        }
+
         return [
             'line_id'          => $line_id,
             'dist_id'          => $dist_id,
@@ -446,6 +469,7 @@ final class DealerFulfillmentRoutingPlanner
             'ffl_required'     => !empty($row['ffl_required']),
             'dropship_enabled' => !empty($row['dropship_enabled']),
             'dist_lane_fee'    => $dist_lane_fee,
+            'dealer_outbound_unit_cost' => $dealer_outbound_unit_cost,
         ];
     }
 

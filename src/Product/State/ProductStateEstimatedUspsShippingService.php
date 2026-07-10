@@ -10,9 +10,9 @@ if (!defined('ABSPATH')) {
 /**
  * Formula-based, zone-agnostic USPS estimate helper for internal admin review.
  *
- * This intentionally does not call USPS or affect checkout, pricing, offer
- * selection, or customer-facing shipping. It only fills product_state reference
- * data from the already-selected product_state package measurements.
+ * This intentionally does not call USPS. It fills Product State reference data
+ * from the selected package measurements; checkout uses that reference only when
+ * the corresponding global shipping mode is explicitly enabled.
  */
 final class ProductStateEstimatedUspsShippingService
 {

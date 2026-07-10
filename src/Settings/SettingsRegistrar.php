@@ -119,6 +119,16 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_USE_PRODUCT_STATE_USPS_SHIPPING,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_use_product_state_usps_shipping() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_GUNDEALS_FEED_ENABLED,
             [
                 'type'              => 'string',

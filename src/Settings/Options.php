@@ -44,6 +44,7 @@ final class Options
     public const OPTION_PAYMENT_PROCESSOR_FEE_PERCENT = 'fflhub_payment_processor_fee_percent';
     public const OPTION_GLOBAL_MARKUP                 = 'fflhub_global_markup';
     public const OPTION_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT = 'fflhub_free_shipping_max_profit_spend_percent';
+    public const OPTION_USE_PRODUCT_STATE_USPS_SHIPPING = 'fflhub_use_product_state_usps_shipping';
     public const OPTION_TEST_ORDER_DEBUG_ENABLED      = 'fflhub_test_order_debug_enabled';
     public const OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = 'fflhub_pretty_random_email_quotes_enabled';
     public const OPTION_GUNDEALS_FEED_ENABLED         = 'fflhub_gundeals_feed_enabled';
@@ -101,6 +102,7 @@ final class Options
     private const DEFAULT_PAYMENT_PROCESSOR_FEE_PERCENT = 2.9;  // %
     private const DEFAULT_GLOBAL_MARKUP                 = 10.0; // %
     private const DEFAULT_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT = 50.0; // %
+    private const DEFAULT_USE_PRODUCT_STATE_USPS_SHIPPING = false;
     private const DEFAULT_TEST_ORDER_DEBUG_ENABLED      = true;
     private const DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = true;
     private const DEFAULT_GUNDEALS_FEED_ENABLED         = true;
@@ -249,6 +251,11 @@ final class Options
     public static function default_free_shipping_max_profit_spend_percent(): float
     {
         return self::DEFAULT_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT;
+    }
+
+    public static function default_use_product_state_usps_shipping(): bool
+    {
+        return self::DEFAULT_USE_PRODUCT_STATE_USPS_SHIPPING;
     }
 
     public static function default_test_order_debug_enabled(): bool
@@ -418,6 +425,13 @@ final class Options
             add_option(
                 self::OPTION_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT,
                 (string) self::DEFAULT_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT
+            );
+        }
+
+        if (get_option(self::OPTION_USE_PRODUCT_STATE_USPS_SHIPPING, null) === null) {
+            add_option(
+                self::OPTION_USE_PRODUCT_STATE_USPS_SHIPPING,
+                self::DEFAULT_USE_PRODUCT_STATE_USPS_SHIPPING ? '1' : '0'
             );
         }
 
@@ -695,6 +709,14 @@ final class Options
     {
         $percent = max(0.0, min(100.0, $percent));
         update_option(self::OPTION_FREE_SHIPPING_MAX_PROFIT_SPEND_PERCENT, (string) $percent);
+    }
+
+    public static function get_use_product_state_usps_shipping(): bool
+    {
+        return ((string) get_option(
+            self::OPTION_USE_PRODUCT_STATE_USPS_SHIPPING,
+            self::DEFAULT_USE_PRODUCT_STATE_USPS_SHIPPING ? '1' : '0'
+        )) === '1';
     }
 
     /**
