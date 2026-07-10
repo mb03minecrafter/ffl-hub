@@ -1002,7 +1002,7 @@ final class ProductStateStore
      * consistent for the future product_state-to-Woo writer.
      *
      * @param array<string,mixed> $raw
-     * @return array{ok:bool,updated:int,changed:bool,message:string}
+     * @return array{ok:bool,updated:int,changed:bool,message:string,distributor_lock_changed?:bool,upc?:string}
      */
     public static function update_admin_controls(int $product_id, array $raw): array
     {
@@ -1083,6 +1083,10 @@ final class ProductStateStore
         $allowed_distributors_json = $allowed_distributors_enabled
             ? self::allowed_distributors_json(true, $raw['allowed_distributors'] ?? [])
             : null;
+        $distributor_lock_changed = self::admin_value_changed(
+            $row['allowed_distributors_json'] ?? null,
+            $allowed_distributors_json
+        );
 
         $status = strtolower(trim((string) ($raw['status'] ?? 'active')));
         if (!in_array($status, ['active', 'ignored'], true)) {
@@ -1154,6 +1158,8 @@ final class ProductStateStore
                 'ok' => true,
                 'updated' => 0,
                 'changed' => false,
+                'distributor_lock_changed' => false,
+                'upc' => (string) ($row['upc'] ?? ''),
                 'message' => 'No product_state changes detected.',
             ];
         }
@@ -1174,6 +1180,8 @@ final class ProductStateStore
                 'ok' => false,
                 'updated' => 0,
                 'changed' => true,
+                'distributor_lock_changed' => $distributor_lock_changed,
+                'upc' => (string) ($row['upc'] ?? ''),
                 'message' => 'Product_state update failed: ' . (string) $wpdb->last_error,
             ];
         }
@@ -1184,6 +1192,8 @@ final class ProductStateStore
             'ok' => true,
             'updated' => (int) $updated,
             'changed' => true,
+            'distributor_lock_changed' => $distributor_lock_changed,
+            'upc' => (string) ($row['upc'] ?? ''),
             'message' => 'Product_state controls saved.',
         ];
     }

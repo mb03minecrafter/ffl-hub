@@ -44,6 +44,7 @@ final class ProductBestOfferSelectionService
         $result['upsert_elapsed_ms'] = '0.00';
         $result['clear_flags_elapsed_ms'] = '0.00';
         $result['missing_product_state_upcs'] = 0;
+        $result['lock_mismatch_upcs'] = 0;
         $result['msrp_rows'] = 0;
         $result['shipping_measurement_rows'] = 0;
         $result['shipping_weight_rows'] = 0;
@@ -68,6 +69,17 @@ final class ProductBestOfferSelectionService
         $map_table = 'tmp_fflhub_best_offer_dirty_maps';
         $shipping_measurements_table = 'tmp_fflhub_best_offer_dirty_shipping_measurements';
         $charset = $wpdb->get_charset_collate();
+        $lock_allows_offer_sql = static function (string $offer_alias): string {
+            return "(
+                ps.allowed_distributors_json IS NULL
+                OR JSON_CONTAINS(
+                    ps.allowed_distributors_json,
+                    JSON_QUOTE({$offer_alias}.distributor_id)
+                ) = 1
+            )";
+        };
+        $offer_lock_sql = $lock_allows_offer_sql('o');
+        $better_offer_lock_sql = $lock_allows_offer_sql('better');
         $result['temp_table'] = $temp_table;
         $result['map_temp_table'] = $map_table;
         $result['shipping_measurements_temp_table'] = $shipping_measurements_table;
@@ -153,6 +165,31 @@ final class ProductBestOfferSelectionService
 
         $result['missing_product_state_upcs'] = is_numeric($missing_inserted) ? (int) $missing_inserted : 0;
 
+        // Repair already-selected rows that predate lock-aware selection. New
+        // lock edits dirty their UPC offers directly in the product editor.
+        $lock_mismatches_inserted = $wpdb->query("
+            INSERT IGNORE INTO {$temp_table} (upc)
+            SELECT ps.upc
+            FROM {$product_state_table} ps
+            INNER JOIN {$best_offers_table} pbo
+                ON pbo.product_id = ps.product_id
+               AND pbo.distributor_id IS NOT NULL
+            WHERE ps.status = 'active'
+              AND ps.allowed_distributors_json IS NOT NULL
+              AND JSON_CONTAINS(
+                    ps.allowed_distributors_json,
+                    JSON_QUOTE(pbo.distributor_id)
+                  ) <> 1
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if ($lock_mismatches_inserted === false) {
+            $result['ok'] = false;
+            $result['errors'][] = 'Failed to collect distributor-lock mismatches: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $result['lock_mismatch_upcs'] = is_numeric($lock_mismatches_inserted) ? (int) $lock_mismatches_inserted : 0;
+
         $dirty_upcs = $wpdb->get_var("SELECT COUNT(*) FROM {$temp_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $result['dirty_upcs'] = is_numeric($dirty_upcs) ? (int) $dirty_upcs : 0;
         $result['processed_upcs'] = (int) $result['dirty_upcs'];
@@ -178,9 +215,13 @@ final class ProductBestOfferSelectionService
                 END) AS map_price,
                 MAX(CASE WHEN o.msrp IS NOT NULL AND o.msrp > 0 THEN o.msrp ELSE NULL END) AS msrp
             FROM {$temp_table} d
+            INNER JOIN {$product_state_table} ps
+                ON ps.upc = d.upc
+               AND ps.status = 'active'
             INNER JOIN {$offers_table} o
                 ON o.upc = d.upc
                AND o.enabled = 1
+               AND {$offer_lock_sql}
             GROUP BY d.upc
             HAVING map_price IS NOT NULL
                 OR msrp IS NOT NULL
@@ -254,9 +295,13 @@ final class ProductBestOfferSelectionService
                     ELSE NULL
                 END ORDER BY (o.shipping_length_in * o.shipping_width_in * o.shipping_height_in) DESC SEPARATOR ','), ',', 1) AS DECIMAL(10,3)) AS shipping_height_in
             FROM {$temp_table} d
+            INNER JOIN {$product_state_table} ps
+                ON ps.upc = d.upc
+               AND ps.status = 'active'
             INNER JOIN {$offers_table} o
                 ON o.upc = d.upc
                AND o.enabled = 1
+               AND {$offer_lock_sql}
             GROUP BY d.upc
             HAVING shipping_weight_oz IS NOT NULL
                 OR shipping_length_in IS NOT NULL
@@ -449,10 +494,12 @@ final class ProductBestOfferSelectionService
                 ON o.upc = ps.upc
                AND o.enabled = 1
                AND o.landed_cost > 0
+               AND {$offer_lock_sql}
             LEFT JOIN {$offers_table} better
                 ON better.upc = ps.upc
                AND better.enabled = 1
                AND better.landed_cost > 0
+               AND {$better_offer_lock_sql}
                AND (
                     (
                         better.stock_status = 'instock'

@@ -3,6 +3,7 @@
 namespace FFLHub\Admin\ProductMeta;
 
 use FFLHub\Distributor\Core\DistributorRegistry;
+use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use WP_Post;
@@ -345,7 +346,7 @@ class ProductMetaBox
             checked(!empty($allowed_distributor_ids), true, false) .
             ' />';
         echo '<span><strong>' . esc_html__('Restrict allowed distributors', 'ffl-hub') . '</strong><br />' .
-            '<span>' . esc_html__('When enabled, only the selected distributor IDs should be considered by the future product_state sync path.', 'ffl-hub') . '</span></span>';
+            '<span>' . esc_html__('When enabled, best-offer selection considers only the selected distributors.', 'ffl-hub') . '</span></span>';
         echo '</label>';
         echo '</div>';
 
@@ -985,7 +986,7 @@ class ProductMetaBox
             $allowed_distributors = [$allowed_distributors];
         }
 
-        ProductStateStore::update_admin_controls($post_id, [
+        $result = ProductStateStore::update_admin_controls($post_id, [
             'status' => self::sanitize_state_text_post('fflhub_state_status'),
             'pricing_mode' => self::sanitize_state_text_post('fflhub_state_pricing_mode'),
             'pricing_percent' => self::sanitize_state_decimal_post('fflhub_state_pricing_percent'),
@@ -1009,6 +1010,12 @@ class ProductMetaBox
                 $allowed_distributors
             ),
         ]);
+
+        // A lock changes which normalized offers are eligible to win. Dirty
+        // this UPC so the regular offer pipeline reselects it on its next run.
+        if (!empty($result['ok']) && !empty($result['distributor_lock_changed'])) {
+            DistributorOffersStore::mark_upc_changed((string) ($result['upc'] ?? ''));
+        }
     }
 
     private static function sanitize_state_text_post(string $post_key): string

@@ -100,6 +100,32 @@ final class DistributorOffersStore
         return is_string($found) && $found === $table;
     }
 
+    /**
+     * Mark every normalized offer for a UPC for best-offer reselection.
+     *
+     * @return int|false Number of offer rows newly marked, or false on error.
+     */
+    public static function mark_upc_changed(string $upc)
+    {
+        global $wpdb;
+
+        $upc = trim($upc);
+        if (!$wpdb || $upc === '') {
+            return false;
+        }
+
+        self::ensure_schema();
+        $table = self::table_name();
+
+        return $wpdb->query($wpdb->prepare(
+            "UPDATE {$table}
+             SET has_changed = 1
+             WHERE upc = %s
+               AND has_changed <> 1",
+            $upc
+        )); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+    }
+
     private static function has_expected_indexes(): bool
     {
         global $wpdb;
