@@ -426,10 +426,19 @@ final class OrderProfitAuditMeta
                 ? $plan['by_dist']
                 : self::decode_array($shipping_item->get_meta('fflhub_shipping_by_dist', true));
 
-            $row_total = self::sum_distributor_shipping_rows($rows, $by_dist, (int) $item_id);
+            $used_ignored_inbound_estimate = false;
+            $row_total = self::sum_distributor_shipping_rows(
+                $rows,
+                $by_dist,
+                (int) $item_id,
+                !empty($plan['distributor_inbound_shipping_ignored']),
+                $used_ignored_inbound_estimate
+            );
             if ($row_total > 0.0) {
                 $total += $row_total;
-                $sources['shipping_item_by_dist'] = true;
+                $sources[$used_ignored_inbound_estimate
+                    ? 'shipping_item_by_dist_with_pre_batch_inbound_estimate'
+                    : 'shipping_item_by_dist'] = true;
                 continue;
             }
 
@@ -452,8 +461,13 @@ final class OrderProfitAuditMeta
      * @param array<int|string,mixed> $rows
      * @param array<string,array<string,mixed>> $by_dist
      */
-    private static function sum_distributor_shipping_rows(array $rows, array &$by_dist, int $shipping_item_id = 0): float
-    {
+    private static function sum_distributor_shipping_rows(
+        array $rows,
+        array &$by_dist,
+        int $shipping_item_id = 0,
+        bool $restore_ignored_dealer_inbound = false,
+        bool &$used_ignored_inbound_estimate = false
+    ): float {
         $total = 0.0;
 
         foreach ($rows as $dist_id => $row) {
@@ -464,8 +478,31 @@ final class OrderProfitAuditMeta
                 continue;
             }
 
-            $cost = self::non_negative_float($row['cost'] ?? null);
-            if ($cost === null || $cost <= 0.0) {
+            $cost = self::non_negative_float($row['cost'] ?? null) ?? 0.0;
+
+            // Customer shipping may intentionally ignore distributor-to-dealer
+            // freight. Profit audit still needs the original lane estimate
+            // until batch execution replaces it with an allocated paid amount
+            // or explicitly records that the batch earned free shipping.
+            $batch_shipping_resolved = !empty($row['dealer_batch_inbound_shipping_allocated'])
+                || !empty($row['dealer_batch_free_inbound_shipping_applied']);
+            if (
+                $restore_ignored_dealer_inbound
+                && !empty($row['dealer_inbound'])
+                && !$batch_shipping_resolved
+            ) {
+                $inbound_estimate = self::non_negative_float($row['dealer_inbound_lane_fee'] ?? null)
+                    ?? self::non_negative_float($row['lane_fee'] ?? null)
+                    ?? 0.0;
+                if ($inbound_estimate > 0.0) {
+                    $cost += $inbound_estimate;
+                    $used_ignored_inbound_estimate = true;
+                    $row['profit_audit_dealer_inbound_estimated'] = true;
+                    $row['profit_audit_dealer_inbound_estimate'] = self::money($inbound_estimate);
+                }
+            }
+
+            if ($cost <= 0.0) {
                 continue;
             }
 
