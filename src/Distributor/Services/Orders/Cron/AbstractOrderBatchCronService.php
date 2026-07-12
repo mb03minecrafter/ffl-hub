@@ -158,10 +158,13 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             // Consume one-shot force-flush requests at the start of a real cron pass, even
             // if the queue is empty. Otherwise a force request made against an empty queue
             // can linger and accidentally flush the next day's first batch row early.
-            $force_flush = $this->consume_force_flush();
+            $force_flush_source = $this->consume_force_flush();
+            $force_flush = $force_flush_source !== '';
             $run_stats['force_flush'] = $force_flush ? 1 : 0;
 
-            $run_stats['optimizer_preflight'] = $this->maybe_run_global_dealer_batch_optimizer_preflight($run_id);
+            $run_stats['optimizer_preflight'] = (!$this->is_ca_relay_mode() && $force_flush_source === 'scoped')
+                ? 'skipped_scoped_force'
+                : $this->maybe_run_global_dealer_batch_optimizer_preflight($run_id);
 
             // Resolve runtime controls once per run for consistent behavior.
             $max_rows = $this->max_rows_per_run();
@@ -2129,10 +2132,17 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         return max(1, (int) get_option($this->opt_max_rows_name(), self::DEFAULT_MAX_ROWS_PER_RUN));
     }
 
-    private function consume_force_flush(): bool
+    private function consume_force_flush(): string
     {
         if (!$this->is_ca_relay_mode()) {
-            return DealerBatchOptimizerConfig::consume_force_flush_for_option_prefix($this->get_option_prefix());
+            $scoped = DealerBatchOptimizerConfig::consume_scoped_force_flush($this->get_option_prefix());
+            $global = DealerBatchOptimizerConfig::consume_force_flush_for_option_prefix($this->get_option_prefix());
+
+            if ($global) {
+                return 'global';
+            }
+
+            return $scoped ? 'scoped' : '';
         }
 
         // One-shot toggle: read and immediately clear so only one run consumes it.
@@ -2140,7 +2150,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         if ($enabled) {
             update_option($this->opt_force_flush_name(), '0', false);
         }
-        return $enabled;
+        return $enabled ? 'scoped' : '';
     }
 
     /**
@@ -2679,7 +2689,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     private function opt_force_flush_name(): string
     {
         if (!$this->is_ca_relay_mode()) {
-            return DealerBatchOptimizerConfig::dealer_batch_option_name('force_flush');
+            return DealerBatchOptimizerConfig::scoped_force_flush_option_name($this->get_option_prefix());
         }
 
         return $this->get_option_prefix() . '_force_flush';

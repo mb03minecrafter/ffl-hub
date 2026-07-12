@@ -110,6 +110,36 @@ final class DealerBatchOptimizerConfig
         update_option(self::dealer_batch_option_name('force_flush'), (string) time(), false);
     }
 
+    public static function scoped_force_flush_option_name(string $distributor_option_prefix): string
+    {
+        $prefix = trim($distributor_option_prefix);
+        return $prefix === '' ? '' : $prefix . '_force_flush';
+    }
+
+    public static function mark_scoped_force_flush_requested(string $distributor_option_prefix): void
+    {
+        $option = self::scoped_force_flush_option_name($distributor_option_prefix);
+        if ($option !== '') {
+            update_option($option, (string) time(), false);
+        }
+    }
+
+    public static function scoped_force_flush_requested(string $distributor_option_prefix): bool
+    {
+        return self::scoped_force_flush_token($distributor_option_prefix) !== '';
+    }
+
+    public static function consume_scoped_force_flush(string $distributor_option_prefix): bool
+    {
+        $option = self::scoped_force_flush_option_name($distributor_option_prefix);
+        if ($option === '' || self::scoped_force_flush_token($distributor_option_prefix) === '') {
+            return false;
+        }
+
+        update_option($option, '0', false);
+        return true;
+    }
+
     public static function consume_force_flush_for_option_prefix(string $distributor_option_prefix): bool
     {
         $raw = self::force_flush_token();
@@ -173,6 +203,34 @@ final class DealerBatchOptimizerConfig
         }
 
         update_option(self::dealer_batch_option_name('force_flush'), '0', false);
+        return '';
+    }
+
+    private static function scoped_force_flush_token(string $distributor_option_prefix): string
+    {
+        $option = self::scoped_force_flush_option_name($distributor_option_prefix);
+        if ($option === '') {
+            return '';
+        }
+
+        $token = trim((string) get_option($option, '0'));
+        if (!self::truthy($token, false)) {
+            return '';
+        }
+
+        // Distributor settings historically saved this one-shot toggle as "1".
+        if ($token === '1') {
+            return $token;
+        }
+
+        if (is_numeric($token)) {
+            $requested_at = (int) $token;
+            if ($requested_at > 0 && (time() - $requested_at) <= self::FORCE_FLUSH_TTL_SECONDS) {
+                return $token;
+            }
+        }
+
+        update_option($option, '0', false);
         return '';
     }
 

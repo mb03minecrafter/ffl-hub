@@ -169,7 +169,7 @@ final class DistributorBatchQueuePage
         $low_stock_threshold_field = $this->option_name('low_stock_threshold');
         $retry_delay_seconds_field = $this->option_name('retry_delay_seconds');
         $max_rows_per_run_field = $this->option_name('max_rows_per_run');
-        $force_flush_field = $this->option_name('force_flush');
+        $force_flush_field = $this->force_flush_option_name();
 
         $enabled = $this->to_checkbox_string(
             isset($_POST[$enabled_field]) ? wp_unslash((string) $_POST[$enabled_field]) : '0'
@@ -192,7 +192,7 @@ final class DistributorBatchQueuePage
         update_option($retry_delay_seconds_field, (string) $retry_delay_seconds, false);
         update_option($max_rows_per_run_field, (string) $max_rows_per_run, false);
         if ($this->mode === self::MODE_DEALER && $force_flush === '1') {
-            DealerBatchOptimizerConfig::mark_force_flush_requested();
+            DealerBatchOptimizerConfig::mark_scoped_force_flush_requested($this->option_prefix);
         } else {
             update_option($force_flush_field, $force_flush, false);
         }
@@ -207,9 +207,9 @@ final class DistributorBatchQueuePage
         }
 
         if ($this->mode === self::MODE_DEALER) {
-            DealerBatchOptimizerConfig::mark_force_flush_requested();
+            DealerBatchOptimizerConfig::mark_scoped_force_flush_requested($this->option_prefix);
         } else {
-            update_option($this->option_name('force_flush'), '1', false);
+            update_option($this->force_flush_option_name(), '1', false);
         }
 
         $scheduled = false;
@@ -224,8 +224,8 @@ final class DistributorBatchQueuePage
         }
 
         $msg = $scheduled
-            ? __('Force flush enabled and batch run scheduled.', 'ffl-hub')
-            : __('Force flush enabled and batch run triggered.', 'ffl-hub');
+            ? sprintf(__('%s force flush enabled; only its batch cron was scheduled.', 'ffl-hub'), $this->dist_label)
+            : sprintf(__('%s force flush enabled; only its batch cron was triggered.', 'ffl-hub'), $this->dist_label);
         $this->redirect_with_notice('success', $msg);
     }
 
@@ -282,8 +282,19 @@ final class DistributorBatchQueuePage
             'low_stock_threshold' => max(0, (int) get_option($this->option_name('low_stock_threshold'), self::DEFAULT_LOW_STOCK_THRESHOLD)),
             'retry_delay_seconds' => max(30, (int) get_option($this->option_name('retry_delay_seconds'), self::DEFAULT_RETRY_DELAY_SECONDS)),
             'max_rows_per_run' => max(1, (int) get_option($this->option_name('max_rows_per_run'), self::DEFAULT_MAX_ROWS_PER_RUN)),
-            'force_flush' => $this->truthy_option($this->option_name('force_flush'), false),
+            'force_flush' => $this->mode === self::MODE_DEALER
+                ? DealerBatchOptimizerConfig::scoped_force_flush_requested($this->option_prefix)
+                : $this->truthy_option($this->force_flush_option_name(), false),
         ];
+    }
+
+    private function force_flush_option_name(): string
+    {
+        if ($this->mode === self::MODE_DEALER) {
+            return DealerBatchOptimizerConfig::scoped_force_flush_option_name($this->option_prefix);
+        }
+
+        return $this->option_name('force_flush');
     }
 
     private function option_name(string $suffix): string
@@ -407,7 +418,7 @@ final class DistributorBatchQueuePage
             <form method="post" action="">
                 <?php wp_nonce_field($this->nonce_action(), $this->post_field('nonce')); ?>
                 <input type="hidden" name="<?php echo esc_attr($this->post_field('action')); ?>" value="<?php echo esc_attr($this->form_action_force_run()); ?>" />
-                <?php submit_button(__('Force Flush + Run Now', 'ffl-hub'), 'secondary', '', false); ?>
+                <?php submit_button(sprintf(__('Force %s Batch + Run Now', 'ffl-hub'), $this->dist_label), 'secondary', '', false); ?>
             </form>
         </section>
         <?php
@@ -941,7 +952,7 @@ final class DistributorBatchQueuePage
                 <li><?php echo esc_html(sprintf(__('Batch mode controls whether eligible %s %s rows are queued as batch_pending for grouped placement.', 'ffl-hub'), $this->dist_label, strtolower($this->mode_label))); ?></li>
                 <li><?php echo esc_html(sprintf(__('Dispatch time is %s Central time on weekdays. Rows wait until that window unless force flush is enabled.', 'ffl-hub'), $dispatch_time)); ?></li>
                 <li><?php esc_html_e('Saturday and Sunday rows are held until the next weekday dispatch window.', 'ffl-hub'); ?></li>
-                <li><?php esc_html_e('Force Flush + Run Now sets a one-time force flag and schedules the batch cron immediately. It can bypass the weekday clock, but not the weekend hold.', 'ffl-hub'); ?></li>
+                <li><?php echo esc_html(sprintf(__('Force %s Batch + Run Now sets a one-time flag for this distributor only and schedules only its batch cron. It can bypass the weekday clock, but not the weekend hold.', 'ffl-hub'), $this->dist_label)); ?></li>
                 <li><?php echo esc_html(sprintf(__('Retry Delay (%d sec) and Max Rows Per Run (%d) bound how aggressively each cron run processes queue entries.', 'ffl-hub'), $retry_delay, $max_rows)); ?></li>
                 <li><?php esc_html_e('The queue tables above show both aggregated UPC demand and raw per-line entries so you can audit exactly what will be sent.', 'ffl-hub'); ?></li>
             </ul>
