@@ -27,8 +27,9 @@ if (! defined('ABSPATH')) {
  * - Cost includes:
  *   - distributor lane fees (dealer_inbound/direct_home/direct_ffl)
  *   - dealer outbound home/ffl costs (USPS API when enabled; formula fallback).
- * - Optional Product State USPS mode replaces dealer inbound + runtime outbound
- *   pricing with each dealer-fulfilled line's stored USPS estimate.
+ * - Optional Product State USPS mode uses each dealer-fulfilled line's stored
+ *   USPS estimate for dealer outbound. Distributor inbound remains part of the
+ *   economic route cost, but may be excluded from the customer charge.
  *
  * FREE SHIPPING RULE:
  * - Product MAP quote free-shipping override removes that product's routed
@@ -479,7 +480,9 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $plan['ca_shipping_surcharge_customer_state'] = $customer_dest_state;
         $plan['ca_shipping_surcharge_drop_ship_lane'] = $ca_surcharge_has_drop_ship_lane ? 1 : 0;
         $plan['product_state_usps_shipping_applied'] = $use_product_state_usps_shipping ? 1 : 0;
-        $plan['distributor_inbound_shipping_ignored'] = $use_product_state_usps_shipping ? 1 : 0;
+        $plan['planner_includes_dealer_inbound_shipping'] = 1;
+        $plan['distributor_inbound_shipping_ignored'] = 0;
+        $plan['customer_charge_ignores_dealer_inbound'] = $use_product_state_usps_shipping ? 1 : 0;
         $plan['meta']['outbound_pricing'] = [
             'home_source' => $dealer_home_source,
             'ffl_source'  => $dealer_ffl_source,
@@ -504,10 +507,25 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $shipping_cost_total,
             $customer_chargeable_base_total
         );
-        $customer_free_shipping_credit_total = max(0.0, $shipping_cost_total - $customer_chargeable_shipping_cost_total);
-        $customer_free_shipping_product_applied = $customer_free_shipping_credit_total > 0.0001;
+        $customer_ignored_dealer_inbound_cost_total = $use_product_state_usps_shipping
+            ? $this->dealer_inbound_cost_total($by_dist)
+            : 0.0;
+        $customer_free_shipping_credit_total = max(
+            0.0,
+            $shipping_cost_total
+                - $customer_chargeable_shipping_cost_total
+                - $customer_ignored_dealer_inbound_cost_total
+        );
+        $customer_free_shipping_product_applied = false;
+        foreach ($line_debug_rows as $line_debug_row) {
+            if (!empty($line_debug_row['customer_free_shipping'])) {
+                $customer_free_shipping_product_applied = $customer_free_shipping_credit_total > 0.0001;
+                break;
+            }
+        }
 
         $plan['customer_chargeable_shipping_cost_total'] = $customer_chargeable_shipping_cost_total;
+        $plan['customer_ignored_dealer_inbound_cost_total'] = $customer_ignored_dealer_inbound_cost_total;
         $plan['customer_free_shipping_credit_total'] = $customer_free_shipping_credit_total;
         $plan['customer_chargeable_distributor_cost_total'] = (float) ($customer_shipping['distributor_cost_total'] ?? 0.0);
         $plan['customer_chargeable_dealer_outbound_home_cost'] = (float) ($customer_shipping['dealer_outbound_home_cost'] ?? 0.0);
@@ -533,12 +551,13 @@ class FFLHubShippingMethod extends WC_Shipping_Method
 
         $this->log_debug(
             sprintf(
-                'PLAN total=%s dist_total=%s outbound_total=%s ca_surcharge=%s customer_chargeable=%s customer_free_credit=%s decision_lines=%d combos=%d',
+                'PLAN total=%s dist_total=%s outbound_total=%s ca_surcharge=%s customer_chargeable=%s customer_ignored_inbound=%s customer_free_credit=%s decision_lines=%d combos=%d',
                 $this->fmt_money($shipping_cost_total),
                 $this->fmt_money($dist_total),
                 $this->fmt_money($outbound_total),
                 $this->fmt_money($ca_surcharge),
                 $this->fmt_money($customer_chargeable_shipping_cost_total),
+                $this->fmt_money($customer_ignored_dealer_inbound_cost_total),
                 $this->fmt_money($customer_free_shipping_credit_total),
                 (int) (($plan['meta']['decision_lines'] ?? 0)),
                 (int) (($plan['meta']['combinations_evaluated'] ?? 0))
@@ -677,7 +696,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $ca_surcharge_customer_facing = !empty($plan['ca_shipping_surcharge_customer_facing']);
 
         if ($use_product_state_usps_shipping) {
-            $plan_version = 'dealer_fulfilled_v3_product_state_usps';
+            $plan_version = 'dealer_fulfilled_v4_product_state_usps';
         } else {
             $plan_version = (($dealer_home_source === 'usps_api') || ($dealer_ffl_source === 'usps_api'))
                 ? 'dealer_fulfilled_v2_usps_outbound'
@@ -697,6 +716,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 // What customer was charged at checkout for shipping (already in 'cost', but nice to have)
                 'fflhub_customer_shipping_charge' => (string) wc_format_decimal($customer_charge, 4),
                 'fflhub_customer_chargeable_shipping_cost_total' => (string) wc_format_decimal($customer_chargeable_shipping_cost_total, 4),
+                'fflhub_customer_ignored_dealer_inbound_cost_total' => (string) wc_format_decimal($customer_ignored_dealer_inbound_cost_total, 4),
                 'fflhub_customer_free_shipping_credit_total' => (string) wc_format_decimal($customer_free_shipping_credit_total, 4),
                 'fflhub_ca_shipping_surcharge' => (string) wc_format_decimal($ca_surcharge, 4),
                 'fflhub_ca_shipping_surcharge_applied' => ($ca_surcharge > 0.0) ? '1' : '0',
@@ -1071,6 +1091,31 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             'total' => max(0.0, $total),
             'by_dist' => $by_dist,
         ];
+    }
+
+    /**
+     * Sum distributor-to-dealer lanes that remain an internal cost but are not
+     * included in the customer charge under Product State USPS mode.
+     *
+     * @param array<string,array<string,mixed>> $by_dist
+     */
+    private function dealer_inbound_cost_total(array $by_dist): float
+    {
+        $total = 0.0;
+
+        foreach ($by_dist as $row) {
+            if (!is_array($row) || empty($row['dealer_inbound'])) {
+                continue;
+            }
+
+            $lane_fee = max(0.0, (float) ($row['dealer_inbound_lane_fee'] ?? 0.0));
+            if ($lane_fee <= 0.0) {
+                $lane_fee = max(0.0, (float) ($row['lane_fee'] ?? 0.0));
+            }
+            $total += $lane_fee;
+        }
+
+        return max(0.0, $total);
     }
 
     /**

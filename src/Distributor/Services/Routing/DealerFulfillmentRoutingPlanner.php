@@ -20,6 +20,10 @@ if (!defined('ABSPATH')) {
  *   - dealer -> home
  *   - dealer -> ffl
  *
+ * Product State USPS mode changes only the dealer-outbound estimate. The
+ * distributor-to-dealer lane remains a real routing cost and is always counted
+ * when comparing dealer fulfillment with direct shipment.
+ *
  * Outbound formula for now:
  *   5.85 + 0.60 * ceil(weight_oz / 4)
  */
@@ -106,6 +110,7 @@ final class DealerFulfillmentRoutingPlanner
             'best_assignment_key'    => $best_assignment_key,
             'best_formula_total'     => (float) ($best_plan['total_cost'] ?? 0.0),
             'product_state_usps_shipping' => $use_product_state_usps_shipping ? 1 : 0,
+            'planner_includes_dealer_inbound_shipping' => 1,
             'top_candidates'         => $top_candidates,
             'alternatives'           => $alternatives,
         ];
@@ -223,7 +228,7 @@ final class DealerFulfillmentRoutingPlanner
             $direct_ffl_lane_fee = max(0.0, (float) ($row['direct_ffl_lane_fee'] ?? 0.0));
 
             $cost = 0.0;
-            if (!empty($row['dealer_inbound']) && !$use_product_state_usps_shipping) {
+            if (!empty($row['dealer_inbound'])) {
                 $cost += $dealer_inbound_lane_fee > 0.0 ? $dealer_inbound_lane_fee : $lane_fee;
             }
             if (!empty($row['direct_home'])) {

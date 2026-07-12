@@ -901,6 +901,11 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         if ($dist_lane_fee <= 0.0) {
             $dist_lane_fee = max(0.0, $fallback_ship);
         }
+        $estimated_usps_shipping = $this->to_non_negative_float(
+            $state_row['estimated_usps_shipping_cost'] ?? null,
+            $fallback_ship
+        );
+        $use_product_state_usps_shipping = Options::get_use_product_state_usps_shipping();
         $weight_oz = $this->to_non_negative_float($state_row['shipping_weight_oz'] ?? null, 0.0);
 
         $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan([
@@ -912,8 +917,9 @@ final class QuoteEmailJobsCronService extends AbstractCronService
                 'ffl_required' => $ffl_required ? 1 : 0,
                 'dropship_enabled' => $dropship_enabled ? 1 : 0,
                 'dist_lane_fee' => $dist_lane_fee,
+                'dealer_outbound_unit_cost' => $estimated_usps_shipping,
             ],
-        ]);
+        ], $use_product_state_usps_shipping);
 
         return max(0.0, (float) ($plan['total_cost'] ?? 0.0));
     }

@@ -10,6 +10,8 @@ if (!defined('ABSPATH')) exit;
 
 class ShippingRegistrar
 {
+    private const SHIPPING_MODEL_VERSION = '4';
+
     public static function init(): void
     {
         // No require_once needed when using autoloading.
@@ -158,6 +160,7 @@ class ShippingRegistrar
     {
         $package['fflhub_free_shipping_coupon_codes'] = implode(',', self::applied_free_shipping_coupon_codes());
         $package['fflhub_use_product_state_usps_shipping'] = Options::get_use_product_state_usps_shipping() ? '1' : '0';
+        $package['fflhub_shipping_model_version'] = self::SHIPPING_MODEL_VERSION;
         return $package;
     }
 

@@ -18,6 +18,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
@@ -206,6 +207,7 @@ final class OrderingOrchestratorService
     {
         $oid = (int) $order->get_id();
         $customer_dest_state = $this->customer_dest_state($order);
+        $use_product_state_usps_shipping = $this->order_uses_product_state_usps_shipping($order);
 
         /** @var array<string,array<string,mixed>> $accepted_by_line_id */
         $accepted_by_line_id = [];
@@ -267,6 +269,9 @@ final class OrderingOrchestratorService
             $weight_oz = $this->to_non_negative_float($state_row['shipping_weight_oz'] ?? null, 0.0);
             $ship_raw = $state_row['shipping_cost'] ?? null;
             $dist_lane_fee = $this->resolve_distributor_lane_fee($ship_raw);
+            $dealer_outbound_unit_cost = $this->resolve_distributor_lane_fee(
+                $state_row['estimated_usps_shipping_cost'] ?? null
+            );
             if ($this->to_non_negative_float($ship_raw, 0.0) <= 0.0 && $dist_lane_fee > 0.0) {
                 $this->log_ctx('shipping_lane_fee_fallback_applied', [
                     'order_id'   => $oid,
@@ -374,6 +379,7 @@ final class OrderingOrchestratorService
                 'ffl_required'     => $ffl_required,
                 'dropship_enabled' => $dropship_enabled,
                 'dist_lane_fee'    => $dist_lane_fee,
+                'dealer_outbound_unit_cost' => $dealer_outbound_unit_cost,
             ];
 
             $seen['accepted']++;
@@ -382,7 +388,10 @@ final class OrderingOrchestratorService
         /** @var array<string,array<string,array<string,array<string,mixed>>>> $agg */
         $agg = [];
         if (!empty($accepted_by_line_id) && !empty($routing_lines)) {
-            $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan($routing_lines);
+            $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan(
+                $routing_lines,
+                $use_product_state_usps_shipping
+            );
             $assignments = (isset($plan['assignments']) && is_array($plan['assignments'])) ? $plan['assignments'] : [];
 
             $this->log_ctx('lane_plan_computed', [
@@ -392,6 +401,7 @@ final class OrderingOrchestratorService
                 'decision_lines'      => (int) ($plan['meta']['decision_lines'] ?? 0),
                 'combinations'        => (int) ($plan['meta']['combinations_evaluated'] ?? 0),
                 'assignment_count'    => count($assignments),
+                'product_state_usps_shipping' => $use_product_state_usps_shipping ? 1 : 0,
                 'local_fulfilled'     => $seen['local_fulfilled'],
                 'local_partial'       => $seen['local_partial'],
             ]);
@@ -846,6 +856,41 @@ final class OrderingOrchestratorService
         }
 
         return 'product-' . (string) $product->get_id();
+    }
+
+    /**
+     * Reuse the checkout shipping mode saved on the order. This prevents a
+     * settings change between checkout and payment from changing route costs.
+     */
+    private function order_uses_product_state_usps_shipping(WC_Order $order): bool
+    {
+        foreach ($order->get_items('shipping') as $shipping_item) {
+            if (!is_object($shipping_item) || !method_exists($shipping_item, 'get_meta')) {
+                continue;
+            }
+
+            $version = trim((string) $shipping_item->get_meta('fflhub_shipping_plan_version', true));
+            if ($version !== '') {
+                return strpos($version, 'product_state_usps') !== false;
+            }
+
+            $raw_plan = $shipping_item->get_meta('fflhub_shipping_plan', true);
+            $plan = is_array($raw_plan) ? $raw_plan : json_decode((string) $raw_plan, true);
+            if (!is_array($plan)) {
+                continue;
+            }
+
+            if (array_key_exists('product_state_usps_shipping_applied', $plan)) {
+                return !empty($plan['product_state_usps_shipping_applied']);
+            }
+
+            $plan_meta = isset($plan['meta']) && is_array($plan['meta']) ? $plan['meta'] : [];
+            if (array_key_exists('product_state_usps_shipping', $plan_meta)) {
+                return !empty($plan_meta['product_state_usps_shipping']);
+            }
+        }
+
+        return Options::get_use_product_state_usps_shipping();
     }
 
     /**

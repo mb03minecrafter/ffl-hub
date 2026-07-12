@@ -536,7 +536,9 @@ final class GunDealsFeedGenerator
             return 0.0;
         }
 
-        $shipping_cost_total = $this->estimate_shipping_cost_total_for_row($row);
+        $shipping_costs = $this->estimate_shipping_costs_for_row($row);
+        $shipping_cost_total = (float) ($shipping_costs['economic'] ?? 0.0);
+        $customer_chargeable_shipping = (float) ($shipping_costs['customer_chargeable'] ?? $shipping_cost_total);
         if ($shipping_cost_total <= 0.0) {
             return 0.0;
         }
@@ -554,9 +556,12 @@ final class GunDealsFeedGenerator
         if ($free_threshold > 0.0 && $shipping_cost_total <= ($free_threshold + 0.0001)) {
             $customer_charge = 0.0;
         } else {
+            $charge_basis = $customer_chargeable_shipping > 0.0
+                ? $customer_chargeable_shipping
+                : $shipping_cost_total;
             $customer_charge = $fee_fraction >= 0.99
-                ? $shipping_cost_total
-                : ($shipping_cost_total / (1.0 - $fee_fraction));
+                ? $charge_basis
+                : ($charge_basis / (1.0 - $fee_fraction));
         }
 
         $shipping_settings = $this->shipping_method_settings_snapshot();
@@ -573,15 +578,19 @@ final class GunDealsFeedGenerator
 
     /**
      * @param array<string,mixed> $row
+     * @return array{economic:float,customer_chargeable:float}
      */
-    private function estimate_shipping_cost_total_for_row(array $row): float
+    private function estimate_shipping_costs_for_row(array $row): array
     {
         $shipping_settings = $this->shipping_method_settings_snapshot();
         $fallback_ship = (float) ($shipping_settings['fallback_shipping'] ?? 15.0);
 
         $dist_id = strtolower(trim((string) ($row['source'] ?? '')));
         if ($dist_id === '') {
-            return max(0.0, $fallback_ship);
+            return [
+                'economic' => max(0.0, $fallback_ship),
+                'customer_chargeable' => max(0.0, $fallback_ship),
+            ];
         }
 
         $dist_lane_fee = $this->resolve_distributor_lane_fee($row['shipping_cost'] ?? null, $fallback_ship);
@@ -614,7 +623,17 @@ final class GunDealsFeedGenerator
             ],
         ], $use_product_state_usps_shipping);
 
-        return max(0.0, (float) ($plan['total_cost'] ?? 0.0));
+        $economic_cost = max(0.0, (float) ($plan['total_cost'] ?? 0.0));
+        $route = strtolower(trim((string) ($plan['assignments']['gundeals_line'] ?? 'direct_ship')));
+        $customer_chargeable = $economic_cost;
+        if ($use_product_state_usps_shipping && $route === 'dealer_fulfilled') {
+            $customer_chargeable = min($economic_cost, max(0.0, $estimated_usps_shipping));
+        }
+
+        return [
+            'economic' => $economic_cost,
+            'customer_chargeable' => $customer_chargeable,
+        ];
     }
 
     private function format_shipping_info(float $shipping_charge): string

@@ -426,12 +426,17 @@ final class OrderProfitAuditMeta
                 ? $plan['by_dist']
                 : self::decode_array($shipping_item->get_meta('fflhub_shipping_by_dist', true));
 
+            $plan_meta = isset($plan['meta']) && is_array($plan['meta']) ? $plan['meta'] : [];
+            $planner_includes_dealer_inbound = !empty($plan['planner_includes_dealer_inbound_shipping'])
+                || !empty($plan_meta['planner_includes_dealer_inbound_shipping']);
+            $restore_legacy_ignored_inbound = !empty($plan['distributor_inbound_shipping_ignored'])
+                && !$planner_includes_dealer_inbound;
             $used_ignored_inbound_estimate = false;
             $row_total = self::sum_distributor_shipping_rows(
                 $rows,
                 $by_dist,
                 (int) $item_id,
-                !empty($plan['distributor_inbound_shipping_ignored']),
+                $restore_legacy_ignored_inbound,
                 $used_ignored_inbound_estimate
             );
             if ($row_total > 0.0) {
@@ -480,10 +485,9 @@ final class OrderProfitAuditMeta
 
             $cost = self::non_negative_float($row['cost'] ?? null) ?? 0.0;
 
-            // Customer shipping may intentionally ignore distributor-to-dealer
-            // freight. Profit audit still needs the original lane estimate
-            // until batch execution replaces it with an allocated paid amount
-            // or explicitly records that the batch earned free shipping.
+            // Legacy v3 customer shipping plans omitted distributor-to-dealer
+            // freight from row cost. Restore the estimate until batch execution
+            // replaces it or records that the batch earned free shipping.
             $batch_shipping_resolved = !empty($row['dealer_batch_inbound_shipping_allocated'])
                 || !empty($row['dealer_batch_free_inbound_shipping_applied']);
             if (

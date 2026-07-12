@@ -1647,6 +1647,11 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                 continue;
             }
 
+            $plan_meta = isset($plan['meta']) && is_array($plan['meta']) ? $plan['meta'] : [];
+            $planner_includes_dealer_inbound = !empty($plan['planner_includes_dealer_inbound_shipping'])
+                || !empty($plan_meta['planner_includes_dealer_inbound_shipping']);
+            $legacy_plan_omits_dealer_inbound = !empty($plan['distributor_inbound_shipping_ignored'])
+                && !$planner_includes_dealer_inbound;
             $changed = false;
             $item_waived_total = 0.0;
             foreach ($by_dist as $key => $row) {
@@ -1662,7 +1667,14 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                     continue;
                 }
 
-                $waived = $this->waive_dealer_inbound_shipping_row($row, $po, $batch_kind, $batch_total, $threshold);
+                $waived = $this->waive_dealer_inbound_shipping_row(
+                    $row,
+                    $po,
+                    $batch_kind,
+                    $batch_total,
+                    $threshold,
+                    $legacy_plan_omits_dealer_inbound
+                );
                 if ($waived <= 0.0) {
                     continue;
                 }
@@ -1720,7 +1732,8 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         string $po,
         string $batch_kind,
         float $batch_total,
-        float $threshold
+        float $threshold,
+        bool $dealer_inbound_omitted_from_cost = false
     ): float {
         if (empty($row['dealer_inbound'])) {
             return 0.0;
@@ -1731,10 +1744,6 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         }
 
         $cost = $this->non_negative_float($row['cost'] ?? null) ?? 0.0;
-        if ($cost <= 0.0) {
-            return 0.0;
-        }
-
         $active_lanes = max(0, (int) ($row['active_lanes'] ?? 0));
         $direct_lanes = 0;
         if (!empty($row['direct_home'])) {
@@ -1752,9 +1761,21 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             $lane_fee = $cost / (float) $active_lanes;
         }
 
-        $waived = ($direct_lanes < 1)
-            ? $cost
-            : min($cost, max(0.0, (float) ($lane_fee ?? 0.0)));
+        // Legacy v3 plans recorded the inbound lane fee but omitted it from row
+        // cost. Mark that estimate waived without subtracting a direct lane.
+        if ($dealer_inbound_omitted_from_cost) {
+            $waived = max(0.0, (float) ($lane_fee ?? 0.0));
+            $remaining_cost = $cost;
+        } else {
+            if ($cost <= 0.0) {
+                return 0.0;
+            }
+
+            $waived = ($direct_lanes < 1)
+                ? $cost
+                : min($cost, max(0.0, (float) ($lane_fee ?? 0.0)));
+            $remaining_cost = max(0.0, $cost - $waived);
+        }
 
         if ($waived <= 0.0) {
             return 0.0;
@@ -1762,7 +1783,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
 
         $row['cost_before_dealer_batch_free_inbound'] = $this->money4($cost);
         $row['dealer_inbound_cost_waived'] = $this->money4($waived);
-        $row['cost'] = $this->money4(max(0.0, $cost - $waived));
+        $row['cost'] = $this->money4($remaining_cost);
         $row['dealer_batch_free_inbound_shipping_applied'] = true;
         $row['dealer_batch_free_inbound_shipping_po'] = $po;
         $row['dealer_batch_free_inbound_shipping_batch_kind'] = $batch_kind;
