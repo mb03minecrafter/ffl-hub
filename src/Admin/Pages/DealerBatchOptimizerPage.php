@@ -105,7 +105,7 @@ final class DealerBatchOptimizerPage
                     </tr>
                     <tr>
                         <td><strong><?php esc_html_e('Dispatch time (Central)', 'ffl-hub'); ?></strong></td>
-                        <td><?php esc_html_e('The weekday scheduled dispatch window in America/Chicago time. Dealer-batch rows are held on Saturdays and Sundays. Force flush can bypass the clock on a weekday, but not the weekend hold.', 'ffl-hub'); ?></td>
+                        <td><?php esc_html_e('The scheduled dispatch window in America/Chicago time. Automated runs are held on Saturdays and Sundays; an explicit force flush bypasses both the clock and weekend hold.', 'ffl-hub'); ?></td>
                     </tr>
                     <tr>
                         <td><strong><?php esc_html_e('Low stock threshold', 'ffl-hub'); ?></strong></td>
@@ -121,7 +121,7 @@ final class DealerBatchOptimizerPage
                     </tr>
                     <tr>
                         <td><strong><?php esc_html_e('Force flush token', 'ffl-hub'); ?></strong></td>
-                        <td><?php esc_html_e('Requests a one-pass force flush. Each dealer-batch distributor can consume the token once, which lets all batch distributors flush without needing separate per-distributor force flags. Weekend hold still applies.', 'ffl-hub'); ?></td>
+                        <td><?php esc_html_e('Requests a one-pass force flush. Each dealer-batch distributor can consume the token once, selecting queued rows regardless of future run time and bypassing the dispatch clock and weekend hold.', 'ffl-hub'); ?></td>
                     </tr>
                     <tr>
                         <td><strong><?php esc_html_e('Free shipping threshold', 'ffl-hub'); ?></strong></td>
@@ -156,7 +156,7 @@ final class DealerBatchOptimizerPage
             </p>
             <p>
                 <strong><?php esc_html_e('Force Flush All Dealer Batches', 'ffl-hub'); ?></strong>
-                <?php esc_html_e('sets the shared force-flush token and schedules each dealer-batch distributor cron. A single shared optimizer preflight runs first, then each distributor batch places whatever rows belong to that distributor after the final refetch.', 'ffl-hub'); ?>
+                <?php esc_html_e('sets the shared force-flush token and schedules each dealer-batch distributor cron. It bypasses future run times, the dispatch clock, and the weekend hold. A single shared optimizer preflight runs first, then each distributor batch places whatever rows belong to that distributor after the final refetch.', 'ffl-hub'); ?>
             </p>
         </div>
         <?php

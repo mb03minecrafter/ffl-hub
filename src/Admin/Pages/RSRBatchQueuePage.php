@@ -186,9 +186,6 @@ final class RSRBatchQueuePage
         $msg = $scheduled
             ? __('RSR force flush enabled; only its batch cron was scheduled.', 'ffl-hub')
             : __('RSR force flush enabled; only its batch cron was triggered.', 'ffl-hub');
-        if ($this->is_weekend_hold_active()) {
-            $msg = __('Force flush enabled. Weekend hold is active, so queued dealer-batch rows will wait until the next weekday dispatch time.', 'ffl-hub');
-        }
         $this->redirect_with_notice('success', $msg);
     }
 
@@ -277,7 +274,7 @@ final class RSRBatchQueuePage
                 <?php echo esc_html((string) ((int) ($settings['max_rows_per_run'] ?? self::DEFAULT_MAX_ROWS_PER_RUN))); ?>
             </p>
             <p class="description">
-                <?php esc_html_e('Dealer batch placement is held on Saturdays and Sundays for every batch-enabled distributor.', 'ffl-hub'); ?>
+                <?php esc_html_e('Automated dealer batch placement is held on Saturdays and Sundays. An explicit force flush bypasses this timing hold.', 'ffl-hub'); ?>
             </p>
             <p>
                 <a class="button button-secondary" href="<?php echo esc_url($settings_url); ?>">
@@ -302,7 +299,7 @@ final class RSRBatchQueuePage
                     <?php
                     echo esc_html(
                         sprintf(
-                            __('Dealer-batch rows will not be placed again until %s.', 'ffl-hub'),
+                            __('Automatic dealer-batch placement waits until %s; the force button below bypasses this hold.', 'ffl-hub'),
                             (string) ($settings['next_allowed_dispatch_label'] ?? '')
                         )
                     );
@@ -316,10 +313,7 @@ final class RSRBatchQueuePage
                 <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
                 <input type="hidden" name="fflhub_rsr_batch_action" value="<?php echo esc_attr(self::FORM_ACTION_FORCE_RUN); ?>" />
                 <?php
-                $button_label = !empty($settings['weekend_hold_active'])
-                    ? __('Force RSR Batch at Next Weekday Window', 'ffl-hub')
-                    : __('Force RSR Batch + Run Now', 'ffl-hub');
-                submit_button($button_label, 'secondary', '', false);
+                submit_button(__('Force RSR Batch + Run Now', 'ffl-hub'), 'secondary', '', false);
                 ?>
             </form>
         </section>
@@ -825,8 +819,8 @@ final class RSRBatchQueuePage
             <ul style="list-style:disc;margin-left:18px;">
                 <li><?php esc_html_e('Batch mode controls whether eligible RSR dealer rows are queued as batch_pending for grouped placement.', 'ffl-hub'); ?></li>
                 <li><?php echo esc_html(sprintf(__('Dispatch time is %s Central time on weekdays. Rows wait until that window unless force flush is enabled.', 'ffl-hub'), $dispatch_time)); ?></li>
-                <li><?php esc_html_e('Saturday and Sunday dealer-batch placement is blocked for every batch-enabled distributor.', 'ffl-hub'); ?></li>
-                <li><?php esc_html_e('Force RSR Batch + Run Now sets a one-time RSR-only flag and schedules only the RSR batch cron. It can bypass the weekday clock, but not the weekend hold.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Saturday and Sunday automated dealer-batch placement is blocked for every batch-enabled distributor.', 'ffl-hub'); ?></li>
+                <li><?php esc_html_e('Force RSR Batch + Run Now selects queued RSR rows, up to the configured per-run limit, and bypasses future run times, the dispatch clock, and the weekend hold. Order and validation safety checks still apply.', 'ffl-hub'); ?></li>
                 <li><?php echo esc_html(sprintf(__('Retry Delay (%d sec) and Max Rows Per Run (%d) bound how aggressively each cron run processes queue entries.', 'ffl-hub'), $retry_delay, $max_rows)); ?></li>
                 <li><?php esc_html_e('The queue tables above show both aggregated UPC demand and raw per-line entries so you can audit exactly what will be sent.', 'ffl-hub'); ?></li>
             </ul>

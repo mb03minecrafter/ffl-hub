@@ -565,13 +565,15 @@ final class OrderPlacementJobsRepository
      * @param string                  $dist_id
      * @param string                  $now_mysql_utc
      * @param int                     $limit
+     * @param bool                    $ignore_schedule Include future-scheduled rows for an operator force flush.
      * @return OrderPlacementJobRow[]
      */
     public static function find_jobs_for_dealer_batch_processing(
         OrderPlacementJobsTable $jobs_table,
         string $dist_id,
         string $now_mysql_utc,
-        int $limit
+        int $limit,
+        bool $ignore_schedule = false
     ): array {
         global $wpdb;
 
@@ -587,6 +589,18 @@ final class OrderPlacementJobsRepository
         }
         $lane = OrderPlacementKeysUtil::LANE_DEALER_FULFILLED;
         $status = OrderPlacementKeys::JOB_STATUS_BATCH_PENDING;
+        $schedule_where = $ignore_schedule
+            ? ''
+            : "AND (
+                    next_run_at IS NULL
+                    OR next_run_at = '0000-00-00 00:00:00'
+                    OR next_run_at <= %s
+                )";
+        $prepare_args = [$dist_id, $lane, $status];
+        if (!$ignore_schedule) {
+            $prepare_args[] = (string) $now_mysql_utc;
+        }
+        $prepare_args[] = $limit;
 
         $sql = $wpdb->prepare(
             "
@@ -605,11 +619,7 @@ final class OrderPlacementJobsRepository
                 dist_id = %s
                 AND lane = %s
                 AND status = %s
-                AND (
-                    next_run_at IS NULL
-                    OR next_run_at = '0000-00-00 00:00:00'
-                    OR next_run_at <= %s
-                )
+                {$schedule_where}
             ORDER BY
                 CASE
                     WHEN next_run_at IS NULL OR next_run_at = '0000-00-00 00:00:00'
@@ -619,11 +629,7 @@ final class OrderPlacementJobsRepository
                 id ASC
             LIMIT %d
             ",
-            $dist_id,
-            $lane,
-            $status,
-            (string) $now_mysql_utc,
-            $limit
+            ...$prepare_args
         );
 
         $rows = $wpdb->get_results($sql, ARRAY_A);
@@ -652,13 +658,15 @@ final class OrderPlacementJobsRepository
      * @param string                  $dist_id
      * @param string                  $now_mysql_utc
      * @param int                     $limit
+     * @param bool                    $ignore_schedule Include future-scheduled rows for an operator force flush.
      * @return OrderPlacementJobRow[]
      */
     public static function find_jobs_for_ca_relay_batch_processing(
         OrderPlacementJobsTable $jobs_table,
         string $dist_id,
         string $now_mysql_utc,
-        int $limit
+        int $limit,
+        bool $ignore_schedule = false
     ): array {
         global $wpdb;
 
@@ -675,6 +683,18 @@ final class OrderPlacementJobsRepository
 
         $lane = OrderPlacementKeysUtil::LANE_DIRECT_SHIP_NON_FFL;
         $status = OrderPlacementKeys::JOB_STATUS_BATCH_PENDING;
+        $schedule_where = $ignore_schedule
+            ? ''
+            : "AND (
+                    next_run_at IS NULL
+                    OR next_run_at = '0000-00-00 00:00:00'
+                    OR next_run_at <= %s
+                )";
+        $prepare_args = [$dist_id, $lane, $status, '%"ca_relay"%'];
+        if (!$ignore_schedule) {
+            $prepare_args[] = (string) $now_mysql_utc;
+        }
+        $prepare_args[] = $limit;
 
         $sql = $wpdb->prepare(
             "
@@ -694,11 +714,7 @@ final class OrderPlacementJobsRepository
                 AND lane = %s
                 AND status = %s
                 AND payload_json LIKE %s
-                AND (
-                    next_run_at IS NULL
-                    OR next_run_at = '0000-00-00 00:00:00'
-                    OR next_run_at <= %s
-                )
+                {$schedule_where}
             ORDER BY
                 CASE
                     WHEN next_run_at IS NULL OR next_run_at = '0000-00-00 00:00:00'
@@ -708,12 +724,7 @@ final class OrderPlacementJobsRepository
                 id ASC
             LIMIT %d
             ",
-            $dist_id,
-            $lane,
-            $status,
-            '%"ca_relay"%',
-            (string) $now_mysql_utc,
-            $limit
+            ...$prepare_args
         );
 
         $rows = $wpdb->get_results($sql, ARRAY_A);

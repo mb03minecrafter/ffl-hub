@@ -171,8 +171,10 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             $low_threshold = $this->low_stock_threshold();
             $retry_delay = $this->retry_delay_seconds();
 
-            // Pull only rows that are batch-pending and due now (bounded by max rows).
-            $jobs = $this->find_jobs_for_batch_processing($now_mysql_utc, $max_rows);
+            // Normal polls only inspect rows whose schedule is due. An operator force
+            // flush selects every queued row for this distributor, including rows with
+            // a future next_run_at, while retaining order and validation safety checks.
+            $jobs = $this->find_jobs_for_batch_processing($now_mysql_utc, $max_rows, $force_flush);
 
             $this->log_ctx('run_start', [
                 'run_id' => $run_id,
@@ -346,14 +348,11 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                 return;
             }
 
-            // Weekdays plus the configured dispatch time are the hard gates for
-            // all automated aggregate dealer/relay placement. This intentionally
-            // runs before low-stock partitioning:
-            // a batch_pending row can be due in the DB before the dispatch window opens, but
-            // it must not place early unless an operator explicitly requested force flush.
-            // Force flush may bypass the clock on weekdays, but never the weekend hold.
-            $dispatch_block_reason = $this->current_dispatch_block_reason();
-            $dispatch_due = $dispatch_block_reason === '' && ($force_flush || $this->is_dispatch_window_open());
+            // Automated runs obey weekday and dispatch-time gates. An explicit operator
+            // force flush bypasses both calendar and clock gates for the selected batch.
+            $dispatch_block_reason = $force_flush ? '' : $this->current_dispatch_block_reason();
+            $dispatch_due = $force_flush
+                || ($dispatch_block_reason === '' && $this->is_dispatch_window_open());
             $run_stats['dispatch_due'] = $dispatch_due ? 1 : 0;
 
             if ($dispatch_block_reason !== '') {
@@ -2588,14 +2587,19 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     /**
      * @return OrderPlacementJobRow[]
      */
-    private function find_jobs_for_batch_processing(string $now_mysql_utc, int $limit): array
+    private function find_jobs_for_batch_processing(
+        string $now_mysql_utc,
+        int $limit,
+        bool $ignore_schedule = false
+    ): array
     {
         if ($this->is_ca_relay_mode()) {
             return OrderPlacementJobsRepository::find_jobs_for_ca_relay_batch_processing(
                 $this->jobs_table,
                 $this->get_distributor_id(),
                 $now_mysql_utc,
-                $limit
+                $limit,
+                $ignore_schedule
             );
         }
 
@@ -2603,7 +2607,8 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             $this->jobs_table,
             $this->get_distributor_id(),
             $now_mysql_utc,
-            $limit
+            $limit,
+            $ignore_schedule
         );
     }
 

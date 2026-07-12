@@ -200,7 +200,7 @@ final class RSRModule implements DistributorModuleInterface
             'dealer_batch_force_flush' => [
                 'label'       => 'Force Dealer Batch Flush On Next Run',
                 'type'        => 'checkbox',
-                'description' => 'If enabled, the next eligible batch cron run will flush queued dealer rows, then auto-reset this toggle. Weekend holds still apply.',
+                'description' => 'If enabled, the next batch cron run flushes queued dealer rows immediately, bypasses timing holds, and then auto-resets this toggle.',
                 'default'     => '0',
             ],
 
