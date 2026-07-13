@@ -119,7 +119,66 @@ final class FFLRepository
     }
 
     /**
-     * Bulk upsert rows parsed from ATF CSV.
+     * Atomically replace the complete FFL snapshot.
+     *
+     * The old rows remain visible to other connections until the replacement
+     * commits. Any delete, insert, or row-count failure rolls the transaction
+     * back so a failed import cannot leave the registry empty or partial.
+     *
+     * @param array<int,array<string,string>> $rows
+     */
+    public static function replace_all(FFLTable $table, array $rows, int $batch_size = 500): int
+    {
+        if (empty($rows)) {
+            return 0;
+        }
+
+        global $wpdb;
+
+        $table_name = $table->get_table_name();
+        $expected    = count($rows);
+
+        if ($wpdb->query('START TRANSACTION') === false) {
+            throw new \RuntimeException('Could not start the FFL import transaction.');
+        }
+
+        try {
+            if ($wpdb->query("DELETE FROM {$table_name}") === false) {
+                throw new \RuntimeException('Could not clear the existing FFL snapshot: ' . (string) $wpdb->last_error);
+            }
+
+            $processed = self::bulk_upsert($table, $rows, $batch_size);
+            if ($processed !== $expected) {
+                throw new \RuntimeException(
+                    sprintf(
+                        'FFL snapshot insert was incomplete: expected %d rows, processed %d. %s',
+                        $expected,
+                        $processed,
+                        (string) $wpdb->last_error
+                    )
+                );
+            }
+
+            $stored = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}");
+            if ($stored !== $expected) {
+                throw new \RuntimeException(
+                    sprintf('FFL snapshot row count mismatch: expected %d rows, stored %d.', $expected, $stored)
+                );
+            }
+
+            if ($wpdb->query('COMMIT') === false) {
+                throw new \RuntimeException('Could not commit the FFL snapshot: ' . (string) $wpdb->last_error);
+            }
+
+            return $stored;
+        } catch (\Throwable $e) {
+            $wpdb->query('ROLLBACK');
+            throw $e;
+        }
+    }
+
+    /**
+     * Bulk upsert normalized rows parsed from an ATF export.
      *
      * Expected keys per row (12 columns):
      * - ffl_number, ffl_expiration, license_name

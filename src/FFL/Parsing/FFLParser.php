@@ -11,13 +11,36 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Pure parser for the ATF FFL export (CSV).
+ * Pure parser for the ATF FFL exports.
  *
- * Output:
- * - array<int, array<string,string>> keyed to match DB columns.
+ * Supports the header-based CSV export and ATF's 323-character fixed-width
+ * TXT export. Both formats produce the same normalized database rows.
  */
 final class FFLParser
 {
+    private const FIXED_WIDTH_REQUIRED_LENGTH = 307;
+
+    /** @var array<string,array{0:int,1:int}> */
+    private const FIXED_WIDTH_FIELDS = [
+        'LIC_REGN'        => [0, 1],
+        'LIC_DIST'        => [1, 2],
+        'LIC_CNTY'        => [3, 3],
+        'LIC_TYPE'        => [6, 2],
+        'LIC_XPRDTE'      => [8, 2],
+        'LIC_SEQN'        => [10, 5],
+        'LICENSE_NAME'    => [15, 50],
+        'BUSINESS_NAME'   => [65, 50],
+        'PREMISE_STREET'  => [115, 50],
+        'PREMISE_CITY'    => [165, 30],
+        'PREMISE_STATE'   => [195, 2],
+        'PREMISE_ZIP_CODE' => [197, 9],
+        'MAIL_STREET'     => [206, 50],
+        'MAIL_CITY'       => [256, 30],
+        'MAIL_STATE'      => [286, 2],
+        'MAIL_ZIP_CODE'   => [288, 9],
+        'VOICE_PHONE'     => [297, 10],
+    ];
+
     private const LOG_PREFIX = '[FFLHUB][FFLParser]';
 
     private static function log(string $msg, array $ctx = []): void
@@ -29,50 +52,47 @@ final class FFLParser
         DebugLogUtil::log('FFLHUB_ADMIN_DEBUG', self::LOG_PREFIX, $msg);
     }
 
-    /**
-     * Parse ATF CSV file contents.
-     *
-     * Expected header (case-insensitive):
-     * LIC_REGN,LIC_DIST,LIC_CNTY,LIC_TYPE,LIC_XPRDTE,LIC_SEQN,LICENSE_NAME,BUSINESS_NAME,
-     * PREMISE_STREET,PREMISE_CITY,PREMISE_STATE,PREMISE_ZIP_CODE,
-     * MAIL_STREET,MAIL_CITY,MAIL_STATE,MAIL_ZIP_CODE,VOICE_PHONE
-     *
-     * @return array<int, array<string,string>> Rows keyed to match DB columns.
-     */
+    /** @return array<int,array<string,string>> */
     public function parse(string $txt): array
     {
         $txt = $this->strip_utf8_bom($txt);
 
         $lines = preg_split("/\r\n|\n|\r/", $txt) ?: [];
-        $rows  = [];
-
         if (empty($lines)) {
             self::log('parse(): no lines');
             return [];
         }
 
-        // Find first non-empty line as header.
-        $headerLine = '';
-        $startIndex = 0;
+        $first_line_index = null;
         foreach ($lines as $i => $line) {
-            $line = trim((string) $line);
-            if ($line === '') {
-                continue;
+            if (trim((string) $line) !== '') {
+                $first_line_index = (int) $i;
+                break;
             }
-            $headerLine = $line;
-            $startIndex = $i + 1;
-            break;
         }
 
-        if ($headerLine === '') {
-            self::log('parse(): header missing (all empty)');
+        if ($first_line_index === null) {
+            self::log('parse(): no non-empty records');
             return [];
         }
 
-        $header = str_getcsv($headerLine, ',', '"', '\\');
+        $first_line = (string) $lines[$first_line_index];
+        if ($this->looks_like_fixed_width_record($first_line)) {
+            return $this->parse_fixed_width($lines);
+        }
+
+        return $this->parse_csv($lines, $first_line_index);
+    }
+
+    /**
+     * @param string[] $lines
+     * @return array<int,array<string,string>>
+     */
+    private function parse_csv(array $lines, int $header_index): array
+    {
+        $header = str_getcsv(trim((string) $lines[$header_index]), ',', '"', '\\');
         $header = array_map(static fn($h) => strtoupper(trim((string) $h)), $header);
 
-        // Build name->index map.
         $idx = [];
         foreach ($header as $i => $name) {
             if ($name !== '') {
@@ -101,19 +121,21 @@ final class FFLParser
 
         $missing = array_values(array_filter($required, static fn($k) => !isset($idx[$k])));
         if (!empty($missing)) {
-            self::log('parse(): missing required header columns', [
+            self::log('parse_csv(): missing required header columns', [
                 'missing' => $missing,
                 'header'  => $header,
             ]);
             return [];
         }
 
+        $rows           = [];
         $accepted       = 0;
         $skipped_empty  = 0;
         $skipped_short  = 0;
         $skipped_sanity = 0;
 
-        for ($i = $startIndex; $i < count($lines); $i++) {
+        $line_count = count($lines);
+        for ($i = $header_index + 1; $i < $line_count; $i++) {
             $line = trim((string) $lines[$i]);
             if ($line === '') {
                 $skipped_empty++;
@@ -134,84 +156,22 @@ final class FFLParser
                 return trim((string) ($cols[$pos] ?? ''));
             };
 
-            $lic_regn   = $get($cols, $idx, 'LIC_REGN');
-            $lic_dist   = $get($cols, $idx, 'LIC_DIST');
-            $lic_cnty   = $get($cols, $idx, 'LIC_CNTY');
-            $lic_type   = $get($cols, $idx, 'LIC_TYPE');
-            $lic_xprdte = $get($cols, $idx, 'LIC_XPRDTE'); // <-- 2-char code like "7F"
-            $lic_seqn   = $get($cols, $idx, 'LIC_SEQN');
+            $source = [];
+            foreach ($required as $field) {
+                $source[$field] = $get($cols, $idx, $field);
+            }
 
-            $license_name   = $get($cols, $idx, 'LICENSE_NAME');
-
-            $premise_street = $get($cols, $idx, 'PREMISE_STREET');
-            $premise_city   = $get($cols, $idx, 'PREMISE_CITY');
-            $premise_state  = strtoupper($get($cols, $idx, 'PREMISE_STATE'));
-            $premise_zip    = $get($cols, $idx, 'PREMISE_ZIP_CODE');
-
-            $mail_street    = $get($cols, $idx, 'MAIL_STREET');
-            $mail_city      = $get($cols, $idx, 'MAIL_CITY');
-            $mail_state     = strtoupper($get($cols, $idx, 'MAIL_STATE'));
-            $mail_zip       = $get($cols, $idx, 'MAIL_ZIP_CODE');
-
-            $voice_phone    = $get($cols, $idx, 'VOICE_PHONE');
-
-            if (
-                $license_name === '' ||
-                $premise_street === '' ||
-                $premise_city === '' ||
-                $premise_state === ''
-            ) {
+            $row = $this->normalize_row($source);
+            if ($row === null) {
                 $skipped_sanity++;
                 continue;
             }
 
-            $premise_zip = preg_replace('/\s+/', '', $premise_zip) ?? '';
-            $mail_zip    = preg_replace('/\s+/', '', $mail_zip) ?? '';
-
-            // Require all 6 parts for FFL number.
-            $ffl_number_parts = array_map('trim', [
-                $lic_regn,
-                $lic_dist,
-                $lic_cnty,
-                $lic_type,
-                $lic_xprdte,
-                $lic_seqn,
-            ]);
-
-            $ffl_number_parts = array_values(array_filter(
-                $ffl_number_parts,
-                static fn(string $v): bool => $v !== ''
-            ));
-
-            if (count($ffl_number_parts) < 6) {
-                $skipped_sanity++;
-                continue;
-            }
-
-            $ffl_number = implode('-', $ffl_number_parts);
-
-            // Convert ATF expiration CODE -> real date string (YYYY-MM-DD) for DB DATE column.
-            $ffl_expiration = $this->normalize_atf_expiration($lic_xprdte);
-
-            $rows[] = [
-                'ffl_number'     => $ffl_number,
-                'ffl_expiration' => $ffl_expiration, // '' allowed (DATE NULL)
-                'license_name'   => $license_name,
-                'premise_street' => $premise_street,
-                'premise_city'   => $premise_city,
-                'premise_state'  => $premise_state,
-                'premise_zip'    => $premise_zip,
-                'mail_street'    => $mail_street,
-                'mail_city'      => $mail_city,
-                'mail_state'     => $mail_state,
-                'mail_zip'       => $mail_zip,
-                'voice_phone'    => $voice_phone,
-            ];
-
+            $rows[] = $row;
             $accepted++;
         }
 
-        self::log('parse() summary', [
+        self::log('parse_csv() summary', [
             'accepted'       => $accepted,
             'rows_returned'  => count($rows),
             'skipped_empty'  => $skipped_empty,
@@ -220,6 +180,116 @@ final class FFLParser
         ]);
 
         return $rows;
+    }
+
+    /**
+     * @param string[] $lines
+     * @return array<int,array<string,string>>
+     */
+    private function parse_fixed_width(array $lines): array
+    {
+        $rows           = [];
+        $skipped_empty  = 0;
+        $skipped_short  = 0;
+        $skipped_sanity = 0;
+
+        foreach ($lines as $line) {
+            $line = (string) $line;
+            if (trim($line) === '') {
+                $skipped_empty++;
+                continue;
+            }
+
+            // The final 16 characters are optional ATF date fields that are
+            // not stored by the current FFL schema.
+            if (strlen($line) < self::FIXED_WIDTH_REQUIRED_LENGTH) {
+                $skipped_short++;
+                continue;
+            }
+
+            $source = [];
+            foreach (self::FIXED_WIDTH_FIELDS as $field => [$offset, $length]) {
+                $source[$field] = trim(substr($line, $offset, $length));
+            }
+
+            $row = $this->normalize_row($source);
+            if ($row === null) {
+                $skipped_sanity++;
+                continue;
+            }
+
+            $rows[] = $row;
+        }
+
+        self::log('parse_fixed_width() summary', [
+            'accepted'       => count($rows),
+            'rows_returned'  => count($rows),
+            'skipped_empty'  => $skipped_empty,
+            'skipped_short'  => $skipped_short,
+            'skipped_sanity' => $skipped_sanity,
+        ]);
+
+        return $rows;
+    }
+
+    private function looks_like_fixed_width_record(string $line): bool
+    {
+        if (strlen($line) < self::FIXED_WIDTH_REQUIRED_LENGTH) {
+            return false;
+        }
+
+        return preg_match('/^\d{9}[A-HJ-M]\d{5}/', $line) === 1;
+    }
+
+    /**
+     * @param array<string,string> $source
+     * @return array<string,string>|null
+     */
+    private function normalize_row(array $source): ?array
+    {
+        $get = static fn(string $field): string => trim((string) ($source[$field] ?? ''));
+
+        $license_name   = $get('LICENSE_NAME');
+        $premise_street = $get('PREMISE_STREET');
+        $premise_city   = $get('PREMISE_CITY');
+        $premise_state  = strtoupper($get('PREMISE_STATE'));
+
+        if ($license_name === '' || $premise_street === '' || $premise_city === '' || $premise_state === '') {
+            return null;
+        }
+
+        $ffl_number_parts = [
+            $get('LIC_REGN'),
+            $get('LIC_DIST'),
+            $get('LIC_CNTY'),
+            $get('LIC_TYPE'),
+            $get('LIC_XPRDTE'),
+            $get('LIC_SEQN'),
+        ];
+
+        foreach ($ffl_number_parts as $part) {
+            if ($part === '') {
+                return null;
+            }
+        }
+
+        $premise_zip = preg_replace('/\s+/', '', $get('PREMISE_ZIP_CODE')) ?? '';
+        $mail_zip    = preg_replace('/\s+/', '', $get('MAIL_ZIP_CODE')) ?? '';
+
+        return [
+            'ffl_number'     => implode('-', $ffl_number_parts),
+            'ffl_expiration' => $this->normalize_atf_expiration($get('LIC_XPRDTE')),
+            'license_name'   => $license_name,
+            'premise_street' => $premise_street,
+            'premise_city'   => $premise_city,
+            'premise_state'  => $premise_state,
+            'premise_zip'    => $premise_zip,
+            'mail_street'    => $get('MAIL_STREET'),
+            'mail_city'      => $get('MAIL_CITY'),
+            'mail_state'     => strtoupper($get('MAIL_STATE')),
+            'mail_zip'       => $mail_zip,
+            'voice_phone'    => $get('VOICE_PHONE'),
+        ];
     }
 
     private function strip_utf8_bom(string $s): string

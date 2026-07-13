@@ -20,6 +20,7 @@ final class FFLImporterPage
     private const FORM_ACTION   = 'fflhub_import_ffls';
     private const NONCE_ACTION  = 'fflhub_import_ffls';
     private const NONCE_NAME    = 'fflhub_import_ffls_nonce';
+    private const MIN_COMPLETE_FFL_ROWS = 50000;
 
     // -----------------------------
     // DEBUG LOGGING (no behavior changes)
@@ -90,15 +91,15 @@ final class FFLImporterPage
             <h1>FFL Hub - Import ATF FFL List</h1>
 
             <p>
-                Step 1: Download the latest <strong>Complete Federal Firearms Listings</strong> CSV file
+                Step 1: Download the latest <strong>Complete Federal Firearms Listings</strong> CSV or TXT file
                 from the ATF website: https://www.atf.gov/firearms/tools-and-services-firearms-industry/federal-firearms-listings<br>
-                Step 2: Upload that CSV file here to populate/update the FFL database.
+                Step 2: Upload that file here to replace the FFL database with the current complete list.
             </p>
 
             <?php if ($message === 'success') : ?>
                 <div class="notice notice-success">
                     <p>
-                        Imported/updated <strong><?php echo esc_html($imported_rows); ?></strong> FFL records.
+                        Replaced the registry with <strong><?php echo esc_html($imported_rows); ?></strong> current FFL records.
                     </p>
                 </div>
             <?php elseif ($message === 'error') : ?>
@@ -109,7 +110,7 @@ final class FFLImporterPage
 
             <hr>
 
-            <h2>Upload ATF CSV File</h2>
+            <h2>Upload ATF FFL File</h2>
             <form
                 method="post"
                 enctype="multipart/form-data"
@@ -120,7 +121,7 @@ final class FFLImporterPage
 
                 <table class="form-table" role="presentation">
                     <tr>
-                        <th scope="row"><label for="fflhub_csv_file">ATF CSV file</label></th>
+                        <th scope="row"><label for="fflhub_csv_file">ATF CSV or TXT file</label></th>
                         <td>
                             <input
                                 type="file"
@@ -129,7 +130,7 @@ final class FFLImporterPage
                                 accept=".csv,.txt"
                                 required>
                             <p class="description">
-                                Upload the CSV file you downloaded from the ATF website.
+                                Upload the header-based CSV or fixed-width TXT file downloaded from the ATF website.
                             </p>
                         </td>
                     </tr>
@@ -278,7 +279,7 @@ final class FFLImporterPage
             'head'  => substr($contents, 0, 80),
         ]);
 
-        $imported_count = $this->import_atf_txt((string) $contents);
+        $imported_count = $this->import_atf_file_contents((string) $contents);
 
         self::log('import complete', ['imported_count' => $imported_count]);
 
@@ -289,19 +290,19 @@ final class FFLImporterPage
         $this->redirect_with_result('success', $imported_count);
     }
 
-    protected function import_atf_txt(string $txt): int
+    protected function import_atf_file_contents(string $contents): int
     {
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
-        self::log('import_atf_txt() START', [
-            'txt_bytes' => strlen($txt),
+        self::log('import_atf_file_contents() START', [
+            'bytes' => strlen($contents),
         ]);
 
         try {
             $parser = new FFLParser();
-            $rows   = $parser->parse($txt);
+            $rows   = $parser->parse($contents);
 
             self::log('parse finished', [
                 'rows_count' => is_array($rows) ? count($rows) : -1,
@@ -312,6 +313,14 @@ final class FFLImporterPage
                 return 0;
             }
 
+            if (count($rows) < self::MIN_COMPLETE_FFL_ROWS) {
+                self::log('parsed row count below complete-list safety minimum', [
+                    'rows_count' => count($rows),
+                    'minimum'    => self::MIN_COMPLETE_FFL_ROWS,
+                ]);
+                return 0;
+            }
+
             // Useful sanity peek at shape (avoid logging whole row)
             $first = $rows[0] ?? null;
             if (is_array($first)) {
@@ -319,14 +328,14 @@ final class FFLImporterPage
             }
 
             $table_name = method_exists($this->table, 'get_table_name') ? $this->table->get_table_name() : '';
-            self::log('bulk_upsert begin', [
+            self::log('snapshot replacement begin', [
                 'table' => $table_name,
                 'batch' => 500,
             ]);
 
-            $result = FFLRepository::bulk_upsert($this->table, $rows, 500);
+            $result = FFLRepository::replace_all($this->table, $rows, 500);
 
-            self::log('bulk_upsert done', ['result' => $result]);
+            self::log('snapshot replacement done', ['result' => $result]);
 
             return (int) $result;
         } catch (\Throwable $e) {
