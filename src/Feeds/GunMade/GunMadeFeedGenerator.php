@@ -5,6 +5,7 @@ namespace FFLHub\Feeds\GunMade;
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
+use FFLHub\Shipping\CustomerShippingCostPolicy;
 use FFLHub\Util\DebugLogUtil;
 
 if (!defined('ABSPATH')) {
@@ -177,6 +178,7 @@ final class GunMadeFeedGenerator
                 CAST(ps.effective_map_price AS CHAR) AS map_price,
                 CAST(COALESCE(ps.map_applicable, 0) AS CHAR) AS map_applicable,
                 ps.map_visibility_policy,
+                ps.pricing_mode,
                 CAST(ps.shipping_cost AS CHAR) AS shipping_cost,
                 CAST(ps.estimated_usps_shipping_cost AS CHAR) AS estimated_usps_shipping_cost,
                 CAST(ps.landed_cost AS CHAR) AS landed_cost,
@@ -396,7 +398,7 @@ final class GunMadeFeedGenerator
         $shipping_costs = $this->estimate_shipping_costs_for_row($row);
         $shipping_cost_total = (float) ($shipping_costs['economic'] ?? 0.0);
         $customer_chargeable_shipping = (float) ($shipping_costs['customer_chargeable'] ?? $shipping_cost_total);
-        if ($shipping_cost_total <= 0.0) {
+        if ($customer_chargeable_shipping <= 0.0) {
             return 0.0;
         }
 
@@ -413,12 +415,9 @@ final class GunMadeFeedGenerator
         if ($free_threshold > 0.0 && $shipping_cost_total <= ($free_threshold + 0.0001)) {
             $customer_charge = 0.0;
         } else {
-            $charge_basis = $customer_chargeable_shipping > 0.0
-                ? $customer_chargeable_shipping
-                : $shipping_cost_total;
             $customer_charge = $fee_fraction >= 0.99
-                ? $charge_basis
-                : ($charge_basis / (1.0 - $fee_fraction));
+                ? $customer_chargeable_shipping
+                : ($customer_chargeable_shipping / (1.0 - $fee_fraction));
         }
 
         $shipping_settings = $this->shipping_method_settings_snapshot();
@@ -473,17 +472,12 @@ final class GunMadeFeedGenerator
             ],
         ], $use_product_state_usps_shipping);
 
-        $economic_cost = max(0.0, (float) ($plan['total_cost'] ?? 0.0));
-        $route = strtolower(trim((string) ($plan['assignments']['gunmade_line'] ?? 'direct_ship')));
-        $customer_chargeable = $economic_cost;
-        if ($use_product_state_usps_shipping && $route === 'dealer_fulfilled') {
-            $customer_chargeable = min($economic_cost, max(0.0, $estimated_usps_shipping));
-        }
-
-        return [
-            'economic' => $economic_cost,
-            'customer_chargeable' => $customer_chargeable,
-        ];
+        return CustomerShippingCostPolicy::single_line_costs(
+            $row,
+            $plan,
+            'gunmade_line',
+            $use_product_state_usps_shipping
+        );
     }
 
     private function quote_free_shipping_override_enabled(array $row): bool

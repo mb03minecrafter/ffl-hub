@@ -8,6 +8,7 @@ use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
 use FFLHub\Settings\Options;
+use FFLHub\Shipping\CustomerShippingCostPolicy;
 use FFLHub\Util\DebugLogUtil;
 use FFLHub\Woo\Emails\FFLHubQuoteOffer;
 use FFLHub\Woo\Emails\Models\QuoteOfferEmailContext;
@@ -812,8 +813,10 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             return true;
         }
 
-        $shipping_cost_total = $this->estimate_shipping_cost_total_for_quote_product($state_row);
-        if ($shipping_cost_total <= 0.0) {
+        $shipping_costs = $this->estimate_shipping_costs_for_quote_product($state_row);
+        $shipping_cost_total = max(0.0, (float) ($shipping_costs['economic'] ?? 0.0));
+        $customer_chargeable_shipping = max(0.0, (float) ($shipping_costs['customer_chargeable'] ?? 0.0));
+        if ($customer_chargeable_shipping <= 0.0) {
             return true;
         }
 
@@ -838,8 +841,8 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             $customer_charge = 0.0;
         } else {
             $customer_charge = ($f >= 0.99)
-                ? $shipping_cost_total
-                : ($shipping_cost_total / (1.0 - $f));
+                ? $customer_chargeable_shipping
+                : ($customer_chargeable_shipping / (1.0 - $f));
         }
 
         $shipping_settings = $this->shipping_method_settings_snapshot();
@@ -883,14 +886,17 @@ final class QuoteEmailJobsCronService extends AbstractCronService
     /**
      * @param array<string,mixed> $state_row
      */
-    private function estimate_shipping_cost_total_for_quote_product(array $state_row): float
+    private function estimate_shipping_costs_for_quote_product(array $state_row): array
     {
         $shipping_settings = $this->shipping_method_settings_snapshot();
         $fallback_ship = (float) ($shipping_settings['fallback_shipping'] ?? 15.0);
 
         $dist_id = strtolower(trim((string) ($state_row['distributor_id'] ?? '')));
         if ($dist_id === '') {
-            return max(0.0, $fallback_ship);
+            return [
+                'economic' => max(0.0, $fallback_ship),
+                'customer_chargeable' => max(0.0, $fallback_ship),
+            ];
         }
 
         $ffl_required = $this->to_boolish($state_row['ffl_required'] ?? null, false);
@@ -921,7 +927,12 @@ final class QuoteEmailJobsCronService extends AbstractCronService
             ],
         ], $use_product_state_usps_shipping);
 
-        return max(0.0, (float) ($plan['total_cost'] ?? 0.0));
+        return CustomerShippingCostPolicy::single_line_costs(
+            $state_row,
+            $plan,
+            'quote_line',
+            $use_product_state_usps_shipping
+        );
     }
 
     /**

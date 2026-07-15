@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) exit;
 
 class ShippingRegistrar
 {
-    private const SHIPPING_MODEL_VERSION = '4';
+    private const SHIPPING_MODEL_VERSION = '5';
 
     public static function init(): void
     {
