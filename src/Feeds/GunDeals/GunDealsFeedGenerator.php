@@ -21,6 +21,7 @@ final class GunDealsFeedGenerator
     private const COMPETITOR_FEE_LABEL = 'NO SALES TAX/FEES';
     private const PRICE_HIDE_EMAIL_FOR_QUOTE = 'Email Form for Best Price';
     private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price';
+    private const PRICE_HIDE_MAP = 'Map';
     private const MIN_PROFIT_AFTER_FREE_SHIPPING = 0.01;
     private const BATCH_SIZE = 250;
 
@@ -453,7 +454,8 @@ final class GunDealsFeedGenerator
         }
 
         if ($this->is_no_email_no_add_to_cart_policy_row($row)) {
-            return max(0.01, $actual_price - 1.00);
+            $discount_fraction = Options::get_gundeals_no_email_no_add_to_cart_discount_percent() / 100.0;
+            return max(0.01, $actual_price * (1.0 - $discount_fraction));
         }
 
         return $actual_price;
@@ -481,6 +483,10 @@ final class GunDealsFeedGenerator
         $policy = $this->normalize_map_policy($raw_policy);
         if ($policy === 'none') {
             return '';
+        }
+
+        if ($policy === Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART) {
+            return self::PRICE_HIDE_MAP;
         }
 
         if ($policy === Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE) {

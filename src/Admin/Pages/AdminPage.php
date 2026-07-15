@@ -1892,6 +1892,7 @@ class AdminPage
             'test_order_debug_enabled' => Options::get_test_order_debug_enabled() ? '1' : '0',
             'pretty_random_email_quotes_enabled' => Options::get_pretty_random_email_quotes_enabled() ? '1' : '0',
             'gundeals_feed_enabled' => Options::get_gundeals_feed_enabled() ? '1' : '0',
+            'gundeals_no_email_no_add_to_cart_discount_percent' => (string) Options::get_gundeals_no_email_no_add_to_cart_discount_percent(),
             'gunmade_feed_enabled' => Options::get_gunmade_feed_enabled() ? '1' : '0',
             'prefer_dropship_best_offers_enabled' => Options::get_prefer_dropship_best_offers_enabled() ? '1' : '0',
             'public_brand_name' => Options::get_public_brand_name(),
@@ -1965,6 +1966,10 @@ class AdminPage
         $test_order_debug_enabled = ((string) ($settings['test_order_debug_enabled'] ?? '0') === '1');
         $pretty_random_email_quotes_enabled = ((string) ($settings['pretty_random_email_quotes_enabled'] ?? '1') === '1');
         $gundeals_feed_enabled = ((string) ($settings['gundeals_feed_enabled'] ?? '1') === '1');
+        $gundeals_no_email_no_add_to_cart_discount_percent = (string) (
+            $settings['gundeals_no_email_no_add_to_cart_discount_percent']
+            ?? Options::default_gundeals_no_email_no_add_to_cart_discount_percent()
+        );
         $gunmade_feed_enabled = ((string) ($settings['gunmade_feed_enabled'] ?? '1') === '1');
         $prefer_dropship_best_offers_enabled = ((string) ($settings['prefer_dropship_best_offers_enabled'] ?? '1') === '1');
         $public_brand_name = (string) ($settings['public_brand_name'] ?? Options::default_public_brand_name());
@@ -2266,6 +2271,30 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'Enabled: generate the normal Gun.deals product feed. Disabled: generate a valid empty feed with zero offers.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_gundeals_no_email_no_add_to_cart_discount_percent"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Gun.deals hidden MAP reduction (%)', 'ffl-hub'); ?>
+                    </label>
+                    <input
+                        id="fflhub_gundeals_no_email_no_add_to_cart_discount_percent"
+                        name="fflhub_gundeals_no_email_no_add_to_cart_discount_percent"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="100"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($gundeals_no_email_no_add_to_cart_discount_percent); ?>" />
+                    <span class="fflhub-field-suffix">%</span>
+                    <p class="description">
+                        <?php esc_html_e(
+                            'For no-email/no-add-to-cart MAP products, reduce the MAP submitted to Gun.deals by this percentage and mark the feed price as hidden by MAP.',
                             'ffl-hub'
                         ); ?>
                     </p>

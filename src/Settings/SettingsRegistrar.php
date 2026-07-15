@@ -139,6 +139,16 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_GUNDEALS_NO_EMAIL_NO_ADD_TO_CART_DISCOUNT_PERCENT,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_percent_0_to_100_string'],
+                'default'           => (string) Options::default_gundeals_no_email_no_add_to_cart_discount_percent(),
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_GUNMADE_FEED_ENABLED,
             [
                 'type'              => 'string',
