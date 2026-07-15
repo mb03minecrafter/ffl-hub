@@ -19,6 +19,7 @@ use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthInvoicesClient;
 use FFLHub\Distributor\Services\SportsSouth\API\SportsSouthOrdersClient;
 use FFLHub\Distributor\Services\SportsSouth\SportsSouthAccessoriesOnlyPolicy;
+use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -31,6 +32,8 @@ final class DistributorSportsSouth extends DistributorBase
     private const FLAT_SHIPPING_COST = 7.95;
     private const DEBUG_FLAG = 'FFLHUB_CRON_DEBUG';
     private const LOG_PREFIX = '[FFLHub][SportsSouthDistributor]';
+    private const FFL_DOCUMENT_EMAIL = 'fulfillment@sportssouth.biz';
+    private const SHIP_INSTRUCTION_MAX_ATTEMPTS = 3;
 
     public function __construct(DistributorModuleInterface $module, $services = null)
     {
@@ -452,6 +455,21 @@ final class DistributorSportsSouth extends DistributorBase
             return $header;
         }
 
+        $firearm_fulfillment = null;
+        if ($lane === 'direct_ship_ffl') {
+            $firearm_fulfillment = $this->build_firearm_fulfillment_context($request);
+            if ($firearm_fulfillment instanceof DistributorOrderResult) {
+                $firearm_fulfillment->external_order_ids = $external_ids;
+                $this->profile('Sports South firearm fulfillment context failed', $t0, [
+                    'trace_id' => $trace_id,
+                    'lane' => $lane,
+                    'po' => $po,
+                    'result' => self::summarize_order_result($firearm_fulfillment),
+                ]);
+                return $firearm_fulfillment;
+            }
+        }
+
         $client = $this->make_orders_client(60);
         $endpoint = rtrim($this->get_orders_api_base_url(), '/');
         $this->log('Sports South header row prepared.', [
@@ -463,16 +481,37 @@ final class DistributorSportsSouth extends DistributorBase
         ]);
 
         if ($this->is_test_order_debug_enabled()) {
-            $result = $this->build_test_order_debug_block(
-                $lane,
-                $endpoint . '/AddHeader + /AddDetail + /Submit',
-                'POST',
-                'form',
-                $this->encode_debug_json_payload([
+            $debug_operations = [
+                'AddHeader' => $header,
+                'AddDetail' => $details,
+                'Submit' => ['OrderNumber' => '{AddHeaderResult}'],
+            ];
+            $debug_endpoint = $endpoint . '/AddHeader + /AddDetail + /Submit';
+
+            if (is_array($firearm_fulfillment)) {
+                $debug_operations = [
+                    'TransferDocumentsRequired' => [
+                        'FFL' => (string) $firearm_fulfillment['ffl'],
+                    ],
                     'AddHeader' => $header,
+                    'AddShipInstructions' => [
+                        'SystemOrderNumber' => '{AddHeaderResult}',
+                        'ShipInst1' => (string) $firearm_fulfillment['ship_inst_1'],
+                        'ShipInst2' => (string) $firearm_fulfillment['ship_inst_2'],
+                    ],
                     'AddDetail' => $details,
                     'Submit' => ['OrderNumber' => '{AddHeaderResult}'],
-                ]),
+                ];
+                $debug_endpoint = $endpoint
+                    . '/TransferDocumentsRequired + /AddHeader + /AddShipInstructions + /AddDetail + /Submit';
+            }
+
+            $result = $this->build_test_order_debug_block(
+                $lane,
+                $debug_endpoint,
+                'POST',
+                'form',
+                $this->encode_debug_json_payload($debug_operations),
                 [
                     'po' => $po,
                     'item_count' => count($details),
@@ -488,6 +527,70 @@ final class DistributorSportsSouth extends DistributorBase
             ]);
 
             return $result;
+        }
+
+        if (is_array($firearm_fulfillment)) {
+            $transferResp = $client->transfer_documents_required((string) $firearm_fulfillment['ffl']);
+            $this->log('Sports South TransferDocumentsRequired completed.', [
+                'trace_id' => $trace_id,
+                'lane' => $lane,
+                'po' => $po,
+                'ffl_tail4' => self::tail4((string) $firearm_fulfillment['ffl']),
+                'response' => self::summarize_api_response($transferResp),
+            ]);
+
+            if (empty($transferResp['ok'])) {
+                $failure = $this->classify_sports_south_failure(
+                    $transferResp,
+                    'Sports South TransferDocumentsRequired',
+                    [
+                        'lane' => $lane,
+                        'po' => $po,
+                        'ffl_tail4' => self::tail4((string) $firearm_fulfillment['ffl']),
+                    ],
+                    $external_ids
+                );
+                $this->profile('Sports South TransferDocumentsRequired failed', $t0, [
+                    'trace_id' => $trace_id,
+                    'lane' => $lane,
+                    'po' => $po,
+                    'result' => self::summarize_order_result($failure),
+                ]);
+                return $failure;
+            }
+
+            $decision = strtoupper(trim((string) ($transferResp['decision'] ?? '')));
+            if ($decision === 'N') {
+                return DistributorOrderResult::block_fatal(
+                    'Sports South firearm fulfillment: receiving dealer does not accept transfers.',
+                    [DistributorOrderResult::REASON_FATAL_RESTRICTED],
+                    [
+                        'lane' => $lane,
+                        'po' => $po,
+                        'ffl_tail4' => self::tail4((string) $firearm_fulfillment['ffl']),
+                        'transfer_decision' => $decision,
+                    ],
+                    (int) ($transferResp['status'] ?? 0),
+                    'TransferDocumentsRequired:N',
+                    $external_ids
+                );
+            }
+
+            if ($decision === 'E') {
+                return DistributorOrderResult::block_retryable(
+                    'Sports South firearm fulfillment preflight returned an error; no order header was created.',
+                    [DistributorOrderResult::REASON_RETRY_UPSTREAM],
+                    [
+                        'lane' => $lane,
+                        'po' => $po,
+                        'ffl_tail4' => self::tail4((string) $firearm_fulfillment['ffl']),
+                        'transfer_decision' => $decision,
+                    ],
+                    (int) ($transferResp['status'] ?? 0),
+                    'TransferDocumentsRequired:E',
+                    $external_ids
+                );
+            }
         }
 
         $headerResp = $client->add_header($header);
@@ -518,6 +621,42 @@ final class DistributorSportsSouth extends DistributorBase
             $external_ids[] = $ssOrderNumber;
         }
 
+        if (is_array($firearm_fulfillment)) {
+            $instructionsResp = $this->add_firearm_ship_instructions_with_retry(
+                $client,
+                $ssOrderNumber,
+                (string) $firearm_fulfillment['ship_inst_1'],
+                (string) $firearm_fulfillment['ship_inst_2'],
+                $trace_id,
+                $po
+            );
+
+            if (empty($instructionsResp['ok'])) {
+                $failure = $this->recover_open_order_failure(
+                    $client,
+                    $instructionsResp,
+                    'Sports South AddShipInstructions',
+                    $ssOrderNumber,
+                    [
+                        'lane' => $lane,
+                        'po' => $po,
+                        'ffl_tail4' => self::tail4((string) $firearm_fulfillment['ffl']),
+                        'instruction_attempts' => (int) ($instructionsResp['attempts'] ?? 0),
+                    ],
+                    $external_ids,
+                    true
+                );
+                $this->profile('Sports South AddShipInstructions failed', $t0, [
+                    'trace_id' => $trace_id,
+                    'lane' => $lane,
+                    'po' => $po,
+                    'sports_south_order_number' => $ssOrderNumber,
+                    'result' => self::summarize_order_result($failure),
+                ]);
+                return $failure;
+            }
+        }
+
         foreach ($details as $detail_index => $detail) {
             $detailResp = $client->add_detail($ssOrderNumber, $detail);
             $this->log('Sports South AddDetail completed.', [
@@ -530,13 +669,19 @@ final class DistributorSportsSouth extends DistributorBase
                 'response' => self::summarize_api_response($detailResp),
             ]);
             if (empty($detailResp['ok'])) {
-                $failure = $this->classify_sports_south_failure($detailResp, 'Sports South AddDetail', [
-                    'lane' => $lane,
-                    'po' => $po,
-                    'sports_south_order_number' => $ssOrderNumber,
-                    'item' => $this->summarize_detail_row($detail),
-                ], $external_ids);
-                $failure->external_order_ids = $external_ids;
+                $failure = $this->recover_open_order_failure(
+                    $client,
+                    $detailResp,
+                    'Sports South AddDetail',
+                    $ssOrderNumber,
+                    [
+                        'lane' => $lane,
+                        'po' => $po,
+                        'sports_south_order_number' => $ssOrderNumber,
+                        'item' => $this->summarize_detail_row($detail),
+                    ],
+                    $external_ids
+                );
                 $this->profile('Sports South AddDetail failed', $t0, [
                     'trace_id' => $trace_id,
                     'lane' => $lane,
@@ -763,19 +908,183 @@ final class DistributorSportsSouth extends DistributorBase
             );
         }
 
-        if (self::extract_digits($ship_to->phone) === '') {
+        if ($this->format_sports_south_phone($ship_to->phone) === '') {
             return DistributorOrderResult::block_fatal(
-                'Sports South fulfillment: ship-to phone is required.',
+                'Sports South fulfillment: ship-to phone must contain a valid 10-digit US phone number.',
                 [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
             );
         }
 
-        return array_merge($header, $this->build_ship_to_header_params($ship_to));
+        $attention = '';
+        if ($lane === 'direct_ship_ffl') {
+            $attention = trim((string) $request->ship_to_customer->name);
+            if ($attention === '') {
+                return DistributorOrderResult::block_fatal(
+                    'Sports South FFL fulfillment: customer name is required for ShipToAttn.',
+                    [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
+                );
+            }
+        }
+
+        return array_merge($header, $this->build_ship_to_header_params($ship_to, $attention));
     }
 
     /**
-     * Sports South accepts the FFL order through the regular order endpoint,
-     * but still requires the FFL paperwork/info to be emailed manually.
+     * Build the exact FFL and customer-phone instructions required by Sports
+     * South before any external order is created.
+     *
+     * @return array{ffl:string,customer_phone:string,ship_inst_1:string,ship_inst_2:string}|DistributorOrderResult
+     */
+    private function build_firearm_fulfillment_context(DistributorOrderRequest $request)
+    {
+        $ffl = FFLRowMapper::normalize_ffl_number((string) $request->receiving_ffl_number);
+        if ($ffl === '') {
+            return DistributorOrderResult::block_fatal(
+                'Sports South firearm fulfillment: receiving FFL number is missing or invalid.',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
+            );
+        }
+
+        $customer_phone = $this->format_sports_south_phone($request->ship_to_customer->phone);
+        if ($customer_phone === '') {
+            return DistributorOrderResult::block_fatal(
+                'Sports South firearm fulfillment: customer phone must contain a valid 10-digit US phone number.',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST]
+            );
+        }
+
+        return [
+            'ffl' => $ffl,
+            'customer_phone' => $customer_phone,
+            'ship_inst_1' => 'FFL # ' . $ffl,
+            'ship_inst_2' => 'PHONE # ' . $customer_phone,
+        ];
+    }
+
+    /**
+     * Sports South requires exactly ten phone digits. Accept a leading US
+     * country code, but reject incomplete or ambiguous values.
+     */
+    private function format_sports_south_phone(string $phone): string
+    {
+        $digits = self::extract_digits($phone);
+        if (strlen($digits) === 11 && substr($digits, 0, 1) === '1') {
+            $digits = substr($digits, 1);
+        }
+
+        return strlen($digits) === 10 ? $digits : '';
+    }
+
+    /**
+     * The fulfillment guide explicitly says to retry AddShipInstructions when
+     * it returns false. Keep retries inside this placement attempt so we do not
+     * create another AddHeader merely because the instruction call was flaky.
+     *
+     * @return array<string,mixed>
+     */
+    private function add_firearm_ship_instructions_with_retry(
+        SportsSouthOrdersClient $client,
+        string $systemOrderNumber,
+        string $shipInst1,
+        string $shipInst2,
+        string $traceId,
+        string $po
+    ): array {
+        $last_response = [];
+
+        for ($attempt = 1; $attempt <= self::SHIP_INSTRUCTION_MAX_ATTEMPTS; $attempt++) {
+            $last_response = $client->add_ship_instructions(
+                $systemOrderNumber,
+                $shipInst1,
+                $shipInst2
+            );
+            $last_response['attempts'] = $attempt;
+
+            $this->log('Sports South AddShipInstructions completed.', [
+                'trace_id' => $traceId,
+                'po' => $po,
+                'sports_south_order_number' => $systemOrderNumber,
+                'attempt' => $attempt,
+                'response' => self::summarize_api_response($last_response),
+            ]);
+
+            if (!empty($last_response['ok'])) {
+                return $last_response;
+            }
+
+            if ($attempt < self::SHIP_INSTRUCTION_MAX_ATTEMPTS) {
+                usleep(250000 * $attempt);
+            }
+        }
+
+        return $last_response;
+    }
+
+    /**
+     * Remove an unsubmitted header before returning a placement failure. A
+     * confirmed delete makes later retries safe; an unconfirmed delete stops
+     * automation and leaves the external order number for manual inspection.
+     *
+     * @param array<string,mixed> $failureResponse
+     * @param array<string,mixed> $details
+     * @param string[] $externalIds
+     */
+    private function recover_open_order_failure(
+        SportsSouthOrdersClient $client,
+        array $failureResponse,
+        string $context,
+        string $sportsSouthOrderNumber,
+        array $details,
+        array $externalIds,
+        bool $forceRetryable = false
+    ): DistributorOrderResult {
+        $delete_response = $client->delete_open_order($sportsSouthOrderNumber);
+        $this->log('Sports South DeleteOpenOrder completed after placement failure.', [
+            'context' => $context,
+            'sports_south_order_number' => $sportsSouthOrderNumber,
+            'response' => self::summarize_api_response($delete_response),
+        ]);
+
+        $details['open_order_cleanup'] = [
+            'attempted' => 1,
+            'deleted' => !empty($delete_response['ok']) ? 1 : 0,
+            'response' => self::summarize_api_response($delete_response),
+        ];
+
+        if (!empty($delete_response['ok'])) {
+            if ($forceRetryable) {
+                return DistributorOrderResult::block_retryable(
+                    $context . ' failed after retries; the unsubmitted Sports South order was deleted safely.',
+                    [DistributorOrderResult::REASON_RETRY_UPSTREAM],
+                    $details,
+                    (int) ($failureResponse['status'] ?? 0),
+                    trim((string) ($failureResponse['operation'] ?? $context)),
+                    $externalIds
+                );
+            }
+
+            return $this->classify_sports_south_failure(
+                $failureResponse,
+                $context,
+                $details,
+                $externalIds
+            );
+        }
+
+        return DistributorOrderResult::manual(
+            $context . ' failed and cleanup of the unsubmitted Sports South order could not be confirmed; automatic retry stopped to prevent a duplicate.',
+            [DistributorOrderResult::REASON_MANUAL_REQUIRED],
+            $details,
+            (int) ($failureResponse['status'] ?? 0),
+            'DeleteOpenOrder',
+            $externalIds
+        );
+    }
+
+    /**
+     * Sports South receives the FFL number electronically, but the license PDF
+     * still must be emailed separately. This internal notice supplies the exact
+     * recipient and message format without pretending we possess an attachment.
      *
      * @param array<int,array<string,string>> $details
      */
@@ -880,15 +1189,26 @@ final class DistributorSportsSouth extends DistributorBase
     ): string {
         $ffl = $request->ship_to_ffl;
         $customer = $request->ship_to_customer;
+        $formatted_ffl = FFLRowMapper::normalize_ffl_number((string) $request->receiving_ffl_number);
+        $ffl_contact = $ffl instanceof DistributorShipTo ? trim((string) $ffl->name) : '';
+        $ffl_phone = $ffl instanceof DistributorShipTo ? trim((string) $ffl->phone) : '';
+        $sports_south_subject = $this->get_customer_number() . ' - ' . $po;
+        $sports_south_body = ($ffl_contact !== '' ? $ffl_contact : 'FFL contact person')
+            . ' - '
+            . ($ffl_phone !== '' ? $ffl_phone : 'FFL phone number');
 
         $lines = [
             'Sports South FFL dropship order submitted.',
             '',
-            'Action required: Sports South requires the receiving FFL info/documentation to be emailed to them manually.',
+            'Action required: email a copy of the matching FFL within three business days.',
+            'To: ' . self::FFL_DOCUMENT_EMAIL,
+            'Subject: ' . $sports_south_subject,
+            'Body: ' . $sports_south_body,
+            'Attachment: Copy of the receiving FFL, preferably PDF.',
             '',
             'Merchant PO: ' . ($po !== '' ? $po : '-'),
             'Sports South Order Number: ' . ($sportsSouthOrderNumber !== '' ? $sportsSouthOrderNumber : '-'),
-            'Receiving FFL Number: ' . ($request->receiving_ffl_number !== '' ? $request->receiving_ffl_number : '-'),
+            'Receiving FFL Number: ' . ($formatted_ffl !== '' ? $formatted_ffl : '-'),
             '',
             'Receiving FFL:',
         ];
@@ -957,10 +1277,13 @@ final class DistributorSportsSouth extends DistributorBase
     /**
      * @return array<string,string>
      */
-    private function build_ship_to_header_params(DistributorShipTo $ship): array
+    private function build_ship_to_header_params(DistributorShipTo $ship, string $attention = ''): array
     {
         $name = trim((string) ($ship->name !== '' ? $ship->name : $ship->company));
-        $attn = trim((string) ($ship->company !== '' && $ship->company !== $name ? $ship->company : $ship->name));
+        $attn = trim($attention);
+        if ($attn === '') {
+            $attn = trim((string) ($ship->company !== '' && $ship->company !== $name ? $ship->company : $ship->name));
+        }
 
         return [
             'ShipToName' => self::truncate_string(self::normalize_payload_string($name), 40),
@@ -970,7 +1293,7 @@ final class DistributorSportsSouth extends DistributorBase
             'ShipToCity' => self::truncate_string(self::normalize_payload_string($ship->city), 30),
             'ShipToState' => self::format_us_state2_best_effort($ship->state),
             'ShipToZip' => self::format_us_zip5_best_effort($ship->zip),
-            'ShipToPhone' => self::truncate_string(self::extract_digits($ship->phone), 10),
+            'ShipToPhone' => $this->format_sports_south_phone($ship->phone),
         ];
     }
 

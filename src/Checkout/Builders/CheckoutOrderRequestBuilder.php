@@ -421,7 +421,8 @@ final class CheckoutOrderRequestBuilder
     public static function build_ship_to_ffl_or_null(
         FFLTable $ffl_table,
         string $ffl_number,
-        ?callable $debug = null
+        ?callable $debug = null,
+        bool $premise_only = false
     ): ?DistributorShipTo {
         $ffl_number = FFLRowMapper::normalize_ffl_number($ffl_number);
         if ($ffl_number === '') {
@@ -453,10 +454,28 @@ final class CheckoutOrderRequestBuilder
         $mail_state  = strtoupper(trim((string) ($mailing['state'] ?? '')));
         $mail_zip    = trim((string) ($mailing['zip'] ?? ''));
 
-        $addr1 = $prem_street !== '' ? $prem_street : $mail_street;
-        $city  = $prem_city !== '' ? $prem_city : $mail_city;
-        $state = preg_match('/^[A-Z]{2}$/', $prem_state) ? $prem_state : $mail_state;
-        $zip   = $prem_zip !== '' ? $prem_zip : $mail_zip;
+        $premise_complete = $prem_street !== ''
+            && $prem_city !== ''
+            && preg_match('/^[A-Z]{2}$/', $prem_state)
+            && $prem_zip !== '';
+
+        if ($premise_only && !$premise_complete) {
+            if (is_callable($debug)) {
+                $debug('build_ship_to_ffl: complete premises address required', [
+                    'ffl_number' => $ffl_number,
+                    'premise_street_present' => $prem_street !== '' ? 1 : 0,
+                    'premise_city_present' => $prem_city !== '' ? 1 : 0,
+                    'premise_state_valid' => preg_match('/^[A-Z]{2}$/', $prem_state) ? 1 : 0,
+                    'premise_zip_present' => $prem_zip !== '' ? 1 : 0,
+                ]);
+            }
+            return null;
+        }
+
+        $addr1 = $premise_only ? $prem_street : ($prem_street !== '' ? $prem_street : $mail_street);
+        $city  = $premise_only ? $prem_city : ($prem_city !== '' ? $prem_city : $mail_city);
+        $state = $premise_only ? $prem_state : (preg_match('/^[A-Z]{2}$/', $prem_state) ? $prem_state : $mail_state);
+        $zip   = $premise_only ? $prem_zip : ($prem_zip !== '' ? $prem_zip : $mail_zip);
 
         if ($addr1 === '' || $city === '' || !preg_match('/^[A-Z]{2}$/', $state) || $zip === '') {
             if (is_callable($debug)) {

@@ -139,7 +139,13 @@ final class OrderPlacementJobRunner
             $original_customer_name = trim((string) $ship_customer->name);
 
             // Resolve FFL ship-to (if needed).
-            [$ship_ffl, $receiving_ffl_number] = self::resolve_ship_to_ffl_if_needed($ffl_table, $order, $ffl_required);
+            [$ship_ffl, $receiving_ffl_number] = self::resolve_ship_to_ffl_if_needed(
+                $ffl_table,
+                $order,
+                $ffl_required,
+                $dist_id,
+                $lane
+            );
 
             $is_ca_relay = DealerBatchCronRegistry::is_ca_relay_batch_job($job);
             if ($is_ca_relay) {
@@ -324,8 +330,13 @@ final class OrderPlacementJobRunner
      * @return array{0:?DistributorShipTo,1:string}
      * @throws \RuntimeException
      */
-    private static function resolve_ship_to_ffl_if_needed(FFLTable $ffl_table, WC_Order $order, bool $ffl_required): array
-    {
+    private static function resolve_ship_to_ffl_if_needed(
+        FFLTable $ffl_table,
+        WC_Order $order,
+        bool $ffl_required,
+        string $dist_id,
+        string $lane
+    ): array {
         if (!$ffl_required) {
             return [null, ''];
         }
@@ -335,15 +346,22 @@ final class OrderPlacementJobRunner
             throw new \RuntimeException('Job contains FFL-required lines but missing receiving FFL number on order');
         }
 
+        $premise_only = strtolower(trim($dist_id)) === 'sports_south'
+            && strtolower(trim($lane)) === OrderPlacementKeysUtil::LANE_DIRECT_SHIP_FFL;
+
         $ship_ffl = CheckoutOrderRequestBuilder::build_ship_to_ffl_or_null(
             $ffl_table,
             $receiving_ffl_number,
             function (): void {
                 // silent
-            }
+            },
+            $premise_only
         );
 
         if (!($ship_ffl instanceof DistributorShipTo)) {
+            if ($premise_only) {
+                throw new \RuntimeException('Sports South firearm fulfillment requires a complete FFL premises address');
+            }
             throw new \RuntimeException('Job contains FFL-required lines but failed to resolve ship_to_ffl from DB');
         }
 

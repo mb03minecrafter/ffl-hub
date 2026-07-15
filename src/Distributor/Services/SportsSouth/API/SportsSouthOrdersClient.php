@@ -118,6 +118,52 @@ final class SportsSouthOrdersClient
     }
 
     /**
+     * Check whether Sports South will accept a firearm transfer for an FFL.
+     *
+     * A valid API response is one of Y (documents required), N (dealer does
+     * not accept transfers), or E (Sports South error). Business handling of
+     * those decisions belongs to the distributor integration.
+     *
+     * @return array<string,mixed>
+     */
+    public function transfer_documents_required(string $ffl): array
+    {
+        $resp = $this->post_operation('TransferDocumentsRequired', [
+            'FFL' => trim($ffl),
+        ]);
+        $decision = strtoupper(trim((string) ($resp['scalar'] ?? '')));
+        $ok = !empty($resp['ok']) && in_array($decision, ['Y', 'N', 'E'], true);
+
+        $error = (string) ($resp['error'] ?? '');
+        if (!$ok && $error === '') {
+            $error = 'Sports South TransferDocumentsRequired returned an invalid decision.';
+        }
+
+        return array_merge($resp, [
+            'ok' => $ok,
+            'decision' => $decision,
+            'error' => $error,
+        ]);
+    }
+
+    /**
+     * Add the required firearm-transfer instructions to an open order.
+     *
+     * @return array<string,mixed>
+     */
+    public function add_ship_instructions(
+        string $systemOrderNumber,
+        string $shipInst1,
+        string $shipInst2
+    ): array {
+        return $this->boolean_operation('AddShipInstructions', [
+            'SystemOrderNumber' => trim($systemOrderNumber),
+            'ShipInst1' => trim($shipInst1),
+            'ShipInst2' => trim($shipInst2),
+        ]);
+    }
+
+    /**
      * @param array<string,string> $params
      * @return array<string,mixed>
      */
@@ -134,6 +180,19 @@ final class SportsSouthOrdersClient
     public function submit(string $orderNumber): array
     {
         return $this->boolean_operation('Submit', [
+            'OrderNumber' => trim($orderNumber),
+        ]);
+    }
+
+    /**
+     * Delete an unsubmitted Sports South order so a later retry cannot create
+     * a duplicate alongside a partially built header.
+     *
+     * @return array<string,mixed>
+     */
+    public function delete_open_order(string $orderNumber): array
+    {
+        return $this->boolean_operation('DeleteOpenOrder', [
             'OrderNumber' => trim($orderNumber),
         ]);
     }
