@@ -38,7 +38,8 @@ final class BillHicksEdiFtpExchange
             return ['ok' => false, 'remote_path' => $remote_path, 'error' => 'Missing or invalid Bill Hicks FTP credentials.'];
         }
 
-        $ok = $client->upload_file($local_path, $remote_path, true);
+        // BHC watches for the final .txt upload; a .tmp upload followed by a rename may not trigger pickup.
+        $ok = $client->upload_file($local_path, $remote_path, false);
         $error = $ok ? '' : (string) ($client->get_last_error() ?: 'Bill Hicks EDI FTP upload failed.');
         $client->close();
 
