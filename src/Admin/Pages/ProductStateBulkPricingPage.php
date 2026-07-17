@@ -17,7 +17,7 @@ final class ProductStateBulkPricingPage
     private const PAGE_SLUG = 'fflhub-product-state-bulk-pricing';
     private const NONCE_ACTION = 'fflhub_product_state_bulk_pricing';
     private const NONCE_FIELD = 'fflhub_product_state_bulk_pricing_nonce';
-    private const FORM_ACTION = 'apply_fixed_profit_pricing';
+    private const FORM_ACTION = 'apply_bulk_pricing_controls';
     private const RESULT_TRANSIENT_PREFIX = 'fflhub_product_state_bulk_pricing_result_';
     private const PREVIEW_LIMIT = 100;
 
@@ -48,7 +48,7 @@ final class ProductStateBulkPricingPage
         $this->maybe_handle_post();
 
         $filters = $this->read_filters_from_request($_GET);
-        $fixed_profit = $this->read_fixed_profit_from_request($_GET, 5.0);
+        $pricing = $this->read_pricing_from_request($_GET);
         $apply_woo_now = $this->read_apply_woo_now_from_request($_GET, true);
         $brand_options = $this->brand_options();
         $map_policy_options = $this->map_policy_options();
@@ -63,9 +63,10 @@ final class ProductStateBulkPricingPage
             </p>
 
             <?php $this->render_result($result); ?>
-            <?php $this->render_filter_form($filters, $fixed_profit, $apply_woo_now, $brand_options, $map_policy_options, $match_count); ?>
+            <?php $this->render_filter_form($filters, $pricing, $apply_woo_now, $brand_options, $map_policy_options, $match_count); ?>
             <?php $this->render_preview_table($preview_rows, $match_count); ?>
             <?php $this->render_styles(); ?>
+            <?php $this->render_scripts(); ?>
         </div>
         <?php
     }
@@ -95,9 +96,9 @@ final class ProductStateBulkPricingPage
         }
 
         $filters = $this->read_filters_from_request($_POST);
-        $fixed_profit = $this->read_fixed_profit_from_request($_POST, 5.0);
+        $pricing = $this->read_pricing_from_request($_POST);
         $apply_woo_now = $this->read_apply_woo_now_from_request($_POST, true);
-        $result = $this->apply_fixed_profit($filters, $fixed_profit, $apply_woo_now);
+        $result = $this->apply_pricing_controls($filters, $pricing, $apply_woo_now);
         set_transient($this->result_transient_key(), $result, 5 * MINUTE_IN_SECONDS);
 
         $redirect_args = [
@@ -107,7 +108,8 @@ final class ProductStateBulkPricingPage
             'map_price_status' => $filters['map_price_status'],
             'dropship_status' => $filters['dropship_status'],
             'ffl_status' => $filters['ffl_status'],
-            'fixed_profit' => number_format($fixed_profit, 2, '.', ''),
+            'pricing_mode' => $pricing['mode'],
+            'pricing_value' => $pricing['value_input'],
             'apply_woo_now' => $apply_woo_now ? '1' : '0',
             'ran' => self::FORM_ACTION,
         ];
@@ -120,21 +122,23 @@ final class ProductStateBulkPricingPage
      * @param array<string,mixed> $filters
      * @return array<string,mixed>
      */
-    private function apply_fixed_profit(array $filters, float $fixed_profit, bool $apply_woo_now): array
+    private function apply_pricing_controls(array $filters, array $pricing, bool $apply_woo_now): array
     {
         global $wpdb;
 
         $started = microtime(true);
         $result = [
             'ok' => true,
-            'stage' => 'fixed_profit_apply',
+            'stage' => 'pricing_controls_apply',
             'brand_id' => $filters['brand_id'],
             'brand_label' => $this->brand_label((int) $filters['brand_id']),
             'map_policy' => $filters['map_policy'],
             'map_price_status' => $filters['map_price_status'],
             'dropship_status' => $filters['dropship_status'],
             'ffl_status' => $filters['ffl_status'],
-            'fixed_profit' => number_format($fixed_profit, 4, '.', ''),
+            'pricing_mode' => $pricing['mode'],
+            'pricing_mode_label' => $this->pricing_mode_label($pricing['mode']),
+            'pricing_value' => $pricing['value'] === null ? '' : number_format((float) $pricing['value'], 4, '.', ''),
             'matched_rows' => 0,
             'pricing_control_rows' => 0,
             'recalculated_rows' => 0,
@@ -158,29 +162,42 @@ final class ProductStateBulkPricingPage
             return $this->finish_result($result, $started);
         }
 
-        $fixed_profit = max(0.0, $fixed_profit);
+        $mode = $pricing['mode'];
+        $value = $pricing['value'];
+        if ($this->pricing_mode_requires_value($mode) && $value === null) {
+            $result['ok'] = false;
+            $result['errors'][] = 'The selected pricing mode requires a numeric value.';
+            return $this->finish_result($result, $started);
+        }
+
+        if ($mode === 'fixed_price' && (float) $value <= 0.0) {
+            $result['ok'] = false;
+            $result['errors'][] = 'Fixed Price mode requires a value greater than zero.';
+            return $this->finish_result($result, $started);
+        }
+
         $table = ProductStateStore::table_name();
         $result['matched_rows'] = $this->matching_count($filters);
 
         $where = $this->where_sql($filters, 'ps');
-        $profit_sql = number_format($fixed_profit, 4, '.', '');
+        $control_expr = $this->pricing_control_sql_for_mode($mode, $value);
 
         $t_controls = microtime(true);
         $control_sql = "
             UPDATE {$table} ps
             SET
-                ps.pricing_mode = 'fixed_profit',
-                ps.pricing_percent = NULL,
-                ps.pricing_fixed_price = NULL,
-                ps.pricing_fixed_profit = {$profit_sql},
+                ps.pricing_mode = '{$control_expr['mode']}',
+                ps.pricing_percent = {$control_expr['pricing_percent']},
+                ps.pricing_fixed_price = {$control_expr['pricing_fixed_price']},
+                ps.pricing_fixed_profit = {$control_expr['pricing_fixed_profit']},
                 ps.updated_at = NOW(),
                 ps.has_changed = 1
             WHERE {$where['sql']}
               AND NOT (
-                    ps.pricing_mode <=> 'fixed_profit'
-                AND ps.pricing_percent IS NULL
-                AND ps.pricing_fixed_price IS NULL
-                AND ps.pricing_fixed_profit <=> {$profit_sql}
+                    ps.pricing_mode <=> '{$control_expr['mode']}'
+                AND ps.pricing_percent <=> {$control_expr['pricing_percent']}
+                AND ps.pricing_fixed_price <=> {$control_expr['pricing_fixed_price']}
+                AND ps.pricing_fixed_profit <=> {$control_expr['pricing_fixed_profit']}
               )
         ";
         $control_sql = $this->prepare_sql($control_sql, $where['params']);
@@ -299,17 +316,77 @@ final class ProductStateBulkPricingPage
 
     /**
      * @param array<string,mixed> $source
+     * @return array{mode:string,value:?float,value_input:string}
      */
-    private function read_fixed_profit_from_request(array $source, float $default): float
+    private function read_pricing_from_request(array $source): array
     {
-        $raw = isset($source['fixed_profit'])
-            ? sanitize_text_field(wp_unslash((string) $source['fixed_profit']))
+        $mode = isset($source['pricing_mode'])
+            ? sanitize_text_field(wp_unslash((string) $source['pricing_mode']))
             : '';
-        if ($raw === '' || !is_numeric($raw)) {
-            return $default;
+
+        // Keep old fixed_profit URLs useful while the page moves to the
+        // generic pricing-control shape.
+        if ($mode === '' && isset($source['fixed_profit'])) {
+            $mode = 'fixed_profit';
         }
 
-        return max(0.0, (float) $raw);
+        if (!array_key_exists($mode, $this->pricing_mode_options())) {
+            $mode = 'fixed_profit';
+        }
+
+        $raw = isset($source['pricing_value'])
+            ? sanitize_text_field(wp_unslash((string) $source['pricing_value']))
+            : '';
+        if ($raw === '' && isset($source['fixed_profit'])) {
+            $raw = sanitize_text_field(wp_unslash((string) $source['fixed_profit']));
+        }
+
+        if ($raw === '' && $mode === 'fixed_profit') {
+            $raw = '5.00';
+        } elseif ($raw === '' && $mode === 'fixed_percent') {
+            $raw = number_format((float) Options::get_global_markup(), 2, '.', '');
+        }
+
+        $value = ($raw !== '' && is_numeric($raw)) ? max(0.0, (float) $raw) : null;
+
+        return [
+            'mode' => $mode,
+            'value' => $value,
+            'value_input' => $value === null ? '' : number_format($value, 2, '.', ''),
+        ];
+    }
+
+    private function pricing_mode_requires_value(string $mode): bool
+    {
+        return in_array($mode, ['fixed_percent', 'fixed_price', 'fixed_profit'], true);
+    }
+
+    /**
+     * @return array{mode:string,pricing_percent:string,pricing_fixed_price:string,pricing_fixed_profit:string}
+     */
+    private function pricing_control_sql_for_mode(string $mode, ?float $value): array
+    {
+        $mode = array_key_exists($mode, $this->pricing_mode_options()) ? $mode : 'fixed_profit';
+        $value_sql = $value === null ? 'NULL' : number_format(max(0.0, $value), 4, '.', '');
+
+        $columns = [
+            'mode' => esc_sql($mode),
+            'pricing_percent' => 'NULL',
+            'pricing_fixed_price' => 'NULL',
+            'pricing_fixed_profit' => 'NULL',
+        ];
+
+        if ($mode === 'global_percent') {
+            $columns['pricing_percent'] = number_format(max(0.0, (float) Options::get_global_markup()), 4, '.', '');
+        } elseif ($mode === 'fixed_percent') {
+            $columns['pricing_percent'] = $value_sql;
+        } elseif ($mode === 'fixed_price') {
+            $columns['pricing_fixed_price'] = $value_sql;
+        } elseif ($mode === 'fixed_profit') {
+            $columns['pricing_fixed_profit'] = $value_sql;
+        }
+
+        return $columns;
     }
 
     /**
@@ -645,8 +722,10 @@ final class ProductStateBulkPricingPage
      * @param array<int,string> $brand_options
      * @param array<string,string> $map_policy_options
      */
-    private function render_filter_form(array $filters, float $fixed_profit, bool $apply_woo_now, array $brand_options, array $map_policy_options, int $match_count): void
+    private function render_filter_form(array $filters, array $pricing, bool $apply_woo_now, array $brand_options, array $map_policy_options, int $match_count): void
     {
+        $mode = (string) ($pricing['mode'] ?? 'fixed_profit');
+        $value_input = (string) ($pricing['value_input'] ?? '');
         ?>
         <div class="fflhub-pricing-panel">
             <form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" class="fflhub-pricing-form">
@@ -709,8 +788,22 @@ final class ProductStateBulkPricingPage
                 </label>
 
                 <label>
-                    <span><?php esc_html_e('Fixed profit', 'ffl-hub'); ?></span>
-                    <input type="number" min="0" step="0.01" name="fixed_profit" value="<?php echo esc_attr(number_format($fixed_profit, 2, '.', '')); ?>" />
+                    <span><?php esc_html_e('Pricing mode', 'ffl-hub'); ?></span>
+                    <select name="pricing_mode" class="fflhub-pricing-mode-select">
+                        <?php foreach ($this->pricing_mode_options() as $value => $label) : ?>
+                            <option value="<?php echo esc_attr($value); ?>" <?php selected($mode, $value); ?>>
+                                <?php echo esc_html($label); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+
+                <label>
+                    <span><?php esc_html_e('Pricing value', 'ffl-hub'); ?></span>
+                    <input type="number" min="0" step="0.01" name="pricing_value" class="fflhub-pricing-value-input" value="<?php echo esc_attr($value_input); ?>" />
+                    <small class="fflhub-pricing-value-hint">
+                        <?php esc_html_e('Used by Fixed Percent, Fixed Price, and Fixed Profit. Global Percent uses the sitewide setting; MAP Price uses effective MAP.', 'ffl-hub'); ?>
+                    </small>
                 </label>
 
                 <label class="fflhub-pricing-check">
@@ -735,16 +828,17 @@ final class ProductStateBulkPricingPage
                 <input type="hidden" name="map_price_status" value="<?php echo esc_attr($filters['map_price_status']); ?>" />
                 <input type="hidden" name="dropship_status" value="<?php echo esc_attr($filters['dropship_status']); ?>" />
                 <input type="hidden" name="ffl_status" value="<?php echo esc_attr($filters['ffl_status']); ?>" />
-                <input type="hidden" name="fixed_profit" value="<?php echo esc_attr(number_format($fixed_profit, 2, '.', '')); ?>" />
+                <input type="hidden" name="pricing_mode" value="<?php echo esc_attr($mode); ?>" />
+                <input type="hidden" name="pricing_value" value="<?php echo esc_attr($value_input); ?>" />
                 <input type="hidden" name="apply_woo_now" value="<?php echo esc_attr($apply_woo_now ? '1' : '0'); ?>" />
                 <?php
                 $apply_attrs = [
-                    'onclick' => "return confirm('Apply fixed-profit pricing to the currently filtered product_state rows? This marks product_state rows changed but does not directly write Woo prices.');",
+                    'onclick' => "return confirm('Apply the selected pricing controls to the currently filtered product_state rows? This marks product_state rows changed and can save matching Woo products if enabled.');",
                 ];
                 if (!$this->has_active_filter($filters)) {
                     $apply_attrs['disabled'] = 'disabled';
                 }
-                submit_button(__('Apply Fixed Profit to Filtered Rows', 'ffl-hub'), 'primary', 'submit', false, $apply_attrs);
+                submit_button(__('Apply Pricing to Filtered Rows', 'ffl-hub'), 'primary', 'submit', false, $apply_attrs);
                 ?>
                 <?php if (!$this->has_active_filter($filters)) : ?>
                     <p class="description"><?php esc_html_e('Choose at least one filter before applying a bulk change.', 'ffl-hub'); ?></p>
@@ -919,7 +1013,8 @@ final class ProductStateBulkPricingPage
                 <li><?php echo esc_html(sprintf('MAP price filter: %s', $this->map_price_status_label((string) ($result['map_price_status'] ?? '')))); ?></li>
                 <li><?php echo esc_html(sprintf('Dropship filter: %s', $this->dropship_status_label((string) ($result['dropship_status'] ?? '')))); ?></li>
                 <li><?php echo esc_html(sprintf('FFL filter: %s', $this->ffl_status_label((string) ($result['ffl_status'] ?? '')))); ?></li>
-                <li><?php echo esc_html(sprintf('Fixed profit: $%s', (string) ($result['fixed_profit'] ?? '0.0000'))); ?></li>
+                <li><?php echo esc_html(sprintf('Pricing mode: %s', (string) ($result['pricing_mode_label'] ?? $this->pricing_mode_label((string) ($result['pricing_mode'] ?? ''))))); ?></li>
+                <li><?php echo esc_html(sprintf('Pricing value: %s', $this->result_pricing_value_label($result))); ?></li>
                 <li><?php echo esc_html(sprintf('Matched rows: %d', (int) ($result['matched_rows'] ?? 0))); ?></li>
                 <li><?php echo esc_html(sprintf('Pricing controls changed: %d', (int) ($result['pricing_control_rows'] ?? 0))); ?></li>
                 <li><?php echo esc_html(sprintf('Outputs recalculated: %d', (int) ($result['recalculated_rows'] ?? 0))); ?></li>
@@ -984,17 +1079,52 @@ final class ProductStateBulkPricingPage
         return (string) $term->name;
     }
 
-    private function pricing_mode_label(string $mode): string
+    /**
+     * @return array<string,string>
+     */
+    private function pricing_mode_options(): array
     {
-        $labels = [
+        return [
             'global_percent' => __('Global Percent', 'ffl-hub'),
             'fixed_percent' => __('Fixed Percent', 'ffl-hub'),
             'fixed_price' => __('Fixed Price', 'ffl-hub'),
             'fixed_profit' => __('Fixed Profit', 'ffl-hub'),
             'map_price' => __('MAP Price', 'ffl-hub'),
         ];
+    }
+
+    private function pricing_mode_label(string $mode): string
+    {
+        $labels = $this->pricing_mode_options();
 
         return $labels[$mode] ?? ($mode !== '' ? $mode : __('Unset', 'ffl-hub'));
+    }
+
+    /**
+     * @param array<string,mixed> $result
+     */
+    private function result_pricing_value_label(array $result): string
+    {
+        $mode = (string) ($result['pricing_mode'] ?? '');
+        $value = $this->float_or_null($result['pricing_value'] ?? null);
+
+        if ($mode === 'global_percent') {
+            return number_format((float) Options::get_global_markup(), 2, '.', '') . '% global';
+        }
+
+        if ($mode === 'map_price') {
+            return 'Effective MAP';
+        }
+
+        if ($value === null) {
+            return '-';
+        }
+
+        if ($mode === 'fixed_percent') {
+            return number_format($value, 2, '.', '') . '%';
+        }
+
+        return '$' . number_format($value, 2, '.', '');
     }
 
     /**
@@ -1003,6 +1133,14 @@ final class ProductStateBulkPricingPage
     private function pricing_value_summary(array $row): string
     {
         $mode = (string) ($row['pricing_mode'] ?? '');
+        if ($mode === 'global_percent') {
+            return number_format((float) Options::get_global_markup(), 2, '.', '') . '% global';
+        }
+
+        if ($mode === 'map_price') {
+            return 'Effective MAP';
+        }
+
         if ($mode === 'fixed_profit') {
             return 'Profit ' . $this->money($row['pricing_fixed_profit'] ?? null);
         }
@@ -1116,6 +1254,17 @@ final class ProductStateBulkPricingPage
             .fflhub-pricing-form select,
             .fflhub-pricing-form input[type="number"] {
                 min-width: 220px;
+            }
+            .fflhub-pricing-form small {
+                max-width: 260px;
+                color: #646970;
+                font-size: 11px;
+                font-weight: 400;
+                line-height: 1.35;
+            }
+            .fflhub-pricing-form input[disabled] {
+                background: #f6f7f7;
+                color: #8c8f94;
             }
             .fflhub-pricing-summary {
                 margin: 14px 0;
@@ -1293,6 +1442,44 @@ final class ProductStateBulkPricingPage
                 }
             }
         </style>
+        <?php
+    }
+
+    private function render_scripts(): void
+    {
+        ?>
+        <script>
+            (function () {
+                var mode = document.querySelector('.fflhub-pricing-mode-select');
+                var value = document.querySelector('.fflhub-pricing-value-input');
+                var hint = document.querySelector('.fflhub-pricing-value-hint');
+                if (!mode || !value || !hint) {
+                    return;
+                }
+
+                function syncPricingValueField() {
+                    var selected = mode.value || '';
+                    var needsValue = selected === 'fixed_percent' || selected === 'fixed_price' || selected === 'fixed_profit';
+                    value.disabled = !needsValue;
+                    value.required = needsValue;
+
+                    if (selected === 'global_percent') {
+                        hint.textContent = 'Global Percent uses the sitewide markup setting and ignores this field.';
+                    } else if (selected === 'map_price') {
+                        hint.textContent = 'MAP Price uses each row\\'s effective MAP price and ignores this field.';
+                    } else if (selected === 'fixed_percent') {
+                        hint.textContent = 'Enter a row-specific markup percentage. Example: 7 means 7%.';
+                    } else if (selected === 'fixed_price') {
+                        hint.textContent = 'Enter the exact sell/quote price to use for each matching row.';
+                    } else {
+                        hint.textContent = 'Enter the desired net profit. Product state accounts for shipping and processor cost.';
+                    }
+                }
+
+                mode.addEventListener('change', syncPricingValueField);
+                syncPricingValueField();
+            }());
+        </script>
         <?php
     }
 }
