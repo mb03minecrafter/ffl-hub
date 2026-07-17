@@ -1641,7 +1641,7 @@ final class ProductStateBulkPricingPage
                     } else if (selected === 'fixed_price') {
                         hint.textContent = 'Enter the exact sell/quote price to use for each matching row.';
                     } else {
-                        hint.textContent = 'Enter the desired net profit. Product state accounts for shipping and processor cost.';
+                        hint.textContent = 'Enter the desired net profit. Product state accounts for shipping and processor cost, then rounds up to the next .99.';
                     }
 
                     if (applyMode) {

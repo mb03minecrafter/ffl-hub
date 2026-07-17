@@ -1728,9 +1728,18 @@ final class ProductStateStore
             // checkout/feed shipping can treat that expense as already paid.
             $offset = ($profit + $shipping + ($cost_base * $fee_fraction)) / $denominator;
         }
-        $price = round($cost_base + $offset, 2);
+        $price = self::round_up_to_99($cost_base + $offset);
 
         return ($price > 0.0) ? $price : null;
+    }
+
+    private static function round_up_to_99(float $raw_price): float
+    {
+        if ($raw_price <= 0.0) {
+            return 0.0;
+        }
+
+        return round(ceil($raw_price + 0.01) - 0.01, 2);
     }
 
     /**

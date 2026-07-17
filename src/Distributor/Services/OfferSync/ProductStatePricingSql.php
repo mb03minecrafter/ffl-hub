@@ -39,7 +39,7 @@ final class ProductStatePricingSql
                     AND {$state_alias}.pricing_fixed_profit >= 0
                     AND {$cost_without_shipping} IS NOT NULL
                     AND {$cost_without_shipping} > 0
-                THEN ROUND(
+                THEN CEIL((
                     {$cost_without_shipping}
                     + (
                         GREATEST({$state_alias}.pricing_fixed_profit, 0.0000)
@@ -48,9 +48,8 @@ final class ProductStatePricingSql
                             THEN (({$cost_without_shipping} + {$shipping}) * {$fee_fraction})
                             ELSE {$shipping} + ({$cost_without_shipping} * {$fee_fraction})
                           END
-                    ) / {$denominator},
-                    2
-                )
+                    ) / {$denominator}
+                ) + 0.01) - 0.01
 
                 WHEN {$state_alias}.pricing_mode = 'map_price'
                     AND {$map_price} IS NOT NULL

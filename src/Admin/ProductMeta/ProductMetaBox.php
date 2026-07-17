@@ -277,7 +277,7 @@ class ProductMetaBox
             esc_attr(self::state_decimal_for_input($row['pricing_fixed_profit'] ?? null)) .
             '" />';
         echo '<span class="fflhub-state-field__hint">' .
-            esc_html__('Used only by Fixed Profit mode. It accounts for shipping and payment processor cost in the product_state calculation.', 'ffl-hub') .
+            esc_html__('Used only by Fixed Profit mode. It accounts for shipping and payment processor cost, then rounds up to the next .99 price.', 'ffl-hub') .
             '</span>';
         echo '</div>';
         echo '<div class="fflhub-state-field" data-pricing-field="fixed_profit">';
