@@ -1457,6 +1457,7 @@ final class ProductStateBulkPricingPage
                 var applyValue = document.querySelector('.fflhub-pricing-apply-value-input');
                 var applyWooCheckbox = document.querySelector('.fflhub-pricing-apply-woo-checkbox');
                 var applyWooInput = document.querySelector('.fflhub-pricing-apply-woo-input');
+                var applyForm = document.querySelector('.fflhub-pricing-apply');
                 if (!mode || !value || !hint) {
                     return;
                 }
@@ -1470,7 +1471,7 @@ final class ProductStateBulkPricingPage
                     if (selected === 'global_percent') {
                         hint.textContent = 'Global Percent uses the sitewide markup setting and ignores this field.';
                     } else if (selected === 'map_price') {
-                        hint.textContent = 'MAP Price uses each row\\'s effective MAP price and ignores this field.';
+                        hint.textContent = 'MAP Price uses each row effective MAP price and ignores this field.';
                     } else if (selected === 'fixed_percent') {
                         hint.textContent = 'Enter a row-specific markup percentage. Example: 7 means 7%.';
                     } else if (selected === 'fixed_price') {
@@ -1494,6 +1495,9 @@ final class ProductStateBulkPricingPage
                 value.addEventListener('input', syncPricingValueField);
                 if (applyWooCheckbox) {
                     applyWooCheckbox.addEventListener('change', syncPricingValueField);
+                }
+                if (applyForm) {
+                    applyForm.addEventListener('submit', syncPricingValueField);
                 }
                 syncPricingValueField();
             }());
