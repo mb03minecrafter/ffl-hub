@@ -24,6 +24,7 @@ use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
 use FFLHub\Admin\Pages\ProductStateBulkPricingPage;
 use FFLHub\Admin\Pages\ProductStatePage;
+use FFLHub\Admin\Pages\ReceivingPage;
 use FFLHub\Admin\Pages\MonthlyProfitAuditPage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
@@ -75,6 +76,7 @@ use FFLHub\Product\MapPriceVisibility;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
+use FFLHub\Receiving\ReceivingEventsStore;
 use FFLHub\Settings\Options;
 use FFLHub\Settings\SettingsRegistrar;
 use FFLHub\Shipping\Wordpress\ShippingRegistrar;
@@ -108,6 +110,7 @@ final class Plugin
     public DistributorProductsPage $distributor_products_page;
     public DealerBatchOptimizerPage $dealer_batch_optimizer_page;
     public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
+    public ReceivingPage $receiving_page;
     public CheckoutActivityPage $checkout_activity_page;
     public BillHicksEdiTestPage $bill_hicks_edi_test_page;
     public DavidsonsFailedJobsPage $davidsons_failed_jobs_page;
@@ -208,6 +211,7 @@ final class Plugin
             ProductStateStore::ensure_schema();
             DistributorOffersStore::ensure_schema();
             ProductBestOffersStore::ensure_schema();
+            ReceivingEventsStore::ensure_schema();
             WPCronWarning::init();
 
             $this->admin_page = new AdminPage($this->distributor_handler);
@@ -218,6 +222,9 @@ final class Plugin
 
             $this->dealer_fulfilled_jobs_page = new DealerFulfilledJobsPage($this->distributor_handler->ordering_jobs_table);
             $this->dealer_fulfilled_jobs_page->register();
+
+            $this->receiving_page = new ReceivingPage($this->distributor_handler->ordering_jobs_table);
+            $this->receiving_page->register();
 
             $this->checkout_activity_page = new CheckoutActivityPage();
             $this->checkout_activity_page->register();
@@ -431,6 +438,7 @@ final class Plugin
         ProductStateStore::ensure_schema();
         DistributorOffersStore::ensure_schema();
         ProductBestOffersStore::ensure_schema();
+        ReceivingEventsStore::ensure_schema();
         self::ensure_quote_email_jobs_table();
         $quote_email_jobs_cron = new QuoteEmailJobsCronService();
         $quote_email_jobs_cron->on_activation();
