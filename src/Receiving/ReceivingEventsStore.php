@@ -18,7 +18,7 @@ final class ReceivingEventsStore
 {
     private const BASE_TABLE = 'fflhub_receiving_events';
     private const SCHEMA_OPTION = 'fflhub_receiving_events_schema_version';
-    private const SCHEMA_VERSION = '1';
+    private const SCHEMA_VERSION = '2';
 
     private static bool $schema_checked = false;
 
@@ -63,6 +63,7 @@ final class ReceivingEventsStore
                 tracking_number VARCHAR(128) NOT NULL DEFAULT '',
                 product_id BIGINT UNSIGNED DEFAULT NULL,
                 upc VARCHAR(64) NOT NULL DEFAULT '',
+                serial_number VARCHAR(128) NOT NULL DEFAULT '',
                 quantity INT UNSIGNED NOT NULL DEFAULT 0,
                 wp_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
                 result VARCHAR(32) NOT NULL DEFAULT '',
@@ -77,8 +78,10 @@ final class ReceivingEventsStore
                 UNIQUE KEY shipment_request_token (shipment_key, request_token),
                 KEY shipment_key (shipment_key),
                 KEY shipment_upc_result (shipment_key, upc, result),
+                KEY shipment_serial_result (shipment_key, serial_number, result),
                 KEY job_upc_result (job_id, upc, result),
                 KEY order_result (order_id, result),
+                KEY serial_number (serial_number),
                 KEY received_at (received_at),
                 KEY tracking_number (tracking_number),
                 KEY merchant_po (merchant_po)
@@ -110,6 +113,7 @@ final class ReceivingEventsStore
             'tracking_number' => $this->text($data['tracking_number'] ?? '', 128),
             'product_id' => $this->nullable_int($data['product_id'] ?? null),
             'upc' => $this->text($data['upc'] ?? '', 64),
+            'serial_number' => $this->text($data['serial_number'] ?? '', 128),
             'quantity' => max(0, (int) ($data['quantity'] ?? 0)),
             'wp_user_id' => max(0, (int) ($data['wp_user_id'] ?? get_current_user_id())),
             'result' => $this->text($data['result'] ?? '', 32),
@@ -127,11 +131,40 @@ final class ReceivingEventsStore
             $row,
             [
                 '%s', '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%d', '%s',
-                '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s',
+                '%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s',
+                '%s',
             ]
         );
 
         return (int) $wpdb->insert_id;
+    }
+
+    public function accepted_serial_exists(string $shipment_key, string $serial_number): bool
+    {
+        global $wpdb;
+
+        $shipment_key = trim($shipment_key);
+        $serial_number = trim($serial_number);
+        if ($shipment_key === '' || $serial_number === '') {
+            return false;
+        }
+
+        self::ensure_schema();
+
+        $found = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT id
+                 FROM " . self::table_name() . "
+                 WHERE shipment_key = %s
+                   AND serial_number = %s
+                   AND result = 'accepted'
+                 LIMIT 1",
+                $shipment_key,
+                $serial_number
+            )
+        );
+
+        return $found > 0;
     }
 
     /**

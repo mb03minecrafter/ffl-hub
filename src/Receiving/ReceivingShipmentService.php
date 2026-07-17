@@ -106,13 +106,14 @@ final class ReceivingShipmentService
     /**
      * @return array<string,mixed>
      */
-    public function scan_product(string $shipment_key, string $raw_scan, string $request_token): array
+    public function scan_product(string $shipment_key, string $raw_scan, string $request_token, string $raw_serial = ''): array
     {
         global $wpdb;
 
         $shipment_key = trim($shipment_key);
         $request_token = $this->request_token($request_token);
         $upc = self::normalize_upc($raw_scan);
+        $serial_number = self::normalize_serial($raw_serial);
 
         if ($shipment_key === '') {
             return $this->error('missing_shipment', __('No active shipment is selected.', 'ffl-hub'));
@@ -195,6 +196,33 @@ final class ReceivingShipmentService
                 );
             }
 
+            if (!empty($product['serial_required']) && $serial_number === '') {
+                return $this->record_rejected_scan(
+                    $shipment_key,
+                    $raw_scan,
+                    $upc,
+                    $request_token,
+                    'serial_required',
+                    __('Serial number is required before this FFL/serialized item can be received.', 'ffl-hub'),
+                    $shipment,
+                    $product
+                );
+            }
+
+            if ($serial_number !== '' && $this->events->accepted_serial_exists($shipment_key, $serial_number)) {
+                return $this->record_rejected_scan(
+                    $shipment_key,
+                    $raw_scan,
+                    $upc,
+                    $request_token,
+                    'duplicate_serial',
+                    __('This serial number has already been received on this shipment.', 'ffl-hub'),
+                    $shipment,
+                    $product,
+                    $serial_number
+                );
+            }
+
             $event_id = $this->events->insert_event([
                 'shipment_key' => $shipment_key,
                 'job_id' => (int) ($allocation['job_id'] ?? 0),
@@ -206,6 +234,7 @@ final class ReceivingShipmentService
                 'tracking_number' => (string) ($shipment['primary_tracking'] ?? ''),
                 'product_id' => (int) ($allocation['product_id'] ?? ($product['product_id'] ?? 0)),
                 'upc' => $upc,
+                'serial_number' => $serial_number,
                 'quantity' => 1,
                 'result' => 'accepted',
                 'exception_status' => '',
@@ -226,6 +255,7 @@ final class ReceivingShipmentService
                 'shipment' => $fresh,
                 'product' => $this->public_product_payload($product),
                 'allocation' => $allocation,
+                'serial_number' => $serial_number,
                 'order_ready' => $order_ready,
                 'shipment_complete' => !empty($fresh['complete']),
             ];
@@ -566,6 +596,8 @@ final class ReceivingShipmentService
                         'upc' => $upc,
                         'product_id' => $product_id,
                         'name' => $name,
+                        'ffl_required' => 0,
+                        'serial_required' => 0,
                         'expected_qty' => 0,
                         'received_qty' => (int) ($received_by_upc[$upc] ?? 0),
                         'remaining_qty' => 0,
@@ -573,8 +605,14 @@ final class ReceivingShipmentService
                     ];
                 }
 
+                $ffl_required = !empty($line->ffl_required) ? 1 : 0;
                 $job_received = (int) ($received_by_job_upc[$job->id . '|' . $upc] ?? 0);
                 $remaining = max(0, $expected - $job_received);
+
+                if ($ffl_required === 1) {
+                    $products_by_upc[$upc]['ffl_required'] = 1;
+                    $products_by_upc[$upc]['serial_required'] = 1;
+                }
 
                 $products_by_upc[$upc]['expected_qty'] += $expected;
                 $allocation_row = [
@@ -587,6 +625,8 @@ final class ReceivingShipmentService
                     'order_item_id' => (int) ($item_context['order_item_id'] ?? 0),
                     'product_id' => $product_id,
                     'lane' => $job->lane_norm(),
+                    'ffl_required' => $ffl_required,
+                    'serial_required' => $ffl_required,
                     'qty_expected' => $expected,
                     'qty_received' => $job_received,
                     'remaining_qty' => $remaining,
@@ -613,6 +653,8 @@ final class ReceivingShipmentService
                 $orders_by_id[(int) $job->order_id]['products'][] = [
                     'upc' => $upc,
                     'name' => $name,
+                    'ffl_required' => $ffl_required,
+                    'serial_required' => $ffl_required,
                     'qty_expected' => $expected,
                     'qty_received' => min($expected, $job_received),
                     'remaining_qty' => $remaining,
@@ -722,7 +764,8 @@ final class ReceivingShipmentService
         string $exception,
         string $message,
         ?array $shipment = null,
-        ?array $product = null
+        ?array $product = null,
+        string $serial_number = ''
     ): array {
         $event_id = $this->events->insert_event([
             'shipment_key' => $shipment_key,
@@ -731,6 +774,7 @@ final class ReceivingShipmentService
             'tracking_number' => is_array($shipment) ? (string) ($shipment['primary_tracking'] ?? '') : '',
             'product_id' => is_array($product) ? (int) ($product['product_id'] ?? 0) : 0,
             'upc' => $upc,
+            'serial_number' => $serial_number,
             'quantity' => 0,
             'result' => 'rejected',
             'exception_status' => $exception,
@@ -748,6 +792,7 @@ final class ReceivingShipmentService
             'message' => $message,
             'shipment' => $this->shipment_by_key($shipment_key),
             'product' => is_array($product) ? $this->public_product_payload($product) : null,
+            'serial_number' => $serial_number,
         ];
     }
 
@@ -765,6 +810,7 @@ final class ReceivingShipmentService
             'duplicate' => $duplicate,
             'message' => (string) ($event['message'] ?? __('Duplicate scan request ignored.', 'ffl-hub')),
             'shipment' => $this->shipment_by_key($shipment_key),
+            'serial_number' => (string) ($event['serial_number'] ?? ''),
         ];
     }
 
@@ -993,6 +1039,7 @@ final class ReceivingShipmentService
                 'order_item_id' => (int) ($event['order_item_id'] ?? 0),
                 'result' => (string) ($event['result'] ?? ''),
                 'exception_status' => (string) ($event['exception_status'] ?? ''),
+                'serial_number' => (string) ($event['serial_number'] ?? ''),
                 'message' => (string) ($event['message'] ?? ''),
             ];
         }
@@ -1031,6 +1078,8 @@ final class ReceivingShipmentService
             'upc' => (string) ($product['upc'] ?? ''),
             'product_id' => (int) ($product['product_id'] ?? 0),
             'name' => (string) ($product['name'] ?? ''),
+            'ffl_required' => (int) ($product['ffl_required'] ?? 0),
+            'serial_required' => (int) ($product['serial_required'] ?? 0),
             'expected_qty' => (int) ($product['expected_qty'] ?? 0),
             'received_qty' => (int) ($product['received_qty'] ?? 0),
             'remaining_qty' => (int) ($product['remaining_qty'] ?? 0),
@@ -1125,5 +1174,14 @@ final class ReceivingShipmentService
         $value = preg_replace('/[^0-9A-Za-z]/', '', $value);
 
         return is_string($value) ? trim($value) : '';
+    }
+
+    public static function normalize_serial(string $raw): string
+    {
+        $value = sanitize_text_field(str_replace(["\t", "\r", "\n"], '', trim($raw)));
+        $value = preg_replace('/\s+/', '', $value);
+        $value = is_string($value) ? strtoupper(trim($value)) : '';
+
+        return substr($value, 0, 128);
     }
 }

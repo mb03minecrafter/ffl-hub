@@ -194,7 +194,8 @@ final class ReceivingPage
         $this->send($this->service()->scan_product(
             $this->request_text('shipment_key'),
             $this->request_text('scan'),
-            $this->request_text('request_token')
+            $this->request_text('request_token'),
+            $this->request_text('serial_number')
         ));
     }
 

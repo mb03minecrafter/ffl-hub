@@ -268,16 +268,41 @@
   font-size: 12px;
 }
 
-.fflhub-receiving-scan-field {
+.fflhub-receiving-scan-grid {
   align-items: end;
   display: grid;
   gap: 10px;
-  grid-template-columns: 1fr 190px;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) 190px;
   margin-bottom: 14px;
 }
 
-.fflhub-receiving-scan-field span {
-  grid-column: 1 / -1;
+.fflhub-receiving-serial-field input:disabled {
+  background: #f1f5f9;
+  color: #94a3b8;
+}
+
+.fflhub-receiving-serial-field small {
+  color: #667085;
+  font-size: 12px;
+}
+
+.fflhub-receiving-serial-field.is-required small {
+  color: #b42318;
+  font-weight: 700;
+}
+
+.fflhub-receiving-serial-badge {
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 999px;
+  color: #b42318;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  margin-top: 7px;
+  padding: 5px 8px;
+  text-transform: uppercase;
 }
 
 .fflhub-receiving-scan-result {
@@ -404,7 +429,7 @@
     grid-template-columns: 1fr;
   }
 
-  .fflhub-receiving-scan-field,
+  .fflhub-receiving-scan-grid,
   .fflhub-receiving-scan-result,
   .fflhub-receiving-debug-actions,
   .fflhub-receiving-complete-grid,

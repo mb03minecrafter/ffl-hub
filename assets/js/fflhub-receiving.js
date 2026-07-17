@@ -106,6 +106,51 @@
     return String(Date.now()).toString(36) + '-' + Math.random().toString(36).slice(2, 12);
   }
 
+  function normalizeScanValue(value) {
+    return String(value || '').replace(/[\t\r\n ]+/g, '').replace(/[^0-9A-Za-z]/g, '').trim();
+  }
+
+  function productForScan(value) {
+    var upc = normalizeScanValue(value);
+    if (!upc || !state.shipment || !state.shipment.products) {
+      return null;
+    }
+
+    for (var i = 0; i < state.shipment.products.length; i++) {
+      if (normalizeScanValue(state.shipment.products[i].upc) === upc) {
+        return state.shipment.products[i];
+      }
+    }
+
+    return null;
+  }
+
+  function serialRequiredForProduct(product) {
+    return !!product && Number(product.serial_required || product.ffl_required || 0) === 1 && Number(product.remaining_qty || 0) > 0;
+  }
+
+  function updateSerialFieldState() {
+    var $upc = $('[data-receiving-upc-input]');
+    var $serial = $('[data-receiving-serial-input]');
+    var $hint = $('[data-receiving-serial-hint]');
+    var product = productForScan($upc.val());
+    var required = serialRequiredForProduct(product);
+
+    if (!$serial.length) {
+      return;
+    }
+
+    $serial.prop('disabled', !required);
+    $('[data-receiving-serial-wrap]').toggleClass('is-required', required);
+    if (required) {
+      $hint.text('Required for this serialized/FFL item.');
+      $serial.attr('placeholder', 'Scan firearm serial number');
+    } else {
+      $hint.text('Serial capture unlocks after a serialized/FFL UPC is scanned.');
+      $serial.val('').attr('placeholder', 'Not required for this UPC');
+    }
+  }
+
   function debugEnabled() {
     return $('[data-receiving-debug-old]').is(':checked');
   }
@@ -161,6 +206,7 @@
           '<td>' +
             '<strong>' + esc(product.name || 'UPC ' + product.upc) + '</strong>' +
             '<div class="fflhub-receiving-muted">UPC ' + esc(product.upc) + '</div>' +
+            (Number(product.serial_required || 0) === 1 ? '<div class="fflhub-receiving-serial-badge">Serial required</div>' : '') +
             (allocations ? '<ul class="fflhub-receiving-allocations">' + allocations + '</ul>' : '') +
           '</td>' +
           '<td>' + Number(product.expected_qty || 0) + '</td>' +
@@ -219,6 +265,7 @@
           '<div class="fflhub-receiving-set-aside">' +
             '<strong>Set aside for Order #' + esc(allocation.order_number || allocation.order_id) + '</strong>' +
             '<span>' + esc(allocation.customer_name || '') + '</span>' +
+            (lastResult.serial_number ? '<span>Serial ' + esc(lastResult.serial_number) + '</span>' : '') +
             (lastResult.order_ready ? '<em>Order #' + esc(allocation.order_number || allocation.order_id) + ' is now ready to pack.</em>' : '') +
           '</div>';
       }
@@ -238,17 +285,25 @@
       '<div class="fflhub-receiving-shipment-card">' +
         '<h3>' + esc(shipmentTitle(shipment)) + '</h3>' +
         renderProgress(shipment) +
-        '<label class="fflhub-receiving-field fflhub-receiving-scan-field">' +
-          '<span>UPC Scan</span>' +
-          '<input type="text" inputmode="text" autocomplete="off" data-receiving-upc-input />' +
+        '<div class="fflhub-receiving-scan-grid">' +
+          '<label class="fflhub-receiving-field">' +
+            '<span>UPC Scan</span>' +
+            '<input type="text" inputmode="text" autocomplete="off" data-receiving-upc-input />' +
+          '</label>' +
+          '<label class="fflhub-receiving-field fflhub-receiving-serial-field" data-receiving-serial-wrap>' +
+            '<span>Serial Number</span>' +
+            '<input type="text" inputmode="text" autocomplete="off" disabled data-receiving-serial-input />' +
+            '<small data-receiving-serial-hint>Serial capture unlocks after a serialized/FFL UPC is scanned.</small>' +
+          '</label>' +
           '<button type="button" class="button button-primary" data-receiving-upc-submit>Receive Item</button>' +
-        '</label>' +
+        '</div>' +
         resultHtml +
         renderDebugOverrideButton() +
         renderProducts(shipment) +
         renderHistory(shipment.scan_history || []) +
       '</div>'
     );
+    updateSerialFieldState();
   }
 
   function renderCompletePane(shipment) {
@@ -297,7 +352,7 @@
           var cls = event.result === 'accepted' ? 'is-success' : 'is-error';
           return '<div class="fflhub-receiving-event ' + cls + '">' +
             '<strong>' + esc(event.upc || event.exception_status || event.result) + '</strong>' +
-            '<span>' + esc(event.message || '') + '</span>' +
+            '<span>' + esc(event.message || '') + (event.serial_number ? ' Serial ' + esc(event.serial_number) : '') + '</span>' +
             '<small>' + esc(event.received_at || '') + '</small>' +
           '</div>';
         }).join('') +
@@ -357,7 +412,11 @@
   function scanProduct() {
     var shipment = state.shipment;
     var $input = $('[data-receiving-upc-input]');
+    var $serial = $('[data-receiving-serial-input]');
     var value = $.trim($input.val());
+    var product = productForScan(value);
+    var serialRequired = serialRequiredForProduct(product);
+    var serialNumber = $.trim($serial.val());
 
     if (!shipment || !shipment.shipment_key) {
       setFeedback('Choose a shipment first.', 'error');
@@ -368,12 +427,20 @@
       $input.trigger('focus');
       return;
     }
+    if (serialRequired && !serialNumber) {
+      setFeedback('Scan the firearm serial number before receiving this item.', 'error');
+      beep('error');
+      $serial.prop('disabled', false).trigger('focus');
+      return;
+    }
 
     state.busy = true;
     $input.prop('disabled', true);
+    $serial.prop('disabled', true);
     post('fflhub_receiving_scan_product', {
       shipment_key: shipment.shipment_key,
       scan: value,
+      serial_number: serialRequired ? serialNumber : '',
       request_token: requestToken()
     }).then(function (payload) {
       if (payload.shipment) {
@@ -395,6 +462,8 @@
     }).always(function () {
       state.busy = false;
       $('[data-receiving-upc-input]').val('').prop('disabled', false).trigger('focus');
+      $('[data-receiving-serial-input]').val('').prop('disabled', true);
+      updateSerialFieldState();
     });
   }
 
@@ -495,7 +564,19 @@
     });
     $(document).on('click', '[data-receiving-upc-submit]', scanProduct);
     $(document).on('click', '[data-receiving-debug-complete]', debugCompleteShipment);
+    $(document).on('input change', '[data-receiving-upc-input]', updateSerialFieldState);
     $(document).on('keydown', '[data-receiving-upc-input]', function (event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        if (serialRequiredForProduct(productForScan($(this).val())) && !$.trim($('[data-receiving-serial-input]').val())) {
+          setFeedback('Scan the firearm serial number before receiving this item.', 'info');
+          $('[data-receiving-serial-input]').prop('disabled', false).trigger('focus');
+          return;
+        }
+        scanProduct();
+      }
+    });
+    $(document).on('keydown', '[data-receiving-serial-input]', function (event) {
       if (event.key === 'Enter') {
         event.preventDefault();
         scanProduct();
@@ -504,6 +585,9 @@
     $(document).on('blur', '[data-receiving-upc-input]', function () {
       if (state.shipment && !state.shipment.complete) {
         window.setTimeout(function () {
+          if ($(document.activeElement).is('[data-receiving-serial-input], [data-receiving-upc-submit]')) {
+            return;
+          }
           $('[data-receiving-upc-input]').trigger('focus');
         }, 250);
       }
