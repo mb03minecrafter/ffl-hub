@@ -179,6 +179,7 @@ final class GunMadeFeedGenerator
                 CAST(COALESCE(ps.map_applicable, 0) AS CHAR) AS map_applicable,
                 ps.map_visibility_policy,
                 ps.pricing_mode,
+                ps.fixed_profit_shipping_mode,
                 CAST(ps.shipping_cost AS CHAR) AS shipping_cost,
                 CAST(ps.estimated_usps_shipping_cost AS CHAR) AS estimated_usps_shipping_cost,
                 CAST(ps.landed_cost AS CHAR) AS landed_cost,

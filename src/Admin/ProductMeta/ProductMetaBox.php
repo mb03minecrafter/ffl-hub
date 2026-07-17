@@ -62,6 +62,7 @@ class ProductMetaBox
         wp_nonce_field('fflhub_save_product_state_controls', 'fflhub_product_state_nonce');
 
         $pricing_mode = self::state_value_raw($row['pricing_mode'] ?? 'global_percent', 'global_percent');
+        $fixed_profit_shipping_mode = self::state_value_raw($row['fixed_profit_shipping_mode'] ?? 'included', 'included');
         $map_policy = self::state_value_raw($row['map_visibility_policy'] ?? 'none', 'none');
         $map_override_mode = self::state_value_raw($row['map_override_mode'] ?? 'auto', 'auto');
         $status = self::state_value_raw($row['status'] ?? 'active', 'active');
@@ -279,6 +280,17 @@ class ProductMetaBox
             esc_html__('Used only by Fixed Profit mode. It accounts for shipping and payment processor cost in the product_state calculation.', 'ffl-hub') .
             '</span>';
         echo '</div>';
+        echo '<div class="fflhub-state-field" data-pricing-field="fixed_profit">';
+        echo '<label>' . esc_html__('Fixed profit shipping mode', 'ffl-hub') . '</label>';
+        echo '<select name="fflhub_state_fixed_profit_shipping_mode">';
+        foreach (self::product_state_fixed_profit_shipping_mode_options() as $value => $label) {
+            echo '<option value="' . esc_attr($value) . '" ' . selected($fixed_profit_shipping_mode, $value, false) . '>' . esc_html($label) . '</option>';
+        }
+        echo '</select>';
+        echo '<span class="fflhub-state-field__hint">' .
+            esc_html__('Included keeps current behavior: product price recovers shipping and checkout/feed shipping can show free. Separate lowers item price and leaves shipping customer-chargeable while still covering the payment fee on that shipping.', 'ffl-hub') .
+            '</span>';
+        echo '</div>';
         echo '</div>';
 
         echo '<div class="fflhub-state-card">';
@@ -380,6 +392,7 @@ class ProductMetaBox
         self::render_state_output_chip(__('Distributor shipping', 'ffl-hub'), self::state_money($profit_metrics['distributor_shipping_cost']), self::shipping_chip_tone($profit_metrics['distributor_shipping_cost']));
         self::render_state_output_chip(__('Estimated USPS Shipping', 'ffl-hub'), self::state_estimated_usps_shipping($row['estimated_usps_shipping_cost'] ?? null), self::shipping_chip_tone($row['estimated_usps_shipping_cost'] ?? null));
         self::render_state_output_chip(__('Shipping cost used', 'ffl-hub'), self::state_money($profit_metrics['shipping_cost_used']), self::shipping_chip_tone($profit_metrics['shipping_cost_used']));
+        self::render_state_output_chip(__('Customer shipping revenue', 'ffl-hub'), self::state_money($profit_metrics['customer_shipping_revenue']), self::shipping_chip_tone($profit_metrics['customer_shipping_revenue']));
         self::render_state_output_chip(__('Dealer + shipping basis', 'ffl-hub'), self::state_money($profit_metrics['dealer_shipping_basis']), 'cost');
         self::render_state_output_chip(__('Stored landed cost', 'ffl-hub'), self::state_money($row['landed_cost'] ?? null), 'cost');
         self::render_state_output_chip(__('Profit basis used', 'ffl-hub'), self::state_money($profit_metrics['cost_basis']), 'cost');
@@ -850,7 +863,7 @@ class ProductMetaBox
 
     /**
      * @param array<string,mixed> $row
-     * @return array{distributor_shipping_cost:?float,shipping_cost_used:?float,dealer_shipping_basis:?float,cost_basis:?float,processor_fee:?float,net_profit:?float,margin_percent:?float,fee_percent_label:string,shipping_explanation:string}
+     * @return array{distributor_shipping_cost:?float,shipping_cost_used:?float,customer_shipping_revenue:?float,dealer_shipping_basis:?float,cost_basis:?float,processor_fee:?float,net_profit:?float,margin_percent:?float,fee_percent_label:string,shipping_explanation:string}
      */
     private static function product_state_profit_metrics(array $row): array
     {
@@ -861,6 +874,11 @@ class ProductMetaBox
         $sell = self::state_float_or_null($row['computed_sell_price'] ?? null);
         $dropship_enabled = self::truthy_state($row['dropship_enabled'] ?? null);
         $use_usps_shipping = Options::get_use_product_state_usps_shipping() && !$dropship_enabled;
+        $fixed_profit_shipping_mode = strtolower(trim((string) ($row['fixed_profit_shipping_mode'] ?? 'included')));
+        $separate_fixed_profit_shipping = (
+            strtolower(trim((string) ($row['pricing_mode'] ?? ''))) === 'fixed_profit'
+            && $fixed_profit_shipping_mode === 'separate'
+        );
 
         $has_usps_estimate = $estimated_usps_shipping !== null && $estimated_usps_shipping >= 0.0;
         $distributor_shipping_cost = ($use_usps_shipping && $has_usps_estimate)
@@ -881,31 +899,39 @@ class ProductMetaBox
         }
 
         $fee_fraction = min(0.99, $fee_percent / 100.0);
-        $processor_fee = ($sell !== null && $sell > 0.0)
-            ? round($sell * $fee_fraction, 2)
+        $customer_shipping_revenue = $separate_fixed_profit_shipping ? $shipping_cost_used : 0.0;
+        $gross_revenue_for_profit = ($sell !== null && $sell > 0.0)
+            ? $sell + max(0.0, $customer_shipping_revenue)
+            : null;
+
+        $processor_fee = ($gross_revenue_for_profit !== null && $gross_revenue_for_profit > 0.0)
+            ? round($gross_revenue_for_profit * $fee_fraction, 2)
             : null;
 
         $net_profit = null;
         $margin_percent = null;
-        if ($sell !== null && $sell > 0.0 && $cost_basis !== null) {
-            $net_profit = round($sell - $cost_basis - ($processor_fee ?? 0.0), 2);
-            $margin_percent = round(($net_profit / $sell) * 100.0, 2);
+        if ($gross_revenue_for_profit !== null && $gross_revenue_for_profit > 0.0 && $cost_basis !== null) {
+            $net_profit = round($gross_revenue_for_profit - $cost_basis - ($processor_fee ?? 0.0), 2);
+            $margin_percent = round(($net_profit / $gross_revenue_for_profit) * 100.0, 2);
         }
 
         return [
             'distributor_shipping_cost' => $distributor_shipping_cost,
             'shipping_cost_used' => $shipping_cost_used,
+            'customer_shipping_revenue' => $customer_shipping_revenue,
             'dealer_shipping_basis' => $dealer_shipping_basis,
             'cost_basis' => $cost_basis,
             'processor_fee' => $processor_fee,
             'net_profit' => $net_profit,
             'margin_percent' => $margin_percent,
             'fee_percent_label' => number_format($fee_percent, 2, '.', ''),
-            'shipping_explanation' => ($use_usps_shipping && $has_usps_estimate)
-                ? __('Net profit ignores distributor-to-dealer freight and uses the Product State USPS estimate, plus card processing cost. Stored landed cost remains visible for auditing.', 'ffl-hub')
-                : ($use_usps_shipping
+            'shipping_explanation' => $separate_fixed_profit_shipping
+                ? __('Fixed Profit is set to charge shipping separately, so the item price is lower and the margin preview adds customer shipping revenue back before card processing cost.', 'ffl-hub')
+                : (($use_usps_shipping && $has_usps_estimate)
+                    ? __('Net profit ignores distributor-to-dealer freight and uses the Product State USPS estimate, plus card processing cost. Stored landed cost remains visible for auditing.', 'ffl-hub')
+                    : ($use_usps_shipping
                     ? __('No Product State USPS estimate is available, so net profit conservatively retains distributor shipping plus card processing cost.', 'ffl-hub')
-                    : __('Net profit uses dealer cost plus distributor shipping and estimated card processing cost. Stored landed cost remains visible for auditing.', 'ffl-hub')),
+                    : __('Net profit uses dealer cost plus distributor shipping and estimated card processing cost. Stored landed cost remains visible for auditing.', 'ffl-hub'))),
         ];
     }
 
@@ -1011,6 +1037,7 @@ class ProductMetaBox
             'pricing_percent' => self::sanitize_state_decimal_post('fflhub_state_pricing_percent'),
             'pricing_fixed_price' => self::sanitize_state_decimal_post('fflhub_state_pricing_fixed_price'),
             'pricing_fixed_profit' => self::sanitize_state_decimal_post('fflhub_state_pricing_fixed_profit'),
+            'fixed_profit_shipping_mode' => self::sanitize_state_text_post('fflhub_state_fixed_profit_shipping_mode'),
             'map_visibility_policy' => self::sanitize_state_text_post('fflhub_state_map_visibility_policy'),
             'map_override_mode' => self::sanitize_state_text_post('fflhub_state_map_override_mode'),
             'map_override_price' => self::sanitize_state_decimal_post('fflhub_state_map_override_price'),
@@ -1085,6 +1112,17 @@ class ProductMetaBox
             'fixed_price' => __('Fixed Price', 'ffl-hub'),
             'fixed_profit' => __('Fixed Profit', 'ffl-hub'),
             'map_price' => __('MAP Price', 'ffl-hub'),
+        ];
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private static function product_state_fixed_profit_shipping_mode_options(): array
+    {
+        return [
+            'included' => __('Include shipping in item price', 'ffl-hub'),
+            'separate' => __('Charge shipping separately', 'ffl-hub'),
         ];
     }
 

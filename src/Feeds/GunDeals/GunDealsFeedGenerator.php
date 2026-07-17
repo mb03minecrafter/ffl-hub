@@ -272,6 +272,7 @@ final class GunDealsFeedGenerator
                 ps.pricing_mode AS pricing_mode,
                 ps.pricing_mode AS markup_mode,
                 CAST(ps.pricing_fixed_profit AS CHAR) AS map_real_price_fixed_profit,
+                ps.fixed_profit_shipping_mode AS fixed_profit_shipping_mode,
                 CAST(ps.quote_free_shipping_override AS CHAR) AS map_real_price_free_shipping_override,
                 CAST(ps.shipping_cost AS CHAR) AS shipping_cost,
                 CAST(ps.estimated_usps_shipping_cost AS CHAR) AS estimated_usps_shipping_cost,

@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 final class ProductStateStore
 {
     private const SCHEMA_OPTION = 'fflhub_product_state_schema_version';
-    private const SCHEMA_VERSION = '11';
+    private const SCHEMA_VERSION = '12';
     private const TABLE_SUFFIX = 'fflhub_product_state';
     private const DEFAULT_BATCH_SIZE = 500;
 
@@ -83,6 +83,7 @@ final class ProductStateStore
                 pricing_percent DECIMAL(8,4) DEFAULT NULL,
                 pricing_fixed_price DECIMAL(12,4) DEFAULT NULL,
                 pricing_fixed_profit DECIMAL(12,4) DEFAULT NULL,
+                fixed_profit_shipping_mode VARCHAR(32) NOT NULL DEFAULT 'included',
                 map_visibility_policy VARCHAR(32) DEFAULT NULL,
                 map_override_mode VARCHAR(32) NOT NULL DEFAULT 'auto',
                 map_override_price DECIMAL(12,4) DEFAULT NULL,
@@ -382,6 +383,7 @@ final class ProductStateStore
             'pricing_percent' => 'pricing_percent DECIMAL(8,4) DEFAULT NULL',
             'pricing_fixed_price' => 'pricing_fixed_price DECIMAL(12,4) DEFAULT NULL',
             'pricing_fixed_profit' => 'pricing_fixed_profit DECIMAL(12,4) DEFAULT NULL',
+            'fixed_profit_shipping_mode' => "fixed_profit_shipping_mode VARCHAR(32) NOT NULL DEFAULT 'included'",
             'map_visibility_policy' => 'map_visibility_policy VARCHAR(32) DEFAULT NULL',
             'map_override_mode' => "map_override_mode VARCHAR(32) NOT NULL DEFAULT 'auto'",
             'map_override_price' => 'map_override_price DECIMAL(12,4) DEFAULT NULL',
@@ -584,6 +586,9 @@ final class ProductStateStore
             'pricing_fixed_profit' => ($pricing_mode === 'fixed_profit')
                 ? self::money_or_null(max(0.0, self::float_or_null($overrides['pricing_fixed_profit'] ?? null) ?? 0.0), 4)
                 : null,
+            'fixed_profit_shipping_mode' => self::admin_fixed_profit_shipping_mode(
+                $overrides['fixed_profit_shipping_mode'] ?? 'included'
+            ),
             'map_visibility_policy' => $map_policy,
             'map_override_mode' => 'auto',
             'map_override_price' => null,
@@ -1039,6 +1044,9 @@ final class ProductStateStore
         $fixed_profit = ($pricing_mode === 'fixed_profit')
             ? max(0.0, self::float_or_null($raw['pricing_fixed_profit'] ?? null) ?? 0.0)
             : null;
+        $fixed_profit_shipping_mode = self::admin_fixed_profit_shipping_mode(
+            $raw['fixed_profit_shipping_mode'] ?? ($row['fixed_profit_shipping_mode'] ?? 'included')
+        );
 
         $map_override_mode = self::admin_map_override_mode($raw['map_override_mode'] ?? ($row['map_override_mode'] ?? 'auto'));
         $map_override_price = ($map_override_mode === 'manual_price')
@@ -1063,6 +1071,7 @@ final class ProductStateStore
             self::nullable_string($row['dealer_price'] ?? null),
             self::fixed_profit_shipping_cost($row),
             self::nullable_string($row['landed_cost'] ?? null),
+            $fixed_profit_shipping_mode,
             self::nullable_string($effective_map_price),
             $row['computed_sell_price'] ?? null,
             get_post_meta($product_id, '_regular_price', true),
@@ -1121,6 +1130,7 @@ final class ProductStateStore
             'pricing_percent' => self::money_or_null($pricing_percent, 4),
             'pricing_fixed_price' => self::money_or_null($fixed_price, 4),
             'pricing_fixed_profit' => self::money_or_null($fixed_profit, 4),
+            'fixed_profit_shipping_mode' => $fixed_profit_shipping_mode,
             'map_visibility_policy' => $visibility_policy,
             'map_override_mode' => $map_override_mode,
             'map_override_price' => self::money_or_null($map_override_price, 4),
@@ -1290,6 +1300,7 @@ final class ProductStateStore
             'pricing_percent' => $pricing['pricing_percent'],
             'pricing_fixed_price' => $pricing['pricing_fixed_price'],
             'pricing_fixed_profit' => $pricing['pricing_fixed_profit'],
+            'fixed_profit_shipping_mode' => $pricing['fixed_profit_shipping_mode'],
             'computed_sell_price' => $pricing['computed_sell_price'],
             'map_applicable' => $pricing['map_applicable'],
             'map_visibility_policy' => $pricing['map_visibility_policy'],
@@ -1385,6 +1396,7 @@ final class ProductStateStore
             $dealer_price,
             $shipping_cost,
             $landed_cost,
+            'included',
             $map_price,
             $last_computed_raw,
             $woo_regular_raw,
@@ -1406,6 +1418,7 @@ final class ProductStateStore
             'pricing_percent' => self::money_or_null($pricing_percent, 4),
             'pricing_fixed_price' => self::money_or_null($pricing_mode === 'fixed_price' ? $fixed_price : null, 4),
             'pricing_fixed_profit' => self::money_or_null($pricing_mode === 'fixed_profit' ? $fixed_profit : null, 4),
+            'fixed_profit_shipping_mode' => 'included',
             'map_visibility_policy' => $visibility_policy,
             'quote_free_shipping_override' => self::truthy($map_real_price_free_shipping_override_raw) ? 1 : 0,
             'computed_sell_price' => self::money_or_null($computed_sell_price, 4),
@@ -1524,6 +1537,7 @@ final class ProductStateStore
         ?string $dealer_price,
         ?string $shipping_cost,
         ?string $landed_cost,
+        string $fixed_profit_shipping_mode,
         ?string $map_price,
         $last_computed_raw,
         $woo_regular_raw,
@@ -1534,7 +1548,13 @@ final class ProductStateStore
         }
 
         if ($pricing_mode === 'fixed_profit' && $fixed_profit !== null && $fixed_profit >= 0.0) {
-            $fixed_profit_price = self::fixed_profit_price($dealer_price, $shipping_cost, $landed_cost, $fixed_profit);
+            $fixed_profit_price = self::fixed_profit_price(
+                $dealer_price,
+                $shipping_cost,
+                $landed_cost,
+                $fixed_profit,
+                $fixed_profit_shipping_mode
+            );
             if ($fixed_profit_price !== null) {
                 return $fixed_profit_price;
             }
@@ -1646,7 +1666,7 @@ final class ProductStateStore
 
         if ($real_mode === ProductMeta::MAP_REAL_PRICE_MODE_FIXED_PROFIT) {
             $profit = self::float_or_null($fixed_profit_raw) ?? 0.0;
-            return self::fixed_profit_price($dealer_price, $shipping_cost, $landed_cost, $profit);
+            return self::fixed_profit_price($dealer_price, $shipping_cost, $landed_cost, $profit, 'included');
         }
 
         $percent = self::float_or_null($percent_raw) ?? 0.0;
@@ -1682,7 +1702,8 @@ final class ProductStateStore
         ?string $dealer_price,
         ?string $shipping_cost,
         ?string $true_cost,
-        float $profit_target
+        float $profit_target,
+        string $shipping_mode = 'included'
     ): ?float {
         $cost_base = self::cost_base_without_shipping($dealer_price, $true_cost);
         if ($cost_base === null || $cost_base <= 0.0) {
@@ -1697,9 +1718,16 @@ final class ProductStateStore
             return null;
         }
 
-        // Match the legacy MAP fixed-profit formula:
-        // price = true/dealer cost + ((profit + shipping + cost fee) / (1 - fee)).
-        $offset = ($profit + max(0.0, $shipping) + ($cost_base * $fee_fraction)) / $denominator;
+        $shipping = max(0.0, $shipping);
+        if (self::admin_fixed_profit_shipping_mode($shipping_mode) === 'separate') {
+            // Customer pays shipping as shipping. The product price only needs
+            // to recover target profit plus card fees on item + shipping.
+            $offset = ($profit + (($cost_base + $shipping) * $fee_fraction)) / $denominator;
+        } else {
+            // Current behavior: shipping is recovered in the item price, so
+            // checkout/feed shipping can treat that expense as already paid.
+            $offset = ($profit + $shipping + ($cost_base * $fee_fraction)) / $denominator;
+        }
         $price = round($cost_base + $offset, 2);
 
         return ($price > 0.0) ? $price : null;
@@ -1752,6 +1780,13 @@ final class ProductStateStore
             Options::MAP_POLICY_EMAIL_FOR_QUOTE,
             Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART,
         ], true) ? $policy : Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+    }
+
+    private static function admin_fixed_profit_shipping_mode($raw): string
+    {
+        return strtolower(trim((string) $raw)) === 'separate'
+            ? 'separate'
+            : 'included';
     }
 
     private static function admin_map_override_mode($raw): string
@@ -1981,6 +2016,7 @@ final class ProductStateStore
             'pricing_percent' => '%f',
             'pricing_fixed_price' => '%f',
             'pricing_fixed_profit' => '%f',
+            'fixed_profit_shipping_mode' => '%s',
             'map_visibility_policy' => '%s',
             'quote_free_shipping_override' => '%d',
             'computed_sell_price' => '%f',

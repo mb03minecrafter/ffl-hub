@@ -43,8 +43,11 @@ final class ProductStatePricingSql
                     {$cost_without_shipping}
                     + (
                         GREATEST({$state_alias}.pricing_fixed_profit, 0.0000)
-                        + {$shipping}
-                        + ({$cost_without_shipping} * {$fee_fraction})
+                        + CASE
+                            WHEN {$state_alias}.fixed_profit_shipping_mode = 'separate'
+                            THEN (({$cost_without_shipping} + {$shipping}) * {$fee_fraction})
+                            ELSE {$shipping} + ({$cost_without_shipping} * {$fee_fraction})
+                          END
                     ) / {$denominator},
                     2
                 )

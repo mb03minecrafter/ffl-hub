@@ -112,6 +112,7 @@ final class ProductStateBulkPricingPage
             'ffl_status' => $filters['ffl_status'],
             'pricing_mode' => $pricing['mode'],
             'pricing_value' => $pricing['value_input'],
+            'fixed_profit_shipping_mode' => $pricing['fixed_profit_shipping_mode'],
             'quote_free_shipping_override_action' => $quote_free_shipping_action,
             'apply_woo_now' => $apply_woo_now ? '1' : '0',
             'ran' => self::FORM_ACTION,
@@ -142,6 +143,8 @@ final class ProductStateBulkPricingPage
             'pricing_mode' => $pricing['mode'],
             'pricing_mode_label' => $this->pricing_mode_label($pricing['mode']),
             'pricing_value' => $pricing['value'] === null ? '' : number_format((float) $pricing['value'], 4, '.', ''),
+            'fixed_profit_shipping_mode' => $pricing['fixed_profit_shipping_mode'],
+            'fixed_profit_shipping_mode_label' => $this->fixed_profit_shipping_mode_label($pricing['fixed_profit_shipping_mode']),
             'quote_free_shipping_action' => $quote_free_shipping_action,
             'quote_free_shipping_action_label' => $this->quote_free_shipping_action_label($quote_free_shipping_action),
             'matched_rows' => 0,
@@ -187,7 +190,10 @@ final class ProductStateBulkPricingPage
         $result['matched_rows'] = $this->matching_count($filters);
 
         $where = $this->where_sql($filters, 'ps');
-        $control_expr = $this->pricing_control_sql_for_mode($mode, $value);
+        $control_expr = $this->pricing_control_sql_for_mode($mode, $value, $pricing['fixed_profit_shipping_mode']);
+        $fixed_profit_shipping_compare = ($mode === 'fixed_profit')
+            ? "\n                AND ps.fixed_profit_shipping_mode <=> {$control_expr['fixed_profit_shipping_mode']}"
+            : '';
 
         $t_controls = microtime(true);
         $control_sql = "
@@ -197,6 +203,7 @@ final class ProductStateBulkPricingPage
                 ps.pricing_percent = {$control_expr['pricing_percent']},
                 ps.pricing_fixed_price = {$control_expr['pricing_fixed_price']},
                 ps.pricing_fixed_profit = {$control_expr['pricing_fixed_profit']},
+                ps.fixed_profit_shipping_mode = {$control_expr['fixed_profit_shipping_mode']},
                 ps.updated_at = NOW(),
                 ps.has_changed = 1
             WHERE {$where['sql']}
@@ -205,6 +212,7 @@ final class ProductStateBulkPricingPage
                 AND ps.pricing_percent <=> {$control_expr['pricing_percent']}
                 AND ps.pricing_fixed_price <=> {$control_expr['pricing_fixed_price']}
                 AND ps.pricing_fixed_profit <=> {$control_expr['pricing_fixed_profit']}
+                {$fixed_profit_shipping_compare}
               )
         ";
         $control_sql = $this->prepare_sql($control_sql, $where['params']);
@@ -348,7 +356,7 @@ final class ProductStateBulkPricingPage
 
     /**
      * @param array<string,mixed> $source
-     * @return array{mode:string,value:?float,value_input:string}
+     * @return array{mode:string,value:?float,value_input:string,fixed_profit_shipping_mode:string}
      */
     private function read_pricing_from_request(array $source): array
     {
@@ -380,11 +388,18 @@ final class ProductStateBulkPricingPage
         }
 
         $value = ($raw !== '' && is_numeric($raw)) ? max(0.0, (float) $raw) : null;
+        $fixed_profit_shipping_mode = isset($source['fixed_profit_shipping_mode'])
+            ? sanitize_text_field(wp_unslash((string) $source['fixed_profit_shipping_mode']))
+            : 'included';
+        if (!array_key_exists($fixed_profit_shipping_mode, $this->fixed_profit_shipping_mode_options())) {
+            $fixed_profit_shipping_mode = 'included';
+        }
 
         return [
             'mode' => $mode,
             'value' => $value,
             'value_input' => $value === null ? '' : number_format($value, 2, '.', ''),
+            'fixed_profit_shipping_mode' => $fixed_profit_shipping_mode,
         ];
     }
 
@@ -406,18 +421,22 @@ final class ProductStateBulkPricingPage
     }
 
     /**
-     * @return array{mode:string,pricing_percent:string,pricing_fixed_price:string,pricing_fixed_profit:string}
+     * @return array{mode:string,pricing_percent:string,pricing_fixed_price:string,pricing_fixed_profit:string,fixed_profit_shipping_mode:string}
      */
-    private function pricing_control_sql_for_mode(string $mode, ?float $value): array
+    private function pricing_control_sql_for_mode(string $mode, ?float $value, string $fixed_profit_shipping_mode): array
     {
         $mode = array_key_exists($mode, $this->pricing_mode_options()) ? $mode : 'fixed_profit';
         $value_sql = $value === null ? 'NULL' : number_format(max(0.0, $value), 4, '.', '');
+        if (!array_key_exists($fixed_profit_shipping_mode, $this->fixed_profit_shipping_mode_options())) {
+            $fixed_profit_shipping_mode = 'included';
+        }
 
         $columns = [
             'mode' => esc_sql($mode),
             'pricing_percent' => 'NULL',
             'pricing_fixed_price' => 'NULL',
             'pricing_fixed_profit' => 'NULL',
+            'fixed_profit_shipping_mode' => 'ps.fixed_profit_shipping_mode',
         ];
 
         if ($mode === 'global_percent') {
@@ -428,6 +447,7 @@ final class ProductStateBulkPricingPage
             $columns['pricing_fixed_price'] = $value_sql;
         } elseif ($mode === 'fixed_profit') {
             $columns['pricing_fixed_profit'] = $value_sql;
+            $columns['fixed_profit_shipping_mode'] = "'" . esc_sql($fixed_profit_shipping_mode) . "'";
         }
 
         return $columns;
@@ -625,6 +645,7 @@ final class ProductStateBulkPricingPage
                 ps.pricing_percent,
                 ps.pricing_fixed_price,
                 ps.pricing_fixed_profit,
+                ps.fixed_profit_shipping_mode,
                 ps.quote_free_shipping_override,
                 ps.distributor_id,
                 ps.distributor_product_id,
@@ -771,6 +792,7 @@ final class ProductStateBulkPricingPage
     {
         $mode = (string) ($pricing['mode'] ?? 'fixed_profit');
         $value_input = (string) ($pricing['value_input'] ?? '');
+        $fixed_profit_shipping_mode = (string) ($pricing['fixed_profit_shipping_mode'] ?? 'included');
         ?>
         <div class="fflhub-pricing-panel">
             <form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" class="fflhub-pricing-form">
@@ -851,6 +873,20 @@ final class ProductStateBulkPricingPage
                     </small>
                 </label>
 
+                <label class="fflhub-pricing-fixed-profit-shipping-field">
+                    <span><?php esc_html_e('Fixed profit shipping', 'ffl-hub'); ?></span>
+                    <select name="fixed_profit_shipping_mode" class="fflhub-pricing-fixed-profit-shipping-select">
+                        <?php foreach ($this->fixed_profit_shipping_mode_options() as $value => $label) : ?>
+                            <option value="<?php echo esc_attr($value); ?>" <?php selected($fixed_profit_shipping_mode, $value); ?>>
+                                <?php echo esc_html($label); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small class="fflhub-pricing-fixed-profit-shipping-hint">
+                        <?php esc_html_e('Used only by Fixed Profit. Included keeps current free-shipping style; separate lowers item price and charges shipping separately.', 'ffl-hub'); ?>
+                    </small>
+                </label>
+
                 <label>
                     <span><?php esc_html_e('Quote free shipping', 'ffl-hub'); ?></span>
                     <select name="quote_free_shipping_override_action" class="fflhub-pricing-quote-ship-select">
@@ -889,6 +925,7 @@ final class ProductStateBulkPricingPage
                 <input type="hidden" name="ffl_status" value="<?php echo esc_attr($filters['ffl_status']); ?>" />
                 <input type="hidden" name="pricing_mode" class="fflhub-pricing-apply-mode-input" value="<?php echo esc_attr($mode); ?>" />
                 <input type="hidden" name="pricing_value" class="fflhub-pricing-apply-value-input" value="<?php echo esc_attr($value_input); ?>" />
+                <input type="hidden" name="fixed_profit_shipping_mode" class="fflhub-pricing-apply-fixed-profit-shipping-input" value="<?php echo esc_attr($fixed_profit_shipping_mode); ?>" />
                 <input type="hidden" name="quote_free_shipping_override_action" class="fflhub-pricing-apply-quote-ship-input" value="<?php echo esc_attr($quote_free_shipping_action); ?>" />
                 <input type="hidden" name="apply_woo_now" class="fflhub-pricing-apply-woo-input" value="<?php echo esc_attr($apply_woo_now ? '1' : '0'); ?>" />
                 <?php
@@ -998,6 +1035,8 @@ final class ProductStateBulkPricingPage
                                     <dd><?php echo esc_html($this->pricing_mode_label((string) ($row['pricing_mode'] ?? ''))); ?></dd>
                                     <dt><?php esc_html_e('Value', 'ffl-hub'); ?></dt>
                                     <dd><?php echo esc_html($pricing_summary !== '' ? $pricing_summary : '-'); ?></dd>
+                                    <dt><?php esc_html_e('Fixed ship', 'ffl-hub'); ?></dt>
+                                    <dd><?php echo esc_html($this->fixed_profit_shipping_mode_label((string) ($row['fixed_profit_shipping_mode'] ?? 'included'))); ?></dd>
                                     <dt><?php esc_html_e('Quote ship', 'ffl-hub'); ?></dt>
                                     <dd>
                                         <?php
@@ -1083,6 +1122,7 @@ final class ProductStateBulkPricingPage
                 <li><?php echo esc_html(sprintf('FFL filter: %s', $this->ffl_status_label((string) ($result['ffl_status'] ?? '')))); ?></li>
                 <li><?php echo esc_html(sprintf('Pricing mode: %s', (string) ($result['pricing_mode_label'] ?? $this->pricing_mode_label((string) ($result['pricing_mode'] ?? ''))))); ?></li>
                 <li><?php echo esc_html(sprintf('Pricing value: %s', $this->result_pricing_value_label($result))); ?></li>
+                <li><?php echo esc_html(sprintf('Fixed profit shipping: %s', (string) ($result['fixed_profit_shipping_mode_label'] ?? $this->fixed_profit_shipping_mode_label((string) ($result['fixed_profit_shipping_mode'] ?? 'included'))))); ?></li>
                 <li><?php echo esc_html(sprintf('Quote free shipping action: %s', (string) ($result['quote_free_shipping_action_label'] ?? $this->quote_free_shipping_action_label((string) ($result['quote_free_shipping_action'] ?? ''))))); ?></li>
                 <li><?php echo esc_html(sprintf('Matched rows: %d', (int) ($result['matched_rows'] ?? 0))); ?></li>
                 <li><?php echo esc_html(sprintf('Pricing controls changed: %d', (int) ($result['pricing_control_rows'] ?? 0))); ?></li>
@@ -1169,6 +1209,24 @@ final class ProductStateBulkPricingPage
         $labels = $this->pricing_mode_options();
 
         return $labels[$mode] ?? ($mode !== '' ? $mode : __('Unset', 'ffl-hub'));
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function fixed_profit_shipping_mode_options(): array
+    {
+        return [
+            'included' => __('Include shipping in item price', 'ffl-hub'),
+            'separate' => __('Charge shipping separately', 'ffl-hub'),
+        ];
+    }
+
+    private function fixed_profit_shipping_mode_label(string $mode): string
+    {
+        $labels = $this->fixed_profit_shipping_mode_options();
+
+        return $labels[$mode] ?? $labels['included'];
     }
 
     /**
@@ -1352,7 +1410,11 @@ final class ProductStateBulkPricingPage
                 font-weight: 400;
                 line-height: 1.35;
             }
-            .fflhub-pricing-form input[disabled] {
+            .fflhub-pricing-form label.is-disabled {
+                opacity: .58;
+            }
+            .fflhub-pricing-form input[disabled],
+            .fflhub-pricing-form select[disabled] {
                 background: #f6f7f7;
                 color: #8c8f94;
             }
@@ -1543,8 +1605,11 @@ final class ProductStateBulkPricingPage
                 var mode = document.querySelector('.fflhub-pricing-mode-select');
                 var value = document.querySelector('.fflhub-pricing-value-input');
                 var hint = document.querySelector('.fflhub-pricing-value-hint');
+                var fixedProfitShippingField = document.querySelector('.fflhub-pricing-fixed-profit-shipping-field');
+                var fixedProfitShippingMode = document.querySelector('.fflhub-pricing-fixed-profit-shipping-select');
                 var applyMode = document.querySelector('.fflhub-pricing-apply-mode-input');
                 var applyValue = document.querySelector('.fflhub-pricing-apply-value-input');
+                var applyFixedProfitShippingMode = document.querySelector('.fflhub-pricing-apply-fixed-profit-shipping-input');
                 var quoteShipAction = document.querySelector('.fflhub-pricing-quote-ship-select');
                 var applyQuoteShipAction = document.querySelector('.fflhub-pricing-apply-quote-ship-input');
                 var applyWooCheckbox = document.querySelector('.fflhub-pricing-apply-woo-checkbox');
@@ -1557,8 +1622,15 @@ final class ProductStateBulkPricingPage
                 function syncPricingValueField() {
                     var selected = mode.value || '';
                     var needsValue = selected === 'fixed_percent' || selected === 'fixed_price' || selected === 'fixed_profit';
+                    var fixedProfitMode = selected === 'fixed_profit';
                     value.disabled = !needsValue;
                     value.required = needsValue;
+                    if (fixedProfitShippingField) {
+                        fixedProfitShippingField.classList.toggle('is-disabled', !fixedProfitMode);
+                    }
+                    if (fixedProfitShippingMode) {
+                        fixedProfitShippingMode.disabled = !fixedProfitMode;
+                    }
 
                     if (selected === 'global_percent') {
                         hint.textContent = 'Global Percent uses the sitewide markup setting and ignores this field.';
@@ -1578,6 +1650,9 @@ final class ProductStateBulkPricingPage
                     if (applyValue) {
                         applyValue.value = needsValue ? value.value : '';
                     }
+                    if (fixedProfitShippingMode && applyFixedProfitShippingMode) {
+                        applyFixedProfitShippingMode.value = fixedProfitMode ? fixedProfitShippingMode.value : 'included';
+                    }
                     if (quoteShipAction && applyQuoteShipAction) {
                         applyQuoteShipAction.value = quoteShipAction.value || '';
                     }
@@ -1588,6 +1663,9 @@ final class ProductStateBulkPricingPage
 
                 mode.addEventListener('change', syncPricingValueField);
                 value.addEventListener('input', syncPricingValueField);
+                if (fixedProfitShippingMode) {
+                    fixedProfitShippingMode.addEventListener('change', syncPricingValueField);
+                }
                 if (applyWooCheckbox) {
                     applyWooCheckbox.addEventListener('change', syncPricingValueField);
                 }

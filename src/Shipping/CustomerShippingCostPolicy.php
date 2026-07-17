@@ -32,6 +32,11 @@ final class CustomerShippingCostPolicy
             return $coverage;
         }
 
+        $shipping_mode = strtolower(trim((string) ($row['fixed_profit_shipping_mode'] ?? 'included')));
+        if ($shipping_mode === 'separate') {
+            return $coverage;
+        }
+
         $distributor_shipping = self::non_negative_number($row['shipping_cost'] ?? null);
         $estimated_usps_shipping = self::non_negative_number($row['estimated_usps_shipping_cost'] ?? null);
         $dropship_enabled = self::boolish($row['dropship_enabled'] ?? null, false);
