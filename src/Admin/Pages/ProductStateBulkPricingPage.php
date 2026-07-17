@@ -808,7 +808,7 @@ final class ProductStateBulkPricingPage
 
                 <label class="fflhub-pricing-check">
                     <input type="hidden" name="apply_woo_now" value="0" />
-                    <input type="checkbox" name="apply_woo_now" value="1" <?php checked($apply_woo_now); ?> />
+                    <input type="checkbox" name="apply_woo_now" class="fflhub-pricing-apply-woo-checkbox" value="1" <?php checked($apply_woo_now); ?> />
                     <span><?php esc_html_e('Save matching Woo products after apply', 'ffl-hub'); ?></span>
                 </label>
 
@@ -828,9 +828,9 @@ final class ProductStateBulkPricingPage
                 <input type="hidden" name="map_price_status" value="<?php echo esc_attr($filters['map_price_status']); ?>" />
                 <input type="hidden" name="dropship_status" value="<?php echo esc_attr($filters['dropship_status']); ?>" />
                 <input type="hidden" name="ffl_status" value="<?php echo esc_attr($filters['ffl_status']); ?>" />
-                <input type="hidden" name="pricing_mode" value="<?php echo esc_attr($mode); ?>" />
-                <input type="hidden" name="pricing_value" value="<?php echo esc_attr($value_input); ?>" />
-                <input type="hidden" name="apply_woo_now" value="<?php echo esc_attr($apply_woo_now ? '1' : '0'); ?>" />
+                <input type="hidden" name="pricing_mode" class="fflhub-pricing-apply-mode-input" value="<?php echo esc_attr($mode); ?>" />
+                <input type="hidden" name="pricing_value" class="fflhub-pricing-apply-value-input" value="<?php echo esc_attr($value_input); ?>" />
+                <input type="hidden" name="apply_woo_now" class="fflhub-pricing-apply-woo-input" value="<?php echo esc_attr($apply_woo_now ? '1' : '0'); ?>" />
                 <?php
                 $apply_attrs = [
                     'onclick' => "return confirm('Apply the selected pricing controls to the currently filtered product_state rows? This marks product_state rows changed and can save matching Woo products if enabled.');",
@@ -1453,6 +1453,10 @@ final class ProductStateBulkPricingPage
                 var mode = document.querySelector('.fflhub-pricing-mode-select');
                 var value = document.querySelector('.fflhub-pricing-value-input');
                 var hint = document.querySelector('.fflhub-pricing-value-hint');
+                var applyMode = document.querySelector('.fflhub-pricing-apply-mode-input');
+                var applyValue = document.querySelector('.fflhub-pricing-apply-value-input');
+                var applyWooCheckbox = document.querySelector('.fflhub-pricing-apply-woo-checkbox');
+                var applyWooInput = document.querySelector('.fflhub-pricing-apply-woo-input');
                 if (!mode || !value || !hint) {
                     return;
                 }
@@ -1474,9 +1478,23 @@ final class ProductStateBulkPricingPage
                     } else {
                         hint.textContent = 'Enter the desired net profit. Product state accounts for shipping and processor cost.';
                     }
+
+                    if (applyMode) {
+                        applyMode.value = selected;
+                    }
+                    if (applyValue) {
+                        applyValue.value = needsValue ? value.value : '';
+                    }
+                    if (applyWooCheckbox && applyWooInput) {
+                        applyWooInput.value = applyWooCheckbox.checked ? '1' : '0';
+                    }
                 }
 
                 mode.addEventListener('change', syncPricingValueField);
+                value.addEventListener('input', syncPricingValueField);
+                if (applyWooCheckbox) {
+                    applyWooCheckbox.addEventListener('change', syncPricingValueField);
+                }
                 syncPricingValueField();
             }());
         </script>
