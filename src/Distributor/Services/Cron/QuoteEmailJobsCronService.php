@@ -840,9 +840,7 @@ final class QuoteEmailJobsCronService extends AbstractCronService
         if ($free_threshold > 0.0 && $shipping_cost_total <= ($free_threshold + 0.0001)) {
             $customer_charge = 0.0;
         } else {
-            $customer_charge = ($f >= 0.99)
-                ? $customer_chargeable_shipping
-                : ($customer_chargeable_shipping / (1.0 - $f));
+            $customer_charge = $customer_chargeable_shipping;
         }
 
         $shipping_settings = $this->shipping_method_settings_snapshot();

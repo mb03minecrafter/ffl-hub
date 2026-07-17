@@ -671,9 +671,7 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                     );
                 }
 
-                $customer_charge = ($f >= 0.99)
-                    ? $charge_basis_shipping_cost
-                    : ($charge_basis_shipping_cost / (1.0 - $f));
+                $customer_charge = $charge_basis_shipping_cost;
                 $this->log_debug(
                     sprintf(
                         'RULE free_shipping=no customer_charge=%s net_shipping_cost=%s basis_shipping_cost=%s charge_basis=%s',
