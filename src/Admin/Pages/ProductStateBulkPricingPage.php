@@ -49,6 +49,7 @@ final class ProductStateBulkPricingPage
 
         $filters = $this->read_filters_from_request($_GET);
         $pricing = $this->read_pricing_from_request($_GET);
+        $quote_free_shipping_action = $this->read_quote_free_shipping_action_from_request($_GET);
         $apply_woo_now = $this->read_apply_woo_now_from_request($_GET, true);
         $brand_options = $this->brand_options();
         $map_policy_options = $this->map_policy_options();
@@ -63,7 +64,7 @@ final class ProductStateBulkPricingPage
             </p>
 
             <?php $this->render_result($result); ?>
-            <?php $this->render_filter_form($filters, $pricing, $apply_woo_now, $brand_options, $map_policy_options, $match_count); ?>
+            <?php $this->render_filter_form($filters, $pricing, $quote_free_shipping_action, $apply_woo_now, $brand_options, $map_policy_options, $match_count); ?>
             <?php $this->render_preview_table($preview_rows, $match_count); ?>
             <?php $this->render_styles(); ?>
             <?php $this->render_scripts(); ?>
@@ -97,8 +98,9 @@ final class ProductStateBulkPricingPage
 
         $filters = $this->read_filters_from_request($_POST);
         $pricing = $this->read_pricing_from_request($_POST);
+        $quote_free_shipping_action = $this->read_quote_free_shipping_action_from_request($_POST);
         $apply_woo_now = $this->read_apply_woo_now_from_request($_POST, true);
-        $result = $this->apply_pricing_controls($filters, $pricing, $apply_woo_now);
+        $result = $this->apply_pricing_controls($filters, $pricing, $quote_free_shipping_action, $apply_woo_now);
         set_transient($this->result_transient_key(), $result, 5 * MINUTE_IN_SECONDS);
 
         $redirect_args = [
@@ -110,6 +112,7 @@ final class ProductStateBulkPricingPage
             'ffl_status' => $filters['ffl_status'],
             'pricing_mode' => $pricing['mode'],
             'pricing_value' => $pricing['value_input'],
+            'quote_free_shipping_override_action' => $quote_free_shipping_action,
             'apply_woo_now' => $apply_woo_now ? '1' : '0',
             'ran' => self::FORM_ACTION,
         ];
@@ -122,7 +125,7 @@ final class ProductStateBulkPricingPage
      * @param array<string,mixed> $filters
      * @return array<string,mixed>
      */
-    private function apply_pricing_controls(array $filters, array $pricing, bool $apply_woo_now): array
+    private function apply_pricing_controls(array $filters, array $pricing, string $quote_free_shipping_action, bool $apply_woo_now): array
     {
         global $wpdb;
 
@@ -139,12 +142,16 @@ final class ProductStateBulkPricingPage
             'pricing_mode' => $pricing['mode'],
             'pricing_mode_label' => $this->pricing_mode_label($pricing['mode']),
             'pricing_value' => $pricing['value'] === null ? '' : number_format((float) $pricing['value'], 4, '.', ''),
+            'quote_free_shipping_action' => $quote_free_shipping_action,
+            'quote_free_shipping_action_label' => $this->quote_free_shipping_action_label($quote_free_shipping_action),
             'matched_rows' => 0,
             'pricing_control_rows' => 0,
+            'quote_free_shipping_rows' => 0,
             'recalculated_rows' => 0,
             'apply_woo_now' => $apply_woo_now ? 1 : 0,
             'woo_apply' => null,
             'pricing_control_elapsed_ms' => '0.00',
+            'quote_free_shipping_elapsed_ms' => '0.00',
             'recalculation_elapsed_ms' => '0.00',
             'elapsed_ms' => '0.00',
             'errors' => [],
@@ -211,6 +218,31 @@ final class ProductStateBulkPricingPage
         }
 
         $result['pricing_control_rows'] = is_numeric($control_rows) ? (int) $control_rows : 0;
+
+        if ($quote_free_shipping_action !== '') {
+            $target_quote_free_shipping = $quote_free_shipping_action === 'enable' ? 1 : 0;
+            $t_quote_free_shipping = microtime(true);
+            $quote_free_shipping_sql = "
+                UPDATE {$table} ps
+                SET
+                    ps.quote_free_shipping_override = {$target_quote_free_shipping},
+                    ps.updated_at = NOW(),
+                    ps.has_changed = 1
+                WHERE {$where['sql']}
+                  AND NOT (ps.quote_free_shipping_override <=> {$target_quote_free_shipping})
+            ";
+            $quote_free_shipping_sql = $this->prepare_sql($quote_free_shipping_sql, $where['params']);
+            $quote_free_shipping_rows = $wpdb->query($quote_free_shipping_sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $result['quote_free_shipping_elapsed_ms'] = number_format((microtime(true) - $t_quote_free_shipping) * 1000.0, 2, '.', '');
+
+            if ($quote_free_shipping_rows === false) {
+                $result['ok'] = false;
+                $result['errors'][] = 'Failed to update quote free shipping override: ' . (string) $wpdb->last_error;
+                return $this->finish_result($result, $started);
+            }
+
+            $result['quote_free_shipping_rows'] = is_numeric($quote_free_shipping_rows) ? (int) $quote_free_shipping_rows : 0;
+        }
 
         $t_recalc = microtime(true);
         $recalc_sql = $this->recalculate_filtered_outputs_sql($table, $where['sql']);
@@ -354,6 +386,18 @@ final class ProductStateBulkPricingPage
             'value' => $value,
             'value_input' => $value === null ? '' : number_format($value, 2, '.', ''),
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $source
+     */
+    private function read_quote_free_shipping_action_from_request(array $source): string
+    {
+        $action = isset($source['quote_free_shipping_override_action'])
+            ? sanitize_text_field(wp_unslash((string) $source['quote_free_shipping_override_action']))
+            : '';
+
+        return array_key_exists($action, $this->quote_free_shipping_action_options()) ? $action : '';
     }
 
     private function pricing_mode_requires_value(string $mode): bool
@@ -581,6 +625,7 @@ final class ProductStateBulkPricingPage
                 ps.pricing_percent,
                 ps.pricing_fixed_price,
                 ps.pricing_fixed_profit,
+                ps.quote_free_shipping_override,
                 ps.distributor_id,
                 ps.distributor_product_id,
                 ps.qty,
@@ -722,7 +767,7 @@ final class ProductStateBulkPricingPage
      * @param array<int,string> $brand_options
      * @param array<string,string> $map_policy_options
      */
-    private function render_filter_form(array $filters, array $pricing, bool $apply_woo_now, array $brand_options, array $map_policy_options, int $match_count): void
+    private function render_filter_form(array $filters, array $pricing, string $quote_free_shipping_action, bool $apply_woo_now, array $brand_options, array $map_policy_options, int $match_count): void
     {
         $mode = (string) ($pricing['mode'] ?? 'fixed_profit');
         $value_input = (string) ($pricing['value_input'] ?? '');
@@ -806,6 +851,20 @@ final class ProductStateBulkPricingPage
                     </small>
                 </label>
 
+                <label>
+                    <span><?php esc_html_e('Quote free shipping', 'ffl-hub'); ?></span>
+                    <select name="quote_free_shipping_override_action" class="fflhub-pricing-quote-ship-select">
+                        <?php foreach ($this->quote_free_shipping_action_options() as $value => $label) : ?>
+                            <option value="<?php echo esc_attr($value); ?>" <?php selected($quote_free_shipping_action, $value); ?>>
+                                <?php echo esc_html($label); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small>
+                        <?php esc_html_e('Only changes the per-product quote/free-shipping override flag. Leave unchanged keeps current row values.', 'ffl-hub'); ?>
+                    </small>
+                </label>
+
                 <label class="fflhub-pricing-check">
                     <input type="hidden" name="apply_woo_now" value="0" />
                     <input type="checkbox" name="apply_woo_now" class="fflhub-pricing-apply-woo-checkbox" value="1" <?php checked($apply_woo_now); ?> />
@@ -830,15 +889,16 @@ final class ProductStateBulkPricingPage
                 <input type="hidden" name="ffl_status" value="<?php echo esc_attr($filters['ffl_status']); ?>" />
                 <input type="hidden" name="pricing_mode" class="fflhub-pricing-apply-mode-input" value="<?php echo esc_attr($mode); ?>" />
                 <input type="hidden" name="pricing_value" class="fflhub-pricing-apply-value-input" value="<?php echo esc_attr($value_input); ?>" />
+                <input type="hidden" name="quote_free_shipping_override_action" class="fflhub-pricing-apply-quote-ship-input" value="<?php echo esc_attr($quote_free_shipping_action); ?>" />
                 <input type="hidden" name="apply_woo_now" class="fflhub-pricing-apply-woo-input" value="<?php echo esc_attr($apply_woo_now ? '1' : '0'); ?>" />
                 <?php
                 $apply_attrs = [
-                    'onclick' => "return confirm('Apply the selected pricing controls to the currently filtered product_state rows? This marks product_state rows changed and can save matching Woo products if enabled.');",
+                    'onclick' => "return confirm('Apply the selected pricing controls and quote free-shipping action to the currently filtered product_state rows? This marks product_state rows changed and can save matching Woo products if enabled.');",
                 ];
                 if (!$this->has_active_filter($filters)) {
                     $apply_attrs['disabled'] = 'disabled';
                 }
-                submit_button(__('Apply Pricing to Filtered Rows', 'ffl-hub'), 'primary', 'submit', false, $apply_attrs);
+                submit_button(__('Apply Bulk Changes to Filtered Rows', 'ffl-hub'), 'primary', 'submit', false, $apply_attrs);
                 ?>
                 <?php if (!$this->has_active_filter($filters)) : ?>
                     <p class="description"><?php esc_html_e('Choose at least one filter before applying a bulk change.', 'ffl-hub'); ?></p>
@@ -938,6 +998,14 @@ final class ProductStateBulkPricingPage
                                     <dd><?php echo esc_html($this->pricing_mode_label((string) ($row['pricing_mode'] ?? ''))); ?></dd>
                                     <dt><?php esc_html_e('Value', 'ffl-hub'); ?></dt>
                                     <dd><?php echo esc_html($pricing_summary !== '' ? $pricing_summary : '-'); ?></dd>
+                                    <dt><?php esc_html_e('Quote ship', 'ffl-hub'); ?></dt>
+                                    <dd>
+                                        <?php
+                                        echo !empty($row['quote_free_shipping_override'])
+                                            ? $this->pill('Free quote ship', 'good')
+                                            : $this->pill('Normal quote ship', 'neutral'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+                                        ?>
+                                    </dd>
                                 </dl>
                             </section>
 
@@ -1015,8 +1083,10 @@ final class ProductStateBulkPricingPage
                 <li><?php echo esc_html(sprintf('FFL filter: %s', $this->ffl_status_label((string) ($result['ffl_status'] ?? '')))); ?></li>
                 <li><?php echo esc_html(sprintf('Pricing mode: %s', (string) ($result['pricing_mode_label'] ?? $this->pricing_mode_label((string) ($result['pricing_mode'] ?? ''))))); ?></li>
                 <li><?php echo esc_html(sprintf('Pricing value: %s', $this->result_pricing_value_label($result))); ?></li>
+                <li><?php echo esc_html(sprintf('Quote free shipping action: %s', (string) ($result['quote_free_shipping_action_label'] ?? $this->quote_free_shipping_action_label((string) ($result['quote_free_shipping_action'] ?? ''))))); ?></li>
                 <li><?php echo esc_html(sprintf('Matched rows: %d', (int) ($result['matched_rows'] ?? 0))); ?></li>
                 <li><?php echo esc_html(sprintf('Pricing controls changed: %d', (int) ($result['pricing_control_rows'] ?? 0))); ?></li>
+                <li><?php echo esc_html(sprintf('Quote free shipping rows changed: %d', (int) ($result['quote_free_shipping_rows'] ?? 0))); ?></li>
                 <li><?php echo esc_html(sprintf('Outputs recalculated: %d', (int) ($result['recalculated_rows'] ?? 0))); ?></li>
                 <li><?php echo esc_html(sprintf('Saved Woo products now: %s', !empty($result['apply_woo_now']) ? 'yes' : 'no')); ?></li>
                 <?php if (is_array($result['woo_apply'] ?? null)) : ?>
@@ -1026,6 +1096,7 @@ final class ProductStateBulkPricingPage
                     <li><?php echo esc_html(sprintf('Woo apply runtime: %s ms', (string) ($result['woo_apply']['elapsed_ms'] ?? '0.00'))); ?></li>
                 <?php endif; ?>
                 <li><?php echo esc_html(sprintf('Controls runtime: %s ms', (string) ($result['pricing_control_elapsed_ms'] ?? '0.00'))); ?></li>
+                <li><?php echo esc_html(sprintf('Quote free shipping runtime: %s ms', (string) ($result['quote_free_shipping_elapsed_ms'] ?? '0.00'))); ?></li>
                 <li><?php echo esc_html(sprintf('Recalculation runtime: %s ms', (string) ($result['recalculation_elapsed_ms'] ?? '0.00'))); ?></li>
                 <li><?php echo esc_html(sprintf('Runtime: %s ms', (string) ($result['elapsed_ms'] ?? '0.00'))); ?></li>
             </ul>
@@ -1098,6 +1169,25 @@ final class ProductStateBulkPricingPage
         $labels = $this->pricing_mode_options();
 
         return $labels[$mode] ?? ($mode !== '' ? $mode : __('Unset', 'ffl-hub'));
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function quote_free_shipping_action_options(): array
+    {
+        return [
+            '' => __('Leave unchanged', 'ffl-hub'),
+            'enable' => __('Enable quote free shipping', 'ffl-hub'),
+            'disable' => __('Disable quote free shipping', 'ffl-hub'),
+        ];
+    }
+
+    private function quote_free_shipping_action_label(string $action): string
+    {
+        $labels = $this->quote_free_shipping_action_options();
+
+        return $labels[$action] ?? ($action !== '' ? $action : __('Leave unchanged', 'ffl-hub'));
     }
 
     /**
@@ -1455,6 +1545,8 @@ final class ProductStateBulkPricingPage
                 var hint = document.querySelector('.fflhub-pricing-value-hint');
                 var applyMode = document.querySelector('.fflhub-pricing-apply-mode-input');
                 var applyValue = document.querySelector('.fflhub-pricing-apply-value-input');
+                var quoteShipAction = document.querySelector('.fflhub-pricing-quote-ship-select');
+                var applyQuoteShipAction = document.querySelector('.fflhub-pricing-apply-quote-ship-input');
                 var applyWooCheckbox = document.querySelector('.fflhub-pricing-apply-woo-checkbox');
                 var applyWooInput = document.querySelector('.fflhub-pricing-apply-woo-input');
                 var applyForm = document.querySelector('.fflhub-pricing-apply');
@@ -1486,6 +1578,9 @@ final class ProductStateBulkPricingPage
                     if (applyValue) {
                         applyValue.value = needsValue ? value.value : '';
                     }
+                    if (quoteShipAction && applyQuoteShipAction) {
+                        applyQuoteShipAction.value = quoteShipAction.value || '';
+                    }
                     if (applyWooCheckbox && applyWooInput) {
                         applyWooInput.value = applyWooCheckbox.checked ? '1' : '0';
                     }
@@ -1495,6 +1590,9 @@ final class ProductStateBulkPricingPage
                 value.addEventListener('input', syncPricingValueField);
                 if (applyWooCheckbox) {
                     applyWooCheckbox.addEventListener('change', syncPricingValueField);
+                }
+                if (quoteShipAction) {
+                    quoteShipAction.addEventListener('change', syncPricingValueField);
                 }
                 if (applyForm) {
                     applyForm.addEventListener('submit', syncPricingValueField);
