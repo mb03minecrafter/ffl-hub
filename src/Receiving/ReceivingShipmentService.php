@@ -235,6 +235,97 @@ final class ReceivingShipmentService
     }
 
     /**
+     * Debug-only helper for testing old shipment labels when the physical items
+     * are no longer available to scan. Normal receiving never calls this path.
+     *
+     * @return array<string,mixed>
+     */
+    public function debug_complete_shipment(string $shipment_key): array
+    {
+        global $wpdb;
+
+        if (!$this->include_old_shipments) {
+            return $this->error('debug_only', __('Enable the old/completed shipment debug option before using this override.', 'ffl-hub'));
+        }
+
+        $shipment_key = trim($shipment_key);
+        if ($shipment_key === '') {
+            return $this->error('missing_shipment', __('No active shipment is selected.', 'ffl-hub'));
+        }
+
+        $lock_name = 'fflhub_receiving_' . md5($shipment_key);
+        $locked = (int) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 5)', $lock_name));
+        if ($locked !== 1) {
+            return $this->error('lock_timeout', __('Receiving is busy for this shipment. Try again.', 'ffl-hub'));
+        }
+
+        try {
+            $shipment = $this->shipment_by_key($shipment_key);
+            if ($shipment === null) {
+                return $this->error('shipment_not_found', __('Shipment was not found or is no longer available.', 'ffl-hub'));
+            }
+
+            $events_created = 0;
+            $orders_touched = [];
+            foreach ((array) ($shipment['products_by_upc'] ?? []) as $upc => $product) {
+                foreach ((array) ($product['orders'] ?? []) as $allocation) {
+                    $remaining = max(0, (int) ($allocation['remaining_qty'] ?? 0));
+                    if ($remaining <= 0) {
+                        continue;
+                    }
+
+                    $this->events->insert_event([
+                        'shipment_key' => $shipment_key,
+                        'job_id' => (int) ($allocation['job_id'] ?? 0),
+                        'order_id' => (int) ($allocation['order_id'] ?? 0),
+                        'order_item_id' => (int) ($allocation['order_item_id'] ?? 0),
+                        'dist_id' => (string) ($shipment['dist_id'] ?? ''),
+                        'lane' => (string) ($allocation['lane'] ?? ''),
+                        'merchant_po' => (string) ($shipment['merchant_po'] ?? ''),
+                        'tracking_number' => (string) ($shipment['primary_tracking'] ?? ''),
+                        'product_id' => (int) ($allocation['product_id'] ?? ($product['product_id'] ?? 0)),
+                        'upc' => (string) $upc,
+                        'quantity' => $remaining,
+                        'result' => 'accepted',
+                        'exception_status' => 'debug_override',
+                        'message' => __('Debug override: marked received without a product scan.', 'ffl-hub'),
+                        'raw_scan' => 'DEBUG_OVERRIDE',
+                        'normalized_scan' => (string) $upc,
+                        'request_token' => 'debug-' . md5($shipment_key . '|' . (string) ($allocation['job_id'] ?? '') . '|' . (string) $upc . '|' . microtime(true)),
+                    ]);
+                    $events_created++;
+
+                    $order_id = (int) ($allocation['order_id'] ?? 0);
+                    if ($order_id > 0) {
+                        $orders_touched[$order_id] = true;
+                    }
+                }
+            }
+
+            foreach (array_keys($orders_touched) as $order_id) {
+                $this->mark_order_ready_if_complete((int) $order_id);
+            }
+
+            $fresh = $this->shipment_by_key($shipment_key);
+
+            return [
+                'ok' => true,
+                'result' => 'debug_override',
+                'events_created' => $events_created,
+                'message' => sprintf(
+                    /* translators: %d: number of receiving event rows created. */
+                    __('Debug override complete. Created %d receiving event rows.', 'ffl-hub'),
+                    $events_created
+                ),
+                'shipment' => $fresh,
+                'shipment_complete' => !empty($fresh['complete']),
+            ];
+        } finally {
+            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock_name));
+        }
+    }
+
+    /**
      * @return array<string,mixed>
      */
     public function recent_history(): array

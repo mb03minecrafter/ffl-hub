@@ -92,6 +92,23 @@
   display: block;
 }
 
+.fflhub-receiving-debug-actions {
+  align-items: center;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  color: #7c2d12;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 150px 1fr auto;
+  margin: 14px 0;
+  padding: 12px;
+}
+
+.fflhub-receiving-debug-actions span {
+  color: #9a3412;
+}
+
 .fflhub-receiving-field {
   display: grid;
   gap: 8px;
@@ -389,6 +406,7 @@
 
   .fflhub-receiving-scan-field,
   .fflhub-receiving-scan-result,
+  .fflhub-receiving-debug-actions,
   .fflhub-receiving-complete-grid,
   .fflhub-receiving-event,
   .fflhub-receiving-history-row {

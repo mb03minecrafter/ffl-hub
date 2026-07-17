@@ -91,6 +91,23 @@
     return String(Date.now()).toString(36) + '-' + Math.random().toString(36).slice(2, 12);
   }
 
+  function debugEnabled() {
+    return $('[data-receiving-debug-old]').is(':checked');
+  }
+
+  function renderDebugOverrideButton() {
+    if (!debugEnabled()) {
+      return '';
+    }
+
+    return '' +
+      '<div class="fflhub-receiving-debug-actions">' +
+        '<strong>Debug tools</strong>' +
+        '<span>For old-box testing only. This marks every remaining expected item as received without scanning products.</span>' +
+        '<button type="button" class="button" data-receiving-debug-complete>Debug Complete Shipment</button>' +
+      '</div>';
+  }
+
   function shipmentTitle(shipment) {
     var tracking = (shipment.tracking_numbers || []).join(', ');
     return [
@@ -165,6 +182,7 @@
           '<div><span>Carrier Service</span><strong>' + esc(shipment.shipping_service || 'Unknown') + '</strong></div>' +
         '</div>' +
         renderProducts(shipment) +
+        renderDebugOverrideButton() +
         '<button type="button" class="button button-primary button-hero" data-receiving-start-scan>Start Scanning Products</button>' +
       '</div>'
     );
@@ -211,6 +229,7 @@
           '<button type="button" class="button button-primary" data-receiving-upc-submit>Receive Item</button>' +
         '</label>' +
         resultHtml +
+        renderDebugOverrideButton() +
         renderProducts(shipment) +
         renderHistory(shipment.scan_history || []) +
       '</div>'
@@ -364,6 +383,50 @@
     });
   }
 
+  function debugCompleteShipment() {
+    var shipment = state.shipment;
+    if (!shipment || !shipment.shipment_key) {
+      setFeedback('Choose a shipment first.', 'error');
+      beep('error');
+      return;
+    }
+    if (!debugEnabled()) {
+      setFeedback('Enable old/completed shipment debug mode first.', 'error');
+      beep('error');
+      return;
+    }
+    if (state.busy) {
+      return;
+    }
+    if (!window.confirm('Debug complete this shipment without scanning product UPCs? This writes debug receiving events.')) {
+      return;
+    }
+
+    state.busy = true;
+    setFeedback('Applying debug receiving override...', 'info');
+    post('fflhub_receiving_debug_complete', {
+      shipment_key: shipment.shipment_key
+    }).then(function (payload) {
+      if (payload.shipment) {
+        state.shipment = payload.shipment;
+        renderScanPane(payload.shipment, payload);
+        renderCompletePane(payload.shipment);
+      }
+
+      if (payload.ok) {
+        setFeedback(payload.message || 'Debug override complete.', 'success');
+        beep(payload.shipment_complete ? 'complete' : 'success');
+        setStep(payload.shipment_complete ? 'complete' : 'scan');
+      } else {
+        setFeedback(payload.message || 'Debug override failed.', 'error');
+        beep('error');
+      }
+    }).always(function () {
+      state.busy = false;
+      $('[data-receiving-upc-input]').trigger('focus');
+    });
+  }
+
   function refreshHistory() {
     post('fflhub_receiving_history', {}).then(function (payload) {
       var rows = (payload.history || []).map(function (row) {
@@ -416,6 +479,7 @@
       }, 50);
     });
     $(document).on('click', '[data-receiving-upc-submit]', scanProduct);
+    $(document).on('click', '[data-receiving-debug-complete]', debugCompleteShipment);
     $(document).on('keydown', '[data-receiving-upc-input]', function (event) {
       if (event.key === 'Enter') {
         event.preventDefault();

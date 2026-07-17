@@ -37,6 +37,7 @@ final class ReceivingPage
         add_action('wp_ajax_fflhub_receiving_lookup_po', [$this, 'ajax_lookup_po']);
         add_action('wp_ajax_fflhub_receiving_get_shipment', [$this, 'ajax_get_shipment']);
         add_action('wp_ajax_fflhub_receiving_scan_product', [$this, 'ajax_scan_product']);
+        add_action('wp_ajax_fflhub_receiving_debug_complete', [$this, 'ajax_debug_complete']);
         add_action('wp_ajax_fflhub_receiving_history', [$this, 'ajax_history']);
     }
 
@@ -195,6 +196,12 @@ final class ReceivingPage
             $this->request_text('scan'),
             $this->request_text('request_token')
         ));
+    }
+
+    public function ajax_debug_complete(): void
+    {
+        $this->assert_ajax_access();
+        $this->send($this->service()->debug_complete_shipment($this->request_text('shipment_key')));
     }
 
     public function ajax_history(): void
