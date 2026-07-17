@@ -85,6 +85,21 @@
         $step.addClass('is-active');
       }
     });
+    scrollToStep(active);
+  }
+
+  function scrollToStep(step) {
+    window.setTimeout(function () {
+      var el = document.querySelector('[data-step="' + step + '"]');
+      if (!el || !el.scrollIntoView) {
+        return;
+      }
+
+      el.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+    }, 80);
   }
 
   function requestToken() {
