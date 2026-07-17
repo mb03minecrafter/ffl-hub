@@ -113,8 +113,8 @@ final class ReceivingPage
                         <label class="fflhub-receiving-debug-toggle">
                             <input type="checkbox" value="1" data-receiving-debug-old />
                             <span>
-                                <strong><?php esc_html_e('Debug: include old/completed shipments', 'ffl-hub'); ?></strong>
-                                <?php esc_html_e('Use this for testing old boxes. Normal receiving keeps completed Woo orders hidden.', 'ffl-hub'); ?>
+                                <strong><?php esc_html_e('Debug: include old/completed and test shipments', 'ffl-hub'); ?></strong>
+                                <?php esc_html_e('Use this for testing old boxes or dummy labels. Normal receiving keeps completed Woo orders and test fixtures hidden.', 'ffl-hub'); ?>
                             </span>
                         </label>
 

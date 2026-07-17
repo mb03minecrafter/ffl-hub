@@ -78,6 +78,7 @@ use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
 use FFLHub\Receiving\ReceivingEventsStore;
+use FFLHub\Receiving\ReceivingTestShipmentStore;
 use FFLHub\Settings\Options;
 use FFLHub\Settings\SettingsRegistrar;
 use FFLHub\Shipping\Wordpress\ShippingRegistrar;
@@ -214,6 +215,7 @@ final class Plugin
             DistributorOffersStore::ensure_schema();
             ProductBestOffersStore::ensure_schema();
             ReceivingEventsStore::ensure_schema();
+            ReceivingTestShipmentStore::ensure_schema();
             WPCronWarning::init();
 
             $this->admin_page = new AdminPage($this->distributor_handler);

@@ -62,7 +62,18 @@ final class ReceivingShipmentService
             }
         }
 
-        return $this->lookup_result(array_values($matches), 'tracking_not_found', __('Tracking number was not found in dealer shipment tracker rows.', 'ffl-hub'));
+        if ($this->include_old_shipments) {
+            $test_shipment = $this->test_shipment_by_tracking($normalized);
+            if (is_array($test_shipment)) {
+                $matches[(string) ($test_shipment['shipment_key'] ?? '')] = $test_shipment;
+            }
+        }
+
+        $not_found_message = $this->include_old_shipments
+            ? __('Tracking number was not found in dealer shipment tracker rows or debug test fixtures.', 'ffl-hub')
+            : __('Tracking number was not found in dealer shipment tracker rows. Enable debug mode to scan dummy test labels.', 'ffl-hub');
+
+        return $this->lookup_result(array_values($matches), 'tracking_not_found', $not_found_message);
     }
 
     /**
@@ -735,7 +746,140 @@ final class ReceivingShipmentService
             }
         }
 
+        if ($this->include_old_shipments) {
+            return $this->test_shipment_by_key($shipment_key);
+        }
+
         return null;
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    private function test_shipment_by_tracking(string $tracking): ?array
+    {
+        $payload = (new ReceivingTestShipmentStore())->find_by_tracking($tracking);
+
+        return is_array($payload) ? $this->hydrate_test_shipment($payload) : null;
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    private function test_shipment_by_key(string $shipment_key): ?array
+    {
+        $payload = (new ReceivingTestShipmentStore())->find_by_key($shipment_key);
+
+        return is_array($payload) ? $this->hydrate_test_shipment($payload) : null;
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>
+     */
+    private function hydrate_test_shipment(array $payload): array
+    {
+        $shipment_key = trim((string) ($payload['shipment_key'] ?? ''));
+        $received_by_upc = $this->events->accepted_quantities_by_upc($shipment_key);
+        $products_by_upc = [];
+        $expected_units = 0;
+        $received_units = 0;
+
+        foreach ((array) ($payload['fixture_products'] ?? []) as $product) {
+            if (!is_array($product)) {
+                continue;
+            }
+
+            $upc = self::normalize_upc((string) ($product['upc'] ?? ''));
+            if ($upc === '') {
+                continue;
+            }
+
+            $expected = max(1, (int) ($product['expected_qty'] ?? 1));
+            $received = min($expected, (int) ($received_by_upc[$upc] ?? 0));
+            $remaining = max(0, $expected - $received);
+            $serial_required = !empty($product['serial_required']) ? 1 : 0;
+            $name = (string) ($product['name'] ?? ('UPC ' . $upc));
+
+            $products_by_upc[$upc] = [
+                'upc' => $upc,
+                'product_id' => 0,
+                'name' => $name,
+                'ffl_required' => $serial_required,
+                'serial_required' => $serial_required,
+                'expected_qty' => $expected,
+                'received_qty' => $received,
+                'remaining_qty' => $remaining,
+                'orders' => [
+                    [
+                        'job_id' => 0,
+                        'order_id' => 0,
+                        'order_number' => 'TEST',
+                        'order_created_ts' => time(),
+                        'customer_name' => __('Receiving Test Fixture', 'ffl-hub'),
+                        'order_edit_url' => '#',
+                        'order_item_id' => 0,
+                        'product_id' => 0,
+                        'lane' => OrderPlacementKeysUtil::LANE_DEALER_FULFILLED,
+                        'ffl_required' => $serial_required,
+                        'serial_required' => $serial_required,
+                        'qty_expected' => $expected,
+                        'qty_received' => $received,
+                        'remaining_qty' => $remaining,
+                    ],
+                ],
+            ];
+
+            $expected_units += $expected;
+            $received_units += $received;
+        }
+
+        uasort(
+            $products_by_upc,
+            static fn(array $a, array $b): int => strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''))
+        );
+
+        $history = $this->events->recent_events($shipment_key, 50);
+        $remaining_units = max(0, $expected_units - $received_units);
+        $complete = $expected_units > 0 && $remaining_units === 0;
+
+        return [
+            'shipment_key' => $shipment_key,
+            'dist_id' => (string) ($payload['dist_id'] ?? 'test'),
+            'merchant_po' => (string) ($payload['merchant_po'] ?? 'TEST'),
+            'tracking_numbers' => (array) ($payload['tracking_numbers'] ?? []),
+            'primary_tracking' => (string) ($payload['primary_tracking'] ?? ''),
+            'external_order_ids' => (array) ($payload['external_order_ids'] ?? []),
+            'shipping_services' => (array) ($payload['shipping_services'] ?? ['Debug Label']),
+            'shipping_service' => (string) ($payload['shipping_service'] ?? 'Debug Label'),
+            'invoice_numbers' => (array) ($payload['invoice_numbers'] ?? []),
+            'updated_at' => (string) ($payload['updated_at'] ?? ''),
+            'debug_fixture' => 1,
+            'products' => array_values($products_by_upc),
+            'products_by_upc' => $products_by_upc,
+            'orders' => [
+                [
+                    'order_id' => 0,
+                    'order_number' => 'TEST',
+                    'customer_name' => __('Receiving Test Fixture', 'ffl-hub'),
+                    'order_edit_url' => '#',
+                    'expected_units' => $expected_units,
+                    'received_units' => $received_units,
+                    'remaining_units' => $remaining_units,
+                    'ready_to_pack' => $complete,
+                    'products' => array_values($products_by_upc),
+                ],
+            ],
+            'expected_units' => $expected_units,
+            'received_units' => $received_units,
+            'remaining_units' => $remaining_units,
+            'order_count' => 1,
+            'status' => $complete ? 'complete' : ($received_units > 0 ? 'partial' : 'open'),
+            'complete' => $complete,
+            'scan_history' => $this->public_history($history),
+            'started_at' => $history ? (string) end($history)['created_at'] : '',
+            'completed_at' => $complete && $history ? (string) ($history[0]['created_at'] ?? '') : '',
+        ];
     }
 
     /**

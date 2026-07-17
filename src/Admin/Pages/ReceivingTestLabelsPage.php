@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Product\State\ProductStateStore;
+use FFLHub\Receiving\ReceivingTestShipmentStore;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -14,8 +15,8 @@ if (!defined('ABSPATH')) {
  *
  * The real receiving workflow is scanner-driven, so this page creates a small
  * 4x6-friendly barcode sheet with dummy tracking, UPC, and serial-number
- * barcodes. It does not look up shipments, write receiving events, or alter
- * orders; it only renders Code 128 test labels for scanner testing.
+ * barcodes. It also stores a debug-only shipment fixture so the Receiving page
+ * can find the dummy tracking number when debug mode is enabled.
  */
 final class ReceivingTestLabelsPage
 {
@@ -96,13 +97,17 @@ final class ReceivingTestLabelsPage
         $rows = $upc_text !== ''
             ? $this->rows_from_text($upc_text, $serial_prefix)
             : $this->sample_rows($serial_prefix);
+        $stored = false;
+        if (!empty($rows)) {
+            $stored = (new ReceivingTestShipmentStore())->upsert($this->debug_shipment_payload($tracking, $rows));
+        }
 
         ?>
         <div class="wrap fflhub-receiving-labels-page">
             <div class="fflhub-receiving-labels-toolbar">
                 <div>
                     <h1><?php esc_html_e('Receiving Test Labels', 'ffl-hub'); ?></h1>
-                    <p><?php esc_html_e('Print dummy scanner labels without creating orders, receiving events, or shipment rows.', 'ffl-hub'); ?></p>
+                    <p><?php esc_html_e('Print dummy scanner labels and register a debug-only receiving shipment fixture.', 'ffl-hub'); ?></p>
                 </div>
                 <button type="button" class="button button-primary" onclick="window.print()">
                     <?php esc_html_e('Print 4x6 Labels', 'ffl-hub'); ?>
@@ -129,7 +134,7 @@ final class ReceivingTestLabelsPage
                 </button>
             </form>
 
-            <?php $this->render_result($tracking, $rows); ?>
+            <?php $this->render_result($tracking, $rows, $stored); ?>
         </div>
         <?php
     }
@@ -137,17 +142,23 @@ final class ReceivingTestLabelsPage
     /**
      * @param array<int,array{upc:string,name:string,serial:string,unit:int,total:int,serial_required:bool}> $rows
      */
-    private function render_result(string $tracking, array $rows): void
+    private function render_result(string $tracking, array $rows, bool $stored): void
     {
         if (empty($rows)) {
             echo '<div class="notice notice-warning"><p>' . esc_html__('No UPC rows were found. Enter UPCs manually or make sure product_state has active non-dropship examples.', 'ffl-hub') . '</p></div>';
             return;
         }
 
-        $first_rows = array_slice($rows, 0, 5);
-        $remaining = array_slice($rows, 5);
+        if ($stored) {
+            echo '<div class="notice notice-success"><p>' . esc_html__('Debug receiving fixture saved. On the Receiving page, enable debug mode, then scan this dummy tracking barcode.', 'ffl-hub') . '</p></div>';
+        } else {
+            echo '<div class="notice notice-error"><p>' . esc_html__('Labels rendered, but the debug receiving fixture was not saved.', 'ffl-hub') . '</p></div>';
+        }
+
+        $first_rows = array_slice($rows, 0, 3);
+        $remaining = array_slice($rows, 3);
         $sheets = [$first_rows];
-        foreach (array_chunk($remaining, 6) as $chunk) {
+        foreach (array_chunk($remaining, 4) as $chunk) {
             $sheets[] = $chunk;
         }
 
@@ -177,7 +188,7 @@ final class ReceivingTestLabelsPage
             <?php if ($include_tracking && $tracking !== '') : ?>
                 <div class="fflhub-receiving-label-tracking">
                     <span><?php esc_html_e('1. Scan Tracking', 'ffl-hub'); ?></span>
-                    <?php echo $this->barcode_svg($tracking, 74, 'fflhub-receiving-barcode is-tracking'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                    <?php echo $this->barcode_svg($tracking, 110, 'fflhub-receiving-barcode is-tracking'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                     <strong><?php echo esc_html($tracking); ?></strong>
                 </div>
             <?php endif; ?>
@@ -187,14 +198,14 @@ final class ReceivingTestLabelsPage
                     <div class="fflhub-receiving-label-row">
                         <div>
                             <span><?php echo esc_html('2. UPC ' . $row['unit'] . '/' . $row['total']); ?></span>
-                            <?php echo $this->barcode_svg($row['upc'], 42, 'fflhub-receiving-barcode'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                            <?php echo $this->barcode_svg($row['upc'], 74, 'fflhub-receiving-barcode'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                             <strong><?php echo esc_html($row['upc']); ?></strong>
                             <small><?php echo esc_html($row['name']); ?></small>
                         </div>
                         <div class="<?php echo $row['serial_required'] ? 'is-serial-required' : ''; ?>">
                             <span><?php echo esc_html($row['serial_required'] ? '3. Serial' : 'Serial Not Required'); ?></span>
                             <?php if ($row['serial_required']) : ?>
-                                <?php echo $this->barcode_svg($row['serial'], 42, 'fflhub-receiving-barcode'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                                <?php echo $this->barcode_svg($row['serial'], 74, 'fflhub-receiving-barcode'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                 <strong><?php echo esc_html($row['serial']); ?></strong>
                             <?php else : ?>
                                 <em><?php esc_html_e('Accessory / non-FFL item', 'ffl-hub'); ?></em>
@@ -370,6 +381,53 @@ final class ReceivingTestLabelsPage
     private function dummy_tracking(): string
     {
         return 'TEST' . gmdate('ymdHis');
+    }
+
+    /**
+     * @param array<int,array{upc:string,name:string,serial:string,unit:int,total:int,serial_required:bool}> $rows
+     * @return array<string,mixed>
+     */
+    private function debug_shipment_payload(string $tracking, array $rows): array
+    {
+        $tracking = strtoupper(trim($tracking));
+        $products = [];
+        foreach ($rows as $row) {
+            $upc = (string) ($row['upc'] ?? '');
+            if ($upc === '') {
+                continue;
+            }
+
+            if (!isset($products[$upc])) {
+                $products[$upc] = [
+                    'upc' => $upc,
+                    'name' => (string) ($row['name'] ?? ('UPC ' . $upc)),
+                    'expected_qty' => 0,
+                    'ffl_required' => !empty($row['serial_required']) ? 1 : 0,
+                    'serial_required' => !empty($row['serial_required']) ? 1 : 0,
+                ];
+            }
+
+            $products[$upc]['expected_qty']++;
+            if (!empty($row['serial_required'])) {
+                $products[$upc]['ffl_required'] = 1;
+                $products[$upc]['serial_required'] = 1;
+            }
+        }
+
+        return [
+            'shipment_key' => 'test_' . substr(hash('sha256', $tracking), 0, 43),
+            'dist_id' => 'test',
+            'merchant_po' => 'TEST',
+            'tracking_numbers' => [$tracking],
+            'primary_tracking' => $tracking,
+            'external_order_ids' => [],
+            'shipping_services' => ['Debug Label'],
+            'shipping_service' => 'Debug Label',
+            'invoice_numbers' => [],
+            'updated_at' => current_time('mysql', true),
+            'debug_fixture' => 1,
+            'fixture_products' => array_values($products),
+        ];
     }
 
     private function barcode_svg(string $value, int $height, string $class): string

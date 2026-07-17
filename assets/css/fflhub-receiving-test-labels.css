@@ -108,8 +108,8 @@
 .fflhub-receiving-label-tracking {
   border: 2px solid #111827;
   display: grid;
-  gap: 4px;
-  padding: 7px;
+  gap: 6px;
+  padding: 8px;
   text-align: center;
 }
 
@@ -128,16 +128,16 @@
 
 .fflhub-receiving-label-items {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .fflhub-receiving-label-row {
   border: 1px solid #111827;
   display: grid;
-  gap: 6px;
+  gap: 8px;
   grid-template-columns: 1fr 1fr;
-  min-height: 0.62in;
-  padding: 5px;
+  min-height: 0.98in;
+  padding: 7px;
 }
 
 .fflhub-receiving-label-row > div {
@@ -147,7 +147,7 @@
 }
 
 .fflhub-receiving-label-row strong {
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 0.04em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -157,10 +157,10 @@
 .fflhub-receiving-label-row small,
 .fflhub-receiving-label-row em {
   color: #374151;
-  font-size: 7px;
+  font-size: 8px;
   font-style: normal;
   line-height: 1.15;
-  max-height: 17px;
+  max-height: 20px;
   overflow: hidden;
 }
 
@@ -171,12 +171,12 @@
 .fflhub-receiving-barcode {
   display: block;
   fill: #000;
-  height: 0.28in;
+  height: 0.48in;
   width: 100%;
 }
 
 .fflhub-receiving-barcode.is-tracking {
-  height: 0.58in;
+  height: 0.92in;
 }
 
 @media (max-width: 900px) {
