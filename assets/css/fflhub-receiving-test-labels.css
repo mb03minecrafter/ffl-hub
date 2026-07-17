@@ -1,0 +1,224 @@
+.fflhub-receiving-labels-page {
+  max-width: 1180px;
+}
+
+.fflhub-receiving-labels-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin: 10px 0 18px;
+}
+
+.fflhub-receiving-labels-toolbar h1 {
+  margin-bottom: 4px;
+}
+
+.fflhub-receiving-labels-toolbar p,
+.fflhub-receiving-labels-empty {
+  color: #52616b;
+  font-size: 15px;
+  margin: 0;
+}
+
+.fflhub-receiving-labels-form {
+  align-items: end;
+  background: #fff;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(160px, 1fr)) auto auto;
+  margin-bottom: 18px;
+  padding: 16px;
+}
+
+.fflhub-receiving-labels-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.fflhub-receiving-labels-form label span {
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.fflhub-receiving-labels-form input[type="text"] {
+  min-height: 38px;
+  width: 100%;
+}
+
+.fflhub-receiving-labels-check {
+  align-items: center;
+  display: flex !important;
+  gap: 8px !important;
+}
+
+.fflhub-receiving-labels-print-area {
+  display: grid;
+  gap: 18px;
+}
+
+.fflhub-receiving-label-sheet {
+  background: #fff;
+  border: 1px solid #1f2937;
+  box-sizing: border-box;
+  color: #111827;
+  display: grid;
+  gap: 8px;
+  min-height: 6in;
+  padding: 0.16in;
+  width: 4in;
+}
+
+.fflhub-receiving-label-sheet header {
+  align-items: baseline;
+  border-bottom: 2px solid #111827;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding-bottom: 5px;
+}
+
+.fflhub-receiving-label-sheet header strong {
+  font-size: 13px;
+}
+
+.fflhub-receiving-label-sheet header span {
+  font-size: 10px;
+  text-align: right;
+}
+
+.fflhub-receiving-label-tracking {
+  border: 2px solid #111827;
+  display: grid;
+  gap: 4px;
+  padding: 7px;
+  text-align: center;
+}
+
+.fflhub-receiving-label-tracking span,
+.fflhub-receiving-label-row span {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.fflhub-receiving-label-tracking strong {
+  font-size: 16px;
+  letter-spacing: 0.08em;
+}
+
+.fflhub-receiving-label-items {
+  display: grid;
+  gap: 6px;
+}
+
+.fflhub-receiving-label-row {
+  border: 1px solid #111827;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 1fr 1fr;
+  min-height: 0.62in;
+  padding: 5px;
+}
+
+.fflhub-receiving-label-row > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fflhub-receiving-label-row strong {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fflhub-receiving-label-row small,
+.fflhub-receiving-label-row em {
+  color: #374151;
+  font-size: 7px;
+  font-style: normal;
+  line-height: 1.15;
+  max-height: 17px;
+  overflow: hidden;
+}
+
+.fflhub-receiving-label-row .is-serial-required span {
+  color: #b42318;
+}
+
+.fflhub-receiving-barcode {
+  display: block;
+  fill: #000;
+  height: 0.28in;
+  width: 100%;
+}
+
+.fflhub-receiving-barcode.is-tracking {
+  height: 0.58in;
+}
+
+@media (max-width: 900px) {
+  .fflhub-receiving-labels-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .fflhub-receiving-labels-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+@page {
+  margin: 0;
+  size: 4in 6in;
+}
+
+@media print {
+  body {
+    background: #fff !important;
+    margin: 0 !important;
+  }
+
+  #adminmenumain,
+  #wpadminbar,
+  #wpfooter,
+  .fflhub-receiving-labels-toolbar,
+  .fflhub-receiving-labels-form,
+  .notice,
+  .update-nag {
+    display: none !important;
+  }
+
+  #wpcontent,
+  #wpbody-content,
+  .wrap,
+  .fflhub-receiving-labels-page,
+  .fflhub-receiving-labels-print-area {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 4in !important;
+  }
+
+  .fflhub-receiving-labels-print-area {
+    display: block;
+  }
+
+  .fflhub-receiving-label-sheet {
+    border: 0;
+    height: 6in;
+    min-height: 6in;
+    page-break-after: always;
+    width: 4in;
+  }
+
+  .fflhub-receiving-label-sheet:last-child {
+    page-break-after: auto;
+  }
+}

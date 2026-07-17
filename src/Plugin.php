@@ -25,6 +25,7 @@ use FFLHub\Admin\Pages\MapPolicyPage;
 use FFLHub\Admin\Pages\ProductStateBulkPricingPage;
 use FFLHub\Admin\Pages\ProductStatePage;
 use FFLHub\Admin\Pages\ReceivingPage;
+use FFLHub\Admin\Pages\ReceivingTestLabelsPage;
 use FFLHub\Admin\Pages\MonthlyProfitAuditPage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
@@ -111,6 +112,7 @@ final class Plugin
     public DealerBatchOptimizerPage $dealer_batch_optimizer_page;
     public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
     public ReceivingPage $receiving_page;
+    public ReceivingTestLabelsPage $receiving_test_labels_page;
     public CheckoutActivityPage $checkout_activity_page;
     public BillHicksEdiTestPage $bill_hicks_edi_test_page;
     public DavidsonsFailedJobsPage $davidsons_failed_jobs_page;
@@ -225,6 +227,9 @@ final class Plugin
 
             $this->receiving_page = new ReceivingPage($this->distributor_handler->ordering_jobs_table);
             $this->receiving_page->register();
+
+            $this->receiving_test_labels_page = new ReceivingTestLabelsPage($this->distributor_handler->ordering_jobs_table);
+            $this->receiving_test_labels_page->register();
 
             $this->checkout_activity_page = new CheckoutActivityPage();
             $this->checkout_activity_page->register();
