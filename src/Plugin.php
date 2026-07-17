@@ -228,7 +228,7 @@ final class Plugin
             $this->receiving_page = new ReceivingPage($this->distributor_handler->ordering_jobs_table);
             $this->receiving_page->register();
 
-            $this->receiving_test_labels_page = new ReceivingTestLabelsPage($this->distributor_handler->ordering_jobs_table);
+            $this->receiving_test_labels_page = new ReceivingTestLabelsPage();
             $this->receiving_test_labels_page->register();
 
             $this->checkout_activity_page = new CheckoutActivityPage();

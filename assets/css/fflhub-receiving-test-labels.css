@@ -28,7 +28,7 @@
   border-radius: 8px;
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(3, minmax(160px, 1fr)) auto auto;
+  grid-template-columns: repeat(2, minmax(180px, 1fr)) auto;
   margin-bottom: 18px;
   padding: 16px;
 }
@@ -47,6 +47,21 @@
 .fflhub-receiving-labels-form input[type="text"] {
   min-height: 38px;
   width: 100%;
+}
+
+.fflhub-receiving-labels-form textarea {
+  min-height: 104px;
+  resize: vertical;
+  width: 100%;
+}
+
+.fflhub-receiving-labels-form small {
+  color: #667085;
+  font-size: 12px;
+}
+
+.fflhub-receiving-labels-upcs {
+  grid-column: 1 / -1;
 }
 
 .fflhub-receiving-labels-check {

@@ -3,8 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Admin\Pages;
 
-use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
-use FFLHub\Receiving\ReceivingShipmentService;
+use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -14,9 +13,9 @@ if (!defined('ABSPATH')) {
  * Debug-only print helper for the Receiving page.
  *
  * The real receiving workflow is scanner-driven, so this page creates a small
- * 4x6-friendly barcode sheet from an existing tracked dealer shipment. It does
- * not write receiving events or alter orders; it only renders Code 128 test
- * labels that can be scanned back into the Receiving wizard.
+ * 4x6-friendly barcode sheet with dummy tracking, UPC, and serial-number
+ * barcodes. It does not look up shipments, write receiving events, or alter
+ * orders; it only renders Code 128 test labels for scanner testing.
  */
 final class ReceivingTestLabelsPage
 {
@@ -45,13 +44,6 @@ final class ReceivingTestLabelsPage
         '214121', '412121', '111143', '111341', '131141', '114113', '114311', '411113', '411311', '113141',
         '114131', '311141', '411131', '211412', '211214', '211232', '2331112',
     ];
-
-    private OrderPlacementJobsTable $jobs_table;
-
-    public function __construct(OrderPlacementJobsTable $jobs_table)
-    {
-        $this->jobs_table = $jobs_table;
-    }
 
     public function register(): void
     {
@@ -92,27 +84,25 @@ final class ReceivingTestLabelsPage
         }
 
         $tracking = $this->request_text('tracking');
-        $po = $this->request_text('po');
         $serial_prefix = $this->request_text('serial_prefix');
-        $include_old = $this->request_bool('include_old');
+        $upc_text = $this->request_textarea('upcs');
+        if ($tracking === '') {
+            $tracking = $this->dummy_tracking();
+        }
         if ($serial_prefix === '') {
             $serial_prefix = 'TEST';
         }
 
-        $result = null;
-        if ($tracking !== '' || $po !== '') {
-            $service = new ReceivingShipmentService($this->jobs_table, null, $include_old);
-            $result = $tracking !== ''
-                ? $service->lookup_by_tracking($tracking)
-                : $service->lookup_by_po($po);
-        }
+        $rows = $upc_text !== ''
+            ? $this->rows_from_text($upc_text, $serial_prefix)
+            : $this->sample_rows($serial_prefix);
 
         ?>
         <div class="wrap fflhub-receiving-labels-page">
             <div class="fflhub-receiving-labels-toolbar">
                 <div>
                     <h1><?php esc_html_e('Receiving Test Labels', 'ffl-hub'); ?></h1>
-                    <p><?php esc_html_e('Print scanner test labels from an existing tracked dealer shipment. This page does not receive inventory or change orders.', 'ffl-hub'); ?></p>
+                    <p><?php esc_html_e('Print dummy scanner labels without creating orders, receiving events, or shipment rows.', 'ffl-hub'); ?></p>
                 </div>
                 <button type="button" class="button button-primary" onclick="window.print()">
                     <?php esc_html_e('Print 4x6 Labels', 'ffl-hub'); ?>
@@ -122,58 +112,36 @@ final class ReceivingTestLabelsPage
             <form method="get" class="fflhub-receiving-labels-form">
                 <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>" />
                 <label>
-                    <span><?php esc_html_e('Tracking Scan / Number', 'ffl-hub'); ?></span>
+                    <span><?php esc_html_e('Dummy Tracking Barcode', 'ffl-hub'); ?></span>
                     <input type="text" name="tracking" value="<?php echo esc_attr($tracking); ?>" autocomplete="off" />
-                </label>
-                <label>
-                    <span><?php esc_html_e('PO / Distributor Order', 'ffl-hub'); ?></span>
-                    <input type="text" name="po" value="<?php echo esc_attr($po); ?>" autocomplete="off" />
                 </label>
                 <label>
                     <span><?php esc_html_e('Dummy Serial Prefix', 'ffl-hub'); ?></span>
                     <input type="text" name="serial_prefix" value="<?php echo esc_attr($serial_prefix); ?>" autocomplete="off" />
                 </label>
-                <label class="fflhub-receiving-labels-check">
-                    <input type="checkbox" name="include_old" value="1" <?php checked($include_old); ?> />
-                    <span><?php esc_html_e('Include old/completed shipments', 'ffl-hub'); ?></span>
+                <label class="fflhub-receiving-labels-upcs">
+                    <span><?php esc_html_e('Optional UPCs', 'ffl-hub'); ?></span>
+                    <textarea name="upcs" rows="5" placeholder="<?php echo esc_attr("706397939540|serial\n764503072949|no-serial"); ?>"><?php echo esc_textarea($upc_text); ?></textarea>
+                    <small><?php esc_html_e('One per line. Use "|serial" for a serial-required row, "|no-serial" for an accessory row. Leave blank to auto-pick sample non-dropship UPCs.', 'ffl-hub'); ?></small>
                 </label>
                 <button type="submit" class="button button-primary">
                     <?php esc_html_e('Build Labels', 'ffl-hub'); ?>
                 </button>
             </form>
 
-            <?php $this->render_result($result, $serial_prefix); ?>
+            <?php $this->render_result($tracking, $rows); ?>
         </div>
         <?php
     }
 
     /**
-     * @param array<string,mixed>|null $result
+     * @param array<int,array{upc:string,name:string,serial:string,unit:int,total:int,serial_required:bool}> $rows
      */
-    private function render_result(?array $result, string $serial_prefix): void
+    private function render_result(string $tracking, array $rows): void
     {
-        if ($result === null) {
-            echo '<p class="fflhub-receiving-labels-empty">' . esc_html__('Look up a shipment to generate printable test labels.', 'ffl-hub') . '</p>';
-            return;
-        }
-
-        if (empty($result['ok']) || empty($result['shipment']) || !is_array($result['shipment'])) {
-            $message = (string) ($result['message'] ?? __('Shipment was not found.', 'ffl-hub'));
-            echo '<div class="notice notice-error"><p>' . esc_html($message) . '</p></div>';
-            return;
-        }
-
-        $shipment = $result['shipment'];
-        $rows = $this->label_rows($shipment, $serial_prefix);
         if (empty($rows)) {
-            echo '<div class="notice notice-warning"><p>' . esc_html__('Shipment has no open expected UPC rows to print.', 'ffl-hub') . '</p></div>';
+            echo '<div class="notice notice-warning"><p>' . esc_html__('No UPC rows were found. Enter UPCs manually or make sure product_state has active non-dropship examples.', 'ffl-hub') . '</p></div>';
             return;
-        }
-
-        $tracking = (string) ($shipment['primary_tracking'] ?? '');
-        if ($tracking === '') {
-            $tracking_numbers = (array) ($shipment['tracking_numbers'] ?? []);
-            $tracking = (string) ($tracking_numbers[0] ?? '');
         }
 
         $first_rows = array_slice($rows, 0, 5);
@@ -185,26 +153,23 @@ final class ReceivingTestLabelsPage
 
         echo '<div class="fflhub-receiving-labels-print-area">';
         foreach ($sheets as $index => $sheet_rows) {
-            $this->render_sheet($shipment, $tracking, $sheet_rows, $index === 0, $index + 1, count($sheets));
+            $this->render_sheet($tracking, $sheet_rows, $index === 0, $index + 1, count($sheets));
         }
         echo '</div>';
     }
 
     /**
-     * @param array<string,mixed> $shipment
      * @param array<int,array{upc:string,name:string,serial:string,unit:int,total:int,serial_required:bool}> $rows
      */
-    private function render_sheet(array $shipment, string $tracking, array $rows, bool $include_tracking, int $sheet_number, int $sheet_count): void
+    private function render_sheet(string $tracking, array $rows, bool $include_tracking, int $sheet_number, int $sheet_count): void
     {
         ?>
         <section class="fflhub-receiving-label-sheet">
             <header>
-                <strong><?php echo esc_html(strtoupper((string) ($shipment['dist_id'] ?? 'Distributor'))); ?></strong>
+                <strong><?php esc_html_e('RECEIVING TEST', 'ffl-hub'); ?></strong>
                 <span>
                     <?php
-                    echo esc_html(trim(
-                        'PO ' . (string) ($shipment['merchant_po'] ?? '') . ' | Sheet ' . $sheet_number . ' of ' . $sheet_count
-                    ));
+                    echo esc_html('Dummy label | Sheet ' . $sheet_number . ' of ' . $sheet_count);
                     ?>
                 </span>
             </header>
@@ -243,43 +208,154 @@ final class ReceivingTestLabelsPage
     }
 
     /**
-     * @param array<string,mixed> $shipment
      * @return array<int,array{upc:string,name:string,serial:string,unit:int,total:int,serial_required:bool}>
      */
-    private function label_rows(array $shipment, string $serial_prefix): array
+    private function rows_from_text(string $text, string $serial_prefix): array
     {
         $rows = [];
-        foreach ((array) ($shipment['products'] ?? []) as $product) {
-            if (!is_array($product)) {
+        foreach (preg_split('/\R+/', $text) ?: [] as $line) {
+            $line = trim((string) $line);
+            if ($line === '') {
                 continue;
             }
 
-            $upc = preg_replace('/[^0-9A-Za-z]/', '', (string) ($product['upc'] ?? ''));
+            $parts = preg_split('/[|,]/', $line);
+            $upc = preg_replace('/[^0-9A-Za-z]/', '', (string) ($parts[0] ?? ''));
             $upc = is_string($upc) ? $upc : '';
             if ($upc === '') {
                 continue;
             }
 
-            $total = max(0, (int) ($product['remaining_qty'] ?? 0));
-            if ($total <= 0) {
-                continue;
+            $lookup = $this->product_state_context($upc);
+            $flag = strtolower(trim((string) ($parts[1] ?? '')));
+            $serial_required = in_array($flag, ['serial', 'ffl', 'serialized', 'yes', '1'], true)
+                || ($flag === '' && !empty($lookup['serial_required']));
+            if (in_array($flag, ['no-serial', 'accessory', 'no', '0'], true)) {
+                $serial_required = false;
             }
 
-            $name = (string) ($product['name'] ?? ('UPC ' . $upc));
-            $serial_required = ((int) ($product['serial_required'] ?? $product['ffl_required'] ?? 0)) === 1;
-            for ($unit = 1; $unit <= $total; $unit++) {
-                $rows[] = [
-                    'upc' => $upc,
-                    'name' => $name,
-                    'serial' => $this->dummy_serial($serial_prefix, $upc, $unit),
-                    'unit' => $unit,
-                    'total' => $total,
-                    'serial_required' => $serial_required,
-                ];
-            }
+            $rows[] = $this->label_row(
+                $upc,
+                (string) ($lookup['name'] ?? ('UPC ' . $upc)),
+                $serial_required,
+                $serial_prefix,
+                1,
+                1
+            );
         }
 
         return $rows;
+    }
+
+    /**
+     * @return array<int,array{upc:string,name:string,serial:string,unit:int,total:int,serial_required:bool}>
+     */
+    private function sample_rows(string $serial_prefix): array
+    {
+        $rows = [];
+        $serial = $this->sample_product_state_row(true);
+        $accessory = $this->sample_product_state_row(false);
+
+        if (!empty($serial['upc'])) {
+            $rows[] = $this->label_row(
+                (string) $serial['upc'],
+                (string) ($serial['name'] ?? ('UPC ' . (string) $serial['upc'])),
+                true,
+                $serial_prefix,
+                1,
+                1
+            );
+        }
+
+        if (!empty($accessory['upc'])) {
+            $rows[] = $this->label_row(
+                (string) $accessory['upc'],
+                (string) ($accessory['name'] ?? ('UPC ' . (string) $accessory['upc'])),
+                false,
+                $serial_prefix,
+                1,
+                1
+            );
+        }
+
+        if (!empty($rows)) {
+            return $rows;
+        }
+
+        return [
+            $this->label_row('706397939540', 'Dummy serialized product', true, $serial_prefix, 1, 1),
+            $this->label_row('764503072949', 'Dummy accessory product', false, $serial_prefix, 1, 1),
+        ];
+    }
+
+    /**
+     * @return array{upc:string,name:string,serial:string,unit:int,total:int,serial_required:bool}
+     */
+    private function label_row(string $upc, string $name, bool $serial_required, string $serial_prefix, int $unit, int $total): array
+    {
+        return [
+            'upc' => $upc,
+            'name' => $name,
+            'serial' => $this->dummy_serial($serial_prefix, $upc, $unit),
+            'unit' => $unit,
+            'total' => $total,
+            'serial_required' => $serial_required,
+        ];
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function sample_product_state_row(bool $serial_required): array
+    {
+        global $wpdb;
+
+        $table = ProductStateStore::table_name();
+        $ffl = $serial_required ? 1 : 0;
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                "
+                SELECT ps.product_id, ps.upc, p.post_title AS name
+                FROM {$table} ps
+                LEFT JOIN {$wpdb->posts} p
+                    ON p.ID = ps.product_id
+                WHERE ps.status = 'active'
+                  AND ps.upc <> ''
+                  AND ps.dropship_enabled = 0
+                  AND ps.ffl_required = %d
+                ORDER BY RAND()
+                LIMIT 1
+                ",
+                $ffl
+            ),
+            ARRAY_A
+        );
+
+        return is_array($row) ? $row : [];
+    }
+
+    /**
+     * @return array{name:string,serial_required:bool}
+     */
+    private function product_state_context(string $upc): array
+    {
+        $row = ProductStateStore::get_row_for_upc($upc);
+        $name = '';
+        if (is_array($row)) {
+            $product_id = (int) ($row['product_id'] ?? 0);
+            $product = $product_id > 0 ? wc_get_product($product_id) : null;
+            $name = $product ? (string) $product->get_name() : '';
+
+            return [
+                'name' => $name !== '' ? $name : ('UPC ' . $upc),
+                'serial_required' => ((int) ($row['ffl_required'] ?? 0)) === 1,
+            ];
+        }
+
+        return [
+            'name' => 'UPC ' . $upc,
+            'serial_required' => false,
+        ];
     }
 
     private function dummy_serial(string $prefix, string $upc, int $unit): string
@@ -289,6 +365,11 @@ final class ReceivingTestLabelsPage
         $tail = substr($upc, -6);
 
         return $prefix . $tail . str_pad((string) $unit, 2, '0', STR_PAD_LEFT);
+    }
+
+    private function dummy_tracking(): string
+    {
+        return 'TEST' . gmdate('ymdHis');
     }
 
     private function barcode_svg(string $value, int $height, string $class): string
@@ -343,12 +424,10 @@ final class ReceivingTestLabelsPage
             : '';
     }
 
-    private function request_bool(string $key): bool
+    private function request_textarea(string $key): string
     {
-        $value = isset($_GET[$key])
-            ? strtolower(trim(sanitize_text_field(wp_unslash((string) $_GET[$key]))))
+        return isset($_GET[$key])
+            ? sanitize_textarea_field(wp_unslash((string) $_GET[$key]))
             : '';
-
-        return in_array($value, ['1', 'true', 'yes', 'on'], true);
     }
 }
