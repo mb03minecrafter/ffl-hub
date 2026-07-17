@@ -11,7 +11,8 @@
   function post(action, data) {
     return $.post(cfg.ajaxUrl, $.extend({
       action: action,
-      nonce: cfg.nonce
+      nonce: cfg.nonce,
+      debug_include_old: $('[data-receiving-debug-old]').is(':checked') ? '1' : '0'
     }, data || {})).then(function (response) {
       if (!response || response.success !== true) {
         return {

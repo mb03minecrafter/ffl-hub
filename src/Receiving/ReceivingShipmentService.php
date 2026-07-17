@@ -27,15 +27,18 @@ if (!defined('ABSPATH')) {
 final class ReceivingShipmentService
 {
     private const RECENT_JOB_LIMIT = 3000;
+    private const DEBUG_RECENT_JOB_LIMIT = 20000;
     private const HISTORY_LIMIT = 25;
 
     private OrderPlacementJobsTable $jobs_table;
     private ReceivingEventsStore $events;
+    private bool $include_old_shipments;
 
-    public function __construct(OrderPlacementJobsTable $jobs_table, ?ReceivingEventsStore $events = null)
+    public function __construct(OrderPlacementJobsTable $jobs_table, ?ReceivingEventsStore $events = null, bool $include_old_shipments = false)
     {
         $this->jobs_table = $jobs_table;
         $this->events = $events ?: new ReceivingEventsStore();
+        $this->include_old_shipments = $include_old_shipments;
     }
 
     /**
@@ -382,7 +385,7 @@ final class ReceivingShipmentService
                 ",
                 $lane,
                 $status,
-                self::RECENT_JOB_LIMIT
+                $this->include_old_shipments ? self::DEBUG_RECENT_JOB_LIMIT : self::RECENT_JOB_LIMIT
             ),
             ARRAY_A
         );
@@ -404,7 +407,7 @@ final class ReceivingShipmentService
                         : '';
                 }
 
-                if ($order_status_cache[$order_id] === 'completed') {
+                if (!$this->include_old_shipments && $order_status_cache[$order_id] === 'completed') {
                     continue;
                 }
 

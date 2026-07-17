@@ -109,6 +109,13 @@ final class ReceivingPage
                     <div class="fflhub-receiving-step-body">
                         <h2><?php esc_html_e('Identify Shipment', 'ffl-hub'); ?></h2>
                         <p><?php esc_html_e('Scan a tracking barcode or manually enter the distributor PO/order number.', 'ffl-hub'); ?></p>
+                        <label class="fflhub-receiving-debug-toggle">
+                            <input type="checkbox" value="1" data-receiving-debug-old />
+                            <span>
+                                <strong><?php esc_html_e('Debug: include old/completed shipments', 'ffl-hub'); ?></strong>
+                                <?php esc_html_e('Use this for testing old boxes. Normal receiving keeps completed Woo orders hidden.', 'ffl-hub'); ?>
+                            </span>
+                        </label>
 
                         <div class="fflhub-receiving-identify-grid">
                             <label class="fflhub-receiving-field">
@@ -198,7 +205,7 @@ final class ReceivingPage
 
     private function service(): ReceivingShipmentService
     {
-        return new ReceivingShipmentService($this->jobs_table);
+        return new ReceivingShipmentService($this->jobs_table, null, $this->request_bool('debug_include_old'));
     }
 
     private function send(array $payload): void
@@ -220,5 +227,14 @@ final class ReceivingPage
         return isset($_POST[$key])
             ? sanitize_text_field(wp_unslash((string) $_POST[$key]))
             : '';
+    }
+
+    private function request_bool(string $key): bool
+    {
+        $value = isset($_POST[$key])
+            ? strtolower(trim(sanitize_text_field(wp_unslash((string) $_POST[$key]))))
+            : '';
+
+        return in_array($value, ['1', 'true', 'yes', 'on'], true);
     }
 }

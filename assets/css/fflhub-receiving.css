@@ -72,6 +72,26 @@
   margin-top: 18px;
 }
 
+.fflhub-receiving-debug-toggle {
+  align-items: flex-start;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  color: #7c2d12;
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 10px 12px;
+}
+
+.fflhub-receiving-debug-toggle input {
+  margin-top: 2px;
+}
+
+.fflhub-receiving-debug-toggle strong {
+  display: block;
+}
+
 .fflhub-receiving-field {
   display: grid;
   gap: 8px;
