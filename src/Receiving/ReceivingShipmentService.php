@@ -975,10 +975,54 @@ final class ReceivingShipmentService
     public static function normalize_tracking(string $raw): string
     {
         $value = str_replace(["\t", "\r", "\n"], '', trim($raw));
+        $fedex_tracking = self::extract_fedex_tracking_from_scan($value);
+        if ($fedex_tracking !== '') {
+            return $fedex_tracking;
+        }
+
         $value = preg_replace('/\s+/', ' ', $value);
         $value = is_string($value) ? $value : '';
 
         return strtoupper(trim($value));
+    }
+
+    private static function extract_fedex_tracking_from_scan(string $raw): string
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return '';
+        }
+
+        $carrier_like = stripos($raw, '[)>') !== false
+            || stripos($raw, 'FDEG') !== false
+            || stripos($raw, '31Z') !== false
+            || stripos($raw, '34Z') !== false;
+
+        $payload = str_replace(["\x1D", "\x1E", "\x04", "\t", "\r", "\n"], '029', $raw);
+
+        if (preg_match('/(?:^|029)31Z(96[0-9]{20,})(?:029|$)/i', $payload, $matches)) {
+            return substr((string) $matches[1], -12);
+        }
+
+        $compact = preg_replace('/\s+/', '', $payload);
+        $compact = is_string($compact) ? $compact : '';
+        if (preg_match('/^96[0-9]{20,}$/', $compact)) {
+            return substr($compact, -12);
+        }
+
+        if (!$carrier_like) {
+            return '';
+        }
+
+        $parts = preg_split('/029/', $payload);
+        foreach (is_array($parts) ? $parts : [] as $part) {
+            $part = trim((string) $part);
+            if (preg_match('/^[0-9]{12}$/', $part)) {
+                return $part;
+            }
+        }
+
+        return '';
     }
 
     public static function normalize_upc(string $raw): string
