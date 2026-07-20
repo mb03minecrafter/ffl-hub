@@ -73,6 +73,23 @@
 .fflhub-receiving-labels-print-area {
   display: grid;
   gap: 18px;
+  width: max-content;
+}
+
+body.fflhub-receiving-labels-print-document {
+  background: #fff;
+  margin: 0;
+  overflow: visible;
+  padding: 0;
+  width: 4in;
+}
+
+body.fflhub-receiving-labels-print-document .fflhub-receiving-labels-print-area {
+  display: block;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  width: 4in;
 }
 
 .fflhub-receiving-label-sheet {
@@ -81,10 +98,23 @@
   box-sizing: border-box;
   color: #111827;
   display: grid;
-  gap: 8px;
+  gap: 0.12in;
+  height: 6in;
   min-height: 6in;
-  padding: 0.16in;
+  overflow: hidden;
+  padding: 0.18in;
+  page-break-after: always;
   width: 4in;
+}
+
+.fflhub-receiving-label-sheet.is-tracking-label {
+  align-content: stretch;
+  grid-template-rows: auto 1fr;
+}
+
+.fflhub-receiving-label-sheet.is-product-label {
+  align-content: stretch;
+  grid-template-rows: auto auto 1fr 1fr;
 }
 
 .fflhub-receiving-label-sheet header {
@@ -97,86 +127,102 @@
 }
 
 .fflhub-receiving-label-sheet header strong {
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .fflhub-receiving-label-sheet header span {
-  font-size: 10px;
+  font-size: 11px;
   text-align: right;
 }
 
 .fflhub-receiving-label-tracking {
-  border: 2px solid #111827;
+  align-content: center;
+  border: 3px solid #111827;
   display: grid;
-  gap: 6px;
-  padding: 8px;
+  gap: 0.16in;
+  padding: 0.18in;
   text-align: center;
 }
 
 .fflhub-receiving-label-tracking span,
-.fflhub-receiving-label-row span {
-  font-size: 9px;
+.fflhub-receiving-label-scan-block span,
+.fflhub-receiving-label-product-name span {
+  font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
 .fflhub-receiving-label-tracking strong {
-  font-size: 16px;
-  letter-spacing: 0.08em;
+  font-size: 22px;
+  letter-spacing: 0.1em;
 }
 
-.fflhub-receiving-label-items {
-  display: grid;
-  gap: 8px;
-}
-
-.fflhub-receiving-label-row {
-  border: 1px solid #111827;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: 1fr 1fr;
-  min-height: 0.98in;
-  padding: 7px;
-}
-
-.fflhub-receiving-label-row > div {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.fflhub-receiving-label-row strong {
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.fflhub-receiving-label-row small,
-.fflhub-receiving-label-row em {
+.fflhub-receiving-label-tracking em,
+.fflhub-receiving-label-scan-block em {
   color: #374151;
-  font-size: 8px;
+  font-size: 11px;
   font-style: normal;
-  line-height: 1.15;
-  max-height: 20px;
-  overflow: hidden;
+  line-height: 1.25;
 }
 
-.fflhub-receiving-label-row .is-serial-required span {
+.fflhub-receiving-label-product-name {
+  border: 2px solid #111827;
+  display: grid;
+  gap: 0.06in;
+  min-height: 0;
+  padding: 0.1in;
+  text-align: center;
+}
+
+.fflhub-receiving-label-product-name strong {
+  display: -webkit-box;
+  font-size: 18px;
+  line-height: 1.16;
+  max-height: 0.86in;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.fflhub-receiving-label-scan-block {
+  align-content: center;
+  border: 2px solid #111827;
+  display: grid;
+  gap: 0.08in;
+  min-height: 0;
+  padding: 0.12in;
+  text-align: center;
+}
+
+.fflhub-receiving-label-scan-block strong {
+  font-size: 18px;
+  letter-spacing: 0.07em;
+  overflow-wrap: anywhere;
+}
+
+.fflhub-receiving-label-scan-block.is-serial-required span {
   color: #b42318;
+}
+
+.fflhub-receiving-label-scan-block.is-not-required {
+  background: #f9fafb;
 }
 
 .fflhub-receiving-barcode {
   display: block;
   fill: #000;
-  height: 0.48in;
+  height: 1.2in;
   width: 100%;
 }
 
 .fflhub-receiving-barcode.is-tracking {
-  height: 0.92in;
+  height: 1.9in;
+}
+
+.fflhub-receiving-barcode.is-upc,
+.fflhub-receiving-barcode.is-serial {
+  height: 1.25in;
 }
 
 @media (max-width: 900px) {
@@ -196,9 +242,13 @@
 }
 
 @media print {
+  html,
   body {
     background: #fff !important;
+    height: 6in !important;
     margin: 0 !important;
+    overflow: visible !important;
+    width: 4in !important;
   }
 
   #adminmenumain,
@@ -223,17 +273,28 @@
 
   .fflhub-receiving-labels-print-area {
     display: block;
+    height: auto !important;
+    max-width: none !important;
+    min-width: 0 !important;
   }
 
   .fflhub-receiving-label-sheet {
     border: 0;
+    box-shadow: none;
+    break-after: page;
+    box-sizing: border-box;
     height: 6in;
     min-height: 6in;
     page-break-after: always;
+    padding: 0.18in;
     width: 4in;
   }
 
   .fflhub-receiving-label-sheet:last-child {
     page-break-after: auto;
+  }
+
+  body.fflhub-receiving-labels-print-document .fflhub-receiving-label-sheet {
+    border: 0;
   }
 }

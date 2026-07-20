@@ -286,7 +286,7 @@ final class ReceivingShipmentService
         global $wpdb;
 
         if (!$this->include_old_shipments) {
-            return $this->error('debug_only', __('Enable the old/completed shipment debug option before using this override.', 'ffl-hub'));
+            return $this->error('debug_only', __('Enable the older/test shipment debug option before using this override.', 'ffl-hub'));
         }
 
         $shipment_key = trim($shipment_key);
@@ -523,23 +523,11 @@ final class ReceivingShipmentService
         );
 
         $jobs = [];
-        $order_status_cache = [];
         foreach (is_array($rows) ? $rows : [] as $row) {
             if (is_array($row)) {
                 $job = new OrderPlacementJobRow($row);
                 $order_id = (int) $job->order_id;
                 if ($order_id <= 0) {
-                    continue;
-                }
-
-                if (!array_key_exists($order_id, $order_status_cache)) {
-                    $order = wc_get_order($order_id);
-                    $order_status_cache[$order_id] = ($order && method_exists($order, 'get_status'))
-                        ? strtolower(trim((string) $order->get_status()))
-                        : '';
-                }
-
-                if (!$this->include_old_shipments && $order_status_cache[$order_id] === 'completed') {
                     continue;
                 }
 

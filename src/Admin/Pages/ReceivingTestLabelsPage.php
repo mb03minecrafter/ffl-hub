@@ -109,7 +109,7 @@ final class ReceivingTestLabelsPage
                     <h1><?php esc_html_e('Receiving Test Labels', 'ffl-hub'); ?></h1>
                     <p><?php esc_html_e('Print dummy scanner labels and register a debug-only receiving shipment fixture.', 'ffl-hub'); ?></p>
                 </div>
-                <button type="button" class="button button-primary" onclick="window.print()">
+                <button type="button" class="button button-primary" id="fflhub-receiving-labels-print-button">
                     <?php esc_html_e('Print 4x6 Labels', 'ffl-hub'); ?>
                 </button>
             </div>
@@ -135,7 +135,55 @@ final class ReceivingTestLabelsPage
             </form>
 
             <?php $this->render_result($tracking, $rows, $stored); ?>
+            <?php $this->render_print_script(); ?>
         </div>
+        <?php
+    }
+
+    private function render_print_script(): void
+    {
+        $css_url = add_query_arg(
+            'ver',
+            (string) filemtime(FFLHUB_PLUGIN_PATH . 'assets/css/fflhub-receiving-test-labels.css'),
+            FFLHUB_PLUGIN_URL . 'assets/css/fflhub-receiving-test-labels.css'
+        );
+
+        ?>
+        <script>
+            (function () {
+                const button = document.getElementById('fflhub-receiving-labels-print-button');
+                if (!button) {
+                    return;
+                }
+
+                button.addEventListener('click', function () {
+                    const labels = document.querySelector('.fflhub-receiving-labels-print-area');
+                    if (!labels) {
+                        return;
+                    }
+
+                    const printWindow = window.open('', 'fflhub_receiving_labels_print', 'width=480,height=720');
+                    if (!printWindow) {
+                        window.print();
+                        return;
+                    }
+
+                    const cssUrl = <?php echo wp_json_encode($css_url); ?>;
+                    const escapedCssUrl = cssUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+                    const doc = printWindow.document;
+                    doc.open();
+                    doc.write('<!doctype html><html><head><meta charset="utf-8">');
+                    doc.write('<meta name="viewport" content="width=device-width, initial-scale=1">');
+                    doc.write('<title>Receiving Test Labels</title>');
+                    doc.write('<link rel="stylesheet" href="' + escapedCssUrl + '">');
+                    doc.write('</head><body class="fflhub-receiving-labels-print-document">');
+                    doc.write(labels.outerHTML);
+                    doc.write('<script>(function(){var printed=false;function run(){if(printed){return;}printed=true;window.focus();setTimeout(function(){window.print();},150);}window.addEventListener("load",function(){setTimeout(run,350);});setTimeout(run,1200);})();<\/script>');
+                    doc.write('</body></html>');
+                    doc.close();
+                });
+            })();
+        </script>
         <?php
     }
 
@@ -155,64 +203,68 @@ final class ReceivingTestLabelsPage
             echo '<div class="notice notice-error"><p>' . esc_html__('Labels rendered, but the debug receiving fixture was not saved.', 'ffl-hub') . '</p></div>';
         }
 
-        $first_rows = array_slice($rows, 0, 3);
-        $remaining = array_slice($rows, 3);
-        $sheets = [$first_rows];
-        foreach (array_chunk($remaining, 4) as $chunk) {
-            $sheets[] = $chunk;
-        }
-
         echo '<div class="fflhub-receiving-labels-print-area">';
-        foreach ($sheets as $index => $sheet_rows) {
-            $this->render_sheet($tracking, $sheet_rows, $index === 0, $index + 1, count($sheets));
+        $total_labels = count($rows) + 1;
+        $this->render_tracking_label($tracking, 1, $total_labels);
+        $label_number = 2;
+        foreach ($rows as $row) {
+            $this->render_product_label($row, $label_number, $total_labels);
+            $label_number++;
         }
         echo '</div>';
     }
 
-    /**
-     * @param array<int,array{upc:string,name:string,serial:string,unit:int,total:int,serial_required:bool}> $rows
-     */
-    private function render_sheet(string $tracking, array $rows, bool $include_tracking, int $sheet_number, int $sheet_count): void
+    private function render_tracking_label(string $tracking, int $label_number, int $label_count): void
     {
         ?>
-        <section class="fflhub-receiving-label-sheet">
+        <section class="fflhub-receiving-label-sheet is-tracking-label">
             <header>
                 <strong><?php esc_html_e('RECEIVING TEST', 'ffl-hub'); ?></strong>
-                <span>
-                    <?php
-                    echo esc_html('Dummy label | Sheet ' . $sheet_number . ' of ' . $sheet_count);
-                    ?>
-                </span>
+                <span><?php echo esc_html('Label ' . $label_number . ' of ' . $label_count); ?></span>
             </header>
 
-            <?php if ($include_tracking && $tracking !== '') : ?>
-                <div class="fflhub-receiving-label-tracking">
-                    <span><?php esc_html_e('1. Scan Tracking', 'ffl-hub'); ?></span>
-                    <?php echo $this->barcode_svg($tracking, 110, 'fflhub-receiving-barcode is-tracking'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-                    <strong><?php echo esc_html($tracking); ?></strong>
-                </div>
-            <?php endif; ?>
+            <div class="fflhub-receiving-label-tracking">
+                <span><?php esc_html_e('1. Scan Tracking', 'ffl-hub'); ?></span>
+                <?php echo $this->barcode_svg($tracking, 170, 'fflhub-receiving-barcode is-tracking'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                <strong><?php echo esc_html($tracking); ?></strong>
+                <em><?php esc_html_e('Enable Receiving debug mode before scanning this test label.', 'ffl-hub'); ?></em>
+            </div>
+        </section>
+        <?php
+    }
 
-            <div class="fflhub-receiving-label-items">
-                <?php foreach ($rows as $row) : ?>
-                    <div class="fflhub-receiving-label-row">
-                        <div>
-                            <span><?php echo esc_html('2. UPC ' . $row['unit'] . '/' . $row['total']); ?></span>
-                            <?php echo $this->barcode_svg($row['upc'], 74, 'fflhub-receiving-barcode'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-                            <strong><?php echo esc_html($row['upc']); ?></strong>
-                            <small><?php echo esc_html($row['name']); ?></small>
-                        </div>
-                        <div class="<?php echo $row['serial_required'] ? 'is-serial-required' : ''; ?>">
-                            <span><?php echo esc_html($row['serial_required'] ? '3. Serial' : 'Serial Not Required'); ?></span>
-                            <?php if ($row['serial_required']) : ?>
-                                <?php echo $this->barcode_svg($row['serial'], 74, 'fflhub-receiving-barcode'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-                                <strong><?php echo esc_html($row['serial']); ?></strong>
-                            <?php else : ?>
-                                <em><?php esc_html_e('Accessory / non-FFL item', 'ffl-hub'); ?></em>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                <?php endforeach; ?>
+    /**
+     * @param array{upc:string,name:string,serial:string,unit:int,total:int,serial_required:bool} $row
+     */
+    private function render_product_label(array $row, int $label_number, int $label_count): void
+    {
+        ?>
+        <section class="fflhub-receiving-label-sheet is-product-label">
+            <header>
+                <strong><?php esc_html_e('RECEIVING TEST', 'ffl-hub'); ?></strong>
+                <span><?php echo esc_html('Label ' . $label_number . ' of ' . $label_count); ?></span>
+            </header>
+
+            <div class="fflhub-receiving-label-product-name">
+                <span><?php echo esc_html($row['serial_required'] ? 'Serialized / FFL Item' : 'Non-Serialized Item'); ?></span>
+                <strong><?php echo esc_html($row['name']); ?></strong>
+            </div>
+
+            <div class="fflhub-receiving-label-scan-block">
+                <span><?php echo esc_html('2. Scan UPC ' . $row['unit'] . '/' . $row['total']); ?></span>
+                <?php echo $this->barcode_svg($row['upc'], 150, 'fflhub-receiving-barcode is-upc'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                <strong><?php echo esc_html($row['upc']); ?></strong>
+            </div>
+
+            <div class="fflhub-receiving-label-scan-block <?php echo $row['serial_required'] ? 'is-serial-required' : 'is-not-required'; ?>">
+                <span><?php echo esc_html($row['serial_required'] ? '3. Scan Serial' : '3. Serial Not Required'); ?></span>
+                <?php if ($row['serial_required']) : ?>
+                    <?php echo $this->barcode_svg($row['serial'], 150, 'fflhub-receiving-barcode is-serial'); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                    <strong><?php echo esc_html($row['serial']); ?></strong>
+                <?php else : ?>
+                    <strong><?php esc_html_e('NO SERIAL', 'ffl-hub'); ?></strong>
+                    <em><?php esc_html_e('After scanning the UPC, Receiving should accept this item without a serial scan.', 'ffl-hub'); ?></em>
+                <?php endif; ?>
             </div>
         </section>
         <?php

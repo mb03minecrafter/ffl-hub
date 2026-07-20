@@ -475,7 +475,7 @@
       return;
     }
     if (!debugEnabled()) {
-      setFeedback('Enable old/completed shipment debug mode first.', 'error');
+      setFeedback('Enable older/test shipment debug mode first.', 'error');
       beep('error');
       return;
     }
