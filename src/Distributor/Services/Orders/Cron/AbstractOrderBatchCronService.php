@@ -1087,7 +1087,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
      *
      * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $batch_candidates
      */
-    private function apply_successful_dealer_batch_profit_audit_shipping_rule(
+    protected function apply_successful_dealer_batch_profit_audit_shipping_rule(
         array $batch_candidates,
         string $po,
         string $batch_kind

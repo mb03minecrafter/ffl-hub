@@ -118,6 +118,17 @@ final class DavidsonsDealerBatchCronService extends AbstractOrderBatchCronServic
             OrderPlacementJobLifeCycle::mark_job_manual($this->jobs_table, $order, $job_key, (string) $result->message);
         }
 
+        // Davidson's manual handoff is still a fired dealer batch for profit
+        // auditing: the items moved to Davidson's and now share Davidson's
+        // inbound batch freight/free-shipping result. Reuse the same shipping
+        // reconciliation that successful automated batch submissions use so
+        // optimized rows do not keep stale checkout-time distributor freight.
+        $this->apply_successful_dealer_batch_profit_audit_shipping_rule(
+            $batch_candidates,
+            $po,
+            $batch_kind
+        );
+
         $this->log_ctx('manual_aggregate_handoff_complete', [
             'run_id' => $run_id,
             'batch_kind' => $batch_kind,
