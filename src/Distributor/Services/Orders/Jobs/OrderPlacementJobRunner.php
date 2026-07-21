@@ -168,7 +168,13 @@ final class OrderPlacementJobRunner
                 : (string) $ship_customer->state;
 
             // Merchant PO build + persist (best-effort, first writer wins).
-            $merchant_order_id = OrderPlacementPOUtil::build_merchant_po($job, 1);
+            // Admin resubmits may preassign the next PO suffix before this run
+            // is claimed; respect that value so a new distributor submission
+            // does not reuse the prior successful external reference.
+            $merchant_order_id = $job->merchant_po_or_empty();
+            if ($merchant_order_id === '') {
+                $merchant_order_id = OrderPlacementPOUtil::build_merchant_po($job, 1);
+            }
             if ($merchant_order_id !== '') {
                 OrderPlacementJobIdentifiersStore::set_job_merchant_po(
                     $jobs_table,

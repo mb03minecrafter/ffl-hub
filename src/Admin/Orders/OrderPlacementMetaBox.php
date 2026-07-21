@@ -6,6 +6,7 @@ use WC_Order;
 
 use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
+use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Models\PartialShipmentEmailContext;
 use FFLHub\Distributor\Models\ShippingUpdateResult;
 use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
@@ -16,6 +17,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementPOUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Util\DebugLogUtil;
 
@@ -66,6 +68,7 @@ final class OrderPlacementMetaBox
 
         // Manual retry action (admin-post)
         add_action('admin_post_fflhub_retry_order_job', [$this, 'handle_retry_job_post']);
+        add_action('admin_post_fflhub_resubmit_order_job', [$this, 'handle_resubmit_job_post']);
 
         // Pipeline rebuild + force-start action (admin-post)
         add_action('admin_post_fflhub_rebuild_pipeline', [$this, 'handle_rebuild_pipeline_post']);
@@ -381,6 +384,9 @@ final class OrderPlacementMetaBox
         // Retry button (only if failed)
         if (strtolower(trim($status)) === 'failed') {
             echo self::render_retry_button($order, $job_key);
+        }
+        if (strtolower(trim($status)) === 'success') {
+            echo self::render_resubmit_button($order, $job_key);
         }
 
         echo '<div class="fflhub-kv">';
@@ -814,6 +820,114 @@ final class OrderPlacementMetaBox
         }
 
         self::redirect_back($order_id, $job_key, 'scheduled');
+    }
+
+    /**
+     * Resubmit a previously successful direct placement job.
+     *
+     * This is intentionally separate from Retry:
+     * - Retry is for failed rows and preserves normal retry behavior.
+     * - Resubmit is for a row that already placed successfully but needs a new
+     *   distributor submission. It clears the old external identifiers and
+     *   assigns the next PO suffix before scheduling the normal order runner.
+     */
+    public function handle_resubmit_job_post(): void
+    {
+        if (!current_user_can('manage_woocommerce') && !current_user_can('edit_shop_orders')) {
+            wp_die('Insufficient permissions.');
+        }
+
+        $order_id = isset($_GET['order_id']) ? (int) $_GET['order_id'] : 0;
+        $job_key  = isset($_GET['job_key'])
+            ? OrderPlacementKeysUtil::normalize_job_key(sanitize_text_field(wp_unslash((string) $_GET['job_key'])))
+            : '';
+
+        if ($order_id <= 0 || $job_key === '') {
+            wp_die('Missing order_id or job_key.');
+        }
+
+        check_admin_referer('fflhub_resubmit_order_job_' . $order_id . '|' . $job_key);
+
+        $order = wc_get_order($order_id);
+        if (!($order instanceof WC_Order)) {
+            wp_die('Order not found.');
+        }
+
+        $job_row = OrderPlacementJobsRepository::get_job_for_order($this->jobs_table, $order, $job_key);
+        if (!($job_row instanceof OrderPlacementJobRow)) {
+            self::redirect_back($order_id, $job_key, 'resubmit_missing_job');
+            return;
+        }
+
+        $status = strtolower(trim((string) $job_row->status));
+        if ($status !== OrderPlacementKeys::JOB_STATUS_SUCCESS) {
+            self::redirect_back($order_id, $job_key, 'resubmit_not_success');
+            return;
+        }
+
+        if (
+            DealerBatchCronRegistry::is_ca_relay_batch_job($job_row)
+            || OrderPlacementKeysUtil::is_dealer_fulfilled_lane((string) $job_row->lane_norm())
+        ) {
+            self::redirect_back($order_id, $job_key, 'resubmit_unsupported_lane');
+            return;
+        }
+
+        $old_po = trim((string) ($job_row->merchant_po ?? ''));
+        $old_external_id = trim((string) ($job_row->external_order_id ?? ''));
+        $new_po = self::next_resubmit_po($job_row);
+        if ($new_po === '') {
+            self::redirect_back($order_id, $job_key, 'resubmit_po_failed');
+            return;
+        }
+
+        $patch = OrderPlacementJobPatch::empty()
+            ->with_status(OrderPlacementKeys::JOB_STATUS_RETRY_SCHEDULED)
+            ->with_next_run_at_mysql(self::now_mysql_utc_plus(0))
+            ->with_field('action_id', null)
+            ->with_field('done_at', null)
+            ->with_field('merchant_po', $new_po)
+            ->with_field('external_order_id', null)
+            ->with_field('external_order_ids_json', null)
+            ->with_field('validate_result_json', null)
+            ->with_field('place_result_json', null)
+            ->with_field('shipped_at', null)
+            ->with_field('tracking_numbers_json', null)
+            ->with_field('invoice_numbers_json', null)
+            ->with_field('shipping_service', null)
+            ->with_field('shipping_weight', null)
+            ->with_field('shipment_raw_json', null)
+            ->with_field('last_shipping_poll_at', null)
+            ->with_last_error('')
+            ->with_last_codes([]);
+
+        OrderPlacementJobWriter::apply_patch($this->jobs_table, $order_id, $job_key, $patch);
+
+        if (function_exists('as_schedule_single_action')) {
+            as_schedule_single_action(
+                time() + 1,
+                OrderingCronService::CRON_HOOK,
+                [],
+                'fflhub_place'
+            );
+        }
+
+        $note = sprintf(
+            'FFLHub resubmitted placement job %s with PO %s.',
+            $job_key,
+            $new_po
+        );
+        if ($old_po !== '' || $old_external_id !== '') {
+            $note .= sprintf(
+                ' Previous PO: %s. Previous external order ID: %s.',
+                $old_po !== '' ? $old_po : '-',
+                $old_external_id !== '' ? $old_external_id : '-'
+            );
+        }
+        $order->add_order_note($note);
+        $order->save();
+
+        self::redirect_back($order_id, $job_key, 'resubmitted');
     }
 
     /**
@@ -1610,6 +1724,45 @@ final class OrderPlacementMetaBox
             . 'onclick="return confirm(\'Retry this job now?\');">'
             . 'Retry Job</a>'
             . '</div>';
+    }
+
+    private static function render_resubmit_button(WC_Order $order, string $job_key): string
+    {
+        $order_id = (int) $order->get_id();
+        $job_key  = OrderPlacementKeysUtil::normalize_job_key($job_key);
+
+        if ($job_key === '') {
+            return '';
+        }
+
+        $url = add_query_arg([
+            'action'   => 'fflhub_resubmit_order_job',
+            'order_id' => $order_id,
+            'job_key'  => $job_key,
+        ], admin_url('admin-post.php'));
+
+        $url = wp_nonce_url($url, 'fflhub_resubmit_order_job_' . $order_id . '|' . $job_key);
+
+        return '<div class="fflhub-retry-wrap">'
+            . '<a class="button button-secondary" href="' . esc_url($url) . '" '
+            . 'onclick="return confirm(\'Resubmit this successful job as a NEW distributor order? This clears the old external IDs and schedules a new placement attempt.\');">'
+            . 'Resubmit Job</a>'
+            . '</div>';
+    }
+
+    private static function next_resubmit_po(OrderPlacementJobRow $job): string
+    {
+        $old_po = trim((string) ($job->merchant_po ?? ''));
+        $start_index = max(2, (int) $job->attempts + 1);
+
+        for ($i = $start_index; $i <= $start_index + 25; $i++) {
+            $po = OrderPlacementPOUtil::build_merchant_po($job, $i);
+            if ($po !== '' && $po !== $old_po) {
+                return $po;
+            }
+        }
+
+        return '';
     }
 
     private static function render_pipeline_rebuild_button(WC_Order $order): string
