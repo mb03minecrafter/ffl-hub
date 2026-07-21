@@ -54,6 +54,7 @@ use FFLHub\Distributor\Core\DistributorHandler;
 use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Distributor\Services\Cron\QuoteEmailJobsCronService;
 use FFLHub\Distributor\Services\Orders\Cron\BillHicksDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\CSSIDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\DavidsonsDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
@@ -342,6 +343,19 @@ final class Plugin
                 'option_prefix' => 'fflhub_bill_hicks_dealer_batch',
                 'field_prefix' => 'fflhub_bill_hicks_dealer_batch_page',
                 'cron_hook' => BillHicksDealerBatchCronService::CRON_HOOK,
+            ],
+            [
+                'page_slug' => 'fflhub-cssi-dealer-batch-queue',
+                'menu_title' => 'CSSI Dealer Batch Queue',
+                'page_title' => 'CSSI Dealer Batch Queue',
+                'description' => 'Per-line-item UPC queue view for CSSI dealer-fulfilled rows on Processing orders.',
+                'dist_id' => 'cssi',
+                'dist_label' => 'CSSI',
+                'mode' => 'dealer',
+                'mode_label' => 'Dealer Batch',
+                'option_prefix' => 'fflhub_cssi_dealer_batch',
+                'field_prefix' => 'fflhub_cssi_dealer_batch_page',
+                'cron_hook' => CSSIDealerBatchCronService::CRON_HOOK,
             ],
             [
                 'page_slug' => 'fflhub-davidsons-dealer-batch-queue',

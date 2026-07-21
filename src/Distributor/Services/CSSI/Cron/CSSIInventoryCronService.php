@@ -38,6 +38,9 @@ final class CSSIInventoryCronService extends AbstractTableCronService
     private const SHIPPING_MINIMUM_ORDER_FEE = 7.50;
     private const SHIPPING_MINIMUM_ORDER_THRESHOLD = 50.0;
     private const SHIPPING_INSURANCE_PER_100 = 1.00;
+    private const DEALER_SHIP_FREE_THRESHOLD = 750.0;
+    private const DEALER_SHIP_NON_FFL_RATE = 11.95;
+    private const DEALER_SHIP_FFL_RATE = 16.95;
 
     public function __construct(DoubleBufferedProductTable $table)
     {
@@ -489,6 +492,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             ? "CASE WHEN {$insertSigMatchExpr} THEN '' ELSE S.dropship_block_reason END"
             : "CASE WHEN {$insertSigMatchExpr} THEN '" . self::SIG_SAUER_DROPSHIP_BLOCK_REASON . "' ELSE S.dropship_block_reason END";
         $stagePriceExpr = "CAST(NULLIF(S.distributor_price, '') AS DECIMAL(12,4))";
+        $effectivePriceExpr = "CAST(COALESCE(NULLIF(S.distributor_price, ''), NULLIF(L.distributor_price, ''), '0') AS DECIMAL(12,4))";
         $fflRequiredExpr = "CASE
             WHEN COALESCE(S.ffl_required, 0) = 1 OR COALESCE(L.sot_required, 0) = 1 THEN 1
             ELSE L.ffl_required
@@ -499,23 +503,70 @@ final class CSSIInventoryCronService extends AbstractTableCronService
         END";
         $effectiveWeightOzExpr = "CAST(COALESCE(NULLIF(S.shipping_weight, ''), NULLIF(L.shipping_weight, ''), '0') AS DECIMAL(12,4))";
         $effectiveWeightLbExpr = "CASE WHEN {$effectiveWeightOzExpr} > 0 THEN {$effectiveWeightOzExpr} / 16 ELSE 1 END";
-        $shippingCostExpr = sprintf(
+        $dropshipShippingCostRawExpr = sprintf(
             "
-            CAST(ROUND(
-                (
-                    CASE
-                        WHEN {$fflRequiredExpr} = 1 THEN GREATEST(1, CEIL((%s) / %F)) * %F
-                        ELSE GREATEST(1, CEIL((%s) / %F)) * %F
-                    END
-                )
+            (
+                CASE
+                    WHEN {$fflRequiredExpr} = 1 THEN GREATEST(1, CEIL((%s) / %F)) * %F
+                    ELSE GREATEST(1, CEIL((%s) / %F)) * %F
+                END
                 + CASE WHEN %s > 0 THEN CEIL(%s / 100) * %F ELSE 0 END
                 + CASE WHEN %s > 0 AND %s < %F THEN %F ELSE 0 END
-            , 2) AS CHAR)
+            )
         ",
             $effectiveWeightLbExpr,
             self::SHIPPING_FFL_WEIGHT_LBS,
             self::SHIPPING_FFL_RATE,
             $effectiveWeightLbExpr,
+            self::SHIPPING_NON_FFL_WEIGHT_LBS,
+            self::SHIPPING_NON_FFL_RATE,
+            $effectivePriceExpr,
+            $effectivePriceExpr,
+            self::SHIPPING_INSURANCE_PER_100,
+            $effectivePriceExpr,
+            $effectivePriceExpr,
+            self::SHIPPING_MINIMUM_ORDER_THRESHOLD,
+            self::SHIPPING_MINIMUM_ORDER_FEE
+        );
+        $dealerShippingCostRawExpr = sprintf(
+            "
+            CASE
+                WHEN {$effectivePriceExpr} >= %F THEN 0
+                WHEN {$fflRequiredExpr} = 1 THEN %F
+                ELSE %F
+            END
+        ",
+            self::DEALER_SHIP_FREE_THRESHOLD,
+            self::DEALER_SHIP_FFL_RATE,
+            self::DEALER_SHIP_NON_FFL_RATE
+        );
+        $shippingCostExpr = "
+            CAST(ROUND(
+                CASE
+                    WHEN {$dropshipEnabledExpr} = 1 THEN ({$dropshipShippingCostRawExpr})
+                    ELSE ({$dealerShippingCostRawExpr})
+                END
+            , 2) AS CHAR)
+        ";
+
+        $insertFflRequiredExpr = 'CASE WHEN COALESCE(S.ffl_required, 0) = 1 OR COALESCE(S.sot_required, 0) = 1 THEN 1 ELSE 0 END';
+        $insertWeightOzExpr = "CAST(COALESCE(NULLIF(S.shipping_weight, ''), '0') AS DECIMAL(12,4))";
+        $insertWeightLbExpr = "CASE WHEN {$insertWeightOzExpr} > 0 THEN {$insertWeightOzExpr} / 16 ELSE 1 END";
+        $insertDropshipShippingCostRawExpr = sprintf(
+            "
+            (
+                CASE
+                    WHEN {$insertFflRequiredExpr} = 1 THEN GREATEST(1, CEIL((%s) / %F)) * %F
+                    ELSE GREATEST(1, CEIL((%s) / %F)) * %F
+                END
+                + CASE WHEN %s > 0 THEN CEIL(%s / 100) * %F ELSE 0 END
+                + CASE WHEN %s > 0 AND %s < %F THEN %F ELSE 0 END
+            )
+        ",
+            $insertWeightLbExpr,
+            self::SHIPPING_FFL_WEIGHT_LBS,
+            self::SHIPPING_FFL_RATE,
+            $insertWeightLbExpr,
             self::SHIPPING_NON_FFL_WEIGHT_LBS,
             self::SHIPPING_NON_FFL_RATE,
             $stagePriceExpr,
@@ -526,6 +577,26 @@ final class CSSIInventoryCronService extends AbstractTableCronService
             self::SHIPPING_MINIMUM_ORDER_THRESHOLD,
             self::SHIPPING_MINIMUM_ORDER_FEE
         );
+        $insertDealerShippingCostRawExpr = sprintf(
+            "
+            CASE
+                WHEN {$stagePriceExpr} >= %F THEN 0
+                WHEN {$insertFflRequiredExpr} = 1 THEN %F
+                ELSE %F
+            END
+        ",
+            self::DEALER_SHIP_FREE_THRESHOLD,
+            self::DEALER_SHIP_FFL_RATE,
+            self::DEALER_SHIP_NON_FFL_RATE
+        );
+        $insertShippingCostExpr = "
+            CAST(ROUND(
+                CASE
+                    WHEN {$insertDropshipEnabledExpr} = 1 THEN ({$insertDropshipShippingCostRawExpr})
+                    ELSE ({$insertDealerShippingCostRawExpr})
+                END
+            , 2) AS CHAR)
+        ";
 
         $joinItemSql = "
             UPDATE {$liveTable} L
@@ -536,8 +607,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 L.in_stock_flag = S.in_stock_flag,
                 L.allocation_status = S.allocation_status,
                 L.shipping_cost = CASE
-                    WHEN S.distributor_price <> ''
-                        AND NOT (CAST(NULLIF(COALESCE(L.shipping_cost, ''), '') AS DECIMAL(12,2)) <=> CAST({$shippingCostExpr} AS DECIMAL(12,2)))
+                    WHEN NOT (CAST(NULLIF(COALESCE(L.shipping_cost, ''), '') AS DECIMAL(12,2)) <=> CAST({$shippingCostExpr} AS DECIMAL(12,2)))
                     THEN {$shippingCostExpr}
                     ELSE L.shipping_cost
                 END,
@@ -568,10 +638,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 OR COALESCE(L.in_stock_flag, 0) <> COALESCE(S.in_stock_flag, 0)
                 OR COALESCE(L.allocation_status, '') <> COALESCE(S.allocation_status, '')
                 OR COALESCE(L.distributor_price, '') <> COALESCE(S.distributor_price, '')
-                OR (
-                    S.distributor_price <> ''
-                    AND NOT (CAST(NULLIF(COALESCE(L.shipping_cost, ''), '') AS DECIMAL(12,2)) <=> CAST({$shippingCostExpr} AS DECIMAL(12,2)))
-                )
+                OR NOT (CAST(NULLIF(COALESCE(L.shipping_cost, ''), '') AS DECIMAL(12,2)) <=> CAST({$shippingCostExpr} AS DECIMAL(12,2)))
                 OR COALESCE(L.retail_map, '') <> COALESCE(S.retail_map, '')
                 OR COALESCE(L.retail_msrp, '') <> COALESCE(S.retail_msrp, '')
                 OR COALESCE(L.drop_ship_price, '') <> COALESCE(S.drop_ship_price, '')
@@ -628,7 +695,7 @@ final class CSSIInventoryCronService extends AbstractTableCronService
                 S.in_stock_flag,
                 S.allocation_status,
                 S.distributor_price,
-                S.shipping_cost,
+                {$insertShippingCostExpr},
                 S.retail_map,
                 S.retail_msrp,
                 S.drop_ship_price,

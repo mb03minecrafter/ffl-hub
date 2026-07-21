@@ -66,6 +66,52 @@ final class CSSIModule implements DistributorModuleInterface
                 'description' => 'Your Chattanooga Shooting Supplies REST API token.',
                 'default'     => '',
             ],
+            'dealer_batch_enabled' => [
+                'label'       => 'Enable CSSI Dealer Batch Queue',
+                'type'        => 'checkbox',
+                'description' => 'When enabled, CSSI dealer-fulfilled rows are held in a batch queue instead of placing immediately.',
+                'default'     => '1',
+            ],
+            'dealer_batch_dispatch_time' => [
+                'label'       => 'CSSI Dealer Batch Dispatch Time',
+                'type'        => 'text',
+                'placeholder' => '17:00',
+                'description' => 'Weekday local dispatch time in 24-hour HH:MM format. Dealer batches are held on Saturdays and Sundays. Example: 17:00.',
+                'default'     => '17:00',
+            ],
+            'dealer_batch_low_stock_threshold' => [
+                'label'       => 'CSSI Dealer Batch Low-Stock Threshold',
+                'type'        => 'number',
+                'placeholder' => '3',
+                'description' => 'Rows containing low-stock UPCs at or below this threshold are placed immediately instead of waiting for the normal batch window.',
+                'default'     => '3',
+                'min'         => 0,
+                'step'        => 1,
+            ],
+            'dealer_batch_retry_delay_seconds' => [
+                'label'       => 'CSSI Dealer Batch Retry Delay Seconds',
+                'type'        => 'number',
+                'placeholder' => '300',
+                'description' => 'Delay before retrying a failed CSSI aggregate batch call.',
+                'default'     => '300',
+                'min'         => 30,
+                'step'        => 1,
+            ],
+            'dealer_batch_max_rows_per_run' => [
+                'label'       => 'CSSI Dealer Batch Max Rows Per Run',
+                'type'        => 'number',
+                'placeholder' => '200',
+                'description' => 'Maximum queued CSSI dealer rows to evaluate in one batch cron execution.',
+                'default'     => '200',
+                'min'         => 1,
+                'step'        => 1,
+            ],
+            'dealer_batch_force_flush' => [
+                'label'       => 'Force CSSI Dealer Batch Flush On Next Run',
+                'type'        => 'checkbox',
+                'description' => 'If enabled, the next CSSI batch cron run flushes queued dealer rows immediately, bypasses timing holds, and then auto-resets this toggle.',
+                'default'     => '0',
+            ],
         ];
     }
 

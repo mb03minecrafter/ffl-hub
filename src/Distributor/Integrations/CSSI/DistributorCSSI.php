@@ -37,6 +37,9 @@ final class DistributorCSSI extends DistributorBase
     private const SHIPPING_MIN_ORDER_FEE_THRESHOLD = 50.0;
     private const SHIPPING_MIN_ORDER_FEE = 7.50;
     private const SHIPPING_INSURANCE_PER_100 = 1.0;
+    private const DEALER_SHIP_FREE_THRESHOLD = 750.0;
+    private const DEALER_SHIP_NON_FFL_RATE = 11.95;
+    private const DEALER_SHIP_FFL_RATE = 16.95;
     private const VALIDATE_MAX_UNIQUE_ITEMS = 75;
     private const CSSI_API_ORDERS_URL = 'https://api.chattanoogashooting.com/rest/v5/orders';
 
@@ -1461,6 +1464,8 @@ final class DistributorCSSI extends DistributorBase
     {
         $ffl_required_raw = $this->get_string_field($row, ['ffl_required']);
         $ffl_required = $this->to_boolish($ffl_required_raw ?? '0', false);
+        $dropship_enabled_raw = $this->get_string_field($row, ['dropship_enabled']);
+        $dropship_enabled = $this->to_boolish($dropship_enabled_raw ?? '0', false);
 
         $item_type = strtoupper(trim((string) ($this->get_string_field($row, ['item_type']) ?? '')));
         $product_name = strtoupper(trim((string) ($this->get_string_field($row, ['product_name']) ?? '')));
@@ -1476,6 +1481,20 @@ final class DistributorCSSI extends DistributorBase
         $distributor_price = $this->parse_non_negative_money(
             $this->get_string_field($row, ['distributor_price']) ?? ''
         );
+
+        if (!$dropship_enabled) {
+            $computed = $distributor_price >= self::DEALER_SHIP_FREE_THRESHOLD
+                ? 0.0
+                : ($ffl_required ? self::DEALER_SHIP_FFL_RATE : self::DEALER_SHIP_NON_FFL_RATE);
+            $cost = apply_filters(
+                'fflhub_cssi_flat_shipping_cost',
+                $computed,
+                $normalized_upc,
+                $this
+            );
+
+            return is_numeric($cost) ? (float) $cost : $computed;
+        }
 
         $service = $this->resolve_shipping_service_for_row(
             $ffl_required,

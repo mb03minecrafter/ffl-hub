@@ -30,6 +30,9 @@ class CSSIProductImporterService
     private const SHIPPING_MINIMUM_ORDER_FEE = 7.50;
     private const SHIPPING_MINIMUM_ORDER_THRESHOLD = 50.0;
     private const SHIPPING_INSURANCE_PER_100 = 1.00;
+    private const DEALER_SHIP_FREE_THRESHOLD = 750.0;
+    private const DEALER_SHIP_NON_FFL_RATE = 11.95;
+    private const DEALER_SHIP_FFL_RATE = 16.95;
 
     private DoubleBufferedProductTable $table;
 
@@ -312,6 +315,13 @@ class CSSIProductImporterService
         $categoryExpr = $trim('@category');
         $fflRequiredCategoryExpr = CSSIRegulatoryCategoryRules::ffl_required_category_sql($categoryExpr);
         $sotRequiredCategoryExpr = CSSIRegulatoryCategoryRules::sot_required_category_sql($categoryExpr);
+        $sigApproved = SigDropshipApproval::is_distributor_sig_approved('cssi');
+        $dropshipEnabledExpr = $sigApproved
+            ? "CASE WHEN {$sigManufacturerExpr} AND NOT ({$sotRequiredCategoryExpr}) THEN 1 WHEN {$sigManufacturerExpr} THEN 0 ELSE {$dropShipFlagExpr} END"
+            : "CASE WHEN {$sigManufacturerExpr} THEN 0 ELSE {$dropShipFlagExpr} END";
+        $dropshipBlockReasonExpr = $sigApproved
+            ? "CASE WHEN {$sigManufacturerExpr} AND NOT ({$sotRequiredCategoryExpr}) THEN '' WHEN {$sigManufacturerExpr} THEN 'manufacturer_policy=sig_sauer_no_dropship' WHEN {$dropShipFlagExpr} = 1 THEN '' ELSE 'drop_ship_flag=0' END"
+            : "CASE WHEN {$sigManufacturerExpr} THEN 'manufacturer_policy=sig_sauer_no_dropship' WHEN {$dropShipFlagExpr} = 1 THEN '' ELSE 'drop_ship_flag=0' END";
         $freightChargeExpr = sprintf(
             "
             CASE
@@ -324,11 +334,29 @@ class CSSIProductImporterService
             self::SHIPPING_NON_FFL_RATE,
             self::SHIPPING_NON_FFL_WEIGHT_LBS
         );
-        $shippingRawExpr = "(
+        $dropshipShippingRawExpr = "(
             ({$freightChargeExpr})
             + CASE WHEN {$priceDecimalExpr} > 0 THEN CEIL({$priceDecimalExpr} / 100.0) * " . self::SHIPPING_INSURANCE_PER_100 . " ELSE 0 END
             + CASE WHEN {$priceDecimalExpr} > 0 AND {$priceDecimalExpr} < " . self::SHIPPING_MINIMUM_ORDER_THRESHOLD . ' THEN ' . self::SHIPPING_MINIMUM_ORDER_FEE . " ELSE 0 END
         )";
+        $dealerShippingRawExpr = sprintf(
+            "
+            CASE
+                WHEN {$priceDecimalExpr} >= %F THEN 0
+                WHEN {$fflRequiredCategoryExpr} THEN %F
+                ELSE %F
+            END
+        ",
+            self::DEALER_SHIP_FREE_THRESHOLD,
+            self::DEALER_SHIP_FFL_RATE,
+            self::DEALER_SHIP_NON_FFL_RATE
+        );
+        $shippingRawExpr = "
+            CASE
+                WHEN {$dropshipEnabledExpr} = 1 THEN ({$dropshipShippingRawExpr})
+                ELSE ({$dealerShippingRawExpr})
+            END
+        ";
         $shippingExpr = "REPLACE(FORMAT({$shippingRawExpr}, 2), ',', '')";
         $descriptionExpr = "CASE
             WHEN LEFT({$trim('@web_description')}, 1) = '\"' THEN REPLACE({$trim('@web_description')}, '\"', '')
@@ -393,15 +421,8 @@ class CSSIProductImporterService
                 serialized_flag = CASE WHEN {$fflRequiredCategoryExpr} THEN 1 ELSE 0 END,
                 ffl_required = CASE WHEN {$fflRequiredCategoryExpr} THEN 1 ELSE 0 END,
                 sot_required = CASE WHEN {$sotRequiredCategoryExpr} THEN 1 ELSE 0 END,
-                dropship_enabled = CASE
-                    WHEN {$sigManufacturerExpr} THEN 0
-                    ELSE {$dropShipFlagExpr}
-                END,
-                dropship_block_reason = CASE
-                    WHEN {$sigManufacturerExpr} THEN 'manufacturer_policy=sig_sauer_no_dropship'
-                    WHEN {$dropShipFlagExpr} = 1 THEN ''
-                    ELSE 'drop_ship_flag=0'
-                END,
+                dropship_enabled = {$dropshipEnabledExpr},
+                dropship_block_reason = {$dropshipBlockReasonExpr},
                 drop_ship_delivery_options = {$trim('@drop_ship_delivery_options')},
                 shipping_weight = {$weightOuncesExpr},
                 shipping_length_in = {$trim('@length')},

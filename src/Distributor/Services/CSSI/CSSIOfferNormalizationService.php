@@ -31,6 +31,16 @@ if (!defined('ABSPATH')) {
 final class CSSIOfferNormalizationService extends AbstractDistributorTableSyncService
 {
     private const DIST_ID = 'cssi';
+    private const SHIPPING_NON_FFL_RATE = 8.95;
+    private const SHIPPING_NON_FFL_WEIGHT_LBS = 8.0;
+    private const SHIPPING_FFL_RATE = 14.95;
+    private const SHIPPING_FFL_WEIGHT_LBS = 30.0;
+    private const SHIPPING_MINIMUM_ORDER_FEE = 7.50;
+    private const SHIPPING_MINIMUM_ORDER_THRESHOLD = 50.0;
+    private const SHIPPING_INSURANCE_PER_100 = 1.00;
+    private const DEALER_SHIP_FREE_THRESHOLD = 750.0;
+    private const DEALER_SHIP_NON_FFL_RATE = 11.95;
+    private const DEALER_SHIP_FFL_RATE = 16.95;
 
     /**
      * Stable distributor id used in fflhub_distributor_offers.distributor_id.
@@ -116,16 +126,6 @@ final class CSSIOfferNormalizationService extends AbstractDistributorTableSyncSe
             END
         ";
 
-        $shipping_cost_raw_expr = self::decimal_expr('S', 'shipping_cost');
-        $shipping_cost_expr = "
-            CASE
-                WHEN NULLIF(TRIM(S.distributor_price), '') IS NULL THEN o.shipping_cost
-                ELSE {$shipping_cost_raw_expr}
-            END
-        ";
-
-        $landed_cost_expr = self::landed_cost_expr($dealer_price_expr, $shipping_cost_expr);
-
         $map_price_raw_expr = self::decimal_expr('S', 'retail_map');
         $map_price_expr = "
             CASE
@@ -162,6 +162,30 @@ final class CSSIOfferNormalizationService extends AbstractDistributorTableSyncSe
         $length_expr = self::preserve_blank_decimal_expr('S', 'shipping_length_in', 'o.shipping_length_in');
         $width_expr = self::preserve_blank_decimal_expr('S', 'shipping_width_in', 'o.shipping_width_in');
         $height_expr = self::preserve_blank_decimal_expr('S', 'shipping_height_in', 'o.shipping_height_in');
+
+        // Do not copy S.shipping_cost directly. The inventory stage can be
+        // partial, so recalculate from the same effective price/FFL/dropship
+        // and weight values this UPDATE is about to persist. If CSSI omits
+        // price entirely and the offer has no existing dealer price fallback,
+        // preserve the old shipping value instead of inventing a rate.
+        $has_price_expr = "
+            (
+                NULLIF(TRIM(S.distributor_price), '') IS NOT NULL
+                OR o.dealer_price IS NOT NULL
+            )
+        ";
+        $shipping_cost_expr = "
+            CASE
+                WHEN NOT ({$has_price_expr}) THEN o.shipping_cost
+                ELSE " . self::shipping_cost_expr(
+                    $dealer_price_expr,
+                    $weight_expr,
+                    $ffl_required_expr,
+                    $dropship_enabled_expr
+                ) . '
+            END
+        ';
+        $landed_cost_expr = self::landed_cost_expr($dealer_price_expr, $shipping_cost_expr);
 
         // Target distributor_offers fields in this UPDATE:
         // manufacturer_norm, qty, stock_status, dealer_price, shipping_cost,
@@ -342,6 +366,65 @@ final class CSSIOfferNormalizationService extends AbstractDistributorTableSyncSe
                 WHEN NULLIF(TRIM({$stage_alias}.{$stage_column}), '') IS NULL THEN {$fallback_expression}
                 ELSE " . self::decimal_expr($stage_alias, $stage_column, 10, 3) . "
             END
+        ";
+    }
+
+    private static function shipping_cost_expr(
+        string $dealer_price_expr,
+        string $weight_oz_expr,
+        string $ffl_required_expr,
+        string $dropship_enabled_expr
+    ): string {
+        $price_expr = "COALESCE({$dealer_price_expr}, 0)";
+        $weight_expr = "COALESCE({$weight_oz_expr}, 0)";
+        $weight_lb_expr = "CASE WHEN {$weight_expr} > 0 THEN {$weight_expr} / 16 ELSE 1 END";
+
+        $dropship_shipping_expr = sprintf(
+            "
+            (
+                CASE
+                    WHEN {$ffl_required_expr} = 1 THEN GREATEST(1, CEIL((%s) / %F)) * %F
+                    ELSE GREATEST(1, CEIL((%s) / %F)) * %F
+                END
+                + CASE WHEN %s > 0 THEN CEIL(%s / 100) * %F ELSE 0 END
+                + CASE WHEN %s > 0 AND %s < %F THEN %F ELSE 0 END
+            )
+        ",
+            $weight_lb_expr,
+            self::SHIPPING_FFL_WEIGHT_LBS,
+            self::SHIPPING_FFL_RATE,
+            $weight_lb_expr,
+            self::SHIPPING_NON_FFL_WEIGHT_LBS,
+            self::SHIPPING_NON_FFL_RATE,
+            $price_expr,
+            $price_expr,
+            self::SHIPPING_INSURANCE_PER_100,
+            $price_expr,
+            $price_expr,
+            self::SHIPPING_MINIMUM_ORDER_THRESHOLD,
+            self::SHIPPING_MINIMUM_ORDER_FEE
+        );
+
+        $dealer_shipping_expr = sprintf(
+            "
+            CASE
+                WHEN {$price_expr} >= %F THEN 0
+                WHEN {$ffl_required_expr} = 1 THEN %F
+                ELSE %F
+            END
+        ",
+            self::DEALER_SHIP_FREE_THRESHOLD,
+            self::DEALER_SHIP_FFL_RATE,
+            self::DEALER_SHIP_NON_FFL_RATE
+        );
+
+        return "
+            CAST(ROUND(
+                CASE
+                    WHEN {$dropship_enabled_expr} = 1 THEN ({$dropship_shipping_expr})
+                    ELSE ({$dealer_shipping_expr})
+                END
+            , 2) AS DECIMAL(12,4))
         ";
     }
 }

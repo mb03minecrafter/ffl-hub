@@ -15,11 +15,16 @@ class CSSIProductParser
 {
     private const SIG_SAUER_MANUFACTURER = 'SIG SAUER';
     private const SIG_SAUER_DROPSHIP_BLOCK_REASON = 'manufacturer_policy=sig_sauer_no_dropship';
-    private const SHIPPING_FLAT_RATE = 14.95;
-    private const SHIPPING_FLAT_RATE_WEIGHT_LBS = 30.0;
+    private const SHIPPING_NON_FFL_RATE = 8.95;
+    private const SHIPPING_NON_FFL_WEIGHT_LBS = 8.0;
+    private const SHIPPING_FFL_RATE = 14.95;
+    private const SHIPPING_FFL_WEIGHT_LBS = 30.0;
     private const SHIPPING_MINIMUM_ORDER_FEE = 7.50;
     private const SHIPPING_MINIMUM_ORDER_THRESHOLD = 50.0;
     private const SHIPPING_INSURANCE_PER_100 = 1.00;
+    private const DEALER_SHIP_FREE_THRESHOLD = 750.0;
+    private const DEALER_SHIP_NON_FFL_RATE = 11.95;
+    private const DEALER_SHIP_FFL_RATE = 16.95;
 
     /**
      * @param array<int,mixed> $header
@@ -133,7 +138,7 @@ class CSSIProductParser
             'in_stock_flag' => $inStockFlag,
             'allocation_status' => $allocationStatus,
             'distributor_price' => $distributorPrice,
-            'shipping_cost' => $this->calculate_shipping_cost($distributorPrice, $shippingWeight),
+            'shipping_cost' => $this->calculate_shipping_cost($distributorPrice, $shippingWeight, $fflRequired, $dropShipFlag),
             'retail_map' => $retailMap,
             'retail_msrp' => $retailMsrp,
             'drop_ship_price' => $this->clean_money($this->get_csv($csv, $headerMap, ['drop ship price', 'drop_ship_price', 'dropship_price'])),
@@ -211,7 +216,7 @@ class CSSIProductParser
             'in_stock_flag' => $inStockFlag,
             'allocation_status' => $this->allocation_status($inventory, $inStockFlag),
             'distributor_price' => $distributorPrice,
-            'shipping_cost' => $this->calculate_shipping_cost($distributorPrice, $shippingWeight),
+            'shipping_cost' => $this->calculate_shipping_cost($distributorPrice, $shippingWeight, $fflRequired, $dropShipFlag),
             'retail_map' => $retailMap,
             'retail_msrp' => $retailMsrp,
             'drop_ship_price' => $this->clean_money($this->get_array($item, ['drop_ship_price'])),
@@ -361,14 +366,40 @@ class CSSIProductParser
         return $value;
     }
 
-    private function calculate_shipping_cost(string $priceValue, string $weightOuncesValue): string
+    private function calculate_shipping_cost(
+        string $priceValue,
+        string $weightOuncesValue,
+        string $fflRequiredValue,
+        string $dropshipEnabledValue
+    ): string
     {
         $price = $this->money_to_float($priceValue);
+        $fflRequired = $this->to_flag($fflRequiredValue) === '1';
+        $dropshipEnabled = $this->to_flag($dropshipEnabledValue) === '1';
+
+        if (!$dropshipEnabled) {
+            if ($price >= self::DEALER_SHIP_FREE_THRESHOLD) {
+                return '0.00';
+            }
+
+            return number_format(
+                $fflRequired ? self::DEALER_SHIP_FFL_RATE : self::DEALER_SHIP_NON_FFL_RATE,
+                2,
+                '.',
+                ''
+            );
+        }
+
         $weightOunces = $this->decimal_to_float($weightOuncesValue);
         $weightPounds = $weightOunces > 0.0 ? ($weightOunces / 16.0) : 1.0;
 
-        $freightUnits = max(1, (int) ceil($weightPounds / self::SHIPPING_FLAT_RATE_WEIGHT_LBS));
-        $freight = self::SHIPPING_FLAT_RATE * $freightUnits;
+        if ($fflRequired) {
+            $freightUnits = max(1, (int) ceil($weightPounds / self::SHIPPING_FFL_WEIGHT_LBS));
+            $freight = self::SHIPPING_FFL_RATE * $freightUnits;
+        } else {
+            $freightUnits = max(1, (int) ceil($weightPounds / self::SHIPPING_NON_FFL_WEIGHT_LBS));
+            $freight = self::SHIPPING_NON_FFL_RATE * $freightUnits;
+        }
 
         $insurance = $price > 0.0
             ? (ceil($price / 100.0) * self::SHIPPING_INSURANCE_PER_100)

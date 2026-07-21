@@ -19,6 +19,7 @@ final class DealerBatchCronRegistry
     {
         return [
             'bill_hicks'   => BillHicksDealerBatchCronService::CRON_HOOK,
+            'cssi'         => CSSIDealerBatchCronService::CRON_HOOK,
             'davidsons'    => DavidsonsDealerBatchCronService::CRON_HOOK,
             'rsr'          => RSRDealerBatchCronService::CRON_HOOK,
             'lipseys'      => LipseysDealerBatchCronService::CRON_HOOK,
