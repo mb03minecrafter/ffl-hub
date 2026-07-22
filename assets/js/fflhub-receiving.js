@@ -542,6 +542,7 @@
       return;
     }
 
+    var keepSerializedScanVisible = false;
     state.busy = true;
     $input.prop('disabled', true);
     $serial.prop('disabled', true);
@@ -558,6 +559,7 @@
       }
 
       if (payload.ok) {
+        keepSerializedScanVisible = !!payload.serial_number;
         beep(payload.shipment_complete ? 'complete' : 'success');
         if (payload.shipment_complete) {
           setStep('complete');
@@ -569,6 +571,13 @@
       }
     }).always(function () {
       state.busy = false;
+      if (keepSerializedScanVisible) {
+        $('[data-receiving-upc-input]').val(value).prop('disabled', false);
+        $('[data-receiving-serial-input]').val(serialNumber).prop('disabled', false);
+        $('[data-fastbound-manufacturer]').first().trigger('focus');
+        return;
+      }
+
       $('[data-receiving-upc-input]').val('').prop('disabled', false).trigger('focus');
       $('[data-receiving-serial-input]').val('').prop('disabled', true);
       updateSerialFieldState();
