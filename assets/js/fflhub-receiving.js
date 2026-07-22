@@ -542,6 +542,7 @@
       return;
     }
 
+    var wasSerializedAttempt = serialRequired && !!serialNumber;
     var keepSerializedScanVisible = false;
     state.busy = true;
     $input.prop('disabled', true);
@@ -560,6 +561,7 @@
 
       if (payload.ok) {
         keepSerializedScanVisible = !!payload.serial_number;
+        setFeedback(payload.message || 'Product received.', 'success');
         beep(payload.shipment_complete ? 'complete' : 'success');
         if (payload.shipment_complete) {
           setStep('complete');
@@ -567,14 +569,19 @@
           setStep('scan');
         }
       } else {
+        setFeedback(payload.message || 'Scan rejected.', 'error');
         beep('error');
       }
     }).always(function () {
       state.busy = false;
-      if (keepSerializedScanVisible) {
+      if (keepSerializedScanVisible || wasSerializedAttempt) {
         $('[data-receiving-upc-input]').val(value).prop('disabled', false);
         $('[data-receiving-serial-input]').val(serialNumber).prop('disabled', false);
-        $('[data-fastbound-manufacturer]').first().trigger('focus');
+        if (keepSerializedScanVisible) {
+          $('[data-fastbound-manufacturer]').first().trigger('focus');
+        } else {
+          $('[data-receiving-serial-input]').trigger('focus');
+        }
         return;
       }
 
@@ -795,7 +802,7 @@
     $(document).on('keydown', '[data-receiving-serial-input]', function (event) {
       if (event.key === 'Enter') {
         event.preventDefault();
-        scanProduct();
+        window.setTimeout(scanProduct, 120);
       }
     });
     $(document).on('blur', '[data-receiving-upc-input]', function () {
