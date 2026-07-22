@@ -299,8 +299,8 @@ class MapPriceVisibility
         echo '<div class="fflhub-email-for-quote-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="fflhub-email-for-quote-title">';
         echo '<button type="button" class="fflhub-email-for-quote-modal__close" aria-label="' . esc_attr__('Close quote form', 'ffl-hub') . '" data-fflhub-quote-close="1">&times;</button>';
 
-        echo '<h2 id="fflhub-email-for-quote-title" class="fflhub-email-for-quote-modal__title">' . esc_html__('Request a Custom Price Quote', 'ffl-hub') . '</h2>';
-        echo '<p>' . esc_html__('This form will be sent to and reviewed by a store associate who will evaluate each request individually and then contact you concerning product info and pricing. Any discount or promo code you may receive is specific to your email address. It cannot be shared or used by anyone else. It will be a one time use only code for YOU only.', 'ffl-hub') . '</p>';
+        echo '<h2 id="fflhub-email-for-quote-title" class="fflhub-email-for-quote-modal__title">' . esc_html__('Get Your Custom Quote', 'ffl-hub') . '</h2>';
+        echo '<p>' . esc_html__('Enter your email and we will send a private checkout link with your quoted price shortly. Quote links are tied to your email, one time use, and expire automatically.', 'ffl-hub') . '</p>';
 
         echo '<form class="fflhub-email-for-quote-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         echo '<input type="hidden" name="action" value="' . esc_attr(self::EMAIL_FOR_QUOTE_FORM_ACTION) . '">';
@@ -310,9 +310,7 @@ class MapPriceVisibility
 
         echo '<label for="fflhub-quote-first-name">' . esc_html__('First Name', 'ffl-hub') . '</label>';
         echo '<input id="fflhub-quote-first-name" name="fflhub_first_name" type="text" required maxlength="100">';
-
-        echo '<label for="fflhub-quote-last-name">' . esc_html__('Last Name', 'ffl-hub') . '</label>';
-        echo '<input id="fflhub-quote-last-name" name="fflhub_last_name" type="text" required maxlength="100">';
+        echo '<input type="hidden" name="fflhub_last_name" value="">';
 
         echo '<label for="fflhub-quote-email">' . esc_html__('Email Address', 'ffl-hub') . '</label>';
         echo '<input id="fflhub-quote-email" name="fflhub_email" type="email" required maxlength="190">';
@@ -348,7 +346,7 @@ class MapPriceVisibility
         $email = sanitize_email((string) wp_unslash($_POST['fflhub_email'] ?? ''));
         $receive_deals_updates = ((string) wp_unslash($_POST['fflhub_receive_deals_updates'] ?? '0') === '1');
 
-        if ($first_name === '' || $last_name === '' || $email === '') {
+        if ($first_name === '' || $email === '') {
             self::redirect_with_quote_status($redirect_url, 'missing_fields');
         }
         if (!is_email($email)) {
@@ -450,7 +448,6 @@ class MapPriceVisibility
             __('A new custom price quote request has been submitted.', 'ffl-hub'),
             '',
             sprintf(__('First Name: %s', 'ffl-hub'), $first_name),
-            sprintf(__('Last Name: %s', 'ffl-hub'), $last_name),
             sprintf(__('Email: %s', 'ffl-hub'), $email),
             sprintf(__('Receive deals and updates: %s', 'ffl-hub'), $receive_deals_updates ? __('Yes', 'ffl-hub') : __('No', 'ffl-hub')),
             sprintf(__('Product: %s', 'ffl-hub'), $product->get_name()),
@@ -831,11 +828,11 @@ class MapPriceVisibility
 
         if ($status === 'success') {
             $class .= ' is-success';
-            $message = __('Thanks, your quote request was submitted. A store associate will review it during business hours.', 'ffl-hub');
+            $message = __('Thanks, your quote request was submitted. Check your inbox shortly for your private checkout link.', 'ffl-hub');
         } else {
             $class .= ' is-error';
             if ($status === 'missing_fields') {
-                $message = __('Please complete First Name, Last Name, and Email Address.', 'ffl-hub');
+                $message = __('Please complete First Name and Email Address.', 'ffl-hub');
             } elseif ($status === 'invalid_email') {
                 $message = __('Please enter a valid email address.', 'ffl-hub');
             } else {
