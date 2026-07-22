@@ -247,9 +247,15 @@ final class ReceivingFastBoundService
         }
 
         $missing = [];
+        $labels = [
+            'manufacturer' => __('manufacturer', 'ffl-hub'),
+            'model' => __('model', 'ffl-hub'),
+            'caliber' => __('caliber', 'ffl-hub'),
+            'type' => __('firearm type', 'ffl-hub'),
+        ];
         foreach ($fields as $key => $value) {
             if ($value === '') {
-                $missing[] = $key;
+                $missing[] = (string) ($labels[$key] ?? $key);
             }
         }
 

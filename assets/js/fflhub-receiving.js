@@ -300,7 +300,7 @@
           '<label><span>Manufacturer</span><input type="text" value="' + esc(event.fastbound_manufacturer || '') + '" data-fastbound-manufacturer /></label>' +
           '<label><span>Model</span><input type="text" value="' + esc(event.fastbound_model || event.product_name || '') + '" data-fastbound-model /></label>' +
           '<label><span>Caliber</span><input type="text" value="' + esc(event.fastbound_caliber || '') + '" data-fastbound-caliber /></label>' +
-          '<label><span>Firearm Type</span><input type="text" value="' + esc(event.fastbound_firearm_type || '') + '" placeholder="Pistol, Rifle, Receiver..." data-fastbound-firearm-type /></label>' +
+          '<label><span>Firearm Type Required</span><input type="text" value="' + esc(event.fastbound_firearm_type || '') + '" placeholder="Pistol, Rifle, Shotgun, Receiver..." data-fastbound-firearm-type /></label>' +
           '<button type="button" class="button button-primary" data-fastbound-acquire' + acquireDisabled + '>Confirm Acquisition</button>' +
         '</div>';
     } else if (!disposed) {
