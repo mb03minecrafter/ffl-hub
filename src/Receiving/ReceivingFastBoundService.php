@@ -331,7 +331,7 @@ final class ReceivingFastBoundService
     {
         $payload = [
             'externalId' => 'fflhub-receiving-event-' . (int) ($event['id'] ?? 0),
-            'date' => gmdate('c'),
+            'date' => $this->fastbound_business_date(),
             'type' => self::ACQUISITION_TYPE,
             'purchaseOrderNumber' => $this->text($event['merchant_po'] ?? '', 100),
             'shipmentTrackingNumber' => $this->text($event['tracking_number'] ?? '', 100),
@@ -372,7 +372,7 @@ final class ReceivingFastBoundService
             'requestType' => self::DISPOSITION_REQUEST_TYPE,
             'contactId' => $contact_id,
             'externalId' => 'fflhub-disposition-event-' . (int) ($event['id'] ?? 0),
-            'date' => gmdate('c'),
+            'date' => $this->fastbound_business_date(),
             'type' => self::DISPOSITION_TYPE,
             'purchaseOrderNumber' => $this->text($event['merchant_po'] ?? '', 100),
             'shipmentTrackingNumber' => $this->text($event['tracking_number'] ?? '', 100),
@@ -476,6 +476,16 @@ final class ReceivingFastBoundService
         ];
 
         return $this->text(implode(' ', $parts), 1000);
+    }
+
+    /**
+     * FastBound validates acquisition/disposition dates against the account's
+     * business day. Sending UTC "now" can drift into tomorrow for a US account,
+     * so receiving sends the local WordPress date at midnight.
+     */
+    private function fastbound_business_date(): string
+    {
+        return current_time('Y-m-d') . 'T00:00:00';
     }
 
     /**
