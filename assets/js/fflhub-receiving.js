@@ -226,6 +226,112 @@
       '</table>';
   }
 
+  function renderFastBoundSourceOptions(fastbound, selected) {
+    var contacts = fastbound && fastbound.source_contacts ? fastbound.source_contacts : [];
+    if (!contacts.length) {
+      return '<option value="">No mapped FastBound source contacts</option>';
+    }
+
+    return contacts.map(function (contact, index) {
+      var value = contact.contact_id || '';
+      var label = contact.label || contact.ffl_number || contact.external_id || value || 'FastBound contact';
+      var isSelected = selected
+        ? value === selected
+        : index === 0;
+
+      return '<option value="' + esc(value) + '"' + (isSelected ? ' selected' : '') + '>' + esc(label) + '</option>';
+    }).join('');
+  }
+
+  function renderFastBoundSection(shipment) {
+    var fastbound = shipment && shipment.fastbound ? shipment.fastbound : {};
+    var events = (shipment && shipment.scan_history ? shipment.scan_history : []).filter(function (event) {
+      return event.result === 'accepted' && event.serial_number;
+    });
+
+    if (!events.length) {
+      return '';
+    }
+
+    if (Number(fastbound.enabled || 0) !== 1) {
+      return '' +
+        '<div class="fflhub-receiving-fastbound">' +
+          '<h3>FastBound Bound Book</h3>' +
+          '<p class="fflhub-receiving-muted">Serialized scans are present, but FastBound integration is disabled.</p>' +
+        '</div>';
+    }
+
+    var configured = Number(fastbound.configured || 0) === 1;
+
+    return '' +
+      '<div class="fflhub-receiving-fastbound">' +
+        '<div class="fflhub-receiving-fastbound-head">' +
+          '<div>' +
+            '<h3>FastBound Bound Book</h3>' +
+            '<p>Acquire each serialized item when it is received, then dispose it when the order is packed for the selected FFL.</p>' +
+          '</div>' +
+          (!configured ? '<strong class="fflhub-receiving-fastbound-warning">FastBound settings incomplete</strong>' : '') +
+        '</div>' +
+        events.map(function (event) {
+          return renderFastBoundEvent(event, fastbound, configured);
+        }).join('') +
+      '</div>';
+  }
+
+  function renderFastBoundEvent(event, fastbound, configured) {
+    var status = event.fastbound_status || '';
+    var acquired = !!event.fastbound_acquisition_item_id;
+    var disposed = status === 'disposed' || !!event.fastbound_disposition_id;
+    var failed = status === 'acquire_failed' || status === 'dispose_failed';
+    var contacts = fastbound && fastbound.source_contacts ? fastbound.source_contacts : [];
+    var sourceDisabled = !configured || !contacts.length;
+    var acquireDisabled = sourceDisabled ? ' disabled' : '';
+    var disposeDisabled = !configured ? ' disabled' : '';
+
+    var statusText = disposed
+      ? 'Disposed'
+      : (acquired ? 'Acquired' : (failed ? 'Needs Attention' : 'Needs Acquisition'));
+
+    var body = '';
+    if (!acquired) {
+      body =
+        '<div class="fflhub-receiving-fastbound-form">' +
+          '<label><span>Source Contact</span><select data-fastbound-source-contact' + (sourceDisabled ? ' disabled' : '') + '>' + renderFastBoundSourceOptions(fastbound, '') + '</select></label>' +
+          '<label><span>Manufacturer</span><input type="text" value="' + esc(event.fastbound_manufacturer || '') + '" data-fastbound-manufacturer /></label>' +
+          '<label><span>Model</span><input type="text" value="' + esc(event.fastbound_model || event.product_name || '') + '" data-fastbound-model /></label>' +
+          '<label><span>Caliber</span><input type="text" value="' + esc(event.fastbound_caliber || '') + '" data-fastbound-caliber /></label>' +
+          '<label><span>Firearm Type</span><input type="text" value="' + esc(event.fastbound_firearm_type || '') + '" placeholder="Pistol, Rifle, Receiver..." data-fastbound-firearm-type /></label>' +
+          '<button type="button" class="button button-primary" data-fastbound-acquire' + acquireDisabled + '>Confirm Acquisition</button>' +
+        '</div>';
+    } else if (!disposed) {
+      body =
+        '<div class="fflhub-receiving-fastbound-form is-dispose">' +
+          '<label><span>Destination FFL #</span><input type="text" value="' + esc(event.destination_ffl_number || '') + '" data-fastbound-destination-ffl /></label>' +
+          '<button type="button" class="button button-primary" data-fastbound-dispose' + disposeDisabled + '>Confirm Disposition</button>' +
+        '</div>';
+    } else {
+      body = '<p class="fflhub-receiving-muted">Acquisition and disposition are complete for this serial number.</p>';
+    }
+
+    return '' +
+      '<div class="fflhub-receiving-fastbound-event ' + (disposed ? 'is-disposed' : (acquired ? 'is-acquired' : '')) + '" data-fastbound-event="' + esc(event.id) + '">' +
+        '<div class="fflhub-receiving-fastbound-summary">' +
+          '<div>' +
+            '<strong>' + esc(event.product_name || ('UPC ' + event.upc)) + '</strong>' +
+            '<span>UPC ' + esc(event.upc) + ' | Serial ' + esc(event.serial_number) + '</span>' +
+            (event.order_number ? '<span>Order #' + esc(event.order_number) + '</span>' : '') +
+          '</div>' +
+          '<div>' +
+            '<b>' + esc(statusText) + '</b>' +
+            (event.fastbound_acquisition_item_id ? '<small>Item ' + esc(event.fastbound_acquisition_item_id) + '</small>' : '') +
+            (event.fastbound_disposition_id ? '<small>Disposition ' + esc(event.fastbound_disposition_id) + '</small>' : '') +
+          '</div>' +
+        '</div>' +
+        (event.fastbound_error ? '<div class="fflhub-receiving-fastbound-error">' + esc(event.fastbound_error) + '</div>' : '') +
+        body +
+      '</div>';
+  }
+
   function renderShipment(shipment) {
     state.shipment = shipment;
     setFeedback('', 'info');
@@ -298,6 +404,7 @@
           '<button type="button" class="button button-primary" data-receiving-upc-submit>Receive Item</button>' +
         '</div>' +
         resultHtml +
+        renderFastBoundSection(shipment) +
         renderDebugOverrideButton() +
         renderProducts(shipment) +
         renderHistory(shipment.scan_history || []) +
@@ -330,6 +437,7 @@
           '<h3>' + esc(shipmentTitle(shipment)) + '</h3>' +
           '<p>All expected units have been received.</p>' +
           renderProgress(shipment) +
+          renderFastBoundSection(shipment) +
           '<div class="fflhub-receiving-complete-grid">' +
             '<section><h4>Ready to Pack</h4>' + (readyRows || '<p>No associated orders are fully ready yet.</p>') + '</section>' +
             '<section><h4>Still Waiting on Other Items</h4>' + (waitingRows || '<p>No associated orders are waiting on other inbound items.</p>') + '</section>' +
@@ -511,6 +619,99 @@
     });
   }
 
+  function refreshCurrentShipment(callback) {
+    if (!state.shipment || !state.shipment.shipment_key) {
+      if (typeof callback === 'function') {
+        callback();
+      }
+      return;
+    }
+
+    post('fflhub_receiving_get_shipment', { shipment_key: state.shipment.shipment_key }).then(function (payload) {
+      if (payload.ok && payload.shipment) {
+        state.shipment = payload.shipment;
+        renderScanPane(payload.shipment);
+        renderCompletePane(payload.shipment);
+      }
+
+      if (typeof callback === 'function') {
+        callback(payload);
+      }
+    });
+  }
+
+  function fastBoundAcquire($button) {
+    var $card = $button.closest('[data-fastbound-event]');
+    var eventId = Number($card.data('fastbound-event') || 0);
+    if (!eventId || state.busy) {
+      return;
+    }
+
+    state.busy = true;
+    $button.prop('disabled', true);
+    setFeedback('Committing FastBound acquisition...', 'info');
+    post('fflhub_receiving_fastbound_acquire', {
+      event_id: eventId,
+      source_contact_id: $.trim($card.find('[data-fastbound-source-contact]').val() || ''),
+      manufacturer: $.trim($card.find('[data-fastbound-manufacturer]').val() || ''),
+      model: $.trim($card.find('[data-fastbound-model]').val() || ''),
+      caliber: $.trim($card.find('[data-fastbound-caliber]').val() || ''),
+      firearm_type: $.trim($card.find('[data-fastbound-firearm-type]').val() || '')
+    }).then(function (payload) {
+      if (payload.ok) {
+        setFeedback(payload.message || 'FastBound acquisition committed.', 'success');
+        beep('success');
+      } else {
+        setFeedback(payload.message || 'FastBound acquisition failed.', 'error');
+        beep('error');
+      }
+
+      refreshCurrentShipment();
+    }).always(function () {
+      state.busy = false;
+      $button.prop('disabled', false);
+    });
+  }
+
+  function fastBoundDispose($button) {
+    var $card = $button.closest('[data-fastbound-event]');
+    var eventId = Number($card.data('fastbound-event') || 0);
+    var ffl = $.trim($card.find('[data-fastbound-destination-ffl]').val() || '');
+    if (!eventId || state.busy) {
+      return;
+    }
+    if (!ffl) {
+      setFeedback('Enter the destination FFL number before disposition.', 'error');
+      beep('error');
+      $card.find('[data-fastbound-destination-ffl]').trigger('focus');
+      return;
+    }
+    if (!window.confirm('Commit this FastBound disposition to the destination FFL?')) {
+      return;
+    }
+
+    state.busy = true;
+    $button.prop('disabled', true);
+    setFeedback('Committing FastBound disposition...', 'info');
+    post('fflhub_receiving_fastbound_dispose', {
+      event_id: eventId,
+      destination_ffl_number: ffl
+    }).then(function (payload) {
+      if (payload.ok) {
+        setFeedback(payload.message || 'FastBound disposition committed.', 'success');
+        beep('success');
+      } else {
+        setFeedback(payload.message || 'FastBound disposition failed.', 'error');
+        beep('error');
+      }
+
+      refreshCurrentShipment();
+    }).always(function () {
+      state.busy = false;
+      $button.prop('disabled', false);
+    });
+  }
+
   function refreshHistory() {
     post('fflhub_receiving_history', {}).then(function (payload) {
       var rows = (payload.history || []).map(function (row) {
@@ -564,6 +765,12 @@
     });
     $(document).on('click', '[data-receiving-upc-submit]', scanProduct);
     $(document).on('click', '[data-receiving-debug-complete]', debugCompleteShipment);
+    $(document).on('click', '[data-fastbound-acquire]', function () {
+      fastBoundAcquire($(this));
+    });
+    $(document).on('click', '[data-fastbound-dispose]', function () {
+      fastBoundDispose($(this));
+    });
     $(document).on('input change', '[data-receiving-upc-input]', updateSerialFieldState);
     $(document).on('keydown', '[data-receiving-upc-input]', function (event) {
       if (event.key === 'Enter') {

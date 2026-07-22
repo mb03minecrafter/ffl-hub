@@ -334,6 +334,121 @@
   font-weight: 700;
 }
 
+.fflhub-receiving-fastbound {
+  background: #f8fafc;
+  border: 1px solid #dbe3ea;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 14px;
+}
+
+.fflhub-receiving-fastbound-head {
+  align-items: start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.fflhub-receiving-fastbound-head h3 {
+  margin: 0 0 4px;
+}
+
+.fflhub-receiving-fastbound-head p {
+  color: #52616b;
+  margin: 0;
+}
+
+.fflhub-receiving-fastbound-warning {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 999px;
+  color: #9a3412;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.fflhub-receiving-fastbound-event {
+  background: #fff;
+  border: 1px solid #dbe3ea;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.fflhub-receiving-fastbound-event.is-acquired {
+  border-color: #a7d9be;
+}
+
+.fflhub-receiving-fastbound-event.is-disposed {
+  background: #f0fdf4;
+  border-color: #86cda2;
+}
+
+.fflhub-receiving-fastbound-summary {
+  align-items: start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, auto);
+}
+
+.fflhub-receiving-fastbound-summary strong,
+.fflhub-receiving-fastbound-summary b {
+  color: #111827;
+  display: block;
+  font-size: 15px;
+}
+
+.fflhub-receiving-fastbound-summary span,
+.fflhub-receiving-fastbound-summary small {
+  color: #64748b;
+  display: block;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.fflhub-receiving-fastbound-error {
+  background: #fff1f2;
+  border-radius: 6px;
+  color: #b42318;
+  font-weight: 700;
+  padding: 9px 10px;
+}
+
+.fflhub-receiving-fastbound-form {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(5, minmax(120px, 1fr)) auto;
+}
+
+.fflhub-receiving-fastbound-form.is-dispose {
+  grid-template-columns: minmax(240px, 360px) auto;
+  justify-content: start;
+}
+
+.fflhub-receiving-fastbound-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.fflhub-receiving-fastbound-form label span {
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.fflhub-receiving-fastbound-form input,
+.fflhub-receiving-fastbound-form select {
+  border-color: #aab7c4;
+  border-radius: 6px;
+  min-height: 38px;
+  width: 100%;
+}
+
 .fflhub-receiving-complete-grid {
   display: grid;
   gap: 16px;
@@ -432,10 +547,16 @@
   .fflhub-receiving-scan-grid,
   .fflhub-receiving-scan-result,
   .fflhub-receiving-debug-actions,
+  .fflhub-receiving-fastbound-form,
+  .fflhub-receiving-fastbound-summary,
   .fflhub-receiving-complete-grid,
   .fflhub-receiving-event,
   .fflhub-receiving-history-row {
     grid-template-columns: 1fr;
+  }
+
+  .fflhub-receiving-fastbound-head {
+    flex-direction: column;
   }
 
   .fflhub-receiving-header {

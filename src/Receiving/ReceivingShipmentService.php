@@ -8,6 +8,8 @@ use FFLHub\Distributor\Models\OrderPlacementJobRow;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\FFL\Data\FFLRowMapper;
+use FFLHub\Settings\Options;
 use WC_Order;
 use WC_Order_Item_Product;
 use WC_Product;
@@ -715,6 +717,7 @@ final class ReceivingShipmentService
         $group['scan_history'] = $this->public_history($history);
         $group['started_at'] = $history ? (string) end($history)['created_at'] : '';
         $group['completed_at'] = !empty($group['complete']) && $history ? (string) ($history[0]['created_at'] ?? '') : '';
+        $group['fastbound'] = $this->fastbound_context((string) ($group['dist_id'] ?? ''));
 
         unset($group['jobs']);
 
@@ -870,6 +873,7 @@ final class ReceivingShipmentService
             'scan_history' => $this->public_history($history),
             'started_at' => $history ? (string) end($history)['created_at'] : '',
             'completed_at' => $complete && $history ? (string) ($history[0]['created_at'] ?? '') : '',
+            'fastbound' => $this->fastbound_context((string) ($payload['dist_id'] ?? 'test')),
         ];
     }
 
@@ -1162,18 +1166,36 @@ final class ReceivingShipmentService
         $out = [];
         foreach ($events as $event) {
             $user = get_user_by('id', (int) ($event['wp_user_id'] ?? 0));
+            $product = $this->event_product((int) ($event['product_id'] ?? 0));
+            $order = $this->event_order((int) ($event['order_id'] ?? 0));
             $out[] = [
                 'id' => (int) ($event['id'] ?? 0),
                 'received_at' => (string) ($event['received_at'] ?? ''),
                 'employee' => $user ? (string) $user->display_name : '',
                 'upc' => (string) ($event['upc'] ?? ''),
                 'product_id' => (int) ($event['product_id'] ?? 0),
+                'product_name' => $product instanceof WC_Product ? $product->get_name() : '',
                 'order_id' => (int) ($event['order_id'] ?? 0),
+                'order_number' => $order instanceof WC_Order ? (string) $order->get_order_number() : '',
+                'order_edit_url' => $order instanceof WC_Order ? admin_url('post.php?post=' . (int) $order->get_id() . '&action=edit') : '',
+                'destination_ffl_number' => $this->event_order_ffl_number($order),
                 'order_item_id' => (int) ($event['order_item_id'] ?? 0),
                 'result' => (string) ($event['result'] ?? ''),
                 'exception_status' => (string) ($event['exception_status'] ?? ''),
                 'serial_number' => (string) ($event['serial_number'] ?? ''),
                 'message' => (string) ($event['message'] ?? ''),
+                'fastbound_status' => (string) ($event['fastbound_status'] ?? ''),
+                'fastbound_error' => (string) ($event['fastbound_error'] ?? ''),
+                'fastbound_acquisition_id' => (string) ($event['fastbound_acquisition_id'] ?? ''),
+                'fastbound_acquisition_item_id' => (string) ($event['fastbound_acquisition_item_id'] ?? ''),
+                'fastbound_disposition_id' => (string) ($event['fastbound_disposition_id'] ?? ''),
+                'fastbound_disposition_contact_id' => (string) ($event['fastbound_disposition_contact_id'] ?? ''),
+                'fastbound_manufacturer' => (string) ($event['fastbound_manufacturer'] ?? ''),
+                'fastbound_model' => (string) ($event['fastbound_model'] ?? ''),
+                'fastbound_caliber' => (string) ($event['fastbound_caliber'] ?? ''),
+                'fastbound_firearm_type' => (string) ($event['fastbound_firearm_type'] ?? ''),
+                'fastbound_acquired_at' => (string) ($event['fastbound_acquired_at'] ?? ''),
+                'fastbound_disposed_at' => (string) ($event['fastbound_disposed_at'] ?? ''),
             ];
         }
 
@@ -1217,6 +1239,55 @@ final class ReceivingShipmentService
             'received_qty' => (int) ($product['received_qty'] ?? 0),
             'remaining_qty' => (int) ($product['remaining_qty'] ?? 0),
         ];
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function fastbound_context(string $dist_id): array
+    {
+        $contacts = [];
+        foreach (Options::get_fastbound_contacts_for_distributor($dist_id) as $contact) {
+            $contacts[] = [
+                'label' => (string) ($contact['label'] ?? ''),
+                'contact_id' => (string) ($contact['fastbound_contact_id'] ?? ''),
+                'external_id' => (string) ($contact['fastbound_contact_external_id'] ?? ''),
+                'ffl_number' => (string) ($contact['ffl_number'] ?? ''),
+            ];
+        }
+
+        return [
+            'enabled' => Options::get_fastbound_enabled() ? 1 : 0,
+            'configured' => (
+                Options::get_fastbound_account_number() !== ''
+                && Options::get_fastbound_api_key() !== ''
+                && Options::get_fastbound_audit_user_email() !== ''
+            ) ? 1 : 0,
+            'source_contacts' => $contacts,
+        ];
+    }
+
+    private function event_product(int $product_id): ?WC_Product
+    {
+        $product = $product_id > 0 ? wc_get_product($product_id) : null;
+
+        return $product instanceof WC_Product ? $product : null;
+    }
+
+    private function event_order(int $order_id): ?WC_Order
+    {
+        $order = $order_id > 0 ? wc_get_order($order_id) : null;
+
+        return $order instanceof WC_Order ? $order : null;
+    }
+
+    private function event_order_ffl_number(?WC_Order $order): string
+    {
+        if (!$order instanceof WC_Order) {
+            return '';
+        }
+
+        return FFLRowMapper::normalize_ffl_number((string) $order->get_meta('fflhub_receiving_ffl_number', true));
     }
 
     /**

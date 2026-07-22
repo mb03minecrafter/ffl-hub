@@ -18,7 +18,7 @@ final class ReceivingEventsStore
 {
     private const BASE_TABLE = 'fflhub_receiving_events';
     private const SCHEMA_OPTION = 'fflhub_receiving_events_schema_version';
-    private const SCHEMA_VERSION = '2';
+    private const SCHEMA_VERSION = '3';
 
     private static bool $schema_checked = false;
 
@@ -72,6 +72,18 @@ final class ReceivingEventsStore
                 raw_scan VARCHAR(191) NOT NULL DEFAULT '',
                 normalized_scan VARCHAR(191) NOT NULL DEFAULT '',
                 request_token VARCHAR(64) NOT NULL DEFAULT '',
+                fastbound_acquisition_id VARCHAR(64) DEFAULT NULL,
+                fastbound_acquisition_item_id VARCHAR(64) DEFAULT NULL,
+                fastbound_disposition_id VARCHAR(64) DEFAULT NULL,
+                fastbound_disposition_contact_id VARCHAR(64) DEFAULT NULL,
+                fastbound_status VARCHAR(32) NOT NULL DEFAULT '',
+                fastbound_error TEXT NULL,
+                fastbound_manufacturer VARCHAR(100) NOT NULL DEFAULT '',
+                fastbound_model VARCHAR(100) NOT NULL DEFAULT '',
+                fastbound_caliber VARCHAR(100) NOT NULL DEFAULT '',
+                fastbound_firearm_type VARCHAR(100) NOT NULL DEFAULT '',
+                fastbound_acquired_at DATETIME DEFAULT NULL,
+                fastbound_disposed_at DATETIME DEFAULT NULL,
                 received_at DATETIME NOT NULL,
                 created_at DATETIME NOT NULL,
                 PRIMARY KEY (id),
@@ -84,7 +96,9 @@ final class ReceivingEventsStore
                 KEY serial_number (serial_number),
                 KEY received_at (received_at),
                 KEY tracking_number (tracking_number),
-                KEY merchant_po (merchant_po)
+                KEY merchant_po (merchant_po),
+                KEY fastbound_status (fastbound_status),
+                KEY fastbound_acquisition_item_id (fastbound_acquisition_item_id)
             ) {$charset};
         ");
 
@@ -190,6 +204,90 @@ final class ReceivingEventsStore
         );
 
         return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    public function find_by_id(int $event_id): ?array
+    {
+        global $wpdb;
+
+        if ($event_id <= 0) {
+            return null;
+        }
+
+        self::ensure_schema();
+
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT * FROM " . self::table_name() . " WHERE id = %d LIMIT 1",
+                $event_id
+            ),
+            ARRAY_A
+        );
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     */
+    public function update_fastbound_fields(int $event_id, array $data): bool
+    {
+        global $wpdb;
+
+        if ($event_id <= 0 || empty($data)) {
+            return false;
+        }
+
+        self::ensure_schema();
+
+        $allowed = [
+            'fastbound_acquisition_id' => 64,
+            'fastbound_acquisition_item_id' => 64,
+            'fastbound_disposition_id' => 64,
+            'fastbound_disposition_contact_id' => 64,
+            'fastbound_status' => 32,
+            'fastbound_error' => 2000,
+            'fastbound_manufacturer' => 100,
+            'fastbound_model' => 100,
+            'fastbound_caliber' => 100,
+            'fastbound_firearm_type' => 100,
+            'fastbound_acquired_at' => 32,
+            'fastbound_disposed_at' => 32,
+        ];
+
+        $row = [];
+        $formats = [];
+        foreach ($allowed as $column => $max) {
+            if (!array_key_exists($column, $data)) {
+                continue;
+            }
+
+            if (in_array($column, ['fastbound_acquired_at', 'fastbound_disposed_at'], true) && ($data[$column] === null || $data[$column] === '')) {
+                $row[$column] = null;
+            } elseif ($column === 'fastbound_error') {
+                $row[$column] = $this->textarea($data[$column] ?? '', $max);
+            } else {
+                $row[$column] = $this->text($data[$column] ?? '', $max);
+            }
+            $formats[] = '%s';
+        }
+
+        if (empty($row)) {
+            return false;
+        }
+
+        $updated = $wpdb->update(
+            self::table_name(),
+            $row,
+            ['id' => $event_id],
+            $formats,
+            ['%d']
+        );
+
+        return $updated !== false;
     }
 
     /**
@@ -328,6 +426,19 @@ final class ReceivingEventsStore
     private function text($value, int $max): string
     {
         $text = sanitize_text_field((string) ($value ?? ''));
+        if ($max > 0 && strlen($text) > $max) {
+            $text = substr($text, 0, $max);
+        }
+
+        return $text;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function textarea($value, int $max): string
+    {
+        $text = sanitize_textarea_field((string) ($value ?? ''));
         if ($max > 0 && strlen($text) > $max) {
             $text = substr($text, 0, $max);
         }

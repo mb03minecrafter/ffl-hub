@@ -5,6 +5,7 @@ namespace FFLHub\Admin\Pages;
 
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Receiving\ReceivingEventsStore;
+use FFLHub\Receiving\ReceivingFastBoundService;
 use FFLHub\Receiving\ReceivingShipmentService;
 
 if (!defined('ABSPATH')) {
@@ -37,6 +38,8 @@ final class ReceivingPage
         add_action('wp_ajax_fflhub_receiving_lookup_po', [$this, 'ajax_lookup_po']);
         add_action('wp_ajax_fflhub_receiving_get_shipment', [$this, 'ajax_get_shipment']);
         add_action('wp_ajax_fflhub_receiving_scan_product', [$this, 'ajax_scan_product']);
+        add_action('wp_ajax_fflhub_receiving_fastbound_acquire', [$this, 'ajax_fastbound_acquire']);
+        add_action('wp_ajax_fflhub_receiving_fastbound_dispose', [$this, 'ajax_fastbound_dispose']);
         add_action('wp_ajax_fflhub_receiving_debug_complete', [$this, 'ajax_debug_complete']);
         add_action('wp_ajax_fflhub_receiving_history', [$this, 'ajax_history']);
     }
@@ -199,6 +202,32 @@ final class ReceivingPage
         ));
     }
 
+    public function ajax_fastbound_acquire(): void
+    {
+        $this->assert_ajax_access();
+        $this->send($this->fastbound_service()->acquire_event(
+            $this->request_int('event_id'),
+            [
+                'source_contact_id' => $this->request_text('source_contact_id'),
+                'manufacturer' => $this->request_text('manufacturer'),
+                'model' => $this->request_text('model'),
+                'caliber' => $this->request_text('caliber'),
+                'firearm_type' => $this->request_text('firearm_type'),
+            ]
+        ));
+    }
+
+    public function ajax_fastbound_dispose(): void
+    {
+        $this->assert_ajax_access();
+        $this->send($this->fastbound_service()->dispose_event(
+            $this->request_int('event_id'),
+            [
+                'destination_ffl_number' => $this->request_text('destination_ffl_number'),
+            ]
+        ));
+    }
+
     public function ajax_debug_complete(): void
     {
         $this->assert_ajax_access();
@@ -214,6 +243,11 @@ final class ReceivingPage
     private function service(): ReceivingShipmentService
     {
         return new ReceivingShipmentService($this->jobs_table, null, $this->request_bool('debug_include_old'));
+    }
+
+    private function fastbound_service(): ReceivingFastBoundService
+    {
+        return new ReceivingFastBoundService();
     }
 
     private function send(array $payload): void
@@ -235,6 +269,13 @@ final class ReceivingPage
         return isset($_POST[$key])
             ? sanitize_text_field(wp_unslash((string) $_POST[$key]))
             : '';
+    }
+
+    private function request_int(string $key): int
+    {
+        return isset($_POST[$key])
+            ? max(0, (int) sanitize_text_field(wp_unslash((string) $_POST[$key])))
+            : 0;
     }
 
     private function request_bool(string $key): bool
