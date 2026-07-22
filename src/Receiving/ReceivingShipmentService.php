@@ -734,7 +734,7 @@ final class ReceivingShipmentService
             return null;
         }
 
-        foreach ($this->recent_shipments() as $shipment) {
+        foreach ($this->recent_shipments(true) as $shipment) {
             if ((string) ($shipment['shipment_key'] ?? '') === $shipment_key) {
                 return $shipment;
             }
