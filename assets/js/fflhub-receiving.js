@@ -24,6 +24,11 @@
       }
 
       return response.data || { ok: false, message: 'Empty response.' };
+    }, function (xhr) {
+      return {
+        ok: false,
+        message: 'Request failed before WordPress returned a response. HTTP ' + (xhr && xhr.status ? xhr.status : 'unknown') + '.'
+      };
     });
   }
 
@@ -531,7 +536,13 @@
       beep('error');
       return;
     }
-    if (!value || state.busy) {
+    if (state.busy) {
+      setFeedback('Receiving is already submitting a scan. Wait one second and try again.', 'info');
+      return;
+    }
+    if (!value) {
+      setFeedback('Scan or enter the UPC before receiving this item.', 'error');
+      beep('error');
       $input.trigger('focus');
       return;
     }
@@ -545,6 +556,7 @@
     var wasSerializedAttempt = serialRequired && !!serialNumber;
     var keepSerializedScanVisible = false;
     state.busy = true;
+    setFeedback('Submitting receive scan...', 'info');
     $input.prop('disabled', true);
     $serial.prop('disabled', true);
     post('fflhub_receiving_scan_product', {
