@@ -87,7 +87,7 @@ final class ReceivingShipmentService
         }
 
         $matches = [];
-        foreach ($this->recent_shipments() as $shipment) {
+        foreach ($this->recent_shipments(true) as $shipment) {
             $po = strtoupper(trim((string) ($shipment['merchant_po'] ?? '')));
             $external_ids = array_map('strtoupper', (array) ($shipment['external_order_ids'] ?? []));
             if ($po === $needle || in_array($needle, $external_ids, true)) {
@@ -430,14 +430,14 @@ final class ReceivingShipmentService
     /**
      * @return array<int,array<string,mixed>>
      */
-    private function recent_shipments(): array
+    private function recent_shipments(bool $include_without_tracking = false): array
     {
-        $jobs = $this->recent_dealer_jobs();
+        $jobs = $this->recent_dealer_jobs($include_without_tracking);
         $groups = [];
 
         foreach ($jobs as $job) {
             $tracking = $job->tracking_numbers();
-            if (empty($tracking)) {
+            if (empty($tracking) && !$include_without_tracking) {
                 continue;
             }
 
@@ -486,13 +486,17 @@ final class ReceivingShipmentService
     /**
      * @return OrderPlacementJobRow[]
      */
-    private function recent_dealer_jobs(): array
+    private function recent_dealer_jobs(bool $include_without_tracking = false): array
     {
         global $wpdb;
 
         $table = $this->jobs_table->get_table_name();
         $lane = OrderPlacementKeysUtil::LANE_DEALER_FULFILLED;
         $status = OrderPlacementKeys::JOB_STATUS_SUCCESS;
+        $tracking_where = $include_without_tracking
+            ? ''
+            : "AND tracking_numbers_json IS NOT NULL
+                  AND tracking_numbers_json <> ''";
 
         $rows = $wpdb->get_results(
             $wpdb->prepare(
@@ -510,8 +514,7 @@ final class ReceivingShipmentService
                 FROM {$table}
                 WHERE lane = %s
                   AND status = %s
-                  AND tracking_numbers_json IS NOT NULL
-                  AND tracking_numbers_json <> ''
+                  {$tracking_where}
                 ORDER BY updated_at DESC, id DESC
                 LIMIT %d
                 ",
@@ -994,8 +997,6 @@ final class ReceivingShipmentService
                 WHERE order_id = %d
                   AND lane = %s
                   AND status = %s
-                  AND tracking_numbers_json IS NOT NULL
-                  AND tracking_numbers_json <> ''
                 ORDER BY id ASC
                 ",
                 $order_id,

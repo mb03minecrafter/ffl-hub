@@ -92,6 +92,11 @@ final class Options
     public const OPTION_USPS_PRICE_TYPE               = 'fflhub_usps_price_type';
     public const OPTION_USPS_TIMEOUT_SEC              = 'fflhub_usps_timeout_sec';
     public const OPTION_USPS_TARE_WEIGHT_OZ           = 'fflhub_usps_tare_weight_oz';
+    public const OPTION_FASTBOUND_ENABLED             = 'fflhub_fastbound_enabled';
+    public const OPTION_FASTBOUND_ACCOUNT_NUMBER      = 'fflhub_fastbound_account_number';
+    public const OPTION_FASTBOUND_API_KEY             = 'fflhub_fastbound_api_key';
+    public const OPTION_FASTBOUND_AUDIT_USER_EMAIL    = 'fflhub_fastbound_audit_user_email';
+    public const OPTION_FASTBOUND_DISTRIBUTOR_CONTACTS = 'fflhub_fastbound_distributor_contacts';
 
     /* -------------------------------------------------------------------------
      * Defaults
@@ -150,6 +155,11 @@ final class Options
     private const DEFAULT_USPS_PRICE_TYPE               = 'COMMERCIAL';
     private const DEFAULT_USPS_TIMEOUT_SEC              = 8;
     private const DEFAULT_USPS_TARE_WEIGHT_OZ           = 0.0;
+    private const DEFAULT_FASTBOUND_ENABLED             = false;
+    private const DEFAULT_FASTBOUND_ACCOUNT_NUMBER      = '';
+    private const DEFAULT_FASTBOUND_API_KEY             = '';
+    private const DEFAULT_FASTBOUND_AUDIT_USER_EMAIL    = '';
+    private const DEFAULT_FASTBOUND_DISTRIBUTOR_CONTACTS = [];
 
     public const MAP_POLICY_ADD_TO_CART_FOR_PRICE   = 'add_to_cart_for_price';
     public const MAP_POLICY_EMAIL_FOR_QUOTE         = 'email_for_quote';
@@ -398,6 +408,34 @@ final class Options
         return self::DEFAULT_USPS_TARE_WEIGHT_OZ;
     }
 
+    public static function default_fastbound_enabled(): bool
+    {
+        return self::DEFAULT_FASTBOUND_ENABLED;
+    }
+
+    public static function default_fastbound_account_number(): string
+    {
+        return self::DEFAULT_FASTBOUND_ACCOUNT_NUMBER;
+    }
+
+    public static function default_fastbound_api_key(): string
+    {
+        return self::DEFAULT_FASTBOUND_API_KEY;
+    }
+
+    public static function default_fastbound_audit_user_email(): string
+    {
+        return self::DEFAULT_FASTBOUND_AUDIT_USER_EMAIL;
+    }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    public static function default_fastbound_distributor_contacts(): array
+    {
+        return self::DEFAULT_FASTBOUND_DISTRIBUTOR_CONTACTS;
+    }
+
     /* -------------------------------------------------------------------------
      * Initialization
      * ---------------------------------------------------------------------- */
@@ -559,6 +597,22 @@ final class Options
         }
         if (get_option(self::OPTION_USPS_TARE_WEIGHT_OZ, null) === null) {
             add_option(self::OPTION_USPS_TARE_WEIGHT_OZ, (string) self::DEFAULT_USPS_TARE_WEIGHT_OZ);
+        }
+
+        if (get_option(self::OPTION_FASTBOUND_ENABLED, null) === null) {
+            add_option(self::OPTION_FASTBOUND_ENABLED, self::DEFAULT_FASTBOUND_ENABLED ? '1' : '0');
+        }
+        if (get_option(self::OPTION_FASTBOUND_ACCOUNT_NUMBER, null) === null) {
+            add_option(self::OPTION_FASTBOUND_ACCOUNT_NUMBER, self::DEFAULT_FASTBOUND_ACCOUNT_NUMBER);
+        }
+        if (get_option(self::OPTION_FASTBOUND_API_KEY, null) === null) {
+            add_option(self::OPTION_FASTBOUND_API_KEY, self::DEFAULT_FASTBOUND_API_KEY);
+        }
+        if (get_option(self::OPTION_FASTBOUND_AUDIT_USER_EMAIL, null) === null) {
+            add_option(self::OPTION_FASTBOUND_AUDIT_USER_EMAIL, self::DEFAULT_FASTBOUND_AUDIT_USER_EMAIL);
+        }
+        if (get_option(self::OPTION_FASTBOUND_DISTRIBUTOR_CONTACTS, null) === null) {
+            add_option(self::OPTION_FASTBOUND_DISTRIBUTOR_CONTACTS, self::DEFAULT_FASTBOUND_DISTRIBUTOR_CONTACTS);
         }
 
         self::sync_distributor_state();
@@ -1333,6 +1387,107 @@ final class Options
         return $v;
     }
 
+    public static function get_fastbound_enabled(): bool
+    {
+        return ((string) get_option(
+            self::OPTION_FASTBOUND_ENABLED,
+            self::DEFAULT_FASTBOUND_ENABLED ? '1' : '0'
+        )) === '1';
+    }
+
+    public static function set_fastbound_enabled(bool $enabled): void
+    {
+        update_option(self::OPTION_FASTBOUND_ENABLED, $enabled ? '1' : '0');
+    }
+
+    public static function get_fastbound_account_number(): string
+    {
+        return trim((string) get_option(
+            self::OPTION_FASTBOUND_ACCOUNT_NUMBER,
+            self::DEFAULT_FASTBOUND_ACCOUNT_NUMBER
+        ));
+    }
+
+    public static function set_fastbound_account_number(string $account_number): void
+    {
+        update_option(self::OPTION_FASTBOUND_ACCOUNT_NUMBER, trim($account_number));
+    }
+
+    public static function get_fastbound_api_key(): string
+    {
+        return (string) get_option(self::OPTION_FASTBOUND_API_KEY, self::DEFAULT_FASTBOUND_API_KEY);
+    }
+
+    public static function set_fastbound_api_key(string $api_key): void
+    {
+        update_option(self::OPTION_FASTBOUND_API_KEY, trim($api_key));
+    }
+
+    public static function get_fastbound_audit_user_email(): string
+    {
+        return trim((string) get_option(
+            self::OPTION_FASTBOUND_AUDIT_USER_EMAIL,
+            self::DEFAULT_FASTBOUND_AUDIT_USER_EMAIL
+        ));
+    }
+
+    public static function set_fastbound_audit_user_email(string $email): void
+    {
+        update_option(self::OPTION_FASTBOUND_AUDIT_USER_EMAIL, trim($email));
+    }
+
+    /**
+     * Distributor/contact rows used by FastBound receiving/disposition flows.
+     *
+     * @return array<int,array{enabled:bool,distributor_id:string,label:string,fastbound_contact_id:string,fastbound_contact_external_id:string,ffl_number:string,notes:string}>
+     */
+    public static function get_fastbound_distributor_contacts(): array
+    {
+        return self::normalize_fastbound_distributor_contacts(
+            get_option(
+                self::OPTION_FASTBOUND_DISTRIBUTOR_CONTACTS,
+                self::DEFAULT_FASTBOUND_DISTRIBUTOR_CONTACTS
+            )
+        );
+    }
+
+    /**
+     * @return array<int,array{enabled:bool,distributor_id:string,label:string,fastbound_contact_id:string,fastbound_contact_external_id:string,ffl_number:string,notes:string}>
+     */
+    public static function get_fastbound_contacts_for_distributor(string $distributor_id, bool $enabled_only = true): array
+    {
+        $distributor_id = strtolower(trim($distributor_id));
+        if ($distributor_id === '') {
+            return [];
+        }
+
+        $contacts = [];
+        foreach (self::get_fastbound_distributor_contacts() as $contact) {
+            if ((string) ($contact['distributor_id'] ?? '') !== $distributor_id) {
+                continue;
+            }
+
+            if ($enabled_only && empty($contact['enabled'])) {
+                continue;
+            }
+
+            $contacts[] = $contact;
+        }
+
+        return $contacts;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $contacts
+     */
+    public static function set_fastbound_distributor_contacts(array $contacts): void
+    {
+        update_option(
+            self::OPTION_FASTBOUND_DISTRIBUTOR_CONTACTS,
+            self::normalize_fastbound_distributor_contacts($contacts)
+        );
+    }
+
     /* -------------------------------------------------------------------------
      * Distributor field options (credentials, flags, etc.)
      * ---------------------------------------------------------------------- */
@@ -1464,6 +1619,56 @@ final class Options
     ): void {
         $name = self::distributor_option_name($distributor_id, $key);
         update_option($name, $value);
+    }
+
+    /**
+     * Keep FastBound contact rows strict enough for automation but flexible
+     * enough for multi-location distributors like Davidsons.
+     *
+     * @param mixed $raw
+     * @return array<int,array{enabled:bool,distributor_id:string,label:string,fastbound_contact_id:string,fastbound_contact_external_id:string,ffl_number:string,notes:string}>
+     */
+    private static function normalize_fastbound_distributor_contacts($raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $known_ids = array_fill_keys(DistributorRegistry::get_distributor_ids(), true);
+        $rows = [];
+
+        foreach ($raw as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $distributor_id = strtolower(trim(sanitize_text_field((string) ($row['distributor_id'] ?? ''))));
+            if ($distributor_id === '' || !isset($known_ids[$distributor_id])) {
+                continue;
+            }
+
+            $label = trim(sanitize_text_field((string) ($row['label'] ?? '')));
+            $contact_id = trim(sanitize_text_field((string) ($row['fastbound_contact_id'] ?? '')));
+            $external_id = trim(sanitize_text_field((string) ($row['fastbound_contact_external_id'] ?? '')));
+            $ffl_number = strtoupper(trim(sanitize_text_field((string) ($row['ffl_number'] ?? ''))));
+            $notes = trim(sanitize_textarea_field((string) ($row['notes'] ?? '')));
+
+            if ($label === '' && $contact_id === '' && $external_id === '' && $ffl_number === '' && $notes === '') {
+                continue;
+            }
+
+            $rows[] = [
+                'enabled' => !empty($row['enabled']),
+                'distributor_id' => $distributor_id,
+                'label' => $label,
+                'fastbound_contact_id' => $contact_id,
+                'fastbound_contact_external_id' => $external_id,
+                'ffl_number' => $ffl_number,
+                'notes' => $notes,
+            ];
+        }
+
+        return $rows;
     }
 
     /**
