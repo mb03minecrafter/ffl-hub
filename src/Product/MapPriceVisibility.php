@@ -41,6 +41,7 @@ class MapPriceVisibility
         // Render email-quote products as a quote-only CTA on the single-product page.
         add_action('woocommerce_single_product_summary', [self::class, 'maybe_remove_email_for_quote_add_to_cart'], 1);
         add_action('woocommerce_single_product_summary', [self::class, 'render_email_for_quote_button'], 25);
+        add_filter('render_block', [self::class, 'filter_email_for_quote_add_to_cart_block'], 10, 2);
         add_action('wp_footer', [self::class, 'render_email_for_quote_modal']);
     }
 
@@ -256,6 +257,30 @@ class MapPriceVisibility
         }
 
         remove_action('woocommerce_single_product_summary', 'woocommerce_template_single_add_to_cart', 30);
+    }
+
+    /**
+     * Block themes render the product Add to Cart form through the Woo Blocks
+     * add-to-cart-form block instead of the classic Woo summary action above.
+     */
+    public static function filter_email_for_quote_add_to_cart_block(string $block_content, array $block): string
+    {
+        if (($block['blockName'] ?? '') !== 'woocommerce/add-to-cart-form') {
+            return $block_content;
+        }
+        if (!function_exists('is_product') || !is_product()) {
+            return $block_content;
+        }
+
+        $product = self::current_product_for_quote();
+        if (!($product instanceof WC_Product)) {
+            return $block_content;
+        }
+        if (!self::is_email_for_quote_policy($product, null)) {
+            return $block_content;
+        }
+
+        return '';
     }
 
     public static function render_email_for_quote_button(): void
