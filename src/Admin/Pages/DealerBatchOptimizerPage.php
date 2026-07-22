@@ -3,11 +3,16 @@
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Distributor\Core\DistributorHandler;
+use FFLHub\Distributor\Models\OrderPlacementJobRow;
+use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
+use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerAuditTable;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchOptimizerConfig;
 use FFLHub\Distributor\Services\Orders\Optimization\DealerBatchShippingOptimizer;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Product\State\ProductStateStore;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -60,6 +65,11 @@ final class DealerBatchOptimizerPage
         $notice = $this->read_notice_from_query();
         $runs = $this->audit_table->recent_runs(50);
         $moves = $this->audit_table->recent_moves(200);
+        $latest_run = !empty($runs[0]) && is_array($runs[0]) ? $runs[0] : null;
+        $latest_moves = is_array($latest_run)
+            ? $this->audit_table->moves_for_run((string) ($latest_run['run_id'] ?? ''), 500)
+            : [];
+        $makeup = $this->build_latest_optimizer_makeup_data($latest_run, $latest_moves);
         ?>
         <div class="wrap fflhub-dealer-batch-optimizer">
             <h1><?php esc_html_e('Dealer Batch Optimizer', 'ffl-hub'); ?></h1>
@@ -68,6 +78,7 @@ final class DealerBatchOptimizerPage
             <?php $this->render_explainer(); ?>
             <?php $this->render_settings_form(); ?>
             <?php $this->render_actions(); ?>
+            <?php $this->render_latest_optimizer_makeup($makeup); ?>
             <?php $this->render_recent_runs($runs); ?>
             <?php $this->render_recent_moves($moves); ?>
         </div>
@@ -322,6 +333,181 @@ final class DealerBatchOptimizerPage
     }
 
     /**
+     * @param array{
+     *   latest_run:?array<string,mixed>,
+     *   generated_at:string,
+     *   total_jobs:int,
+     *   total_lines:int,
+     *   total_qty:int,
+     *   total_subtotal:float,
+     *   total_estimated_paid_shipping:float,
+     *   groups:array<string,array<string,mixed>>
+     * } $makeup
+     */
+    private function render_latest_optimizer_makeup(array $makeup): void
+    {
+        $latest_run = $makeup['latest_run'];
+        $groups = (array) ($makeup['groups'] ?? []);
+        ?>
+        <section class="fflhub-dbo-card" style="max-width:1280px;background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:16px 18px;margin:22px 0;">
+            <h2 style="margin-top:0;"><?php esc_html_e('Latest Optimizer Run Makeup', 'ffl-hub'); ?></h2>
+            <p style="margin-top:0;color:#50575e;">
+                <?php esc_html_e('Live dealer-batch queue makeup after the most recent optimizer run. This is read-only and shows the current batch_pending dealer rows by distributor.', 'ffl-hub'); ?>
+            </p>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:12px 0 16px;">
+                <div style="border:1px solid #dcdcde;border-radius:8px;padding:10px 12px;background:#f6f7f7;">
+                    <strong><?php esc_html_e('Latest Run', 'ffl-hub'); ?></strong><br />
+                    <?php if (is_array($latest_run)) : ?>
+                        <code><?php echo esc_html((string) ($latest_run['run_id'] ?? '')); ?></code><br />
+                        <span><?php echo esc_html((string) ($latest_run['status'] ?? '')); ?></span>
+                    <?php else : ?>
+                        <span><?php esc_html_e('No run yet', 'ffl-hub'); ?></span>
+                    <?php endif; ?>
+                </div>
+                <div style="border:1px solid #dcdcde;border-radius:8px;padding:10px 12px;background:#f6f7f7;">
+                    <strong><?php esc_html_e('Queued Jobs', 'ffl-hub'); ?></strong><br />
+                    <span style="font-size:22px;font-weight:700;"><?php echo esc_html((string) ((int) ($makeup['total_jobs'] ?? 0))); ?></span>
+                </div>
+                <div style="border:1px solid #dcdcde;border-radius:8px;padding:10px 12px;background:#f6f7f7;">
+                    <strong><?php esc_html_e('Queued Qty', 'ffl-hub'); ?></strong><br />
+                    <span style="font-size:22px;font-weight:700;"><?php echo esc_html((string) ((int) ($makeup['total_qty'] ?? 0))); ?></span>
+                </div>
+                <div style="border:1px solid #dcdcde;border-radius:8px;padding:10px 12px;background:#f6f7f7;">
+                    <strong><?php esc_html_e('Dealer Subtotal', 'ffl-hub'); ?></strong><br />
+                    <span style="font-size:22px;font-weight:700;"><?php echo esc_html($this->format_money((float) ($makeup['total_subtotal'] ?? 0.0))); ?></span>
+                </div>
+                <div style="border:1px solid #dcdcde;border-radius:8px;padding:10px 12px;background:#f6f7f7;">
+                    <strong><?php esc_html_e('Est. Paid Inbound', 'ffl-hub'); ?></strong><br />
+                    <span style="font-size:22px;font-weight:700;"><?php echo esc_html($this->format_money((float) ($makeup['total_estimated_paid_shipping'] ?? 0.0))); ?></span>
+                </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:8px 0 18px;">
+                <?php foreach ($groups as $group) : ?>
+                    <?php
+                    $subtotal = (float) ($group['subtotal'] ?? 0.0);
+                    $threshold = (float) ($group['threshold'] ?? 0.0);
+                    $remaining = (float) ($group['remaining_to_free'] ?? 0.0);
+                    $paid_shipping = (float) ($group['estimated_paid_shipping'] ?? 0.0);
+                    $has_rows = (int) ($group['line_count'] ?? 0) > 0;
+                    $is_free = $has_rows && $threshold > 0.0 && $subtotal >= $threshold;
+                    ?>
+                    <div style="border:1px solid <?php echo esc_attr($has_rows ? '#c3c4c7' : '#e5e7eb'); ?>;border-radius:8px;padding:10px 12px;background:<?php echo esc_attr($has_rows ? '#fff' : '#fafafa'); ?>;">
+                        <strong><?php echo esc_html((string) ($group['label'] ?? $group['dist_id'] ?? '')); ?></strong>
+                        <div style="font-size:20px;font-weight:700;margin-top:4px;"><?php echo esc_html($this->format_money($subtotal)); ?></div>
+                        <div style="color:#50575e;">
+                            <?php
+                            echo esc_html(sprintf(
+                                __('%d jobs, %d qty', 'ffl-hub'),
+                                (int) ($group['job_count'] ?? 0),
+                                (int) ($group['total_qty'] ?? 0)
+                            ));
+                            ?>
+                        </div>
+                        <div style="margin-top:6px;color:<?php echo esc_attr($is_free ? '#166534' : '#92400e'); ?>;">
+                            <?php if (!$has_rows) : ?>
+                                <?php esc_html_e('No pending rows', 'ffl-hub'); ?>
+                            <?php elseif ($is_free) : ?>
+                                <?php esc_html_e('Free inbound threshold met', 'ffl-hub'); ?>
+                            <?php elseif ($threshold > 0.0) : ?>
+                                <?php echo esc_html(sprintf(__('Needs %s for free inbound', 'ffl-hub'), $this->format_money($remaining))); ?>
+                            <?php else : ?>
+                                <?php echo esc_html(sprintf(__('Est. inbound: %s', 'ffl-hub'), $this->format_money($paid_shipping))); ?>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+
+            <?php if ((int) ($makeup['total_lines'] ?? 0) <= 0) : ?>
+                <p><?php esc_html_e('No current batch_pending dealer rows are waiting for optimizer/batch processing.', 'ffl-hub'); ?></p>
+                <?php
+                return;
+            endif;
+            ?>
+
+            <?php foreach ($groups as $group) : ?>
+                <?php $rows = (array) ($group['rows'] ?? []); ?>
+                <?php if (empty($rows)) : ?>
+                    <?php continue; ?>
+                <?php endif; ?>
+                <h3 style="margin-top:22px;">
+                    <?php
+                    echo esc_html(sprintf(
+                        __('%s Items', 'ffl-hub'),
+                        (string) ($group['label'] ?? $group['dist_id'] ?? '')
+                    ));
+                    ?>
+                </h3>
+                <table class="widefat striped">
+                    <thead>
+                        <tr>
+                            <th><?php esc_html_e('Job', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Order', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Product', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('SKU', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Qty', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Unit Cost', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Ship', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Landed', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Line Total', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Offer Stock', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Latest Move', 'ffl-hub'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($rows as $row) : ?>
+                            <?php
+                            $order_id = (int) ($row['order_id'] ?? 0);
+                            $order_url = $order_id > 0 ? admin_url('post.php?post=' . $order_id . '&action=edit') : '';
+                            $product_id = (int) ($row['product_id'] ?? 0);
+                            $product_url = $product_id > 0 ? admin_url('post.php?post=' . $product_id . '&action=edit') : '';
+                            $move_note = trim((string) ($row['latest_move_note'] ?? ''));
+                            ?>
+                            <tr>
+                                <td><?php echo esc_html((string) ((int) ($row['job_id'] ?? 0))); ?></td>
+                                <td>
+                                    <?php if ($order_url !== '') : ?>
+                                        <a href="<?php echo esc_url($order_url); ?>"><?php echo esc_html('#' . (string) $order_id); ?></a>
+                                    <?php else : ?>
+                                        <?php echo esc_html('-'); ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td><code><?php echo esc_html((string) ($row['upc'] ?? '')); ?></code></td>
+                                <td>
+                                    <?php if ($product_url !== '') : ?>
+                                        <a href="<?php echo esc_url($product_url); ?>"><?php echo esc_html((string) ($row['product_name'] ?? 'Unknown product')); ?></a>
+                                    <?php else : ?>
+                                        <?php echo esc_html((string) ($row['product_name'] ?? 'Unknown product')); ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td><code><?php echo esc_html((string) (($row['distributor_sku'] ?? '') !== '' ? $row['distributor_sku'] : '-')); ?></code></td>
+                                <td><?php echo esc_html((string) ((int) ($row['qty'] ?? 0))); ?></td>
+                                <td><?php echo esc_html($this->format_money((float) ($row['unit_cost'] ?? 0.0))); ?></td>
+                                <td><?php echo esc_html($this->format_optional_money($row['shipping_cost'] ?? null)); ?></td>
+                                <td><?php echo esc_html($this->format_optional_money($row['landed_cost'] ?? null)); ?></td>
+                                <td><?php echo esc_html($this->format_money((float) ($row['line_total'] ?? 0.0))); ?></td>
+                                <td>
+                                    <?php
+                                    echo esc_html(sprintf(
+                                        '%s / %d',
+                                        (string) (($row['stock_status'] ?? '') !== '' ? $row['stock_status'] : '-'),
+                                        (int) ($row['offer_qty'] ?? 0)
+                                    ));
+                                    ?>
+                                </td>
+                                <td><?php echo esc_html($move_note !== '' ? $move_note : '-'); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php endforeach; ?>
+        </section>
+        <?php
+    }
+
+    /**
      * @param array<int,array<string,mixed>> $runs
      */
     private function render_recent_runs(array $runs): void
@@ -379,6 +565,449 @@ final class DealerBatchOptimizerPage
             </tbody>
         </table>
         <?php
+    }
+
+    /**
+     * @param array<string,mixed>|null $latest_run
+     * @param array<int,array<string,mixed>> $latest_moves
+     * @return array{
+     *   latest_run:?array<string,mixed>,
+     *   generated_at:string,
+     *   total_jobs:int,
+     *   total_lines:int,
+     *   total_qty:int,
+     *   total_subtotal:float,
+     *   total_estimated_paid_shipping:float,
+     *   groups:array<string,array<string,mixed>>
+     * }
+     */
+    private function build_latest_optimizer_makeup_data(?array $latest_run, array $latest_moves): array
+    {
+        $dist_ids = DealerBatchOptimizerConfig::optimizer_distributor_ids();
+        $groups = [];
+        foreach ($dist_ids as $dist_id) {
+            $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) $dist_id);
+            if ($dist_id === '') {
+                continue;
+            }
+
+            $groups[$dist_id] = [
+                'dist_id' => $dist_id,
+                'label' => $this->distributor_label($dist_id),
+                'job_ids' => [],
+                'job_count' => 0,
+                'line_count' => 0,
+                'total_qty' => 0,
+                'subtotal' => 0.0,
+                'threshold' => DealerBatchOptimizerConfig::free_shipping_threshold($dist_id),
+                'estimated_paid_shipping' => 0.0,
+                'remaining_to_free' => 0.0,
+                'rows' => [],
+            ];
+        }
+
+        $jobs = $this->load_current_dealer_batch_makeup_jobs($dist_ids);
+        $line_rows = [];
+        $upcs = [];
+
+        foreach ($jobs as $job) {
+            if (!($job instanceof OrderPlacementJobRow)) {
+                continue;
+            }
+
+            $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) $job->dist_id_norm());
+            if ($dist_id === '' || !isset($groups[$dist_id])) {
+                continue;
+            }
+
+            foreach ($job->payload_lines() as $line) {
+                $upc = trim((string) $line->upc);
+                if ($upc === '') {
+                    continue;
+                }
+
+                $upcs[$upc] = $upc;
+                $line_rows[] = [
+                    'job' => $job,
+                    'dist_id' => $dist_id,
+                    'upc' => $upc,
+                    'qty' => max(1, (int) $line->quantity),
+                ];
+            }
+        }
+
+        $offer_rows = $this->load_offer_rows_for_makeup(array_keys($groups), array_values($upcs));
+        $products = $this->load_product_names_for_makeup(array_values($upcs));
+        $move_lookup = $this->latest_move_lookup($latest_moves);
+
+        $total_job_ids = [];
+        $total_lines = 0;
+        $total_qty = 0;
+        $total_subtotal = 0.0;
+
+        foreach ($line_rows as $line_row) {
+            $job = $line_row['job'];
+            if (!($job instanceof OrderPlacementJobRow)) {
+                continue;
+            }
+
+            $dist_id = (string) ($line_row['dist_id'] ?? '');
+            $upc = (string) ($line_row['upc'] ?? '');
+            $qty = max(1, (int) ($line_row['qty'] ?? 0));
+            if ($dist_id === '' || $upc === '' || !isset($groups[$dist_id])) {
+                continue;
+            }
+
+            $offer_key = $dist_id . '|' . $upc;
+            $offer = (array) ($offer_rows[$offer_key] ?? []);
+            $unit_cost = $this->money_float($offer['dealer_price'] ?? 0.0);
+            $shipping_cost = $this->optional_money_float($offer['shipping_cost'] ?? null);
+            $landed_cost = $this->optional_money_float($offer['landed_cost'] ?? null);
+            $line_total = $this->money_float($unit_cost * (float) $qty);
+            $product = (array) ($products[$upc] ?? []);
+            $move = (array) ($move_lookup[((int) $job->id) . '|' . $upc] ?? []);
+            $move_note = '';
+            if (!empty($move)) {
+                $move_note = sprintf(
+                    '%s -> %s (%s)',
+                    (string) ($move['source_dist_id'] ?? ''),
+                    (string) ($move['target_dist_id'] ?? ''),
+                    (string) ($move['reason'] ?? '')
+                );
+            }
+
+            $groups[$dist_id]['job_ids'][(int) $job->id] = true;
+            $groups[$dist_id]['line_count'] = (int) $groups[$dist_id]['line_count'] + 1;
+            $groups[$dist_id]['total_qty'] = (int) $groups[$dist_id]['total_qty'] + $qty;
+            $groups[$dist_id]['subtotal'] = $this->money_float((float) $groups[$dist_id]['subtotal'] + $line_total);
+            $groups[$dist_id]['rows'][] = [
+                'job_id' => (int) $job->id,
+                'order_id' => (int) $job->order_id,
+                'upc' => $upc,
+                'product_id' => (int) ($product['product_id'] ?? 0),
+                'product_name' => (string) ($product['product_name'] ?? __('Unknown product', 'ffl-hub')),
+                'distributor_sku' => (string) ($offer['distributor_sku'] ?? ''),
+                'qty' => $qty,
+                'unit_cost' => $unit_cost,
+                'shipping_cost' => $shipping_cost,
+                'landed_cost' => $landed_cost,
+                'line_total' => $line_total,
+                'offer_qty' => (int) ($offer['qty'] ?? 0),
+                'stock_status' => (string) ($offer['stock_status'] ?? ''),
+                'latest_move_note' => $move_note,
+            ];
+
+            $total_job_ids[(int) $job->id] = true;
+            $total_lines++;
+            $total_qty += $qty;
+            $total_subtotal = $this->money_float($total_subtotal + $line_total);
+        }
+
+        $total_estimated_paid_shipping = 0.0;
+        foreach ($groups as $dist_id => &$group) {
+            $subtotal = (float) ($group['subtotal'] ?? 0.0);
+            $threshold = (float) ($group['threshold'] ?? 0.0);
+            $paid_shipping = $this->estimated_paid_shipping_for_makeup((string) $dist_id, $subtotal);
+            $group['job_count'] = count((array) ($group['job_ids'] ?? []));
+            $group['estimated_paid_shipping'] = $paid_shipping;
+            $group['remaining_to_free'] = ($threshold > 0.0 && $subtotal > 0.0 && $subtotal < $threshold)
+                ? $this->money_float($threshold - $subtotal)
+                : 0.0;
+            unset($group['job_ids']);
+            $total_estimated_paid_shipping = $this->money_float($total_estimated_paid_shipping + $paid_shipping);
+        }
+        unset($group);
+
+        return [
+            'latest_run' => $latest_run,
+            'generated_at' => gmdate('Y-m-d H:i:s'),
+            'total_jobs' => count($total_job_ids),
+            'total_lines' => $total_lines,
+            'total_qty' => $total_qty,
+            'total_subtotal' => $total_subtotal,
+            'total_estimated_paid_shipping' => $total_estimated_paid_shipping,
+            'groups' => $groups,
+        ];
+    }
+
+    /**
+     * @param string[] $dist_ids
+     * @return OrderPlacementJobRow[]
+     */
+    private function load_current_dealer_batch_makeup_jobs(array $dist_ids): array
+    {
+        global $wpdb;
+
+        $table = (string) $this->jobs_table->get_table_name();
+        $dist_ids = array_values(array_filter(array_map(
+            static fn($dist_id): string => OrderPlacementKeysUtil::normalize_dist_id((string) $dist_id),
+            $dist_ids
+        )));
+        if ($table === '' || empty($dist_ids)) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($dist_ids), '%s'));
+        $args = array_merge(
+            $dist_ids,
+            [
+                OrderPlacementKeysUtil::LANE_DEALER_FULFILLED,
+                OrderPlacementKeys::JOB_STATUS_BATCH_PENDING,
+                1000,
+            ]
+        );
+
+        $sql = $wpdb->prepare(
+            "
+            SELECT
+                id, order_id, job_key, dist_id, lane, status,
+                attempts, created_at, updated_at,
+                action_id, next_run_at,
+                last_step, last_error, last_codes_json,
+                done_at,
+                payload_json, validate_result_json, place_result_json,
+                merchant_po, external_order_ids_json, external_order_id,
+                shipped_at, tracking_numbers_json, invoice_numbers_json,
+                last_shipping_poll_at, shipping_service, shipping_weight, shipment_raw_json
+            FROM {$table}
+            WHERE
+                dist_id IN ({$placeholders})
+                AND lane = %s
+                AND status = %s
+                AND (merchant_po IS NULL OR merchant_po = '')
+                AND (external_order_id IS NULL OR external_order_id = '')
+                AND (external_order_ids_json IS NULL OR external_order_ids_json = '' OR external_order_ids_json = '[]')
+            ORDER BY dist_id ASC, created_at ASC, id ASC
+            LIMIT %d
+            ",
+            ...$args
+        );
+
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $jobs = [];
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $jobs[] = new OrderPlacementJobRow($row);
+            }
+        }
+
+        return $jobs;
+    }
+
+    /**
+     * @param string[] $dist_ids
+     * @param string[] $upcs
+     * @return array<string,array<string,mixed>>
+     */
+    private function load_offer_rows_for_makeup(array $dist_ids, array $upcs): array
+    {
+        global $wpdb;
+
+        $dist_ids = array_values(array_filter(array_map(
+            static fn($dist_id): string => OrderPlacementKeysUtil::normalize_dist_id((string) $dist_id),
+            $dist_ids
+        )));
+        $upcs = array_values(array_filter(array_map('strval', $upcs), static fn(string $upc): bool => trim($upc) !== ''));
+        if (empty($dist_ids) || empty($upcs)) {
+            return [];
+        }
+
+        DistributorOffersStore::ensure_schema();
+        $table = DistributorOffersStore::table_name();
+        $dist_placeholders = implode(',', array_fill(0, count($dist_ids), '%s'));
+        $upc_placeholders = implode(',', array_fill(0, count($upcs), '%s'));
+        $args = array_merge($dist_ids, $upcs);
+
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "
+                SELECT
+                    distributor_id,
+                    upc,
+                    distributor_product_id,
+                    distributor_sku,
+                    qty,
+                    stock_status,
+                    dealer_price,
+                    shipping_cost,
+                    landed_cost
+                FROM {$table}
+                WHERE distributor_id IN ({$dist_placeholders})
+                  AND upc IN ({$upc_placeholders})
+                ",
+                ...$args
+            ),
+            ARRAY_A
+        );
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) ($row['distributor_id'] ?? ''));
+            $upc = trim((string) ($row['upc'] ?? ''));
+            if ($dist_id === '' || $upc === '') {
+                continue;
+            }
+
+            $out[$dist_id . '|' . $upc] = $row;
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param string[] $upcs
+     * @return array<string,array{product_id:int,product_name:string}>
+     */
+    private function load_product_names_for_makeup(array $upcs): array
+    {
+        global $wpdb;
+
+        $upcs = array_values(array_filter(array_map('strval', $upcs), static fn(string $upc): bool => trim($upc) !== ''));
+        if (empty($upcs)) {
+            return [];
+        }
+
+        ProductStateStore::ensure_schema();
+        $table = ProductStateStore::table_name();
+        $placeholders = implode(',', array_fill(0, count($upcs), '%s'));
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT upc, product_id FROM {$table} WHERE upc IN ({$placeholders})",
+                ...$upcs
+            ),
+            ARRAY_A
+        );
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $upc = trim((string) ($row['upc'] ?? ''));
+            $product_id = (int) ($row['product_id'] ?? 0);
+            if ($upc === '' || $product_id <= 0 || isset($out[$upc])) {
+                continue;
+            }
+
+            $name = '';
+            if (function_exists('wc_get_product')) {
+                $product = wc_get_product($product_id);
+                if ($product && method_exists($product, 'get_name')) {
+                    $name = trim((string) $product->get_name());
+                }
+            }
+
+            $out[$upc] = [
+                'product_id' => $product_id,
+                'product_name' => $name !== '' ? $name : __('Unknown product', 'ffl-hub'),
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $moves
+     * @return array<string,array<string,mixed>>
+     */
+    private function latest_move_lookup(array $moves): array
+    {
+        $lookup = [];
+        foreach ($moves as $move) {
+            if (!is_array($move)) {
+                continue;
+            }
+
+            $job_id = (int) ($move['job_id'] ?? 0);
+            $upc = trim((string) ($move['upc'] ?? ''));
+            if ($job_id <= 0 || $upc === '') {
+                continue;
+            }
+
+            $lookup[$job_id . '|' . $upc] = $move;
+        }
+
+        return $lookup;
+    }
+
+    private function estimated_paid_shipping_for_makeup(string $dist_id, float $subtotal): float
+    {
+        $subtotal = $this->money_float($subtotal);
+        if ($subtotal <= 0.0) {
+            return 0.0;
+        }
+
+        $threshold = DealerBatchOptimizerConfig::free_shipping_threshold($dist_id);
+        if ($threshold > 0.0 && $subtotal >= $threshold) {
+            return 0.0;
+        }
+
+        return $this->money_float(DealerBatchOptimizerConfig::shipping_penalty($dist_id));
+    }
+
+    private function distributor_label(string $dist_id): string
+    {
+        $dist_id = OrderPlacementKeysUtil::normalize_dist_id($dist_id);
+        if ($dist_id === '') {
+            return '';
+        }
+
+        $distributor = $this->handler->get_distributor_by_id($dist_id);
+        if ($distributor && method_exists($distributor, 'get_label')) {
+            $label = trim((string) $distributor->get_label());
+            if ($label !== '') {
+                return $label . ' (' . $dist_id . ')';
+            }
+        }
+
+        return ucwords(str_replace('_', ' ', $dist_id)) . ' (' . $dist_id . ')';
+    }
+
+    private function money_float($value): float
+    {
+        if ($value === null || $value === '') {
+            return 0.0;
+        }
+
+        return round((float) $value, 2);
+    }
+
+    private function optional_money_float($value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return round((float) $value, 2);
+    }
+
+    private function format_money(float $value): string
+    {
+        return '$' . number_format($value, 2);
+    }
+
+    private function format_optional_money($value): string
+    {
+        if ($value === null || $value === '') {
+            return '-';
+        }
+
+        return $this->format_money((float) $value);
     }
 
     private function schedule_all_dealer_batch_crons(): void

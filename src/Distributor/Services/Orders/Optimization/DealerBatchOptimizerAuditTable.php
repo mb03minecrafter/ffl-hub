@@ -212,4 +212,31 @@ KEY idx_created_at (created_at)
 
         return is_array($rows) ? $rows : [];
     }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    public function moves_for_run(string $run_id, int $limit = 500): array
+    {
+        global $wpdb;
+
+        $this->ensureTables();
+        $run_id = trim($run_id);
+        if ($run_id === '') {
+            return [];
+        }
+
+        $limit = max(1, min(1000, $limit));
+        $table = $this->moves_table_name();
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM {$table} WHERE run_id = %s ORDER BY id ASC LIMIT %d",
+                $run_id,
+                $limit
+            ),
+            ARRAY_A
+        );
+
+        return is_array($rows) ? $rows : [];
+    }
 }
