@@ -38,8 +38,9 @@ class MapPriceVisibility
 
         // Hide offer/price from Woo structured data (prevents Google showing price)
         add_filter('woocommerce_structured_data_product_offer', [self::class, 'filter_structured_offer'], 99, 2);
-        // Render single-product notices/CTAs around the purchase controls.
-        add_action('woocommerce_after_add_to_cart_form', [self::class, 'render_email_for_quote_button'], 10);
+        // Render email-quote products as a quote-only CTA on the single-product page.
+        add_action('woocommerce_single_product_summary', [self::class, 'maybe_remove_email_for_quote_add_to_cart'], 1);
+        add_action('woocommerce_single_product_summary', [self::class, 'render_email_for_quote_button'], 25);
         add_action('wp_footer', [self::class, 'render_email_for_quote_modal']);
     }
 
@@ -242,6 +243,19 @@ class MapPriceVisibility
         }
 
         return self::apply_public_price_to_structured_offer($offer, $product, null);
+    }
+
+    public static function maybe_remove_email_for_quote_add_to_cart(): void
+    {
+        $product = self::current_product_for_quote();
+        if (!($product instanceof WC_Product)) {
+            return;
+        }
+        if (!self::is_email_for_quote_policy($product, null)) {
+            return;
+        }
+
+        remove_action('woocommerce_single_product_summary', 'woocommerce_template_single_add_to_cart', 30);
     }
 
     public static function render_email_for_quote_button(): void

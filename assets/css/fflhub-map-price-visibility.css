@@ -39,13 +39,13 @@
 }
 
 .single-product .fflhub-email-for-quote-wrap {
-  margin: 0px 0 0 !important;
+  margin: 14px 0 18px !important;
 }
 
 .single-product .fflhub-email-for-quote-wrap button.fflhub-email-for-quote-button {
   display: flex !important;
-  width: var(--fflhub-product-cta-width) !important;
-  min-width: var(--fflhub-product-cta-width) !important;
+  width: 360px !important;
+  min-width: min(360px, 100%) !important;
   max-width: 100% !important;
 }
 
@@ -73,13 +73,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 48px;
-  padding: 15px 30px !important;
+  min-height: 58px;
+  padding: 18px 34px !important;
   border-width: 0 !important;
   border-radius: 5px !important;
   font-family: var(--wp--preset--font-family--primary, inherit) !important;
-  font-size: var(--wp--preset--font-size--x-small, 16px) !important;
-  font-weight: var(--wp--custom--font-weight--regular, 400) !important;
+  font-size: 18px !important;
+  font-weight: var(--wp--custom--font-weight--bold, 700) !important;
   line-height: var(--wp--custom--line-height--medium, 1.5) !important;
   text-decoration: none !important;
   text-transform: uppercase !important;
