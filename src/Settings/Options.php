@@ -97,6 +97,7 @@ final class Options
     public const OPTION_FASTBOUND_API_KEY             = 'fflhub_fastbound_api_key';
     public const OPTION_FASTBOUND_AUDIT_USER_EMAIL    = 'fflhub_fastbound_audit_user_email';
     public const OPTION_FASTBOUND_DISTRIBUTOR_CONTACTS = 'fflhub_fastbound_distributor_contacts';
+    public const OPTION_FASTBOUND_CONTACT_CACHE       = 'fflhub_fastbound_contact_cache';
 
     /* -------------------------------------------------------------------------
      * Defaults
@@ -160,6 +161,10 @@ final class Options
     private const DEFAULT_FASTBOUND_API_KEY             = '';
     private const DEFAULT_FASTBOUND_AUDIT_USER_EMAIL    = '';
     private const DEFAULT_FASTBOUND_DISTRIBUTOR_CONTACTS = [];
+    private const DEFAULT_FASTBOUND_CONTACT_CACHE       = [
+        'fetched_at' => 0,
+        'contacts' => [],
+    ];
 
     public const MAP_POLICY_ADD_TO_CART_FOR_PRICE   = 'add_to_cart_for_price';
     public const MAP_POLICY_EMAIL_FOR_QUOTE         = 'email_for_quote';
@@ -613,6 +618,9 @@ final class Options
         }
         if (get_option(self::OPTION_FASTBOUND_DISTRIBUTOR_CONTACTS, null) === null) {
             add_option(self::OPTION_FASTBOUND_DISTRIBUTOR_CONTACTS, self::DEFAULT_FASTBOUND_DISTRIBUTOR_CONTACTS);
+        }
+        if (get_option(self::OPTION_FASTBOUND_CONTACT_CACHE, null) === null) {
+            add_option(self::OPTION_FASTBOUND_CONTACT_CACHE, self::DEFAULT_FASTBOUND_CONTACT_CACHE);
         }
 
         self::sync_distributor_state();
@@ -1488,6 +1496,32 @@ final class Options
         );
     }
 
+    /**
+     * Cached contacts last pulled from FastBound.
+     *
+     * @return array{fetched_at:int,contacts:array<int,array<string,mixed>>}
+     */
+    public static function get_fastbound_contact_cache(): array
+    {
+        return self::normalize_fastbound_contact_cache(
+            get_option(self::OPTION_FASTBOUND_CONTACT_CACHE, self::DEFAULT_FASTBOUND_CONTACT_CACHE)
+        );
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $contacts
+     */
+    public static function set_fastbound_contact_cache(array $contacts): void
+    {
+        update_option(
+            self::OPTION_FASTBOUND_CONTACT_CACHE,
+            [
+                'fetched_at' => time(),
+                'contacts' => self::normalize_fastbound_contact_cache_rows($contacts),
+            ]
+        );
+    }
+
     /* -------------------------------------------------------------------------
      * Distributor field options (credentials, flags, etc.)
      * ---------------------------------------------------------------------- */
@@ -1667,6 +1701,77 @@ final class Options
                 'notes' => $notes,
             ];
         }
+
+        return $rows;
+    }
+
+    /**
+     * @param mixed $raw
+     * @return array{fetched_at:int,contacts:array<int,array<string,mixed>>}
+     */
+    private static function normalize_fastbound_contact_cache($raw): array
+    {
+        if (!is_array($raw)) {
+            return self::DEFAULT_FASTBOUND_CONTACT_CACHE;
+        }
+
+        $fetched_at = isset($raw['fetched_at']) ? (int) $raw['fetched_at'] : 0;
+        $contacts = self::normalize_fastbound_contact_cache_rows(
+            is_array($raw['contacts'] ?? null) ? $raw['contacts'] : []
+        );
+
+        return [
+            'fetched_at' => max(0, $fetched_at),
+            'contacts' => $contacts,
+        ];
+    }
+
+    /**
+     * @param mixed $raw
+     * @return array<int,array<string,mixed>>
+     */
+    private static function normalize_fastbound_contact_cache_rows($raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($raw as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $id = trim(sanitize_text_field((string) ($row['id'] ?? '')));
+            if ($id === '') {
+                continue;
+            }
+
+            $rows[] = [
+                'id' => $id,
+                'external_id' => trim(sanitize_text_field((string) ($row['external_id'] ?? $row['externalId'] ?? ''))),
+                'ffl_number' => strtoupper(trim(sanitize_text_field((string) ($row['ffl_number'] ?? $row['fflNumber'] ?? '')))),
+                'ffl_expires' => trim(sanitize_text_field((string) ($row['ffl_expires'] ?? $row['fflExpires'] ?? ''))),
+                'label' => trim(sanitize_text_field((string) ($row['label'] ?? ''))),
+                'license_name' => trim(sanitize_text_field((string) ($row['license_name'] ?? $row['licenseName'] ?? ''))),
+                'trade_name' => trim(sanitize_text_field((string) ($row['trade_name'] ?? $row['tradeName'] ?? ''))),
+                'organization_name' => trim(sanitize_text_field((string) ($row['organization_name'] ?? $row['organizationName'] ?? ''))),
+                'first_name' => trim(sanitize_text_field((string) ($row['first_name'] ?? $row['firstName'] ?? ''))),
+                'middle_name' => trim(sanitize_text_field((string) ($row['middle_name'] ?? $row['middleName'] ?? ''))),
+                'last_name' => trim(sanitize_text_field((string) ($row['last_name'] ?? $row['lastName'] ?? ''))),
+                'suffix' => trim(sanitize_text_field((string) ($row['suffix'] ?? ''))),
+                'premise_address1' => trim(sanitize_text_field((string) ($row['premise_address1'] ?? $row['premiseAddress1'] ?? ''))),
+                'premise_address2' => trim(sanitize_text_field((string) ($row['premise_address2'] ?? $row['premiseAddress2'] ?? ''))),
+                'premise_city' => trim(sanitize_text_field((string) ($row['premise_city'] ?? $row['premiseCity'] ?? ''))),
+                'premise_state' => strtoupper(trim(sanitize_text_field((string) ($row['premise_state'] ?? $row['premiseState'] ?? '')))),
+                'premise_zip_code' => trim(sanitize_text_field((string) ($row['premise_zip_code'] ?? $row['premiseZipCode'] ?? ''))),
+                'is_primary_account_contact' => !empty($row['is_primary_account_contact'] ?? $row['isPrimaryAccountContact'] ?? false),
+            ];
+        }
+
+        usort($rows, static function (array $a, array $b): int {
+            return strcasecmp((string) ($a['label'] ?? ''), (string) ($b['label'] ?? ''));
+        });
 
         return $rows;
     }

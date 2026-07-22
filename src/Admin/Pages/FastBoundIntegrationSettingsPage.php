@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Distributor\Core\DistributorRegistry;
+use FFLHub\FastBound\FastBoundContactsService;
 use FFLHub\Settings\Options;
 
 if (!defined('ABSPATH')) {
@@ -23,6 +24,8 @@ final class FastBoundIntegrationSettingsPage
     private const NONCE_ACTION = 'fflhub_fastbound_integration_settings';
     private const NONCE_FIELD = 'fflhub_fastbound_integration_settings_nonce';
     private const FORM_ACTION = 'save_fastbound_integration_settings';
+    private const ACTION_REFRESH_CONTACTS = 'refresh_fastbound_contacts';
+    private const RESULT_TRANSIENT_PREFIX = 'fflhub_fastbound_settings_result_';
     private const EXTRA_BLANK_CONTACT_ROWS = 12;
 
     public function register(): void
@@ -53,7 +56,10 @@ final class FastBoundIntegrationSettingsPage
         $contacts = Options::get_fastbound_distributor_contacts();
         $contact_rows = array_merge($contacts, array_fill(0, self::EXTRA_BLANK_CONTACT_ROWS, []));
         $distributor_options = $this->distributor_options();
+        $contact_cache = Options::get_fastbound_contact_cache();
+        $fastbound_contacts = is_array($contact_cache['contacts'] ?? null) ? $contact_cache['contacts'] : [];
         $api_key_configured = Options::get_fastbound_api_key() !== '';
+        $result = $this->read_result();
         ?>
         <div class="wrap fflhub-fastbound-settings">
             <?php $this->render_styles(); ?>
@@ -68,9 +74,10 @@ final class FastBoundIntegrationSettingsPage
                     <p><?php esc_html_e('FastBound settings saved.', 'ffl-hub'); ?></p>
                 </div>
             <?php endif; ?>
+            <?php $this->render_result($result); ?>
 
             <form method="post" action="">
-                <input type="hidden" name="fflhub_fastbound_action" value="<?php echo esc_attr(self::FORM_ACTION); ?>" />
+                <input type="hidden" name="fflhub_fastbound_form" value="1" />
                 <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
 
                 <section class="fflhub-fastbound-card">
@@ -166,8 +173,19 @@ final class FastBoundIntegrationSettingsPage
                 <section class="fflhub-fastbound-card">
                     <h2><?php esc_html_e('Distributor Contacts', 'ffl-hub'); ?></h2>
                     <p class="description">
-                        <?php esc_html_e('Add one row per FastBound contact/location. Use multiple rows for distributors with more than one ship-from contact, such as Davidsons.', 'ffl-hub'); ?>
+                        <?php esc_html_e('Refresh contacts from FastBound, then assign one cached contact/location per distributor row. Use multiple rows for distributors with more than one ship-from contact, such as Davidsons.', 'ffl-hub'); ?>
                     </p>
+
+                    <div class="fflhub-fastbound-cache-bar">
+                        <div>
+                            <strong><?php esc_html_e('Cached FastBound contacts:', 'ffl-hub'); ?></strong>
+                            <?php echo esc_html((string) count($fastbound_contacts)); ?>
+                            <span class="description">
+                                <?php echo esc_html($this->contact_cache_timestamp_label((int) ($contact_cache['fetched_at'] ?? 0))); ?>
+                            </span>
+                        </div>
+                        <?php submit_button(__('Refresh Contacts from FastBound', 'ffl-hub'), 'secondary', 'fflhub_fastbound_refresh_contacts', false); ?>
+                    </div>
 
                     <div class="fflhub-fastbound-table-wrap">
                         <table class="widefat striped fflhub-fastbound-contact-table">
@@ -175,8 +193,8 @@ final class FastBoundIntegrationSettingsPage
                                 <tr>
                                     <th><?php esc_html_e('Enabled', 'ffl-hub'); ?></th>
                                     <th><?php esc_html_e('Distributor', 'ffl-hub'); ?></th>
+                                    <th><?php esc_html_e('FastBound Contact', 'ffl-hub'); ?></th>
                                     <th><?php esc_html_e('Label / Location', 'ffl-hub'); ?></th>
-                                    <th><?php esc_html_e('FastBound Contact ID', 'ffl-hub'); ?></th>
                                     <th><?php esc_html_e('External ID', 'ffl-hub'); ?></th>
                                     <th><?php esc_html_e('FFL Number', 'ffl-hub'); ?></th>
                                     <th><?php esc_html_e('Notes', 'ffl-hub'); ?></th>
@@ -184,15 +202,16 @@ final class FastBoundIntegrationSettingsPage
                             </thead>
                             <tbody>
                                 <?php foreach ($contact_rows as $index => $row) : ?>
-                                    <?php $this->render_contact_row((int) $index, is_array($row) ? $row : [], $distributor_options); ?>
+                                    <?php $this->render_contact_row((int) $index, is_array($row) ? $row : [], $distributor_options, $fastbound_contacts); ?>
                                 <?php endforeach; ?>
                             </tbody>
                         </table>
                     </div>
                 </section>
 
-                <?php submit_button(__('Save FastBound Settings', 'ffl-hub')); ?>
+                <?php submit_button(__('Save FastBound Settings', 'ffl-hub'), 'primary', 'fflhub_fastbound_save_settings'); ?>
             </form>
+            <?php $this->render_scripts(); ?>
         </div>
         <?php
     }
@@ -203,12 +222,13 @@ final class FastBoundIntegrationSettingsPage
             return;
         }
 
-        $action = isset($_POST['fflhub_fastbound_action'])
-            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_fastbound_action']))
-            : '';
-        if ($action !== self::FORM_ACTION) {
+        if (!isset($_POST['fflhub_fastbound_form'])) {
             return;
         }
+
+        $action = isset($_POST['fflhub_fastbound_refresh_contacts'])
+            ? self::ACTION_REFRESH_CONTACTS
+            : self::FORM_ACTION;
 
         if (!current_user_can('manage_options')) {
             wp_die(esc_html__('You do not have permission to perform this action.', 'ffl-hub'));
@@ -241,25 +261,29 @@ final class FastBoundIntegrationSettingsPage
         }
         Options::set_fastbound_distributor_contacts($contacts);
 
-        wp_safe_redirect(add_query_arg(
-            [
-                'page' => self::PAGE_SLUG,
-                'fastbound_saved' => '1',
-            ],
-            admin_url('admin.php')
-        ));
+        if ($action === self::ACTION_REFRESH_CONTACTS) {
+            set_transient($this->result_transient_key(), FastBoundContactsService::refresh_cache(), 5 * MINUTE_IN_SECONDS);
+        }
+
+        wp_safe_redirect(add_query_arg([
+            'page' => self::PAGE_SLUG,
+            'fastbound_saved' => '1',
+        ], admin_url('admin.php')));
         exit;
     }
 
     /**
      * @param array<string,mixed> $row
      * @param array<string,string> $distributor_options
+     * @param array<int,array<string,mixed>> $fastbound_contacts
      */
-    private function render_contact_row(int $index, array $row, array $distributor_options): void
+    private function render_contact_row(int $index, array $row, array $distributor_options, array $fastbound_contacts): void
     {
         $base = Options::OPTION_FASTBOUND_DISTRIBUTOR_CONTACTS . '[' . $index . ']';
         $enabled = array_key_exists('enabled', $row) ? !empty($row['enabled']) : true;
         $distributor_id = (string) ($row['distributor_id'] ?? '');
+        $selected_contact_id = (string) ($row['fastbound_contact_id'] ?? '');
+        $contact_ids = array_fill_keys(array_map(static fn(array $contact): string => (string) ($contact['id'] ?? ''), $fastbound_contacts), true);
         ?>
         <tr>
             <td class="fflhub-fastbound-enabled-cell">
@@ -281,23 +305,47 @@ final class FastBoundIntegrationSettingsPage
                 </select>
             </td>
             <td>
+                <select
+                    class="fflhub-fastbound-contact-select"
+                    name="<?php echo esc_attr($base . '[fastbound_contact_id]'); ?>"
+                >
+                    <option value=""><?php esc_html_e('Select cached contact...', 'ffl-hub'); ?></option>
+                    <?php if ($selected_contact_id !== '' && !isset($contact_ids[$selected_contact_id])) : ?>
+                        <option value="<?php echo esc_attr($selected_contact_id); ?>" selected>
+                            <?php echo esc_html(sprintf(__('Saved contact ID: %s', 'ffl-hub'), $selected_contact_id)); ?>
+                        </option>
+                    <?php endif; ?>
+                    <?php foreach ($fastbound_contacts as $contact) : ?>
+                        <?php
+                        $contact_id = (string) ($contact['id'] ?? '');
+                        if ($contact_id === '') {
+                            continue;
+                        }
+                        ?>
+                        <option
+                            value="<?php echo esc_attr($contact_id); ?>"
+                            data-label="<?php echo esc_attr((string) ($contact['label'] ?? '')); ?>"
+                            data-external-id="<?php echo esc_attr((string) ($contact['external_id'] ?? '')); ?>"
+                            data-ffl-number="<?php echo esc_attr((string) ($contact['ffl_number'] ?? '')); ?>"
+                            <?php selected($selected_contact_id, $contact_id); ?>
+                        >
+                            <?php echo esc_html($this->contact_option_label($contact)); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </td>
+            <td>
                 <input
+                    class="fflhub-fastbound-label-input"
                     type="text"
                     name="<?php echo esc_attr($base . '[label]'); ?>"
                     value="<?php echo esc_attr((string) ($row['label'] ?? '')); ?>"
-                    placeholder="<?php echo esc_attr__('Prescott / NC / Main', 'ffl-hub'); ?>"
+                    placeholder="<?php echo esc_attr__('Auto-filled from contact, editable', 'ffl-hub'); ?>"
                 />
             </td>
             <td>
                 <input
-                    type="text"
-                    name="<?php echo esc_attr($base . '[fastbound_contact_id]'); ?>"
-                    value="<?php echo esc_attr((string) ($row['fastbound_contact_id'] ?? '')); ?>"
-                    autocomplete="off"
-                />
-            </td>
-            <td>
-                <input
+                    class="fflhub-fastbound-external-id-input"
                     type="text"
                     name="<?php echo esc_attr($base . '[fastbound_contact_external_id]'); ?>"
                     value="<?php echo esc_attr((string) ($row['fastbound_contact_external_id'] ?? '')); ?>"
@@ -306,6 +354,7 @@ final class FastBoundIntegrationSettingsPage
             </td>
             <td>
                 <input
+                    class="fflhub-fastbound-ffl-input"
                     type="text"
                     name="<?php echo esc_attr($base . '[ffl_number]'); ?>"
                     value="<?php echo esc_attr((string) ($row['ffl_number'] ?? '')); ?>"
@@ -334,6 +383,99 @@ final class FastBoundIntegrationSettingsPage
         }
 
         return $options;
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    private function read_result(): ?array
+    {
+        $key = $this->result_transient_key();
+        $result = get_transient($key);
+        if ($result !== false) {
+            delete_transient($key);
+        }
+
+        return is_array($result) ? $result : null;
+    }
+
+    private function result_transient_key(): string
+    {
+        return self::RESULT_TRANSIENT_PREFIX . get_current_user_id();
+    }
+
+    /**
+     * @param array<string,mixed>|null $result
+     */
+    private function render_result(?array $result): void
+    {
+        if ($result === null) {
+            return;
+        }
+
+        $ok = !empty($result['ok']);
+        ?>
+        <div class="notice <?php echo esc_attr($ok ? 'notice-success' : 'notice-error'); ?> is-dismissible">
+            <p>
+                <strong><?php echo esc_html($ok ? __('FastBound contacts refreshed.', 'ffl-hub') : __('FastBound contacts refresh failed.', 'ffl-hub')); ?></strong>
+            </p>
+            <p>
+                <?php
+                printf(
+                    esc_html__('Contacts cached: %1$s. Runtime: %2$s ms.', 'ffl-hub'),
+                    esc_html((string) ($result['contacts_cached'] ?? 0)),
+                    esc_html((string) ($result['elapsed_ms'] ?? '0.00'))
+                );
+                ?>
+            </p>
+            <?php if (!empty($result['records_reported'])) : ?>
+                <p><?php echo esc_html(sprintf(__('FastBound reported %s total contact records.', 'ffl-hub'), (string) $result['records_reported'])); ?></p>
+            <?php endif; ?>
+            <?php if (!empty($result['errors']) && is_array($result['errors'])) : ?>
+                <ul class="fflhub-fastbound-errors">
+                    <?php foreach ($result['errors'] as $error) : ?>
+                        <li><?php echo esc_html((string) $error); ?></li>
+                    <?php endforeach; ?>
+                </ul>
+            <?php endif; ?>
+        </div>
+        <?php
+    }
+
+    private function contact_cache_timestamp_label(int $fetched_at): string
+    {
+        if ($fetched_at <= 0) {
+            return __('Never refreshed.', 'ffl-hub');
+        }
+
+        return sprintf(
+            __('Last refreshed %s.', 'ffl-hub'),
+            wp_date('M j, Y g:i A T', $fetched_at)
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $contact
+     */
+    private function contact_option_label(array $contact): string
+    {
+        $label = trim((string) ($contact['label'] ?? ''));
+        if ($label !== '') {
+            return $label;
+        }
+
+        $pieces = array_filter([
+            (string) ($contact['license_name'] ?? ''),
+            (string) ($contact['trade_name'] ?? ''),
+            (string) ($contact['organization_name'] ?? ''),
+            trim(implode(' ', array_filter([
+                (string) ($contact['first_name'] ?? ''),
+                (string) ($contact['last_name'] ?? ''),
+            ]))),
+            (string) ($contact['id'] ?? ''),
+        ]);
+
+        return (string) reset($pieces);
     }
 
     private function posted_text(string $key): string
@@ -380,6 +522,18 @@ final class FastBoundIntegrationSettingsPage
                 margin-top: 8px;
             }
 
+            .fflhub-fastbound-cache-bar {
+                align-items: center;
+                background: #f6f7f7;
+                border: 1px solid #dcdcde;
+                border-radius: 6px;
+                display: flex;
+                gap: 18px;
+                justify-content: space-between;
+                margin: 14px 0 16px;
+                padding: 12px 14px;
+            }
+
             .fflhub-fastbound-table-wrap {
                 overflow-x: auto;
             }
@@ -404,7 +558,55 @@ final class FastBoundIntegrationSettingsPage
                 text-align: center;
                 width: 70px;
             }
+
+            .fflhub-fastbound-errors {
+                list-style: disc;
+                margin-left: 20px;
+            }
         </style>
+        <?php
+    }
+
+    private function render_scripts(): void
+    {
+        ?>
+        <script>
+            (function () {
+                const table = document.querySelector('.fflhub-fastbound-contact-table');
+                if (!table) {
+                    return;
+                }
+
+                table.addEventListener('change', function (event) {
+                    const select = event.target && event.target.classList
+                        ? event.target
+                        : null;
+                    if (!select || !select.classList.contains('fflhub-fastbound-contact-select')) {
+                        return;
+                    }
+
+                    const row = select.closest('tr');
+                    const option = select.options[select.selectedIndex];
+                    if (!row || !option || !option.value) {
+                        return;
+                    }
+
+                    const label = row.querySelector('.fflhub-fastbound-label-input');
+                    const externalId = row.querySelector('.fflhub-fastbound-external-id-input');
+                    const ffl = row.querySelector('.fflhub-fastbound-ffl-input');
+
+                    if (label && (!label.value || label.value === label.defaultValue)) {
+                        label.value = option.dataset.label || option.textContent.trim();
+                    }
+                    if (externalId) {
+                        externalId.value = option.dataset.externalId || '';
+                    }
+                    if (ffl) {
+                        ffl.value = option.dataset.fflNumber || '';
+                    }
+                });
+            })();
+        </script>
         <?php
     }
 }
