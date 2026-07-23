@@ -200,7 +200,7 @@
 
 .fflhub-ss-rate-card {
     display: grid;
-    grid-template-columns: 24px minmax(160px, 1.2fr) minmax(220px, 1.8fr) minmax(110px, .8fr) minmax(150px, 1fr);
+    grid-template-columns: 24px minmax(230px, 1.35fr) minmax(220px, 1.65fr) minmax(110px, .8fr) minmax(120px, .8fr);
     align-items: center;
     gap: 14px;
     position: relative;
@@ -278,9 +278,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    flex: 0 0 74px;
-    width: 74px;
-    min-height: 42px;
+    flex: 0 0 112px;
+    width: 112px;
+    height: 58px;
     border-radius: 6px;
     border: 1px solid #dcdcde;
     background: #f6f7f7;
@@ -291,14 +291,15 @@
 
 .fflhub-ss-carrier-mark.has-logo {
     background: #fff;
+    overflow: hidden;
 }
 
 .fflhub-ss-carrier-mark img {
     display: block;
-    max-width: 58px;
-    max-height: 28px;
-    width: auto;
-    height: auto;
+    width: 92px;
+    height: 42px;
+    object-fit: contain;
+    transform: scale(1.22);
 }
 
 .fflhub-ss-carrier-mark.is-usps {

@@ -321,6 +321,10 @@
       '<span class="screen-reader-text">' + escapeHtml(brand.label) + '</span>';
   }
 
+  function showDebugFields(panel) {
+    return !!(context(panel).settings && context(panel).settings.show_debug_fields);
+  }
+
   function transitLabel(rate) {
     var days = Number(rate.delivery_days || 0);
     if (days > 0 && days < 9999) {
@@ -342,7 +346,7 @@
     }).join('');
   }
 
-  function renderRateCard(rate, cheapest, fastestDays) {
+  function renderRateCard(rate, cheapest, fastestDays, debug) {
     var brand = carrierBrand(rate);
     var badges = [];
     if (Number(rate.total_amount || 0) === cheapest) badges.push('<span class="fflhub-ss-badge">Cheapest</span>');
@@ -351,7 +355,9 @@
     if (rate.guaranteed_service) badges.push('<span class="fflhub-ss-badge is-guaranteed">Guaranteed</span>');
 
     var warnings = (rate.warning_messages || []).join('; ');
-    var carrierName = rate.carrier_nickname || rate.carrier_friendly_name || rate.carrier_code || 'Carrier';
+    var carrierName = !debug && brand.slug !== 'generic'
+      ? brand.label
+      : (rate.carrier_nickname || rate.carrier_friendly_name || rate.carrier_code || 'Carrier');
     var serviceName = rate.service_type || rate.service_code || 'Service';
 
     return '<label class="fflhub-ss-rate-card">' +
@@ -359,21 +365,21 @@
       '<span class="fflhub-ss-rate-select-dot" aria-hidden="true"></span>' +
       '<div class="fflhub-ss-rate-carrier-block">' +
         '<span class="fflhub-ss-carrier-mark is-' + escapeHtml(brand.slug) + (brand.slug !== 'generic' ? ' has-logo' : '') + '">' + carrierLogoHtml(brand) + '</span>' +
-        '<div><strong>' + escapeHtml(carrierName) + '</strong><code>' + escapeHtml(rate.carrier_code || '') + '</code></div>' +
+        '<div><strong>' + escapeHtml(carrierName) + '</strong>' + (debug ? '<code>' + escapeHtml(rate.carrier_code || '') + '</code>' : '') + '</div>' +
       '</div>' +
       '<div class="fflhub-ss-rate-service-block">' +
         '<strong>' + escapeHtml(serviceName) + '</strong>' +
-        '<code>' + escapeHtml(rate.service_code || '') + '</code>' +
+        (debug ? '<code>' + escapeHtml(rate.service_code || '') + '</code>' : '') +
         '<div class="fflhub-ss-rate-badges">' + badges.join(' ') + '</div>' +
       '</div>' +
       '<div class="fflhub-ss-rate-transit-block">' +
         '<span>' + escapeHtml(transitLabel(rate)) + '</span>' +
-        '<small>' + escapeHtml(rate.estimated_delivery_date || 'No delivery date') + '</small>' +
+        (debug ? '<small>' + escapeHtml(rate.estimated_delivery_date || 'No delivery date') + '</small>' : '') +
       '</div>' +
       '<div class="fflhub-ss-rate-price-block">' +
         '<strong>' + money(rate.total_amount) + '</strong>' +
         '<span>Total</span>' +
-        '<dl>' + rateCostBreakdown(rate) + '</dl>' +
+        (debug ? '<dl>' + rateCostBreakdown(rate) + '</dl>' : '') +
       '</div>' +
       (warnings ? '<div class="fflhub-ss-rate-warning">' + escapeHtml(warnings) + '</div>' : '') +
     '</label>';
@@ -385,6 +391,7 @@
     var currentCarrier = '';
     var currentMaxDays = '';
     var carrierOptions = {};
+    var debug = showDebugFields(panel);
     panel.fflhubShipStationRatesById = {};
     (rates || []).forEach(function (rate) {
       var key = rate.carrier_id || rate.carrier_code || '';
@@ -435,7 +442,7 @@
       } else {
         html += '<div class="fflhub-ss-rate-list">';
         rows.forEach(function (rate) {
-          html += renderRateCard(rate, cheapest, fastestDays);
+          html += renderRateCard(rate, cheapest, fastestDays, debug);
         });
         html += '</div><button type="button" class="button button-primary fflhub-ss-purchase">Purchase Selected Label</button>';
       }

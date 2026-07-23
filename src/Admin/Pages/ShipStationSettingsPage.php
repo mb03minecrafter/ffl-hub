@@ -160,6 +160,15 @@ final class ShipStationSettingsPage
                                     </select>
                                 </td>
                             </tr>
+                            <tr>
+                                <th scope="row"><?php esc_html_e('Show Debug Fields', 'ffl-hub'); ?></th>
+                                <td>
+                                    <label>
+                                        <input type="checkbox" name="shipstation[show_debug_fields]" value="1" <?php checked(ShipStationOptions::show_debug_fields()); ?> />
+                                        <?php esc_html_e('Show carrier/service codes, delivery dates, and rate cost breakdowns in the order label panel.', 'ffl-hub'); ?>
+                                    </label>
+                                </td>
+                            </tr>
                         </tbody>
                     </table>
                 </section>

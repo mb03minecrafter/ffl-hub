@@ -69,6 +69,7 @@ final class ShipStationShipmentService
                 'confirmation' => ShipStationOptions::confirmation(),
                 'insurance_mode' => ShipStationOptions::insurance_mode(),
                 'after_purchase_status' => ShipStationOptions::after_purchase_status(),
+                'show_debug_fields' => ShipStationOptions::show_debug_fields(),
             ],
             'carriers' => [],
             'eligible_carriers' => [],

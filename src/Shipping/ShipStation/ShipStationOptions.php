@@ -47,6 +47,7 @@ final class ShipStationOptions
             'confirmation' => 'delivery',
             'insurance_mode' => 'none',
             'after_purchase_status' => '',
+            'show_debug_fields' => '0',
             'package_presets' => self::default_package_presets(),
             'enabled_carrier_ids' => [],
             'firearm_carrier_ids' => [],
@@ -107,6 +108,7 @@ final class ShipStationOptions
             ),
             'insurance_mode' => self::choice((string) ($input['insurance_mode'] ?? 'none'), ['none', 'declared_value'], 'none'),
             'after_purchase_status' => self::text($input['after_purchase_status'] ?? ''),
+            'show_debug_fields' => !empty($input['show_debug_fields']) ? '1' : '0',
             'package_presets' => self::sanitize_package_presets($input['package_presets'] ?? []),
             'enabled_carrier_ids' => self::string_list($input['enabled_carrier_ids'] ?? []),
             'firearm_carrier_ids' => self::string_list($input['firearm_carrier_ids'] ?? []),
@@ -278,6 +280,11 @@ final class ShipStationOptions
     public static function after_purchase_status(): string
     {
         return sanitize_key((string) (self::get_all()['after_purchase_status'] ?? ''));
+    }
+
+    public static function show_debug_fields(): bool
+    {
+        return ((string) (self::get_all()['show_debug_fields'] ?? '0')) === '1';
     }
 
     /**
