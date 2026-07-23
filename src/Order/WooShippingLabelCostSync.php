@@ -2,6 +2,7 @@
 
 namespace FFLHub\Order;
 
+use FFLHub\Shipping\ShipStation\ShipStationOrderMeta;
 use WC_Order;
 
 if (!defined('ABSPATH')) {
@@ -54,7 +55,7 @@ final class WooShippingLabelCostSync
      */
     public static function sync_after_label_meta_change($meta_id, $object_id, $meta_key, $_meta_value = null): void
     {
-        if (!in_array((string) $meta_key, ['wcshipping_labels', 'wc_connect_labels'], true)) {
+        if (!in_array((string) $meta_key, ['wcshipping_labels', 'wc_connect_labels', ShipStationOrderMeta::META_LABELS], true)) {
             return;
         }
 
@@ -111,6 +112,10 @@ final class WooShippingLabelCostSync
         }
 
         if (self::has_meta_value($order->get_meta('wc_connect_labels', true))) {
+            return true;
+        }
+
+        if (self::has_meta_value($order->get_meta(ShipStationOrderMeta::META_LABELS, true))) {
             return true;
         }
 

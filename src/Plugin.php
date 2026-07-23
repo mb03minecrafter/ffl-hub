@@ -11,6 +11,7 @@ use FFLHub\Admin\Orders\AuthorizeNetOrderRescueButton;
 use FFLHub\Admin\Orders\OrderFulfillmentModeBadge;
 use FFLHub\Admin\Orders\OrderCartComplianceMetaBox;
 use FFLHub\Admin\Orders\OrderProfitAuditMetaBox;
+use FFLHub\Admin\Orders\ShipStationOrderMetaBox;
 use FFLHub\Admin\Pages\AdminPage;
 use FFLHub\Admin\Pages\BillHicksEdiTestPage;
 use FFLHub\Admin\Pages\CheckoutActivityPage;
@@ -30,6 +31,7 @@ use FFLHub\Admin\Pages\ReceivingTestLabelsPage;
 use FFLHub\Admin\Pages\MonthlyProfitAuditPage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
+use FFLHub\Admin\Pages\ShipStationSettingsPage;
 use FFLHub\Admin\Pages\ZandersCreditLimitPage;
 use FFLHub\Admin\ProductMeta\BOMMetaBox;
 use FFLHub\Admin\ProductMeta\OrderFFLPanel;
@@ -83,6 +85,7 @@ use FFLHub\Receiving\ReceivingEventsStore;
 use FFLHub\Receiving\ReceivingTestShipmentStore;
 use FFLHub\Settings\Options;
 use FFLHub\Settings\SettingsRegistrar;
+use FFLHub\Shipping\ShipStation\ShipStationRestController;
 use FFLHub\Shipping\Wordpress\ShippingRegistrar;
 use FFLHub\Util\ActionSchedulerWebRunnerGuard;
 
@@ -129,10 +132,12 @@ final class Plugin
     public ProductStatePage $product_state_page;
     public ProductStateBulkPricingPage $product_state_bulk_pricing_page;
     public MonthlyProfitAuditPage $monthly_profit_audit_page;
+    public ShipStationSettingsPage $shipstation_settings_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public AuthorizeNetOrderRescueButton $authnet_order_rescue_button;
     public OrderCartComplianceMetaBox $order_cart_compliance_metabox;
     public OrderProfitAuditMetaBox $order_profit_audit_metabox;
+    public ShipStationOrderMetaBox $shipstation_order_metabox;
     public OrderFulfillmentModeBadge $order_fulfillment_mode_badge;
     public ProductDistributorColumns $product_distributor_columns;
 
@@ -197,6 +202,7 @@ final class Plugin
         self::cleanup_gundeals_analytics_tables_once();
 
         ShippingRegistrar::init();
+        ShipStationRestController::init($this->ffl_table);
 
         OrderProfitAuditMeta::init();
         WooShippingLabelCostSync::init();
@@ -288,6 +294,9 @@ final class Plugin
             $this->monthly_profit_audit_page = new MonthlyProfitAuditPage();
             $this->monthly_profit_audit_page->register();
 
+            $this->shipstation_settings_page = new ShipStationSettingsPage();
+            $this->shipstation_settings_page->register();
+
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();
 
@@ -299,6 +308,9 @@ final class Plugin
 
             $this->order_profit_audit_metabox = new OrderProfitAuditMetaBox();
             $this->order_profit_audit_metabox->register();
+
+            $this->shipstation_order_metabox = new ShipStationOrderMetaBox($this->ffl_table);
+            $this->shipstation_order_metabox->register();
 
             $this->order_fulfillment_mode_badge = new OrderFulfillmentModeBadge($this->distributor_handler->ordering_jobs_table);
             $this->order_fulfillment_mode_badge->register();

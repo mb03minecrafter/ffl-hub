@@ -4,6 +4,7 @@ namespace FFLHub\Order;
 
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
+use FFLHub\Shipping\ShipStation\ShipStationOrderMeta;
 use WC_Order;
 use WC_Order_Item_Product;
 use WC_Order_Item_Shipping;
@@ -576,6 +577,7 @@ final class OrderProfitAuditMeta
     private static function woo_shipping_label_cost_summary(WC_Order $order): array
     {
         $label_groups = [
+            'fflhub_shipstation_labels' => self::normalize_label_collection($order->get_meta(ShipStationOrderMeta::META_LABELS, true)),
             'wcshipping_labels' => self::normalize_label_collection($order->get_meta('wcshipping_labels', true)),
             'wc_connect_labels' => self::normalize_label_collection($order->get_meta('wc_connect_labels', true)),
             'wcshipping_fulfillments' => self::fulfillment_label_collection($order),
@@ -759,11 +761,15 @@ final class OrderProfitAuditMeta
     private static function is_ignored_label(array $label): bool
     {
         $status = strtoupper(trim((string) ($label['status'] ?? '')));
+        if (!empty($label['voided'])) {
+            return true;
+        }
+
         if (in_array($status, ['PURCHASE_ERROR', 'ANONYMIZED'], true)) {
             return true;
         }
 
-        if ($status !== '' && $status !== 'PURCHASED') {
+        if ($status !== '' && !in_array($status, ['PURCHASED', 'COMPLETED', 'LABEL_PURCHASED'], true)) {
             return true;
         }
 
