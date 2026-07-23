@@ -360,9 +360,9 @@ final class ShipStationOrderMetaBox
         echo '<label><span>Item oz</span><input type="number" step="0.01" min="0" class="fflhub-ss-content-weight" data-weight-role="content" value="' . esc_attr($content_weight) . '" /></label>';
         echo '<label><span>Pkg oz</span><input type="number" step="0.01" min="0" class="fflhub-ss-package-weight" data-weight-role="package" value="" /></label>';
         echo '<label><span>Total oz</span><input type="number" step="0.01" min="0" class="fflhub-ss-total-weight" data-field="weight.value" data-weight-role="total" value="' . esc_attr($content_weight) . '" readonly /></label>';
-        echo '<label><span>Length</span><input type="number" step="0.01" min="0" data-field="dimensions.length" value="' . esc_attr((string) ($dims['length'] ?? '')) . '" /></label>';
-        echo '<label><span>Width</span><input type="number" step="0.01" min="0" data-field="dimensions.width" value="' . esc_attr((string) ($dims['width'] ?? '')) . '" /></label>';
-        echo '<label><span>Height</span><input type="number" step="0.01" min="0" data-field="dimensions.height" value="' . esc_attr((string) ($dims['height'] ?? '')) . '" /></label>';
+        echo '<label><span>Pkg Length</span><input type="number" step="0.01" min="0" data-field="dimensions.length" value="' . esc_attr((string) ($dims['length'] ?? '')) . '" /></label>';
+        echo '<label><span>Pkg Width</span><input type="number" step="0.01" min="0" data-field="dimensions.width" value="' . esc_attr((string) ($dims['width'] ?? '')) . '" /></label>';
+        echo '<label><span>Pkg Height</span><input type="number" step="0.01" min="0" data-field="dimensions.height" value="' . esc_attr((string) ($dims['height'] ?? '')) . '" /></label>';
         echo '<label><span>Insured $</span><input type="number" step="0.01" min="0" data-field="insured_value.amount" value="' . esc_attr((string) ($insured['amount'] ?? '0')) . '" /></label>';
         $this->render_package_items($package, $order_items);
         echo '<button type="button" class="button-link-delete fflhub-ss-remove-package">Remove</button>';
@@ -415,11 +415,32 @@ final class ShipStationOrderMetaBox
                     $detail
                 );
             }
+            $measurement_parts = [];
+            $weight_oz = self::positive_number_label($item['weight_oz'] ?? null);
+            if ($weight_oz !== '') {
+                $measurement_parts[] = sprintf(
+                    /* translators: %s is the item shipping weight in ounces. */
+                    __('Item %s oz', 'ffl-hub'),
+                    $weight_oz
+                );
+            }
+            $dimension_label = self::item_dimension_label($item);
+            if ($dimension_label !== '') {
+                $measurement_parts[] = sprintf(
+                    /* translators: %s is length x width x height in inches. */
+                    __('Item %s in', 'ffl-hub'),
+                    $dimension_label
+                );
+            }
+            $measurements = implode(' | ', $measurement_parts);
 
             echo '<div class="fflhub-ss-package-item">';
             echo '<div class="fflhub-ss-package-item-main">';
             echo '<strong>' . esc_html($name) . '</strong>';
             echo '<span>' . esc_html($detail) . '</span>';
+            if ($measurements !== '') {
+                echo '<span class="fflhub-ss-package-item-measurements">' . esc_html($measurements) . '</span>';
+            }
             echo '</div>';
             echo '<label><span>' . esc_html__('Qty', 'ffl-hub') . '</span><input type="number" min="0" max="' . esc_attr((string) $quantity) . '" step="1" data-package-item-qty data-item-id="' . esc_attr((string) $item_id) . '" value="' . esc_attr((string) min($assigned, $quantity)) . '" /></label>';
             echo '</div>';
@@ -444,6 +465,33 @@ final class ShipStationOrderMetaBox
         }
 
         return 0;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function positive_number_label($value): string
+    {
+        if (!is_numeric($value) || (float) $value <= 0.0) {
+            return '';
+        }
+
+        return rtrim(rtrim(number_format((float) $value, 2, '.', ''), '0'), '.');
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     */
+    private static function item_dimension_label(array $item): string
+    {
+        $length = self::positive_number_label($item['length_in'] ?? null);
+        $width = self::positive_number_label($item['width_in'] ?? null);
+        $height = self::positive_number_label($item['height_in'] ?? null);
+        if ($length === '' || $width === '' || $height === '') {
+            return '';
+        }
+
+        return $length . ' x ' . $width . ' x ' . $height;
     }
 
     private static function resolve_order($post_or_order): ?WC_Order

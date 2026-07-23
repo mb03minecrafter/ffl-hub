@@ -664,9 +664,6 @@ final class ShipStationShipmentService
     private function default_packages_from_order(WC_Order $order): array
     {
         $total_oz = 0.0;
-        $max_length = 0.0;
-        $max_width = 0.0;
-        $max_height = 0.0;
         $insured_value = max(0.0, (float) $order->get_total() - (float) $order->get_total_tax());
         $package_items = [];
 
@@ -681,15 +678,8 @@ final class ShipStationShipmentService
             }
 
             $qty = max(1, (int) $item->get_quantity());
-            $row = ProductStateStore::get_row_for_product($product);
-            $weight_oz = self::positive_float($row['shipping_weight_oz'] ?? null)
-                ?? self::woo_weight_to_ounces((string) $product->get_weight());
-            $length = self::positive_float($row['shipping_length_in'] ?? null)
-                ?? self::woo_dimension_to_inches((string) $product->get_length());
-            $width = self::positive_float($row['shipping_width_in'] ?? null)
-                ?? self::woo_dimension_to_inches((string) $product->get_width());
-            $height = self::positive_float($row['shipping_height_in'] ?? null)
-                ?? self::woo_dimension_to_inches((string) $product->get_height());
+            $measurements = self::shipping_measurements_for_product($product);
+            $weight_oz = $measurements['weight_oz'];
 
             $package_items[] = [
                 'item_id' => (int) $item->get_id(),
@@ -699,9 +689,6 @@ final class ShipStationShipmentService
             if ($weight_oz !== null) {
                 $total_oz += ($weight_oz * $qty);
             }
-            $max_length = max($max_length, (float) ($length ?? 0));
-            $max_width = max($max_width, (float) ($width ?? 0));
-            $max_height = max($max_height, (float) ($height ?? 0));
         }
 
         return [[
@@ -712,9 +699,9 @@ final class ShipStationShipmentService
             ],
             'dimensions' => [
                 'unit' => 'inch',
-                'length' => self::round_decimal($max_length, 2),
-                'width' => self::round_decimal($max_width, 2),
-                'height' => self::round_decimal($max_height, 2),
+                'length' => '',
+                'width' => '',
+                'height' => '',
             ],
             'insured_value' => [
                 'currency' => get_woocommerce_currency() ? strtolower((string) get_woocommerce_currency()) : 'usd',
@@ -743,6 +730,14 @@ final class ShipStationShipmentService
             $product = $item->get_product();
             $sku = $product instanceof WC_Product ? (string) $product->get_sku() : '';
             $product_id = $product instanceof WC_Product ? (int) $product->get_id() : (int) $item->get_product_id();
+            $measurements = $product instanceof WC_Product
+                ? self::shipping_measurements_for_product($product)
+                : [
+                    'weight_oz' => null,
+                    'length_in' => null,
+                    'width_in' => null,
+                    'height_in' => null,
+                ];
 
             $rows[] = [
                 'item_id' => (int) $item->get_id(),
@@ -751,10 +746,33 @@ final class ShipStationShipmentService
                 'name' => (string) $item->get_name(),
                 'sku' => $sku,
                 'quantity' => max(0, (int) $item->get_quantity()),
+                'weight_oz' => $measurements['weight_oz'] !== null ? self::round_decimal((float) $measurements['weight_oz'], 2) : null,
+                'length_in' => $measurements['length_in'] !== null ? self::round_decimal((float) $measurements['length_in'], 2) : null,
+                'width_in' => $measurements['width_in'] !== null ? self::round_decimal((float) $measurements['width_in'], 2) : null,
+                'height_in' => $measurements['height_in'] !== null ? self::round_decimal((float) $measurements['height_in'], 2) : null,
             ];
         }
 
         return $rows;
+    }
+
+    /**
+     * @return array{weight_oz:?float,length_in:?float,width_in:?float,height_in:?float}
+     */
+    private static function shipping_measurements_for_product(WC_Product $product): array
+    {
+        $row = ProductStateStore::get_row_for_product($product);
+
+        return [
+            'weight_oz' => self::positive_float($row['shipping_weight_oz'] ?? null)
+                ?? self::woo_weight_to_ounces((string) $product->get_weight()),
+            'length_in' => self::positive_float($row['shipping_length_in'] ?? null)
+                ?? self::woo_dimension_to_inches((string) $product->get_length()),
+            'width_in' => self::positive_float($row['shipping_width_in'] ?? null)
+                ?? self::woo_dimension_to_inches((string) $product->get_width()),
+            'height_in' => self::positive_float($row['shipping_height_in'] ?? null)
+                ?? self::woo_dimension_to_inches((string) $product->get_height()),
+        ];
     }
 
     /**

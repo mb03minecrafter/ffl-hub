@@ -182,6 +182,11 @@
     display: block;
 }
 
+.fflhub-ss-package-item-measurements {
+    color: #2271b1;
+    font-weight: 700;
+}
+
 .fflhub-ss-package-item-main strong {
     overflow: hidden;
     color: #1d2327;
