@@ -27,7 +27,7 @@ The complete key is never printed in HTML, JavaScript, REST responses, logs, or 
 
 On a WooCommerce order, use **FFL Hub - ShipStation Labels**:
 
-1. Review the ship-from address.
+1. Review the ship-from address. This is read-only on the order screen and is managed globally under **FFL Hub > ShipStation Labels**.
 2. Review the ship-to address.
 3. For FFL orders, confirm the receiving FFL premise address is being used.
 4. Enter package weight and dimensions. FFL Hub starts with product-state shipping data when available, but missing dimensions must be entered manually.

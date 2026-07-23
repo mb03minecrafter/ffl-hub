@@ -88,6 +88,37 @@
     width: 100%;
 }
 
+.fflhub-ss-address-summary {
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    background: #f6f7f7;
+    padding: 10px 12px;
+}
+
+.fflhub-ss-address-summary address {
+    margin: 0 0 10px;
+    font-style: normal;
+    font-weight: 600;
+    line-height: 1.45;
+}
+
+.fflhub-ss-address-summary dl {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+}
+
+.fflhub-ss-address-summary dt {
+    color: #50575e;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.fflhub-ss-address-summary dd {
+    margin: 2px 0 0;
+}
+
 .fflhub-ss-package-list {
     display: flex;
     flex-direction: column;
@@ -196,6 +227,7 @@
 @media (max-width: 1100px) {
     .fflhub-ss-grid,
     .fflhub-ss-address-grid,
+    .fflhub-ss-address-summary dl,
     .fflhub-ss-rate-options {
         grid-template-columns: 1fr;
     }

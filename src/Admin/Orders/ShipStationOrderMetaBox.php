@@ -141,8 +141,16 @@ final class ShipStationOrderMetaBox
 
             <div class="fflhub-ss-grid">
                 <section class="fflhub-ss-card">
-                    <h4><?php esc_html_e('Ship From', 'ffl-hub'); ?></h4>
-                    <?php $this->render_address_fields('origin', (array) ($context['origin'] ?? [])); ?>
+                    <div class="fflhub-ss-card-title-row">
+                        <h4><?php esc_html_e('Ship From', 'ffl-hub'); ?></h4>
+                        <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=fflhub-shipstation-settings')); ?>">
+                            <?php esc_html_e('Edit Global Origin', 'ffl-hub'); ?>
+                        </a>
+                    </div>
+                    <p class="description">
+                        <?php esc_html_e('Managed globally under FFL Hub > ShipStation Labels. Rates and labels always use this saved origin.', 'ffl-hub'); ?>
+                    </p>
+                    <?php $this->render_address_summary((array) ($context['origin'] ?? [])); ?>
                 </section>
 
                 <section class="fflhub-ss-card">
@@ -241,6 +249,47 @@ final class ShipStationOrderMetaBox
             echo '</div>';
         }
         echo '</div></section>';
+    }
+
+    /**
+     * @param array<string,mixed> $address
+     */
+    private function render_address_summary(array $address): void
+    {
+        $lines = array_values(array_filter([
+            trim((string) ($address['name'] ?? '')),
+            trim((string) ($address['company_name'] ?? '')),
+            trim((string) ($address['address_line1'] ?? '')),
+            trim((string) ($address['address_line2'] ?? '')),
+            trim(implode(', ', array_filter([
+                trim((string) ($address['city_locality'] ?? '')),
+                trim((string) ($address['state_province'] ?? '')),
+                trim((string) ($address['postal_code'] ?? '')),
+            ]))),
+            trim((string) ($address['country_code'] ?? '')),
+        ]));
+
+        echo '<div class="fflhub-ss-address-summary">';
+        if (empty($lines)) {
+            echo '<div class="fflhub-ss-empty">' . esc_html__('No global ShipStation origin address is configured yet.', 'ffl-hub') . '</div>';
+        } else {
+            echo '<address>' . wp_kses_post(implode('<br>', array_map('esc_html', $lines))) . '</address>';
+        }
+
+        echo '<dl>';
+        foreach ([
+            'phone' => __('Phone', 'ffl-hub'),
+            'email' => __('Email', 'ffl-hub'),
+            'address_residential_indicator' => __('Residential', 'ffl-hub'),
+        ] as $key => $label) {
+            $value = trim((string) ($address[$key] ?? ''));
+            if ($value === '') {
+                continue;
+            }
+            echo '<div><dt>' . esc_html($label) . '</dt><dd>' . esc_html($value) . '</dd></div>';
+        }
+        echo '</dl>';
+        echo '</div>';
     }
 
     /**

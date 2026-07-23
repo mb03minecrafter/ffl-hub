@@ -58,7 +58,6 @@
 
   function buildPayload(panel) {
     return {
-      origin: readAddress(panel, 'origin'),
       destination: readAddress(panel, 'destination'),
       packages: readPackages(panel),
       ship_date: panel.querySelector('.fflhub-ss-ship-date').value,

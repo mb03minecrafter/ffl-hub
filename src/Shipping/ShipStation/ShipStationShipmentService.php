@@ -20,9 +20,9 @@ if (!defined('ABSPATH')) {
 /**
  * Builds order shipments, shops ShipStation rates, and records purchased labels.
  *
- * The browser can edit package/address fields, but this class is still the
- * authority for the order, FFL destination, carrier policy, rate totals, and
- * duplicate-label protection.
+ * The browser can edit package and destination fields, but this class is still
+ * the authority for the global origin, order, FFL destination, carrier policy,
+ * rate totals, and duplicate-label protection.
  */
 final class ShipStationShipmentService
 {
@@ -377,7 +377,7 @@ final class ShipStationShipmentService
      */
     private function shipment_from_input(WC_Order $order, array $context, array $input)
     {
-        $origin = self::address_from_input($input['origin'] ?? $context['origin'] ?? []);
+        $origin = self::address_from_input($context['origin'] ?? []);
         $destination = self::address_from_input($input['destination'] ?? $context['destination'] ?? []);
         $packages = self::packages_from_input($input['packages'] ?? $context['packages'] ?? []);
         $confirmation = self::choice((string) ($input['confirmation'] ?? ShipStationOptions::confirmation()), [
