@@ -768,6 +768,7 @@ final class ShipStationShipmentService
                 }
             }
         }
+        $normalized_rates = self::dedupe_equivalent_rates($normalized_rates);
 
         usort($normalized_rates, static function (array $a, array $b): int {
             $by_total = ((float) ($a['total_amount'] ?? 0)) <=> ((float) ($b['total_amount'] ?? 0));
@@ -838,6 +839,71 @@ final class ShipStationShipmentService
             'warning_messages' => self::string_list($rate['warning_messages'] ?? []),
             'raw' => $rate,
         ];
+    }
+
+    /**
+     * ShipStation can return multiple rate IDs that are operationally the same
+     * choice: same carrier account, service, package type, transit, and price.
+     * Keep the first rate ID so label purchase still has an exact ShipStation
+     * rate to buy, but do not make the admin pick between duplicate cards.
+     *
+     * @param array<int,array<string,mixed>> $rates
+     * @return array<int,array<string,mixed>>
+     */
+    private static function dedupe_equivalent_rates(array $rates): array
+    {
+        $seen = [];
+        $unique = [];
+
+        foreach ($rates as $rate) {
+            if (!is_array($rate)) {
+                continue;
+            }
+
+            $key = self::equivalent_rate_key($rate);
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $unique[] = $rate;
+        }
+
+        return $unique;
+    }
+
+    /**
+     * @param array<string,mixed> $rate
+     */
+    private static function equivalent_rate_key(array $rate): string
+    {
+        $warnings = $rate['warning_messages'] ?? [];
+        if (!is_array($warnings)) {
+            $warnings = [$warnings];
+        }
+        $warnings = array_values(array_map('strval', $warnings));
+        sort($warnings);
+
+        return (string) wp_json_encode([
+            'carrier_id' => (string) ($rate['carrier_id'] ?? ''),
+            'carrier_code' => (string) ($rate['carrier_code'] ?? ''),
+            'carrier_nickname' => (string) ($rate['carrier_nickname'] ?? ''),
+            'carrier_friendly_name' => (string) ($rate['carrier_friendly_name'] ?? ''),
+            'service_code' => (string) ($rate['service_code'] ?? ''),
+            'service_type' => (string) ($rate['service_type'] ?? ''),
+            'package_type' => (string) ($rate['package_type'] ?? ''),
+            'shipping_amount' => (string) ($rate['shipping_amount'] ?? ''),
+            'insurance_amount' => (string) ($rate['insurance_amount'] ?? ''),
+            'confirmation_amount' => (string) ($rate['confirmation_amount'] ?? ''),
+            'other_amount' => (string) ($rate['other_amount'] ?? ''),
+            'total_amount' => (string) ($rate['total_amount'] ?? ''),
+            'currency' => (string) ($rate['currency'] ?? ''),
+            'delivery_days' => $rate['delivery_days'] ?? null,
+            'estimated_delivery_date' => (string) ($rate['estimated_delivery_date'] ?? ''),
+            'guaranteed_service' => !empty($rate['guaranteed_service']),
+            'trackable' => !empty($rate['trackable']),
+            'warning_messages' => $warnings,
+        ]);
     }
 
     /**
