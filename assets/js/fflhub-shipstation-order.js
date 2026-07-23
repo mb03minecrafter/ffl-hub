@@ -385,6 +385,17 @@
     '</label>';
   }
 
+  function selectRateCard(target, rateId) {
+    target.querySelectorAll('.fflhub-ss-rate-card').forEach(function (card) {
+      var radio = card.querySelector('input[name="fflhub_ss_rate"]');
+      var selected = radio && String(radio.value || '') === String(rateId || '');
+      if (radio) {
+        radio.checked = selected;
+      }
+      card.classList.toggle('is-selected', !!selected);
+    });
+  }
+
   function renderRates(panel, rates, invalidRates) {
     var target = panel.querySelector('.fflhub-ss-rates');
     var currentSort = 'total';
@@ -417,6 +428,12 @@
       rows = sortRates(rows, currentSort);
       var fastestDays = rows.length ? Math.min.apply(null, rows.map(function (r) { return Number(r.delivery_days || 9999); })) : 9999;
       var cheapest = rows.length ? Math.min.apply(null, rows.map(function (r) { return Number(r.total_amount || 0); })) : 0;
+      var cheapestRate = rows.reduce(function (best, rate) {
+        if (!best || Number(rate.total_amount || 0) < Number(best.total_amount || 0)) {
+          return rate;
+        }
+        return best;
+      }, null);
 
       var html = '<div class="fflhub-ss-rate-toolbar"><label>Sort <select class="fflhub-ss-rate-sort">' +
         '<option value="total">Total price</option>' +
@@ -464,11 +481,13 @@
       });
       target.querySelectorAll('input[name="fflhub_ss_rate"]').forEach(function (radio) {
         radio.addEventListener('change', function () {
-          target.querySelectorAll('.fflhub-ss-rate-card').forEach(function (card) {
-            card.classList.toggle('is-selected', !!card.querySelector('input[name="fflhub_ss_rate"]:checked'));
-          });
+          selectRateCard(target, radio.value);
         });
       });
+
+      if (cheapestRate && cheapestRate.rate_id) {
+        selectRateCard(target, cheapestRate.rate_id);
+      }
     }
 
     paint();

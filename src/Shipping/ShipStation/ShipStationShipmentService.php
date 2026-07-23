@@ -706,7 +706,7 @@ final class ShipStationShipmentService
         foreach ($rates as $rate) {
             if (is_array($rate)) {
                 $normalized = self::normalize_rate($rate);
-                if ((string) ($normalized['rate_id'] ?? '') !== '') {
+                if ((string) ($normalized['rate_id'] ?? '') !== '' && !self::is_excluded_service_rate($normalized)) {
                     $normalized_rates[] = $normalized;
                 }
             }
@@ -781,6 +781,21 @@ final class ShipStationShipmentService
             'warning_messages' => self::string_list($rate['warning_messages'] ?? []),
             'raw' => $rate,
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $rate
+     */
+    private static function is_excluded_service_rate(array $rate): bool
+    {
+        $haystack = strtolower(implode(' ', [
+            (string) ($rate['service_code'] ?? ''),
+            (string) ($rate['service_type'] ?? ''),
+            (string) ($rate['package_type'] ?? ''),
+        ]));
+        $normalized = str_replace(['_', '-'], ' ', $haystack);
+
+        return strpos($normalized, 'media mail') !== false;
     }
 
     /**
