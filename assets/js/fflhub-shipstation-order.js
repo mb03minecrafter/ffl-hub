@@ -368,6 +368,10 @@
   ready(function () {
     document.querySelectorAll('.fflhub-ss-panel').forEach(function (panel) {
       panel.addEventListener('input', function (event) {
+        if (event.target.closest('.fflhub-ss-rates')) {
+          return;
+        }
+
         if (event.target.matches('input,select')) {
           var row = event.target.closest('.fflhub-ss-package-row');
           if (row && event.target.matches('[data-weight-role="content"],[data-weight-role="package"]')) {
