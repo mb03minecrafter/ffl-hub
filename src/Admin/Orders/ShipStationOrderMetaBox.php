@@ -115,6 +115,7 @@ final class ShipStationOrderMetaBox
         $settings = isset($context['settings']) && is_array($context['settings']) ? $context['settings'] : [];
         $labels = isset($context['labels']) && is_array($context['labels']) ? $context['labels'] : [];
         $package_presets = isset($context['package_presets']) && is_array($context['package_presets']) ? $context['package_presets'] : [];
+        $order_items = isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : [];
         ?>
         <div
             class="fflhub-ss-panel"
@@ -176,7 +177,7 @@ final class ShipStationOrderMetaBox
                 </div>
                 <div class="fflhub-ss-package-list">
                     <?php foreach ((array) ($context['packages'] ?? []) as $index => $package) : ?>
-                        <?php $this->render_package_row((int) $index, is_array($package) ? $package : [], $package_presets); ?>
+                        <?php $this->render_package_row((int) $index, is_array($package) ? $package : [], $package_presets, $order_items); ?>
                     <?php endforeach; ?>
                 </div>
             </section>
@@ -333,8 +334,9 @@ final class ShipStationOrderMetaBox
     /**
      * @param array<string,mixed> $package
      * @param array<int,array<string,mixed>> $presets
+     * @param array<int,array<string,mixed>> $order_items
      */
-    private function render_package_row(int $index, array $package, array $presets): void
+    private function render_package_row(int $index, array $package, array $presets, array $order_items): void
     {
         $weight = isset($package['weight']) && is_array($package['weight']) ? $package['weight'] : [];
         $dims = isset($package['dimensions']) && is_array($package['dimensions']) ? $package['dimensions'] : [];
@@ -362,9 +364,86 @@ final class ShipStationOrderMetaBox
         echo '<label><span>Width</span><input type="number" step="0.01" min="0" data-field="dimensions.width" value="' . esc_attr((string) ($dims['width'] ?? '')) . '" /></label>';
         echo '<label><span>Height</span><input type="number" step="0.01" min="0" data-field="dimensions.height" value="' . esc_attr((string) ($dims['height'] ?? '')) . '" /></label>';
         echo '<label><span>Insured $</span><input type="number" step="0.01" min="0" data-field="insured_value.amount" value="' . esc_attr((string) ($insured['amount'] ?? '0')) . '" /></label>';
-        echo '<label class="fflhub-ss-wide"><span>Description</span><input data-field="description" value="' . esc_attr((string) ($package['description'] ?? '')) . '" /></label>';
+        $this->render_package_items($package, $order_items);
         echo '<button type="button" class="button-link-delete fflhub-ss-remove-package">Remove</button>';
         echo '</div>';
+    }
+
+    /**
+     * @param array<string,mixed> $package
+     * @param array<int,array<string,mixed>> $order_items
+     */
+    private function render_package_items(array $package, array $order_items): void
+    {
+        echo '<div class="fflhub-ss-package-items fflhub-ss-wide">';
+        echo '<div class="fflhub-ss-package-items-heading">';
+        echo '<strong>' . esc_html__('Items in this package', 'ffl-hub') . '</strong>';
+        echo '<span>' . esc_html__('Assign the Woo order item quantities this label/package represents.', 'ffl-hub') . '</span>';
+        echo '</div>';
+
+        if (empty($order_items)) {
+            echo '<div class="fflhub-ss-empty">' . esc_html__('No shippable Woo line items found on this order.', 'ffl-hub') . '</div>';
+            echo '</div>';
+            return;
+        }
+
+        echo '<div class="fflhub-ss-package-item-list">';
+        foreach ($order_items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $item_id = absint($item['item_id'] ?? 0);
+            if ($item_id <= 0) {
+                continue;
+            }
+
+            $quantity = max(0, (int) ($item['quantity'] ?? 0));
+            $assigned = self::assigned_package_item_quantity($package, $item_id);
+            $name = (string) ($item['name'] ?? __('Order item', 'ffl-hub'));
+            $sku = trim((string) ($item['sku'] ?? ''));
+            $detail = sprintf(
+                /* translators: %d is the order item quantity. */
+                __('Order qty %d', 'ffl-hub'),
+                $quantity
+            );
+            if ($sku !== '') {
+                $detail = sprintf(
+                    /* translators: 1: SKU, 2: order quantity detail. */
+                    __('SKU %1$s | %2$s', 'ffl-hub'),
+                    $sku,
+                    $detail
+                );
+            }
+
+            echo '<div class="fflhub-ss-package-item">';
+            echo '<div class="fflhub-ss-package-item-main">';
+            echo '<strong>' . esc_html($name) . '</strong>';
+            echo '<span>' . esc_html($detail) . '</span>';
+            echo '</div>';
+            echo '<label><span>' . esc_html__('Qty', 'ffl-hub') . '</span><input type="number" min="0" max="' . esc_attr((string) $quantity) . '" step="1" data-package-item-qty data-item-id="' . esc_attr((string) $item_id) . '" value="' . esc_attr((string) min($assigned, $quantity)) . '" /></label>';
+            echo '</div>';
+        }
+        echo '</div>';
+        echo '</div>';
+    }
+
+    /**
+     * @param array<string,mixed> $package
+     */
+    private static function assigned_package_item_quantity(array $package, int $item_id): int
+    {
+        $items = isset($package['items']) && is_array($package['items']) ? $package['items'] : [];
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            if (absint($item['item_id'] ?? 0) === $item_id) {
+                return max(0, (int) ($item['quantity'] ?? 0));
+            }
+        }
+
+        return 0;
     }
 
     private static function resolve_order($post_or_order): ?WC_Order

@@ -61,6 +61,7 @@ final class ShipStationShipmentService
             'receiving_ffl' => $receiving_ffl,
             'origin' => ShipStationOptions::origin_address(),
             'destination' => $destination,
+            'order_items' => $this->order_items_for_packages($order),
             'packages' => $this->default_packages_from_order($order),
             'package_presets' => ShipStationOptions::package_presets(),
             'settings' => [
@@ -273,6 +274,10 @@ final class ShipStationShipmentService
 
         $normalized = $this->normalize_rate_response($response);
         $shipment_hash = self::shipment_hash($shipment);
+        $package_items = self::package_item_assignments_from_input(
+            $input['package_items'] ?? [],
+            isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : []
+        );
         ShipStationOrderMeta::save_pending_rates(
             $order,
             $shipment,
@@ -280,7 +285,8 @@ final class ShipStationShipmentService
             $normalized['rates'],
             $normalized['invalid_rates'],
             (string) ($normalized['shipment_id'] ?? ''),
-            (string) ($response['_fflhub_request_id'] ?? '')
+            (string) ($response['_fflhub_request_id'] ?? ''),
+            $package_items
         );
 
         $result = [
@@ -290,6 +296,7 @@ final class ShipStationShipmentService
             'rates' => $normalized['rates'],
             'invalid_rates' => $normalized['invalid_rates'],
             'shipment' => $shipment,
+            'package_items' => $package_items,
         ];
 
         /**
@@ -348,6 +355,18 @@ final class ShipStationShipmentService
 
             $pending = ShipStationOrderMeta::pending_rates($order);
             $rated = ShipStationOrderMeta::pending_rate($order, $rate_id, $shipment_hash);
+            $package_items_source = null;
+            if (is_array($shipment_input) && array_key_exists('package_items', $shipment_input)) {
+                $package_items_source = $shipment_input['package_items'];
+            } elseif (array_key_exists('package_items', $input)) {
+                $package_items_source = $input['package_items'];
+            }
+            if ($package_items_source !== null) {
+                $pending['package_items'] = self::package_item_assignments_from_input(
+                    $package_items_source,
+                    isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : []
+                );
+            }
             if (!is_array($rated)) {
                 $selected_rate = isset($input['selected_rate']) && is_array($input['selected_rate']) ? $input['selected_rate'] : [];
                 if ((string) ($selected_rate['rate_id'] ?? '') !== $rate_id) {
@@ -369,6 +388,7 @@ final class ShipStationShipmentService
                     'rate_request_id' => '',
                     'rates' => [$selected_rate],
                     'invalid_rates' => [],
+                    'package_items' => $pending['package_items'] ?? [],
                 ];
             }
 
@@ -637,7 +657,7 @@ final class ShipStationShipmentService
         $max_width = 0.0;
         $max_height = 0.0;
         $insured_value = max(0.0, (float) $order->get_total() - (float) $order->get_total_tax());
-        $descriptions = [];
+        $package_items = [];
 
         foreach ($order->get_items('line_item') as $item) {
             if (!($item instanceof WC_Order_Item_Product)) {
@@ -660,13 +680,17 @@ final class ShipStationShipmentService
             $height = self::positive_float($row['shipping_height_in'] ?? null)
                 ?? self::woo_dimension_to_inches((string) $product->get_height());
 
+            $package_items[] = [
+                'item_id' => (int) $item->get_id(),
+                'quantity' => $qty,
+            ];
+
             if ($weight_oz !== null) {
                 $total_oz += ($weight_oz * $qty);
             }
             $max_length = max($max_length, (float) ($length ?? 0));
             $max_width = max($max_width, (float) ($width ?? 0));
             $max_height = max($max_height, (float) ($height ?? 0));
-            $descriptions[] = $product->get_name();
         }
 
         return [[
@@ -685,8 +709,41 @@ final class ShipStationShipmentService
                 'currency' => get_woocommerce_currency() ? strtolower((string) get_woocommerce_currency()) : 'usd',
                 'amount' => ShipStationOptions::insurance_mode() === 'declared_value' ? self::round_decimal($insured_value, 2) : 0,
             ],
-            'description' => implode(', ', array_slice(array_filter($descriptions), 0, 3)),
+            'items' => $package_items,
         ]];
+    }
+
+    /**
+     * The package editor mirrors WooCommerce Shipping by showing order line
+     * items under each package. These rows are for admin clarity and label
+     * history only; ShipStation receives only the package dimensions, weight,
+     * value, and service choices.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function order_items_for_packages(WC_Order $order): array
+    {
+        $rows = [];
+        foreach ($order->get_items('line_item') as $item) {
+            if (!($item instanceof WC_Order_Item_Product)) {
+                continue;
+            }
+
+            $product = $item->get_product();
+            $sku = $product instanceof WC_Product ? (string) $product->get_sku() : '';
+            $product_id = $product instanceof WC_Product ? (int) $product->get_id() : (int) $item->get_product_id();
+
+            $rows[] = [
+                'item_id' => (int) $item->get_id(),
+                'product_id' => $product_id,
+                'variation_id' => (int) $item->get_variation_id(),
+                'name' => (string) $item->get_name(),
+                'sku' => $sku,
+                'quantity' => max(0, (int) $item->get_quantity()),
+            ];
+        }
+
+        return $rows;
     }
 
     /**
@@ -915,8 +972,58 @@ final class ShipStationShipmentService
                     'currency' => strtolower(sanitize_text_field((string) ($insured['currency'] ?? 'usd'))),
                     'amount' => self::round_decimal(max(0.0, (float) ($insured['amount'] ?? 0)), 2),
                 ],
-                'description' => sanitize_text_field((string) ($row['description'] ?? '')),
             ];
+        }
+
+        return $packages;
+    }
+
+    /**
+     * @param mixed $input
+     * @param array<int,array<string,mixed>> $order_items
+     * @return array<int,array<int,array{item_id:int,quantity:int}>>
+     */
+    private static function package_item_assignments_from_input($input, array $order_items): array
+    {
+        if (!is_array($input)) {
+            return [];
+        }
+
+        $allowed_item_ids = [];
+        foreach ($order_items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $item_id = absint($item['item_id'] ?? 0);
+            if ($item_id > 0) {
+                $allowed_item_ids[$item_id] = max(0, (int) ($item['quantity'] ?? 0));
+            }
+        }
+
+        $packages = [];
+        foreach ($input as $package_rows) {
+            $package_items = [];
+            if (!is_array($package_rows)) {
+                $packages[] = $package_items;
+                continue;
+            }
+
+            foreach ($package_rows as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $item_id = absint($row['item_id'] ?? 0);
+                $quantity = max(0, (int) ($row['quantity'] ?? 0));
+                if ($item_id <= 0 || $quantity <= 0 || !isset($allowed_item_ids[$item_id])) {
+                    continue;
+                }
+                $package_items[] = [
+                    'item_id' => $item_id,
+                    'quantity' => min($quantity, max(1, $allowed_item_ids[$item_id])),
+                ];
+            }
+
+            $packages[] = $package_items;
         }
 
         return $packages;

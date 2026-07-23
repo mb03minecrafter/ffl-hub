@@ -64,6 +64,25 @@
     return rows;
   }
 
+  function readPackageItems(panel) {
+    var packages = [];
+    panel.querySelectorAll('.fflhub-ss-package-row').forEach(function (row) {
+      var items = [];
+      row.querySelectorAll('[data-package-item-qty]').forEach(function (input) {
+        var itemId = Number(input.dataset.itemId || 0) || 0;
+        var quantity = Number(input.value || 0) || 0;
+        if (itemId > 0 && quantity > 0) {
+          items.push({
+            item_id: itemId,
+            quantity: Math.max(0, Math.floor(quantity))
+          });
+        }
+      });
+      packages.push(items);
+    });
+    return packages;
+  }
+
   function context(panel) {
     if (panel.fflhubShipStationContext) {
       return panel.fflhubShipStationContext;
@@ -154,6 +173,7 @@
     return {
       destination: readAddress(panel, 'destination'),
       packages: readPackages(panel),
+      package_items: readPackageItems(panel),
       ship_date: panel.querySelector('.fflhub-ss-ship-date').value,
       confirmation: panel.querySelector('.fflhub-ss-confirmation').value
     };
@@ -510,6 +530,9 @@
     });
     copy.querySelectorAll('[data-weight-role]').forEach(function (input) {
       input.value = '';
+    });
+    copy.querySelectorAll('[data-package-item-qty]').forEach(function (input) {
+      input.value = '0';
     });
     copy.querySelectorAll('.fflhub-ss-package-preset').forEach(function (select) {
       select.value = '';

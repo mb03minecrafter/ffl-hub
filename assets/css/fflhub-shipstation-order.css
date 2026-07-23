@@ -137,6 +137,62 @@
     grid-column: span 9;
 }
 
+.fflhub-ss-package-items {
+    border: 1px solid #dcdcde;
+    border-radius: 6px;
+    background: #f6f7f7;
+    padding: 10px;
+}
+
+.fflhub-ss-package-items-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.fflhub-ss-package-items-heading strong {
+    color: #1d2327;
+}
+
+.fflhub-ss-package-item-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.fflhub-ss-package-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 76px;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background: #fff;
+    padding: 8px;
+}
+
+.fflhub-ss-package-item-main {
+    min-width: 0;
+}
+
+.fflhub-ss-package-item-main strong,
+.fflhub-ss-package-item-main span {
+    display: block;
+}
+
+.fflhub-ss-package-item-main strong {
+    overflow: hidden;
+    color: #1d2327;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fflhub-ss-package-item label {
+    margin: 0;
+}
+
 .fflhub-ss-total-weight[readonly] {
     background: #f6f7f7;
     border-color: #c3c4c7;
