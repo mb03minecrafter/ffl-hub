@@ -162,6 +162,19 @@
     color: #b32d2e;
 }
 
+.fflhub-ss-message.is-warning {
+    color: #996800;
+}
+
+.fflhub-ss-validation-address {
+    margin: 6px 0;
+    padding: 8px 10px;
+    border-left: 3px solid #72aee6;
+    background: #f6f7f7;
+    color: #1d2327;
+    font-weight: 600;
+}
+
 .fflhub-ss-rate-table td,
 .fflhub-ss-rate-table th {
     vertical-align: top;

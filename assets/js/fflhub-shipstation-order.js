@@ -36,6 +36,14 @@
     return out;
   }
 
+  function writeAddress(panel, group, address) {
+    panel.querySelectorAll('[data-address-group="' + group + '"] [data-field]').forEach(function (field) {
+      if (Object.prototype.hasOwnProperty.call(address || {}, field.dataset.field)) {
+        field.value = address[field.dataset.field] || '';
+      }
+    });
+  }
+
   function readPackages(panel) {
     var rows = [];
     panel.querySelectorAll('.fflhub-ss-package-row').forEach(function (row) {
@@ -155,6 +163,49 @@
     var box = panel.querySelector('.fflhub-ss-message');
     box.textContent = message || '';
     box.className = 'fflhub-ss-message' + (type ? ' is-' + type : '');
+  }
+
+  function setHtmlMessage(panel, html, type) {
+    var box = panel.querySelector('.fflhub-ss-message');
+    box.innerHTML = html || '';
+    box.className = 'fflhub-ss-message' + (type ? ' is-' + type : '');
+  }
+
+  function formatAddress(address) {
+    address = address || {};
+    return [
+      address.company_name || address.name || '',
+      address.address_line1 || '',
+      address.address_line2 || '',
+      [
+        address.city_locality || '',
+        address.state_province || '',
+        address.postal_code || ''
+      ].filter(Boolean).join(', '),
+      address.country_code || ''
+    ].filter(Boolean).join(' | ');
+  }
+
+  function renderValidationResult(panel, data) {
+    data = data || {};
+    var type = data.validation_status === 'validated' ? 'success' : 'warning';
+    var message = data.message || 'Address validation completed.';
+    var html = '<div>' + escapeHtml(message) + '</div>';
+    var recommended = data.recommended_address || null;
+
+    if (recommended) {
+      panel.fflhubShipStationValidatedAddress = recommended;
+      html += '<div class="fflhub-ss-validation-address">' + escapeHtml(formatAddress(recommended)) + '</div>';
+      if (data.validation_status === 'validated') {
+        html += '<button type="button" class="button button-small fflhub-ss-apply-address">Apply suggested address</button>';
+      }
+    }
+
+    if (data.validation_status === 'unavailable') {
+      html += '<div class="description">This does not block rates or label purchase. Labels are still created with ShipStation address validation disabled.</div>';
+    }
+
+    setHtmlMessage(panel, html, type);
   }
 
   function setLoading(panel, loading) {
@@ -416,9 +467,18 @@
           event.preventDefault();
           setLoading(panel, true);
           request(panel, '/validate-address', { address: readAddress(panel, 'destination') })
-            .then(function () { setMessage(panel, 'ShipStation address validation returned successfully.', 'success'); })
+            .then(function (data) { renderValidationResult(panel, data); })
             .catch(function (error) { setMessage(panel, error.message, 'error'); })
             .finally(function () { setLoading(panel, false); });
+        }
+
+        if (event.target.matches('.fflhub-ss-apply-address')) {
+          event.preventDefault();
+          if (panel.fflhubShipStationValidatedAddress) {
+            writeAddress(panel, 'destination', panel.fflhubShipStationValidatedAddress);
+            invalidateRates(panel);
+            setMessage(panel, 'Suggested address applied. Refresh rates before purchasing.', 'success');
+          }
         }
 
         if (event.target.matches('.fflhub-ss-get-rates')) {

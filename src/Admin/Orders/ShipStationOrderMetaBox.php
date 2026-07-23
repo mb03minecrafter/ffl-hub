@@ -157,7 +157,7 @@ final class ShipStationOrderMetaBox
                 <section class="fflhub-ss-card">
                     <div class="fflhub-ss-card-title-row">
                         <h4><?php esc_html_e('Ship To', 'ffl-hub'); ?></h4>
-                        <button type="button" class="button fflhub-ss-validate-address"><?php esc_html_e('Validate', 'ffl-hub'); ?></button>
+                        <button type="button" class="button fflhub-ss-validate-address"><?php esc_html_e('Validate Optional', 'ffl-hub'); ?></button>
                     </div>
                     <?php $this->render_address_fields('destination', (array) ($context['destination'] ?? [])); ?>
                 </section>

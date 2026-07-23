@@ -121,7 +121,85 @@ final class ShipStationShipmentService
             );
         }
 
-        return $this->client->validate_address($address);
+        $result = $this->client->validate_address($address);
+        if (is_wp_error($result)) {
+            return $this->address_validation_error_response($result, $address);
+        }
+
+        return $this->normalize_address_validation_result($result, $address);
+    }
+
+    /**
+     * @param array<string,mixed> $result
+     * @param array<string,mixed> $original_address
+     * @return array<string,mixed>
+     */
+    private function normalize_address_validation_result(array $result, array $original_address): array
+    {
+        $entries = isset($result['validated_addresses']) && is_array($result['validated_addresses'])
+            ? $result['validated_addresses']
+            : [];
+        $entry = is_array($entries[0] ?? null) ? $entries[0] : [];
+        $status = strtolower(trim((string) ($entry['status'] ?? $entry['validation_status'] ?? 'verified')));
+        $recommended = self::address_candidate_from_validation($entry, $original_address);
+        $messages = self::validation_messages($entry['messages'] ?? $entry['validation_messages'] ?? []);
+
+        $is_valid = !in_array($status, ['error', 'invalid', 'unverified', 'failed'], true);
+        if (empty($messages)) {
+            $messages[] = $is_valid
+                ? 'ShipStation address validation completed.'
+                : 'ShipStation could not fully validate this address.';
+        }
+
+        return [
+            'validation_available' => true,
+            'validation_status' => $is_valid ? 'validated' : 'failed',
+            'valid' => $is_valid,
+            'message' => $messages[0],
+            'messages' => $messages,
+            'original_address' => $original_address,
+            'recommended_address' => $recommended,
+            'shipstation_status' => $status,
+            'raw' => $result,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $address
+     * @return array<string,mixed>
+     */
+    private function address_validation_error_response(WP_Error $error, array $address): array
+    {
+        $data = $error->get_error_data();
+        $data = is_array($data) ? $data : [];
+        $status = (int) ($data['status'] ?? 0);
+        $messages = [$error->get_error_message()];
+        foreach ((array) ($data['errors'] ?? []) as $entry) {
+            if (is_array($entry) && trim((string) ($entry['message'] ?? '')) !== '') {
+                $messages[] = trim((string) $entry['message']);
+            }
+        }
+        $messages = array_values(array_unique(array_filter($messages)));
+
+        $is_unavailable = in_array($status, [0, 401, 402, 403, 404], true) || $status >= 500;
+        $message = $is_unavailable
+            ? 'ShipStation address validation is unavailable for this account/API mode. You can still get rates and buy labels with the address shown.'
+            : ($messages[0] ?? 'ShipStation could not validate this address.');
+
+        return [
+            'validation_available' => !$is_unavailable,
+            'validation_status' => $is_unavailable ? 'unavailable' : 'failed',
+            'valid' => false,
+            'message' => $message,
+            'messages' => $messages,
+            'original_address' => $address,
+            'recommended_address' => $address,
+            'shipstation_error' => [
+                'code' => $error->get_error_code(),
+                'status' => $status,
+                'request_id' => (string) ($data['request_id'] ?? ''),
+            ],
+        ];
     }
 
     /**
@@ -730,6 +808,59 @@ final class ShipStationShipmentService
                 'unknown'
             ),
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $entry
+     * @param array<string,mixed> $fallback
+     * @return array<string,mixed>
+     */
+    private static function address_candidate_from_validation(array $entry, array $fallback): array
+    {
+        foreach (['matched_address', 'normalized_address', 'recommended_address', 'address'] as $key) {
+            if (isset($entry[$key]) && is_array($entry[$key])) {
+                return self::address_from_input(array_merge($fallback, $entry[$key]));
+            }
+        }
+
+        $has_address_fields = false;
+        foreach (['address_line1', 'city_locality', 'state_province', 'postal_code'] as $key) {
+            if (trim((string) ($entry[$key] ?? '')) !== '') {
+                $has_address_fields = true;
+                break;
+            }
+        }
+
+        return $has_address_fields ? self::address_from_input(array_merge($fallback, $entry)) : $fallback;
+    }
+
+    /**
+     * @param mixed $value
+     * @return string[]
+     */
+    private static function validation_messages($value): array
+    {
+        if (!is_array($value)) {
+            $value = [$value];
+        }
+
+        $messages = [];
+        foreach ($value as $entry) {
+            if (is_array($entry)) {
+                $message = trim((string) ($entry['message'] ?? $entry['detail'] ?? $entry['code'] ?? ''));
+                if ($message !== '') {
+                    $messages[] = $message;
+                }
+                continue;
+            }
+
+            $message = trim((string) $entry);
+            if ($message !== '') {
+                $messages[] = $message;
+            }
+        }
+
+        return array_values(array_unique($messages));
     }
 
     /**
