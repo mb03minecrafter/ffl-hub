@@ -127,14 +127,14 @@
 
 .fflhub-ss-package-row {
     position: relative;
-    grid-template-columns: repeat(6, minmax(80px, 1fr));
+    grid-template-columns: repeat(7, minmax(80px, 1fr));
     border: 1px solid #e0e0e0;
     border-radius: 6px;
     padding: 10px;
 }
 
 .fflhub-ss-package-row .fflhub-ss-wide {
-    grid-column: span 5;
+    grid-column: span 6;
 }
 
 .fflhub-ss-remove-package {

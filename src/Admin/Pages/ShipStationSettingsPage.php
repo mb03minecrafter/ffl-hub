@@ -165,6 +165,14 @@ final class ShipStationSettingsPage
                 </section>
 
                 <section class="fflhub-ss-card">
+                    <h2><?php esc_html_e('Package Presets', 'ffl-hub'); ?></h2>
+                    <p class="description">
+                        <?php esc_html_e('Define reusable boxes and envelopes for the order label panel. Weight is optional; order/product weight remains the default unless a preset is applied to an empty package row.', 'ffl-hub'); ?>
+                    </p>
+                    <?php $this->render_package_presets_table(ShipStationOptions::package_presets()); ?>
+                </section>
+
+                <section class="fflhub-ss-card">
                     <div class="fflhub-ss-card-head">
                         <div>
                             <h2><?php esc_html_e('Connected Carriers', 'ffl-hub'); ?></h2>
@@ -269,6 +277,58 @@ final class ShipStationSettingsPage
     }
 
     /**
+     * @param array<int,array<string,mixed>> $presets
+     */
+    private function render_package_presets_table(array $presets): void
+    {
+        echo '<table class="widefat striped fflhub-ss-package-presets">';
+        echo '<thead><tr>';
+        echo '<th>Name</th><th>Kind</th><th>ShipStation Code</th><th>Length</th><th>Width</th><th>Height</th><th>Default Weight oz</th><th>Remove</th>';
+        echo '</tr></thead><tbody>';
+
+        $rows = array_values($presets);
+        for ($i = 0; $i < 3; $i++) {
+            $rows[] = [];
+        }
+
+        foreach ($rows as $index => $preset) {
+            $preset = is_array($preset) ? $preset : [];
+            $name = (string) ($preset['name'] ?? '');
+            $id = (string) ($preset['id'] ?? '');
+            $kind = (string) ($preset['kind'] ?? 'package');
+            $code = (string) ($preset['package_code'] ?? 'package');
+            $length = (string) ($preset['length'] ?? '');
+            $width = (string) ($preset['width'] ?? '');
+            $height = (string) ($preset['height'] ?? '');
+            $weight_oz = (string) ($preset['weight_oz'] ?? '');
+
+            echo '<tr>';
+            echo '<td><input type="hidden" name="shipstation[package_presets][' . esc_attr((string) $index) . '][id]" value="' . esc_attr($id) . '" />';
+            echo '<input class="regular-text" type="text" name="shipstation[package_presets][' . esc_attr((string) $index) . '][name]" value="' . esc_attr($name) . '" placeholder="Small Box" /></td>';
+            echo '<td><select name="shipstation[package_presets][' . esc_attr((string) $index) . '][kind]">';
+            foreach (['package' => 'Package', 'envelope' => 'Envelope'] as $value => $label) {
+                echo '<option value="' . esc_attr($value) . '" ' . selected($kind, $value, false) . '>' . esc_html($label) . '</option>';
+            }
+            echo '</select></td>';
+            echo '<td><input type="text" name="shipstation[package_presets][' . esc_attr((string) $index) . '][package_code]" value="' . esc_attr($code) . '" placeholder="package" /></td>';
+            echo '<td><input type="number" min="0" step="0.01" name="shipstation[package_presets][' . esc_attr((string) $index) . '][length]" value="' . esc_attr($length) . '" /></td>';
+            echo '<td><input type="number" min="0" step="0.01" name="shipstation[package_presets][' . esc_attr((string) $index) . '][width]" value="' . esc_attr($width) . '" /></td>';
+            echo '<td><input type="number" min="0" step="0.01" name="shipstation[package_presets][' . esc_attr((string) $index) . '][height]" value="' . esc_attr($height) . '" /></td>';
+            echo '<td><input type="number" min="0" step="0.01" name="shipstation[package_presets][' . esc_attr((string) $index) . '][weight_oz]" value="' . esc_attr($weight_oz) . '" /></td>';
+            echo '<td>';
+            if ($name !== '' || $id !== '') {
+                echo '<label><input type="checkbox" name="shipstation[package_presets][' . esc_attr((string) $index) . '][remove]" value="1" /> Remove</label>';
+            } else {
+                echo '<span class="description">New</span>';
+            }
+            echo '</td>';
+            echo '</tr>';
+        }
+
+        echo '</tbody></table>';
+    }
+
+    /**
      * @param array<string,mixed> $settings
      */
     private function render_origin_fields(array $settings): void
@@ -347,6 +407,9 @@ final class ShipStationSettingsPage
             .fflhub-ss-card h2{margin-top:0}
             .fflhub-ss-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
             .fflhub-ss-carriers td,.fflhub-ss-carriers th{vertical-align:top}
+            .fflhub-ss-package-presets input[type="number"]{width:86px}
+            .fflhub-ss-package-presets input[type="text"]{width:100%;max-width:220px}
+            .fflhub-ss-package-presets td,.fflhub-ss-package-presets th{vertical-align:middle}
         </style>
         <?php
     }

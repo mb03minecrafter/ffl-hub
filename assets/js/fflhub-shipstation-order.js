@@ -56,6 +56,61 @@
     return rows;
   }
 
+  function context(panel) {
+    if (panel.fflhubShipStationContext) {
+      return panel.fflhubShipStationContext;
+    }
+
+    try {
+      panel.fflhubShipStationContext = JSON.parse(panel.dataset.context || '{}') || {};
+    } catch (error) {
+      panel.fflhubShipStationContext = {};
+    }
+
+    return panel.fflhubShipStationContext;
+  }
+
+  function packagePreset(panel, presetId) {
+    var presets = context(panel).package_presets || [];
+    for (var i = 0; i < presets.length; i++) {
+      if (String(presets[i].id || '') === String(presetId || '')) {
+        return presets[i];
+      }
+    }
+    return null;
+  }
+
+  function field(row, name) {
+    return row.querySelector('[data-field="' + name + '"]');
+  }
+
+  function setField(row, name, value) {
+    var input = field(row, name);
+    if (input) {
+      input.value = value || '';
+    }
+  }
+
+  function applyPackagePreset(panel, select) {
+    var preset = packagePreset(panel, select.value);
+    var row = select.closest('.fflhub-ss-package-row');
+    if (!preset || !row) {
+      return;
+    }
+
+    setField(row, 'package_code', preset.package_code || 'package');
+    setField(row, 'dimensions.length', preset.length || '');
+    setField(row, 'dimensions.width', preset.width || '');
+    setField(row, 'dimensions.height', preset.height || '');
+
+    var weight = field(row, 'weight.value');
+    if (weight && Number(weight.value || 0) <= 0 && Number(preset.weight_oz || 0) > 0) {
+      weight.value = preset.weight_oz;
+    }
+
+    invalidateRates(panel);
+  }
+
   function buildPayload(panel) {
     return {
       destination: readAddress(panel, 'destination'),
@@ -259,6 +314,9 @@
         input.value = '';
       }
     });
+    copy.querySelectorAll('.fflhub-ss-package-preset').forEach(function (select) {
+      select.value = '';
+    });
     list.appendChild(copy);
     invalidateRates(panel);
   }
@@ -277,6 +335,12 @@
       panel.addEventListener('input', function (event) {
         if (event.target.matches('input,select')) {
           invalidateRates(panel);
+        }
+      });
+
+      panel.addEventListener('change', function (event) {
+        if (event.target.matches('.fflhub-ss-package-preset')) {
+          applyPackagePreset(panel, event.target);
         }
       });
 

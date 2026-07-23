@@ -47,6 +47,7 @@ final class ShipStationOptions
             'confirmation' => 'delivery',
             'insurance_mode' => 'none',
             'after_purchase_status' => '',
+            'package_presets' => self::default_package_presets(),
             'enabled_carrier_ids' => [],
             'firearm_carrier_ids' => [],
         ];
@@ -106,6 +107,7 @@ final class ShipStationOptions
             ),
             'insurance_mode' => self::choice((string) ($input['insurance_mode'] ?? 'none'), ['none', 'declared_value'], 'none'),
             'after_purchase_status' => self::text($input['after_purchase_status'] ?? ''),
+            'package_presets' => self::sanitize_package_presets($input['package_presets'] ?? []),
             'enabled_carrier_ids' => self::string_list($input['enabled_carrier_ids'] ?? []),
             'firearm_carrier_ids' => self::string_list($input['firearm_carrier_ids'] ?? []),
         ];
@@ -279,6 +281,14 @@ final class ShipStationOptions
     }
 
     /**
+     * @return array<int,array{id:string,name:string,kind:string,package_code:string,length:string,width:string,height:string,weight_oz:string}>
+     */
+    public static function package_presets(): array
+    {
+        return self::sanitize_package_presets(self::get_all()['package_presets'] ?? []);
+    }
+
+    /**
      * @return string[]
      */
     public static function enabled_carrier_ids(): array
@@ -349,6 +359,116 @@ final class ShipStationOptions
         return $mode === 'production'
             ? 'FFLHUB_SHIPSTATION_PRODUCTION_API_KEY'
             : 'FFLHUB_SHIPSTATION_SANDBOX_API_KEY';
+    }
+
+    /**
+     * @return array<int,array{id:string,name:string,kind:string,package_code:string,length:string,width:string,height:string,weight_oz:string}>
+     */
+    private static function default_package_presets(): array
+    {
+        return [
+            [
+                'id' => 'generic_package',
+                'name' => 'Generic Package',
+                'kind' => 'package',
+                'package_code' => 'package',
+                'length' => '',
+                'width' => '',
+                'height' => '',
+                'weight_oz' => '',
+            ],
+            [
+                'id' => 'generic_envelope',
+                'name' => 'Generic Envelope',
+                'kind' => 'envelope',
+                'package_code' => 'package',
+                'length' => '',
+                'width' => '',
+                'height' => '',
+                'weight_oz' => '',
+            ],
+        ];
+    }
+
+    /**
+     * @param mixed $value
+     * @return array<int,array{id:string,name:string,kind:string,package_code:string,length:string,width:string,height:string,weight_oz:string}>
+     */
+    private static function sanitize_package_presets($value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $out = [];
+        $used_ids = [];
+        foreach ($value as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            if (!empty($row['remove'])) {
+                continue;
+            }
+
+            $name = self::text($row['name'] ?? '');
+            $length = self::decimal_text($row['length'] ?? '');
+            $width = self::decimal_text($row['width'] ?? '');
+            $height = self::decimal_text($row['height'] ?? '');
+            $weight_oz = self::decimal_text($row['weight_oz'] ?? '');
+            if ($name === '' && $length === '' && $width === '' && $height === '' && $weight_oz === '') {
+                continue;
+            }
+            if ($name === '') {
+                $name = 'Package Preset';
+            }
+
+            $id = sanitize_key((string) ($row['id'] ?? ''));
+            if ($id === '') {
+                $id = sanitize_key($name);
+            }
+            if ($id === '') {
+                $id = 'package_preset';
+            }
+
+            $base_id = $id;
+            $suffix = 2;
+            while (isset($used_ids[$id])) {
+                $id = $base_id . '_' . $suffix;
+                $suffix++;
+            }
+            $used_ids[$id] = true;
+
+            $out[] = [
+                'id' => $id,
+                'name' => $name,
+                'kind' => self::choice((string) ($row['kind'] ?? 'package'), ['package', 'envelope'], 'package'),
+                'package_code' => self::text($row['package_code'] ?? 'package') ?: 'package',
+                'length' => $length,
+                'width' => $width,
+                'height' => $height,
+                'weight_oz' => $weight_oz,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function decimal_text($value): string
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return '';
+        }
+
+        $number = (float) preg_replace('/[^0-9.]/', '', $value);
+        if ($number <= 0.0) {
+            return '';
+        }
+
+        return rtrim(rtrim(number_format($number, 2, '.', ''), '0'), '.');
     }
 
     /**

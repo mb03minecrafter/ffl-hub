@@ -9,9 +9,10 @@ FFL Hub includes an admin-only ShipStation API v2 label workflow for individual 
 3. Choose `sandbox` or `production`.
 4. Add the sandbox and/or production API key. The selected mode controls which key is used for carrier refreshes, rates, and label purchases.
 5. Enter the default origin address.
-6. Save, then click **Refresh / Test API Connection** to cache connected carrier accounts.
-7. Enable carrier accounts for ordinary shipments.
-8. Explicitly check firearm-approved carriers for FFL shipments.
+6. Define package/envelope presets for common boxes, padded mailers, and envelopes.
+7. Save, then click **Refresh / Test API Connection** to cache connected carrier accounts.
+8. Enable carrier accounts for ordinary shipments.
+9. Explicitly check firearm-approved carriers for FFL shipments.
 
 API key precedence:
 
@@ -30,7 +31,7 @@ On a WooCommerce order, use **FFL Hub - ShipStation Labels**:
 1. Review the ship-from address. This is read-only on the order screen and is managed globally under **FFL Hub > ShipStation Labels**.
 2. Review the ship-to address.
 3. For FFL orders, confirm the receiving FFL premise address is being used.
-4. Enter package weight and dimensions. FFL Hub starts with product-state shipping data when available, but missing dimensions must be entered manually.
+4. Pick a package/envelope preset when useful, then confirm package weight and dimensions. FFL Hub starts with product-state shipping data when available, but missing dimensions must be entered manually.
 5. Click **Get Rates**.
 6. Compare all valid rates. Totals include shipping, confirmation, insurance, and other charges.
 7. Select one rate and click **Purchase Selected Label**.

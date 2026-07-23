@@ -62,6 +62,7 @@ final class ShipStationShipmentService
             'origin' => ShipStationOptions::origin_address(),
             'destination' => $destination,
             'packages' => $this->default_packages_from_order($order),
+            'package_presets' => ShipStationOptions::package_presets(),
             'settings' => [
                 'label_format' => ShipStationOptions::label_format(),
                 'label_layout' => ShipStationOptions::label_layout(),

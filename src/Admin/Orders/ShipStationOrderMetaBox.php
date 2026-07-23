@@ -108,6 +108,7 @@ final class ShipStationOrderMetaBox
         $order_id = (int) $order->get_id();
         $settings = isset($context['settings']) && is_array($context['settings']) ? $context['settings'] : [];
         $labels = isset($context['labels']) && is_array($context['labels']) ? $context['labels'] : [];
+        $package_presets = isset($context['package_presets']) && is_array($context['package_presets']) ? $context['package_presets'] : [];
         ?>
         <div
             class="fflhub-ss-panel"
@@ -169,7 +170,7 @@ final class ShipStationOrderMetaBox
                 </div>
                 <div class="fflhub-ss-package-list">
                     <?php foreach ((array) ($context['packages'] ?? []) as $index => $package) : ?>
-                        <?php $this->render_package_row((int) $index, is_array($package) ? $package : []); ?>
+                        <?php $this->render_package_row((int) $index, is_array($package) ? $package : [], $package_presets); ?>
                     <?php endforeach; ?>
                 </div>
             </section>
@@ -325,13 +326,27 @@ final class ShipStationOrderMetaBox
 
     /**
      * @param array<string,mixed> $package
+     * @param array<int,array<string,mixed>> $presets
      */
-    private function render_package_row(int $index, array $package): void
+    private function render_package_row(int $index, array $package, array $presets): void
     {
         $weight = isset($package['weight']) && is_array($package['weight']) ? $package['weight'] : [];
         $dims = isset($package['dimensions']) && is_array($package['dimensions']) ? $package['dimensions'] : [];
         $insured = isset($package['insured_value']) && is_array($package['insured_value']) ? $package['insured_value'] : [];
         echo '<div class="fflhub-ss-package-row" data-package-index="' . esc_attr((string) $index) . '">';
+        echo '<label><span>Preset</span><select class="fflhub-ss-package-preset"><option value="">Manual</option>';
+        foreach ($presets as $preset) {
+            if (!is_array($preset)) {
+                continue;
+            }
+            $id = (string) ($preset['id'] ?? '');
+            $name = (string) ($preset['name'] ?? '');
+            if ($id === '' || $name === '') {
+                continue;
+            }
+            echo '<option value="' . esc_attr($id) . '">' . esc_html($name) . '</option>';
+        }
+        echo '</select></label>';
         echo '<label><span>Package</span><input data-field="package_code" value="' . esc_attr((string) ($package['package_code'] ?? 'package')) . '" /></label>';
         echo '<label><span>Weight oz</span><input type="number" step="0.01" min="0" data-field="weight.value" value="' . esc_attr((string) ($weight['value'] ?? '')) . '" /></label>';
         echo '<label><span>Length</span><input type="number" step="0.01" min="0" data-field="dimensions.length" value="' . esc_attr((string) ($dims['length'] ?? '')) . '" /></label>';
