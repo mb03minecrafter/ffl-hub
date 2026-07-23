@@ -88,7 +88,8 @@ final class ShipStationOrderMeta
         array $invalid_rates,
         string $shipment_id,
         string $rate_request_id,
-        array $package_items = []
+        array $package_items = [],
+        array $duplicate_rate_groups = []
     ): void {
         $payload = [
             'created_at' => current_time('mysql', true),
@@ -97,6 +98,7 @@ final class ShipStationOrderMeta
             'shipment_id' => $shipment_id,
             'rate_request_id' => $rate_request_id,
             'package_items' => $package_items,
+            'duplicate_rate_groups' => $duplicate_rate_groups,
             'rates' => $rates,
             'invalid_rates' => $invalid_rates,
         ];

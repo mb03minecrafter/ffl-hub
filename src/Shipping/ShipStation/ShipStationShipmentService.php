@@ -8,6 +8,7 @@ use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Product\State\ProductStateStore;
+use FFLHub\Util\DebugLogUtil;
 use WC_Order;
 use WC_Order_Item_Product;
 use WC_Product;
@@ -278,6 +279,10 @@ final class ShipStationShipmentService
             $input['package_items'] ?? [],
             isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : []
         );
+        $duplicate_rate_groups = isset($normalized['duplicate_rate_groups']) && is_array($normalized['duplicate_rate_groups'])
+            ? $normalized['duplicate_rate_groups']
+            : [];
+        $this->log_duplicate_rate_groups($order, $duplicate_rate_groups);
         ShipStationOrderMeta::save_pending_rates(
             $order,
             $shipment,
@@ -286,7 +291,8 @@ final class ShipStationShipmentService
             $normalized['invalid_rates'],
             (string) ($normalized['shipment_id'] ?? ''),
             (string) ($response['_fflhub_request_id'] ?? ''),
-            $package_items
+            $package_items,
+            $duplicate_rate_groups
         );
 
         $result = [
@@ -295,6 +301,7 @@ final class ShipStationShipmentService
             'request_id' => (string) ($response['_fflhub_request_id'] ?? ''),
             'rates' => $normalized['rates'],
             'invalid_rates' => $normalized['invalid_rates'],
+            'duplicate_rate_groups' => $duplicate_rate_groups,
             'shipment' => $shipment,
             'package_items' => $package_items,
         ];
@@ -748,7 +755,7 @@ final class ShipStationShipmentService
 
     /**
      * @param mixed $rates_response
-     * @return array{shipment_id:string,rates:array<int,array<string,mixed>>,invalid_rates:array<int,array<string,mixed>>}
+     * @return array{shipment_id:string,rates:array<int,array<string,mixed>>,invalid_rates:array<int,array<string,mixed>>,duplicate_rate_groups:array<int,array<string,mixed>>}
      */
     public function normalize_rate_response(array $rates_response): array
     {
@@ -768,7 +775,8 @@ final class ShipStationShipmentService
                 }
             }
         }
-        $normalized_rates = self::dedupe_equivalent_rates($normalized_rates);
+        $duplicate_rate_groups = [];
+        $normalized_rates = self::dedupe_equivalent_rates($normalized_rates, $duplicate_rate_groups);
 
         usort($normalized_rates, static function (array $a, array $b): int {
             $by_total = ((float) ($a['total_amount'] ?? 0)) <=> ((float) ($b['total_amount'] ?? 0));
@@ -797,6 +805,7 @@ final class ShipStationShipmentService
             'shipment_id' => $shipment_id,
             'rates' => $normalized_rates,
             'invalid_rates' => $invalid_rates,
+            'duplicate_rate_groups' => $duplicate_rate_groups,
         ];
     }
 
@@ -848,12 +857,14 @@ final class ShipStationShipmentService
      * rate to buy, but do not make the admin pick between duplicate cards.
      *
      * @param array<int,array<string,mixed>> $rates
+     * @param array<int,array<string,mixed>> $duplicate_groups
      * @return array<int,array<string,mixed>>
      */
-    private static function dedupe_equivalent_rates(array $rates): array
+    private static function dedupe_equivalent_rates(array $rates, array &$duplicate_groups = []): array
     {
         $seen = [];
         $unique = [];
+        $duplicate_groups = [];
 
         foreach ($rates as $rate) {
             if (!is_array($rate)) {
@@ -862,14 +873,117 @@ final class ShipStationShipmentService
 
             $key = self::equivalent_rate_key($rate);
             if (isset($seen[$key])) {
+                $group_index = $seen[$key]['group_index'];
+                if ($group_index === null) {
+                    $group_index = count($duplicate_groups);
+                    $seen[$key]['group_index'] = $group_index;
+                    $duplicate_groups[$group_index] = self::duplicate_rate_group_seed($seen[$key]['rate']);
+                }
+                $duplicate_groups[$group_index]['duplicate_rate_ids'][] = (string) ($rate['rate_id'] ?? '');
+                $duplicate_groups[$group_index]['duplicates'][] = self::duplicate_rate_summary($rate, $seen[$key]['rate']);
                 continue;
             }
 
-            $seen[$key] = true;
+            $seen[$key] = [
+                'rate' => $rate,
+                'group_index' => null,
+            ];
             $unique[] = $rate;
         }
 
         return $unique;
+    }
+
+    /**
+     * @param array<string,mixed> $rate
+     * @return array<string,mixed>
+     */
+    private static function duplicate_rate_group_seed(array $rate): array
+    {
+        return [
+            'kept_rate_id' => (string) ($rate['rate_id'] ?? ''),
+            'duplicate_rate_ids' => [],
+            'carrier_id' => (string) ($rate['carrier_id'] ?? ''),
+            'carrier_code' => (string) ($rate['carrier_code'] ?? ''),
+            'carrier_nickname' => (string) ($rate['carrier_nickname'] ?? ''),
+            'carrier_friendly_name' => (string) ($rate['carrier_friendly_name'] ?? ''),
+            'service_code' => (string) ($rate['service_code'] ?? ''),
+            'service_type' => (string) ($rate['service_type'] ?? ''),
+            'package_type' => (string) ($rate['package_type'] ?? ''),
+            'total_amount' => (string) ($rate['total_amount'] ?? ''),
+            'shipping_amount' => (string) ($rate['shipping_amount'] ?? ''),
+            'delivery_days' => $rate['delivery_days'] ?? null,
+            'estimated_delivery_date' => (string) ($rate['estimated_delivery_date'] ?? ''),
+            'duplicates' => [],
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $duplicate
+     * @param array<string,mixed> $kept
+     * @return array<string,mixed>
+     */
+    private static function duplicate_rate_summary(array $duplicate, array $kept): array
+    {
+        return [
+            'rate_id' => (string) ($duplicate['rate_id'] ?? ''),
+            'raw_differences' => self::raw_rate_differences($kept, $duplicate),
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $kept
+     * @param array<string,mixed> $duplicate
+     * @return array<int,array<string,string>>
+     */
+    private static function raw_rate_differences(array $kept, array $duplicate): array
+    {
+        $kept_raw = is_array($kept['raw'] ?? null) ? $kept['raw'] : [];
+        $duplicate_raw = is_array($duplicate['raw'] ?? null) ? $duplicate['raw'] : [];
+        if (empty($kept_raw) && empty($duplicate_raw)) {
+            return [];
+        }
+
+        $keys = array_values(array_unique(array_merge(array_keys($kept_raw), array_keys($duplicate_raw))));
+        sort($keys);
+
+        $diffs = [];
+        foreach ($keys as $key) {
+            $key = (string) $key;
+            $kept_value = $kept_raw[$key] ?? null;
+            $duplicate_value = $duplicate_raw[$key] ?? null;
+            if (wp_json_encode($kept_value) === wp_json_encode($duplicate_value)) {
+                continue;
+            }
+
+            $diffs[] = [
+                'field' => $key,
+                'kept' => self::debug_value($kept_value),
+                'duplicate' => self::debug_value($duplicate_value),
+            ];
+
+            if (count($diffs) >= 20) {
+                break;
+            }
+        }
+
+        return $diffs;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function debug_value($value): string
+    {
+        if (is_scalar($value) || $value === null) {
+            return substr((string) $value, 0, 160);
+        }
+
+        if (is_array($value)) {
+            return '[array:' . count($value) . ']';
+        }
+
+        return '[' . gettype($value) . ']';
     }
 
     /**
@@ -1093,6 +1207,49 @@ final class ShipStationShipmentService
         }
 
         return $packages;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $duplicate_rate_groups
+     */
+    private function log_duplicate_rate_groups(WC_Order $order, array $duplicate_rate_groups): void
+    {
+        if (empty($duplicate_rate_groups)) {
+            return;
+        }
+
+        $duplicate_count = 0;
+        foreach ($duplicate_rate_groups as $group) {
+            if (is_array($group)) {
+                $duplicate_count += count((array) ($group['duplicate_rate_ids'] ?? []));
+            }
+        }
+
+        DebugLogUtil::log_if_ctx(
+            self::shipstation_rate_debug_enabled(),
+            '[ShipStationRates]',
+            'duplicate equivalent rates hidden',
+            [
+                'order_id' => (int) $order->get_id(),
+                'group_count' => count($duplicate_rate_groups),
+                'duplicate_count' => $duplicate_count,
+                'groups' => $duplicate_rate_groups,
+            ],
+            'FFLHUB_DEBUG_SHIPSTATION'
+        );
+    }
+
+    private static function shipstation_rate_debug_enabled(): bool
+    {
+        if (defined('FFLHUB_DEBUG_SHIPSTATION') && (bool) constant('FFLHUB_DEBUG_SHIPSTATION')) {
+            return true;
+        }
+
+        if (defined('WP_DEBUG') && (bool) constant('WP_DEBUG')) {
+            return true;
+        }
+
+        return ShipStationOptions::show_debug_fields();
     }
 
     /**

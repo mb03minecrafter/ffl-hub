@@ -268,14 +268,17 @@
     panel.querySelector('.fflhub-ss-diagnostics-body').innerHTML = '';
   }
 
-  function renderDiagnostics(panel, invalidRates) {
+  function renderDiagnostics(panel, invalidRates, duplicateRateGroups) {
     var target = panel.querySelector('.fflhub-ss-diagnostics-body');
-    if (!invalidRates || !invalidRates.length) {
-      target.innerHTML = '<p>No invalid rates returned.</p>';
+    invalidRates = invalidRates || [];
+    duplicateRateGroups = duplicateRateGroups || [];
+
+    if (!invalidRates.length && !duplicateRateGroups.length) {
+      target.innerHTML = '<p>No invalid or duplicate rates returned.</p>';
       return;
     }
 
-    target.innerHTML = invalidRates.map(function (rate) {
+    var html = invalidRates.map(function (rate) {
       var errors = (rate.error_messages || []).map(function (msg) {
         return '<li>' + escapeHtml(String(msg)) + '</li>';
       }).join('');
@@ -283,6 +286,37 @@
         escapeHtml(rate.carrier_nickname || rate.carrier_code || 'Carrier') +
         '</strong><ul>' + errors + '</ul></div>';
     }).join('');
+
+    if (duplicateRateGroups.length) {
+      html += '<h5>Hidden duplicate rates</h5>';
+      html += duplicateRateGroups.map(function (group) {
+        var duplicateIds = (group.duplicate_rate_ids || []).filter(Boolean).join(', ');
+        var duplicateRows = (group.duplicates || []).map(function (duplicate) {
+          var diffs = (duplicate.raw_differences || []).map(function (diff) {
+            return '<li><code>' + escapeHtml(diff.field || '') + '</code>: kept <code>' +
+              escapeHtml(diff.kept || '') + '</code>, duplicate <code>' +
+              escapeHtml(diff.duplicate || '') + '</code></li>';
+          }).join('');
+          if (!diffs) {
+            diffs = '<li>No raw top-level differences except the rate identity.</li>';
+          }
+          return '<details><summary>Duplicate rate ' + escapeHtml(duplicate.rate_id || '') + '</summary><ul>' + diffs + '</ul></details>';
+        }).join('');
+
+        return '<div class="fflhub-ss-invalid-rate fflhub-ss-duplicate-rate">' +
+          '<strong>' + escapeHtml(group.service_type || group.service_code || 'Service') + '</strong>' +
+          '<p>Kept <code>' + escapeHtml(group.kept_rate_id || '') + '</code>; hidden duplicate(s) <code>' +
+          escapeHtml(duplicateIds || 'none') + '</code>.</p>' +
+          '<dl><div><dt>Carrier</dt><dd>' + escapeHtml(group.carrier_nickname || group.carrier_code || '') + '</dd></div>' +
+          '<div><dt>Service</dt><dd>' + escapeHtml(group.service_code || '') + '</dd></div>' +
+          '<div><dt>Package</dt><dd>' + escapeHtml(group.package_type || '') + '</dd></div>' +
+          '<div><dt>Total</dt><dd>' + money(group.total_amount) + '</dd></div></dl>' +
+          duplicateRows +
+        '</div>';
+      }).join('');
+    }
+
+    target.innerHTML = html;
   }
 
   function sortRates(rates, key) {
@@ -416,7 +450,7 @@
     });
   }
 
-  function renderRates(panel, rates, invalidRates) {
+  function renderRates(panel, rates, invalidRates, duplicateRateGroups) {
     var target = panel.querySelector('.fflhub-ss-rates');
     var currentSort = 'total';
     var currentCarrier = '';
@@ -511,7 +545,7 @@
     }
 
     paint();
-    renderDiagnostics(panel, invalidRates || []);
+    renderDiagnostics(panel, invalidRates || [], duplicateRateGroups || []);
   }
 
   function addPackage(panel) {
@@ -619,7 +653,7 @@
           request(panel, '/rates', buildPayload(panel))
             .then(function (data) {
               panel.dataset.shipmentHash = data.shipment_hash || '';
-              renderRates(panel, data.rates || [], data.invalid_rates || []);
+              renderRates(panel, data.rates || [], data.invalid_rates || [], data.duplicate_rate_groups || []);
               setMessage(panel, 'Rates refreshed. Pick a rate before purchasing.', 'success');
             })
             .catch(function (error) { setMessage(panel, error.message, 'error'); })

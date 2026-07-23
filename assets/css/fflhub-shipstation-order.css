@@ -467,6 +467,35 @@
     padding: 8px 0;
 }
 
+.fflhub-ss-diagnostics-body h5 {
+    margin: 12px 0 4px;
+}
+
+.fflhub-ss-duplicate-rate p {
+    margin: 4px 0 8px;
+}
+
+.fflhub-ss-duplicate-rate dl {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    margin: 8px 0;
+}
+
+.fflhub-ss-duplicate-rate dt {
+    color: #646970;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.fflhub-ss-duplicate-rate dd {
+    margin: 1px 0 0;
+}
+
+.fflhub-ss-duplicate-rate details {
+    margin-top: 6px;
+}
+
 @media (max-width: 1100px) {
     .fflhub-ss-grid,
     .fflhub-ss-address-grid,
