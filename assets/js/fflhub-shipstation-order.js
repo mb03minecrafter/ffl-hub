@@ -240,10 +240,14 @@
     var currentCarrier = '';
     var currentMaxDays = '';
     var carrierOptions = {};
+    panel.fflhubShipStationRatesById = {};
     (rates || []).forEach(function (rate) {
       var key = rate.carrier_id || rate.carrier_code || '';
       if (key) {
         carrierOptions[key] = rate.carrier_nickname || rate.carrier_friendly_name || rate.carrier_code || key;
+      }
+      if (rate.rate_id) {
+        panel.fflhubShipStationRatesById[String(rate.rate_id)] = rate;
       }
     });
 
@@ -443,10 +447,15 @@
             return;
           }
           setLoading(panel, true);
+          var rateId = selected.value;
+          var selectedRate = panel.fflhubShipStationRatesById && panel.fflhubShipStationRatesById[String(rateId)]
+            ? panel.fflhubShipStationRatesById[String(rateId)]
+            : null;
           request(panel, '/purchase', {
-            rate_id: selected.value,
+            rate_id: rateId,
             shipment_hash: panel.dataset.shipmentHash || '',
-            shipment: buildPayload(panel)
+            shipment: buildPayload(panel),
+            selected_rate: selectedRate
           })
             .then(function () {
               setMessage(panel, 'Label purchased. Reloading order panel...', 'success');

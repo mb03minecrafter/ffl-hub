@@ -270,11 +270,27 @@ final class ShipStationShipmentService
             $pending = ShipStationOrderMeta::pending_rates($order);
             $rated = ShipStationOrderMeta::pending_rate($order, $rate_id, $shipment_hash);
             if (!is_array($rated)) {
-                return new WP_Error(
-                    'fflhub_shipstation_stale_rate',
-                    'That rate is stale. Refresh rates before buying a label.',
-                    ['status' => 409]
-                );
+                $selected_rate = isset($input['selected_rate']) && is_array($input['selected_rate']) ? $input['selected_rate'] : [];
+                if ((string) ($selected_rate['rate_id'] ?? '') !== $rate_id) {
+                    return new WP_Error(
+                        'fflhub_shipstation_stale_rate',
+                        'That rate is stale. Refresh rates before buying a label.',
+                        ['status' => 409]
+                    );
+                }
+
+                // Woo order meta can be unavailable between the rate request and label purchase on some admin flows.
+                // The current shipment hash was already rechecked above, so this fallback only preserves label metadata;
+                // ShipStation still validates the selected rate_id when purchasing the label.
+                $rated = $selected_rate;
+                $pending = [
+                    'shipment_hash' => $shipment_hash,
+                    'shipment_snapshot' => $current_shipment,
+                    'shipment_id' => '',
+                    'rate_request_id' => '',
+                    'rates' => [$selected_rate],
+                    'invalid_rates' => [],
+                ];
             }
 
             $payload = [
