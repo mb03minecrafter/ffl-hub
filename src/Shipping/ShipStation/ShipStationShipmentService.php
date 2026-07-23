@@ -520,7 +520,11 @@ final class ShipStationShipmentService
         $errors = array_merge(
             $this->missing_address_fields($origin, 'Ship-from'),
             $this->missing_address_fields($destination, 'Ship-to'),
-            $this->package_validation_errors($packages)
+            $this->package_validation_errors($packages),
+            self::package_assignment_validation_errors(
+                $input,
+                isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : []
+            )
         );
         if (!empty($errors)) {
             return new WP_Error('fflhub_shipstation_shipment_invalid', implode(' ', $errors), ['status' => 400]);
@@ -1014,8 +1018,6 @@ final class ShipStationShipmentService
             'currency' => (string) ($rate['currency'] ?? ''),
             'delivery_days' => $rate['delivery_days'] ?? null,
             'estimated_delivery_date' => (string) ($rate['estimated_delivery_date'] ?? ''),
-            'guaranteed_service' => !empty($rate['guaranteed_service']),
-            'trackable' => !empty($rate['trackable']),
             'warning_messages' => $warnings,
         ]);
     }
@@ -1207,6 +1209,69 @@ final class ShipStationShipmentService
         }
 
         return $packages;
+    }
+
+    /**
+     * The ShipStation API only needs package weight and dimensions, but our
+     * admin workflow should behave like WooCommerce Shipping: every package row
+     * represents actual Woo order item quantities. This prevents accidental
+     * "empty" package rows from being rated or purchased.
+     *
+     * @param array<string,mixed> $input
+     * @param array<int,array<string,mixed>> $order_items
+     * @return string[]
+     */
+    private static function package_assignment_validation_errors(array $input, array $order_items): array
+    {
+        if (!array_key_exists('package_items', $input) || empty($order_items)) {
+            return [];
+        }
+
+        $packages_input = is_array($input['packages'] ?? null) ? $input['packages'] : [];
+        $assignments = self::package_item_assignments_from_input($input['package_items'], $order_items);
+        $errors = [];
+
+        foreach (array_keys($packages_input) as $index) {
+            if (empty($assignments[(int) $index])) {
+                $errors[] = 'Package ' . ((int) $index + 1) . ' must have at least one assigned Woo order item.';
+            }
+        }
+
+        $expected = [];
+        foreach ($order_items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $item_id = absint($item['item_id'] ?? 0);
+            if ($item_id <= 0) {
+                continue;
+            }
+            $expected[$item_id] = max(0, (int) ($item['quantity'] ?? 0));
+        }
+
+        $actual = array_fill_keys(array_keys($expected), 0);
+        foreach ($assignments as $package_items) {
+            foreach ($package_items as $row) {
+                $item_id = absint($row['item_id'] ?? 0);
+                if ($item_id > 0 && isset($actual[$item_id])) {
+                    $actual[$item_id] += max(0, (int) ($row['quantity'] ?? 0));
+                }
+            }
+        }
+
+        foreach ($expected as $item_id => $quantity) {
+            if ((int) ($actual[$item_id] ?? 0) !== (int) $quantity) {
+                $errors[] = sprintf(
+                    'Order item %d must be assigned exactly %d time(s) across packages; currently assigned %d.',
+                    $item_id,
+                    (int) $quantity,
+                    (int) ($actual[$item_id] ?? 0)
+                );
+            }
+        }
+
+        return $errors;
     }
 
     /**
