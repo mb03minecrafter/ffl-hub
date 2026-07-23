@@ -294,6 +294,7 @@ final class ShipStationShipmentService
             }
 
             $payload = [
+                'test_label' => ShipStationOptions::mode() === 'sandbox',
                 'label_format' => ShipStationOptions::label_format(),
                 'label_layout' => ShipStationOptions::label_layout(),
                 'label_download_type' => 'url',

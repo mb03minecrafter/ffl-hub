@@ -219,7 +219,7 @@ final class ShipStationClient
         }
 
         if ($status < 200 || $status >= 300) {
-            return $this->api_error($decoded, $status, $request_id);
+            return $this->api_error($decoded, $status, $request_id, $raw_body);
         }
 
         $decoded['_fflhub_status'] = $status;
@@ -240,7 +240,7 @@ final class ShipStationClient
     /**
      * @param array<string,mixed> $decoded
      */
-    private function api_error(array $decoded, int $status, string $request_id): WP_Error
+    private function api_error(array $decoded, int $status, string $request_id, string $raw_body): WP_Error
     {
         $errors = isset($decoded['errors']) && is_array($decoded['errors'])
             ? $decoded['errors']
@@ -268,6 +268,23 @@ final class ShipStationClient
             $message = (string) $decoded['message'];
         }
 
+        $raw_body = trim($raw_body);
+        if ($raw_body !== '') {
+            $raw_body = substr($raw_body, 0, 500);
+        }
+
+        if ($message === 'ShipStation API request failed.') {
+            $message = 'ShipStation API request failed with HTTP ' . $status . '.';
+        }
+
+        if ($request_id !== '') {
+            $message .= ' Request ID: ' . $request_id . '.';
+        }
+
+        if ($raw_body !== '' && empty($normalized_errors)) {
+            $message .= ' Response: ' . $raw_body;
+        }
+
         return new WP_Error(
             'fflhub_shipstation_api_error',
             $message,
@@ -275,6 +292,7 @@ final class ShipStationClient
                 'status' => $status,
                 'request_id' => $request_id !== '' ? $request_id : (string) ($decoded['request_id'] ?? ''),
                 'errors' => $normalized_errors,
+                'raw_response' => $raw_body,
             ]
         );
     }
