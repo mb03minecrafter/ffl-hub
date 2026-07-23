@@ -85,6 +85,12 @@ final class ShipStationOrderMetaBox
         wp_localize_script('fflhub-shipstation-order', 'FFLHubShipStation', [
             'restRoot' => esc_url_raw(rest_url('fflhub/v1/shipstation/order/')),
             'nonce' => wp_create_nonce('wp_rest'),
+            'carrierLogos' => [
+                'usps' => esc_url_raw(plugins_url('assets/icons/carrier-usps.svg', FFLHUB_PLUGIN_FILE)),
+                'ups' => esc_url_raw(plugins_url('assets/icons/carrier-ups.svg', FFLHUB_PLUGIN_FILE)),
+                'fedex' => esc_url_raw(plugins_url('assets/icons/carrier-fedex.svg', FFLHUB_PLUGIN_FILE)),
+                'dhl' => esc_url_raw(plugins_url('assets/icons/carrier-dhl.svg', FFLHUB_PLUGIN_FILE)),
+            ],
         ]);
     }
 

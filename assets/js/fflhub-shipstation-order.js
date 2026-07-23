@@ -310,6 +310,17 @@
     return { slug: 'generic', label: 'Ship' };
   }
 
+  function carrierLogoHtml(brand) {
+    var logos = (window.FFLHubShipStation && window.FFLHubShipStation.carrierLogos) || {};
+    var url = logos[brand.slug] || '';
+    if (!url) {
+      return escapeHtml(brand.label);
+    }
+
+    return '<img src="' + escapeHtml(url) + '" alt="' + escapeHtml(brand.label) + '" loading="lazy" />' +
+      '<span class="screen-reader-text">' + escapeHtml(brand.label) + '</span>';
+  }
+
   function transitLabel(rate) {
     var days = Number(rate.delivery_days || 0);
     if (days > 0 && days < 9999) {
@@ -347,7 +358,7 @@
       '<input class="fflhub-ss-rate-radio" type="radio" name="fflhub_ss_rate" value="' + escapeHtml(rate.rate_id) + '" />' +
       '<span class="fflhub-ss-rate-select-dot" aria-hidden="true"></span>' +
       '<div class="fflhub-ss-rate-carrier-block">' +
-        '<span class="fflhub-ss-carrier-mark is-' + escapeHtml(brand.slug) + '">' + escapeHtml(brand.label) + '</span>' +
+        '<span class="fflhub-ss-carrier-mark is-' + escapeHtml(brand.slug) + (brand.slug !== 'generic' ? ' has-logo' : '') + '">' + carrierLogoHtml(brand) + '</span>' +
         '<div><strong>' + escapeHtml(carrierName) + '</strong><code>' + escapeHtml(rate.carrier_code || '') + '</code></div>' +
       '</div>' +
       '<div class="fflhub-ss-rate-service-block">' +

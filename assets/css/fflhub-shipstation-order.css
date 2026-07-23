@@ -278,8 +278,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    flex: 0 0 58px;
-    min-height: 34px;
+    flex: 0 0 74px;
+    width: 74px;
+    min-height: 42px;
     border-radius: 6px;
     border: 1px solid #dcdcde;
     background: #f6f7f7;
@@ -288,28 +289,32 @@
     font-weight: 800;
 }
 
+.fflhub-ss-carrier-mark.has-logo {
+    background: #fff;
+}
+
+.fflhub-ss-carrier-mark img {
+    display: block;
+    max-width: 58px;
+    max-height: 28px;
+    width: auto;
+    height: auto;
+}
+
 .fflhub-ss-carrier-mark.is-usps {
     border-color: #b5c9e8;
-    background: #eaf2ff;
-    color: #004b87;
 }
 
 .fflhub-ss-carrier-mark.is-ups {
     border-color: #c8a44d;
-    background: #3b2617;
-    color: #f4c85d;
 }
 
 .fflhub-ss-carrier-mark.is-fedex {
     border-color: #d7c9ea;
-    background: #fbf7ff;
-    color: #4d148c;
 }
 
 .fflhub-ss-carrier-mark.is-dhl {
     border-color: #e1bd34;
-    background: #ffcc00;
-    color: #b11f24;
 }
 
 .fflhub-ss-rate-badges {
