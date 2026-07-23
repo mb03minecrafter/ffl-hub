@@ -50,7 +50,28 @@ final class ShipStationClient
      */
     public function validate_address(array $address)
     {
-        return $this->request('POST', '/v2/addresses/validate', $address);
+        $result = $this->request('POST', '/v2/addresses/validate', [$address]);
+        if (is_wp_error($result)) {
+            return $result;
+        }
+
+        $status = (int) ($result['_fflhub_status'] ?? 0);
+        $request_id = (string) ($result['_fflhub_request_id'] ?? '');
+        unset($result['_fflhub_status'], $result['_fflhub_request_id']);
+
+        $validated = [];
+        foreach ($result as $entry) {
+            if (is_array($entry)) {
+                $validated[] = $entry;
+            }
+        }
+
+        return [
+            'validated_addresses' => $validated,
+            'validation' => $validated[0] ?? [],
+            '_fflhub_status' => $status,
+            '_fflhub_request_id' => $request_id,
+        ];
     }
 
     /**
