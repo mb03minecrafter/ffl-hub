@@ -179,6 +179,50 @@
     };
   }
 
+  function packageAssignmentErrors(panel) {
+    var orderItems = context(panel).order_items || [];
+    if (!orderItems.length) {
+      return [];
+    }
+
+    var packages = readPackageItems(panel);
+    var errors = [];
+    var expected = {};
+    var actual = {};
+
+    packages.forEach(function (items, index) {
+      if (!items.length) {
+        errors.push('Package ' + (index + 1) + ' must have at least one assigned Woo order item.');
+      }
+    });
+
+    orderItems.forEach(function (item) {
+      var itemId = Number(item.item_id || 0) || 0;
+      if (itemId <= 0) {
+        return;
+      }
+      expected[itemId] = Number(item.quantity || 0) || 0;
+      actual[itemId] = 0;
+    });
+
+    packages.forEach(function (items) {
+      items.forEach(function (item) {
+        var itemId = Number(item.item_id || 0) || 0;
+        if (Object.prototype.hasOwnProperty.call(actual, itemId)) {
+          actual[itemId] += Number(item.quantity || 0) || 0;
+        }
+      });
+    });
+
+    Object.keys(expected).forEach(function (itemId) {
+      if (Number(actual[itemId] || 0) !== Number(expected[itemId] || 0)) {
+        errors.push('Order item ' + itemId + ' must be assigned exactly ' + expected[itemId] + ' time(s); currently assigned ' + (actual[itemId] || 0) + '.');
+      }
+    });
+
+    return errors;
+  }
+
   function setMessage(panel, message, type) {
     var box = panel.querySelector('.fflhub-ss-message');
     box.textContent = message || '';
@@ -648,6 +692,12 @@
 
         if (event.target.matches('.fflhub-ss-get-rates')) {
           event.preventDefault();
+          invalidateRates(panel);
+          var packageErrors = packageAssignmentErrors(panel);
+          if (packageErrors.length) {
+            setMessage(panel, packageErrors.join(' '), 'error');
+            return;
+          }
           setLoading(panel, true);
           setMessage(panel, 'Requesting ShipStation rates...', '');
           request(panel, '/rates', buildPayload(panel))
