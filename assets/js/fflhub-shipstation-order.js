@@ -91,6 +91,34 @@
     }
   }
 
+  function numericInput(row, role) {
+    return row.querySelector('[data-weight-role="' + role + '"]');
+  }
+
+  function numberValue(input) {
+    return Number(input && input.value ? input.value : 0) || 0;
+  }
+
+  function formatWeight(value) {
+    var rounded = Math.round(Math.max(0, Number(value || 0)) * 100) / 100;
+    return rounded.toFixed(2).replace(/\.?0+$/, '');
+  }
+
+  function recalcPackageWeight(row) {
+    var total = numericInput(row, 'total');
+    if (!total) {
+      return;
+    }
+
+    total.value = formatWeight(
+      numberValue(numericInput(row, 'content')) + numberValue(numericInput(row, 'package'))
+    );
+  }
+
+  function syncPackageWeights(panel) {
+    panel.querySelectorAll('.fflhub-ss-package-row').forEach(recalcPackageWeight);
+  }
+
   function applyPackagePreset(panel, select) {
     var preset = packagePreset(panel, select.value);
     var row = select.closest('.fflhub-ss-package-row');
@@ -103,15 +131,18 @@
     setField(row, 'dimensions.width', preset.width || '');
     setField(row, 'dimensions.height', preset.height || '');
 
-    var weight = field(row, 'weight.value');
-    if (weight && Number(weight.value || 0) <= 0 && Number(preset.weight_oz || 0) > 0) {
-      weight.value = preset.weight_oz;
+    var packageWeight = numericInput(row, 'package');
+    if (packageWeight) {
+      packageWeight.value = preset.weight_oz || '';
     }
+    recalcPackageWeight(row);
 
     invalidateRates(panel);
   }
 
   function buildPayload(panel) {
+    syncPackageWeights(panel);
+
     return {
       destination: readAddress(panel, 'destination'),
       packages: readPackages(panel),
@@ -314,9 +345,13 @@
         input.value = '';
       }
     });
+    copy.querySelectorAll('[data-weight-role]').forEach(function (input) {
+      input.value = '';
+    });
     copy.querySelectorAll('.fflhub-ss-package-preset').forEach(function (select) {
       select.value = '';
     });
+    recalcPackageWeight(copy);
     list.appendChild(copy);
     invalidateRates(panel);
   }
@@ -334,6 +369,10 @@
     document.querySelectorAll('.fflhub-ss-panel').forEach(function (panel) {
       panel.addEventListener('input', function (event) {
         if (event.target.matches('input,select')) {
+          var row = event.target.closest('.fflhub-ss-package-row');
+          if (row && event.target.matches('[data-weight-role="content"],[data-weight-role="package"]')) {
+            recalcPackageWeight(row);
+          }
           invalidateRates(panel);
         }
       });

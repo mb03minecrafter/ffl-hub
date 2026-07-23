@@ -333,6 +333,7 @@ final class ShipStationOrderMetaBox
         $weight = isset($package['weight']) && is_array($package['weight']) ? $package['weight'] : [];
         $dims = isset($package['dimensions']) && is_array($package['dimensions']) ? $package['dimensions'] : [];
         $insured = isset($package['insured_value']) && is_array($package['insured_value']) ? $package['insured_value'] : [];
+        $content_weight = (string) ($weight['value'] ?? '');
         echo '<div class="fflhub-ss-package-row" data-package-index="' . esc_attr((string) $index) . '">';
         echo '<label><span>Preset</span><select class="fflhub-ss-package-preset"><option value="">Manual</option>';
         foreach ($presets as $preset) {
@@ -348,7 +349,9 @@ final class ShipStationOrderMetaBox
         }
         echo '</select></label>';
         echo '<label><span>Package</span><input data-field="package_code" value="' . esc_attr((string) ($package['package_code'] ?? 'package')) . '" /></label>';
-        echo '<label><span>Weight oz</span><input type="number" step="0.01" min="0" data-field="weight.value" value="' . esc_attr((string) ($weight['value'] ?? '')) . '" /></label>';
+        echo '<label><span>Item oz</span><input type="number" step="0.01" min="0" class="fflhub-ss-content-weight" data-weight-role="content" value="' . esc_attr($content_weight) . '" /></label>';
+        echo '<label><span>Pkg oz</span><input type="number" step="0.01" min="0" class="fflhub-ss-package-weight" data-weight-role="package" value="" /></label>';
+        echo '<label><span>Total oz</span><input type="number" step="0.01" min="0" class="fflhub-ss-total-weight" data-field="weight.value" data-weight-role="total" value="' . esc_attr($content_weight) . '" readonly /></label>';
         echo '<label><span>Length</span><input type="number" step="0.01" min="0" data-field="dimensions.length" value="' . esc_attr((string) ($dims['length'] ?? '')) . '" /></label>';
         echo '<label><span>Width</span><input type="number" step="0.01" min="0" data-field="dimensions.width" value="' . esc_attr((string) ($dims['width'] ?? '')) . '" /></label>';
         echo '<label><span>Height</span><input type="number" step="0.01" min="0" data-field="dimensions.height" value="' . esc_attr((string) ($dims['height'] ?? '')) . '" /></label>';
