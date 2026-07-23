@@ -175,11 +175,6 @@
     font-weight: 600;
 }
 
-.fflhub-ss-rate-table td,
-.fflhub-ss-rate-table th {
-    vertical-align: top;
-}
-
 .fflhub-ss-badge {
     display: inline-block;
     margin: 4px 4px 0 0;
@@ -194,6 +189,173 @@
 .fflhub-ss-badge.is-guaranteed {
     background: #edfaef;
     color: #008a20;
+}
+
+.fflhub-ss-rate-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 12px 0;
+}
+
+.fflhub-ss-rate-card {
+    display: grid;
+    grid-template-columns: 24px minmax(160px, 1.2fr) minmax(220px, 1.8fr) minmax(110px, .8fr) minmax(150px, 1fr);
+    align-items: center;
+    gap: 14px;
+    position: relative;
+    border: 1px solid #dcdcde;
+    border-radius: 8px;
+    background: #fff;
+    padding: 12px;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
+    transition: border-color .12s ease, box-shadow .12s ease, background-color .12s ease;
+}
+
+.fflhub-ss-rate-card:hover,
+.fflhub-ss-rate-card.is-selected {
+    border-color: #2271b1;
+    box-shadow: 0 2px 8px rgba(34, 113, 177, .12);
+}
+
+.fflhub-ss-rate-card.is-selected {
+    background: #f7fbff;
+}
+
+.fflhub-ss-rate-radio {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.fflhub-ss-rate-select-dot {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #8c8f94;
+    border-radius: 50%;
+    background: #fff;
+}
+
+.fflhub-ss-rate-card.is-selected .fflhub-ss-rate-select-dot {
+    border-color: #2271b1;
+    box-shadow: inset 0 0 0 4px #fff;
+    background: #2271b1;
+}
+
+.fflhub-ss-rate-carrier-block,
+.fflhub-ss-rate-service-block,
+.fflhub-ss-rate-transit-block,
+.fflhub-ss-rate-price-block {
+    min-width: 0;
+}
+
+.fflhub-ss-rate-carrier-block {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.fflhub-ss-rate-carrier-block strong,
+.fflhub-ss-rate-service-block strong,
+.fflhub-ss-rate-transit-block span,
+.fflhub-ss-rate-price-block strong {
+    display: block;
+    color: #1d2327;
+}
+
+.fflhub-ss-rate-carrier-block code,
+.fflhub-ss-rate-service-block code,
+.fflhub-ss-rate-transit-block small,
+.fflhub-ss-rate-price-block span {
+    display: block;
+    margin-top: 3px;
+    color: #646970;
+    font-size: 12px;
+}
+
+.fflhub-ss-carrier-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 58px;
+    min-height: 34px;
+    border-radius: 6px;
+    border: 1px solid #dcdcde;
+    background: #f6f7f7;
+    color: #1d2327;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.fflhub-ss-carrier-mark.is-usps {
+    border-color: #b5c9e8;
+    background: #eaf2ff;
+    color: #004b87;
+}
+
+.fflhub-ss-carrier-mark.is-ups {
+    border-color: #c8a44d;
+    background: #3b2617;
+    color: #f4c85d;
+}
+
+.fflhub-ss-carrier-mark.is-fedex {
+    border-color: #d7c9ea;
+    background: #fbf7ff;
+    color: #4d148c;
+}
+
+.fflhub-ss-carrier-mark.is-dhl {
+    border-color: #e1bd34;
+    background: #ffcc00;
+    color: #b11f24;
+}
+
+.fflhub-ss-rate-badges {
+    margin-top: 3px;
+}
+
+.fflhub-ss-rate-price-block {
+    text-align: right;
+}
+
+.fflhub-ss-rate-price-block strong {
+    font-size: 20px;
+}
+
+.fflhub-ss-rate-price-block dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px 8px;
+    margin: 8px 0 0;
+}
+
+.fflhub-ss-rate-price-block dl div {
+    display: flex;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.fflhub-ss-rate-price-block dt,
+.fflhub-ss-rate-price-block dd {
+    margin: 0;
+    color: #646970;
+    font-size: 11px;
+}
+
+.fflhub-ss-rate-warning {
+    grid-column: 2 / -1;
+    border-left: 3px solid #dba617;
+    background: #fff8e5;
+    padding: 6px 8px;
+    color: #5c4200;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.fflhub-ss-purchase {
+    margin-top: 4px;
 }
 
 .fflhub-ss-label-stack {
@@ -257,5 +419,27 @@
 
     .fflhub-ss-package-row .fflhub-ss-wide {
         grid-column: span 2;
+    }
+
+    .fflhub-ss-rate-toolbar,
+    .fflhub-ss-rate-card {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .fflhub-ss-rate-card {
+        grid-template-columns: 24px 1fr;
+    }
+
+    .fflhub-ss-rate-carrier-block,
+    .fflhub-ss-rate-service-block,
+    .fflhub-ss-rate-transit-block,
+    .fflhub-ss-rate-price-block,
+    .fflhub-ss-rate-warning {
+        grid-column: 2;
+    }
+
+    .fflhub-ss-rate-price-block {
+        text-align: left;
     }
 }
