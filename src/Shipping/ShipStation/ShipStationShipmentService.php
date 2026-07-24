@@ -793,12 +793,19 @@ final class ShipStationShipmentService
         $shipment_id = (string) ($rates_response['shipment_id'] ?? $rate_response['shipment_id'] ?? '');
 
         $normalized_rates = [];
+        $excluded_rates = [];
         foreach ($rates as $rate) {
             if (is_array($rate)) {
                 $normalized = self::normalize_rate($rate);
-                if ((string) ($normalized['rate_id'] ?? '') !== '' && !self::is_excluded_service_rate($normalized)) {
-                    $normalized_rates[] = $normalized;
+                if ((string) ($normalized['rate_id'] ?? '') === '') {
+                    continue;
                 }
+                if (self::is_excluded_service_rate($normalized)) {
+                    $excluded_rates[] = self::excluded_rate_summary($normalized);
+                    continue;
+                }
+
+                $normalized_rates[] = $normalized;
             }
         }
         $duplicate_rate_groups = [];
@@ -826,6 +833,7 @@ final class ShipStationShipmentService
                 ];
             }
         }
+        $invalid_rates = array_merge($invalid_rates, $excluded_rates);
 
         return [
             'shipment_id' => $shipment_id,
@@ -1025,23 +1033,50 @@ final class ShipStationShipmentService
         sort($warnings);
 
         return (string) wp_json_encode([
-            'carrier_id' => (string) ($rate['carrier_id'] ?? ''),
-            'carrier_code' => (string) ($rate['carrier_code'] ?? ''),
-            'carrier_nickname' => (string) ($rate['carrier_nickname'] ?? ''),
-            'carrier_friendly_name' => (string) ($rate['carrier_friendly_name'] ?? ''),
-            'service_code' => (string) ($rate['service_code'] ?? ''),
-            'service_type' => (string) ($rate['service_type'] ?? ''),
-            'package_type' => (string) ($rate['package_type'] ?? ''),
-            'shipping_amount' => (string) ($rate['shipping_amount'] ?? ''),
-            'insurance_amount' => (string) ($rate['insurance_amount'] ?? ''),
-            'confirmation_amount' => (string) ($rate['confirmation_amount'] ?? ''),
-            'other_amount' => (string) ($rate['other_amount'] ?? ''),
-            'total_amount' => (string) ($rate['total_amount'] ?? ''),
-            'currency' => (string) ($rate['currency'] ?? ''),
+            'carrier_code' => self::rate_key_text((string) ($rate['carrier_code'] ?? '')),
+            'carrier_name' => self::rate_key_text((string) ($rate['carrier_nickname'] ?? $rate['carrier_friendly_name'] ?? '')),
+            'service_code' => self::rate_key_text((string) ($rate['service_code'] ?? '')),
+            'service_type' => self::rate_key_text((string) ($rate['service_type'] ?? '')),
+            'package_type' => self::rate_key_text((string) ($rate['package_type'] ?? '')),
+            'shipping_amount' => self::rate_key_money($rate['shipping_amount'] ?? 0),
+            'insurance_amount' => self::rate_key_money($rate['insurance_amount'] ?? 0),
+            'confirmation_amount' => self::rate_key_money($rate['confirmation_amount'] ?? 0),
+            'other_amount' => self::rate_key_money($rate['other_amount'] ?? 0),
+            'total_amount' => self::rate_key_money($rate['total_amount'] ?? 0),
+            'currency' => self::rate_key_text((string) ($rate['currency'] ?? '')),
             'delivery_days' => $rate['delivery_days'] ?? null,
             'estimated_delivery_date' => (string) ($rate['estimated_delivery_date'] ?? ''),
             'warning_messages' => $warnings,
         ]);
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function rate_key_money($value): string
+    {
+        return number_format((float) $value, 4, '.', '');
+    }
+
+    private static function rate_key_text(string $value): string
+    {
+        return strtolower(trim(preg_replace('/\s+/', ' ', $value) ?? $value));
+    }
+
+    /**
+     * @param array<string,mixed> $rate
+     * @return array<string,mixed>
+     */
+    private static function excluded_rate_summary(array $rate): array
+    {
+        return [
+            'carrier_id' => (string) ($rate['carrier_id'] ?? ''),
+            'carrier_code' => (string) ($rate['carrier_code'] ?? ''),
+            'carrier_nickname' => (string) ($rate['carrier_nickname'] ?? ''),
+            'service_code' => (string) ($rate['service_code'] ?? ''),
+            'service_type' => (string) ($rate['service_type'] ?? ''),
+            'error_messages' => ['Hidden by FFLHub Shipping banned method settings.'],
+        ];
     }
 
     /**

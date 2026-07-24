@@ -494,7 +494,46 @@
     });
   }
 
+  function rateKeyText(value) {
+    return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  function rateKeyMoney(value) {
+    return Number(value || 0).toFixed(4);
+  }
+
+  function displayRateKey(rate) {
+    return JSON.stringify({
+      carrier_code: rateKeyText(rate.carrier_code),
+      carrier_name: rateKeyText(rate.carrier_nickname || rate.carrier_friendly_name),
+      service_code: rateKeyText(rate.service_code),
+      service_type: rateKeyText(rate.service_type),
+      package_type: rateKeyText(rate.package_type),
+      shipping_amount: rateKeyMoney(rate.shipping_amount),
+      insurance_amount: rateKeyMoney(rate.insurance_amount),
+      confirmation_amount: rateKeyMoney(rate.confirmation_amount),
+      other_amount: rateKeyMoney(rate.other_amount),
+      total_amount: rateKeyMoney(rate.total_amount),
+      currency: rateKeyText(rate.currency),
+      delivery_days: rate.delivery_days || null,
+      estimated_delivery_date: String(rate.estimated_delivery_date || '')
+    });
+  }
+
+  function dedupeRatesForDisplay(rates) {
+    var seen = {};
+    return (rates || []).filter(function (rate) {
+      var key = displayRateKey(rate || {});
+      if (seen[key]) {
+        return false;
+      }
+      seen[key] = true;
+      return true;
+    });
+  }
+
   function renderRates(panel, rates, invalidRates, duplicateRateGroups) {
+    rates = dedupeRatesForDisplay(rates || []);
     var target = panel.querySelector('.fflhub-ss-rates');
     var currentSort = 'total';
     var currentCarrier = '';
