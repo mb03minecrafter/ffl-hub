@@ -51,21 +51,43 @@
             '</section>';
     }
 
+    function buildFormData(controls) {
+        var formData = new FormData();
+
+        controls.querySelectorAll('input[name], select[name], textarea[name]').forEach(function (field) {
+            if (field.disabled) {
+                return;
+            }
+
+            var type = field.type ? field.type.toLowerCase() : '';
+            if ((type === 'checkbox' || type === 'radio') && !field.checked) {
+                return;
+            }
+
+            formData.append(field.name, field.value);
+        });
+
+        formData.set('action', FFLHubBoxPacking.action || 'fflhub_test_order_box_packing');
+        return formData;
+    }
+
     ready(function () {
         if (!window.FFLHubBoxPacking || !FFLHubBoxPacking.ajaxUrl) {
             return;
         }
 
-        document.querySelectorAll('[data-fflhub-box-pack-form]').forEach(function (form) {
-            form.addEventListener('submit', function (event) {
+        document.querySelectorAll('[data-fflhub-box-pack-form]').forEach(function (controls) {
+            var button = controls.querySelector('[data-fflhub-box-pack-run]');
+            if (!button) {
+                return;
+            }
+
+            button.addEventListener('click', function (event) {
                 event.preventDefault();
 
-                var panel = form.closest('.fflhub-box-pack-panel');
+                var panel = controls.closest('.fflhub-box-pack-panel');
                 var resultSlot = panel ? panel.querySelector('[data-fflhub-box-pack-result]') : null;
-                var button = form.querySelector('input[type="submit"], button[type="submit"]');
-                var formData = new FormData(form);
-
-                formData.set('action', FFLHubBoxPacking.action || 'fflhub_test_order_box_packing');
+                var formData = buildFormData(controls);
 
                 setButtonBusy(button, true);
                 if (resultSlot) {

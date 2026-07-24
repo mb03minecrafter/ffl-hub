@@ -115,7 +115,7 @@ final class OrderBoxPackingMetaBox
         }
         echo '</div>';
 
-        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" data-fflhub-box-pack-form>';
+        echo '<div class="fflhub-box-pack-controls" data-fflhub-box-pack-form>';
         echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION) . '" />';
         echo '<input type="hidden" name="order_id" value="' . esc_attr((string) $order_id) . '" />';
         echo '<input type="hidden" name="redirect_to" value="' . esc_attr($this->current_url()) . '" />';
@@ -129,9 +129,9 @@ final class OrderBoxPackingMetaBox
         $this->render_box_checklist($presets, $checked_ids);
 
         echo '<p class="fflhub-box-pack-actions">';
-        submit_button(__('Run Box Packing Test', 'ffl-hub'), 'primary', 'submit', false);
+        echo '<button type="button" class="button button-primary" data-fflhub-box-pack-run>' . esc_html__('Run Box Packing Test', 'ffl-hub') . '</button>';
         echo '</p>';
-        echo '</form>';
+        echo '</div>';
         echo '</div>';
     }
 
