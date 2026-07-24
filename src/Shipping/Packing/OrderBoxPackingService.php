@@ -88,7 +88,9 @@ final class OrderBoxPackingService
         }
 
         $packer = new Packer();
-        $packer->throwOnUnpackableItem(false);
+        if (method_exists($packer, 'throwOnUnpackableItem')) {
+            $packer->throwOnUnpackableItem(false);
+        }
 
         foreach ($boxes as $box) {
             $packer->addBox($box);
@@ -118,6 +120,13 @@ final class OrderBoxPackingService
             );
         } catch (\Throwable $e) {
             $errors[] = 'BoxPacker failed: ' . $e->getMessage();
+            if (method_exists($e, 'getItem') && $e->getItem() instanceof PackingItem) {
+                $unpacked_items[] = [
+                    ...$e->getItem()->summary(),
+                    'quantity' => 1,
+                    'reason' => 'no_matching_box',
+                ];
+            }
 
             return $this->result(
                 $order,
@@ -130,10 +139,12 @@ final class OrderBoxPackingService
             );
         }
 
-        $unpacked_items = array_merge(
-            $unpacked_items,
-            $this->unpacked_items_from_list($packer->getUnpackedItems(), 'no_matching_box')
-        );
+        if (method_exists($packer, 'getUnpackedItems')) {
+            $unpacked_items = array_merge(
+                $unpacked_items,
+                $this->unpacked_items_from_list($packer->getUnpackedItems(), 'no_matching_box')
+            );
+        }
 
         return $this->result(
             $order,
@@ -437,17 +448,26 @@ final class OrderBoxPackingService
         $out = [];
 
         foreach ($packed_boxes as $packed_box) {
-            if (!($packed_box instanceof PackedBox) || !($packed_box->box instanceof PackingBox)) {
+            if (!($packed_box instanceof PackedBox)) {
+                continue;
+            }
+
+            $box = $this->packed_box_source_box($packed_box);
+            if (!($box instanceof PackingBox)) {
                 continue;
             }
 
             $items = [];
-            foreach ($packed_box->items as $packed_item) {
-                if (!($packed_item instanceof PackedItem) || !($packed_item->item instanceof PackingItem)) {
+            foreach ($this->packed_box_items($packed_box) as $packed_item) {
+                if (!($packed_item instanceof PackedItem)) {
                     continue;
                 }
 
-                $packing_item = $packed_item->item;
+                $packing_item = $this->packed_item_source_item($packed_item);
+                if (!($packing_item instanceof PackingItem)) {
+                    continue;
+                }
+
                 $key = $packing_item->getPackingKey();
                 if (!isset($items[$key])) {
                     $items[$key] = [
@@ -459,16 +479,15 @@ final class OrderBoxPackingService
 
                 $items[$key]['quantity']++;
                 $items[$key]['placements'][] = [
-                    'x_in' => self::mm_to_inches($packed_item->x),
-                    'y_in' => self::mm_to_inches($packed_item->y),
-                    'z_in' => self::mm_to_inches($packed_item->z),
-                    'length_in' => self::mm_to_inches($packed_item->length),
-                    'width_in' => self::mm_to_inches($packed_item->width),
-                    'height_in' => self::mm_to_inches($packed_item->depth),
+                    'x_in' => self::mm_to_inches(self::packed_item_int($packed_item, 'getX', 'x')),
+                    'y_in' => self::mm_to_inches(self::packed_item_int($packed_item, 'getY', 'y')),
+                    'z_in' => self::mm_to_inches(self::packed_item_int($packed_item, 'getZ', 'z')),
+                    'length_in' => self::mm_to_inches(self::packed_item_int($packed_item, 'getLength', 'length')),
+                    'width_in' => self::mm_to_inches(self::packed_item_int($packed_item, 'getWidth', 'width')),
+                    'height_in' => self::mm_to_inches(self::packed_item_int($packed_item, 'getDepth', 'depth')),
                 ];
             }
 
-            $box = $packed_box->box;
             $out[] = [
                 ...$box->summary(),
                 'packed_weight_oz' => self::grams_to_ounces($packed_box->getWeight()),
@@ -482,6 +501,66 @@ final class OrderBoxPackingService
         }
 
         return $out;
+    }
+
+    private function packed_box_source_box(PackedBox $packed_box): ?PackingBox
+    {
+        $box = method_exists($packed_box, 'getBox')
+            ? $packed_box->getBox()
+            : self::public_object_property($packed_box, 'box');
+
+        return $box instanceof PackingBox ? $box : null;
+    }
+
+    /**
+     * @return iterable<mixed>
+     */
+    private function packed_box_items(PackedBox $packed_box): iterable
+    {
+        $items = method_exists($packed_box, 'getItems')
+            ? $packed_box->getItems()
+            : self::public_object_property($packed_box, 'items');
+
+        return is_iterable($items) ? $items : [];
+    }
+
+    private function packed_item_source_item(PackedItem $packed_item): ?PackingItem
+    {
+        $item = method_exists($packed_item, 'getItem')
+            ? $packed_item->getItem()
+            : self::public_object_property($packed_item, 'item');
+
+        return $item instanceof PackingItem ? $item : null;
+    }
+
+    private static function packed_item_int(PackedItem $packed_item, string $method, string $property): int
+    {
+        if (method_exists($packed_item, $method)) {
+            return (int) $packed_item->{$method}();
+        }
+
+        return (int) (self::public_object_property($packed_item, $property) ?? 0);
+    }
+
+    /**
+     * @return mixed|null
+     */
+    private static function public_object_property(object $object, string $property)
+    {
+        if (!property_exists($object, $property)) {
+            return null;
+        }
+
+        try {
+            $reflection = new \ReflectionProperty($object, $property);
+            if (!$reflection->isPublic()) {
+                return null;
+            }
+
+            return $reflection->getValue($object);
+        } catch (\ReflectionException $e) {
+            return null;
+        }
     }
 
     /**
