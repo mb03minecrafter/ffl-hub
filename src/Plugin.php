@@ -20,6 +20,7 @@ use FFLHub\Admin\Pages\DealerBatchOptimizerPage;
 use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
 use FFLHub\Admin\Pages\DistributorBatchQueuePage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
+use FFLHub\Admin\Pages\EasyPostSettingsPage;
 use FFLHub\Admin\Pages\FastBoundIntegrationSettingsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
 use FFLHub\Admin\Pages\LipseysCreditLimitPage;
@@ -31,6 +32,10 @@ use FFLHub\Admin\Pages\ReceivingTestLabelsPage;
 use FFLHub\Admin\Pages\MonthlyProfitAuditPage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
+use FFLHub\Admin\Pages\ShippingDashboardPage;
+use FFLHub\Admin\Pages\ShippingPackagePresetsPage;
+use FFLHub\Admin\Pages\ShippingSettingsPage;
+use FFLHub\Admin\Pages\ShippingShipFromLocationsPage;
 use FFLHub\Admin\Pages\ShipStationSettingsPage;
 use FFLHub\Admin\Pages\ZandersCreditLimitPage;
 use FFLHub\Admin\ProductMeta\BOMMetaBox;
@@ -132,6 +137,11 @@ final class Plugin
     public ProductStatePage $product_state_page;
     public ProductStateBulkPricingPage $product_state_bulk_pricing_page;
     public MonthlyProfitAuditPage $monthly_profit_audit_page;
+    public ShippingDashboardPage $shipping_dashboard_page;
+    public ShippingSettingsPage $shipping_settings_page;
+    public ShippingPackagePresetsPage $shipping_package_presets_page;
+    public ShippingShipFromLocationsPage $shipping_ship_from_locations_page;
+    public EasyPostSettingsPage $easypost_settings_page;
     public ShipStationSettingsPage $shipstation_settings_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public AuthorizeNetOrderRescueButton $authnet_order_rescue_button;
@@ -293,6 +303,21 @@ final class Plugin
 
             $this->monthly_profit_audit_page = new MonthlyProfitAuditPage();
             $this->monthly_profit_audit_page->register();
+
+            $this->shipping_dashboard_page = new ShippingDashboardPage();
+            $this->shipping_dashboard_page->register();
+
+            $this->shipping_settings_page = new ShippingSettingsPage();
+            $this->shipping_settings_page->register();
+
+            $this->shipping_package_presets_page = new ShippingPackagePresetsPage();
+            $this->shipping_package_presets_page->register();
+
+            $this->shipping_ship_from_locations_page = new ShippingShipFromLocationsPage();
+            $this->shipping_ship_from_locations_page->register();
+
+            $this->easypost_settings_page = new EasyPostSettingsPage();
+            $this->easypost_settings_page->register();
 
             $this->shipstation_settings_page = new ShipStationSettingsPage();
             $this->shipstation_settings_page->register();

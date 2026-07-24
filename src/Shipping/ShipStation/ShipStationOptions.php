@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace FFLHub\Shipping\ShipStation;
 
+use FFLHub\Shipping\ShippingOptions;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -82,34 +84,31 @@ final class ShipStationOptions
     public static function save(array $input, array $clear_keys = []): void
     {
         $current = self::get_all();
+        $shared = ShippingOptions::get_all();
         $saved = [
             'enabled' => !empty($input['enabled']) ? '1' : '0',
             'mode' => self::choice((string) ($input['mode'] ?? 'sandbox'), ['sandbox', 'production'], 'sandbox'),
             'sandbox_api_key' => in_array('sandbox', $clear_keys, true) ? '' : (string) ($current['sandbox_api_key'] ?? ''),
             'production_api_key' => in_array('production', $clear_keys, true) ? '' : (string) ($current['production_api_key'] ?? ''),
             'api_key' => '',
-            'origin_name' => self::text($input['origin_name'] ?? ''),
-            'origin_company' => self::text($input['origin_company'] ?? ''),
-            'origin_phone' => self::text($input['origin_phone'] ?? ''),
-            'origin_email' => sanitize_email((string) ($input['origin_email'] ?? '')),
-            'origin_address1' => self::text($input['origin_address1'] ?? ''),
-            'origin_address2' => self::text($input['origin_address2'] ?? ''),
-            'origin_city' => self::text($input['origin_city'] ?? ''),
-            'origin_state' => strtoupper(self::text($input['origin_state'] ?? '')),
-            'origin_postal_code' => self::text($input['origin_postal_code'] ?? ''),
-            'origin_country' => strtoupper(self::text($input['origin_country'] ?? 'US')),
-            'origin_residential' => self::choice((string) ($input['origin_residential'] ?? 'no'), ['unknown', 'yes', 'no'], 'no'),
-            'label_format' => self::choice(strtolower((string) ($input['label_format'] ?? 'pdf')), ['pdf', 'png', 'zpl'], 'pdf'),
-            'label_layout' => self::choice(strtolower((string) ($input['label_layout'] ?? '4x6')), ['4x6', 'letter'], '4x6'),
-            'confirmation' => self::choice(
-                strtolower((string) ($input['confirmation'] ?? 'delivery')),
-                ['none', 'delivery', 'signature', 'adult_signature', 'direct_signature'],
-                'delivery'
-            ),
-            'insurance_mode' => self::choice((string) ($input['insurance_mode'] ?? 'none'), ['none', 'declared_value'], 'none'),
-            'after_purchase_status' => self::text($input['after_purchase_status'] ?? ''),
-            'show_debug_fields' => !empty($input['show_debug_fields']) ? '1' : '0',
-            'package_presets' => self::sanitize_package_presets($input['package_presets'] ?? []),
+            'origin_name' => (string) ($shared['origin_name'] ?? ''),
+            'origin_company' => (string) ($shared['origin_company'] ?? ''),
+            'origin_phone' => (string) ($shared['origin_phone'] ?? ''),
+            'origin_email' => (string) ($shared['origin_email'] ?? ''),
+            'origin_address1' => (string) ($shared['origin_address1'] ?? ''),
+            'origin_address2' => (string) ($shared['origin_address2'] ?? ''),
+            'origin_city' => (string) ($shared['origin_city'] ?? ''),
+            'origin_state' => (string) ($shared['origin_state'] ?? ''),
+            'origin_postal_code' => (string) ($shared['origin_postal_code'] ?? ''),
+            'origin_country' => (string) ($shared['origin_country'] ?? 'US'),
+            'origin_residential' => (string) ($shared['origin_residential'] ?? 'no'),
+            'label_format' => (string) ($shared['label_format'] ?? 'pdf'),
+            'label_layout' => (string) ($shared['label_layout'] ?? '4x6'),
+            'confirmation' => (string) ($shared['confirmation'] ?? 'delivery'),
+            'insurance_mode' => (string) ($shared['insurance_mode'] ?? 'none'),
+            'after_purchase_status' => (string) ($shared['after_purchase_status'] ?? ''),
+            'show_debug_fields' => (string) ($shared['show_debug_fields'] ?? '0'),
+            'package_presets' => ShippingOptions::package_presets(),
             'enabled_carrier_ids' => self::string_list($input['enabled_carrier_ids'] ?? []),
             'firearm_carrier_ids' => self::string_list($input['firearm_carrier_ids'] ?? []),
         ];
@@ -235,56 +234,37 @@ final class ShipStationOptions
      */
     public static function origin_address(): array
     {
-        $s = self::get_all();
-
-        return [
-            'name' => (string) $s['origin_name'],
-            'phone' => (string) $s['origin_phone'],
-            'email' => (string) $s['origin_email'],
-            'company_name' => (string) $s['origin_company'],
-            'address_line1' => (string) $s['origin_address1'],
-            'address_line2' => (string) $s['origin_address2'],
-            'address_line3' => '',
-            'city_locality' => (string) $s['origin_city'],
-            'state_province' => (string) $s['origin_state'],
-            'postal_code' => (string) $s['origin_postal_code'],
-            'country_code' => (string) $s['origin_country'],
-            'address_residential_indicator' => (string) $s['origin_residential'],
-        ];
+        return ShippingOptions::origin_address();
     }
 
     public static function label_format(): string
     {
-        return self::choice((string) (self::get_all()['label_format'] ?? 'pdf'), ['pdf', 'png', 'zpl'], 'pdf');
+        return ShippingOptions::label_format();
     }
 
     public static function label_layout(): string
     {
-        return self::choice((string) (self::get_all()['label_layout'] ?? '4x6'), ['4x6', 'letter'], '4x6');
+        return ShippingOptions::label_layout();
     }
 
     public static function confirmation(): string
     {
-        return self::choice(
-            (string) (self::get_all()['confirmation'] ?? 'delivery'),
-            ['none', 'delivery', 'signature', 'adult_signature', 'direct_signature'],
-            'delivery'
-        );
+        return ShippingOptions::confirmation();
     }
 
     public static function insurance_mode(): string
     {
-        return self::choice((string) (self::get_all()['insurance_mode'] ?? 'none'), ['none', 'declared_value'], 'none');
+        return ShippingOptions::insurance_mode();
     }
 
     public static function after_purchase_status(): string
     {
-        return sanitize_key((string) (self::get_all()['after_purchase_status'] ?? ''));
+        return ShippingOptions::after_purchase_status();
     }
 
     public static function show_debug_fields(): bool
     {
-        return ((string) (self::get_all()['show_debug_fields'] ?? '0')) === '1';
+        return ShippingOptions::show_debug_fields();
     }
 
     /**
@@ -292,7 +272,7 @@ final class ShipStationOptions
      */
     public static function package_presets(): array
     {
-        return self::sanitize_package_presets(self::get_all()['package_presets'] ?? []);
+        return ShippingOptions::package_presets();
     }
 
     /**

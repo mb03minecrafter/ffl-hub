@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Admin\Orders;
 
+use FFLHub\Admin\Pages\ShippingAdminPage;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Shipping\ShipStation\ShipStationRestController;
 use FFLHub\Shipping\ShipStation\ShipStationShipmentService;
@@ -124,7 +125,7 @@ final class ShipStationOrderMetaBox
         >
             <?php if (empty($context['enabled'])) : ?>
                 <div class="fflhub-ss-notice is-warning">
-                    <?php esc_html_e('ShipStation labels are disabled. Enable them under FFL Hub > ShipStation Labels.', 'ffl-hub'); ?>
+                    <?php esc_html_e('ShipStation labels are disabled. Enable them under FFLHub Shipping > ShipStation API.', 'ffl-hub'); ?>
                 </div>
             <?php endif; ?>
 
@@ -151,12 +152,12 @@ final class ShipStationOrderMetaBox
                 <section class="fflhub-ss-card">
                     <div class="fflhub-ss-card-title-row">
                         <h4><?php esc_html_e('Ship From', 'ffl-hub'); ?></h4>
-                        <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=fflhub-shipstation-settings')); ?>">
+                        <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::SHIP_FROM_SLUG)); ?>">
                             <?php esc_html_e('Edit Global Origin', 'ffl-hub'); ?>
                         </a>
                     </div>
                     <p class="description">
-                        <?php esc_html_e('Managed globally under FFL Hub > ShipStation Labels. Rates and labels always use this saved origin.', 'ffl-hub'); ?>
+                        <?php esc_html_e('Managed globally under FFLHub Shipping > Ship-From Locations. Rates and labels always use this saved origin.', 'ffl-hub'); ?>
                     </p>
                     <?php $this->render_address_summary((array) ($context['origin'] ?? [])); ?>
                 </section>

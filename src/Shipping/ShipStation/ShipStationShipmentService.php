@@ -9,6 +9,7 @@ use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Shipping\Providers\ShippingProviderInterface;
+use FFLHub\Shipping\ShippingOptions;
 use FFLHub\Util\DebugLogUtil;
 use WC_Order;
 use WC_Order_Item_Product;
@@ -1048,14 +1049,7 @@ final class ShipStationShipmentService
      */
     private static function is_excluded_service_rate(array $rate): bool
     {
-        $haystack = strtolower(implode(' ', [
-            (string) ($rate['service_code'] ?? ''),
-            (string) ($rate['service_type'] ?? ''),
-            (string) ($rate['package_type'] ?? ''),
-        ]));
-        $normalized = str_replace(['_', '-'], ' ', $haystack);
-
-        return strpos($normalized, 'media mail') !== false;
+        return ShippingOptions::rate_service_is_banned($rate);
     }
 
     /**
