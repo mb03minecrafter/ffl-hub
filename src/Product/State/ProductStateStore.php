@@ -1073,6 +1073,7 @@ final class ProductStateStore
             self::nullable_string($row['landed_cost'] ?? null),
             $fixed_profit_shipping_mode,
             self::nullable_string($effective_map_price),
+            $map_override_mode === 'manual_price',
             $row['computed_sell_price'] ?? null,
             get_post_meta($product_id, '_regular_price', true),
             get_post_meta($product_id, '_price', true)
@@ -1398,6 +1399,7 @@ final class ProductStateStore
             $landed_cost,
             'included',
             $map_price,
+            false,
             $last_computed_raw,
             $woo_regular_raw,
             $woo_active_raw
@@ -1539,10 +1541,18 @@ final class ProductStateStore
         ?string $landed_cost,
         string $fixed_profit_shipping_mode,
         ?string $map_price,
+        bool $manual_map_override,
         $last_computed_raw,
         $woo_regular_raw,
         $woo_active_raw
     ): ?float {
+        if ($manual_map_override) {
+            $map = self::float_or_null($map_price);
+            if ($map !== null && $map > 0.0) {
+                return round($map, 2);
+            }
+        }
+
         if ($pricing_mode === 'fixed_price' && $fixed_price !== null && $fixed_price > 0.0) {
             return round($fixed_price, 2);
         }

@@ -29,6 +29,11 @@ final class ProductStatePricingSql
 
         return "
             CASE
+                WHEN {$state_alias}.map_override_mode = 'manual_price'
+                    AND {$state_alias}.map_override_price IS NOT NULL
+                    AND {$state_alias}.map_override_price > 0
+                THEN ROUND({$state_alias}.map_override_price, 2)
+
                 WHEN {$state_alias}.pricing_mode = 'fixed_price'
                     AND {$state_alias}.pricing_fixed_price IS NOT NULL
                     AND {$state_alias}.pricing_fixed_price > 0
