@@ -519,7 +519,13 @@ final class ShipStationShipmentService
     {
         $origin = self::address_from_input($context['origin'] ?? []);
         $destination = self::address_from_input($input['destination'] ?? $context['destination'] ?? []);
-        $packages = self::packages_from_input($input['packages'] ?? $context['packages'] ?? []);
+        $order_items = isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : [];
+        $package_items = self::package_item_assignments_from_input($input['package_items'] ?? [], $order_items);
+        $packages = self::packages_from_input(
+            $input['packages'] ?? $context['packages'] ?? [],
+            $order_items,
+            $package_items
+        );
         $confirmation = self::choice((string) ($input['confirmation'] ?? ShipStationOptions::confirmation()), [
             'none',
             'delivery',
@@ -539,7 +545,7 @@ final class ShipStationShipmentService
             $this->package_validation_errors($packages),
             self::package_assignment_validation_errors(
                 $input,
-                isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : []
+                $order_items
             )
         );
         if (!empty($errors)) {
@@ -1300,16 +1306,18 @@ final class ShipStationShipmentService
 
     /**
      * @param mixed $input
+     * @param array<int,array<string,mixed>> $order_items
+     * @param array<int,array<int,array{item_id:int,quantity:int}>> $package_item_assignments
      * @return array<int,array<string,mixed>>
      */
-    private static function packages_from_input($input): array
+    private static function packages_from_input($input, array $order_items = [], array $package_item_assignments = []): array
     {
         if (!is_array($input)) {
             return [];
         }
 
         $packages = [];
-        foreach ($input as $row) {
+        foreach ($input as $index => $row) {
             if (!is_array($row)) {
                 continue;
             }
@@ -1318,6 +1326,9 @@ final class ShipStationShipmentService
             $dims = is_array($row['dimensions'] ?? null) ? $row['dimensions'] : [];
             $insured = is_array($row['insured_value'] ?? null) ? $row['insured_value'] : [];
             $package_code = sanitize_text_field((string) ($row['package_code'] ?? 'package'));
+            $length = self::round_decimal(max(0.0, (float) ($dims['length'] ?? 0)), 2);
+            $width = self::round_decimal(max(0.0, (float) ($dims['width'] ?? 0)), 2);
+            $height = self::round_decimal(max(0.0, (float) ($dims['height'] ?? 0)), 2);
 
             $package = [
                 'package_code' => $package_code,
@@ -1332,11 +1343,21 @@ final class ShipStationShipmentService
             ];
 
             if (!self::package_code_has_provider_dimensions($package_code)) {
+                if (self::is_thick_envelope_package_code($package_code)) {
+                    $height = self::round_decimal(max(
+                        $height,
+                        self::max_assigned_item_height_in(
+                            is_array($package_item_assignments[$index] ?? null) ? $package_item_assignments[$index] : [],
+                            $order_items
+                        )
+                    ), 2);
+                }
+
                 $package['dimensions'] = [
                     'unit' => self::choice((string) ($dims['unit'] ?? 'inch'), ['inch', 'centimeter'], 'inch'),
-                    'length' => self::round_decimal(max(0.0, (float) ($dims['length'] ?? 0)), 2),
-                    'width' => self::round_decimal(max(0.0, (float) ($dims['width'] ?? 0)), 2),
-                    'height' => self::round_decimal(max(0.0, (float) ($dims['height'] ?? 0)), 2),
+                    'length' => $length,
+                    'width' => $width,
+                    'height' => $height,
                 ];
             }
 
@@ -1565,10 +1586,6 @@ final class ShipStationShipmentService
     private static function package_code_has_provider_dimensions(string $package_code): bool
     {
         return in_array(self::rate_key_text($package_code), [
-            'thick_envelope',
-            'large_envelope_or_flat',
-            'letter',
-            'large_package',
             'flat_rate_envelope',
             'flat_rate_legal_envelope',
             'flat_rate_padded_envelope',
@@ -1578,6 +1595,51 @@ final class ShipStationShipmentService
             'regional_rate_box_a',
             'regional_rate_box_b',
         ], true);
+    }
+
+    private static function is_thick_envelope_package_code(string $package_code): bool
+    {
+        return self::rate_key_text($package_code) === 'thick_envelope';
+    }
+
+    /**
+     * @param array<int,array{item_id:int,quantity:int}> $assigned_items
+     * @param array<int,array<string,mixed>> $order_items
+     */
+    private static function max_assigned_item_height_in(array $assigned_items, array $order_items): float
+    {
+        if (empty($assigned_items) || empty($order_items)) {
+            return 0.0;
+        }
+
+        $items_by_id = [];
+        foreach ($order_items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $item_id = absint($item['item_id'] ?? 0);
+            if ($item_id > 0) {
+                $items_by_id[$item_id] = $item;
+            }
+        }
+
+        $max_height = 0.0;
+        foreach ($assigned_items as $assigned) {
+            if (!is_array($assigned) || (int) ($assigned['quantity'] ?? 0) <= 0) {
+                continue;
+            }
+
+            $item_id = absint($assigned['item_id'] ?? 0);
+            $item = $items_by_id[$item_id] ?? null;
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $max_height = max($max_height, self::positive_float($item['height_in'] ?? null) ?? 0.0);
+        }
+
+        return $max_height;
     }
 
     /**

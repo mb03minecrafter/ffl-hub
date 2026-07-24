@@ -132,6 +132,11 @@
     return Number(input && input.value ? input.value : 0) || 0;
   }
 
+  function positiveNumber(value) {
+    var num = Number(value || 0);
+    return num > 0 ? num : 0;
+  }
+
   function formatWeight(value) {
     var rounded = Math.round(Math.max(0, Number(value || 0)) * 100) / 100;
     return rounded.toFixed(2).replace(/\.?0+$/, '');
@@ -148,8 +153,70 @@
     );
   }
 
+  function orderItemIndex(panel) {
+    var index = {};
+    (context(panel).order_items || []).forEach(function (item) {
+      var itemId = Number(item.item_id || 0) || 0;
+      if (itemId > 0) {
+        index[itemId] = item;
+      }
+    });
+    return index;
+  }
+
+  function packageCode(row) {
+    var input = field(row, 'package_code');
+    return rateKeyText(input ? input.value : '');
+  }
+
+  function maxAssignedItemHeight(panel, row) {
+    var itemsById = orderItemIndex(panel);
+    var maxHeight = 0;
+
+    row.querySelectorAll('[data-package-item-qty]').forEach(function (input) {
+      var qty = Number(input.value || 0) || 0;
+      var itemId = Number(input.dataset.itemId || 0) || 0;
+      var item = itemId > 0 ? itemsById[itemId] : null;
+      if (qty <= 0 || !item) {
+        return;
+      }
+
+      maxHeight = Math.max(maxHeight, positiveNumber(item.height_in));
+    });
+
+    return maxHeight;
+  }
+
+  function rememberEnvelopeBaseHeight(row) {
+    var height = field(row, 'dimensions.height');
+    if (height && packageCode(row) === 'thick_envelope') {
+      row.dataset.envelopeBaseHeight = height.value || '';
+    }
+  }
+
+  function syncPackageShapeForRow(panel, row) {
+    if (!row || packageCode(row) !== 'thick_envelope') {
+      return;
+    }
+
+    var height = field(row, 'dimensions.height');
+    if (!height) {
+      return;
+    }
+
+    var baseHeight = positiveNumber(row.dataset.envelopeBaseHeight || height.value);
+    var itemHeight = maxAssignedItemHeight(panel, row);
+    height.value = formatWeight(Math.max(baseHeight, itemHeight));
+  }
+
   function syncPackageWeights(panel) {
     panel.querySelectorAll('.fflhub-ss-package-row').forEach(recalcPackageWeight);
+  }
+
+  function syncPackageShapes(panel) {
+    panel.querySelectorAll('.fflhub-ss-package-row').forEach(function (row) {
+      syncPackageShapeForRow(panel, row);
+    });
   }
 
   function applyPackagePreset(panel, select) {
@@ -163,18 +230,21 @@
     setField(row, 'dimensions.length', preset.length || '');
     setField(row, 'dimensions.width', preset.width || '');
     setField(row, 'dimensions.height', preset.height || '');
+    row.dataset.envelopeBaseHeight = preset.height || '';
 
     var packageWeight = numericInput(row, 'package');
     if (packageWeight) {
       packageWeight.value = preset.weight_oz || '';
     }
     recalcPackageWeight(row);
+    syncPackageShapeForRow(panel, row);
 
     invalidateRates(panel);
   }
 
   function buildPayload(panel) {
     syncPackageWeights(panel);
+    syncPackageShapes(panel);
 
     return {
       destination: readAddress(panel, 'destination'),
@@ -738,6 +808,9 @@
 
   ready(function () {
     document.querySelectorAll('.fflhub-ss-panel').forEach(function (panel) {
+      panel.querySelectorAll('.fflhub-ss-package-row').forEach(rememberEnvelopeBaseHeight);
+      syncPackageShapes(panel);
+
       panel.addEventListener('input', function (event) {
         if (event.target.closest('.fflhub-ss-rates')) {
           return;
@@ -748,6 +821,13 @@
           if (row && event.target.matches('[data-weight-role="content"],[data-weight-role="package"]')) {
             recalcPackageWeight(row);
           }
+          if (row && event.target.matches('[data-package-item-qty]')) {
+            syncPackageShapeForRow(panel, row);
+          }
+          if (row && event.target.matches('[data-field="dimensions.height"]')) {
+            rememberEnvelopeBaseHeight(row);
+            syncPackageShapeForRow(panel, row);
+          }
           invalidateRates(panel);
         }
       });
@@ -755,6 +835,13 @@
       panel.addEventListener('change', function (event) {
         if (event.target.matches('.fflhub-ss-package-preset')) {
           applyPackagePreset(panel, event.target);
+        }
+
+        var row = event.target.closest('.fflhub-ss-package-row');
+        if (row && event.target.matches('[data-field="package_code"]')) {
+          rememberEnvelopeBaseHeight(row);
+          syncPackageShapeForRow(panel, row);
+          invalidateRates(panel);
         }
       });
 
