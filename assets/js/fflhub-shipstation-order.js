@@ -114,6 +114,12 @@
   function setField(row, name, value) {
     var input = field(row, name);
     if (input) {
+      if (input.tagName === 'SELECT' && value && !input.querySelector('option[value="' + String(value).replace(/"/g, '\\"') + '"]')) {
+        var option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        input.appendChild(option);
+      }
       input.value = value || '';
     }
   }
@@ -444,6 +450,27 @@
     }).join('');
   }
 
+  function packageTypeLabel(value) {
+    var code = rateKeyText(value);
+    var labels = {
+      package: 'Package',
+      thick_envelope: 'Thick Envelope',
+      large_envelope_or_flat: 'Large Envelope / Flat',
+      letter: 'Letter',
+      large_package: 'Large Package',
+      flat_rate_envelope: 'Flat Rate Envelope',
+      flat_rate_legal_envelope: 'Legal Flat Rate Envelope',
+      flat_rate_padded_envelope: 'Padded Flat Rate Envelope',
+      small_flat_rate_box: 'Small Flat Rate Box',
+      medium_flat_rate_box: 'Medium Flat Rate Box',
+      large_flat_rate_box: 'Large Flat Rate Box',
+      regional_rate_box_a: 'Regional Rate Box A',
+      regional_rate_box_b: 'Regional Rate Box B'
+    };
+
+    return labels[code] || String(value || '').replace(/_/g, ' ').trim();
+  }
+
   function renderRateCard(rate, cheapest, fastestDays, debug) {
     var brand = carrierBrand(rate);
     var badges = [];
@@ -457,6 +484,7 @@
       ? brand.label
       : (rate.carrier_nickname || rate.carrier_friendly_name || rate.carrier_code || 'Carrier');
     var serviceName = rate.service_type || rate.service_code || 'Service';
+    var packageName = packageTypeLabel(rate.package_type);
 
     return '<label class="fflhub-ss-rate-card">' +
       '<input class="fflhub-ss-rate-radio" type="radio" name="fflhub_ss_rate" value="' + escapeHtml(rate.rate_id) + '" />' +
@@ -467,6 +495,7 @@
       '</div>' +
       '<div class="fflhub-ss-rate-service-block">' +
         '<strong>' + escapeHtml(serviceName) + '</strong>' +
+        (packageName ? '<small>' + escapeHtml(packageName) + '</small>' : '') +
         (debug ? '<code>' + escapeHtml(rate.service_code || '') + '</code>' : '') +
         '<div class="fflhub-ss-rate-badges">' + badges.join(' ') + '</div>' +
       '</div>' +
@@ -520,6 +549,42 @@
     });
   }
 
+  function selectedPackageCodes(panel) {
+    var codes = [];
+    readPackages(panel).forEach(function (pkg) {
+      var code = rateKeyText(pkg.package_code || '');
+      if (code && codes.indexOf(code) === -1) {
+        codes.push(code);
+      }
+    });
+    return codes;
+  }
+
+  function filterRatesForSelectedPackages(panel, rates, invalidRates) {
+    var codes = selectedPackageCodes(panel);
+    if (!codes.length) {
+      return rates || [];
+    }
+
+    return (rates || []).filter(function (rate) {
+      var packageType = rateKeyText(rate.package_type || '');
+      if (!packageType || codes.indexOf(packageType) !== -1) {
+        return true;
+      }
+
+      invalidRates.push({
+        carrier_code: rate.carrier_code || '',
+        carrier_nickname: rate.carrier_nickname || '',
+        service_code: rate.service_code || '',
+        service_type: rate.service_type || '',
+        error_messages: [
+          'Hidden because package type "' + (rate.package_type || '') + '" does not match selected package code(s): ' + codes.join(', ') + '.'
+        ]
+      });
+      return false;
+    });
+  }
+
   function dedupeRatesForDisplay(rates) {
     var seen = {};
     return (rates || []).filter(function (rate) {
@@ -533,6 +598,8 @@
   }
 
   function renderRates(panel, rates, invalidRates, duplicateRateGroups) {
+    invalidRates = invalidRates || [];
+    rates = filterRatesForSelectedPackages(panel, rates || [], invalidRates);
     rates = dedupeRatesForDisplay(rates || []);
     var target = panel.querySelector('.fflhub-ss-rates');
     var currentSort = 'total';
@@ -637,13 +704,14 @@
     if (!first) return;
     var copy = first.cloneNode(true);
     copy.querySelectorAll('input').forEach(function (input) {
-      if (input.dataset.field === 'package_code') {
-        input.value = 'package';
-      } else if (input.dataset.field === 'insured_value.amount') {
+      if (input.dataset.field === 'insured_value.amount') {
         input.value = '0';
       } else {
         input.value = '';
       }
+    });
+    copy.querySelectorAll('select[data-field="package_code"]').forEach(function (select) {
+      select.value = 'package';
     });
     copy.querySelectorAll('[data-weight-role]').forEach(function (input) {
       input.value = '';

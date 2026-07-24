@@ -278,6 +278,18 @@ final class ShipStationShipmentService
         }
 
         $normalized = $this->normalize_rate_response($response);
+        $package_filtered_rates = [];
+        $normalized['rates'] = self::filter_rates_to_selected_package_codes(
+            isset($normalized['rates']) && is_array($normalized['rates']) ? $normalized['rates'] : [],
+            $shipment,
+            $package_filtered_rates
+        );
+        if (!empty($package_filtered_rates)) {
+            $normalized['invalid_rates'] = array_merge(
+                isset($normalized['invalid_rates']) && is_array($normalized['invalid_rates']) ? $normalized['invalid_rates'] : [],
+                $package_filtered_rates
+            );
+        }
         $shipment_hash = self::shipment_hash($shipment);
         $package_items = self::package_item_assignments_from_input(
             $input['package_items'] ?? [],
@@ -808,17 +820,12 @@ final class ShipStationShipmentService
                 $normalized_rates[] = $normalized;
             }
         }
+        usort($normalized_rates, [self::class, 'compare_rates_for_display']);
+
         $duplicate_rate_groups = [];
         $normalized_rates = self::dedupe_equivalent_rates($normalized_rates, $duplicate_rate_groups);
 
-        usort($normalized_rates, static function (array $a, array $b): int {
-            $by_total = ((float) ($a['total_amount'] ?? 0)) <=> ((float) ($b['total_amount'] ?? 0));
-            if ($by_total !== 0) {
-                return $by_total;
-            }
-
-            return strcmp((string) ($a['service_type'] ?? ''), (string) ($b['service_type'] ?? ''));
-        });
+        usort($normalized_rates, [self::class, 'compare_rates_for_display']);
 
         $invalid_rates = [];
         foreach ($invalid as $rate) {
@@ -885,10 +892,10 @@ final class ShipStationShipmentService
     }
 
     /**
-     * ShipStation can return multiple rate IDs that are operationally the same
-     * choice: same carrier account, service, package type, transit, and price.
-     * Keep the first rate ID so label purchase still has an exact ShipStation
-     * rate to buy, but do not make the admin pick between duplicate cards.
+     * ShipStation can return exact duplicate rate choices for the same selected
+     * package. Keep the cheapest rate ID so label purchase still has a concrete
+     * ShipStation rate to buy, but do not make the admin pick between identical
+     * cards.
      *
      * @param array<int,array<string,mixed>> $rates
      * @param array<int,array<string,mixed>> $duplicate_groups
@@ -1025,16 +1032,8 @@ final class ShipStationShipmentService
      */
     private static function equivalent_rate_key(array $rate): string
     {
-        $warnings = $rate['warning_messages'] ?? [];
-        if (!is_array($warnings)) {
-            $warnings = [$warnings];
-        }
-        $warnings = array_values(array_map('strval', $warnings));
-        sort($warnings);
-
         return (string) wp_json_encode([
-            'carrier_code' => self::rate_key_text((string) ($rate['carrier_code'] ?? '')),
-            'carrier_name' => self::rate_key_text((string) ($rate['carrier_nickname'] ?? $rate['carrier_friendly_name'] ?? '')),
+            'carrier_family' => self::rate_carrier_family_key($rate),
             'service_code' => self::rate_key_text((string) ($rate['service_code'] ?? '')),
             'service_type' => self::rate_key_text((string) ($rate['service_type'] ?? '')),
             'package_type' => self::rate_key_text((string) ($rate['package_type'] ?? '')),
@@ -1046,7 +1045,6 @@ final class ShipStationShipmentService
             'currency' => self::rate_key_text((string) ($rate['currency'] ?? '')),
             'delivery_days' => $rate['delivery_days'] ?? null,
             'estimated_delivery_date' => (string) ($rate['estimated_delivery_date'] ?? ''),
-            'warning_messages' => $warnings,
         ]);
     }
 
@@ -1058,9 +1056,141 @@ final class ShipStationShipmentService
         return number_format((float) $value, 4, '.', '');
     }
 
+    /**
+     * @param array<string,mixed> $a
+     * @param array<string,mixed> $b
+     */
+    private static function compare_rates_for_display(array $a, array $b): int
+    {
+        $by_total = ((float) ($a['total_amount'] ?? 0)) <=> ((float) ($b['total_amount'] ?? 0));
+        if ($by_total !== 0) {
+            return $by_total;
+        }
+
+        $by_service = strcmp((string) ($a['service_type'] ?? ''), (string) ($b['service_type'] ?? ''));
+        if ($by_service !== 0) {
+            return $by_service;
+        }
+
+        return strcmp((string) ($a['rate_id'] ?? ''), (string) ($b['rate_id'] ?? ''));
+    }
+
+    /**
+     * @param array<string,mixed> $rate
+     */
+    private static function rate_carrier_family_key(array $rate): string
+    {
+        $text = strtolower(implode(' ', [
+            (string) ($rate['carrier_code'] ?? ''),
+            (string) ($rate['carrier_nickname'] ?? ''),
+            (string) ($rate['carrier_friendly_name'] ?? ''),
+            (string) ($rate['service_code'] ?? ''),
+            (string) ($rate['service_type'] ?? ''),
+        ]));
+
+        if (strpos($text, 'usps') !== false || strpos($text, 'stamps') !== false) {
+            return 'usps';
+        }
+
+        if (strpos($text, 'fedex') !== false || strpos($text, 'federal express') !== false) {
+            return 'fedex';
+        }
+
+        if (strpos($text, 'ups') !== false || strpos($text, 'united parcel') !== false) {
+            return 'ups';
+        }
+
+        if (strpos($text, 'dhl') !== false) {
+            return 'dhl';
+        }
+
+        $fallback = self::rate_key_text((string) ($rate['carrier_code'] ?? $rate['carrier_nickname'] ?? ''));
+        return $fallback !== '' ? $fallback : 'unknown';
+    }
+
     private static function rate_key_text(string $value): string
     {
         return strtolower(trim(preg_replace('/\s+/', ' ', $value) ?? $value));
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $rates
+     * @param array<string,mixed> $shipment
+     * @param array<int,array<string,mixed>> $filtered_rates
+     * @return array<int,array<string,mixed>>
+     */
+    private static function filter_rates_to_selected_package_codes(array $rates, array $shipment, array &$filtered_rates = []): array
+    {
+        $selected = self::selected_package_codes($shipment);
+        if (empty($selected)) {
+            return $rates;
+        }
+
+        $filtered_rates = [];
+        $allowed = array_fill_keys($selected, true);
+        $kept = [];
+
+        foreach ($rates as $rate) {
+            if (!is_array($rate)) {
+                continue;
+            }
+
+            $package_type = self::rate_key_text((string) ($rate['package_type'] ?? ''));
+            if ($package_type === '' || isset($allowed[$package_type])) {
+                $kept[] = $rate;
+                continue;
+            }
+
+            $filtered_rates[] = self::package_filtered_rate_summary($rate, $selected);
+        }
+
+        return $kept;
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @return string[]
+     */
+    private static function selected_package_codes(array $shipment): array
+    {
+        $packages = isset($shipment['packages']) && is_array($shipment['packages']) ? $shipment['packages'] : [];
+        $codes = [];
+
+        foreach ($packages as $package) {
+            if (!is_array($package)) {
+                continue;
+            }
+
+            $code = self::rate_key_text((string) ($package['package_code'] ?? ''));
+            if ($code !== '') {
+                $codes[] = $code;
+            }
+        }
+
+        return array_values(array_unique($codes));
+    }
+
+    /**
+     * @param array<string,mixed> $rate
+     * @param string[] $selected_package_codes
+     * @return array<string,mixed>
+     */
+    private static function package_filtered_rate_summary(array $rate, array $selected_package_codes): array
+    {
+        return [
+            'carrier_id' => (string) ($rate['carrier_id'] ?? ''),
+            'carrier_code' => (string) ($rate['carrier_code'] ?? ''),
+            'carrier_nickname' => (string) ($rate['carrier_nickname'] ?? ''),
+            'service_code' => (string) ($rate['service_code'] ?? ''),
+            'service_type' => (string) ($rate['service_type'] ?? ''),
+            'error_messages' => [
+                sprintf(
+                    'Hidden because package type "%s" does not match selected package code(s): %s.',
+                    (string) ($rate['package_type'] ?? ''),
+                    implode(', ', $selected_package_codes)
+                ),
+            ],
+        ];
     }
 
     /**
@@ -1187,24 +1317,30 @@ final class ShipStationShipmentService
             $weight = is_array($row['weight'] ?? null) ? $row['weight'] : [];
             $dims = is_array($row['dimensions'] ?? null) ? $row['dimensions'] : [];
             $insured = is_array($row['insured_value'] ?? null) ? $row['insured_value'] : [];
+            $package_code = sanitize_text_field((string) ($row['package_code'] ?? 'package'));
 
-            $packages[] = [
-                'package_code' => sanitize_text_field((string) ($row['package_code'] ?? 'package')),
+            $package = [
+                'package_code' => $package_code,
                 'weight' => [
                     'value' => self::round_decimal(max(0.0, (float) ($weight['value'] ?? 0)), 2),
                     'unit' => self::choice((string) ($weight['unit'] ?? 'ounce'), ['ounce', 'pound', 'gram', 'kilogram'], 'ounce'),
-                ],
-                'dimensions' => [
-                    'unit' => self::choice((string) ($dims['unit'] ?? 'inch'), ['inch', 'centimeter'], 'inch'),
-                    'length' => self::round_decimal(max(0.0, (float) ($dims['length'] ?? 0)), 2),
-                    'width' => self::round_decimal(max(0.0, (float) ($dims['width'] ?? 0)), 2),
-                    'height' => self::round_decimal(max(0.0, (float) ($dims['height'] ?? 0)), 2),
                 ],
                 'insured_value' => [
                     'currency' => strtolower(sanitize_text_field((string) ($insured['currency'] ?? 'usd'))),
                     'amount' => self::round_decimal(max(0.0, (float) ($insured['amount'] ?? 0)), 2),
                 ],
             ];
+
+            if (!self::package_code_has_provider_dimensions($package_code)) {
+                $package['dimensions'] = [
+                    'unit' => self::choice((string) ($dims['unit'] ?? 'inch'), ['inch', 'centimeter'], 'inch'),
+                    'length' => self::round_decimal(max(0.0, (float) ($dims['length'] ?? 0)), 2),
+                    'width' => self::round_decimal(max(0.0, (float) ($dims['width'] ?? 0)), 2),
+                    'height' => self::round_decimal(max(0.0, (float) ($dims['height'] ?? 0)), 2),
+                ];
+            }
+
+            $packages[] = $package;
         }
 
         return $packages;
@@ -1409,18 +1545,39 @@ final class ShipStationShipmentService
             $label = 'Package ' . ((int) $index + 1);
             $weight = isset($package['weight']) && is_array($package['weight']) ? $package['weight'] : [];
             $dims = isset($package['dimensions']) && is_array($package['dimensions']) ? $package['dimensions'] : [];
+            $package_code = (string) ($package['package_code'] ?? 'package');
 
             if ((float) ($weight['value'] ?? 0) <= 0.0) {
                 $errors[] = "{$label} weight is required.";
             }
-            foreach (['length', 'width', 'height'] as $dim) {
-                if ((float) ($dims[$dim] ?? 0) <= 0.0) {
-                    $errors[] = "{$label} {$dim} is required.";
+            if (!self::package_code_has_provider_dimensions($package_code)) {
+                foreach (['length', 'width', 'height'] as $dim) {
+                    if ((float) ($dims[$dim] ?? 0) <= 0.0) {
+                        $errors[] = "{$label} {$dim} is required.";
+                    }
                 }
             }
         }
 
         return $errors;
+    }
+
+    private static function package_code_has_provider_dimensions(string $package_code): bool
+    {
+        return in_array(self::rate_key_text($package_code), [
+            'thick_envelope',
+            'large_envelope_or_flat',
+            'letter',
+            'large_package',
+            'flat_rate_envelope',
+            'flat_rate_legal_envelope',
+            'flat_rate_padded_envelope',
+            'small_flat_rate_box',
+            'medium_flat_rate_box',
+            'large_flat_rate_box',
+            'regional_rate_box_a',
+            'regional_rate_box_b',
+        ], true);
     }
 
     /**

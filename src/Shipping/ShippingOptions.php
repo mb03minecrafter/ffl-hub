@@ -143,7 +143,9 @@ final class ShippingOptions
      */
     public static function package_presets(): array
     {
-        return self::sanitize_package_presets(self::get_all()['package_presets'] ?? []);
+        return self::merge_builtin_package_presets(
+            self::sanitize_package_presets(self::get_all()['package_presets'] ?? [])
+        );
     }
 
     /**
@@ -236,16 +238,104 @@ final class ShippingOptions
                 'weight_oz' => '',
             ],
             [
-                'id' => 'generic_envelope',
-                'name' => 'Generic Envelope',
+                'id' => 'usps_thick_envelope',
+                'name' => 'USPS Thick Envelope',
                 'kind' => 'envelope',
-                'package_code' => 'package',
+                'package_code' => 'thick_envelope',
                 'length' => '',
                 'width' => '',
                 'height' => '',
                 'weight_oz' => '',
             ],
         ];
+    }
+
+    /**
+     * @return array<int,array{id:string,name:string,kind:string,package_code:string,length:string,width:string,height:string,weight_oz:string}>
+     */
+    private static function builtin_package_presets(): array
+    {
+        return array_merge(self::default_package_presets(), [
+            [
+                'id' => 'usps_flat_rate_envelope',
+                'name' => 'USPS Priority Flat Rate Envelope',
+                'kind' => 'envelope',
+                'package_code' => 'flat_rate_envelope',
+                'length' => '',
+                'width' => '',
+                'height' => '',
+                'weight_oz' => '',
+            ],
+            [
+                'id' => 'usps_flat_rate_legal_envelope',
+                'name' => 'USPS Priority Legal Flat Rate Envelope',
+                'kind' => 'envelope',
+                'package_code' => 'flat_rate_legal_envelope',
+                'length' => '',
+                'width' => '',
+                'height' => '',
+                'weight_oz' => '',
+            ],
+            [
+                'id' => 'usps_flat_rate_padded_envelope',
+                'name' => 'USPS Priority Padded Flat Rate Envelope',
+                'kind' => 'envelope',
+                'package_code' => 'flat_rate_padded_envelope',
+                'length' => '',
+                'width' => '',
+                'height' => '',
+                'weight_oz' => '',
+            ],
+            [
+                'id' => 'usps_small_flat_rate_box',
+                'name' => 'USPS Priority Small Flat Rate Box',
+                'kind' => 'package',
+                'package_code' => 'small_flat_rate_box',
+                'length' => '',
+                'width' => '',
+                'height' => '',
+                'weight_oz' => '',
+            ],
+            [
+                'id' => 'usps_medium_flat_rate_box',
+                'name' => 'USPS Priority Medium Flat Rate Box',
+                'kind' => 'package',
+                'package_code' => 'medium_flat_rate_box',
+                'length' => '',
+                'width' => '',
+                'height' => '',
+                'weight_oz' => '',
+            ],
+            [
+                'id' => 'usps_large_flat_rate_box',
+                'name' => 'USPS Priority Large Flat Rate Box',
+                'kind' => 'package',
+                'package_code' => 'large_flat_rate_box',
+                'length' => '',
+                'width' => '',
+                'height' => '',
+                'weight_oz' => '',
+            ],
+        ]);
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $saved
+     * @return array<int,array{id:string,name:string,kind:string,package_code:string,length:string,width:string,height:string,weight_oz:string}>
+     */
+    private static function merge_builtin_package_presets(array $saved): array
+    {
+        $out = [];
+        foreach (array_merge(self::builtin_package_presets(), $saved) as $preset) {
+            $id = (string) ($preset['id'] ?? '');
+            if ($id === '') {
+                continue;
+            }
+
+            $out[$id] = $preset;
+        }
+
+        return array_values($out);
     }
 
     /**
@@ -296,11 +386,17 @@ final class ShippingOptions
             }
             $used_ids[$id] = true;
 
+            $kind = self::choice((string) ($row['kind'] ?? 'package'), ['package', 'envelope'], 'package');
+            $package_code = self::text($row['package_code'] ?? 'package') ?: 'package';
+            if ($kind === 'envelope' && $package_code === 'package') {
+                $package_code = 'thick_envelope';
+            }
+
             $out[] = [
                 'id' => $id,
                 'name' => $name,
-                'kind' => self::choice((string) ($row['kind'] ?? 'package'), ['package', 'envelope'], 'package'),
-                'package_code' => self::text($row['package_code'] ?? 'package') ?: 'package',
+                'kind' => $kind,
+                'package_code' => $package_code,
                 'length' => $length,
                 'width' => $width,
                 'height' => $height,

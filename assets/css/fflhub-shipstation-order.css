@@ -327,6 +327,7 @@
 
 .fflhub-ss-rate-carrier-block code,
 .fflhub-ss-rate-service-block code,
+.fflhub-ss-rate-service-block small,
 .fflhub-ss-rate-transit-block small,
 .fflhub-ss-rate-price-block span {
     display: block;

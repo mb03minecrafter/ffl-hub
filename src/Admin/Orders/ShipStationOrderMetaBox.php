@@ -357,7 +357,7 @@ final class ShipStationOrderMetaBox
             echo '<option value="' . esc_attr($id) . '">' . esc_html($name) . '</option>';
         }
         echo '</select></label>';
-        echo '<label><span>Package</span><input data-field="package_code" value="' . esc_attr((string) ($package['package_code'] ?? 'package')) . '" /></label>';
+        $this->render_package_code_select((string) ($package['package_code'] ?? 'package'));
         echo '<label><span>Item oz</span><input type="number" step="0.01" min="0" class="fflhub-ss-content-weight" data-weight-role="content" value="' . esc_attr($content_weight) . '" /></label>';
         echo '<label><span>Pkg oz</span><input type="number" step="0.01" min="0" class="fflhub-ss-package-weight" data-weight-role="package" value="" /></label>';
         echo '<label><span>Total oz</span><input type="number" step="0.01" min="0" class="fflhub-ss-total-weight" data-field="weight.value" data-weight-role="total" value="' . esc_attr($content_weight) . '" readonly /></label>';
@@ -368,6 +368,32 @@ final class ShipStationOrderMetaBox
         $this->render_package_items($package, $order_items);
         echo '<button type="button" class="button-link-delete fflhub-ss-remove-package">Remove</button>';
         echo '</div>';
+    }
+
+    private function render_package_code_select(string $current): void
+    {
+        $current = trim($current) !== '' ? trim($current) : 'package';
+        $options = [
+            'package' => 'Package',
+            'thick_envelope' => 'Thick Envelope',
+            'large_envelope_or_flat' => 'Large Envelope / Flat',
+            'large_package' => 'Large Package',
+            'flat_rate_envelope' => 'USPS Flat Rate Envelope',
+            'flat_rate_legal_envelope' => 'USPS Legal Flat Rate Envelope',
+            'flat_rate_padded_envelope' => 'USPS Padded Flat Rate Envelope',
+            'small_flat_rate_box' => 'USPS Small Flat Rate Box',
+            'medium_flat_rate_box' => 'USPS Medium Flat Rate Box',
+            'large_flat_rate_box' => 'USPS Large Flat Rate Box',
+        ];
+        if (!isset($options[$current])) {
+            $options[$current] = $current;
+        }
+
+        echo '<label><span>Package</span><select data-field="package_code">';
+        foreach ($options as $code => $label) {
+            echo '<option value="' . esc_attr($code) . '" ' . selected($current, $code, false) . '>' . esc_html($label) . '</option>';
+        }
+        echo '</select></label>';
     }
 
     /**
