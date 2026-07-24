@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Admin\Orders\OrderPlacementMetaBox;
 use FFLHub\Admin\Orders\AuthorizeNetOrderRescueButton;
+use FFLHub\Admin\Orders\OrderBoxPackingMetaBox;
 use FFLHub\Admin\Orders\OrderFulfillmentModeBadge;
 use FFLHub\Admin\Orders\OrderCartComplianceMetaBox;
 use FFLHub\Admin\Orders\OrderProfitAuditMetaBox;
@@ -145,6 +146,7 @@ final class Plugin
     public ShipStationSettingsPage $shipstation_settings_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public AuthorizeNetOrderRescueButton $authnet_order_rescue_button;
+    public OrderBoxPackingMetaBox $order_box_packing_metabox;
     public OrderCartComplianceMetaBox $order_cart_compliance_metabox;
     public OrderProfitAuditMetaBox $order_profit_audit_metabox;
     public ShipStationOrderMetaBox $shipstation_order_metabox;
@@ -327,6 +329,9 @@ final class Plugin
 
             $this->authnet_order_rescue_button = new AuthorizeNetOrderRescueButton();
             $this->authnet_order_rescue_button->register();
+
+            $this->order_box_packing_metabox = new OrderBoxPackingMetaBox();
+            $this->order_box_packing_metabox->register();
 
             $this->order_cart_compliance_metabox = new OrderCartComplianceMetaBox();
             $this->order_cart_compliance_metabox->register();
