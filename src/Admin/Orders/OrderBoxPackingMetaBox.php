@@ -32,6 +32,7 @@ final class OrderBoxPackingMetaBox
         add_action('add_meta_boxes_woocommerce_page_wc-orders', [$this, 'register_metabox']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
         add_action('admin_post_' . self::ACTION, [$this, 'handle_post']);
+        add_action('wp_ajax_' . self::ACTION, [$this, 'handle_ajax']);
     }
 
     public function register_metabox(): void
@@ -65,6 +66,23 @@ final class OrderBoxPackingMetaBox
         wp_register_style('fflhub-box-packing-order', false, [], FFLHUB_PLUGIN_VERSION);
         wp_enqueue_style('fflhub-box-packing-order');
         wp_add_inline_style('fflhub-box-packing-order', $this->inline_css());
+
+        $js_rel_path = 'assets/js/fflhub-box-packing-order.js';
+        $js_abs_path = FFLHUB_PLUGIN_PATH . $js_rel_path;
+        wp_enqueue_script(
+            'fflhub-box-packing-order',
+            plugins_url($js_rel_path, FFLHUB_PLUGIN_FILE),
+            [],
+            file_exists($js_abs_path) ? (string) filemtime($js_abs_path) : FFLHUB_PLUGIN_VERSION,
+            true
+        );
+        wp_localize_script('fflhub-box-packing-order', 'FFLHubBoxPacking', [
+            'ajaxUrl' => admin_url('admin-ajax.php'),
+            'action' => self::ACTION,
+            'runningText' => __('Packing...', 'ffl-hub'),
+            'buttonText' => __('Run Box Packing Test', 'ffl-hub'),
+            'errorText' => __('Box packing test failed.', 'ffl-hub'),
+        ]);
     }
 
     /**
@@ -91,11 +109,13 @@ final class OrderBoxPackingMetaBox
         echo '<div class="fflhub-box-pack-panel">';
         echo '<p class="description">' . esc_html__('Test how BoxPacker would split only dealer-fulfilled order items across the selected box presets. Envelopes are hidden for now.', 'ffl-hub') . '</p>';
 
+        echo '<div class="fflhub-box-pack-result-slot" data-fflhub-box-pack-result aria-live="polite">';
         if (!empty($result)) {
             $this->render_result($result);
         }
+        echo '</div>';
 
-        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" data-fflhub-box-pack-form>';
         echo '<input type="hidden" name="action" value="' . esc_attr(self::ACTION) . '" />';
         echo '<input type="hidden" name="order_id" value="' . esc_attr((string) $order_id) . '" />';
         echo '<input type="hidden" name="redirect_to" value="' . esc_attr($this->current_url()) . '" />';
@@ -121,53 +141,12 @@ final class OrderBoxPackingMetaBox
             wp_die(esc_html__('You do not have permission to test box packing.', 'ffl-hub'));
         }
 
-        $order_id = isset($_POST['order_id']) ? absint($_POST['order_id']) : 0;
-        $nonce = isset($_POST['fflhub_box_packing_nonce'])
-            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_box_packing_nonce']))
-            : '';
-        if ($order_id <= 0 || $nonce === '' || !wp_verify_nonce($nonce, self::NONCE_ACTION_PREFIX . $order_id)) {
+        $order_id = $this->posted_order_id();
+        if (!$this->posted_request_is_valid($order_id)) {
             wp_die(esc_html__('Security check failed. Please refresh and try again.', 'ffl-hub'));
         }
 
-        $order = wc_get_order($order_id);
-        $selected_ids = isset($_POST['box_ids']) && is_array($_POST['box_ids'])
-            ? array_map('sanitize_key', wp_unslash($_POST['box_ids']))
-            : [];
-        $selected_ids = array_values(array_unique(array_filter($selected_ids)));
-        $boxes = $this->selected_box_rows($selected_ids);
-
-        if (!($order instanceof WC_Order)) {
-            $result = [
-                'ok' => false,
-                'order_id' => $order_id,
-                'selected_box_ids' => $selected_ids,
-                'errors' => ['Order not found.'],
-                'boxes' => [],
-                'unpacked_items' => [],
-                'ignored_items' => [],
-                'dealer_fulfilled_units' => 0,
-                'packed_units' => 0,
-                'ran_at' => current_time('mysql'),
-            ];
-        } elseif (empty($boxes)) {
-            $result = [
-                'ok' => false,
-                'order_id' => $order_id,
-                'selected_box_ids' => $selected_ids,
-                'errors' => ['Select at least one package preset that has length, width, and height.'],
-                'boxes' => [],
-                'unpacked_items' => [],
-                'ignored_items' => [],
-                'dealer_fulfilled_units' => 0,
-                'packed_units' => 0,
-                'ran_at' => current_time('mysql'),
-            ];
-        } else {
-            $result = (new OrderBoxPackingService())->pack_dealer_fulfilled_order($order, $boxes);
-            $result['selected_box_ids'] = $selected_ids;
-            $result['ran_at'] = current_time('mysql');
-        }
-
+        $result = $this->build_packing_result($order_id, $this->posted_selected_box_ids());
         set_transient($this->result_transient_key($order_id), $result, 10 * MINUTE_IN_SECONDS);
 
         $redirect = isset($_POST['redirect_to'])
@@ -179,6 +158,114 @@ final class OrderBoxPackingMetaBox
 
         wp_safe_redirect(add_query_arg('fflhub_box_packing_test', '1', $redirect));
         exit;
+    }
+
+    public function handle_ajax(): void
+    {
+        if (!self::can_manage()) {
+            wp_send_json_error(['message' => __('You do not have permission to test box packing.', 'ffl-hub')], 403);
+        }
+
+        $order_id = $this->posted_order_id();
+        if (!$this->posted_request_is_valid($order_id)) {
+            wp_send_json_error(['message' => __('Security check failed. Please refresh and try again.', 'ffl-hub')], 403);
+        }
+
+        $result = $this->build_packing_result($order_id, $this->posted_selected_box_ids());
+
+        ob_start();
+        $this->render_result($result);
+        $html = (string) ob_get_clean();
+
+        wp_send_json_success([
+            'html' => $html,
+            'ok' => !empty($result['ok']),
+        ]);
+    }
+
+    /**
+     * @param string[] $selected_ids
+     * @return array<string,mixed>
+     */
+    private function build_packing_result(int $order_id, array $selected_ids): array
+    {
+        $order = wc_get_order($order_id);
+        $boxes = $this->selected_box_rows($selected_ids);
+        $ran_at = current_time('mysql');
+
+        if (!($order instanceof WC_Order)) {
+            return [
+                'ok' => false,
+                'order_id' => $order_id,
+                'selected_box_ids' => $selected_ids,
+                'errors' => ['Order not found.'],
+                'boxes' => [],
+                'unpacked_items' => [],
+                'ignored_items' => [],
+                'dealer_fulfilled_units' => 0,
+                'packed_units' => 0,
+                'ran_at' => $ran_at,
+            ];
+        }
+
+        if (empty($boxes)) {
+            return [
+                'ok' => false,
+                'order_id' => $order_id,
+                'selected_box_ids' => $selected_ids,
+                'errors' => ['Select at least one package preset that has length, width, and height.'],
+                'boxes' => [],
+                'unpacked_items' => [],
+                'ignored_items' => [],
+                'dealer_fulfilled_units' => 0,
+                'packed_units' => 0,
+                'ran_at' => $ran_at,
+            ];
+        }
+
+        $result = (new OrderBoxPackingService())->pack_dealer_fulfilled_order($order, $boxes);
+        $result['selected_box_ids'] = $selected_ids;
+        $result['ran_at'] = $ran_at;
+
+        return $result;
+    }
+
+    private function posted_order_id(): int
+    {
+        return isset($_POST['order_id']) ? absint($_POST['order_id']) : 0;
+    }
+
+    private function posted_request_is_valid(int $order_id): bool
+    {
+        if ($order_id <= 0) {
+            return false;
+        }
+
+        $nonce = isset($_POST['fflhub_box_packing_nonce'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_box_packing_nonce']))
+            : '';
+
+        return $nonce !== '' && wp_verify_nonce($nonce, self::NONCE_ACTION_PREFIX . $order_id);
+    }
+
+    /**
+     * @return string[]
+     */
+    private function posted_selected_box_ids(): array
+    {
+        $posted = isset($_POST['box_ids']) && is_array($_POST['box_ids'])
+            ? (array) wp_unslash($_POST['box_ids'])
+            : [];
+
+        $selected_ids = [];
+        foreach ($posted as $id) {
+            $id = sanitize_key((string) $id);
+            if ($id !== '') {
+                $selected_ids[] = $id;
+            }
+        }
+
+        return array_values(array_unique($selected_ids));
     }
 
     /**
