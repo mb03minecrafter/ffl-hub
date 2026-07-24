@@ -10,6 +10,7 @@ use FFLHub\Distributor\Services\DistributorServicesBase;
 use FFLHub\Distributor\Services\Kinseys\Cron\KinseysInventoryCronService;
 use FFLHub\Distributor\Services\Kinseys\Cron\KinseysProductCronService;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
+use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Util\DebugLogUtil;
 
 final class KinseysServices extends DistributorServicesBase
@@ -17,16 +18,26 @@ final class KinseysServices extends DistributorServicesBase
     private const SCHEMA_VERSION_OPTION = 'fflhub_kinseys_schema_version';
     private const SCHEMA_VERSION = '3';
 
+    private FFLTable $fflTable;
+
     public function __construct(
         DoubleBufferedProductTable $fulfillmentTable,
         KinseysProductCronService $productCron,
-        KinseysInventoryCronService $inventoryCron
+        KinseysInventoryCronService $inventoryCron,
+        FFLTable $fflTable
     ) {
         parent::__construct(
             $fulfillmentTable,
             $productCron,
             $inventoryCron
         );
+
+        $this->fflTable = $fflTable;
+    }
+
+    public function get_ffl_table(): FFLTable
+    {
+        return $this->fflTable;
     }
 
     public function on_activate(): void

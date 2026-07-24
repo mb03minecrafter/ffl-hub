@@ -13,6 +13,8 @@ use FFLHub\Distributor\Services\Kinseys\Cron\KinseysProductCronService;
 use FFLHub\Distributor\Services\Kinseys\KinseysServices;
 use FFLHub\Distributor\Services\Kinseys\Tables\KinseysProductTableSchema;
 use FFLHub\Distributor\Services\Tables\DoubleBufferedProductTable;
+use FFLHub\FFL\Tables\FFLSchema;
+use FFLHub\FFL\Tables\FFLTable;
 
 /**
  * Kinsey's module definition.
@@ -87,11 +89,13 @@ final class KinseysModule implements DistributorModuleInterface
 
         $productCron = new KinseysProductCronService($table);
         $inventoryCron = new KinseysInventoryCronService($table);
+        $fflTable = new FFLTable(new FFLSchema());
 
         $services = new KinseysServices(
             $table,
             $productCron,
-            $inventoryCron
+            $inventoryCron,
+            $fflTable
         );
 
         return new DistributorKinseys($this, $services);

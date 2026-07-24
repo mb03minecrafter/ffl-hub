@@ -8,6 +8,7 @@ use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Product\State\ProductStateStore;
+use FFLHub\Shipping\Providers\ShippingProviderInterface;
 use FFLHub\Util\DebugLogUtil;
 use WC_Order;
 use WC_Order_Item_Product;
@@ -28,17 +29,19 @@ if (!defined('ABSPATH')) {
 final class ShipStationShipmentService
 {
     private FFLTable $ffl_table;
-    private ShipStationClient $client;
+    private ShippingProviderInterface $provider;
     private ShipStationCarrierCache $carrier_cache;
 
     public function __construct(
         FFLTable $ffl_table,
         ?ShipStationClient $client = null,
-        ?ShipStationCarrierCache $carrier_cache = null
+        ?ShipStationCarrierCache $carrier_cache = null,
+        ?ShippingProviderInterface $provider = null
     ) {
         $this->ffl_table = $ffl_table;
-        $this->client = $client ?? new ShipStationClient();
-        $this->carrier_cache = $carrier_cache ?? new ShipStationCarrierCache($this->client);
+        $client = $client ?? new ShipStationClient();
+        $this->provider = $provider ?? new ShipStationShippingProvider($client);
+        $this->carrier_cache = $carrier_cache ?? new ShipStationCarrierCache($client);
     }
 
     /**
@@ -124,7 +127,7 @@ final class ShipStationShipmentService
             );
         }
 
-        $result = $this->client->validate_address($address);
+        $result = $this->provider->validate_address($address);
         if (is_wp_error($result)) {
             return $this->address_validation_error_response($result, $address);
         }
@@ -268,7 +271,7 @@ final class ShipStationShipmentService
          */
         $payload = (array) apply_filters('fflhub_shipstation_rate_request', $payload, $order, $context);
 
-        $response = $this->client->get_rates($payload);
+        $response = $this->provider->get_rates($payload);
         if (is_wp_error($response)) {
             return $response;
         }
@@ -408,7 +411,7 @@ final class ShipStationShipmentService
                 'display_scheme' => 'label',
             ];
 
-            $response = $this->client->purchase_label_from_rate($rate_id, $payload);
+            $response = $this->provider->purchase_label_from_rate($rate_id, $payload);
             if (is_wp_error($response)) {
                 return $response;
             }
@@ -459,7 +462,7 @@ final class ShipStationShipmentService
                 return new WP_Error('fflhub_shipstation_label_not_active', 'That label is already voided or inactive.', ['status' => 409]);
             }
 
-            $response = $this->client->void_label($label_id);
+            $response = $this->provider->void_label($label_id);
             if (is_wp_error($response)) {
                 return $response;
             }
@@ -492,7 +495,7 @@ final class ShipStationShipmentService
             return new WP_Error('fflhub_shipstation_label_url_missing', 'The saved label has no download URL.', ['status' => 404]);
         }
 
-        return $this->client->download_label($url);
+        return $this->provider->download_label($url);
     }
 
     /**

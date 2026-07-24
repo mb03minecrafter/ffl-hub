@@ -472,6 +472,10 @@ final class KinseysApiClient
             if ($license !== '') {
                 $summary['ffl_license_tail5'] = strlen($license) >= 5 ? substr($license, -5) : $license;
             }
+            $expires = isset($payload['fflInfo']['expires']) ? trim((string) $payload['fflInfo']['expires']) : '';
+            if ($expires !== '') {
+                $summary['ffl_expires'] = $expires;
+            }
         }
 
         return $summary;

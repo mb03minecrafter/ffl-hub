@@ -16,6 +16,8 @@ use FFLHub\Distributor\Models\DistributorShipment;
 use FFLHub\Distributor\Models\DistributorShipTo;
 use FFLHub\Distributor\Product\Category\DistributorProductCategoryMapper;
 use FFLHub\Distributor\Services\Kinseys\API\KinseysApiClient;
+use FFLHub\Distributor\Services\Kinseys\KinseysServices;
+use FFLHub\FFL\Data\FFLRepository;
 use FFLHub\Settings\Options;
 
 /**
@@ -534,7 +536,11 @@ final class DistributorKinseys extends DistributorBase
 
             /** @var DistributorShipTo $ffl */
             $ffl = $request->ship_to_ffl;
-            $payload['fflInfo'] = $this->build_kinseys_ffl_payload($ffl, (string) $request->receiving_ffl_number);
+            $payload['fflInfo'] = $this->build_kinseys_ffl_payload(
+                $ffl,
+                (string) $request->receiving_ffl_number,
+                $this->resolve_kinseys_ffl_expires_for_request($request)
+            );
         }
 
         if ($this->is_test_order_debug_enabled()) {
@@ -738,7 +744,7 @@ final class DistributorKinseys extends DistributorBase
     /**
      * @return array<string,mixed>
      */
-    private function build_kinseys_ffl_payload(DistributorShipTo $ffl, string $license_number): array
+    private function build_kinseys_ffl_payload(DistributorShipTo $ffl, string $license_number, string $expires): array
     {
         $name = trim((string) $ffl->name);
         $company = trim((string) $ffl->company);
@@ -756,6 +762,7 @@ final class DistributorKinseys extends DistributorBase
             'state' => self::format_us_state2_best_effort((string) $ffl->state),
             'zip' => self::format_us_zip5_or_zip9_with_dash_for_payload((string) $ffl->zip),
             'phone' => self::truncate_string((string) $ffl->phone, 30),
+            'expires' => $expires,
         ];
 
         return $this->drop_empty_strings($payload);
@@ -801,7 +808,29 @@ final class DistributorKinseys extends DistributorBase
             );
         }
 
+        $expires = $this->resolve_kinseys_ffl_expires_for_request($request);
+        if (!self::looks_like_yyyy_mm_dd($expires)) {
+            return DistributorOrderResult::block_fatal(
+                'Kinsey\'s FFL order missing/invalid receiving FFL expiration.',
+                [DistributorOrderResult::REASON_FATAL_BAD_REQUEST],
+                ['ffl_expires' => $expires],
+                0,
+                '',
+                $external_ids
+            );
+        }
+
         return null;
+    }
+
+    private function resolve_kinseys_ffl_expires_for_request(DistributorOrderRequest $request): string
+    {
+        $license = strtoupper(trim((string) $request->receiving_ffl_number));
+        if ($license === '' || !($this->services instanceof KinseysServices)) {
+            return '';
+        }
+
+        return FFLRepository::get_expiration_by_number($this->services->get_ffl_table(), $license);
     }
 
     /**
