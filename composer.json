@@ -9,5 +9,9 @@
   },
   "require-dev": {
     "php-stubs/wp-cli-stubs": "^2.12"
+  },
+  "require": {
+    "dvdoug/boxpacker": "^4.2",
+    "lipseys/apiintegration": "1.2.2"
   }
 }
