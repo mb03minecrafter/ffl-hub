@@ -83,7 +83,8 @@ final class OrderBoxPackingService
                 $ignored_items,
                 $errors,
                 $item_result['dealer_fulfilled_units'],
-                0
+                count($boxes),
+                $this->candidate_boxes_summary($boxes, $items)
             );
         }
 
@@ -116,7 +117,8 @@ final class OrderBoxPackingService
                 $ignored_items,
                 $errors,
                 $item_result['dealer_fulfilled_units'],
-                0
+                count($boxes),
+                $this->candidate_boxes_summary($boxes, $items)
             );
         } catch (\Throwable $e) {
             $errors[] = 'BoxPacker failed: ' . $e->getMessage();
@@ -135,7 +137,8 @@ final class OrderBoxPackingService
                 $ignored_items,
                 $errors,
                 $item_result['dealer_fulfilled_units'],
-                0
+                count($boxes),
+                $this->candidate_boxes_summary($boxes, $items)
             );
         }
 
@@ -146,14 +149,17 @@ final class OrderBoxPackingService
             );
         }
 
+        $packed_box_summaries = $this->packed_boxes_summary($packed_boxes);
+
         return $this->result(
             $order,
-            $this->packed_boxes_summary($packed_boxes),
+            $packed_box_summaries,
             $unpacked_items,
             $ignored_items,
             $errors,
             $item_result['dealer_fulfilled_units'],
-            count($boxes)
+            count($boxes),
+            $this->candidate_boxes_summary($boxes, $items, $packed_box_summaries)
         );
     }
 
@@ -524,6 +530,87 @@ final class OrderBoxPackingService
         return is_iterable($items) ? $items : [];
     }
 
+    /**
+     * Shows how each candidate box compares against the full dealer-fulfilled
+     * item set. For boxes BoxPacker did not choose, these are capacity estimates
+     * rather than real placements: item volume divided by inner box volume, and
+     * item weight divided by remaining weight capacity.
+     *
+     * @param PackingBox[] $boxes
+     * @param array<int,array{item:PackingItem,quantity:int}> $items
+     * @param array<int,array<string,mixed>> $packed_box_summaries
+     * @return array<int,array<string,mixed>>
+     */
+    private function candidate_boxes_summary(array $boxes, array $items, array $packed_box_summaries = []): array
+    {
+        $totals = $this->packable_item_totals($items);
+        $used_counts = [];
+        foreach ($packed_box_summaries as $packed_box) {
+            $box_id = (string) ($packed_box['box_id'] ?? '');
+            if ($box_id !== '') {
+                $used_counts[$box_id] = (int) ($used_counts[$box_id] ?? 0) + 1;
+            }
+        }
+
+        $out = [];
+        foreach ($boxes as $box) {
+            if (!($box instanceof PackingBox)) {
+                continue;
+            }
+
+            $inner_volume = max(0, $box->getInnerWidth() * $box->getInnerLength() * $box->getInnerDepth());
+            $weight_capacity = max(0, $box->getMaxWeight() - $box->getEmptyWeight());
+            $box_id = $box->getId();
+            $volume_percent = $inner_volume > 0
+                ? round($totals['volume_mm3'] / $inner_volume * 100, 1)
+                : null;
+            $weight_percent = $weight_capacity > 0
+                ? round($totals['weight_g'] / $weight_capacity * 100, 1)
+                : null;
+
+            $out[] = [
+                ...$box->summary(),
+                'used_count' => (int) ($used_counts[$box_id] ?? 0),
+                'was_chosen' => !empty($used_counts[$box_id]),
+                'estimated_volume_utilization_percent' => $volume_percent,
+                'estimated_weight_utilization_percent' => $weight_percent,
+                'can_hold_by_volume' => $inner_volume > 0 && $totals['volume_mm3'] <= $inner_volume,
+                'can_hold_by_weight' => $weight_capacity > 0 && $totals['weight_g'] <= $weight_capacity,
+                'total_item_volume_in3' => self::mm3_to_cubic_inches($totals['volume_mm3']),
+                'inner_volume_in3' => self::mm3_to_cubic_inches($inner_volume),
+                'total_item_weight_oz' => self::grams_to_ounces($totals['weight_g']),
+                'weight_capacity_oz' => self::grams_to_ounces($weight_capacity),
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<int,array{item:PackingItem,quantity:int}> $items
+     * @return array{volume_mm3:int,weight_g:int}
+     */
+    private function packable_item_totals(array $items): array
+    {
+        $volume = 0;
+        $weight = 0;
+        foreach ($items as $entry) {
+            $item = $entry['item'] ?? null;
+            if (!($item instanceof PackingItem)) {
+                continue;
+            }
+
+            $quantity = max(1, (int) ($entry['quantity'] ?? 1));
+            $volume += $item->getWidth() * $item->getLength() * $item->getDepth() * $quantity;
+            $weight += $item->getWeight() * $quantity;
+        }
+
+        return [
+            'volume_mm3' => $volume,
+            'weight_g' => $weight,
+        ];
+    }
+
     private function packed_item_source_item(PackedItem $packed_item): ?PackingItem
     {
         $item = method_exists($packed_item, 'getItem')
@@ -628,6 +715,7 @@ final class OrderBoxPackingService
      * @param array<int,array<string,mixed>> $boxes
      * @param array<int,array<string,mixed>> $unpacked_items
      * @param array<int,array<string,mixed>> $ignored_items
+     * @param array<int,array<string,mixed>> $candidate_boxes
      * @param string[] $errors
      * @return array<string,mixed>
      */
@@ -638,7 +726,8 @@ final class OrderBoxPackingService
         array $ignored_items,
         array $errors,
         int $dealer_fulfilled_units,
-        int $candidate_box_count
+        int $candidate_box_count,
+        array $candidate_boxes = []
     ): array {
         $packed_units = 0;
         foreach ($boxes as $box) {
@@ -659,6 +748,7 @@ final class OrderBoxPackingService
             'ignored_item_count' => count($ignored_items),
             'unpacked_item_count' => count($unpacked_items),
             'boxes' => $boxes,
+            'candidate_boxes' => $candidate_boxes,
             'unpacked_items' => $unpacked_items,
             'ignored_items' => $ignored_items,
             'errors' => $errors,
@@ -786,5 +876,10 @@ final class OrderBoxPackingService
     private static function grams_to_ounces(int $value): float
     {
         return round((float) $value / self::OUNCE_TO_GRAM, 2);
+    }
+
+    private static function mm3_to_cubic_inches(int $value): float
+    {
+        return round((float) $value / (self::INCH_TO_MM ** 3), 2);
     }
 }

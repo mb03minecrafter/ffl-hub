@@ -434,9 +434,63 @@ final class OrderBoxPackingMetaBox
             echo '</div>';
         }
 
+        $this->render_candidate_box_comparison((array) ($result['candidate_boxes'] ?? []));
         $this->render_item_debug_list(__('Unpacked Items', 'ffl-hub'), (array) ($result['unpacked_items'] ?? []));
         $this->render_item_debug_list(__('Ignored Direct-Ship Items', 'ffl-hub'), (array) ($result['ignored_items'] ?? []));
         echo '</section>';
+    }
+
+    /**
+     * @param array<int,mixed> $candidate_boxes
+     */
+    private function render_candidate_box_comparison(array $candidate_boxes): void
+    {
+        if (empty($candidate_boxes)) {
+            return;
+        }
+
+        echo '<details class="fflhub-box-pack-candidates" open>';
+        echo '<summary>' . esc_html__('Candidate Box Comparison', 'ffl-hub') . '</summary>';
+        echo '<p class="description">' . esc_html__('Unchosen boxes show capacity estimates for the full dealer-fulfilled item set, not actual alternate placements.', 'ffl-hub') . '</p>';
+        echo '<table class="widefat striped"><thead><tr>';
+        echo '<th>' . esc_html__('Box', 'ffl-hub') . '</th>';
+        echo '<th>' . esc_html__('Chosen', 'ffl-hub') . '</th>';
+        echo '<th>' . esc_html__('Volume Used', 'ffl-hub') . '</th>';
+        echo '<th>' . esc_html__('Weight Used', 'ffl-hub') . '</th>';
+        echo '<th>' . esc_html__('Capacity', 'ffl-hub') . '</th>';
+        echo '<th>' . esc_html__('Dimensions', 'ffl-hub') . '</th>';
+        echo '</tr></thead><tbody>';
+
+        foreach ($candidate_boxes as $box) {
+            if (!is_array($box)) {
+                continue;
+            }
+
+            $chosen = !empty($box['was_chosen']);
+            $used_count = max(0, (int) ($box['used_count'] ?? 0));
+            $volume_percent = self::nullable_percent_label($box['estimated_volume_utilization_percent'] ?? null);
+            $weight_percent = self::nullable_percent_label($box['estimated_weight_utilization_percent'] ?? null);
+            $volume_ok = !empty($box['can_hold_by_volume']);
+            $weight_ok = !empty($box['can_hold_by_weight']);
+            $capacity = trim(implode(' / ', array_filter([
+                self::nullable_number_label($box['total_item_volume_in3'] ?? null) . ' of ' . self::nullable_number_label($box['inner_volume_in3'] ?? null) . ' in3',
+                self::nullable_number_label($box['total_item_weight_oz'] ?? null) . ' of ' . self::nullable_number_label($box['weight_capacity_oz'] ?? null) . ' oz',
+            ])));
+
+            echo '<tr class="' . esc_attr($chosen ? 'is-chosen' : 'is-not-chosen') . '">';
+            echo '<td><strong>' . esc_html((string) ($box['box_name'] ?? $box['box_id'] ?? 'Box')) . '</strong><br><code>' . esc_html((string) ($box['package_code'] ?? 'package')) . '</code></td>';
+            echo '<td>' . ($chosen
+                ? '<span class="fflhub-box-pack-badge is-good">' . esc_html(sprintf(_n('%d used', '%d used', $used_count, 'ffl-hub'), $used_count)) . '</span>'
+                : '<span class="fflhub-box-pack-badge">' . esc_html__('Not chosen', 'ffl-hub') . '</span>') . '</td>';
+            echo '<td><strong>' . esc_html($volume_percent) . '</strong><br>' . self::status_badge($volume_ok, __('volume ok', 'ffl-hub'), __('volume high', 'ffl-hub')) . '</td>';
+            echo '<td><strong>' . esc_html($weight_percent) . '</strong><br>' . self::status_badge($weight_ok, __('weight ok', 'ffl-hub'), __('weight high', 'ffl-hub')) . '</td>';
+            echo '<td>' . esc_html($capacity) . '</td>';
+            echo '<td>' . esc_html(self::box_dimension_label($box)) . '</td>';
+            echo '</tr>';
+        }
+
+        echo '</tbody></table>';
+        echo '</details>';
     }
 
     /**
@@ -626,6 +680,35 @@ final class OrderBoxPackingMetaBox
         return rtrim(rtrim(number_format($value, 2, '.', ''), '0'), '.');
     }
 
+    /**
+     * @param mixed $value
+     */
+    private static function nullable_number_label($value): string
+    {
+        if ($value === null || $value === '') {
+            return __('n/a', 'ffl-hub');
+        }
+
+        return self::number_label((float) $value);
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function nullable_percent_label($value): string
+    {
+        if ($value === null || $value === '') {
+            return __('n/a', 'ffl-hub');
+        }
+
+        return self::number_label((float) $value) . '%';
+    }
+
+    private static function status_badge(bool $ok, string $ok_label, string $bad_label): string
+    {
+        return '<span class="fflhub-box-pack-badge ' . ($ok ? 'is-good' : 'is-bad') . '">' . esc_html($ok ? $ok_label : $bad_label) . '</span>';
+    }
+
     private function inline_css(): string
     {
         return '
@@ -686,6 +769,16 @@ final class OrderBoxPackingMetaBox
             .fflhub-box-pack-items td { font-size:12px; }
             .fflhub-box-pack-debug-list { margin-top:10px; }
             .fflhub-box-pack-debug-list summary { cursor:pointer; font-weight:600; }
+            .fflhub-box-pack-candidates { margin-top:12px; }
+            .fflhub-box-pack-candidates summary { cursor:pointer; font-weight:600; }
+            .fflhub-box-pack-candidates table { margin-top:8px; }
+            .fflhub-box-pack-candidates tr.is-chosen td { background:#f0f8f2; }
+            .fflhub-box-pack-badge {
+                display:inline-flex; align-items:center; border-radius:999px; padding:2px 8px;
+                background:#f0f0f1; color:#50575e; font-size:11px; font-weight:600;
+            }
+            .fflhub-box-pack-badge.is-good { background:#e7f7ed; color:#006b2e; }
+            .fflhub-box-pack-badge.is-bad { background:#fcf0f1; color:#8a2424; }
             .fflhub-box-pack-empty {
                 padding:10px; border:1px dashed #c3c4c7; border-radius:8px; color:#646970; background:#f6f7f7;
             }
