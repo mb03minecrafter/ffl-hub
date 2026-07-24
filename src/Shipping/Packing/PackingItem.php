@@ -71,6 +71,17 @@ final class PackingItem implements Item, JsonSerializable
         return $this->allowed_rotation;
     }
 
+    /**
+     * Older BoxPacker interface builds asked items this question directly.
+     * Keeping it here is harmless on newer builds and protects the admin tester
+     * if PHP-FPM is still holding a stale interface in OPcache after composer
+     * updates.
+     */
+    public function getKeepFlat(): bool
+    {
+        return $this->allowed_rotation === Rotation::KeepFlat;
+    }
+
     public function getPackingKey(): string
     {
         return $this->packing_key;
