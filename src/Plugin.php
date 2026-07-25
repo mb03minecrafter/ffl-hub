@@ -93,6 +93,7 @@ use FFLHub\Receiving\ReceivingTestShipmentStore;
 use FFLHub\Settings\Options;
 use FFLHub\Settings\SettingsRegistrar;
 use FFLHub\Shipping\ShipStation\ShipStationRestController;
+use FFLHub\Shipping\EasyPost\EasyPostRestController;
 use FFLHub\Shipping\Wordpress\ShippingRegistrar;
 use FFLHub\Util\ActionSchedulerWebRunnerGuard;
 
@@ -217,6 +218,7 @@ final class Plugin
 
         ShippingRegistrar::init();
         ShipStationRestController::init($this->ffl_table);
+        EasyPostRestController::init();
 
         OrderProfitAuditMeta::init();
         WooShippingLabelCostSync::init();

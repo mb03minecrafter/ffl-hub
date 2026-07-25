@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Shipping\ShippingOptions;
+use FFLHub\Shipping\EasyPost\EasyPostOptions;
 use FFLHub\Shipping\ShipStation\ShipStationOptions;
 
 if (!defined('ABSPATH')) {
@@ -65,6 +66,13 @@ final class ShippingDashboardPage
                     <strong><?php echo esc_html(ShipStationOptions::is_enabled() ? __('Enabled', 'ffl-hub') : __('Disabled', 'ffl-hub')); ?></strong>
                     <p class="description">
                         <?php echo esc_html(sprintf('Mode: %s. API key: %s.', ShipStationOptions::mode(), ShipStationOptions::active_api_key_source_label())); ?>
+                    </p>
+                </div>
+                <div class="fflhub-shipping-stat">
+                    <?php esc_html_e('EasyPost', 'ffl-hub'); ?>
+                    <strong><?php echo esc_html(EasyPostOptions::is_enabled() ? __('Enabled', 'ffl-hub') : __('Disabled', 'ffl-hub')); ?></strong>
+                    <p class="description">
+                        <?php echo esc_html(sprintf('Mode: %s. API key: %s.', EasyPostOptions::mode(), EasyPostOptions::active_api_key_source_label())); ?>
                     </p>
                 </div>
                 <div class="fflhub-shipping-stat">
