@@ -177,9 +177,14 @@ final class ShipStationOrderMeta
         $label_download = is_array($api_label['label_download'] ?? null) ? $api_label['label_download'] : [];
         $format = strtolower((string) ($api_label['label_format'] ?? ShipStationOptions::label_format()));
         $label_url = (string) ($label_download[$format] ?? $label_download['href'] ?? '');
+        $provider_id = (string) ($api_label['provider_id'] ?? $rated['provider_id'] ?? 'shipstation');
+        $provider_label = (string) ($api_label['provider_label'] ?? $rated['provider_label'] ?? 'ShipStation');
+        $source = (string) ($api_label['source'] ?? $rated['source'] ?? ($provider_id === 'shipstation' ? 'fflhub_shipstation' : 'fflhub_' . $provider_id));
 
         return [
-            'source' => 'fflhub_shipstation',
+            'source' => $source,
+            'provider_id' => $provider_id,
+            'provider_label' => $provider_label,
             'label_id' => (string) ($api_label['label_id'] ?? ''),
             'shipment_id' => (string) ($api_label['shipment_id'] ?? ($pending['shipment_id'] ?? '')),
             'rate_id' => $rate_id,

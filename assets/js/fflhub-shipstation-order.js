@@ -403,7 +403,7 @@
         return '<li>' + escapeHtml(String(msg)) + '</li>';
       }).join('');
       return '<div class="fflhub-ss-invalid-rate"><strong>' +
-        escapeHtml(rate.carrier_nickname || rate.carrier_code || 'Carrier') +
+        escapeHtml(rate.provider_label || rate.carrier_nickname || rate.carrier_code || 'Carrier') +
         '</strong><ul>' + errors + '</ul></div>';
     }).join('');
 
@@ -553,6 +553,7 @@
     var carrierName = !debug && brand.slug !== 'generic'
       ? brand.label
       : (rate.carrier_nickname || rate.carrier_friendly_name || rate.carrier_code || 'Carrier');
+    var providerName = rate.provider_label || '';
     var serviceName = rate.service_type || rate.service_code || 'Service';
     var packageName = packageTypeLabel(rate.package_type);
 
@@ -561,7 +562,9 @@
       '<span class="fflhub-ss-rate-select-dot" aria-hidden="true"></span>' +
       '<div class="fflhub-ss-rate-carrier-block">' +
         '<span class="fflhub-ss-carrier-mark is-' + escapeHtml(brand.slug) + (brand.slug !== 'generic' ? ' has-logo' : '') + '">' + carrierLogoHtml(brand) + '</span>' +
-        '<div><strong>' + escapeHtml(carrierName) + '</strong>' + (debug ? '<code>' + escapeHtml(rate.carrier_code || '') + '</code>' : '') + '</div>' +
+        '<div><strong>' + escapeHtml(carrierName) + '</strong>' +
+        (providerName ? '<small>' + escapeHtml(providerName) + '</small>' : '') +
+        (debug ? '<code>' + escapeHtml(rate.carrier_code || '') + '</code>' : '') + '</div>' +
       '</div>' +
       '<div class="fflhub-ss-rate-service-block">' +
         '<strong>' + escapeHtml(serviceName) + '</strong>' +
@@ -603,6 +606,7 @@
 
   function displayRateKey(rate) {
     return JSON.stringify({
+      provider_id: rateKeyText(rate.provider_id || ''),
       carrier_code: rateKeyText(rate.carrier_code),
       carrier_name: rateKeyText(rate.carrier_nickname || rate.carrier_friendly_name),
       service_code: rateKeyText(rate.service_code),
@@ -893,7 +897,7 @@
             return;
           }
           setLoading(panel, true);
-          setMessage(panel, 'Requesting ShipStation rates...', '');
+          setMessage(panel, 'Requesting shipping rates...', '');
           request(panel, '/rates', buildPayload(panel))
             .then(function (data) {
               panel.dataset.shipmentHash = data.shipment_hash || '';
@@ -912,7 +916,7 @@
             return;
           }
           var row = selected.closest('.fflhub-ss-rate-card');
-          if (!window.confirm('Purchase this ShipStation label?\n\n' + (row ? row.innerText : selected.value))) {
+          if (!window.confirm('Purchase this shipping label?\n\n' + (row ? row.innerText : selected.value))) {
             return;
           }
           setLoading(panel, true);

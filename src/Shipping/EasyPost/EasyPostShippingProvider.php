@@ -275,6 +275,24 @@ final class EasyPostShippingProvider implements ShippingProviderInterface
         return $map[$key] ?? '';
     }
 
+    private static function fflhub_package_code_from_predefined(string $predefined): string
+    {
+        $map = [
+            'FlatRateEnvelope' => 'flat_rate_envelope',
+            'FlatRateLegalEnvelope' => 'flat_rate_legal_envelope',
+            'FlatRatePaddedEnvelope' => 'flat_rate_padded_envelope',
+            'SmallFlatRateBox' => 'small_flat_rate_box',
+            'MediumFlatRateBox' => 'medium_flat_rate_box',
+            'LargeFlatRateBox' => 'large_flat_rate_box',
+            'Flat' => 'large_envelope_or_flat',
+            'Letter' => 'letter',
+            'Card' => 'card',
+            'SoftPack' => 'softpack',
+        ];
+
+        return $map[$predefined] ?? $predefined;
+    }
+
     /**
      * @param array<string,mixed> $shipment
      * @return array<string,mixed>
@@ -370,6 +388,9 @@ final class EasyPostShippingProvider implements ShippingProviderInterface
         $shipping = max(0.0, (float) ($rate['rate'] ?? 0));
 
         return [
+            'provider_id' => 'easypost',
+            'provider_label' => 'EasyPost',
+            'provider_rate_id' => (string) ($rate['id'] ?? ''),
             'rate_id' => (string) ($rate['id'] ?? ''),
             'shipment_id' => (string) ($rate['shipment_id'] ?? $shipment_id),
             'carrier_id' => (string) ($rate['carrier_account_id'] ?? ''),
@@ -378,7 +399,7 @@ final class EasyPostShippingProvider implements ShippingProviderInterface
             'carrier_friendly_name' => (string) ($rate['carrier'] ?? ''),
             'service_code' => (string) ($rate['service'] ?? ''),
             'service_type' => (string) ($rate['service'] ?? ''),
-            'package_type' => (string) ($rate['predefined_package'] ?? ''),
+            'package_type' => self::fflhub_package_code_from_predefined((string) ($rate['predefined_package'] ?? '')),
             'shipping_amount' => self::round_decimal($shipping, 4),
             'insurance_amount' => 0.0,
             'confirmation_amount' => 0.0,
@@ -452,6 +473,8 @@ final class EasyPostShippingProvider implements ShippingProviderInterface
         $total_cost = $shipment_cost + $insurance_cost;
 
         return [
+            'provider_id' => 'easypost',
+            'provider_label' => 'EasyPost',
             '_fflhub_status' => (int) ($shipment['_fflhub_status'] ?? 0),
             '_fflhub_request_id' => (string) ($shipment['_fflhub_request_id'] ?? ''),
             'label_id' => self::label_token($carrier, $tracking),

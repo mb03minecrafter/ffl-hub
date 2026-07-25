@@ -8,6 +8,9 @@ use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Product\State\ProductStateStore;
+use FFLHub\Shipping\EasyPost\EasyPostClient;
+use FFLHub\Shipping\EasyPost\EasyPostOptions;
+use FFLHub\Shipping\EasyPost\EasyPostShippingProvider;
 use FFLHub\Shipping\Providers\ShippingProviderInterface;
 use FFLHub\Shipping\ShippingOptions;
 use FFLHub\Util\DebugLogUtil;
@@ -58,10 +61,24 @@ final class ShipStationShipmentService
             : $this->destination_from_order($order);
 
         $context = [
-            'enabled' => ShipStationOptions::is_enabled(),
+            'enabled' => ShipStationOptions::is_enabled() || EasyPostOptions::is_enabled(),
             'mode' => ShipStationOptions::mode(),
             'api_key_source' => ShipStationOptions::api_key_source(),
             'api_key_mask' => ShipStationOptions::api_key_mask(),
+            'providers' => [
+                'shipstation' => [
+                    'enabled' => ShipStationOptions::is_enabled(),
+                    'mode' => ShipStationOptions::mode(),
+                    'api_key_source' => ShipStationOptions::api_key_source(),
+                    'api_key_mask' => ShipStationOptions::api_key_mask(),
+                ],
+                'easypost' => [
+                    'enabled' => EasyPostOptions::is_enabled(),
+                    'mode' => EasyPostOptions::mode(),
+                    'api_key_source' => EasyPostOptions::api_key_source(),
+                    'api_key_mask' => EasyPostOptions::api_key_mask(),
+                ],
+            ],
             'requires_ffl' => $requires_ffl,
             'receiving_ffl' => $receiving_ffl,
             'origin' => ShipStationOptions::origin_address(),
@@ -118,6 +135,10 @@ final class ShipStationShipmentService
      */
     public function validate_address(array $input)
     {
+        if (!ShipStationOptions::is_enabled() && !EasyPostOptions::is_enabled()) {
+            return new WP_Error('fflhub_shipping_providers_disabled', 'No FFL Hub shipping providers are enabled.', ['status' => 400]);
+        }
+
         $address = self::address_from_input($input['address'] ?? []);
         $missing = $this->missing_address_fields($address, 'Address');
         if (!empty($missing)) {
@@ -128,7 +149,15 @@ final class ShipStationShipmentService
             );
         }
 
-        $result = $this->provider->validate_address($address);
+        if (ShipStationOptions::is_enabled() && ShipStationOptions::api_key_source() !== 'none') {
+            $provider = $this->provider;
+        } elseif (EasyPostOptions::is_enabled()) {
+            $provider = new EasyPostShippingProvider(new EasyPostClient());
+        } else {
+            $provider = $this->provider;
+        }
+
+        $result = $provider->validate_address($address);
         if (is_wp_error($result)) {
             return $this->address_validation_error_response($result, $address);
         }
@@ -154,8 +183,8 @@ final class ShipStationShipmentService
         $is_valid = !in_array($status, ['error', 'invalid', 'unverified', 'failed'], true);
         if (empty($messages)) {
             $messages[] = $is_valid
-                ? 'ShipStation address validation completed.'
-                : 'ShipStation could not fully validate this address.';
+                ? 'Shipping provider address validation completed.'
+                : 'Shipping provider could not fully validate this address.';
         }
 
         return [
@@ -190,8 +219,8 @@ final class ShipStationShipmentService
 
         $is_unavailable = in_array($status, [0, 401, 402, 403, 404], true) || $status >= 500;
         $message = $is_unavailable
-            ? 'ShipStation address validation is unavailable for this account/API mode. You can still get rates and buy labels with the address shown.'
-            : ($messages[0] ?? 'ShipStation could not validate this address.');
+            ? 'Shipping provider address validation is unavailable for this account/API mode. You can still get rates and buy labels with the address shown.'
+            : ($messages[0] ?? 'Shipping provider could not validate this address.');
 
         return [
             'validation_available' => !$is_unavailable,
@@ -215,8 +244,8 @@ final class ShipStationShipmentService
      */
     public function rate_order(WC_Order $order, array $input)
     {
-        if (!ShipStationOptions::is_enabled()) {
-            return new WP_Error('fflhub_shipstation_disabled', 'ShipStation labels are disabled.', ['status' => 400]);
+        if (!ShipStationOptions::is_enabled() && !EasyPostOptions::is_enabled()) {
+            return new WP_Error('fflhub_shipping_providers_disabled', 'No FFL Hub shipping providers are enabled.', ['status' => 400]);
         }
 
         $context = $this->build_context($order);
@@ -229,67 +258,14 @@ final class ShipStationShipmentService
             return $shipment;
         }
 
-        $carrier_ids = $this->eligible_carrier_ids($order, !empty($context['requires_ffl']));
-        if (empty($carrier_ids)) {
-            return new WP_Error(
-                'fflhub_shipstation_no_eligible_carriers',
-                'No eligible ShipStation carriers are configured for this order.',
-                ['status' => 400]
-            );
+        $provider_results = $this->rate_enabled_providers($order, $shipment, $context);
+        if (is_wp_error($provider_results)) {
+            return $provider_results;
         }
 
-        /**
-         * Final policy hook before rates are requested.
-         *
-         * @param string[] $carrier_ids
-         * @param WC_Order $order
-         * @param array<string,mixed> $context
-         */
-        $carrier_ids = (array) apply_filters('fflhub_shipstation_eligible_carrier_ids', $carrier_ids, $order, $context);
-        $carrier_ids = array_values(array_filter(array_map('strval', $carrier_ids)));
-        if (empty($carrier_ids)) {
-            return new WP_Error(
-                'fflhub_shipstation_no_policy_carriers',
-                'Shipment policy removed all ShipStation carriers for this order.',
-                ['status' => 400]
-            );
-        }
-
-        $payload = [
-            'rate_options' => [
-                'carrier_ids' => $carrier_ids,
-            ],
-            'shipment' => $shipment,
-        ];
-
-        /**
-         * Let future shipping policy tune rate options without moving HTTP
-         * requests into UI callbacks.
-         *
-         * @param array<string,mixed> $payload
-         * @param WC_Order $order
-         * @param array<string,mixed> $context
-         */
-        $payload = (array) apply_filters('fflhub_shipstation_rate_request', $payload, $order, $context);
-
-        $response = $this->provider->get_rates($payload);
-        if (is_wp_error($response)) {
-            return $response;
-        }
-
-        $normalized = $this->normalize_rate_response($response);
-        $package_filtered_rates = [];
-        $normalized['rates'] = self::filter_rates_to_selected_package_codes(
-            isset($normalized['rates']) && is_array($normalized['rates']) ? $normalized['rates'] : [],
-            $shipment,
-            $package_filtered_rates
-        );
-        if (!empty($package_filtered_rates)) {
-            $normalized['invalid_rates'] = array_merge(
-                isset($normalized['invalid_rates']) && is_array($normalized['invalid_rates']) ? $normalized['invalid_rates'] : [],
-                $package_filtered_rates
-            );
-        }
+        $normalized = $provider_results['normalized'];
+        $request_ids = $provider_results['request_ids'];
+        $provider_errors = $provider_results['provider_errors'];
         $shipment_hash = self::shipment_hash($shipment);
         $package_items = self::package_item_assignments_from_input(
             $input['package_items'] ?? [],
@@ -306,7 +282,7 @@ final class ShipStationShipmentService
             $normalized['rates'],
             $normalized['invalid_rates'],
             (string) ($normalized['shipment_id'] ?? ''),
-            (string) ($response['_fflhub_request_id'] ?? ''),
+            implode(', ', $request_ids),
             $package_items,
             $duplicate_rate_groups
         );
@@ -314,12 +290,13 @@ final class ShipStationShipmentService
         $result = [
             'shipment_hash' => $shipment_hash,
             'shipment_id' => (string) ($normalized['shipment_id'] ?? ''),
-            'request_id' => (string) ($response['_fflhub_request_id'] ?? ''),
+            'request_id' => implode(', ', $request_ids),
             'rates' => $normalized['rates'],
             'invalid_rates' => $normalized['invalid_rates'],
             'duplicate_rate_groups' => $duplicate_rate_groups,
             'shipment' => $shipment,
             'package_items' => $package_items,
+            'provider_errors' => $provider_errors,
         ];
 
         /**
@@ -371,7 +348,7 @@ final class ShipStationShipmentService
             if (ShipStationOrderMeta::has_active_label($order)) {
                 return new WP_Error(
                     'fflhub_shipstation_active_label_exists',
-                    'This order already has an active FFL Hub ShipStation label. Void it before buying another.',
+                    'This order already has an active FFL Hub shipping label. Void it before buying another.',
                     ['status' => 409]
                 );
             }
@@ -415,16 +392,8 @@ final class ShipStationShipmentService
                 ];
             }
 
-            $payload = [
-                'test_label' => ShipStationOptions::mode() === 'sandbox',
-                'label_format' => ShipStationOptions::label_format(),
-                'label_layout' => ShipStationOptions::label_layout(),
-                'label_download_type' => 'url',
-                'validate_address' => 'no_validation',
-                'display_scheme' => 'label',
-            ];
-
-            $response = $this->provider->purchase_label_from_rate($rate_id, $payload);
+            $provider_id = self::rate_provider_id($rated);
+            $response = $this->purchase_rate_with_provider($provider_id, $rate_id, $rated, $current_shipment);
             if (is_wp_error($response)) {
                 return $response;
             }
@@ -475,13 +444,16 @@ final class ShipStationShipmentService
                 return new WP_Error('fflhub_shipstation_label_not_active', 'That label is already voided or inactive.', ['status' => 409]);
             }
 
-            $response = $this->provider->void_label($label_id);
+            $provider = strpos($label_id, 'easypost|') === 0
+                ? new EasyPostShippingProvider(new EasyPostClient())
+                : $this->provider;
+            $response = $provider->void_label($label_id);
             if (is_wp_error($response)) {
                 return $response;
             }
 
             ShipStationOrderMeta::mark_voided($order, $label_id, $response);
-            $order->add_order_note(sprintf('FFL Hub ShipStation label %s voided.', $label_id));
+            $order->add_order_note(sprintf('FFL Hub shipping label %s voided.', $label_id));
             OrderProfitAuditMeta::recalculate_order($order, true);
 
             return [
@@ -573,6 +545,278 @@ final class ShipStationShipmentService
         }
 
         return $shipment;
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @param array<string,mixed> $context
+     * @return array{normalized:array<string,mixed>,request_ids:string[],provider_errors:array<int,array<string,string>>}|WP_Error
+     */
+    private function rate_enabled_providers(WC_Order $order, array $shipment, array $context)
+    {
+        $combined = [
+            'shipment_id' => '',
+            'rates' => [],
+            'invalid_rates' => [],
+            'duplicate_rate_groups' => [],
+        ];
+        $request_ids = [];
+        $provider_errors = [];
+
+        if (ShipStationOptions::is_enabled()) {
+            $shipstation = $this->rate_shipstation_provider($order, $shipment, $context);
+            if (is_wp_error($shipstation)) {
+                $provider_errors[] = [
+                    'provider' => 'ShipStation',
+                    'message' => $shipstation->get_error_message(),
+                ];
+            } else {
+                $combined = self::merge_normalized_rate_result($combined, $shipstation['normalized'], 'shipstation', $shipment);
+                if ((string) ($shipstation['request_id'] ?? '') !== '') {
+                    $request_ids[] = 'shipstation:' . (string) $shipstation['request_id'];
+                }
+            }
+        }
+
+        if (EasyPostOptions::is_enabled()) {
+            $easypost = $this->rate_easypost_provider($shipment);
+            if (is_wp_error($easypost)) {
+                $provider_errors[] = [
+                    'provider' => 'EasyPost',
+                    'message' => $easypost->get_error_message(),
+                ];
+            } else {
+                $combined = self::merge_normalized_rate_result($combined, $easypost['normalized'], 'easypost', $shipment);
+                if ((string) ($easypost['request_id'] ?? '') !== '') {
+                    $request_ids[] = 'easypost:' . (string) $easypost['request_id'];
+                }
+            }
+        }
+
+        if (empty($combined['rates']) && !empty($provider_errors)) {
+            return new WP_Error(
+                'fflhub_shipping_all_provider_rates_failed',
+                implode(' ', array_map(
+                    static fn(array $row): string => $row['provider'] . ': ' . $row['message'],
+                    $provider_errors
+                )),
+                ['status' => 400, 'provider_errors' => $provider_errors]
+            );
+        }
+
+        foreach ($provider_errors as $provider_error) {
+            $combined['invalid_rates'][] = [
+                'carrier_id' => '',
+                'carrier_code' => '',
+                'carrier_nickname' => (string) ($provider_error['provider'] ?? ''),
+                'service_code' => '',
+                'service_type' => '',
+                'provider_label' => (string) ($provider_error['provider'] ?? ''),
+                'error_messages' => [(string) ($provider_error['message'] ?? '')],
+            ];
+        }
+
+        usort($combined['rates'], [self::class, 'compare_rates_for_display']);
+
+        return [
+            'normalized' => $combined,
+            'request_ids' => $request_ids,
+            'provider_errors' => $provider_errors,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @param array<string,mixed> $context
+     * @return array{normalized:array<string,mixed>,request_id:string}|WP_Error
+     */
+    private function rate_shipstation_provider(WC_Order $order, array $shipment, array $context)
+    {
+        $carrier_ids = $this->eligible_carrier_ids($order, !empty($context['requires_ffl']));
+        if (empty($carrier_ids)) {
+            return new WP_Error(
+                'fflhub_shipstation_no_eligible_carriers',
+                'No eligible ShipStation carriers are configured for this order.',
+                ['status' => 400]
+            );
+        }
+
+        /**
+         * Final ShipStation policy hook before rates are requested.
+         *
+         * @param string[] $carrier_ids
+         * @param WC_Order $order
+         * @param array<string,mixed> $context
+         */
+        $carrier_ids = (array) apply_filters('fflhub_shipstation_eligible_carrier_ids', $carrier_ids, $order, $context);
+        $carrier_ids = array_values(array_filter(array_map('strval', $carrier_ids)));
+        if (empty($carrier_ids)) {
+            return new WP_Error(
+                'fflhub_shipstation_no_policy_carriers',
+                'Shipment policy removed all ShipStation carriers for this order.',
+                ['status' => 400]
+            );
+        }
+
+        $payload = [
+            'rate_options' => [
+                'carrier_ids' => $carrier_ids,
+            ],
+            'shipment' => $shipment,
+        ];
+
+        /**
+         * Let future shipping policy tune ShipStation rate options without
+         * moving HTTP requests into UI callbacks.
+         *
+         * @param array<string,mixed> $payload
+         * @param WC_Order $order
+         * @param array<string,mixed> $context
+         */
+        $payload = (array) apply_filters('fflhub_shipstation_rate_request', $payload, $order, $context);
+
+        $response = $this->provider->get_rates($payload);
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        return [
+            'normalized' => $this->normalize_rate_response($response),
+            'request_id' => (string) ($response['_fflhub_request_id'] ?? ''),
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @return array{normalized:array<string,mixed>,request_id:string}|WP_Error
+     */
+    private function rate_easypost_provider(array $shipment)
+    {
+        $response = (new EasyPostShippingProvider(new EasyPostClient()))->get_rates([
+            'shipment' => $shipment,
+        ]);
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        return [
+            'normalized' => $this->normalize_rate_response($response),
+            'request_id' => (string) ($response['_fflhub_request_id'] ?? ''),
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $combined
+     * @param array<string,mixed> $next
+     * @return array<string,mixed>
+     */
+    private static function merge_normalized_rate_result(array $combined, array $next, string $provider_id, array $shipment): array
+    {
+        $package_filtered_rates = [];
+        $rates = self::filter_rates_to_selected_package_codes(
+            isset($next['rates']) && is_array($next['rates']) ? $next['rates'] : [],
+            $shipment,
+            $package_filtered_rates
+        );
+
+        foreach ($rates as $rate) {
+            if (!is_array($rate)) {
+                continue;
+            }
+            $rate['provider_id'] = self::rate_provider_id($rate, $provider_id);
+            $rate['provider_label'] = self::provider_label($rate['provider_id']);
+            $combined['rates'][] = $rate;
+        }
+
+        $invalid_rates = isset($next['invalid_rates']) && is_array($next['invalid_rates']) ? $next['invalid_rates'] : [];
+        foreach (array_merge($invalid_rates, $package_filtered_rates) as $invalid) {
+            if (!is_array($invalid)) {
+                continue;
+            }
+            $invalid['provider_id'] = self::rate_provider_id($invalid, $provider_id);
+            $invalid['provider_label'] = self::provider_label($invalid['provider_id']);
+            $combined['invalid_rates'][] = $invalid;
+        }
+
+        $duplicate_groups = isset($next['duplicate_rate_groups']) && is_array($next['duplicate_rate_groups'])
+            ? $next['duplicate_rate_groups']
+            : [];
+        foreach ($duplicate_groups as $group) {
+            if (is_array($group)) {
+                $combined['duplicate_rate_groups'][] = $group;
+            }
+        }
+
+        $shipment_id = trim((string) ($next['shipment_id'] ?? ''));
+        if ($shipment_id !== '') {
+            $combined['shipment_id'] = trim((string) ($combined['shipment_id'] ?? '')) === ''
+                ? $provider_id . ':' . $shipment_id
+                : (string) $combined['shipment_id'] . ', ' . $provider_id . ':' . $shipment_id;
+        }
+
+        return $combined;
+    }
+
+    /**
+     * @param array<string,mixed> $rate
+     */
+    private static function rate_provider_id(array $rate, string $default = 'shipstation'): string
+    {
+        $provider = sanitize_key((string) ($rate['provider_id'] ?? $default));
+        return $provider !== '' ? $provider : $default;
+    }
+
+    private static function provider_label(string $provider_id): string
+    {
+        return $provider_id === 'easypost' ? 'EasyPost' : 'ShipStation';
+    }
+
+    /**
+     * @param array<string,mixed> $rated
+     * @param array<string,mixed> $current_shipment
+     * @return array<string,mixed>|WP_Error
+     */
+    private function purchase_rate_with_provider(string $provider_id, string $rate_id, array $rated, array $current_shipment)
+    {
+        if ($provider_id === 'easypost') {
+            return (new EasyPostShippingProvider(new EasyPostClient()))->purchase_label_from_rate($rate_id, [
+                'shipment_id' => (string) ($rated['shipment_id'] ?? ''),
+                'label_format' => EasyPostOptions::label_format(),
+                'label_layout' => EasyPostOptions::label_layout(),
+                'confirmation' => (string) ($current_shipment['confirmation'] ?? EasyPostOptions::confirmation()),
+                'insurance' => self::easypost_insurance_amount($current_shipment),
+            ]);
+        }
+
+        return $this->provider->purchase_label_from_rate($rate_id, [
+            'test_label' => ShipStationOptions::mode() === 'sandbox',
+            'label_format' => ShipStationOptions::label_format(),
+            'label_layout' => ShipStationOptions::label_layout(),
+            'label_download_type' => 'url',
+            'validate_address' => 'no_validation',
+            'display_scheme' => 'label',
+        ]);
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     */
+    private static function easypost_insurance_amount(array $shipment): string
+    {
+        if (EasyPostOptions::insurance_mode() !== 'declared_value') {
+            return '';
+        }
+
+        $total = 0.0;
+        foreach ((array) ($shipment['packages'] ?? []) as $package) {
+            if (!is_array($package)) {
+                continue;
+            }
+            $insured = is_array($package['insured_value'] ?? null) ? $package['insured_value'] : [];
+            $total += max(0.0, (float) ($insured['amount'] ?? 0));
+        }
+
+        return $total > 0.0 ? number_format($total, 2, '.', '') : '';
     }
 
     /**
@@ -873,6 +1117,9 @@ final class ShipStationShipmentService
         }
 
         return [
+            'provider_id' => self::rate_provider_id($rate),
+            'provider_label' => (string) ($rate['provider_label'] ?? self::provider_label(self::rate_provider_id($rate))),
+            'provider_rate_id' => (string) ($rate['provider_rate_id'] ?? $rate['rate_id'] ?? ''),
             'rate_id' => (string) ($rate['rate_id'] ?? ''),
             'shipment_id' => (string) ($rate['shipment_id'] ?? ''),
             'carrier_id' => (string) ($rate['carrier_id'] ?? ''),
@@ -1039,6 +1286,7 @@ final class ShipStationShipmentService
     private static function equivalent_rate_key(array $rate): string
     {
         return (string) wp_json_encode([
+            'provider_id' => self::rate_provider_id($rate),
             'carrier_family' => self::rate_carrier_family_key($rate),
             'service_code' => self::rate_key_text((string) ($rate['service_code'] ?? '')),
             'service_type' => self::rate_key_text((string) ($rate['service_type'] ?? '')),
@@ -1690,12 +1938,13 @@ final class ShipStationShipmentService
      */
     private function add_purchase_note(WC_Order $order, array $label): void
     {
-        $carrier = trim((string) ($label['carrier_nickname'] ?? $label['carrier_friendly_name'] ?? $label['carrier_code'] ?? 'ShipStation'));
+        $provider = trim((string) ($label['provider_label'] ?? 'Shipping provider'));
+        $carrier = trim((string) ($label['carrier_nickname'] ?? $label['carrier_friendly_name'] ?? $label['carrier_code'] ?? $provider));
         $service = trim((string) ($label['service_name'] ?? $label['service_code'] ?? ''));
         $tracking = trim((string) ($label['tracking_number'] ?? ''));
         $cost = trim((string) ($label['total_cost'] ?? '0.0000'));
 
-        $parts = ["FFL Hub ShipStation label purchased via {$carrier}"];
+        $parts = ["FFL Hub {$provider} label purchased via {$carrier}"];
         if ($service !== '') {
             $parts[] = "service {$service}";
         }
@@ -1716,7 +1965,7 @@ final class ShipStationShipmentService
             return;
         }
 
-        $order->update_status($status, 'FFL Hub ShipStation label purchased.');
+        $order->update_status($status, 'FFL Hub shipping label purchased.');
     }
 
     /**

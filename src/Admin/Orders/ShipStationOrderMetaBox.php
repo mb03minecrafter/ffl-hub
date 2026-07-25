@@ -14,12 +14,12 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Native WooCommerce order panel for FFL Hub ShipStation labels.
+ * Native WooCommerce order panel for FFL Hub shipping labels.
  */
 final class ShipStationOrderMetaBox
 {
     private const META_BOX_ID = 'fflhub_shipstation_labels';
-    private const META_BOX_TITLE = 'FFL Hub - ShipStation Labels';
+    private const META_BOX_TITLE = 'FFL Hub - Shipping Labels';
 
     private FFLTable $ffl_table;
 
@@ -125,7 +125,7 @@ final class ShipStationOrderMetaBox
         >
             <?php if (empty($context['enabled'])) : ?>
                 <div class="fflhub-ss-notice is-warning">
-                    <?php esc_html_e('ShipStation labels are disabled. Enable them under FFLHub Shipping > ShipStation API.', 'ffl-hub'); ?>
+                    <?php esc_html_e('Shipping labels are disabled. Enable ShipStation and/or EasyPost under FFLHub Shipping.', 'ffl-hub'); ?>
                 </div>
             <?php endif; ?>
 
@@ -223,7 +223,7 @@ final class ShipStationOrderMetaBox
         echo '<h4>' . esc_html__('Purchased Labels', 'ffl-hub') . '</h4>';
 
         if (empty($labels)) {
-            echo '<div class="fflhub-ss-empty">' . esc_html__('No FFL Hub ShipStation labels purchased yet.', 'ffl-hub') . '</div>';
+            echo '<div class="fflhub-ss-empty">' . esc_html__('No FFL Hub shipping labels purchased yet.', 'ffl-hub') . '</div>';
             echo '</section>';
             return;
         }
@@ -238,8 +238,8 @@ final class ShipStationOrderMetaBox
             $is_voided = !empty($label['voided']) || strtolower((string) ($label['label_status'] ?? '')) === 'voided';
             echo '<div class="fflhub-ss-label-card ' . ($is_voided ? 'is-voided' : '') . '">';
             echo '<div>';
-            echo '<strong>' . esc_html((string) ($label['service_name'] ?? $label['service_code'] ?? 'ShipStation label')) . '</strong>';
-            echo '<span>' . esc_html((string) ($label['carrier_nickname'] ?? $label['carrier_friendly_name'] ?? $label['carrier_code'] ?? '')) . '</span>';
+            echo '<strong>' . esc_html((string) ($label['service_name'] ?? $label['service_code'] ?? 'Shipping label')) . '</strong>';
+            echo '<span>' . esc_html((string) ($label['provider_label'] ?? 'Provider')) . ' | ' . esc_html((string) ($label['carrier_nickname'] ?? $label['carrier_friendly_name'] ?? $label['carrier_code'] ?? '')) . '</span>';
             echo '<code>' . esc_html($label_id) . '</code>';
             if ($tracking !== '') {
                 echo '<div class="fflhub-ss-tracking">Tracking: <button type="button" class="button-link fflhub-ss-copy" data-copy="' . esc_attr($tracking) . '">' . esc_html($tracking) . '</button></div>';
