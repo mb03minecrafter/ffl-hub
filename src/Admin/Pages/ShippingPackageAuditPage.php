@@ -135,7 +135,7 @@ final class ShippingPackageAuditPage
         $on_hand_packages = $this->selected_on_hand_package_rows($selected_on_hand_package_ids);
         $future_boxes = $this->future_box_rows();
         $candidate_packages = array_merge($on_hand_packages, $future_boxes);
-        $package_sources = $this->package_source_map($on_hand_packages, $future_boxes);
+        $package_display = $this->package_display_map($on_hand_packages, $future_boxes);
         $order_ids = $this->dealer_fulfilled_order_ids();
 
         $stats = [
@@ -208,13 +208,18 @@ final class ShippingPackageAuditPage
                     continue;
                 }
 
+                $identity = $this->package_identity_for_box($box, $package_display);
+                $box_id = sanitize_key((string) ($identity['box_id'] ?? $box_id));
+                if ($box_id === '') {
+                    continue;
+                }
+
                 if (!isset($box_stats[$box_id])) {
-                    $source = $this->package_source_for_box_id($box_id, $package_sources);
                     $box_stats[$box_id] = [
                         'box_id' => $box_id,
-                        'box_name' => (string) ($box['box_name'] ?? $box_id),
-                        'source' => $source,
-                        'dimensions' => self::box_dimension_label($box),
+                        'box_name' => (string) ($identity['box_name'] ?? ($box['box_name'] ?? $box_id)),
+                        'source' => (string) ($identity['source'] ?? ''),
+                        'dimensions' => (string) ($identity['dimensions'] ?? self::box_dimension_label($box)),
                         'orders' => [],
                         'package_count' => 0,
                         'packed_units' => 0,
@@ -559,21 +564,31 @@ final class ShippingPackageAuditPage
     /**
      * @param array<int,array<string,mixed>> $on_hand_packages
      * @param array<int,array<string,mixed>> $future_boxes
-     * @return array<string,string>
+     * @return array<string,array{box_id:string,box_name:string,source:string,dimensions:string}>
      */
-    private function package_source_map(array $on_hand_packages, array $future_boxes): array
+    private function package_display_map(array $on_hand_packages, array $future_boxes): array
     {
         $map = [];
         foreach ($on_hand_packages as $row) {
             $id = sanitize_key((string) ($row['id'] ?? ''));
             if ($id !== '') {
-                $map[$id] = 'On hand';
+                $map[$id] = [
+                    'box_id' => $id,
+                    'box_name' => trim((string) ($row['name'] ?? $id)),
+                    'source' => 'On hand',
+                    'dimensions' => self::package_dimension_label($row),
+                ];
             }
         }
         foreach ($future_boxes as $row) {
             $id = sanitize_key((string) ($row['id'] ?? ''));
             if ($id !== '') {
-                $map[$id] = 'Potential future';
+                $map[$id] = [
+                    'box_id' => $id,
+                    'box_name' => trim((string) ($row['name'] ?? $id)),
+                    'source' => 'Potential future',
+                    'dimensions' => self::package_dimension_label($row),
+                ];
             }
         }
 
@@ -582,24 +597,33 @@ final class ShippingPackageAuditPage
 
     /**
      * Envelope audit candidates append their virtual thickness to the saved
-     * preset id, so source lookup checks exact ids first and generated virtual
-     * ids second.
+     * preset id, so the audit collapses variants back into one visible envelope
+     * row instead of showing each internal thickness/orientation attempt.
      *
-     * @param array<string,string> $package_sources
+     * @param array<string,mixed> $box
+     * @param array<string,array{box_id:string,box_name:string,source:string,dimensions:string}> $package_display
+     * @return array{box_id:string,box_name:string,source:string,dimensions:string}
      */
-    private function package_source_for_box_id(string $box_id, array $package_sources): string
+    private function package_identity_for_box(array $box, array $package_display): array
     {
-        if (isset($package_sources[$box_id])) {
-            return $package_sources[$box_id];
+        $box_id = sanitize_key((string) ($box['box_id'] ?? ''));
+        if ($box_id !== '' && isset($package_display[$box_id])) {
+            return $package_display[$box_id];
         }
 
-        foreach ($package_sources as $id => $source) {
+        uksort($package_display, static fn(string $a, string $b): int => strlen($b) <=> strlen($a));
+        foreach ($package_display as $id => $display) {
             if ($id !== '' && strpos($box_id, $id . '_t') === 0) {
-                return $source;
+                return $display;
             }
         }
 
-        return '';
+        return [
+            'box_id' => $box_id,
+            'box_name' => (string) ($box['box_name'] ?? $box_id),
+            'source' => '',
+            'dimensions' => self::box_dimension_label($box),
+        ];
     }
 
     /**
@@ -704,6 +728,21 @@ final class ShippingPackageAuditPage
         }
 
         return in_array($value, ['box', 'envelope'], true) ? $value : 'box';
+    }
+
+    /**
+     * @param array<string,mixed> $box
+     */
+    private static function package_dimension_label(array $box): string
+    {
+        $length = self::positive_float($box['length'] ?? $box['outer_length_in'] ?? null);
+        $width = self::positive_float($box['width'] ?? $box['outer_width_in'] ?? null);
+        $height = self::positive_float($box['height'] ?? $box['outer_height_in'] ?? null);
+        if ($length === null || $width === null || $height === null) {
+            return '';
+        }
+
+        return self::number_label($length) . ' x ' . self::number_label($width) . ' x ' . self::number_label($height) . ' in';
     }
 
     /**
