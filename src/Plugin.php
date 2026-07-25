@@ -34,6 +34,7 @@ use FFLHub\Admin\Pages\MonthlyProfitAuditPage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
 use FFLHub\Admin\Pages\ShippingDashboardPage;
+use FFLHub\Admin\Pages\ShippingPackageAuditPage;
 use FFLHub\Admin\Pages\ShippingPackagePresetsPage;
 use FFLHub\Admin\Pages\ShippingSettingsPage;
 use FFLHub\Admin\Pages\ShippingShipFromLocationsPage;
@@ -141,6 +142,7 @@ final class Plugin
     public ShippingDashboardPage $shipping_dashboard_page;
     public ShippingSettingsPage $shipping_settings_page;
     public ShippingPackagePresetsPage $shipping_package_presets_page;
+    public ShippingPackageAuditPage $shipping_package_audit_page;
     public ShippingShipFromLocationsPage $shipping_ship_from_locations_page;
     public EasyPostSettingsPage $easypost_settings_page;
     public ShipStationSettingsPage $shipstation_settings_page;
@@ -314,6 +316,9 @@ final class Plugin
 
             $this->shipping_package_presets_page = new ShippingPackagePresetsPage();
             $this->shipping_package_presets_page->register();
+
+            $this->shipping_package_audit_page = new ShippingPackageAuditPage();
+            $this->shipping_package_audit_page->register();
 
             $this->shipping_ship_from_locations_page = new ShippingShipFromLocationsPage();
             $this->shipping_ship_from_locations_page->register();

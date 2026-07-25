@@ -17,6 +17,7 @@ final class ShippingAdminPage
     public const DASHBOARD_SLUG = 'fflhub-shipping';
     public const SETTINGS_SLUG = 'fflhub-shipping-settings';
     public const PACKAGE_PRESETS_SLUG = 'fflhub-shipping-package-presets';
+    public const PACKAGE_AUDIT_SLUG = 'fflhub-shipping-package-audit';
     public const SHIP_FROM_SLUG = 'fflhub-shipping-ship-from';
     public const EASYPOST_SLUG = 'fflhub-shipping-easypost';
     public const SHIPSTATION_SLUG = 'fflhub-shipping-shipstation';
