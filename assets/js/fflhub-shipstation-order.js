@@ -585,6 +585,65 @@
     '</label>';
   }
 
+  function rateProviderId(rate) {
+    var provider = rateKeyText(rate && rate.provider_id ? rate.provider_id : '');
+    if (provider) {
+      return provider;
+    }
+
+    var label = rateKeyText(rate && rate.provider_label ? rate.provider_label : '');
+    if (label.indexOf('easy') !== -1) {
+      return 'easypost';
+    }
+
+    return 'shipstation';
+  }
+
+  function rateProviderLabel(providerId, rates) {
+    for (var i = 0; i < (rates || []).length; i++) {
+      if (rateProviderId(rates[i]) === providerId && rates[i].provider_label) {
+        return String(rates[i].provider_label);
+      }
+    }
+
+    if (providerId === 'easypost') {
+      return 'EasyPost';
+    }
+
+    if (providerId === 'shipstation') {
+      return 'ShipStation';
+    }
+
+    return providerId ? providerId.replace(/_/g, ' ') : 'Provider';
+  }
+
+  function providerRateGroups(rates) {
+    var order = ['shipstation', 'easypost'];
+    var groups = {};
+
+    (rates || []).forEach(function (rate) {
+      var providerId = rateProviderId(rate);
+      if (!groups[providerId]) {
+        groups[providerId] = [];
+        if (order.indexOf(providerId) === -1) {
+          order.push(providerId);
+        }
+      }
+
+      groups[providerId].push(rate);
+    });
+
+    return order.filter(function (providerId) {
+      return groups[providerId] && groups[providerId].length;
+    }).map(function (providerId) {
+      return {
+        id: providerId,
+        label: rateProviderLabel(providerId, groups[providerId]),
+        rates: groups[providerId]
+      };
+    });
+  }
+
   function selectRateCard(target, rateId) {
     target.querySelectorAll('.fflhub-ss-rate-card').forEach(function (card) {
       var radio = card.querySelector('input[name="fflhub_ss_rate"]');
@@ -735,9 +794,22 @@
       if (!rows.length) {
         html += '<div class="fflhub-ss-empty">No valid rates match the current filters.</div>';
       } else {
-        html += '<div class="fflhub-ss-rate-list">';
-        rows.forEach(function (rate) {
-          html += renderRateCard(rate, cheapest, fastestDays, debug);
+        html += '<div class="fflhub-ss-provider-rate-grid">';
+        providerRateGroups(rows).forEach(function (group) {
+          var providerCheapest = Math.min.apply(null, group.rates.map(function (rate) {
+            return Number(rate.total_amount || 0);
+          }));
+
+          html += '<section class="fflhub-ss-provider-rate-column is-' + escapeHtml(group.id) + '">' +
+            '<div class="fflhub-ss-provider-rate-heading">' +
+              '<div><strong>' + escapeHtml(group.label) + '</strong><span>' + group.rates.length + ' rate' + (group.rates.length === 1 ? '' : 's') + '</span></div>' +
+              '<em>Best ' + money(providerCheapest) + '</em>' +
+            '</div>' +
+            '<div class="fflhub-ss-rate-list">';
+          group.rates.forEach(function (rate) {
+            html += renderRateCard(rate, cheapest, fastestDays, debug);
+          });
+          html += '</div></section>';
         });
         html += '</div><button type="button" class="button button-primary fflhub-ss-purchase">Purchase Selected Label</button>';
       }
