@@ -263,9 +263,10 @@ final class OrderBoxPackingService
      * Envelope presets are flat usable dimensions. The usable 3D space changes
      * as the mailer fills, so each preset becomes a series of virtual boxes.
      * The strict candidate shrinks both flat dimensions by the tested thickness.
-     * Padded mailers can also bulge along one flat axis in real packing, so the
-     * same thickness also gets two one-axis shrink candidates. The first
-     * candidate that fits every unit wins, with thinner candidates tested first.
+     * Padded mailers can also bulge in real packing, so the same thickness gets
+     * two one-axis shrink candidates plus a final flat-face candidate that keeps
+     * the full flat dimensions. The first candidate that fits every unit wins,
+     * with thinner and more conservative candidates tested first.
      *
      * @param array<int,array<string,mixed>> $box_rows
      * @return PackingBox[]
@@ -327,6 +328,13 @@ final class OrderBoxPackingService
                         'label' => 'width held',
                         'variant_order' => 2,
                         'length' => $length - $thickness,
+                        'width' => $width,
+                    ],
+                    [
+                        'suffix' => 'flat_held',
+                        'label' => 'flat held',
+                        'variant_order' => 3,
+                        'length' => $length,
                         'width' => $width,
                     ],
                 ];
