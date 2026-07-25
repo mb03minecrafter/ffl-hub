@@ -261,9 +261,11 @@ final class OrderBoxPackingService
 
     /**
      * Envelope presets are flat usable dimensions. The usable 3D space changes
-     * as the mailer fills, so each preset becomes a series of virtual boxes:
-     * length and width shrink by the tested thickness, and height becomes that
-     * same thickness. The first candidate that fits every unit wins.
+     * as the mailer fills, so each preset becomes a series of virtual boxes.
+     * The strict candidate shrinks both flat dimensions by the tested thickness.
+     * Padded mailers can also bulge along one flat axis in real packing, so the
+     * same thickness also gets two one-axis shrink candidates. The first
+     * candidate that fits every unit wins, with thinner candidates tested first.
      *
      * @param array<int,array<string,mixed>> $box_rows
      * @return PackingBox[]
@@ -303,33 +305,62 @@ final class OrderBoxPackingService
             $empty_weight = self::positive_float($row['empty_weight_oz'] ?? $row['weight_oz'] ?? null) ?? 0.0;
             $max_weight = self::positive_float($row['max_weight_oz'] ?? null) ?? self::DEFAULT_MAX_WEIGHT_OZ;
 
+            $base_id = $id !== '' ? $id : sanitize_key($name);
             foreach ($this->envelope_thicknesses($max_thickness) as $thickness) {
-                $virtual_length = $length - $thickness;
-                $virtual_width = $width - $thickness;
-                if ($virtual_length <= 0.0 || $virtual_width <= 0.0) {
-                    continue;
-                }
-
-                $candidate_specs[] = [
-                    'id' => ($id !== '' ? $id : sanitize_key($name)) . '_t' . self::number_key($thickness),
-                    'name' => $name . ' @ ' . self::number_label($thickness) . ' in',
-                    'package_code' => $package_code,
-                    'outer_length' => $virtual_length,
-                    'outer_width' => $virtual_width,
-                    'outer_height' => $thickness,
-                    'empty_weight' => $empty_weight,
-                    'max_weight' => $max_weight,
-                    'thickness' => $thickness,
-                    'source_order' => $source_order,
-                    'source' => [
-                        ...$row,
-                        'kind' => 'envelope',
-                        'flat_length_in' => $length,
-                        'flat_width_in' => $width,
-                        'max_thickness_in' => $max_thickness,
-                        'virtual_thickness_in' => $thickness,
+                $variants = [
+                    [
+                        'suffix' => 'strict',
+                        'label' => 'strict',
+                        'variant_order' => 0,
+                        'length' => $length - $thickness,
+                        'width' => $width - $thickness,
+                    ],
+                    [
+                        'suffix' => 'hold_length',
+                        'label' => 'length held',
+                        'variant_order' => 1,
+                        'length' => $length,
+                        'width' => $width - $thickness,
+                    ],
+                    [
+                        'suffix' => 'hold_width',
+                        'label' => 'width held',
+                        'variant_order' => 2,
+                        'length' => $length - $thickness,
+                        'width' => $width,
                     ],
                 ];
+
+                foreach ($variants as $variant) {
+                    $virtual_length = (float) $variant['length'];
+                    $virtual_width = (float) $variant['width'];
+                    if ($virtual_length <= 0.0 || $virtual_width <= 0.0) {
+                        continue;
+                    }
+
+                    $candidate_specs[] = [
+                        'id' => $base_id . '_t' . self::number_key($thickness) . '_' . $variant['suffix'],
+                        'name' => $name . ' @ ' . self::number_label($thickness) . ' in (' . $variant['label'] . ')',
+                        'package_code' => $package_code,
+                        'outer_length' => $virtual_length,
+                        'outer_width' => $virtual_width,
+                        'outer_height' => $thickness,
+                        'empty_weight' => $empty_weight,
+                        'max_weight' => $max_weight,
+                        'thickness' => $thickness,
+                        'variant_order' => (int) $variant['variant_order'],
+                        'source_order' => $source_order,
+                        'source' => [
+                            ...$row,
+                            'kind' => 'envelope',
+                            'flat_length_in' => $length,
+                            'flat_width_in' => $width,
+                            'max_thickness_in' => $max_thickness,
+                            'virtual_thickness_in' => $thickness,
+                            'virtual_envelope_mode' => (string) $variant['suffix'],
+                        ],
+                    ];
+                }
             }
 
             $source_order++;
@@ -339,6 +370,11 @@ final class OrderBoxPackingService
             $thickness = ((float) $a['thickness']) <=> ((float) $b['thickness']);
             if ($thickness !== 0) {
                 return $thickness;
+            }
+
+            $variant = ((int) $a['variant_order']) <=> ((int) $b['variant_order']);
+            if ($variant !== 0) {
+                return $variant;
             }
 
             $a_volume = (float) $a['outer_length'] * (float) $a['outer_width'] * (float) $a['outer_height'];
