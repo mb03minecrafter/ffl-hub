@@ -71,6 +71,15 @@ final class PackingItem implements Item, JsonSerializable
         return $this->allowed_rotation;
     }
 
+    public function getEnvelopeMinimumThicknessIn(): float
+    {
+        if ($this->allowed_rotation === Rotation::BestFit) {
+            return min($this->length_in, $this->width_in, $this->height_in);
+        }
+
+        return $this->height_in;
+    }
+
     /**
      * Older BoxPacker interface builds asked items this question directly.
      * Keeping it here is harmless on newer builds and protects the admin tester

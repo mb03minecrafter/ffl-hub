@@ -39,7 +39,7 @@ final class OrderBoxPackingService
     private const INCH_TO_MM = 25.4;
     private const OUNCE_TO_GRAM = 28.349523125;
     private const DEFAULT_MAX_WEIGHT_OZ = 1120.0; // 70 lb carrier default.
-    private const ENVELOPE_THICKNESS_INCREMENT_IN = 0.1;
+    private const ENVELOPE_THICKNESS_INCREMENT_IN = 0.25;
 
     /**
      * Pack dealer-fulfilled order lines using explicit boxes or saved package
@@ -66,13 +66,13 @@ final class OrderBoxPackingService
         }
 
         $box_rows = !empty($available_boxes) ? $available_boxes : ShippingOptions::package_presets();
-        $boxes = $this->normalize_boxes($box_rows);
-        $envelope_candidates = $this->normalize_envelope_candidates($box_rows);
-        $candidate_boxes = array_merge($envelope_candidates, $boxes);
         $item_result = $this->dealer_fulfilled_items_for_order($order);
         $items = $item_result['items'];
         $ignored_items = $item_result['ignored_items'];
         $unpacked_items = $item_result['unpacked_items'];
+        $boxes = $this->normalize_boxes($box_rows);
+        $envelope_candidates = $this->normalize_envelope_candidates($box_rows, $items);
+        $candidate_boxes = array_merge($envelope_candidates, $boxes);
         $errors = [];
 
         if (empty($candidate_boxes) && !empty($items)) {
@@ -263,16 +263,21 @@ final class OrderBoxPackingService
      * Envelope presets are flat usable dimensions. The usable 3D space changes
      * as the mailer fills, so each preset becomes two virtual boxes per tested
      * thickness: one keeps the flat width and shrinks length, the other keeps
-     * the flat length and shrinks width. VolumePacker then decides whether
-     * either candidate can physically pack all items.
+     * the flat length and shrinks width. The first thickness tested is derived
+     * from the thinnest legal orientation of the order items, so we do not waste
+     * time testing envelope shapes that cannot possibly fit the tallest item.
+     * VolumePacker still decides whether either candidate can physically pack
+     * all items.
      *
      * @param array<int,array<string,mixed>> $box_rows
+     * @param array<int,array{item:PackingItem,quantity:int}> $items
      * @return PackingBox[]
      */
-    private function normalize_envelope_candidates(array $box_rows): array
+    private function normalize_envelope_candidates(array $box_rows, array $items): array
     {
         $candidate_specs = [];
         $source_order = 0;
+        $minimum_thickness = $this->minimum_envelope_thickness_for_items($items);
 
         foreach ($box_rows as $row) {
             if (!is_array($row)) {
@@ -305,7 +310,7 @@ final class OrderBoxPackingService
             $max_weight = self::positive_float($row['max_weight_oz'] ?? null) ?? self::DEFAULT_MAX_WEIGHT_OZ;
             $base_id = $id !== '' ? $id : sanitize_key($name);
 
-            foreach ($this->envelope_thicknesses($max_thickness) as $thickness) {
+            foreach ($this->envelope_thicknesses($max_thickness, $minimum_thickness) as $thickness) {
                 $variants = [
                     [
                         'suffix' => 'length_shrink',
@@ -398,13 +403,22 @@ final class OrderBoxPackingService
     /**
      * @return float[]
      */
-    private function envelope_thicknesses(float $max_thickness): array
+    private function envelope_thicknesses(float $max_thickness, ?float $minimum_thickness = null): array
     {
         $thicknesses = [];
         $increment = self::ENVELOPE_THICKNESS_INCREMENT_IN;
-        $start = min($increment, $max_thickness);
+        $start = $minimum_thickness !== null
+            ? max($increment, self::ceil_inches_to_hundredth($minimum_thickness))
+            : min($increment, $max_thickness);
 
-        for ($thickness = $start; $thickness <= $max_thickness + 0.0001; $thickness += $increment) {
+        if ($start > $max_thickness + 0.0001) {
+            return [];
+        }
+
+        $thicknesses[] = round($start, 2);
+        $next_increment = (float) (ceil(($start + 0.0001) / $increment) * $increment);
+
+        for ($thickness = $next_increment; $thickness <= $max_thickness + 0.0001; $thickness += $increment) {
             $thicknesses[] = round(min($thickness, $max_thickness), 2);
         }
 
@@ -417,6 +431,31 @@ final class OrderBoxPackingService
         sort($thicknesses, SORT_NUMERIC);
 
         return $thicknesses;
+    }
+
+    /**
+     * @param array<int,array{item:PackingItem,quantity:int}> $items
+     */
+    private function minimum_envelope_thickness_for_items(array $items): ?float
+    {
+        $minimum = null;
+
+        foreach ($items as $entry) {
+            $item = $entry['item'] ?? null;
+            $quantity = max(0, (int) ($entry['quantity'] ?? 0));
+            if (!$item instanceof PackingItem || $quantity <= 0) {
+                continue;
+            }
+
+            $item_minimum = self::positive_float($item->getEnvelopeMinimumThicknessIn());
+            if ($item_minimum === null) {
+                continue;
+            }
+
+            $minimum = $minimum === null ? $item_minimum : max($minimum, $item_minimum);
+        }
+
+        return $minimum;
     }
 
     /**
@@ -1122,6 +1161,11 @@ final class OrderBoxPackingService
     private static function number_label(float $value): string
     {
         return rtrim(rtrim(number_format($value, 2, '.', ''), '0'), '.');
+    }
+
+    private static function ceil_inches_to_hundredth(float $value): float
+    {
+        return ceil(($value * 100.0) - 0.000001) / 100.0;
     }
 
     private static function boolish($value, bool $default = false): bool
