@@ -43,7 +43,7 @@ final class ShippingPackagePresetsPage
             <?php ShippingAdminPage::render_styles(); ?>
             <h1><?php esc_html_e('Package Presets', 'ffl-hub'); ?></h1>
             <p class="description">
-                <?php esc_html_e('Reusable boxes and envelopes for order label panels. Envelope length and width are flat usable dimensions; height is the maximum filled thickness.', 'ffl-hub'); ?>
+                <?php esc_html_e('Reusable boxes and envelopes for order label panels. Envelope length and width are flat usable dimensions; height is the maximum filled thickness. Potential future boxes are audit-only and are never selected for real labels.', 'ffl-hub'); ?>
             </p>
 
             <?php if (isset($_GET['presets_saved'])) : ?>
@@ -55,7 +55,15 @@ final class ShippingPackagePresetsPage
                 <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_FIELD); ?>
 
                 <section class="fflhub-shipping-card">
-                    <?php $this->render_package_presets_table(ShippingOptions::package_presets()); ?>
+                    <h2><?php esc_html_e('Current Package Presets', 'ffl-hub'); ?></h2>
+                    <p class="description"><?php esc_html_e('These are the packages we can actually use for labels and order packing.', 'ffl-hub'); ?></p>
+                    <?php $this->render_package_presets_table('package_presets', ShippingOptions::package_presets(), true); ?>
+                </section>
+
+                <section class="fflhub-shipping-card">
+                    <h2><?php esc_html_e('Potential Future Boxes', 'ffl-hub'); ?></h2>
+                    <p class="description"><?php esc_html_e('These box sizes are used only by the box-packing audit tab so we can decide what boxes to buy later. Package weights are stored in ounces.', 'ffl-hub'); ?></p>
+                    <?php $this->render_package_presets_table('future_package_presets', ShippingOptions::future_package_presets(), false); ?>
                 </section>
 
                 <?php submit_button(__('Save Package Presets', 'ffl-hub')); ?>
@@ -84,6 +92,7 @@ final class ShippingPackagePresetsPage
         $input = is_array($input) ? $input : [];
         ShippingOptions::save_partial([
             'package_presets' => $input['package_presets'] ?? [],
+            'future_package_presets' => $input['future_package_presets'] ?? [],
         ]);
 
         wp_safe_redirect(add_query_arg(['page' => ShippingAdminPage::PACKAGE_PRESETS_SLUG, 'presets_saved' => '1'], admin_url('admin.php')));
@@ -93,7 +102,7 @@ final class ShippingPackagePresetsPage
     /**
      * @param array<int,array<string,mixed>> $presets
      */
-    private function render_package_presets_table(array $presets): void
+    private function render_package_presets_table(string $field, array $presets, bool $allow_envelopes): void
     {
         echo '<table class="widefat striped fflhub-shipping-package-presets">';
         echo '<thead><tr>';
@@ -113,21 +122,29 @@ final class ShippingPackagePresetsPage
             $width = (string) ($preset['width'] ?? '');
             $height = (string) ($preset['height'] ?? '');
             $weight_oz = (string) ($preset['weight_oz'] ?? '');
+            $name = (string) ($preset['name'] ?? '');
+            $max_weight_oz = (string) ($preset['max_weight_oz'] ?? '');
 
             echo '<tr>';
-            echo '<td><input type="hidden" name="shipping[package_presets][' . esc_attr((string) $index) . '][id]" value="' . esc_attr($id) . '" />';
-            echo '<select name="shipping[package_presets][' . esc_attr((string) $index) . '][kind]">';
-            foreach (['box' => 'Box', 'envelope' => 'Envelope'] as $value => $label) {
+            echo '<td><input type="hidden" name="shipping[' . esc_attr($field) . '][' . esc_attr((string) $index) . '][id]" value="' . esc_attr($id) . '" />';
+            echo '<input type="hidden" name="shipping[' . esc_attr($field) . '][' . esc_attr((string) $index) . '][name]" value="' . esc_attr($name) . '" />';
+            echo '<input type="hidden" name="shipping[' . esc_attr($field) . '][' . esc_attr((string) $index) . '][max_weight_oz]" value="' . esc_attr($max_weight_oz) . '" />';
+            if ($name !== '') {
+                echo '<strong>' . esc_html($name) . '</strong><br />';
+            }
+            echo '<select name="shipping[' . esc_attr($field) . '][' . esc_attr((string) $index) . '][kind]">';
+            $types = $allow_envelopes ? ['box' => 'Box', 'envelope' => 'Envelope'] : ['box' => 'Box'];
+            foreach ($types as $value => $label) {
                 echo '<option value="' . esc_attr($value) . '" ' . selected($kind, $value, false) . '>' . esc_html($label) . '</option>';
             }
             echo '</select></td>';
-            echo '<td><input type="number" min="0" step="0.01" name="shipping[package_presets][' . esc_attr((string) $index) . '][length]" value="' . esc_attr($length) . '" /></td>';
-            echo '<td><input type="number" min="0" step="0.01" name="shipping[package_presets][' . esc_attr((string) $index) . '][width]" value="' . esc_attr($width) . '" /></td>';
-            echo '<td><input type="number" min="0" step="0.01" name="shipping[package_presets][' . esc_attr((string) $index) . '][height]" value="' . esc_attr($height) . '" /></td>';
-            echo '<td><input type="number" min="0" step="0.01" name="shipping[package_presets][' . esc_attr((string) $index) . '][weight_oz]" value="' . esc_attr($weight_oz) . '" /></td>';
+            echo '<td><input type="number" min="0" step="0.01" name="shipping[' . esc_attr($field) . '][' . esc_attr((string) $index) . '][length]" value="' . esc_attr($length) . '" /></td>';
+            echo '<td><input type="number" min="0" step="0.01" name="shipping[' . esc_attr($field) . '][' . esc_attr((string) $index) . '][width]" value="' . esc_attr($width) . '" /></td>';
+            echo '<td><input type="number" min="0" step="0.01" name="shipping[' . esc_attr($field) . '][' . esc_attr((string) $index) . '][height]" value="' . esc_attr($height) . '" /></td>';
+            echo '<td><input type="number" min="0" step="0.01" name="shipping[' . esc_attr($field) . '][' . esc_attr((string) $index) . '][weight_oz]" value="' . esc_attr($weight_oz) . '" /></td>';
             echo '<td>';
             if ($id !== '') {
-                echo '<label><input type="checkbox" name="shipping[package_presets][' . esc_attr((string) $index) . '][remove]" value="1" /> Remove</label>';
+                echo '<label><input type="checkbox" name="shipping[' . esc_attr($field) . '][' . esc_attr((string) $index) . '][remove]" value="1" /> Remove</label>';
             } else {
                 echo '<span class="description">New</span>';
             }

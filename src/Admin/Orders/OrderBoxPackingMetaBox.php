@@ -223,9 +223,18 @@ final class OrderBoxPackingMetaBox
             ];
         }
 
-        $result = (new OrderBoxPackingService())->pack_dealer_fulfilled_order($order, $boxes);
+        $service = new OrderBoxPackingService();
+        $result = $service->pack_dealer_fulfilled_order($order, $boxes);
         $result['selected_box_ids'] = $selected_ids;
         $result['ran_at'] = $ran_at;
+
+        $future_boxes = $this->future_box_rows();
+        if (!empty($future_boxes)) {
+            $future_result = $service->pack_dealer_fulfilled_order($order, $future_boxes);
+            $future_result['audit_only'] = true;
+            $future_result['ran_at'] = $ran_at;
+            $result['future_box_audit'] = $future_result;
+        }
 
         return $result;
     }
@@ -273,14 +282,39 @@ final class OrderBoxPackingMetaBox
      */
     private function box_presets_for_ui(): array
     {
+        return $this->package_rows_for_ui(ShippingOptions::package_presets(), ['box', 'envelope']);
+    }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    private function future_box_rows(): array
+    {
         $rows = [];
-        foreach (ShippingOptions::package_presets() as $preset) {
+        foreach ($this->package_rows_for_ui(ShippingOptions::future_package_presets(), ['box']) as $preset) {
+            if (!empty($preset['eligible_for_packing'])) {
+                $rows[] = $preset;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $presets
+     * @param string[] $allowed_kinds
+     * @return array<int,array<string,mixed>>
+     */
+    private function package_rows_for_ui(array $presets, array $allowed_kinds): array
+    {
+        $rows = [];
+        foreach ($presets as $preset) {
             if (!is_array($preset)) {
                 continue;
             }
 
             $kind = self::package_type($preset['kind'] ?? 'box');
-            if (!in_array($kind, ['box', 'envelope'], true)) {
+            if (!in_array($kind, $allowed_kinds, true)) {
                 continue;
             }
 
@@ -389,6 +423,10 @@ final class OrderBoxPackingMetaBox
     private function render_result(array $result): void
     {
         $ok = !empty($result['ok']);
+        $future_audit = isset($result['future_box_audit']) && is_array($result['future_box_audit'])
+            ? $result['future_box_audit']
+            : null;
+
         echo '<section class="fflhub-box-pack-result ' . ($ok ? 'is-ok' : 'is-warning') . '">';
         echo '<div class="fflhub-box-pack-result-head">';
         echo '<h4>' . esc_html($ok ? __('Packing Result', 'ffl-hub') : __('Packing Needs Attention', 'ffl-hub')) . '</h4>';
@@ -397,6 +435,32 @@ final class OrderBoxPackingMetaBox
         }
         echo '</div>';
 
+        if ($future_audit !== null) {
+            echo '<div class="fflhub-box-pack-tabs" data-fflhub-box-pack-tabs>';
+            echo '<div class="fflhub-box-pack-tab-nav" role="tablist">';
+            echo '<button type="button" class="button is-active" data-fflhub-box-pack-tab="current">' . esc_html__('Current Packages', 'ffl-hub') . '</button>';
+            echo '<button type="button" class="button" data-fflhub-box-pack-tab="future">' . esc_html__('Potential Future Boxes', 'ffl-hub') . '</button>';
+            echo '</div>';
+            echo '<div class="fflhub-box-pack-tab-panel is-active" data-fflhub-box-pack-tab-panel="current">';
+            $this->render_result_body($result);
+            echo '</div>';
+            echo '<div class="fflhub-box-pack-tab-panel" data-fflhub-box-pack-tab-panel="future" hidden>';
+            echo '<p class="description">' . esc_html__('Audit only. These boxes are not selected for labels or fulfillment; they show what would happen if we bought these sizes later.', 'ffl-hub') . '</p>';
+            $this->render_result_body($future_audit, true);
+            echo '</div>';
+            echo '</div>';
+        } else {
+            $this->render_result_body($result);
+        }
+
+        echo '</section>';
+    }
+
+    /**
+     * @param array<string,mixed> $result
+     */
+    private function render_result_body(array $result, bool $audit_only = false): void
+    {
         $stats = [
             __('Candidate packages', 'ffl-hub') => (int) ($result['candidate_box_count'] ?? 0),
             __('Packed packages', 'ffl-hub') => (int) ($result['box_count'] ?? 0),
@@ -426,30 +490,37 @@ final class OrderBoxPackingMetaBox
             echo '<div class="fflhub-box-pack-boxes">';
             foreach ($boxes as $index => $box) {
                 if (is_array($box)) {
-                    $this->render_packed_box((int) $index + 1, $box);
+                    $this->render_packed_box((int) $index + 1, $box, $audit_only);
                 }
             }
             echo '</div>';
         }
 
-        $this->render_candidate_box_comparison((array) ($result['candidate_boxes'] ?? []));
+        $this->render_candidate_box_comparison(
+            (array) ($result['candidate_boxes'] ?? []),
+            $audit_only ? __('Potential Future Box Comparison', 'ffl-hub') : __('Candidate Package Comparison', 'ffl-hub'),
+            $audit_only
+                ? __('These are audit-only future boxes. Chosen here means BoxPacker would have used that future size, not that FFL Hub selected it for the order.', 'ffl-hub')
+                : __('Unchosen packages show capacity estimates for the full dealer-fulfilled item set, not actual alternate placements.', 'ffl-hub')
+        );
         $this->render_item_debug_list(__('Unpacked Items', 'ffl-hub'), (array) ($result['unpacked_items'] ?? []));
         $this->render_item_debug_list(__('Ignored Direct-Ship Items', 'ffl-hub'), (array) ($result['ignored_items'] ?? []));
-        echo '</section>';
     }
 
     /**
      * @param array<int,mixed> $candidate_boxes
      */
-    private function render_candidate_box_comparison(array $candidate_boxes): void
+    private function render_candidate_box_comparison(array $candidate_boxes, string $title = '', string $description = ''): void
     {
         if (empty($candidate_boxes)) {
             return;
         }
 
         echo '<details class="fflhub-box-pack-candidates" open>';
-        echo '<summary>' . esc_html__('Candidate Package Comparison', 'ffl-hub') . '</summary>';
-        echo '<p class="description">' . esc_html__('Unchosen packages show capacity estimates for the full dealer-fulfilled item set, not actual alternate placements.', 'ffl-hub') . '</p>';
+        echo '<summary>' . esc_html($title !== '' ? $title : __('Candidate Package Comparison', 'ffl-hub')) . '</summary>';
+        if ($description !== '') {
+            echo '<p class="description">' . esc_html($description) . '</p>';
+        }
         echo '<table class="widefat striped"><thead><tr>';
         echo '<th>' . esc_html__('Package', 'ffl-hub') . '</th>';
         echo '<th>' . esc_html__('Chosen', 'ffl-hub') . '</th>';
@@ -494,7 +565,7 @@ final class OrderBoxPackingMetaBox
     /**
      * @param array<string,mixed> $box
      */
-    private function render_packed_box(int $number, array $box): void
+    private function render_packed_box(int $number, array $box, bool $audit_only = false): void
     {
         $name = (string) ($box['box_name'] ?? $box['box_id'] ?? 'Package');
         $dims = self::box_dimension_label($box);
@@ -503,7 +574,7 @@ final class OrderBoxPackingMetaBox
 
         echo '<article class="fflhub-box-pack-packed-box">';
         echo '<div class="fflhub-box-pack-packed-box-head">';
-        echo '<strong>' . esc_html(sprintf(__('Package %d: %s', 'ffl-hub'), $number, $name)) . '</strong>';
+        echo '<strong>' . esc_html(sprintf($audit_only ? __('Audit Package %d: %s', 'ffl-hub') : __('Package %d: %s', 'ffl-hub'), $number, $name)) . '</strong>';
         echo '<span>' . esc_html((string) ($box['package_type'] ?? 'box')) . '</span>';
         echo '</div>';
         echo '<div class="fflhub-box-pack-packed-box-meta">';
@@ -766,6 +837,13 @@ final class OrderBoxPackingMetaBox
             .fflhub-box-pack-errors { padding:8px 10px; border-radius:6px; background:#fcf0f1; color:#8a2424; }
             .fflhub-box-pack-errors p { margin:0 0 4px; }
             .fflhub-box-pack-errors p:last-child { margin-bottom:0; }
+            .fflhub-box-pack-tabs { display:grid; gap:12px; margin-top:12px; }
+            .fflhub-box-pack-tab-nav { display:flex; flex-wrap:wrap; gap:8px; }
+            .fflhub-box-pack-tab-nav .button.is-active {
+                background:#1d2327; border-color:#1d2327; color:#fff;
+            }
+            .fflhub-box-pack-tab-panel { display:none; }
+            .fflhub-box-pack-tab-panel.is-active { display:block; }
             .fflhub-box-pack-boxes { display:grid; gap:12px; }
             .fflhub-box-pack-packed-box {
                 border:1px solid #dcdcde; border-radius:8px; padding:10px; background:#fbfbfc;
