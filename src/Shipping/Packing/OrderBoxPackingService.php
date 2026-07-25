@@ -1207,7 +1207,7 @@ final class OrderBoxPackingService
 
     private static function inches_to_mm(float $value): int
     {
-        return max(1, (int) ceil($value * self::INCH_TO_MM));
+        return max(1, (int) round($value * self::INCH_TO_MM));
     }
 
     private static function ounces_to_grams(float $value): int
