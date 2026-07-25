@@ -43,7 +43,7 @@ final class ShippingPackagePresetsPage
             <?php ShippingAdminPage::render_styles(); ?>
             <h1><?php esc_html_e('Package Presets', 'ffl-hub'); ?></h1>
             <p class="description">
-                <?php esc_html_e('Reusable boxes and envelopes for order label panels. Package weight is added to assigned item weight when a preset is selected.', 'ffl-hub'); ?>
+                <?php esc_html_e('Reusable boxes and envelopes for order label panels. Envelope length and width are flat usable dimensions; height is the maximum filled thickness.', 'ffl-hub'); ?>
             </p>
 
             <?php if (isset($_GET['presets_saved'])) : ?>
@@ -97,7 +97,7 @@ final class ShippingPackagePresetsPage
     {
         echo '<table class="widefat striped fflhub-shipping-package-presets">';
         echo '<thead><tr>';
-        echo '<th>Name</th><th>Kind</th><th>Provider Package Code</th><th>Length</th><th>Width</th><th>Height</th><th>Package Weight oz</th><th>Remove</th>';
+        echo '<th>Type</th><th>Usable length</th><th>Usable width</th><th>Usable height</th><th>Default package weight</th><th>Remove</th>';
         echo '</tr></thead><tbody>';
 
         $rows = array_values($presets);
@@ -107,10 +107,8 @@ final class ShippingPackagePresetsPage
 
         foreach ($rows as $index => $preset) {
             $preset = is_array($preset) ? $preset : [];
-            $name = (string) ($preset['name'] ?? '');
             $id = (string) ($preset['id'] ?? '');
-            $kind = (string) ($preset['kind'] ?? 'package');
-            $code = (string) ($preset['package_code'] ?? 'package');
+            $kind = self::package_type($preset['kind'] ?? 'box');
             $length = (string) ($preset['length'] ?? '');
             $width = (string) ($preset['width'] ?? '');
             $height = (string) ($preset['height'] ?? '');
@@ -118,19 +116,17 @@ final class ShippingPackagePresetsPage
 
             echo '<tr>';
             echo '<td><input type="hidden" name="shipping[package_presets][' . esc_attr((string) $index) . '][id]" value="' . esc_attr($id) . '" />';
-            echo '<input class="regular-text" type="text" name="shipping[package_presets][' . esc_attr((string) $index) . '][name]" value="' . esc_attr($name) . '" placeholder="Small Box" /></td>';
-            echo '<td><select name="shipping[package_presets][' . esc_attr((string) $index) . '][kind]">';
-            foreach (['package' => 'Package', 'envelope' => 'Envelope'] as $value => $label) {
+            echo '<select name="shipping[package_presets][' . esc_attr((string) $index) . '][kind]">';
+            foreach (['box' => 'Box', 'envelope' => 'Envelope'] as $value => $label) {
                 echo '<option value="' . esc_attr($value) . '" ' . selected($kind, $value, false) . '>' . esc_html($label) . '</option>';
             }
             echo '</select></td>';
-            echo '<td><input type="text" name="shipping[package_presets][' . esc_attr((string) $index) . '][package_code]" value="' . esc_attr($code) . '" placeholder="package" /></td>';
             echo '<td><input type="number" min="0" step="0.01" name="shipping[package_presets][' . esc_attr((string) $index) . '][length]" value="' . esc_attr($length) . '" /></td>';
             echo '<td><input type="number" min="0" step="0.01" name="shipping[package_presets][' . esc_attr((string) $index) . '][width]" value="' . esc_attr($width) . '" /></td>';
             echo '<td><input type="number" min="0" step="0.01" name="shipping[package_presets][' . esc_attr((string) $index) . '][height]" value="' . esc_attr($height) . '" /></td>';
             echo '<td><input type="number" min="0" step="0.01" name="shipping[package_presets][' . esc_attr((string) $index) . '][weight_oz]" value="' . esc_attr($weight_oz) . '" /></td>';
             echo '<td>';
-            if ($name !== '' || $id !== '') {
+            if ($id !== '') {
                 echo '<label><input type="checkbox" name="shipping[package_presets][' . esc_attr((string) $index) . '][remove]" value="1" /> Remove</label>';
             } else {
                 echo '<span class="description">New</span>';
@@ -140,5 +136,18 @@ final class ShippingPackagePresetsPage
         }
 
         echo '</tbody></table>';
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function package_type($value): string
+    {
+        $value = strtolower(trim((string) $value));
+        if ($value === 'package') {
+            return 'box';
+        }
+
+        return in_array($value, ['box', 'envelope'], true) ? $value : 'box';
     }
 }

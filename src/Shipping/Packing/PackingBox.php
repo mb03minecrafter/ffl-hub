@@ -112,6 +112,7 @@ final class PackingBox implements Box, JsonSerializable
         return [
             'box_id' => $this->id,
             'box_name' => $this->name,
+            'package_type' => (string) ($this->source['kind'] ?? 'box'),
             'package_code' => $this->package_code,
             'outer_length_in' => $this->outer_length_in,
             'outer_width_in' => $this->outer_width_in,

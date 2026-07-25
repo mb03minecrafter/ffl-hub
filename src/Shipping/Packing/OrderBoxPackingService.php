@@ -9,6 +9,7 @@ use DVDoug\BoxPacker\Packer;
 use DVDoug\BoxPacker\PackedBox;
 use DVDoug\BoxPacker\PackedItem;
 use DVDoug\BoxPacker\Rotation;
+use DVDoug\BoxPacker\VolumePacker;
 use FFLHub\Distributor\Models\DistributorOrderLine;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementKeysUtil;
@@ -38,6 +39,7 @@ final class OrderBoxPackingService
     private const INCH_TO_MM = 25.4;
     private const OUNCE_TO_GRAM = 28.349523125;
     private const DEFAULT_MAX_WEIGHT_OZ = 1120.0; // 70 lb carrier default.
+    private const ENVELOPE_THICKNESS_INCREMENT_IN = 0.25;
 
     /**
      * Pack dealer-fulfilled order lines using explicit boxes or saved package
@@ -65,17 +67,19 @@ final class OrderBoxPackingService
 
         $box_rows = !empty($available_boxes) ? $available_boxes : ShippingOptions::package_presets();
         $boxes = $this->normalize_boxes($box_rows);
+        $envelope_candidates = $this->normalize_envelope_candidates($box_rows);
+        $candidate_boxes = array_merge($envelope_candidates, $boxes);
         $item_result = $this->dealer_fulfilled_items_for_order($order);
         $items = $item_result['items'];
         $ignored_items = $item_result['ignored_items'];
         $unpacked_items = $item_result['unpacked_items'];
         $errors = [];
 
-        if (empty($boxes) && !empty($items)) {
-            $errors[] = 'No packable box presets were supplied. Boxes need positive length, width, and height.';
+        if (empty($candidate_boxes) && !empty($items)) {
+            $errors[] = 'No packable package presets were supplied. Presets need positive usable length, width, and height.';
         }
 
-        if (empty($items) || empty($boxes)) {
+        if (empty($items) || empty($candidate_boxes)) {
             return $this->result(
                 $order,
                 [],
@@ -83,8 +87,39 @@ final class OrderBoxPackingService
                 $ignored_items,
                 $errors,
                 $item_result['dealer_fulfilled_units'],
-                count($boxes),
-                $this->candidate_boxes_summary($boxes, $items)
+                count($candidate_boxes),
+                $this->candidate_boxes_summary($candidate_boxes, $items)
+            );
+        }
+
+        $envelope_pack = $this->pack_first_envelope_candidate($envelope_candidates, $items);
+        if ($envelope_pack instanceof PackedBox) {
+            $packed_box_summaries = $this->packed_boxes_summary([$envelope_pack]);
+
+            return $this->result(
+                $order,
+                $packed_box_summaries,
+                $unpacked_items,
+                $ignored_items,
+                $errors,
+                $item_result['dealer_fulfilled_units'],
+                count($candidate_boxes),
+                $this->candidate_boxes_summary($candidate_boxes, $items, $packed_box_summaries)
+            );
+        }
+
+        if (empty($boxes)) {
+            $errors[] = 'No selected envelope candidate could pack all dealer-fulfilled items.';
+
+            return $this->result(
+                $order,
+                [],
+                array_merge($unpacked_items, $this->unpacked_items_from_entries($items, 'no_matching_envelope')),
+                $ignored_items,
+                $errors,
+                $item_result['dealer_fulfilled_units'],
+                count($candidate_boxes),
+                $this->candidate_boxes_summary($candidate_boxes, $items)
             );
         }
 
@@ -117,8 +152,8 @@ final class OrderBoxPackingService
                 $ignored_items,
                 $errors,
                 $item_result['dealer_fulfilled_units'],
-                count($boxes),
-                $this->candidate_boxes_summary($boxes, $items)
+                count($candidate_boxes),
+                $this->candidate_boxes_summary($candidate_boxes, $items)
             );
         } catch (\Throwable $e) {
             $errors[] = 'BoxPacker failed: ' . $e->getMessage();
@@ -137,8 +172,8 @@ final class OrderBoxPackingService
                 $ignored_items,
                 $errors,
                 $item_result['dealer_fulfilled_units'],
-                count($boxes),
-                $this->candidate_boxes_summary($boxes, $items)
+                count($candidate_boxes),
+                $this->candidate_boxes_summary($candidate_boxes, $items)
             );
         }
 
@@ -158,8 +193,8 @@ final class OrderBoxPackingService
             $ignored_items,
             $errors,
             $item_result['dealer_fulfilled_units'],
-            count($boxes),
-            $this->candidate_boxes_summary($boxes, $items, $packed_box_summaries)
+            count($candidate_boxes),
+            $this->candidate_boxes_summary($candidate_boxes, $items, $packed_box_summaries)
         );
     }
 
@@ -176,10 +211,14 @@ final class OrderBoxPackingService
                 continue;
             }
 
+            if (self::package_type($row['kind'] ?? ($row['type'] ?? 'box')) !== 'box') {
+                continue;
+            }
+
             $id = sanitize_key((string) ($row['id'] ?? $row['box_id'] ?? ''));
             $name = trim((string) ($row['name'] ?? $row['box_name'] ?? $id));
             if ($name === '') {
-                $name = 'Package';
+                $name = 'Box';
             }
 
             $package_code = trim((string) ($row['package_code'] ?? 'package'));
@@ -200,7 +239,8 @@ final class OrderBoxPackingService
             $empty_weight = self::positive_float($row['empty_weight_oz'] ?? $row['weight_oz'] ?? null) ?? 0.0;
             $max_weight = self::positive_float($row['max_weight_oz'] ?? null) ?? self::DEFAULT_MAX_WEIGHT_OZ;
 
-            $boxes[] = new PackingBox(
+            $row['kind'] = 'box';
+            $boxes[] = $this->make_packing_box(
                 $id !== '' ? $id : sanitize_key($name),
                 $name,
                 $package_code,
@@ -212,19 +252,276 @@ final class OrderBoxPackingService
                 $inner_height,
                 $empty_weight,
                 $max_weight,
-                self::inches_to_mm($outer_length),
-                self::inches_to_mm($outer_width),
-                self::inches_to_mm($outer_height),
-                self::inches_to_mm($inner_length),
-                self::inches_to_mm($inner_width),
-                self::inches_to_mm($inner_height),
-                self::ounces_to_grams($empty_weight),
-                self::ounces_to_grams($max_weight),
                 $row
             );
         }
 
         return $boxes;
+    }
+
+    /**
+     * Envelope presets are flat usable dimensions. The usable 3D space changes
+     * as the mailer fills, so each preset becomes a series of virtual boxes:
+     * length and width shrink by the tested thickness, and height becomes that
+     * same thickness. The first candidate that fits every unit wins.
+     *
+     * @param array<int,array<string,mixed>> $box_rows
+     * @return PackingBox[]
+     */
+    private function normalize_envelope_candidates(array $box_rows): array
+    {
+        $candidate_specs = [];
+        $source_order = 0;
+
+        foreach ($box_rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            if (self::package_type($row['kind'] ?? ($row['type'] ?? 'box')) !== 'envelope') {
+                continue;
+            }
+
+            $length = self::positive_float($row['length'] ?? $row['outer_length_in'] ?? $row['length_in'] ?? null);
+            $width = self::positive_float($row['width'] ?? $row['outer_width_in'] ?? $row['width_in'] ?? null);
+            $max_thickness = self::positive_float($row['height'] ?? $row['outer_height_in'] ?? $row['height_in'] ?? null);
+            if ($length === null || $width === null || $max_thickness === null) {
+                continue;
+            }
+
+            $id = sanitize_key((string) ($row['id'] ?? $row['box_id'] ?? ''));
+            $name = trim((string) ($row['name'] ?? $row['box_name'] ?? $id));
+            if ($name === '') {
+                $name = 'Envelope';
+            }
+
+            $package_code = trim((string) ($row['package_code'] ?? 'thick_envelope'));
+            if ($package_code === '') {
+                $package_code = 'thick_envelope';
+            }
+
+            $empty_weight = self::positive_float($row['empty_weight_oz'] ?? $row['weight_oz'] ?? null) ?? 0.0;
+            $max_weight = self::positive_float($row['max_weight_oz'] ?? null) ?? self::DEFAULT_MAX_WEIGHT_OZ;
+
+            foreach ($this->envelope_thicknesses($max_thickness) as $thickness) {
+                $virtual_length = $length - $thickness;
+                $virtual_width = $width - $thickness;
+                if ($virtual_length <= 0.0 || $virtual_width <= 0.0) {
+                    continue;
+                }
+
+                $candidate_specs[] = [
+                    'id' => ($id !== '' ? $id : sanitize_key($name)) . '_t' . self::number_key($thickness),
+                    'name' => $name . ' @ ' . self::number_label($thickness) . ' in',
+                    'package_code' => $package_code,
+                    'outer_length' => $virtual_length,
+                    'outer_width' => $virtual_width,
+                    'outer_height' => $thickness,
+                    'empty_weight' => $empty_weight,
+                    'max_weight' => $max_weight,
+                    'thickness' => $thickness,
+                    'source_order' => $source_order,
+                    'source' => [
+                        ...$row,
+                        'kind' => 'envelope',
+                        'flat_length_in' => $length,
+                        'flat_width_in' => $width,
+                        'max_thickness_in' => $max_thickness,
+                        'virtual_thickness_in' => $thickness,
+                    ],
+                ];
+            }
+
+            $source_order++;
+        }
+
+        usort($candidate_specs, static function (array $a, array $b): int {
+            $thickness = ((float) $a['thickness']) <=> ((float) $b['thickness']);
+            if ($thickness !== 0) {
+                return $thickness;
+            }
+
+            $a_volume = (float) $a['outer_length'] * (float) $a['outer_width'] * (float) $a['outer_height'];
+            $b_volume = (float) $b['outer_length'] * (float) $b['outer_width'] * (float) $b['outer_height'];
+
+            return ($a_volume <=> $b_volume) ?: ((int) $a['source_order'] <=> (int) $b['source_order']);
+        });
+
+        $boxes = [];
+        foreach ($candidate_specs as $spec) {
+            $boxes[] = $this->make_packing_box(
+                (string) $spec['id'],
+                (string) $spec['name'],
+                (string) $spec['package_code'],
+                (float) $spec['outer_length'],
+                (float) $spec['outer_width'],
+                (float) $spec['outer_height'],
+                (float) $spec['outer_length'],
+                (float) $spec['outer_width'],
+                (float) $spec['outer_height'],
+                (float) $spec['empty_weight'],
+                (float) $spec['max_weight'],
+                (array) $spec['source']
+            );
+        }
+
+        return $boxes;
+    }
+
+    /**
+     * @return float[]
+     */
+    private function envelope_thicknesses(float $max_thickness): array
+    {
+        $thicknesses = [];
+        $increment = self::ENVELOPE_THICKNESS_INCREMENT_IN;
+        $start = min($increment, $max_thickness);
+
+        for ($thickness = $start; $thickness <= $max_thickness + 0.0001; $thickness += $increment) {
+            $thicknesses[] = round(min($thickness, $max_thickness), 2);
+        }
+
+        $max = round($max_thickness, 2);
+        if (!in_array($max, $thicknesses, true)) {
+            $thicknesses[] = $max;
+        }
+
+        $thicknesses = array_values(array_unique(array_filter($thicknesses, static fn (float $value): bool => $value > 0.0)));
+        sort($thicknesses, SORT_NUMERIC);
+
+        return $thicknesses;
+    }
+
+    /**
+     * @param array<string,mixed> $source
+     */
+    private function make_packing_box(
+        string $id,
+        string $name,
+        string $package_code,
+        float $outer_length,
+        float $outer_width,
+        float $outer_height,
+        float $inner_length,
+        float $inner_width,
+        float $inner_height,
+        float $empty_weight,
+        float $max_weight,
+        array $source
+    ): PackingBox {
+        return new PackingBox(
+            $id,
+            $name,
+            $package_code,
+            $outer_length,
+            $outer_width,
+            $outer_height,
+            $inner_length,
+            $inner_width,
+            $inner_height,
+            $empty_weight,
+            $max_weight,
+            self::inches_to_mm($outer_length),
+            self::inches_to_mm($outer_width),
+            self::inches_to_mm($outer_height),
+            self::inches_to_mm($inner_length),
+            self::inches_to_mm($inner_width),
+            self::inches_to_mm($inner_height),
+            self::ounces_to_grams($empty_weight),
+            self::ounces_to_grams($max_weight),
+            $source
+        );
+    }
+
+    /**
+     * @param PackingBox[] $envelope_candidates
+     * @param array<int,array{item:PackingItem,quantity:int}> $items
+     */
+    private function pack_first_envelope_candidate(array $envelope_candidates, array $items): ?PackedBox
+    {
+        if (empty($envelope_candidates) || empty($items)) {
+            return null;
+        }
+
+        $item_list = $this->item_list_from_entries($items);
+        $unit_count = $item_list->count();
+        if ($unit_count <= 0) {
+            return null;
+        }
+
+        foreach ($envelope_candidates as $box) {
+            if (!($box instanceof PackingBox)) {
+                continue;
+            }
+
+            try {
+                $packed_box = (new VolumePacker($box, $item_list))->pack();
+            } catch (\Throwable $e) {
+                continue;
+            }
+
+            if (
+                $this->packed_box_item_count($packed_box) === $unit_count
+                && $packed_box->getWeight() <= $box->getMaxWeight()
+            ) {
+                return $packed_box;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<int,array{item:PackingItem,quantity:int}> $items
+     */
+    private function item_list_from_entries(array $items): ItemList
+    {
+        $item_list = new ItemList();
+        foreach ($items as $entry) {
+            $item = $entry['item'] ?? null;
+            if ($item instanceof PackingItem) {
+                $item_list->insert($item, max(1, (int) ($entry['quantity'] ?? 1)));
+            }
+        }
+
+        return $item_list;
+    }
+
+    private function packed_box_item_count(PackedBox $packed_box): int
+    {
+        $items = $this->packed_box_items($packed_box);
+        if (is_array($items)) {
+            return count($items);
+        }
+        if ($items instanceof \Countable) {
+            return $items->count();
+        }
+        if ($items instanceof \Traversable) {
+            return iterator_count($items);
+        }
+
+        return 0;
+    }
+
+    /**
+     * @param array<int,array{item:PackingItem,quantity:int}> $items
+     * @return array<int,array<string,mixed>>
+     */
+    private function unpacked_items_from_entries(array $items, string $reason): array
+    {
+        $out = [];
+        foreach ($items as $entry) {
+            $item = $entry['item'] ?? null;
+            if ($item instanceof PackingItem) {
+                $out[] = [
+                    ...$item->summary(),
+                    'quantity' => max(1, (int) ($entry['quantity'] ?? 1)),
+                    'reason' => $reason,
+                ];
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -775,6 +1072,29 @@ final class OrderBoxPackingService
 
         $float = (float) $value;
         return $float > 0.0 ? $float : null;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function package_type($value): string
+    {
+        $value = strtolower(trim((string) $value));
+        if ($value === 'package') {
+            return 'box';
+        }
+
+        return in_array($value, ['box', 'envelope'], true) ? $value : 'box';
+    }
+
+    private static function number_key(float $value): string
+    {
+        return str_replace('.', '_', self::number_label($value));
+    }
+
+    private static function number_label(float $value): string
+    {
+        return rtrim(rtrim(number_format($value, 2, '.', ''), '0'), '.');
     }
 
     private static function boolish($value, bool $default = false): bool

@@ -80,8 +80,8 @@ final class OrderBoxPackingMetaBox
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'action' => self::ACTION,
             'runningText' => __('Packing...', 'ffl-hub'),
-            'buttonText' => __('Run Box Packing Test', 'ffl-hub'),
-            'errorText' => __('Box packing test failed.', 'ffl-hub'),
+            'buttonText' => __('Run Package Packing Test', 'ffl-hub'),
+            'errorText' => __('Package packing test failed.', 'ffl-hub'),
         ]);
     }
 
@@ -107,7 +107,7 @@ final class OrderBoxPackingMetaBox
             : $this->default_checked_ids($presets);
 
         echo '<div class="fflhub-box-pack-panel">';
-        echo '<p class="description">' . esc_html__('Test how BoxPacker would split only dealer-fulfilled order items across the selected box presets. Envelopes are hidden for now.', 'ffl-hub') . '</p>';
+        echo '<p class="description">' . esc_html__('Test how BoxPacker would split only dealer-fulfilled order items across the selected box and envelope presets.', 'ffl-hub') . '</p>';
 
         echo '<div class="fflhub-box-pack-result-slot" data-fflhub-box-pack-result aria-live="polite">';
         if (!empty($result)) {
@@ -122,7 +122,7 @@ final class OrderBoxPackingMetaBox
         wp_nonce_field(self::NONCE_ACTION_PREFIX . $order_id, 'fflhub_box_packing_nonce');
 
         echo '<div class="fflhub-box-pack-title-row">';
-        echo '<h4>' . esc_html__('Candidate Boxes', 'ffl-hub') . '</h4>';
+        echo '<h4>' . esc_html__('Candidate Packages', 'ffl-hub') . '</h4>';
         echo '<a class="button" href="' . esc_url(admin_url('admin.php?page=' . ShippingAdminPage::PACKAGE_PRESETS_SLUG)) . '">' . esc_html__('Edit Package Presets', 'ffl-hub') . '</a>';
         echo '</div>';
 
@@ -213,7 +213,7 @@ final class OrderBoxPackingMetaBox
                 'ok' => false,
                 'order_id' => $order_id,
                 'selected_box_ids' => $selected_ids,
-                'errors' => ['Select at least one package preset that has length, width, and height.'],
+                'errors' => ['Select at least one package preset that has usable length, width, and height.'],
                 'boxes' => [],
                 'unpacked_items' => [],
                 'ignored_items' => [],
@@ -279,10 +279,8 @@ final class OrderBoxPackingMetaBox
                 continue;
             }
 
-            $kind = strtolower(trim((string) ($preset['kind'] ?? 'package')));
-            $name = trim((string) ($preset['name'] ?? ''));
-            $code = strtolower(trim((string) ($preset['package_code'] ?? 'package')));
-            if ($kind !== 'package' || strpos($code, 'envelope') !== false || stripos($name, 'envelope') !== false) {
+            $kind = self::package_type($preset['kind'] ?? 'box');
+            if (!in_array($kind, ['box', 'envelope'], true)) {
                 continue;
             }
 
@@ -345,7 +343,7 @@ final class OrderBoxPackingMetaBox
     private function render_box_checklist(array $presets, array $checked_ids): void
     {
         if (empty($presets)) {
-            echo '<div class="fflhub-box-pack-empty">' . esc_html__('No package presets found. Add box presets under FFLHub Shipping > Package Presets.', 'ffl-hub') . '</div>';
+            echo '<div class="fflhub-box-pack-empty">' . esc_html__('No package presets found. Add box or envelope presets under FFLHub Shipping > Package Presets.', 'ffl-hub') . '</div>';
             return;
         }
 
@@ -357,7 +355,7 @@ final class OrderBoxPackingMetaBox
             }
 
             $name = trim((string) ($preset['name'] ?? $id));
-            $code = trim((string) ($preset['package_code'] ?? 'package'));
+            $kind = self::package_type($preset['kind'] ?? 'box');
             $length = self::positive_float($preset['length'] ?? null);
             $width = self::positive_float($preset['width'] ?? null);
             $height = self::positive_float($preset['height'] ?? null);
@@ -377,7 +375,7 @@ final class OrderBoxPackingMetaBox
             echo '<span>' . esc_html($dims) . '</span>';
             echo '</span>';
             echo '<span class="fflhub-box-pack-choice-meta">';
-            echo '<code>' . esc_html($code) . '</code>';
+            echo '<code>' . esc_html($kind) . '</code>';
             echo '<span>' . esc_html($weight_label) . '</span>';
             echo '</span>';
             echo '</label>';
@@ -400,8 +398,8 @@ final class OrderBoxPackingMetaBox
         echo '</div>';
 
         $stats = [
-            __('Candidate boxes', 'ffl-hub') => (int) ($result['candidate_box_count'] ?? 0),
-            __('Packed boxes', 'ffl-hub') => (int) ($result['box_count'] ?? 0),
+            __('Candidate packages', 'ffl-hub') => (int) ($result['candidate_box_count'] ?? 0),
+            __('Packed packages', 'ffl-hub') => (int) ($result['box_count'] ?? 0),
             __('Dealer units', 'ffl-hub') => (int) ($result['dealer_fulfilled_units'] ?? 0),
             __('Packed units', 'ffl-hub') => (int) ($result['packed_units'] ?? 0),
             __('Unpacked', 'ffl-hub') => (int) ($result['unpacked_item_count'] ?? count((array) ($result['unpacked_items'] ?? []))),
@@ -450,10 +448,10 @@ final class OrderBoxPackingMetaBox
         }
 
         echo '<details class="fflhub-box-pack-candidates" open>';
-        echo '<summary>' . esc_html__('Candidate Box Comparison', 'ffl-hub') . '</summary>';
-        echo '<p class="description">' . esc_html__('Unchosen boxes show capacity estimates for the full dealer-fulfilled item set, not actual alternate placements.', 'ffl-hub') . '</p>';
+        echo '<summary>' . esc_html__('Candidate Package Comparison', 'ffl-hub') . '</summary>';
+        echo '<p class="description">' . esc_html__('Unchosen packages show capacity estimates for the full dealer-fulfilled item set, not actual alternate placements.', 'ffl-hub') . '</p>';
         echo '<table class="widefat striped"><thead><tr>';
-        echo '<th>' . esc_html__('Box', 'ffl-hub') . '</th>';
+        echo '<th>' . esc_html__('Package', 'ffl-hub') . '</th>';
         echo '<th>' . esc_html__('Chosen', 'ffl-hub') . '</th>';
         echo '<th>' . esc_html__('Volume Used', 'ffl-hub') . '</th>';
         echo '<th>' . esc_html__('Weight Used', 'ffl-hub') . '</th>';
@@ -478,7 +476,7 @@ final class OrderBoxPackingMetaBox
             ])));
 
             echo '<tr class="' . esc_attr($chosen ? 'is-chosen' : 'is-not-chosen') . '">';
-            echo '<td><strong>' . esc_html((string) ($box['box_name'] ?? $box['box_id'] ?? 'Box')) . '</strong><br><code>' . esc_html((string) ($box['package_code'] ?? 'package')) . '</code></td>';
+            echo '<td><strong>' . esc_html((string) ($box['box_name'] ?? $box['box_id'] ?? 'Package')) . '</strong><br><code>' . esc_html((string) ($box['package_type'] ?? 'box')) . '</code></td>';
             echo '<td>' . ($chosen
                 ? '<span class="fflhub-box-pack-badge is-good">' . esc_html(sprintf(_n('%d used', '%d used', $used_count, 'ffl-hub'), $used_count)) . '</span>'
                 : '<span class="fflhub-box-pack-badge">' . esc_html__('Not chosen', 'ffl-hub') . '</span>') . '</td>';
@@ -498,15 +496,15 @@ final class OrderBoxPackingMetaBox
      */
     private function render_packed_box(int $number, array $box): void
     {
-        $name = (string) ($box['box_name'] ?? $box['box_id'] ?? 'Box');
+        $name = (string) ($box['box_name'] ?? $box['box_id'] ?? 'Package');
         $dims = self::box_dimension_label($box);
         $weight = self::positive_float($box['packed_weight_oz'] ?? null);
         $utilization = self::positive_float($box['volume_utilization_percent'] ?? null);
 
         echo '<article class="fflhub-box-pack-packed-box">';
         echo '<div class="fflhub-box-pack-packed-box-head">';
-        echo '<strong>' . esc_html(sprintf(__('Box %d: %s', 'ffl-hub'), $number, $name)) . '</strong>';
-        echo '<span>' . esc_html((string) ($box['package_code'] ?? 'package')) . '</span>';
+        echo '<strong>' . esc_html(sprintf(__('Package %d: %s', 'ffl-hub'), $number, $name)) . '</strong>';
+        echo '<span>' . esc_html((string) ($box['package_type'] ?? 'box')) . '</span>';
         echo '</div>';
         echo '<div class="fflhub-box-pack-packed-box-meta">';
         if ($dims !== '') {
@@ -643,6 +641,19 @@ final class OrderBoxPackingMetaBox
 
         $float = (float) $value;
         return $float > 0.0 ? $float : null;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function package_type($value): string
+    {
+        $value = strtolower(trim((string) $value));
+        if ($value === 'package') {
+            return 'box';
+        }
+
+        return in_array($value, ['box', 'envelope'], true) ? $value : 'box';
     }
 
     private static function box_dimension_label(array $box): string

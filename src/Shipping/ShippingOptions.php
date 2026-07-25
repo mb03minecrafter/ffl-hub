@@ -229,8 +229,8 @@ final class ShippingOptions
         return [
             [
                 'id' => 'generic_package',
-                'name' => 'Generic Package',
-                'kind' => 'package',
+                'name' => 'Generic Box',
+                'kind' => 'box',
                 'package_code' => 'package',
                 'length' => '',
                 'width' => '',
@@ -255,68 +255,7 @@ final class ShippingOptions
      */
     private static function builtin_package_presets(): array
     {
-        return array_merge(self::default_package_presets(), [
-            [
-                'id' => 'usps_flat_rate_envelope',
-                'name' => 'USPS Priority Flat Rate Envelope',
-                'kind' => 'envelope',
-                'package_code' => 'flat_rate_envelope',
-                'length' => '',
-                'width' => '',
-                'height' => '',
-                'weight_oz' => '',
-            ],
-            [
-                'id' => 'usps_flat_rate_legal_envelope',
-                'name' => 'USPS Priority Legal Flat Rate Envelope',
-                'kind' => 'envelope',
-                'package_code' => 'flat_rate_legal_envelope',
-                'length' => '',
-                'width' => '',
-                'height' => '',
-                'weight_oz' => '',
-            ],
-            [
-                'id' => 'usps_flat_rate_padded_envelope',
-                'name' => 'USPS Priority Padded Flat Rate Envelope',
-                'kind' => 'envelope',
-                'package_code' => 'flat_rate_padded_envelope',
-                'length' => '',
-                'width' => '',
-                'height' => '',
-                'weight_oz' => '',
-            ],
-            [
-                'id' => 'usps_small_flat_rate_box',
-                'name' => 'USPS Priority Small Flat Rate Box',
-                'kind' => 'package',
-                'package_code' => 'small_flat_rate_box',
-                'length' => '',
-                'width' => '',
-                'height' => '',
-                'weight_oz' => '',
-            ],
-            [
-                'id' => 'usps_medium_flat_rate_box',
-                'name' => 'USPS Priority Medium Flat Rate Box',
-                'kind' => 'package',
-                'package_code' => 'medium_flat_rate_box',
-                'length' => '',
-                'width' => '',
-                'height' => '',
-                'weight_oz' => '',
-            ],
-            [
-                'id' => 'usps_large_flat_rate_box',
-                'name' => 'USPS Priority Large Flat Rate Box',
-                'kind' => 'package',
-                'package_code' => 'large_flat_rate_box',
-                'length' => '',
-                'width' => '',
-                'height' => '',
-                'weight_oz' => '',
-            ],
-        ]);
+        return self::default_package_presets();
     }
 
     /**
@@ -358,17 +297,15 @@ final class ShippingOptions
                 continue;
             }
 
-            $name = self::text($row['name'] ?? '');
+            $kind = self::package_type($row['kind'] ?? ($row['type'] ?? 'box'));
             $length = self::decimal_text($row['length'] ?? '');
             $width = self::decimal_text($row['width'] ?? '');
             $height = self::decimal_text($row['height'] ?? '');
             $weight_oz = self::decimal_text($row['weight_oz'] ?? '');
-            if ($name === '' && $length === '' && $width === '' && $height === '' && $weight_oz === '') {
+            if ($length === '' && $width === '' && $height === '' && $weight_oz === '') {
                 continue;
             }
-            if ($name === '') {
-                $name = 'Package Preset';
-            }
+            $name = self::package_preset_name($kind, $length, $width, $height);
 
             $id = sanitize_key((string) ($row['id'] ?? ''));
             if ($id === '') {
@@ -386,17 +323,11 @@ final class ShippingOptions
             }
             $used_ids[$id] = true;
 
-            $kind = self::choice((string) ($row['kind'] ?? 'package'), ['package', 'envelope'], 'package');
-            $package_code = self::text($row['package_code'] ?? 'package') ?: 'package';
-            if ($kind === 'envelope' && $package_code === 'package') {
-                $package_code = 'thick_envelope';
-            }
-
             $out[] = [
                 'id' => $id,
                 'name' => $name,
                 'kind' => $kind,
-                'package_code' => $package_code,
+                'package_code' => $kind === 'envelope' ? 'thick_envelope' : 'package',
                 'length' => $length,
                 'width' => $width,
                 'height' => $height,
@@ -481,6 +412,29 @@ final class ShippingOptions
     {
         $value = trim($value);
         return in_array($value, $allowed, true) ? $value : $default;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function package_type($value): string
+    {
+        $value = strtolower(trim((string) $value));
+        if ($value === 'package') {
+            return 'box';
+        }
+
+        return in_array($value, ['box', 'envelope'], true) ? $value : 'box';
+    }
+
+    private static function package_preset_name(string $type, string $length, string $width, string $height): string
+    {
+        $label = $type === 'envelope' ? 'Envelope' : 'Box';
+        $dims = array_filter([$length, $width, $height], static fn (string $value): bool => $value !== '');
+
+        return count($dims) === 3
+            ? $label . ' ' . implode(' x ', $dims)
+            : $label . ' Preset';
     }
 
     /**
