@@ -43,6 +43,7 @@ final class ShippingOptions
             'insurance_mode' => 'none',
             'after_purchase_status' => '',
             'show_debug_fields' => '0',
+            'exclude_globalpost' => '1',
             'package_presets' => self::default_package_presets(),
             'future_package_presets' => self::default_future_package_presets(),
             'banned_service_codes' => ['usps_media_mail'],
@@ -139,6 +140,11 @@ final class ShippingOptions
         return ((string) (self::get_all()['show_debug_fields'] ?? '0')) === '1';
     }
 
+    public static function exclude_globalpost(): bool
+    {
+        return ((string) (self::get_all()['exclude_globalpost'] ?? '1')) === '1';
+    }
+
     /**
      * @return array<int,array{id:string,name:string,kind:string,package_code:string,length:string,width:string,height:string,weight_oz:string}>
      */
@@ -175,6 +181,10 @@ final class ShippingOptions
      */
     public static function rate_service_is_banned(array $rate): bool
     {
+        if (self::exclude_globalpost() && self::rate_is_globalpost($rate)) {
+            return true;
+        }
+
         $codes = self::banned_service_codes();
         if (empty($codes)) {
             return false;
@@ -205,6 +215,26 @@ final class ShippingOptions
         }
 
         return false;
+    }
+
+    /**
+     * @param array<string,mixed> $rate
+     */
+    public static function rate_is_globalpost(array $rate): bool
+    {
+        $text = strtolower(implode(' ', [
+            (string) ($rate['carrier_code'] ?? ''),
+            (string) ($rate['carrier_nickname'] ?? ''),
+            (string) ($rate['carrier_friendly_name'] ?? ''),
+            (string) ($rate['service_code'] ?? ''),
+            (string) ($rate['service_type'] ?? ''),
+            (string) ($rate['package_type'] ?? ''),
+        ]));
+        $normalized = str_replace(['_', '-'], ' ', $text);
+
+        return strpos($text, 'globalpost') !== false
+            || strpos($normalized, 'global post') !== false
+            || strpos($text, 'goglobalpost') !== false;
     }
 
     /**
@@ -433,6 +463,7 @@ final class ShippingOptions
             'insurance_mode' => self::choice((string) ($settings['insurance_mode'] ?? 'none'), ['none', 'declared_value'], 'none'),
             'after_purchase_status' => self::text($settings['after_purchase_status'] ?? ''),
             'show_debug_fields' => !empty($settings['show_debug_fields']) ? '1' : '0',
+            'exclude_globalpost' => !empty($settings['exclude_globalpost']) ? '1' : '0',
             'package_presets' => self::sanitize_package_presets($settings['package_presets'] ?? []),
             'future_package_presets' => self::sanitize_package_presets($settings['future_package_presets'] ?? [], 'box'),
             'banned_service_codes' => self::string_list($settings['banned_service_codes'] ?? []),

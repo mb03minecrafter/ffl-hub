@@ -120,6 +120,15 @@ final class ShippingSettingsPage
                                     </label>
                                 </td>
                             </tr>
+                            <tr>
+                                <th scope="row"><?php esc_html_e('Exclude GlobalPost', 'ffl-hub'); ?></th>
+                                <td>
+                                    <label>
+                                        <input type="checkbox" name="shipping[exclude_globalpost]" value="1" <?php checked(ShippingOptions::exclude_globalpost()); ?> />
+                                        <?php esc_html_e('Hide GlobalPost rates from admin label panels. Leave this enabled unless we intentionally start shipping internationally.', 'ffl-hub'); ?>
+                                    </label>
+                                </td>
+                            </tr>
                         </tbody>
                     </table>
                 </section>
@@ -170,6 +179,7 @@ final class ShippingSettingsPage
             'insurance_mode' => $input['insurance_mode'] ?? 'none',
             'after_purchase_status' => $input['after_purchase_status'] ?? '',
             'show_debug_fields' => !empty($input['show_debug_fields']) ? '1' : '0',
+            'exclude_globalpost' => !empty($input['exclude_globalpost']) ? '1' : '0',
             'banned_service_codes' => $input['banned_service_codes'] ?? '',
         ]);
 

@@ -1459,7 +1459,7 @@ final class ShipStationShipmentService
             'carrier_nickname' => (string) ($rate['carrier_nickname'] ?? ''),
             'service_code' => (string) ($rate['service_code'] ?? ''),
             'service_type' => (string) ($rate['service_type'] ?? ''),
-            'error_messages' => ['Hidden by FFLHub Shipping banned method settings.'],
+            'error_messages' => ['Hidden by FFLHub Shipping rate exclusion settings.'],
         ];
     }
 
