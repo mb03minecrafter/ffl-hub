@@ -476,6 +476,11 @@ final class OrderBoxPackingMetaBox
         }
         echo '</div>';
 
+        $selection_note = trim((string) ($result['selection_note'] ?? ''));
+        if ($selection_note !== '') {
+            echo '<div class="notice notice-info inline"><p>' . esc_html($selection_note) . '</p></div>';
+        }
+
         $errors = isset($result['errors']) && is_array($result['errors']) ? $result['errors'] : [];
         if (!empty($errors)) {
             echo '<div class="fflhub-box-pack-errors">';

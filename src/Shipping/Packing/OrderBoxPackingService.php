@@ -92,23 +92,31 @@ final class OrderBoxPackingService
             );
         }
 
+        // Envelopes are tested separately because BoxPacker optimizes physical
+        // fit/volume, while our shipping reality is different: if a padded
+        // mailer can actually hold the whole dealer-fulfilled shipment, it is
+        // usually cheaper than a box even when the box has better volume use.
+        //
+        // We still let the normal box algorithm run below when boxes exist so
+        // the candidate comparison remains useful, then promote this successful
+        // envelope result over the box result at the end.
         $envelope_pack = $this->pack_first_envelope_candidate($envelope_candidates, $items);
-        if ($envelope_pack instanceof PackedBox) {
-            $packed_box_summaries = $this->packed_boxes_summary([$envelope_pack]);
-
-            return $this->result(
-                $order,
-                $packed_box_summaries,
-                $unpacked_items,
-                $ignored_items,
-                $errors,
-                $item_result['dealer_fulfilled_units'],
-                count($candidate_boxes),
-                $this->candidate_boxes_summary($candidate_boxes, $items, $packed_box_summaries)
-            );
-        }
+        $base_unpacked_items = $unpacked_items;
 
         if (empty($boxes)) {
+            if ($envelope_pack instanceof PackedBox) {
+                return $this->envelope_preferred_result(
+                    $order,
+                    $envelope_pack,
+                    $candidate_boxes,
+                    $items,
+                    $unpacked_items,
+                    $ignored_items,
+                    $errors,
+                    $item_result['dealer_fulfilled_units']
+                );
+            }
+
             $errors[] = 'No selected envelope candidate could pack all dealer-fulfilled items.';
 
             return $this->result(
@@ -142,6 +150,19 @@ final class OrderBoxPackingService
         try {
             $packed_boxes = $packer->pack();
         } catch (NoBoxesAvailableException $e) {
+            if ($envelope_pack instanceof PackedBox) {
+                return $this->envelope_preferred_result(
+                    $order,
+                    $envelope_pack,
+                    $candidate_boxes,
+                    $items,
+                    $base_unpacked_items,
+                    $ignored_items,
+                    [],
+                    $item_result['dealer_fulfilled_units']
+                );
+            }
+
             $errors[] = $e->getMessage();
             $unpacked_items = array_merge($unpacked_items, $this->unpacked_items_from_list($e->getAffectedItems(), 'no_matching_box'));
 
@@ -156,6 +177,19 @@ final class OrderBoxPackingService
                 $this->candidate_boxes_summary($candidate_boxes, $items)
             );
         } catch (\Throwable $e) {
+            if ($envelope_pack instanceof PackedBox) {
+                return $this->envelope_preferred_result(
+                    $order,
+                    $envelope_pack,
+                    $candidate_boxes,
+                    $items,
+                    $base_unpacked_items,
+                    $ignored_items,
+                    [],
+                    $item_result['dealer_fulfilled_units']
+                );
+            }
+
             $errors[] = 'BoxPacker failed: ' . $e->getMessage();
             if (method_exists($e, 'getItem') && $e->getItem() instanceof PackingItem) {
                 $unpacked_items[] = [
@@ -186,6 +220,19 @@ final class OrderBoxPackingService
 
         $packed_box_summaries = $this->packed_boxes_summary($packed_boxes);
 
+        if ($envelope_pack instanceof PackedBox) {
+            return $this->envelope_preferred_result(
+                $order,
+                $envelope_pack,
+                $candidate_boxes,
+                $items,
+                $base_unpacked_items,
+                $ignored_items,
+                [],
+                $item_result['dealer_fulfilled_units']
+            );
+        }
+
         return $this->result(
             $order,
             $packed_box_summaries,
@@ -194,7 +241,8 @@ final class OrderBoxPackingService
             $errors,
             $item_result['dealer_fulfilled_units'],
             count($candidate_boxes),
-            $this->candidate_boxes_summary($candidate_boxes, $items, $packed_box_summaries)
+            $this->candidate_boxes_summary($candidate_boxes, $items, $packed_box_summaries),
+            'boxpacker_volume'
         );
     }
 
@@ -509,8 +557,7 @@ final class OrderBoxPackingService
             return null;
         }
 
-        $item_list = $this->item_list_from_entries($items);
-        $unit_count = $item_list->count();
+        $unit_count = $this->item_unit_count($items);
         if ($unit_count <= 0) {
             return null;
         }
@@ -521,6 +568,7 @@ final class OrderBoxPackingService
             }
 
             try {
+                $item_list = $this->item_list_from_entries($items);
                 $packed_box = (new VolumePacker($box, $item_list))->pack();
             } catch (\Throwable $e) {
                 continue;
@@ -535,6 +583,60 @@ final class OrderBoxPackingService
         }
 
         return null;
+    }
+
+    /**
+     * @param array<int,array{item:PackingItem,quantity:int}> $items
+     */
+    private function item_unit_count(array $items): int
+    {
+        $count = 0;
+        foreach ($items as $entry) {
+            if (($entry['item'] ?? null) instanceof PackingItem) {
+                $count += max(1, (int) ($entry['quantity'] ?? 1));
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * Return a successful envelope pack as the selected result even when a box
+     * also packed successfully. The physical packing algorithm may score a box
+     * better by volume, but carrier rating tends to favor envelopes because the
+     * rated package is smaller/lighter.
+     *
+     * @param PackingBox[] $candidate_boxes
+     * @param array<int,array{item:PackingItem,quantity:int}> $items
+     * @param array<int,array<string,mixed>> $unpacked_items
+     * @param array<int,array<string,mixed>> $ignored_items
+     * @param string[] $errors
+     * @return array<string,mixed>
+     */
+    private function envelope_preferred_result(
+        WC_Order $order,
+        PackedBox $envelope_pack,
+        array $candidate_boxes,
+        array $items,
+        array $unpacked_items,
+        array $ignored_items,
+        array $errors,
+        int $dealer_fulfilled_units
+    ): array {
+        $packed_box_summaries = $this->packed_boxes_summary([$envelope_pack]);
+
+        return $this->result(
+            $order,
+            $packed_box_summaries,
+            $unpacked_items,
+            $ignored_items,
+            $errors,
+            $dealer_fulfilled_units,
+            count($candidate_boxes),
+            $this->candidate_boxes_summary($candidate_boxes, $items, $packed_box_summaries),
+            'envelope_preferred',
+            'An envelope candidate could pack every dealer-fulfilled item, so it was preferred over the normal box-volume result.'
+        );
     }
 
     /**
@@ -1090,7 +1192,9 @@ final class OrderBoxPackingService
         array $errors,
         int $dealer_fulfilled_units,
         int $candidate_box_count,
-        array $candidate_boxes = []
+        array $candidate_boxes = [],
+        string $selection_strategy = '',
+        string $selection_note = ''
     ): array {
         $packed_units = 0;
         foreach ($boxes as $box) {
@@ -1112,6 +1216,8 @@ final class OrderBoxPackingService
             'unpacked_item_count' => count($unpacked_items),
             'boxes' => $boxes,
             'candidate_boxes' => $candidate_boxes,
+            'selection_strategy' => $selection_strategy,
+            'selection_note' => $selection_note,
             'unpacked_items' => $unpacked_items,
             'ignored_items' => $ignored_items,
             'errors' => $errors,
