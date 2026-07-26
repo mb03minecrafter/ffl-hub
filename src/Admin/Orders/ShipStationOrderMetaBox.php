@@ -238,12 +238,15 @@ final class ShipStationOrderMetaBox
             }
             $label_id = (string) ($label['label_id'] ?? '');
             $tracking = (string) ($label['tracking_number'] ?? '');
-            $is_voided = !empty($label['voided']) || strtolower((string) ($label['label_status'] ?? '')) === 'voided';
-            echo '<div class="fflhub-ss-label-card ' . ($is_voided ? 'is-voided' : '') . '">';
+            $is_inactive = self::label_is_inactive($label);
+            echo '<div class="fflhub-ss-label-card ' . ($is_inactive ? 'is-voided' : '') . '">';
             echo '<div>';
             echo '<strong>' . esc_html((string) ($label['service_name'] ?? $label['service_code'] ?? 'Shipping label')) . '</strong>';
             echo '<span>' . esc_html((string) ($label['provider_label'] ?? 'Provider')) . ' | ' . esc_html((string) ($label['carrier_nickname'] ?? $label['carrier_friendly_name'] ?? $label['carrier_code'] ?? '')) . '</span>';
             echo '<code>' . esc_html($label_id) . '</code>';
+            if ($is_inactive) {
+                echo '<span class="fflhub-ss-inactive-label">' . esc_html(self::inactive_label_text($label)) . '</span>';
+            }
             if ($tracking !== '') {
                 echo '<div class="fflhub-ss-tracking">Tracking: <button type="button" class="button-link fflhub-ss-copy" data-copy="' . esc_attr($tracking) . '">' . esc_html($tracking) . '</button></div>';
             }
@@ -254,8 +257,9 @@ final class ShipStationOrderMetaBox
                 echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, false)) . '">' . esc_html__('Print / Open', 'ffl-hub') . '</a>';
                 echo '<a class="button" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, true)) . '">' . esc_html__('Download', 'ffl-hub') . '</a>';
                 $this->render_packing_slip_links($order, $label, $label_id);
-                if (!$is_voided) {
+                if (!$is_inactive) {
                     echo '<button type="button" class="button fflhub-ss-void-label" data-label-id="' . esc_attr($label_id) . '">' . esc_html__('Void', 'ffl-hub') . '</button>';
+                    echo '<button type="button" class="button fflhub-ss-local-deactivate-label" data-label-id="' . esc_attr($label_id) . '">' . esc_html__('Release for Retest', 'ffl-hub') . '</button>';
                 }
             }
             echo '</div>';
@@ -302,6 +306,31 @@ final class ShipStationOrderMetaBox
             : [];
 
         return max(1, count($packages), count($details), count($items));
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     */
+    private static function label_is_inactive(array $label): bool
+    {
+        if (!empty($label['voided']) || !empty($label['locally_deactivated'])) {
+            return true;
+        }
+
+        $status = strtolower(trim((string) ($label['label_status'] ?? $label['status'] ?? '')));
+        return in_array($status, ['voided', 'cancelled', 'error', 'purchase_error', 'inactive', 'local_inactive', 'locally_deactivated'], true);
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     */
+    private static function inactive_label_text(array $label): string
+    {
+        if (!empty($label['locally_deactivated'])) {
+            return __('Released locally; carrier/provider label was not refunded or cancelled.', 'ffl-hub');
+        }
+
+        return __('Inactive label.', 'ffl-hub');
     }
 
     /**

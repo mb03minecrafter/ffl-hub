@@ -67,6 +67,12 @@ final class ShipStationRestController
             'callback' => [__CLASS__, 'void_label_route'],
             'permission_callback' => [__CLASS__, 'can_manage_shipping'],
         ]);
+
+        register_rest_route(self::REST_NAMESPACE, '/shipstation/order/(?P<order_id>\d+)/local-deactivate-label', [
+            'methods' => 'POST',
+            'callback' => [__CLASS__, 'local_deactivate_label_route'],
+            'permission_callback' => [__CLASS__, 'can_manage_shipping'],
+        ]);
     }
 
     /**
@@ -154,6 +160,24 @@ final class ShipStationRestController
 
         $params = self::json_params($request);
         return self::service()->void_label($order, (string) ($params['label_id'] ?? ''));
+    }
+
+    /**
+     * @return array<string,mixed>|WP_Error
+     */
+    public static function local_deactivate_label_route(WP_REST_Request $request)
+    {
+        $order = self::order_from_request($request);
+        if (is_wp_error($order)) {
+            return $order;
+        }
+
+        $params = self::json_params($request);
+        return self::service()->deactivate_label_locally(
+            $order,
+            (string) ($params['label_id'] ?? ''),
+            (string) ($params['reason'] ?? '')
+        );
     }
 
     public static function download_label(): void

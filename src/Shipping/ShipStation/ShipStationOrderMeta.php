@@ -148,12 +148,16 @@ final class ShipStationOrderMeta
      */
     public static function label_is_active(array $label): bool
     {
+        if (!empty($label['locally_deactivated'])) {
+            return false;
+        }
+
         $status = strtolower(trim((string) ($label['status'] ?? $label['label_status'] ?? '')));
         if ($status === '' || in_array($status, ['completed', 'purchased'], true)) {
             return empty($label['voided']);
         }
 
-        return !in_array($status, ['voided', 'error', 'purchase_error', 'cancelled'], true);
+        return !in_array($status, ['voided', 'error', 'purchase_error', 'cancelled', 'inactive', 'local_inactive', 'locally_deactivated'], true);
     }
 
     /**
@@ -263,6 +267,42 @@ final class ShipStationOrderMeta
             self::save_labels($order, $labels);
             $order->update_meta_data(self::META_LABEL_STATUS, 'voided');
             $order->update_meta_data(self::META_VOIDED_AT, current_time('mysql', true));
+            $order->save();
+        }
+
+        return $changed;
+    }
+
+    /**
+     * Mark a label inactive inside FFL Hub without claiming the carrier refunded
+     * or cancelled it. This is intentionally separate from mark_voided() so test
+     * labels or already-shipped labels can be cleared for retesting while the
+     * order note still tells the truth about the provider result.
+     *
+     * @param array<string,mixed> $context
+     */
+    public static function mark_locally_deactivated(WC_Order $order, string $label_id, array $context = []): bool
+    {
+        $labels = self::labels($order);
+        $changed = false;
+
+        foreach ($labels as &$label) {
+            if ((string) ($label['label_id'] ?? '') !== $label_id) {
+                continue;
+            }
+
+            $label['locally_deactivated'] = true;
+            $label['local_deactivated_at'] = current_time('mysql', true);
+            $label['local_deactivation_context'] = $context;
+            $label['status'] = 'local_inactive';
+            $label['label_status'] = 'local_inactive';
+            $changed = true;
+        }
+        unset($label);
+
+        if ($changed) {
+            self::save_labels($order, $labels);
+            $order->update_meta_data(self::META_LABEL_STATUS, 'local_inactive');
             $order->save();
         }
 

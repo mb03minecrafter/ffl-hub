@@ -549,6 +549,11 @@
     margin-top: 3px;
 }
 
+.fflhub-ss-inactive-label {
+    color: #8a2424;
+    font-weight: 700;
+}
+
 .fflhub-ss-label-actions {
     display: flex;
     align-items: center;

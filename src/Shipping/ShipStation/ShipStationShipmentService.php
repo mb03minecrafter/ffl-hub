@@ -540,6 +540,58 @@ final class ShipStationShipmentService
     }
 
     /**
+     * Release a saved label from FFL Hub's active-label guard without telling
+     * the provider to refund or cancel it. This gives admins a deliberate escape
+     * hatch for test labels and carrier-side "already shipped" responses.
+     *
+     * @return array<string,mixed>|WP_Error
+     */
+    public function deactivate_label_locally(WC_Order $order, string $label_id, string $reason = '')
+    {
+        $label_id = sanitize_text_field($label_id);
+        if ($label_id === '') {
+            return new WP_Error('fflhub_shipstation_missing_label', 'Missing label ID.', ['status' => 400]);
+        }
+
+        if (!ShipStationOrderMeta::acquire_purchase_lock($order)) {
+            return new WP_Error('fflhub_shipstation_purchase_locked', 'Another label action is already in progress for this order.', ['status' => 409]);
+        }
+
+        try {
+            $label = ShipStationOrderMeta::find_label($order, $label_id);
+            if (!is_array($label)) {
+                return new WP_Error('fflhub_shipstation_label_not_found', 'Could not find that label on this order.', ['status' => 404]);
+            }
+
+            if (!ShipStationOrderMeta::label_is_active($label)) {
+                return new WP_Error('fflhub_shipstation_label_not_active', 'That label is already voided or inactive.', ['status' => 409]);
+            }
+
+            $reason = trim(sanitize_text_field($reason));
+            $context = [
+                'provider_voided' => false,
+                'reason' => $reason !== '' ? $reason : 'Released locally for retesting.',
+                'label_id' => $label_id,
+            ];
+
+            ShipStationOrderMeta::mark_locally_deactivated($order, $label_id, $context);
+            $order->add_order_note(sprintf(
+                'FFL Hub shipping label %1$s was released locally for retesting. The carrier/provider label was not refunded or cancelled.%2$s',
+                $label_id,
+                $reason !== '' ? ' Reason: ' . $reason : ''
+            ));
+            OrderProfitAuditMeta::recalculate_order($order, true);
+
+            return [
+                'local_deactivation' => $context,
+                'labels' => array_map([self::class, 'public_label'], ShipStationOrderMeta::labels($order)),
+            ];
+        } finally {
+            ShipStationOrderMeta::release_purchase_lock($order);
+        }
+    }
+
+    /**
      * @return array{body:string,content_type:string,filename:string}|WP_Error
      */
     public function download_label(WC_Order $order, string $label_id)

@@ -1209,6 +1209,25 @@
             .catch(function (error) { setMessage(panel, error.message, 'error'); })
             .finally(function () { setLoading(panel, false); });
         }
+
+        if (event.target.matches('.fflhub-ss-local-deactivate-label')) {
+          event.preventDefault();
+          var localLabelId = event.target.dataset.labelId || '';
+          if (!localLabelId || !window.confirm('Release this label locally for retesting?\n\nThis does NOT refund postage and does NOT cancel the carrier/provider label. It only tells FFL Hub this saved label should no longer block buying another label for this order.')) {
+            return;
+          }
+          setLoading(panel, true);
+          request(panel, '/local-deactivate-label', {
+            label_id: localLabelId,
+            reason: 'Admin released label locally for retesting.'
+          })
+            .then(function () {
+              setMessage(panel, 'Label released locally. Reloading order panel...', 'success');
+              window.location.reload();
+            })
+            .catch(function (error) { setMessage(panel, error.message, 'error'); })
+            .finally(function () { setLoading(panel, false); });
+        }
       });
     });
   });
