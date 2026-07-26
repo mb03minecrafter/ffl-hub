@@ -135,6 +135,18 @@ final class EasyPostShippingProvider implements ShippingProviderInterface
     }
 
     /**
+     * Normalize a retrieved EasyPost purchased Shipment into the provider label
+     * shape consumed by ShipStationOrderMeta::normalize_purchased_label().
+     *
+     * @param array<string,mixed> $shipment
+     * @return array<string,mixed>
+     */
+    public function normalize_purchased_shipment(array $shipment, string $rate_id): array
+    {
+        return self::normalized_label_response($shipment, $rate_id);
+    }
+
+    /**
      * @param array<string,mixed> $payload
      * @return array<string,mixed>|WP_Error
      */

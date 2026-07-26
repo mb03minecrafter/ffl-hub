@@ -156,6 +156,30 @@ final class ShipStationShipmentService
     }
 
     /**
+     * Build the same normalized shipment payload used by the per-order label UI,
+     * but with caller-supplied packages. Bulk label flows use this to avoid
+     * reimplementing FFL destination, ship-from, confirmation, insurance, and
+     * package-assignment validation rules.
+     *
+     * @param array<int,array<string,mixed>> $packages
+     * @param array<int,array<int,array<string,mixed>>> $package_items
+     * @param array<string,mixed> $overrides
+     * @return array<string,mixed>|WP_Error
+     */
+    public function shipment_for_packages(WC_Order $order, array $packages, array $package_items = [], array $overrides = [])
+    {
+        $context = $this->build_context($order);
+        if (is_wp_error($context)) {
+            return $context;
+        }
+
+        return $this->shipment_from_input($order, $context, array_merge($overrides, [
+            'packages' => $packages,
+            'package_items' => $package_items,
+        ]));
+    }
+
+    /**
      * @param array<string,mixed> $input
      * @return array<string,mixed>|WP_Error
      */

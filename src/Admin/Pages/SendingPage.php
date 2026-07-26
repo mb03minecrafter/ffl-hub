@@ -4,8 +4,11 @@ declare(strict_types=1);
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Shipping\EasyPost\EasyPostBatchLabelService;
+use FFLHub\Shipping\EasyPost\EasyPostBatchLabelStore;
 use FFLHub\WMS\SendingOrdersService;
 use FFLHub\WMS\SendingPackingService;
+use WP_Error;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -47,6 +50,12 @@ final class SendingPage
     {
         WMSAdminPage::ensure_access();
 
+        $batch_action_result = null;
+        $download_error = $this->maybe_download_batch_print_packet();
+        if (is_wp_error($download_error)) {
+            $batch_action_result = $this->action_result_from_error($download_error);
+        }
+
         $job_scan_limit = $this->read_job_scan_limit();
         $debug_ready = $this->read_bool('debug_ready');
         $result = (new SendingOrdersService($this->jobs_table))->ready_orders($job_scan_limit, $debug_ready);
@@ -60,6 +69,10 @@ final class SendingPage
             $stats['packing_orders_packed'] = (int) ($packing_result['stats']['orders_packed'] ?? 0);
             $stats['packing_orders_failed'] = (int) ($packing_result['stats']['orders_failed'] ?? 0);
             $stats['packing_packages_selected'] = (int) ($packing_result['stats']['packages_selected'] ?? 0);
+        }
+
+        if ($batch_action_result === null && $this->should_handle_batch_action()) {
+            $batch_action_result = $this->handle_batch_action($orders);
         }
         ?>
         <div class="wrap fflhub-sending-page">
@@ -87,6 +100,10 @@ final class SendingPage
                 <?php $this->render_packing_notice((array) ($packing_result['stats'] ?? [])); ?>
             <?php endif; ?>
 
+            <?php if (is_array($batch_action_result)) : ?>
+                <?php $this->render_batch_action_notice($batch_action_result); ?>
+            <?php endif; ?>
+
             <form method="get" action="" class="fflhub-sending-filter">
                 <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>" />
                 <label>
@@ -110,6 +127,8 @@ final class SendingPage
             </form>
 
             <?php $this->render_packing_form($job_scan_limit, $debug_ready, !empty($orders)); ?>
+
+            <?php $this->render_easypost_batch_panel($job_scan_limit, $debug_ready, !empty($orders)); ?>
 
             <?php $this->render_orders($orders); ?>
         </div>
@@ -147,6 +166,170 @@ final class SendingPage
         return $nonce !== '' && wp_verify_nonce($nonce, 'fflhub_sending_run_packing');
     }
 
+    private function should_handle_batch_action(): bool
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['fflhub_sending_batch_action'])) {
+            return false;
+        }
+
+        $nonce = isset($_POST['fflhub_sending_batch_nonce'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_sending_batch_nonce']))
+            : '';
+
+        return $nonce !== '' && wp_verify_nonce($nonce, 'fflhub_sending_batch_action');
+    }
+
+    private function maybe_download_batch_print_packet(): ?WP_Error
+    {
+        if (!$this->should_handle_batch_action()) {
+            return null;
+        }
+
+        $action = sanitize_key(wp_unslash((string) ($_POST['fflhub_sending_batch_action'] ?? '')));
+        if ($action !== 'download_easypost_print_packet') {
+            return null;
+        }
+
+        $batch_id = $this->posted_batch_id();
+        if ($batch_id <= 0) {
+            return new WP_Error('fflhub_sending_batch_missing_id', 'Missing EasyPost batch ID.');
+        }
+
+        $document = (new EasyPostBatchLabelService())->print_packet($batch_id);
+        if (is_wp_error($document)) {
+            return $document;
+        }
+
+        $body = (string) ($document['body'] ?? '');
+        if ($body === '') {
+            return new WP_Error('fflhub_sending_batch_empty_document', 'The EasyPost print packet was empty.');
+        }
+
+        nocache_headers();
+        header('Content-Type: ' . (string) ($document['content_type'] ?? 'application/pdf'));
+        header('Content-Disposition: attachment; filename="' . sanitize_file_name((string) ($document['filename'] ?? 'easypost-batch-print-packet.pdf')) . '"');
+        header('Content-Length: ' . strlen($body));
+        echo $body;
+        exit;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $orders
+     * @return array<string,mixed>
+     */
+    private function handle_batch_action(array $orders): array
+    {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(300);
+        }
+
+        $action = sanitize_key(wp_unslash((string) ($_POST['fflhub_sending_batch_action'] ?? '')));
+        $service = new EasyPostBatchLabelService();
+
+        switch ($action) {
+            case 'prepare_easypost_batch':
+                $result = $service->prepare_from_ready_orders($orders);
+                break;
+            case 'submit_buy_easypost_batch':
+                $result = $service->submit_or_buy($this->posted_batch_id());
+                break;
+            case 'refresh_easypost_batch':
+                $result = $service->refresh($this->posted_batch_id());
+                break;
+            default:
+                return [
+                    'type' => 'error',
+                    'message' => __('Unknown EasyPost batch action.', 'ffl-hub'),
+                    'details' => [],
+                ];
+        }
+
+        if (is_wp_error($result)) {
+            return $this->action_result_from_error($result);
+        }
+
+        return $this->action_result_from_batch_response((array) $result, $action);
+    }
+
+    private function posted_batch_id(): int
+    {
+        return isset($_POST['batch_id'])
+            ? max(0, (int) sanitize_text_field(wp_unslash((string) $_POST['batch_id'])))
+            : 0;
+    }
+
+    private function action_result_from_error(WP_Error $error): array
+    {
+        $details = [];
+        $data = $error->get_error_data();
+        if (is_array($data)) {
+            foreach ((array) ($data['problems'] ?? []) as $problem) {
+                if (is_array($problem)) {
+                    $details[] = trim(
+                        '#' . (string) ($problem['order_number'] ?? $problem['order_id'] ?? '-') .
+                        ': ' . (string) ($problem['message'] ?? '')
+                    );
+                }
+            }
+        }
+
+        return [
+            'type' => 'error',
+            'message' => $error->get_error_message(),
+            'details' => array_slice(array_values(array_filter($details)), 0, 8),
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $response
+     * @return array<string,mixed>
+     */
+    private function action_result_from_batch_response(array $response, string $action): array
+    {
+        $batch = is_array($response['batch'] ?? null) ? $response['batch'] : [];
+        $stats = is_array($response['stats'] ?? null) ? $response['stats'] : [];
+        $problems = is_array($response['problems'] ?? null) ? $response['problems'] : [];
+        $status = (string) ($batch['status'] ?? '-');
+
+        if ($action === 'prepare_easypost_batch') {
+            $message = sprintf(
+                __('Prepared EasyPost batch #%1$d with %2$d package(s). No labels were purchased yet.', 'ffl-hub'),
+                (int) ($batch['id'] ?? 0),
+                (int) ($stats['packages_prepared'] ?? $batch['item_count'] ?? 0)
+            );
+        } elseif ($action === 'submit_buy_easypost_batch') {
+            $message = sprintf(
+                __('EasyPost batch #%1$d submitted/buy requested. Current status: %2$s. Labels saved: %3$d.', 'ffl-hub'),
+                (int) ($batch['id'] ?? 0),
+                $status,
+                (int) ($response['labels_saved'] ?? 0)
+            );
+        } else {
+            $message = sprintf(
+                __('EasyPost batch #%1$d refreshed. Current status: %2$s. Labels saved: %3$d.', 'ffl-hub'),
+                (int) ($batch['id'] ?? 0),
+                $status,
+                (int) ($response['labels_saved'] ?? 0)
+            );
+        }
+
+        $details = [];
+        foreach (array_slice($problems, 0, 8) as $problem) {
+            if (is_array($problem)) {
+                $details[] = trim(
+                    '#' . (string) ($problem['order_number'] ?? $problem['order_id'] ?? '-') .
+                    ': ' . (string) ($problem['message'] ?? '')
+                );
+            }
+        }
+
+        return [
+            'type' => 'success',
+            'message' => $message,
+            'details' => array_values(array_filter($details)),
+        ];
+    }
+
     /**
      * @param array<int,array<string,mixed>> $orders
      * @return array{orders:array<int,array<string,mixed>>,stats:array<string,mixed>}
@@ -179,6 +362,193 @@ final class SendingPage
                 ?>
             </span>
         </form>
+        <?php
+    }
+
+    private function render_easypost_batch_panel(int $job_scan_limit, bool $debug_ready, bool $has_orders): void
+    {
+        $recent = EasyPostBatchLabelStore::recent(6);
+        ?>
+        <div class="fflhub-sending-batch-panel">
+            <div class="fflhub-sending-batch-header">
+                <div>
+                    <h2><?php esc_html_e('EasyPost Batch Labels', 'ffl-hub'); ?></h2>
+                    <p>
+                        <?php esc_html_e('Prepare rates from ready orders, then explicitly submit/buy. The print packet alternates each purchased label with its matching packing slip.', 'ffl-hub'); ?>
+                    </p>
+                </div>
+                <form method="post" action="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>">
+                    <?php wp_nonce_field('fflhub_sending_batch_action', 'fflhub_sending_batch_nonce'); ?>
+                    <input type="hidden" name="fflhub_sending_batch_action" value="prepare_easypost_batch" />
+                    <input type="hidden" name="job_scan_limit" value="<?php echo esc_attr((string) $job_scan_limit); ?>" />
+                    <?php if ($debug_ready) : ?>
+                        <input type="hidden" name="debug_ready" value="1" />
+                    <?php endif; ?>
+                    <?php submit_button(__('Prepare EasyPost Batch', 'ffl-hub'), 'secondary', '', false, $has_orders ? [] : ['disabled' => 'disabled']); ?>
+                </form>
+            </div>
+
+            <?php if (empty($recent)) : ?>
+                <div class="fflhub-sending-empty">
+                    <?php esc_html_e('No EasyPost batch labels have been prepared yet.', 'ffl-hub'); ?>
+                </div>
+            <?php else : ?>
+                <table class="widefat striped fflhub-sending-batch-table">
+                    <thead>
+                        <tr>
+                            <th><?php esc_html_e('Batch', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Status', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Packages', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Updated', 'ffl-hub'); ?></th>
+                            <th><?php esc_html_e('Actions', 'ffl-hub'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($recent as $batch) : ?>
+                            <?php $this->render_easypost_batch_row($batch); ?>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php endif; ?>
+        </div>
+        <?php
+    }
+
+    /**
+     * @param array<string,mixed> $batch
+     */
+    private function render_easypost_batch_row(array $batch): void
+    {
+        $batch_id = (int) ($batch['id'] ?? 0);
+        $items = is_array($batch['items'] ?? null) ? $batch['items'] : [];
+        $status = (string) ($batch['status'] ?? '-');
+        $can_submit = !in_array($status, [EasyPostBatchLabelStore::STATUS_LABELS_SAVED, EasyPostBatchLabelStore::STATUS_FAILED], true);
+        ?>
+        <tr>
+            <td>
+                <strong>#<?php echo esc_html((string) $batch_id); ?></strong>
+                <span class="fflhub-sending-muted"><?php echo esc_html((string) ($batch['reference'] ?? '')); ?></span>
+                <?php if ((string) ($batch['provider_batch_id'] ?? '') !== '') : ?>
+                    <code><?php echo esc_html((string) ($batch['provider_batch_id'] ?? '')); ?></code>
+                <?php endif; ?>
+            </td>
+            <td>
+                <span class="fflhub-sending-pill <?php echo esc_attr($this->batch_status_class($status)); ?>">
+                    <?php echo esc_html($status); ?>
+                </span>
+                <?php if ((string) ($batch['error_message'] ?? '') !== '') : ?>
+                    <span class="fflhub-sending-error-text"><?php echo esc_html((string) ($batch['error_message'] ?? '')); ?></span>
+                <?php endif; ?>
+            </td>
+            <td>
+                <?php $this->render_easypost_batch_items($items); ?>
+            </td>
+            <td><?php echo esc_html($this->local_time((string) ($batch['updated_at'] ?? ''))); ?></td>
+            <td>
+                <div class="fflhub-sending-batch-actions">
+                    <?php $this->render_easypost_batch_button($batch_id, 'submit_buy_easypost_batch', __('Submit / Buy', 'ffl-hub'), 'button-primary', !$can_submit); ?>
+                    <?php $this->render_easypost_batch_button($batch_id, 'refresh_easypost_batch', __('Refresh / Save', 'ffl-hub')); ?>
+                    <?php $this->render_easypost_batch_button($batch_id, 'download_easypost_print_packet', __('Download Alternating PDF', 'ffl-hub')); ?>
+                </div>
+            </td>
+        </tr>
+        <?php
+    }
+
+    private function render_easypost_batch_button(int $batch_id, string $action, string $label, string $class = 'button', bool $disabled = false): void
+    {
+        $confirm = $action === 'submit_buy_easypost_batch'
+            ? __('This will submit/buy EasyPost labels for this prepared batch. Continue?', 'ffl-hub')
+            : '';
+        ?>
+        <form method="post" action="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>">
+            <?php wp_nonce_field('fflhub_sending_batch_action', 'fflhub_sending_batch_nonce'); ?>
+            <input type="hidden" name="fflhub_sending_batch_action" value="<?php echo esc_attr($action); ?>" />
+            <input type="hidden" name="batch_id" value="<?php echo esc_attr((string) $batch_id); ?>" />
+            <button
+                type="submit"
+                class="button <?php echo esc_attr($class); ?>"
+                <?php disabled($disabled); ?>
+                <?php if ($confirm !== '') : ?>
+                    onclick="return confirm('<?php echo esc_js($confirm); ?>');"
+                <?php endif; ?>>
+                <?php echo esc_html($label); ?>
+            </button>
+        </form>
+        <?php
+    }
+
+    /**
+     * @param array<int,mixed> $items
+     */
+    private function render_easypost_batch_items(array $items): void
+    {
+        if (empty($items)) {
+            echo '<span class="fflhub-sending-muted">-</span>';
+            return;
+        }
+
+        echo '<ul class="fflhub-sending-mini-list">';
+        foreach (array_slice($items, 0, 8) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $order = (string) ($item['order_number'] ?? $item['order_id'] ?? '-');
+            $package = is_array($item['package'] ?? null) ? $item['package'] : [];
+            $rate = is_array($item['rate'] ?? null) ? $item['rate'] : [];
+            $package_name = trim((string) ($package['name'] ?? $package['package_name'] ?? 'Package'));
+            $service = trim((string) ($rate['carrier_friendly_name'] ?? $rate['carrier_code'] ?? 'EasyPost') . ' ' . (string) ($rate['service_name'] ?? $rate['service_code'] ?? ''));
+            $amount = (float) ($rate['total_amount'] ?? 0);
+            echo '<li>';
+            echo '<strong>#' . esc_html($order) . '</strong> ';
+            echo esc_html($package_name);
+            if ($service !== '') {
+                echo ' <span class="fflhub-sending-muted-inline">' . esc_html($service) . '</span>';
+            }
+            if ($amount > 0) {
+                echo ' <code>$' . esc_html(number_format($amount, 2)) . '</code>';
+            }
+            if ((string) ($item['batch_status'] ?? '') !== '') {
+                echo ' <span class="fflhub-sending-muted-inline">' . esc_html((string) ($item['batch_status'] ?? '')) . '</span>';
+            }
+            echo '</li>';
+        }
+        if (count($items) > 8) {
+            echo '<li class="fflhub-sending-muted">' . esc_html(sprintf(__('+%d more package(s)', 'ffl-hub'), count($items) - 8)) . '</li>';
+        }
+        echo '</ul>';
+    }
+
+    private function batch_status_class(string $status): string
+    {
+        if ($status === EasyPostBatchLabelStore::STATUS_LABELS_SAVED || $status === EasyPostBatchLabelStore::STATUS_LABEL_GENERATED) {
+            return 'is-labeled';
+        }
+        if ($status === EasyPostBatchLabelStore::STATUS_FAILED) {
+            return 'packing-failed';
+        }
+
+        return 'needs-label';
+    }
+
+    /**
+     * @param array<string,mixed> $result
+     */
+    private function render_batch_action_notice(array $result): void
+    {
+        $type = (string) ($result['type'] ?? 'info');
+        $class = $type === 'error' ? 'notice-error' : 'notice-success';
+        ?>
+        <div class="notice <?php echo esc_attr($class); ?> inline fflhub-sending-batch-notice">
+            <p><strong><?php echo esc_html((string) ($result['message'] ?? '')); ?></strong></p>
+            <?php if (!empty($result['details']) && is_array($result['details'])) : ?>
+                <ul>
+                    <?php foreach ((array) $result['details'] as $detail) : ?>
+                        <li><?php echo esc_html((string) $detail); ?></li>
+                    <?php endforeach; ?>
+                </ul>
+            <?php endif; ?>
+        </div>
         <?php
     }
 
@@ -506,6 +876,18 @@ final class SendingPage
             .fflhub-sending-packing-form span{color:#646970}
             .fflhub-sending-packing-debug-toggle span{color:#1d2327}
             .fflhub-sending-packing-notice{margin:0 0 16px}
+            .fflhub-sending-batch-notice{margin:0 0 16px}
+            .fflhub-sending-batch-notice ul{margin:8px 0 0 18px;list-style:disc}
+            .fflhub-sending-batch-panel{background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:14px;margin-bottom:16px}
+            .fflhub-sending-batch-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}
+            .fflhub-sending-batch-header h2{margin:0 0 4px;font-size:18px;line-height:1.2}
+            .fflhub-sending-batch-header p{margin:0;color:#646970;max-width:760px}
+            .fflhub-sending-batch-table{border:1px solid #dcdcde}
+            .fflhub-sending-batch-table td{vertical-align:top}
+            .fflhub-sending-batch-actions{display:flex;align-items:flex-start;flex-wrap:wrap;gap:6px}
+            .fflhub-sending-batch-actions form{margin:0}
+            .fflhub-sending-muted-inline{color:#646970;font-size:12px}
+            .fflhub-sending-error-text{display:block;margin-top:6px;color:#8a2424}
             .fflhub-sending-table-wrap{background:#fff;border:1px solid #dcdcde;border-radius:8px;overflow:auto}
             .fflhub-sending-table{border:0}
             .fflhub-sending-table th{white-space:nowrap}
@@ -529,7 +911,7 @@ final class SendingPage
             .fflhub-sending-mini-list li{margin:0}
             .fflhub-sending-ffl-tag{display:inline-flex;border-radius:999px;background:#e5f0ff;color:#0a4b78;font-size:10px;font-weight:800;padding:1px 5px;vertical-align:middle}
             .fflhub-sending-empty{background:#fff;border:1px dashed #c3c4c7;border-radius:8px;padding:18px;color:#646970}
-            @media (max-width:782px){.fflhub-sending-filter,.fflhub-sending-packing-form{display:block}.fflhub-sending-filter .button,.fflhub-sending-packing-form .button{margin-top:10px}.fflhub-sending-filter .fflhub-sending-debug-toggle{grid-template-columns:auto 1fr;margin-top:10px}}
+            @media (max-width:782px){.fflhub-sending-filter,.fflhub-sending-packing-form,.fflhub-sending-batch-header{display:block}.fflhub-sending-filter .button,.fflhub-sending-packing-form .button,.fflhub-sending-batch-header .button{margin-top:10px}.fflhub-sending-filter .fflhub-sending-debug-toggle{grid-template-columns:auto 1fr;margin-top:10px}}
         </style>
         <?php
     }

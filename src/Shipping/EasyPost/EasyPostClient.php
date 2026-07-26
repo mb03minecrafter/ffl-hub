@@ -70,6 +70,87 @@ final class EasyPostClient
     }
 
     /**
+     * @return array<string,mixed>|WP_Error
+     */
+    public function retrieve_shipment(string $shipment_id)
+    {
+        $shipment_id = sanitize_text_field($shipment_id);
+        if ($shipment_id === '') {
+            return new WP_Error('fflhub_easypost_missing_shipment_id', 'Missing EasyPost shipment ID.');
+        }
+
+        return $this->request('GET', '/shipments/' . rawurlencode($shipment_id));
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $shipments
+     * @return array<string,mixed>|WP_Error
+     */
+    public function create_batch(array $shipments, string $reference = '')
+    {
+        if (empty($shipments)) {
+            return new WP_Error('fflhub_easypost_empty_batch', 'EasyPost batch needs at least one shipment.');
+        }
+
+        $batch = [
+            'shipments' => array_values($shipments),
+        ];
+
+        $reference = sanitize_text_field($reference);
+        if ($reference !== '') {
+            $batch['reference'] = $reference;
+        }
+
+        return $this->request('POST', '/batches', ['batch' => $batch]);
+    }
+
+    /**
+     * @return array<string,mixed>|WP_Error
+     */
+    public function retrieve_batch(string $batch_id)
+    {
+        $batch_id = sanitize_text_field($batch_id);
+        if ($batch_id === '') {
+            return new WP_Error('fflhub_easypost_missing_batch_id', 'Missing EasyPost batch ID.');
+        }
+
+        return $this->request('GET', '/batches/' . rawurlencode($batch_id));
+    }
+
+    /**
+     * @return array<string,mixed>|WP_Error
+     */
+    public function buy_batch(string $batch_id)
+    {
+        $batch_id = sanitize_text_field($batch_id);
+        if ($batch_id === '') {
+            return new WP_Error('fflhub_easypost_missing_batch_id', 'Missing EasyPost batch ID.');
+        }
+
+        return $this->request('POST', '/batches/' . rawurlencode($batch_id) . '/buy');
+    }
+
+    /**
+     * @return array<string,mixed>|WP_Error
+     */
+    public function create_batch_label(string $batch_id, string $file_format = 'PDF')
+    {
+        $batch_id = sanitize_text_field($batch_id);
+        if ($batch_id === '') {
+            return new WP_Error('fflhub_easypost_missing_batch_id', 'Missing EasyPost batch ID.');
+        }
+
+        $format = strtoupper(sanitize_text_field($file_format));
+        if (!in_array($format, ['PDF', 'ZPL', 'EPL2'], true)) {
+            $format = 'PDF';
+        }
+
+        return $this->request('POST', '/batches/' . rawurlencode($batch_id) . '/label', [
+            'file_format' => $format,
+        ]);
+    }
+
+    /**
      * @param array<string,mixed> $options
      * @return array<string,mixed>|WP_Error
      */
