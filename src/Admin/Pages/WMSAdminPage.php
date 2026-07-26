@@ -58,13 +58,17 @@ final class WMSAdminPage
             <?php self::render_styles(); ?>
             <h1><?php esc_html_e('FFLHub WMS', 'ffl-hub'); ?></h1>
             <p class="description">
-                <?php esc_html_e('Receiving workflows and warehouse test-label tools.', 'ffl-hub'); ?>
+                <?php esc_html_e('Warehouse receiving, sending, and scanner test-label tools.', 'ffl-hub'); ?>
             </p>
 
             <div class="fflhub-wms-grid">
                 <a class="fflhub-wms-card" href="<?php echo esc_url(admin_url('admin.php?page=fflhub-receiving')); ?>">
                     <strong><?php esc_html_e('Receiving', 'ffl-hub'); ?></strong>
-                    <span><?php esc_html_e('Scan inbound distributor shipments, receive items, and handle serialized acquisition/disposition steps.', 'ffl-hub'); ?></span>
+                    <span><?php esc_html_e('Scan inbound distributor shipments, receive items, and acquire serialized firearms into FastBound.', 'ffl-hub'); ?></span>
+                </a>
+                <a class="fflhub-wms-card" href="<?php echo esc_url(admin_url('admin.php?page=fflhub-sending')); ?>">
+                    <strong><?php esc_html_e('Sending', 'ffl-hub'); ?></strong>
+                    <span><?php esc_html_e('Review orders whose dealer-fulfilled items are received and ready for packing or outbound labels.', 'ffl-hub'); ?></span>
                 </a>
                 <a class="fflhub-wms-card" href="<?php echo esc_url(admin_url('admin.php?page=fflhub-receiving-test-labels')); ?>">
                     <strong><?php esc_html_e('Receiving Test Labels', 'ffl-hub'); ?></strong>
