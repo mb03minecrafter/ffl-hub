@@ -129,7 +129,7 @@ final class DistributorOrderingAdminPage
             self::MENU_SLUG,
             [$this, 'render_page'],
             'dashicons-cart',
-            58
+            57
         );
 
         add_submenu_page(

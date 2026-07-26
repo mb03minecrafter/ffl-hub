@@ -47,10 +47,10 @@ final class ReceivingPage
     public function register_menu_page(): void
     {
         add_submenu_page(
-            AdminPage::get_page_slug(),
+            WMSAdminPage::MENU_SLUG,
             __('Receiving', 'ffl-hub'),
             __('Receiving', 'ffl-hub'),
-            'manage_options',
+            WMSAdminPage::CAPABILITY,
             self::PAGE_SLUG,
             [$this, 'render_page']
         );

@@ -30,7 +30,7 @@ final class ShippingDashboardPage
             ShippingAdminPage::DASHBOARD_SLUG,
             [$this, 'render_page'],
             'dashicons-airplane',
-            57
+            58
         );
 
         add_submenu_page(

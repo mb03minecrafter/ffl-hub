@@ -41,6 +41,7 @@ use FFLHub\Admin\Pages\ShippingPackingSlipsPage;
 use FFLHub\Admin\Pages\ShippingSettingsPage;
 use FFLHub\Admin\Pages\ShippingShipFromLocationsPage;
 use FFLHub\Admin\Pages\ShipStationSettingsPage;
+use FFLHub\Admin\Pages\WMSAdminPage;
 use FFLHub\Admin\Pages\ZandersCreditLimitPage;
 use FFLHub\Admin\ProductMeta\BOMMetaBox;
 use FFLHub\Admin\ProductMeta\OrderFFLPanel;
@@ -151,6 +152,7 @@ final class Plugin
     public ShippingShipFromLocationsPage $shipping_ship_from_locations_page;
     public EasyPostSettingsPage $easypost_settings_page;
     public ShipStationSettingsPage $shipstation_settings_page;
+    public WMSAdminPage $wms_admin_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public AuthorizeNetOrderRescueButton $authnet_order_rescue_button;
     public OrderBoxPackingMetaBox $order_box_packing_metabox;
@@ -258,6 +260,9 @@ final class Plugin
 
             $this->dealer_fulfilled_jobs_page = new DealerFulfilledJobsPage($this->distributor_handler->ordering_jobs_table);
             $this->dealer_fulfilled_jobs_page->register();
+
+            $this->wms_admin_page = new WMSAdminPage();
+            $this->wms_admin_page->register();
 
             $this->receiving_page = new ReceivingPage($this->distributor_handler->ordering_jobs_table);
             $this->receiving_page->register();
