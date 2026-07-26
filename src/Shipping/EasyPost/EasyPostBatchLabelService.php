@@ -200,7 +200,7 @@ final class EasyPostBatchLabelService
             $batch = EasyPostBatchLabelStore::get($local_batch_id) ?? $batch;
         }
 
-        $remote = $provider_batch_id !== '' ? $this->client->retrieve_batch($provider_batch_id) : null;
+        $remote = $provider_batch_id !== '' ? $this->wait_for_buyable_batch($provider_batch_id) : null;
         if (is_wp_error($remote)) {
             EasyPostBatchLabelStore::update($local_batch_id, [
                 'status' => EasyPostBatchLabelStore::STATUS_FAILED,
@@ -658,6 +658,34 @@ final class EasyPostBatchLabelService
     }
 
     /**
+     * EasyPost batches are asynchronous. After creation they often report
+     * "creating" briefly before they become "created" and are allowed to be
+     * bought. Submit/Buy should feel like one action, so we wait a short window
+     * here instead of making the admin click Refresh and Submit/Buy again.
+     *
+     * @return array<string,mixed>|WP_Error
+     */
+    private function wait_for_buyable_batch(string $provider_batch_id)
+    {
+        $remote = null;
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $remote = $this->client->retrieve_batch($provider_batch_id);
+            if (is_wp_error($remote)) {
+                return $remote;
+            }
+
+            $state = strtolower(trim((string) ($remote['state'] ?? '')));
+            if (in_array($state, ['created', 'purchased', 'label_generating', 'label_generated', 'creation_failed', 'purchase_failed'], true)) {
+                return $remote;
+            }
+
+            sleep(2);
+        }
+
+        return is_array($remote) ? $remote : $this->client->retrieve_batch($provider_batch_id);
+    }
+
+    /**
      * @param array<int,array<string,mixed>> $items
      */
     private function all_items_have_saved_labels(array $items): bool
@@ -782,7 +810,8 @@ final class EasyPostBatchLabelService
     {
         $state = strtolower(trim($state));
         return match ($state) {
-            'creating', 'created' => EasyPostBatchLabelStore::STATUS_SUBMITTED,
+            'creating' => EasyPostBatchLabelStore::STATUS_SUBMITTED,
+            'created' => EasyPostBatchLabelStore::STATUS_READY_TO_BUY,
             'purchasing' => EasyPostBatchLabelStore::STATUS_PURCHASING,
             'purchased' => EasyPostBatchLabelStore::STATUS_PURCHASED,
             'label_generating' => EasyPostBatchLabelStore::STATUS_LABEL_GENERATING,

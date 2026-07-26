@@ -19,6 +19,7 @@ final class EasyPostBatchLabelStore
 {
     public const STATUS_PREPARED = 'prepared';
     public const STATUS_SUBMITTED = 'submitted';
+    public const STATUS_READY_TO_BUY = 'ready_to_buy';
     public const STATUS_PURCHASING = 'purchasing';
     public const STATUS_PURCHASED = 'purchased';
     public const STATUS_LABEL_GENERATING = 'label_generating';
