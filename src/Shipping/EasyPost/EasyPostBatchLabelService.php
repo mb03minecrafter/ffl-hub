@@ -367,7 +367,7 @@ final class EasyPostBatchLabelService
                     continue;
                 }
 
-                $documents[] = (string) ($label_pdf['body'] ?? '');
+                $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''));
                 $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
                 continue;
             }
@@ -392,7 +392,7 @@ final class EasyPostBatchLabelService
                 continue;
             }
 
-            $documents[] = (string) ($label_pdf['body'] ?? '');
+            $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''));
             $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
         }
 
@@ -403,14 +403,14 @@ final class EasyPostBatchLabelService
             );
         }
 
-        return (new PdfDocumentService())->combine(
+        return (new PdfDocumentService())->combine_with_options(
             $documents,
             'easypost-batch-' . (int) ($batch['id'] ?? $local_batch_id) . '-labels-and-packing-slips.pdf'
         );
     }
 
     /**
-     * @param string[] $documents
+     * @param array<int,string|array{body:string,force_4x6?:bool}> $documents
      * @param array<string,mixed> $item
      * @param array<int,array<string,mixed>> $batch_items
      */
@@ -437,6 +437,17 @@ final class EasyPostBatchLabelService
         if (!is_wp_error($slip)) {
             $documents[] = (string) ($slip['body'] ?? '');
         }
+    }
+
+    /**
+     * @return array{body:string,force_4x6:bool}
+     */
+    private function label_pdf_document(string $body): array
+    {
+        return [
+            'body' => $body,
+            'force_4x6' => true,
+        ];
     }
 
     /**

@@ -490,8 +490,11 @@ final class ShipStationRestController
             return $slip_pdfs;
         }
 
-        return (new PdfDocumentService())->combine(
-            array_merge([$carrier_pdf], $slip_pdfs),
+        return (new PdfDocumentService())->combine_with_options(
+            array_merge([[
+                'body' => $carrier_pdf,
+                'force_4x6' => true,
+            ]], $slip_pdfs),
             'label-and-packing-slip-order-' . (string) $order->get_order_number() . '.pdf'
         );
     }
