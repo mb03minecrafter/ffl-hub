@@ -8,9 +8,11 @@ use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Product\State\ProductStateStore;
+use FFLHub\Shipping\DTO\ShippingPackage;
 use FFLHub\Shipping\EasyPost\EasyPostClient;
 use FFLHub\Shipping\EasyPost\EasyPostOptions;
 use FFLHub\Shipping\EasyPost\EasyPostShippingProvider;
+use FFLHub\Shipping\Packing\OrderBoxPackingService;
 use FFLHub\Shipping\Providers\ShippingProviderInterface;
 use FFLHub\Shipping\ShippingOptions;
 use FFLHub\Util\DebugLogUtil;
@@ -55,6 +57,7 @@ final class ShipStationShipmentService
     {
         $requires_ffl = $this->order_requires_ffl($order);
         $receiving_ffl = $requires_ffl ? $this->receiving_ffl_snapshot($order) : null;
+        $order_items = (new OrderBoxPackingService())->dealer_fulfilled_order_items_for_labels($order);
 
         $destination = $requires_ffl
             ? $this->destination_from_ffl($receiving_ffl)
@@ -83,8 +86,8 @@ final class ShipStationShipmentService
             'receiving_ffl' => $receiving_ffl,
             'origin' => ShipStationOptions::origin_address(),
             'destination' => $destination,
-            'order_items' => $this->order_items_for_packages($order),
-            'packages' => $this->default_packages_from_order($order),
+            'order_items' => $order_items,
+            'packages' => $this->default_packages_from_order($order, $order_items),
             'package_presets' => ShipStationOptions::package_presets(),
             'settings' => [
                 'label_format' => ShipStationOptions::label_format(),
@@ -127,6 +130,29 @@ final class ShipStationShipmentService
          * @param WC_Order $order
          */
         return apply_filters('fflhub_shipstation_shipment_context', $context, $order);
+    }
+
+    /**
+     * Run the dealer-fulfilled box packer and translate the chosen boxes into
+     * the same package rows used by the label-rate UI.
+     *
+     * @return array<string,mixed>
+     */
+    public function auto_pack_order(WC_Order $order): array
+    {
+        $packing = (new OrderBoxPackingService())->pack_dealer_fulfilled_order($order);
+        $label_packages = $this->label_packages_from_packing_result($order, $packing);
+        $package_items = array_map(
+            static fn(array $package): array => is_array($package['items'] ?? null) ? $package['items'] : [],
+            $label_packages
+        );
+
+        return [
+            ...$packing,
+            'label_packages' => $label_packages,
+            'package_items' => $package_items,
+            'message' => $this->auto_pack_message($packing, $label_packages),
+        ];
     }
 
     /**
@@ -398,21 +424,54 @@ final class ShipStationShipmentService
                 return $response;
             }
 
-            $label = ShipStationOrderMeta::normalize_purchased_label(
-                $response,
-                $rated,
-                $pending,
-                $rate_id,
-                (string) ($response['_fflhub_request_id'] ?? '')
-            );
-            ShipStationOrderMeta::append_label($order, $label);
+            $labels = [];
+            if (isset($response['labels']) && is_array($response['labels'])) {
+                foreach ($response['labels'] as $child_label) {
+                    if (!is_array($child_label)) {
+                        continue;
+                    }
 
-            $this->add_purchase_note($order, $label);
+                    $child_response = is_array($child_label['response'] ?? null) ? $child_label['response'] : [];
+                    $child_rated = is_array($child_label['rated'] ?? null) ? $child_label['rated'] : [];
+                    $package_index = max(0, (int) ($child_label['package_index'] ?? 0));
+                    $child_pending = $pending;
+                    $child_pending['shipment_snapshot'] = is_array($child_label['shipment'] ?? null) ? $child_label['shipment'] : [];
+                    $child_pending['shipment_id'] = (string) ($child_rated['shipment_id'] ?? '');
+                    $child_pending['package_items'] = [
+                        is_array($pending['package_items'][$package_index] ?? null) ? $pending['package_items'][$package_index] : [],
+                    ];
+
+                    $label = ShipStationOrderMeta::normalize_purchased_label(
+                        $child_response,
+                        $child_rated,
+                        $child_pending,
+                        (string) ($child_rated['rate_id'] ?? ''),
+                        (string) ($child_response['_fflhub_request_id'] ?? '')
+                    );
+                    $label['package_index'] = $package_index;
+                    $label['package_count'] = count((array) ($response['labels'] ?? []));
+                    $labels[] = $label;
+                }
+            } else {
+                $labels[] = ShipStationOrderMeta::normalize_purchased_label(
+                    $response,
+                    $rated,
+                    $pending,
+                    $rate_id,
+                    (string) ($response['_fflhub_request_id'] ?? '')
+                );
+            }
+
+            foreach ($labels as $label) {
+                ShipStationOrderMeta::append_label($order, $label);
+                $this->add_purchase_note($order, $label);
+            }
+
             $this->maybe_update_status($order);
             OrderProfitAuditMeta::recalculate_order($order, true);
 
             return [
-                'label' => self::public_label($label),
+                'label' => self::public_label($labels[0] ?? []),
                 'labels' => array_map([self::class, 'public_label'], ShipStationOrderMeta::labels($order)),
             ];
         } finally {
@@ -480,7 +539,11 @@ final class ShipStationShipmentService
             return new WP_Error('fflhub_shipstation_label_url_missing', 'The saved label has no download URL.', ['status' => 404]);
         }
 
-        return $this->provider->download_label($url);
+        $provider = strpos((string) ($label['label_id'] ?? ''), 'easypost|') === 0
+            ? new EasyPostShippingProvider(new EasyPostClient())
+            : $this->provider;
+
+        return $provider->download_label($url);
     }
 
     /**
@@ -692,6 +755,11 @@ final class ShipStationShipmentService
      */
     private function rate_easypost_provider(array $shipment)
     {
+        $packages = isset($shipment['packages']) && is_array($shipment['packages']) ? array_values($shipment['packages']) : [];
+        if (count($packages) > 1) {
+            return $this->rate_easypost_multi_package_provider($shipment, $packages);
+        }
+
         $response = (new EasyPostShippingProvider(new EasyPostClient()))->get_rates([
             'shipment' => $shipment,
         ]);
@@ -703,6 +771,271 @@ final class ShipStationShipmentService
             'normalized' => $this->normalize_rate_response($response),
             'request_id' => (string) ($response['_fflhub_request_id'] ?? ''),
         ];
+    }
+
+    /**
+     * EasyPost buys one Shipment at a time. For a split order, request rates
+     * for each package separately, then present one selectable bundle per
+     * carrier/service combination that can rate every package.
+     *
+     * @param array<string,mixed> $shipment
+     * @param array<int,array<string,mixed>> $packages
+     * @return array{normalized:array<string,mixed>,request_id:string}|WP_Error
+     */
+    private function rate_easypost_multi_package_provider(array $shipment, array $packages)
+    {
+        $provider = new EasyPostShippingProvider(new EasyPostClient());
+        $package_results = [];
+        $request_ids = [];
+        $invalid_rates = [];
+        $errors = [];
+
+        foreach ($packages as $index => $package) {
+            if (!is_array($package)) {
+                continue;
+            }
+
+            $single_shipment = self::shipment_with_single_package($shipment, $package, $index);
+            $response = $provider->get_rates(['shipment' => $single_shipment]);
+            if (is_wp_error($response)) {
+                $errors[] = sprintf('Package %d: %s', $index + 1, $response->get_error_message());
+                continue;
+            }
+
+            $normalized = $this->normalize_rate_response($response);
+            if ((string) ($response['_fflhub_request_id'] ?? '') !== '') {
+                $request_ids[] = (string) $response['_fflhub_request_id'];
+            }
+
+            foreach ((array) ($normalized['invalid_rates'] ?? []) as $invalid) {
+                if (is_array($invalid)) {
+                    $invalid['error_messages'] = array_map(
+                        static fn(string $message): string => 'Package ' . ($index + 1) . ': ' . $message,
+                        self::string_list($invalid['error_messages'] ?? [])
+                    );
+                    $invalid_rates[] = $invalid;
+                }
+            }
+
+            $rates = isset($normalized['rates']) && is_array($normalized['rates']) ? $normalized['rates'] : [];
+            if (empty($rates)) {
+                $errors[] = sprintf('Package %d: EasyPost returned no usable rates.', $index + 1);
+            }
+
+            $package_results[$index] = [
+                'shipment' => $single_shipment,
+                'shipment_id' => (string) ($normalized['shipment_id'] ?? ''),
+                'rates' => $rates,
+            ];
+        }
+
+        if (count($package_results) !== count($packages)) {
+            return new WP_Error(
+                'fflhub_easypost_split_package_rates_failed',
+                implode(' ', $errors) ?: 'EasyPost could not rate every split package.',
+                ['status' => 400]
+            );
+        }
+
+        $bundle_rates = self::easypost_bundle_rates($package_results);
+        if (empty($bundle_rates)) {
+            return new WP_Error(
+                'fflhub_easypost_no_common_split_rate',
+                'EasyPost did not return a common carrier/service across every split package.',
+                ['status' => 400]
+            );
+        }
+
+        usort($bundle_rates, [self::class, 'compare_rates_for_display']);
+
+        return [
+            'normalized' => [
+                'shipment_id' => implode(', ', array_map(
+                    static fn(array $result): string => (string) ($result['shipment_id'] ?? ''),
+                    $package_results
+                )),
+                'rates' => $bundle_rates,
+                'invalid_rates' => $invalid_rates,
+                'duplicate_rate_groups' => [],
+            ],
+            'request_id' => implode(', ', array_values(array_filter($request_ids))),
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @param array<string,mixed> $package
+     * @return array<string,mixed>
+     */
+    private static function shipment_with_single_package(array $shipment, array $package, int $index): array
+    {
+        $single = $shipment;
+        $single['packages'] = [$package];
+        $base_id = trim((string) ($shipment['external_shipment_id'] ?? $shipment['external_order_id'] ?? ''));
+        if ($base_id !== '') {
+            $single['external_shipment_id'] = substr($base_id . '-P' . ($index + 1), 0, 50);
+        }
+
+        return $single;
+    }
+
+    /**
+     * @param array<int,array{shipment:array<string,mixed>,shipment_id:string,rates:array<int,array<string,mixed>>}> $package_results
+     * @return array<int,array<string,mixed>>
+     */
+    private static function easypost_bundle_rates(array $package_results): array
+    {
+        $bundles = [];
+        $package_count = count($package_results);
+
+        foreach ($package_results as $index => $result) {
+            $package_rates = self::cheapest_easypost_rates_by_bundle_key((array) ($result['rates'] ?? []));
+            if (empty($package_rates)) {
+                return [];
+            }
+
+            if ($index === array_key_first($package_results)) {
+                foreach ($package_rates as $key => $rate) {
+                    $bundles[$key] = [
+                        'rates' => [],
+                        'shipments' => [],
+                    ];
+                }
+            }
+
+            foreach (array_keys($bundles) as $key) {
+                if (!isset($package_rates[$key])) {
+                    unset($bundles[$key]);
+                    continue;
+                }
+
+                $rate = $package_rates[$key];
+                $rate['package_index'] = (int) $index;
+                $bundles[$key]['rates'][] = $rate;
+                $bundles[$key]['shipments'][] = [
+                    'package_index' => (int) $index,
+                    'shipment_id' => (string) ($result['shipment_id'] ?? ''),
+                    'shipment' => is_array($result['shipment'] ?? null) ? $result['shipment'] : [],
+                ];
+            }
+        }
+
+        $out = [];
+        foreach ($bundles as $key => $bundle) {
+            $rates = isset($bundle['rates']) && is_array($bundle['rates']) ? $bundle['rates'] : [];
+            if (count($rates) !== $package_count || empty($rates)) {
+                continue;
+            }
+
+            $first = $rates[0];
+            $shipping = 0.0;
+            $insurance = 0.0;
+            $confirmation = 0.0;
+            $other = 0.0;
+            $delivery_days = null;
+            $estimated_delivery_date = '';
+            $child_ids = [];
+
+            foreach ($rates as $rate) {
+                $shipping += (float) ($rate['shipping_amount'] ?? 0);
+                $insurance += (float) ($rate['insurance_amount'] ?? 0);
+                $confirmation += (float) ($rate['confirmation_amount'] ?? 0);
+                $other += (float) ($rate['other_amount'] ?? 0);
+                $days = isset($rate['delivery_days']) ? (int) $rate['delivery_days'] : null;
+                if ($days !== null) {
+                    $delivery_days = $delivery_days === null ? $days : max($delivery_days, $days);
+                }
+                $date = (string) ($rate['estimated_delivery_date'] ?? '');
+                if ($date !== '' && strcmp($date, $estimated_delivery_date) > 0) {
+                    $estimated_delivery_date = $date;
+                }
+                $child_ids[] = (string) ($rate['rate_id'] ?? '');
+            }
+
+            $total = $shipping + $insurance + $confirmation + $other;
+            $rate_id = 'easypost_bundle_' . md5($key . '|' . implode('|', $child_ids));
+
+            $out[] = [
+                'provider_id' => 'easypost',
+                'provider_label' => 'EasyPost',
+                'provider_rate_id' => $rate_id,
+                'rate_id' => $rate_id,
+                'shipment_id' => implode(', ', array_map(
+                    static fn(array $shipment): string => (string) ($shipment['shipment_id'] ?? ''),
+                    (array) ($bundle['shipments'] ?? [])
+                )),
+                'carrier_id' => (string) ($first['carrier_id'] ?? ''),
+                'carrier_code' => (string) ($first['carrier_code'] ?? ''),
+                'carrier_nickname' => (string) ($first['carrier_nickname'] ?? ''),
+                'carrier_friendly_name' => (string) ($first['carrier_friendly_name'] ?? ''),
+                'service_code' => (string) ($first['service_code'] ?? ''),
+                'service_type' => (string) ($first['service_type'] ?? ''),
+                'package_type' => '',
+                'shipping_amount' => self::round_decimal($shipping, 4),
+                'insurance_amount' => self::round_decimal($insurance, 4),
+                'confirmation_amount' => self::round_decimal($confirmation, 4),
+                'other_amount' => self::round_decimal($other, 4),
+                'total_amount' => self::round_decimal($total, 4),
+                'currency' => (string) ($first['currency'] ?? 'usd'),
+                'delivery_days' => $delivery_days,
+                'estimated_delivery_date' => $estimated_delivery_date,
+                'guaranteed_service' => !empty($first['guaranteed_service']),
+                'trackable' => !empty($first['trackable']),
+                'warning_messages' => [
+                    sprintf('EasyPost split-package bundle for %d package(s).', $package_count),
+                ],
+                'child_rates' => $rates,
+                'child_shipments' => (array) ($bundle['shipments'] ?? []),
+                'raw' => [
+                    'bundle_key' => $key,
+                    'child_rates' => $rates,
+                    'child_shipments' => (array) ($bundle['shipments'] ?? []),
+                ],
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $rates
+     * @return array<string,array<string,mixed>>
+     */
+    private static function cheapest_easypost_rates_by_bundle_key(array $rates): array
+    {
+        $out = [];
+
+        foreach ($rates as $rate) {
+            if (!is_array($rate)) {
+                continue;
+            }
+
+            $key = self::easypost_bundle_key($rate);
+            if ($key === '') {
+                continue;
+            }
+
+            if (!isset($out[$key]) || (float) ($rate['total_amount'] ?? 0) < (float) ($out[$key]['total_amount'] ?? 0)) {
+                $out[$key] = $rate;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<string,mixed> $rate
+     */
+    private static function easypost_bundle_key(array $rate): string
+    {
+        $carrier = self::rate_key_text((string) ($rate['carrier_code'] ?? $rate['carrier_nickname'] ?? ''));
+        $service = self::rate_key_text((string) ($rate['service_code'] ?? $rate['service_type'] ?? ''));
+        $currency = self::rate_key_text((string) ($rate['currency'] ?? 'usd'));
+        if ($carrier === '' || $service === '') {
+            return '';
+        }
+
+        return implode('|', [$carrier, $service, $currency]);
     }
 
     /**
@@ -779,6 +1112,10 @@ final class ShipStationShipmentService
     private function purchase_rate_with_provider(string $provider_id, string $rate_id, array $rated, array $current_shipment)
     {
         if ($provider_id === 'easypost') {
+            if (!empty($rated['child_rates']) && is_array($rated['child_rates'])) {
+                return $this->purchase_easypost_bundle_rate($rated, $current_shipment);
+            }
+
             return (new EasyPostShippingProvider(new EasyPostClient()))->purchase_label_from_rate($rate_id, [
                 'shipment_id' => (string) ($rated['shipment_id'] ?? ''),
                 'label_format' => EasyPostOptions::label_format(),
@@ -796,6 +1133,57 @@ final class ShipStationShipmentService
             'validate_address' => 'no_validation',
             'display_scheme' => 'label',
         ]);
+    }
+
+    /**
+     * @param array<string,mixed> $rated
+     * @param array<string,mixed> $current_shipment
+     * @return array{labels:array<int,array<string,mixed>>}|WP_Error
+     */
+    private function purchase_easypost_bundle_rate(array $rated, array $current_shipment)
+    {
+        $provider = new EasyPostShippingProvider(new EasyPostClient());
+        $packages = isset($current_shipment['packages']) && is_array($current_shipment['packages'])
+            ? array_values($current_shipment['packages'])
+            : [];
+        $labels = [];
+
+        foreach ((array) ($rated['child_rates'] ?? []) as $child_rate) {
+            if (!is_array($child_rate)) {
+                continue;
+            }
+
+            $package_index = max(0, (int) ($child_rate['package_index'] ?? 0));
+            $package = is_array($packages[$package_index] ?? null) ? $packages[$package_index] : [];
+            $single_shipment = self::shipment_with_single_package($current_shipment, $package, $package_index);
+            $response = $provider->purchase_label_from_rate((string) ($child_rate['rate_id'] ?? ''), [
+                'shipment_id' => (string) ($child_rate['shipment_id'] ?? ''),
+                'label_format' => EasyPostOptions::label_format(),
+                'label_layout' => EasyPostOptions::label_layout(),
+                'confirmation' => (string) ($current_shipment['confirmation'] ?? EasyPostOptions::confirmation()),
+                'insurance' => self::easypost_insurance_amount($single_shipment),
+            ]);
+            if (is_wp_error($response)) {
+                return $response;
+            }
+
+            $labels[] = [
+                'response' => $response,
+                'rated' => $child_rate,
+                'package_index' => $package_index,
+                'shipment' => $single_shipment,
+            ];
+        }
+
+        if (empty($labels)) {
+            return new WP_Error(
+                'fflhub_easypost_empty_bundle_purchase',
+                'EasyPost split-package rate did not include child package rates.',
+                ['status' => 400]
+            );
+        }
+
+        return ['labels' => $labels];
     }
 
     /**
@@ -927,31 +1315,29 @@ final class ShipStationShipmentService
     /**
      * @return array<int,array<string,mixed>>
      */
-    private function default_packages_from_order(WC_Order $order): array
+    private function default_packages_from_order(WC_Order $order, array $order_items): array
     {
         $total_oz = 0.0;
         $insured_value = max(0.0, (float) $order->get_total() - (float) $order->get_total_tax());
         $package_items = [];
 
-        foreach ($order->get_items('line_item') as $item) {
-            if (!($item instanceof WC_Order_Item_Product)) {
+        foreach ($order_items as $item) {
+            if (!is_array($item)) {
                 continue;
             }
 
-            $product = $item->get_product();
-            if (!($product instanceof WC_Product)) {
+            $item_id = absint($item['item_id'] ?? $item['order_item_id'] ?? 0);
+            $qty = max(0, (int) ($item['quantity'] ?? 0));
+            if ($item_id <= 0 || $qty <= 0) {
                 continue;
             }
-
-            $qty = max(1, (int) $item->get_quantity());
-            $measurements = self::shipping_measurements_for_product($product);
-            $weight_oz = $measurements['weight_oz'];
 
             $package_items[] = [
-                'item_id' => (int) $item->get_id(),
+                'item_id' => $item_id,
                 'quantity' => $qty,
             ];
 
+            $weight_oz = self::positive_float($item['weight_oz'] ?? null);
             if ($weight_oz !== null) {
                 $total_oz += ($weight_oz * $qty);
             }
@@ -978,67 +1364,122 @@ final class ShipStationShipmentService
     }
 
     /**
-     * The package editor mirrors WooCommerce Shipping by showing order line
-     * items under each package. These rows are for admin clarity and label
-     * history only; ShipStation receives only the package dimensions, weight,
-     * value, and service choices.
-     *
+     * @param array<string,mixed> $packing
      * @return array<int,array<string,mixed>>
      */
-    private function order_items_for_packages(WC_Order $order): array
+    private function label_packages_from_packing_result(WC_Order $order, array $packing): array
     {
-        $rows = [];
+        $currency = strtolower((string) (get_woocommerce_currency() ?: 'usd'));
+        $boxes = isset($packing['boxes']) && is_array($packing['boxes']) ? $packing['boxes'] : [];
+        $packages = [];
+
+        foreach ($boxes as $box) {
+            if (!is_array($box)) {
+                continue;
+            }
+
+            $assignments = self::assignments_from_packed_box($box);
+            if (empty($assignments)) {
+                continue;
+            }
+
+            $insured = ShipStationOptions::insurance_mode() === 'declared_value'
+                ? $this->insured_value_for_assignments($order, $assignments)
+                : 0.0;
+            $packages[] = ShippingPackage::from_packed_box($box, $insured, $currency)->to_array();
+        }
+
+        return $packages;
+    }
+
+    /**
+     * @param array<string,mixed> $box
+     * @return array<int,array{item_id:int,quantity:int}>
+     */
+    private static function assignments_from_packed_box(array $box): array
+    {
+        $assignments = [];
+        foreach ((array) ($box['items'] ?? []) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $item_id = absint($item['order_item_id'] ?? $item['item_id'] ?? 0);
+            $quantity = max(0, (int) ($item['quantity'] ?? 0));
+            if ($item_id <= 0 || $quantity <= 0) {
+                continue;
+            }
+
+            $assignments[] = [
+                'item_id' => $item_id,
+                'quantity' => $quantity,
+            ];
+        }
+
+        return $assignments;
+    }
+
+    /**
+     * @param array<int,array{item_id:int,quantity:int}> $assignments
+     */
+    private function insured_value_for_assignments(WC_Order $order, array $assignments): float
+    {
+        $remaining = [];
+        foreach ($assignments as $assignment) {
+            $item_id = absint($assignment['item_id'] ?? 0);
+            if ($item_id > 0) {
+                $remaining[$item_id] = (int) ($remaining[$item_id] ?? 0) + max(0, (int) ($assignment['quantity'] ?? 0));
+            }
+        }
+
+        if (empty($remaining)) {
+            return 0.0;
+        }
+
+        $value = 0.0;
         foreach ($order->get_items('line_item') as $item) {
             if (!($item instanceof WC_Order_Item_Product)) {
                 continue;
             }
 
-            $product = $item->get_product();
-            $sku = $product instanceof WC_Product ? (string) $product->get_sku() : '';
-            $product_id = $product instanceof WC_Product ? (int) $product->get_id() : (int) $item->get_product_id();
-            $measurements = $product instanceof WC_Product
-                ? self::shipping_measurements_for_product($product)
-                : [
-                    'weight_oz' => null,
-                    'length_in' => null,
-                    'width_in' => null,
-                    'height_in' => null,
-                ];
+            $item_id = (int) $item->get_id();
+            $assigned_qty = max(0, (int) ($remaining[$item_id] ?? 0));
+            if ($assigned_qty <= 0) {
+                continue;
+            }
 
-            $rows[] = [
-                'item_id' => (int) $item->get_id(),
-                'product_id' => $product_id,
-                'variation_id' => (int) $item->get_variation_id(),
-                'name' => (string) $item->get_name(),
-                'sku' => $sku,
-                'quantity' => max(0, (int) $item->get_quantity()),
-                'weight_oz' => $measurements['weight_oz'] !== null ? self::round_decimal((float) $measurements['weight_oz'], 2) : null,
-                'length_in' => $measurements['length_in'] !== null ? self::round_decimal((float) $measurements['length_in'], 2) : null,
-                'width_in' => $measurements['width_in'] !== null ? self::round_decimal((float) $measurements['width_in'], 2) : null,
-                'height_in' => $measurements['height_in'] !== null ? self::round_decimal((float) $measurements['height_in'], 2) : null,
-            ];
+            $order_qty = max(1, (int) $item->get_quantity());
+            $line_value = max(0.0, (float) $item->get_total());
+            $value += ($line_value / $order_qty) * min($assigned_qty, $order_qty);
         }
 
-        return $rows;
+        return self::round_decimal($value, 2);
     }
 
     /**
-     * @return array{weight_oz:?float,length_in:?float,width_in:?float,height_in:?float}
+     * @param array<string,mixed> $packing
+     * @param array<int,array<string,mixed>> $label_packages
      */
-    private static function shipping_measurements_for_product(WC_Product $product): array
+    private function auto_pack_message(array $packing, array $label_packages): string
     {
-        $row = ProductStateStore::get_row_for_product($product);
+        if (empty($label_packages)) {
+            $errors = array_values(array_filter(array_map('strval', (array) ($packing['errors'] ?? []))));
+            if (!empty($errors)) {
+                return $errors[0];
+            }
 
-        return [
-            'weight_oz' => self::positive_float($row['shipping_weight_oz'] ?? null)
-                ?? self::woo_weight_to_ounces((string) $product->get_weight()),
-            'length_in' => self::positive_float($row['shipping_length_in'] ?? null)
-                ?? self::woo_dimension_to_inches((string) $product->get_length()),
-            'width_in' => self::positive_float($row['shipping_width_in'] ?? null)
-                ?? self::woo_dimension_to_inches((string) $product->get_width()),
-            'height_in' => self::positive_float($row['shipping_height_in'] ?? null)
-                ?? self::woo_dimension_to_inches((string) $product->get_height()),
-        ];
+            if (!empty($packing['unpacked_items'])) {
+                return 'Box packing found dealer-fulfilled items, but at least one item could not be packed.';
+            }
+
+            return 'No dealer-fulfilled items needed packing for this order.';
+        }
+
+        return sprintf(
+            'Auto packed %d dealer-fulfilled unit(s) into %d package(s).',
+            (int) ($packing['packed_units'] ?? 0),
+            count($label_packages)
+        );
     }
 
     /**
@@ -1591,7 +2032,8 @@ final class ShipStationShipmentService
             ];
 
             if (!self::package_code_has_provider_dimensions($package_code)) {
-                if (self::is_thick_envelope_package_code($package_code)) {
+                $uses_packer_shape = !empty($row['auto_packed_shape']);
+                if (self::is_thick_envelope_package_code($package_code) && !$uses_packer_shape) {
                     $height = self::round_decimal(max(
                         $height,
                         self::max_assigned_item_height_in(
@@ -1991,67 +2433,6 @@ final class ShipStationShipmentService
 
         $float = (float) $value;
         return $float > 0.0 ? $float : null;
-    }
-
-    private static function woo_weight_to_ounces(string $weight): ?float
-    {
-        $weight = trim($weight);
-        if ($weight === '') {
-            return null;
-        }
-
-        $value = (float) $weight;
-        if ($value <= 0.0) {
-            return null;
-        }
-
-        $unit = strtolower((string) get_option('woocommerce_weight_unit', 'lbs'));
-        if (in_array($unit, ['lbs', 'lb', 'pound', 'pounds'], true)) {
-            return $value * 16.0;
-        }
-        if (in_array($unit, ['oz', 'ounce', 'ounces'], true)) {
-            return $value;
-        }
-        if (in_array($unit, ['kg', 'kilogram', 'kilograms'], true)) {
-            return $value * 35.27396195;
-        }
-        if (in_array($unit, ['g', 'gram', 'grams'], true)) {
-            return $value * 0.03527396195;
-        }
-
-        return $value;
-    }
-
-    private static function woo_dimension_to_inches(string $dimension): ?float
-    {
-        $dimension = trim($dimension);
-        if ($dimension === '') {
-            return null;
-        }
-
-        $value = (float) $dimension;
-        if ($value <= 0.0) {
-            return null;
-        }
-
-        $unit = strtolower((string) get_option('woocommerce_dimension_unit', 'in'));
-        if (in_array($unit, ['in', 'inch', 'inches'], true)) {
-            return $value;
-        }
-        if (in_array($unit, ['cm', 'centimeter', 'centimeters'], true)) {
-            return $value * 0.3937007874;
-        }
-        if (in_array($unit, ['m', 'meter', 'meters'], true)) {
-            return $value * 39.37007874;
-        }
-        if (in_array($unit, ['mm', 'millimeter', 'millimeters'], true)) {
-            return $value * 0.03937007874;
-        }
-        if (in_array($unit, ['yd', 'yard', 'yards'], true)) {
-            return $value * 36.0;
-        }
-
-        return $value;
     }
 
     /**

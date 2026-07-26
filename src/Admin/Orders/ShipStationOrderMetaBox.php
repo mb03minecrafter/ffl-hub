@@ -174,7 +174,10 @@ final class ShipStationOrderMetaBox
             <section class="fflhub-ss-card">
                 <div class="fflhub-ss-card-title-row">
                     <h4><?php esc_html_e('Packages', 'ffl-hub'); ?></h4>
-                    <button type="button" class="button fflhub-ss-add-package"><?php esc_html_e('Add Package', 'ffl-hub'); ?></button>
+                    <div class="fflhub-ss-card-actions">
+                        <button type="button" class="button fflhub-ss-auto-pack"><?php esc_html_e('Auto Pack Dealer Items', 'ffl-hub'); ?></button>
+                        <button type="button" class="button fflhub-ss-add-package"><?php esc_html_e('Add Package', 'ffl-hub'); ?></button>
+                    </div>
                 </div>
                 <div class="fflhub-ss-package-list">
                     <?php foreach ((array) ($context['packages'] ?? []) as $index => $package) : ?>
@@ -343,6 +346,7 @@ final class ShipStationOrderMetaBox
         $dims = isset($package['dimensions']) && is_array($package['dimensions']) ? $package['dimensions'] : [];
         $insured = isset($package['insured_value']) && is_array($package['insured_value']) ? $package['insured_value'] : [];
         $content_weight = (string) ($weight['value'] ?? '');
+        $selected_preset_id = (string) ($package['preset_id'] ?? '');
         echo '<div class="fflhub-ss-package-row" data-package-index="' . esc_attr((string) $index) . '">';
         echo '<label><span>Preset</span><select class="fflhub-ss-package-preset"><option value="">Manual</option>';
         foreach ($presets as $preset) {
@@ -354,7 +358,7 @@ final class ShipStationOrderMetaBox
             if ($id === '' || $name === '') {
                 continue;
             }
-            echo '<option value="' . esc_attr($id) . '">' . esc_html($name) . '</option>';
+            echo '<option value="' . esc_attr($id) . '" ' . selected($selected_preset_id, $id, false) . '>' . esc_html($name) . '</option>';
         }
         echo '</select></label>';
         $this->render_package_code_select((string) ($package['package_code'] ?? 'package'));

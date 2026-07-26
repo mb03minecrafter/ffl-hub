@@ -122,6 +122,9 @@ final class PackingBox implements Box, JsonSerializable
             'inner_height_in' => $this->inner_height_in,
             'empty_weight_oz' => $this->empty_weight_oz,
             'max_weight_oz' => $this->max_weight_oz,
+            'source_id' => (string) ($this->source['id'] ?? $this->source['box_id'] ?? ''),
+            'source_name' => (string) ($this->source['name'] ?? $this->source['box_name'] ?? ''),
+            'source_kind' => (string) ($this->source['kind'] ?? $this->source['type'] ?? ''),
         ];
     }
 

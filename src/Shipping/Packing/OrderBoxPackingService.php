@@ -42,6 +42,19 @@ final class OrderBoxPackingService
     private const ENVELOPE_THICKNESS_INCREMENT_IN = 0.25;
 
     /**
+     * Return the Woo order item rows that should be represented by dealer
+     * outbound labels. The shipping label UI uses this list for package item
+     * assignment validation, so drop-ship/direct-ship rows stay out of dealer
+     * label packages.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function dealer_fulfilled_order_items_for_labels(WC_Order $order): array
+    {
+        return $this->dealer_fulfilled_items_for_order($order)['order_items'] ?? [];
+    }
+
+    /**
      * Pack dealer-fulfilled order lines using explicit boxes or saved package
      * presets. Passing explicit boxes is best for tests; omitting the argument
      * lets the service use the shared FFLHub package preset settings.
@@ -693,13 +706,14 @@ final class OrderBoxPackingService
     }
 
     /**
-     * @return array{items:array<int,array{item:PackingItem,quantity:int}>,ignored_items:array<int,array<string,mixed>>,unpacked_items:array<int,array<string,mixed>>,dealer_fulfilled_units:int}
+     * @return array{items:array<int,array{item:PackingItem,quantity:int}>,order_items:array<int,array<string,mixed>>,ignored_items:array<int,array<string,mixed>>,unpacked_items:array<int,array<string,mixed>>,dealer_fulfilled_units:int}
      */
     private function dealer_fulfilled_items_for_order(WC_Order $order): array
     {
         $job_quantities = $this->dealer_fulfilled_job_upc_quantities($order);
         $has_job_routing = !empty($job_quantities);
         $items = [];
+        $order_items = [];
         $ignored = [];
         $unpacked = [];
         $dealer_units = 0;
@@ -751,6 +765,15 @@ final class OrderBoxPackingService
             $dealer_units += $pack_qty;
 
             $measurements = $this->shipping_measurements_for_product($product, $state_row);
+            $order_items[] = [
+                ...$this->order_item_summary($order_item, $product),
+                'item_id' => (int) $order_item->get_id(),
+                'quantity' => $pack_qty,
+                'weight_oz' => $measurements['weight_oz'],
+                'length_in' => $measurements['length_in'],
+                'width_in' => $measurements['width_in'],
+                'height_in' => $measurements['height_in'],
+            ];
             $missing = $this->missing_measurement_keys($measurements);
             if (!empty($missing)) {
                 $unpacked[] = [
@@ -787,6 +810,7 @@ final class OrderBoxPackingService
 
         return [
             'items' => $items,
+            'order_items' => $order_items,
             'ignored_items' => $ignored,
             'unpacked_items' => $unpacked,
             'dealer_fulfilled_units' => $dealer_units,

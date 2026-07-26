@@ -55,6 +55,14 @@
     gap: 12px;
 }
 
+.fflhub-ss-card-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
 .fflhub-ss-address-grid,
 .fflhub-ss-package-row,
 .fflhub-ss-rate-options {

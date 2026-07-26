@@ -59,6 +59,9 @@
         }
         setNested(pkg, field.dataset.field, value);
       });
+      if (row.dataset.fflhubAutoPackedShape === '1') {
+        pkg.auto_packed_shape = true;
+      }
       rows.push(pkg);
     });
     return rows;
@@ -199,6 +202,10 @@
       return;
     }
 
+    if (row.dataset.fflhubAutoPackedShape === '1') {
+      return;
+    }
+
     var height = field(row, 'dimensions.height');
     if (!height) {
       return;
@@ -219,6 +226,155 @@
     });
   }
 
+  function packageItemsFromPackage(pkg) {
+    return (pkg && Array.isArray(pkg.items) ? pkg.items : []).map(function (item) {
+      return {
+        item_id: Number(item.item_id || item.order_item_id || 0) || 0,
+        quantity: Math.max(0, Math.floor(Number(item.quantity || 0) || 0))
+      };
+    }).filter(function (item) {
+      return item.item_id > 0 && item.quantity > 0;
+    });
+  }
+
+  function resetPackageRow(row) {
+    row.querySelectorAll('input').forEach(function (input) {
+      if (input.dataset.field === 'insured_value.amount') {
+        input.value = '0';
+      } else {
+        input.value = '';
+      }
+    });
+    row.querySelectorAll('select[data-field="package_code"]').forEach(function (select) {
+      select.value = 'package';
+    });
+    row.querySelectorAll('[data-weight-role]').forEach(function (input) {
+      input.value = '';
+    });
+    row.querySelectorAll('[data-package-item-qty]').forEach(function (input) {
+      input.value = '0';
+    });
+    row.querySelectorAll('.fflhub-ss-package-preset').forEach(function (select) {
+      select.value = '';
+    });
+    row.dataset.envelopeBaseHeight = '';
+    row.dataset.fflhubAutoPackedShape = '';
+  }
+
+  function ensurePackageRows(panel, count) {
+    var list = panel.querySelector('.fflhub-ss-package-list');
+    var rows = Array.prototype.slice.call(list.querySelectorAll('.fflhub-ss-package-row'));
+    if (!rows.length) {
+      return [];
+    }
+
+    while (rows.length < count) {
+      var copy = rows[0].cloneNode(true);
+      resetPackageRow(copy);
+      list.appendChild(copy);
+      rows.push(copy);
+    }
+
+    while (rows.length > count && rows.length > 1) {
+      var row = rows.pop();
+      row.parentNode.removeChild(row);
+    }
+
+    rows.forEach(function (row, index) {
+      row.dataset.packageIndex = String(index);
+    });
+
+    return rows;
+  }
+
+  function setPackagePreset(row, presetId) {
+    var select = row.querySelector('.fflhub-ss-package-preset');
+    if (!select) {
+      return;
+    }
+
+    if (presetId && select.querySelector('option[value="' + String(presetId).replace(/"/g, '\\"') + '"]')) {
+      select.value = presetId;
+    } else {
+      select.value = '';
+    }
+  }
+
+  function setPackageItemQuantities(row, items) {
+    var wanted = {};
+    (items || []).forEach(function (item) {
+      var itemId = Number(item.item_id || 0) || 0;
+      if (itemId > 0) {
+        wanted[itemId] = (wanted[itemId] || 0) + Math.max(0, Math.floor(Number(item.quantity || 0) || 0));
+      }
+    });
+
+    row.querySelectorAll('[data-package-item-qty]').forEach(function (input) {
+      var itemId = Number(input.dataset.itemId || 0) || 0;
+      input.value = String(Math.max(0, wanted[itemId] || 0));
+    });
+  }
+
+  function applyPackageToRow(panel, row, pkg) {
+    pkg = pkg || {};
+    var weight = pkg.weight || {};
+    var dims = pkg.dimensions || {};
+    var insured = pkg.insured_value || {};
+
+    setPackagePreset(row, pkg.preset_id || '');
+    setField(row, 'package_code', pkg.package_code || 'package');
+    setField(row, 'dimensions.length', dims.length || '');
+    setField(row, 'dimensions.width', dims.width || '');
+    setField(row, 'dimensions.height', dims.height || '');
+    setField(row, 'insured_value.amount', insured.amount || '0');
+
+    var contentWeight = numericInput(row, 'content');
+    var packageWeight = numericInput(row, 'package');
+    var totalWeight = numericInput(row, 'total');
+    if (contentWeight) {
+      contentWeight.value = formatWeight(pkg.content_weight_oz || weight.value || 0);
+    }
+    if (packageWeight) {
+      packageWeight.value = formatWeight(pkg.package_weight_oz || 0);
+    }
+    if (totalWeight) {
+      totalWeight.value = formatWeight(weight.value || 0);
+    }
+
+    setPackageItemQuantities(row, packageItemsFromPackage(pkg));
+    row.dataset.envelopeBaseHeight = dims.height || '';
+    row.dataset.fflhubAutoPackedShape = '1';
+    syncPackageShapeForRow(panel, row);
+    recalcPackageWeight(row);
+  }
+
+  function applyPackingPlan(panel, data) {
+    var packages = data && Array.isArray(data.label_packages) ? data.label_packages : [];
+    if (!packages.length) {
+      setMessage(panel, (data && data.message) || 'No packages were produced by the box packer.', 'warning');
+      renderDiagnostics(panel, (data && data.errors || []).map(function (message) {
+        return { error_messages: [String(message)] };
+      }), []);
+      return;
+    }
+
+    var rows = ensurePackageRows(panel, packages.length);
+    packages.forEach(function (pkg, index) {
+      if (rows[index]) {
+        applyPackageToRow(panel, rows[index], pkg);
+      }
+    });
+
+    invalidateRates(panel);
+    var message = (data && data.message) || ('Auto packed ' + packages.length + ' package(s).');
+    if (data && Number(data.unpacked_item_count || 0) > 0) {
+      message += ' Some items could not be packed; check diagnostics.';
+      setMessage(panel, message, 'warning');
+    } else {
+      setMessage(panel, message + ' Review the packages, then get rates.', 'success');
+    }
+  }
+
   function applyPackagePreset(panel, select) {
     var preset = packagePreset(panel, select.value);
     var row = select.closest('.fflhub-ss-package-row');
@@ -231,6 +387,7 @@
     setField(row, 'dimensions.width', preset.width || '');
     setField(row, 'dimensions.height', preset.height || '');
     row.dataset.envelopeBaseHeight = preset.height || '';
+    row.dataset.fflhubAutoPackedShape = '';
 
     var packageWeight = numericInput(row, 'package');
     if (packageWeight) {
@@ -898,9 +1055,11 @@
             recalcPackageWeight(row);
           }
           if (row && event.target.matches('[data-package-item-qty]')) {
+            row.dataset.fflhubAutoPackedShape = '';
             syncPackageShapeForRow(panel, row);
           }
           if (row && event.target.matches('[data-field="dimensions.height"]')) {
+            row.dataset.fflhubAutoPackedShape = '';
             rememberEnvelopeBaseHeight(row);
             syncPackageShapeForRow(panel, row);
           }
@@ -915,6 +1074,7 @@
 
         var row = event.target.closest('.fflhub-ss-package-row');
         if (row && event.target.matches('[data-field="package_code"]')) {
+          row.dataset.fflhubAutoPackedShape = '';
           rememberEnvelopeBaseHeight(row);
           syncPackageShapeForRow(panel, row);
           invalidateRates(panel);
@@ -925,6 +1085,17 @@
         if (event.target.matches('.fflhub-ss-add-package')) {
           event.preventDefault();
           addPackage(panel);
+        }
+
+        if (event.target.matches('.fflhub-ss-auto-pack')) {
+          event.preventDefault();
+          invalidateRates(panel);
+          setLoading(panel, true);
+          setMessage(panel, 'Running box packer...', '');
+          request(panel, '/auto-pack', {})
+            .then(function (data) { applyPackingPlan(panel, data); })
+            .catch(function (error) { setMessage(panel, error.message, 'error'); })
+            .finally(function () { setLoading(panel, false); });
         }
 
         if (event.target.matches('.fflhub-ss-remove-package')) {

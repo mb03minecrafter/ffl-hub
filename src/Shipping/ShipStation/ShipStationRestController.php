@@ -42,6 +42,12 @@ final class ShipStationRestController
             'permission_callback' => [__CLASS__, 'can_manage_shipping'],
         ]);
 
+        register_rest_route(self::REST_NAMESPACE, '/shipstation/order/(?P<order_id>\d+)/auto-pack', [
+            'methods' => 'POST',
+            'callback' => [__CLASS__, 'auto_pack'],
+            'permission_callback' => [__CLASS__, 'can_manage_shipping'],
+        ]);
+
         register_rest_route(self::REST_NAMESPACE, '/shipstation/order/(?P<order_id>\d+)/rates', [
             'methods' => 'POST',
             'callback' => [__CLASS__, 'rates'],
@@ -93,6 +99,19 @@ final class ShipStationRestController
         }
 
         return self::service()->validate_address(self::json_params($request));
+    }
+
+    /**
+     * @return array<string,mixed>|WP_Error
+     */
+    public static function auto_pack(WP_REST_Request $request)
+    {
+        $order = self::order_from_request($request);
+        if (is_wp_error($order)) {
+            return $order;
+        }
+
+        return self::service()->auto_pack_order($order);
     }
 
     /**
