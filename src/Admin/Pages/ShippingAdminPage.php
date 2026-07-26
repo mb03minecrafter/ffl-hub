@@ -22,6 +22,7 @@ final class ShippingAdminPage
     public const SHIP_FROM_SLUG = 'fflhub-shipping-ship-from';
     public const EASYPOST_SLUG = 'fflhub-shipping-easypost';
     public const SHIPSTATION_SLUG = 'fflhub-shipping-shipstation';
+    public const PRINTNODE_SLUG = 'fflhub-shipping-printnode';
 
     public static function ensure_access(): void
     {

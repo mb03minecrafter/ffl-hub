@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "e2087bda884edeac55d9c80854e41a06",
+    "content-hash": "555070b84937455623aedec5842710c3",
     "packages": [
         {
             "name": "dvdoug/boxpacker",
@@ -124,6 +124,53 @@
                 "source": "https://github.com/Lipseys/LipseysApiIntegrationPhp/tree/v1.2.2"
             },
             "time": "2024-12-13T18:34:11+00:00"
+        },
+        {
+            "name": "printnode/printnode-php",
+            "version": "dev-master",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/PrintNode/PrintNode-PHP.git",
+                "reference": "c111bd06d452332b058006618d4d2a36201273f5"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/PrintNode/PrintNode-PHP/zipball/c111bd06d452332b058006618d4d2a36201273f5",
+                "reference": "c111bd06d452332b058006618d4d2a36201273f5",
+                "shasum": ""
+            },
+            "require": {
+                "ext-curl": "*",
+                "php": ">=7.0"
+            },
+            "default-branch": true,
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "PrintNode\\": "src/PrintNode"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "authors": [
+                {
+                    "name": "Contributors",
+                    "email": "support@printnode.com",
+                    "homepage": "https://www.printnode.com"
+                }
+            ],
+            "description": "Connect any printer to your application with PrintNode Client and easy to use JSON API",
+            "homepage": "https://github.com/PrintNode/PrintNode-PHP",
+            "keywords": [
+                "PrintNode",
+                "api",
+                "php",
+                "printing"
+            ],
+            "support": {
+                "issues": "https://github.com/PrintNode/PrintNode-PHP/issues",
+                "source": "https://github.com/PrintNode/PrintNode-PHP/tree/2.1.0"
+            },
+            "time": "2023-09-19T13:31:46+00:00"
         },
         {
             "name": "psr/log",
@@ -389,7 +436,9 @@
     ],
     "aliases": [],
     "minimum-stability": "stable",
-    "stability-flags": {},
+    "stability-flags": {
+        "printnode/printnode-php": 20
+    },
     "prefer-stable": false,
     "prefer-lowest": false,
     "platform": {},

@@ -6,6 +6,8 @@ namespace FFLHub\Admin\Pages;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Shipping\EasyPost\EasyPostBatchLabelService;
 use FFLHub\Shipping\EasyPost\EasyPostBatchLabelStore;
+use FFLHub\Shipping\PrintNode\PrintNodeBatchPrintService;
+use FFLHub\Shipping\PrintNode\PrintNodeOptions;
 use FFLHub\WMS\SendingOrdersService;
 use FFLHub\WMS\SendingPackingService;
 use WP_Error;
@@ -32,7 +34,6 @@ final class SendingPage
     public function register(): void
     {
         add_action('admin_menu', [$this, 'register_menu_page']);
-        add_action('admin_post_fflhub_sending_download_easypost_packet', [$this, 'download_easypost_print_packet']);
     }
 
     public function register_menu_page(): void
@@ -176,40 +177,6 @@ final class SendingPage
         return $nonce !== '' && wp_verify_nonce($nonce, 'fflhub_sending_batch_action');
     }
 
-    public function download_easypost_print_packet(): void
-    {
-        WMSAdminPage::ensure_access();
-
-        $nonce = isset($_POST['fflhub_sending_batch_nonce'])
-            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_sending_batch_nonce']))
-            : '';
-        if ($nonce === '' || !wp_verify_nonce($nonce, 'fflhub_sending_batch_action')) {
-            wp_die(esc_html__('Invalid EasyPost batch download request.', 'ffl-hub'));
-        }
-
-        $batch_id = $this->posted_batch_id();
-        if ($batch_id <= 0) {
-            wp_die(esc_html__('Missing EasyPost batch ID.', 'ffl-hub'));
-        }
-
-        $document = (new EasyPostBatchLabelService())->print_packet($batch_id);
-        if (is_wp_error($document)) {
-            wp_die(esc_html($document->get_error_message()));
-        }
-
-        $body = (string) ($document['body'] ?? '');
-        if ($body === '') {
-            wp_die(esc_html__('The EasyPost print packet was empty.', 'ffl-hub'));
-        }
-
-        nocache_headers();
-        header('Content-Type: ' . (string) ($document['content_type'] ?? 'application/pdf'));
-        header('Content-Disposition: attachment; filename="' . sanitize_file_name((string) ($document['filename'] ?? 'easypost-batch-print-packet.pdf')) . '"');
-        header('Content-Length: ' . strlen($body));
-        echo $body;
-        exit;
-    }
-
     /**
      * @param array<int,array<string,mixed>> $orders
      * @return array<string,mixed>
@@ -233,10 +200,13 @@ final class SendingPage
             case 'refresh_easypost_batch':
                 $result = $service->refresh($this->posted_batch_id());
                 break;
+            case 'print_easypost_batch':
+                $result = (new PrintNodeBatchPrintService())->print_easypost_batch($this->posted_batch_id());
+                break;
             default:
                 return [
                     'type' => 'error',
-                    'message' => __('Unknown EasyPost batch action.', 'ffl-hub'),
+                    'message' => __('Unknown Sending batch action.', 'ffl-hub'),
                     'details' => [],
                 ];
         }
@@ -267,6 +237,9 @@ final class SendingPage
                         ': ' . (string) ($problem['message'] ?? '')
                     );
                 }
+            }
+            foreach ((array) ($data['errors'] ?? []) as $error) {
+                $details[] = (string) $error;
             }
         }
 
@@ -310,12 +283,19 @@ final class SendingPage
                     (int) ($response['labels_saved'] ?? 0)
                 );
             }
-        } else {
+        } elseif ($action === 'refresh_easypost_batch') {
             $message = sprintf(
                 __('EasyPost batch #%1$d refreshed. Current status: %2$s. Labels saved: %3$d.', 'ffl-hub'),
                 (int) ($batch['id'] ?? 0),
                 $status,
                 (int) ($response['labels_saved'] ?? 0)
+            );
+        } else {
+            $message = sprintf(
+                __('PrintNode queued %1$d print job(s) for EasyPost batch #%2$d on printer #%3$d.', 'ffl-hub'),
+                (int) ($response['jobs_submitted'] ?? 0),
+                (int) ($batch['id'] ?? 0),
+                (int) ($response['printer_id'] ?? 0)
             );
         }
 
@@ -330,6 +310,17 @@ final class SendingPage
         }
         foreach (array_slice((array) ($response['errors'] ?? []), 0, 8) as $error) {
             $details[] = (string) $error;
+        }
+        foreach (array_slice((array) ($response['print_jobs'] ?? []), 0, 8) as $job) {
+            if (!is_array($job)) {
+                continue;
+            }
+
+            $details[] = sprintf(
+                'PrintNode #%s: %s',
+                (string) ($job['print_job_id'] ?? ''),
+                (string) ($job['title'] ?? '')
+            );
         }
 
         return [
@@ -383,7 +374,7 @@ final class SendingPage
                 <div>
                     <h2><?php esc_html_e('EasyPost Batch Labels', 'ffl-hub'); ?></h2>
                     <p>
-                        <?php esc_html_e('Prepare rates from ready orders, then explicitly submit/buy. The print packet alternates each purchased label with its matching packing slip.', 'ffl-hub'); ?>
+                        <?php esc_html_e('Prepare rates from ready orders, explicitly submit/buy, then print purchased labels and packing slips through PrintNode.', 'ffl-hub'); ?>
                     </p>
                 </div>
                 <form method="post" action="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>">
@@ -432,6 +423,8 @@ final class SendingPage
         $items = is_array($batch['items'] ?? null) ? $batch['items'] : [];
         $status = (string) ($batch['status'] ?? '-');
         $can_submit = !in_array($status, [EasyPostBatchLabelStore::STATUS_LABELS_SAVED, EasyPostBatchLabelStore::STATUS_FAILED], true);
+        $can_print = in_array($status, [EasyPostBatchLabelStore::STATUS_LABELS_SAVED, EasyPostBatchLabelStore::STATUS_PARTIAL_LABELS_SAVED], true)
+            && PrintNodeOptions::configured();
         ?>
         <tr>
             <td>
@@ -457,7 +450,10 @@ final class SendingPage
                 <div class="fflhub-sending-batch-actions">
                     <?php $this->render_easypost_batch_button($batch_id, 'submit_buy_easypost_batch', __('Submit / Buy', 'ffl-hub'), 'button-primary', !$can_submit); ?>
                     <?php $this->render_easypost_batch_button($batch_id, 'refresh_easypost_batch', __('Refresh / Save', 'ffl-hub')); ?>
-                    <?php $this->render_easypost_batch_button($batch_id, 'download_easypost_print_packet', __('Download Alternating PDF', 'ffl-hub')); ?>
+                    <?php $this->render_easypost_batch_button($batch_id, 'print_easypost_batch', __('Print via PrintNode', 'ffl-hub'), 'button-primary', !$can_print); ?>
+                    <?php if (!PrintNodeOptions::configured()) : ?>
+                        <span class="fflhub-sending-muted"><?php esc_html_e('Configure PrintNode first.', 'ffl-hub'); ?></span>
+                    <?php endif; ?>
                 </div>
             </td>
         </tr>
@@ -468,16 +464,12 @@ final class SendingPage
     {
         $confirm = $action === 'submit_buy_easypost_batch'
             ? __('This will submit/buy EasyPost labels for this prepared batch. Continue?', 'ffl-hub')
-            : '';
-        $form_action = $action === 'download_easypost_print_packet'
-            ? admin_url('admin-post.php')
-            : admin_url('admin.php?page=' . self::PAGE_SLUG);
+            : ($action === 'print_easypost_batch'
+                ? __('This will send each purchased label and packing slip to PrintNode as print jobs. Continue?', 'ffl-hub')
+                : '');
         ?>
-        <form method="post" action="<?php echo esc_url($form_action); ?>">
+        <form method="post" action="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>">
             <?php wp_nonce_field('fflhub_sending_batch_action', 'fflhub_sending_batch_nonce'); ?>
-            <?php if ($action === 'download_easypost_print_packet') : ?>
-                <input type="hidden" name="action" value="fflhub_sending_download_easypost_packet" />
-            <?php endif; ?>
             <input type="hidden" name="fflhub_sending_batch_action" value="<?php echo esc_attr($action); ?>" />
             <input type="hidden" name="batch_id" value="<?php echo esc_attr((string) $batch_id); ?>" />
             <button

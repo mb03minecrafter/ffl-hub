@@ -5,6 +5,7 @@ namespace FFLHub\Admin\Pages;
 
 use FFLHub\Shipping\ShippingOptions;
 use FFLHub\Shipping\EasyPost\EasyPostOptions;
+use FFLHub\Shipping\PrintNode\PrintNodeOptions;
 use FFLHub\Shipping\ShipStation\ShipStationOptions;
 
 if (!defined('ABSPATH')) {
@@ -88,6 +89,13 @@ final class ShippingDashboardPage
                     <p class="description"><?php esc_html_e('Reusable boxes and envelopes for label buying.', 'ffl-hub'); ?></p>
                 </div>
                 <div class="fflhub-shipping-stat">
+                    <?php esc_html_e('PrintNode', 'ffl-hub'); ?>
+                    <strong><?php echo esc_html(PrintNodeOptions::configured() ? __('Ready', 'ffl-hub') : __('Not Ready', 'ffl-hub')); ?></strong>
+                    <p class="description">
+                        <?php echo esc_html(sprintf('API key: %s. Printer: %s.', PrintNodeOptions::api_key_source_label(), PrintNodeOptions::default_printer_id() > 0 ? '#' . PrintNodeOptions::default_printer_id() : 'not selected')); ?>
+                    </p>
+                </div>
+                <div class="fflhub-shipping-stat">
                     <?php esc_html_e('Banned Services', 'ffl-hub'); ?>
                     <strong><?php echo esc_html((string) count(ShippingOptions::banned_service_codes())); ?></strong>
                     <p class="description"><?php echo esc_html(implode(', ', ShippingOptions::banned_service_codes())); ?></p>
@@ -104,6 +112,7 @@ final class ShippingDashboardPage
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::SHIP_FROM_SLUG)); ?>"><?php esc_html_e('Ship-From Locations', 'ffl-hub'); ?></a>
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::SHIPSTATION_SLUG)); ?>"><?php esc_html_e('ShipStation API', 'ffl-hub'); ?></a>
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::EASYPOST_SLUG)); ?>"><?php esc_html_e('EasyPost', 'ffl-hub'); ?></a>
+                    <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::PRINTNODE_SLUG)); ?>"><?php esc_html_e('PrintNode', 'ffl-hub'); ?></a>
                 </p>
             </section>
         </div>

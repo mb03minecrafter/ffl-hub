@@ -343,6 +343,43 @@ final class EasyPostBatchLabelService
      */
     public function print_packet(int $local_batch_id)
     {
+        $documents = $this->print_documents($local_batch_id);
+        if (is_wp_error($documents)) {
+            return $documents;
+        }
+
+        $pdf_documents = [];
+        foreach ($documents as $document) {
+            if (!is_array($document)) {
+                continue;
+            }
+
+            $body = (string) ($document['body'] ?? '');
+            if ($body === '') {
+                continue;
+            }
+
+            if (!empty($document['force_4x6'])) {
+                $pdf_documents[] = [
+                    'body' => $body,
+                    'force_4x6' => true,
+                ];
+            } else {
+                $pdf_documents[] = $body;
+            }
+        }
+
+        return (new PdfDocumentService())->combine_with_options(
+            $pdf_documents,
+            'easypost-batch-' . $local_batch_id . '-labels-and-packing-slips.pdf'
+        );
+    }
+
+    /**
+     * @return array<int,array{title:string,body:string,force_4x6:bool,kind:string,order_id:int,order_number:string,package_index:int}>|WP_Error
+     */
+    public function print_documents(int $local_batch_id)
+    {
         $batch = EasyPostBatchLabelStore::get($local_batch_id);
         if (!is_array($batch)) {
             return new WP_Error('fflhub_easypost_batch_missing', 'Could not find that local EasyPost batch.');
@@ -367,7 +404,7 @@ final class EasyPostBatchLabelService
                     continue;
                 }
 
-                $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''));
+                $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''), $order, $item);
                 $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
                 continue;
             }
@@ -392,7 +429,7 @@ final class EasyPostBatchLabelService
                 continue;
             }
 
-            $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''));
+            $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''), $order, $item);
             $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
         }
 
@@ -403,14 +440,11 @@ final class EasyPostBatchLabelService
             );
         }
 
-        return (new PdfDocumentService())->combine_with_options(
-            $documents,
-            'easypost-batch-' . (int) ($batch['id'] ?? $local_batch_id) . '-labels-and-packing-slips.pdf'
-        );
+        return $documents;
     }
 
     /**
-     * @param array<int,string|array{body:string,force_4x6?:bool}> $documents
+     * @param array<int,array{title:string,body:string,force_4x6:bool,kind:string,order_id:int,order_number:string,package_index:int}> $documents
      * @param array<string,mixed> $item
      * @param array<int,array<string,mixed>> $batch_items
      */
@@ -435,19 +469,48 @@ final class EasyPostBatchLabelService
             ]
         );
         if (!is_wp_error($slip)) {
-            $documents[] = (string) ($slip['body'] ?? '');
+            $documents[] = [
+                'title' => $this->print_document_title('Packing Slip', $order, $item),
+                'body' => (string) ($slip['body'] ?? ''),
+                'force_4x6' => false,
+                'kind' => 'packing_slip',
+                'order_id' => (int) $order->get_id(),
+                'order_number' => (string) $order->get_order_number(),
+                'package_index' => (int) ($item['package_index'] ?? 0),
+            ];
         }
     }
 
     /**
-     * @return array{body:string,force_4x6:bool}
+     * @param array<string,mixed> $item
+     * @return array{title:string,body:string,force_4x6:bool,kind:string,order_id:int,order_number:string,package_index:int}
      */
-    private function label_pdf_document(string $body): array
+    private function label_pdf_document(string $body, WC_Order $order, array $item): array
     {
         return [
+            'title' => $this->print_document_title('Shipping Label', $order, $item),
             'body' => $body,
             'force_4x6' => true,
+            'kind' => 'label',
+            'order_id' => (int) $order->get_id(),
+            'order_number' => (string) $order->get_order_number(),
+            'package_index' => (int) ($item['package_index'] ?? 0),
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     */
+    private function print_document_title(string $kind, WC_Order $order, array $item): string
+    {
+        $package_index = ((int) ($item['package_index'] ?? 0)) + 1;
+
+        return sprintf(
+            'FFL Hub %s - Order %s - Package %d',
+            $kind,
+            (string) $order->get_order_number(),
+            $package_index
+        );
     }
 
     /**

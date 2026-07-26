@@ -30,6 +30,7 @@ use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
 use FFLHub\Admin\Pages\ProductStateBulkPricingPage;
 use FFLHub\Admin\Pages\ProductStatePage;
+use FFLHub\Admin\Pages\PrintNodeSettingsPage;
 use FFLHub\Admin\Pages\ReceivingPage;
 use FFLHub\Admin\Pages\ReceivingTestLabelsPage;
 use FFLHub\Admin\Pages\SendingPage;
@@ -155,6 +156,7 @@ final class Plugin
     public ShippingShipFromLocationsPage $shipping_ship_from_locations_page;
     public EasyPostSettingsPage $easypost_settings_page;
     public ShipStationSettingsPage $shipstation_settings_page;
+    public PrintNodeSettingsPage $printnode_settings_page;
     public WMSAdminPage $wms_admin_page;
     public OrderPlacementMetaBox $order_placement_metabox;
     public AuthorizeNetOrderRescueButton $authnet_order_rescue_button;
@@ -352,6 +354,9 @@ final class Plugin
 
             $this->shipstation_settings_page = new ShipStationSettingsPage();
             $this->shipstation_settings_page->register();
+
+            $this->printnode_settings_page = new PrintNodeSettingsPage();
+            $this->printnode_settings_page->register();
 
             $this->order_placement_metabox = new OrderPlacementMetaBox($this->distributor_handler->ordering_jobs_table);
             $this->order_placement_metabox->register();
