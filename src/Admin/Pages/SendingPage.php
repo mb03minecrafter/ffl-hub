@@ -5,6 +5,7 @@ namespace FFLHub\Admin\Pages;
 
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\WMS\SendingOrdersService;
+use FFLHub\WMS\SendingPackingService;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -51,6 +52,15 @@ final class SendingPage
         $result = (new SendingOrdersService($this->jobs_table))->ready_orders($job_scan_limit, $debug_ready);
         $orders = $result['orders'];
         $stats = $result['stats'];
+        $packing_result = null;
+
+        if ($this->should_run_packing()) {
+            $packing_result = $this->run_packing($orders);
+            $orders = $packing_result['orders'];
+            $stats['packing_orders_packed'] = (int) ($packing_result['stats']['orders_packed'] ?? 0);
+            $stats['packing_orders_failed'] = (int) ($packing_result['stats']['orders_failed'] ?? 0);
+            $stats['packing_packages_selected'] = (int) ($packing_result['stats']['packages_selected'] ?? 0);
+        }
         ?>
         <div class="wrap fflhub-sending-page">
             <?php $this->render_styles(); ?>
@@ -67,7 +77,15 @@ final class SendingPage
                 <?php if ($debug_ready) : ?>
                     <?php $this->render_stat(__('Debug Ready', 'ffl-hub'), (string) ($stats['debug_ready_orders'] ?? 0)); ?>
                 <?php endif; ?>
+                <?php if ($packing_result !== null) : ?>
+                    <?php $this->render_stat(__('Packed', 'ffl-hub'), (string) ($stats['packing_orders_packed'] ?? 0)); ?>
+                    <?php $this->render_stat(__('Packing Failed', 'ffl-hub'), (string) ($stats['packing_orders_failed'] ?? 0)); ?>
+                <?php endif; ?>
             </div>
+
+            <?php if ($packing_result !== null) : ?>
+                <?php $this->render_packing_notice((array) ($packing_result['stats'] ?? [])); ?>
+            <?php endif; ?>
 
             <form method="get" action="" class="fflhub-sending-filter">
                 <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>" />
@@ -91,6 +109,8 @@ final class SendingPage
                 <?php submit_button(__('Refresh', 'ffl-hub'), 'secondary', '', false); ?>
             </form>
 
+            <?php $this->render_packing_form($job_scan_limit, $debug_ready, !empty($orders)); ?>
+
             <?php $this->render_orders($orders); ?>
         </div>
         <?php
@@ -98,8 +118,8 @@ final class SendingPage
 
     private function read_job_scan_limit(): int
     {
-        $limit = isset($_GET['job_scan_limit'])
-            ? (int) sanitize_text_field(wp_unslash((string) $_GET['job_scan_limit']))
+        $limit = isset($_REQUEST['job_scan_limit'])
+            ? (int) sanitize_text_field(wp_unslash((string) $_REQUEST['job_scan_limit']))
             : SendingOrdersService::DEFAULT_JOB_SCAN_LIMIT;
 
         return max(1, min(SendingOrdersService::MAX_JOB_SCAN_LIMIT, $limit));
@@ -107,11 +127,71 @@ final class SendingPage
 
     private function read_bool(string $key): bool
     {
-        $value = isset($_GET[$key])
-            ? strtolower(trim(sanitize_text_field(wp_unslash((string) $_GET[$key]))))
+        $value = isset($_REQUEST[$key])
+            ? strtolower(trim(sanitize_text_field(wp_unslash((string) $_REQUEST[$key]))))
             : '';
 
         return in_array($value, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private function should_run_packing(): bool
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['fflhub_sending_run_packing'])) {
+            return false;
+        }
+
+        $nonce = isset($_POST['fflhub_sending_packing_nonce'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_sending_packing_nonce']))
+            : '';
+
+        return $nonce !== '' && wp_verify_nonce($nonce, 'fflhub_sending_run_packing');
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $orders
+     * @return array{orders:array<int,array<string,mixed>>,stats:array<string,mixed>}
+     */
+    private function run_packing(array $orders): array
+    {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(180);
+        }
+
+        return (new SendingPackingService())->pack_ready_orders($orders);
+    }
+
+    private function render_packing_form(int $job_scan_limit, bool $debug_ready, bool $has_orders): void
+    {
+        ?>
+        <form method="post" action="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>" class="fflhub-sending-packing-form">
+            <?php wp_nonce_field('fflhub_sending_run_packing', 'fflhub_sending_packing_nonce'); ?>
+            <input type="hidden" name="job_scan_limit" value="<?php echo esc_attr((string) $job_scan_limit); ?>" />
+            <?php if ($debug_ready) : ?>
+                <input type="hidden" name="debug_ready" value="1" />
+            <?php endif; ?>
+            <?php submit_button(__('Run Packing Algorithm For Ready Orders', 'ffl-hub'), 'primary', 'fflhub_sending_run_packing', false, ['disabled' => !$has_orders]); ?>
+            <span><?php esc_html_e('Read-only. Uses the current ready-order filter and current on-hand package presets; it does not buy labels or change order status.', 'ffl-hub'); ?></span>
+        </form>
+        <?php
+    }
+
+    /**
+     * @param array<string,mixed> $stats
+     */
+    private function render_packing_notice(array $stats): void
+    {
+        $message = sprintf(
+            __('Packing pass complete: %1$d packed, %2$d failed, %3$d package(s) selected in %4$s ms.', 'ffl-hub'),
+            (int) ($stats['orders_packed'] ?? 0),
+            (int) ($stats['orders_failed'] ?? 0),
+            (int) ($stats['packages_selected'] ?? 0),
+            (string) ($stats['runtime_ms'] ?? '0')
+        );
+        ?>
+        <div class="notice notice-info inline fflhub-sending-packing-notice">
+            <p><?php echo esc_html($message); ?></p>
+        </div>
+        <?php
     }
 
     private function render_stat(string $label, string $value): void
@@ -203,7 +283,7 @@ final class SendingPage
                 <?php endif; ?>
             </td>
             <td class="fflhub-sending-package-cell">
-                <?php echo $selected_package !== '' ? esc_html($selected_package) : ''; ?>
+                <?php $this->render_selected_package($order, $selected_package); ?>
             </td>
             <td>
                 <span class="fflhub-sending-pill <?php echo esc_attr($label_class); ?>">
@@ -227,6 +307,70 @@ final class SendingPage
             </td>
         </tr>
         <?php
+    }
+
+    /**
+     * @param array<string,mixed> $order
+     */
+    private function render_selected_package(array $order, string $selected_package): void
+    {
+        $packing_status = trim((string) ($order['packing_status'] ?? ''));
+
+        if ($selected_package === '' && $packing_status === '') {
+            echo '<span class="fflhub-sending-muted">' . esc_html__('Not run', 'ffl-hub') . '</span>';
+            return;
+        }
+
+        if (!empty($order['packing_ok']) && $selected_package !== '') {
+            echo '<span class="fflhub-sending-pill is-packed">' . esc_html__('Packed', 'ffl-hub') . '</span>';
+            echo '<strong class="fflhub-sending-package-name">' . esc_html($selected_package) . '</strong>';
+            $this->render_package_details((array) ($order['selected_package_details'] ?? []));
+            return;
+        }
+
+        echo '<span class="fflhub-sending-pill packing-failed">' . esc_html__('No Fit', 'ffl-hub') . '</span>';
+        $errors = array_values(array_filter(array_map('strval', (array) ($order['packing_errors'] ?? []))));
+        if (!empty($errors)) {
+            echo '<ul class="fflhub-sending-mini-list fflhub-sending-error-list">';
+            foreach (array_slice($errors, 0, 3) as $error) {
+                echo '<li>' . esc_html($error) . '</li>';
+            }
+            echo '</ul>';
+        }
+    }
+
+    /**
+     * @param array<int,mixed> $details
+     */
+    private function render_package_details(array $details): void
+    {
+        if (empty($details)) {
+            return;
+        }
+
+        echo '<ul class="fflhub-sending-mini-list fflhub-sending-package-details">';
+        foreach ($details as $detail) {
+            if (!is_array($detail)) {
+                continue;
+            }
+
+            $bits = [];
+            $dimensions = trim((string) ($detail['dimensions'] ?? ''));
+            if ($dimensions !== '') {
+                $bits[] = $dimensions;
+            }
+            $weight = $this->number_or_null($detail['packed_weight_oz'] ?? null);
+            if ($weight !== null) {
+                $bits[] = $weight . ' oz packed';
+            }
+            $utilization = $this->number_or_null($detail['volume_utilization_percent'] ?? null);
+            if ($utilization !== null) {
+                $bits[] = $utilization . '% volume';
+            }
+
+            echo '<li>' . esc_html(implode(' | ', $bits)) . '</li>';
+        }
+        echo '</ul>';
     }
 
     /**
@@ -315,6 +459,23 @@ final class SendingPage
         return wp_date('M j, Y g:i a', $timestamp);
     }
 
+    /**
+     * @param mixed $value
+     */
+    private function number_or_null($value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $float = (float) $value;
+        if ($float <= 0.0) {
+            return null;
+        }
+
+        return rtrim(rtrim(number_format($float, 2, '.', ''), '0'), '.');
+    }
+
     private function render_styles(): void
     {
         ?>
@@ -332,6 +493,9 @@ final class SendingPage
             .fflhub-sending-filter .fflhub-sending-debug-toggle input{width:auto;margin-top:4px}
             .fflhub-sending-filter .fflhub-sending-debug-toggle span{font-weight:400;color:#50575e}
             .fflhub-sending-filter .fflhub-sending-debug-toggle strong{display:block;color:#1d2327}
+            .fflhub-sending-packing-form{display:flex;align-items:center;gap:12px;background:#f6f7f7;border:1px solid #dcdcde;border-radius:8px;padding:12px;margin-bottom:16px}
+            .fflhub-sending-packing-form span{color:#646970}
+            .fflhub-sending-packing-notice{margin:0 0 16px}
             .fflhub-sending-table-wrap{background:#fff;border:1px solid #dcdcde;border-radius:8px;overflow:auto}
             .fflhub-sending-table{border:0}
             .fflhub-sending-table th{white-space:nowrap}
@@ -345,12 +509,17 @@ final class SendingPage
             .fflhub-sending-pill.needs-label{background:#fff4e5;color:#8a4b00}
             .fflhub-sending-pill.is-labeled{background:#e6f6ed;color:#146c43}
             .fflhub-sending-pill.is-debug{background:#1d2327;color:#fff}
-            .fflhub-sending-package-cell{min-width:140px}
+            .fflhub-sending-pill.is-packed{background:#e6f6ed;color:#146c43}
+            .fflhub-sending-pill.packing-failed{background:#fde7e9;color:#8a2424}
+            .fflhub-sending-package-cell{min-width:190px}
+            .fflhub-sending-package-name{display:block;margin-top:6px;color:#1d2327}
+            .fflhub-sending-package-details{margin-top:5px}
+            .fflhub-sending-error-list{margin-top:5px;color:#8a2424}
             .fflhub-sending-mini-list{margin:0;display:grid;gap:5px}
             .fflhub-sending-mini-list li{margin:0}
             .fflhub-sending-ffl-tag{display:inline-flex;border-radius:999px;background:#e5f0ff;color:#0a4b78;font-size:10px;font-weight:800;padding:1px 5px;vertical-align:middle}
             .fflhub-sending-empty{background:#fff;border:1px dashed #c3c4c7;border-radius:8px;padding:18px;color:#646970}
-            @media (max-width:782px){.fflhub-sending-filter{display:block}.fflhub-sending-filter .button{margin-top:10px}.fflhub-sending-filter .fflhub-sending-debug-toggle{grid-template-columns:auto 1fr;margin-top:10px}}
+            @media (max-width:782px){.fflhub-sending-filter,.fflhub-sending-packing-form{display:block}.fflhub-sending-filter .button,.fflhub-sending-packing-form .button{margin-top:10px}.fflhub-sending-filter .fflhub-sending-debug-toggle{grid-template-columns:auto 1fr;margin-top:10px}}
         </style>
         <?php
     }
