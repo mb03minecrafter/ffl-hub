@@ -40,7 +40,7 @@ final class SendingOrdersService
     /**
      * @return array{orders:array<int,array<string,mixed>>,stats:array<string,int>}
      */
-    public function ready_orders(int $job_scan_limit = self::DEFAULT_JOB_SCAN_LIMIT): array
+    public function ready_orders(int $job_scan_limit = self::DEFAULT_JOB_SCAN_LIMIT, bool $debug_ready = false): array
     {
         ReceivingEventsStore::ensure_schema();
 
@@ -87,7 +87,7 @@ final class SendingOrdersService
                 continue;
             }
 
-            $this->finalize_order_row($row);
+            $this->finalize_order_row($row, $debug_ready);
             if (empty($row['ready_to_ship'])) {
                 continue;
             }
@@ -114,6 +114,7 @@ final class SendingOrdersService
                 'ready_orders' => count($orders),
                 'needs_label' => count(array_filter($orders, static fn(array $row): bool => empty($row['has_active_label']))),
                 'has_label' => count(array_filter($orders, static fn(array $row): bool => !empty($row['has_active_label']))),
+                'debug_ready_orders' => count(array_filter($orders, static fn(array $row): bool => !empty($row['debug_ready']))),
             ],
         ];
     }
@@ -201,6 +202,7 @@ final class SendingOrdersService
             'last_received_at' => '',
             'ready_at' => '',
             'ready_to_ship' => false,
+            'debug_ready' => false,
         ];
     }
 
@@ -288,7 +290,7 @@ final class SendingOrdersService
     /**
      * @param array<string,mixed> $row
      */
-    private function finalize_order_row(array &$row): void
+    private function finalize_order_row(array &$row, bool $debug_ready): void
     {
         $row['items'] = array_values($row['items']);
         $row['distributors'] = array_values(array_unique(array_filter(array_map('strval', (array) $row['distributors']))));
@@ -299,12 +301,17 @@ final class SendingOrdersService
         $remaining = (int) ($row['remaining_units'] ?? 0);
         $live_ready = $expected > 0 && $remaining === 0;
         $meta_ready = !empty($row['ready_meta']);
-        $row['ready_to_ship'] = $live_ready || $meta_ready;
-        $row['readiness_source'] = $live_ready ? 'receiving_events' : ($meta_ready ? 'order_meta' : '');
+        $debug_ready = $debug_ready && $expected > 0 && !$live_ready && !$meta_ready;
+        $row['ready_to_ship'] = $live_ready || $meta_ready || $debug_ready;
+        $row['debug_ready'] = $debug_ready;
+        $row['readiness_source'] = $live_ready ? 'receiving_events' : ($meta_ready ? 'order_meta' : ($debug_ready ? 'debug_override' : ''));
 
         $ready_at = trim((string) ($row['ready_meta_at'] ?? ''));
         if ($ready_at === '') {
             $ready_at = trim((string) ($row['last_received_at'] ?? ''));
+        }
+        if ($ready_at === '' && $debug_ready) {
+            $ready_at = current_time('mysql', true);
         }
         $row['ready_at'] = $ready_at;
     }

@@ -47,7 +47,8 @@ final class SendingPage
         WMSAdminPage::ensure_access();
 
         $job_scan_limit = $this->read_job_scan_limit();
-        $result = (new SendingOrdersService($this->jobs_table))->ready_orders($job_scan_limit);
+        $debug_ready = $this->read_bool('debug_ready');
+        $result = (new SendingOrdersService($this->jobs_table))->ready_orders($job_scan_limit, $debug_ready);
         $orders = $result['orders'];
         $stats = $result['stats'];
         ?>
@@ -63,6 +64,9 @@ final class SendingPage
                 <?php $this->render_stat(__('Need Labels', 'ffl-hub'), (string) ($stats['needs_label'] ?? 0)); ?>
                 <?php $this->render_stat(__('Have Labels', 'ffl-hub'), (string) ($stats['has_label'] ?? 0)); ?>
                 <?php $this->render_stat(__('Jobs Scanned', 'ffl-hub'), (string) ($stats['jobs_scanned'] ?? 0)); ?>
+                <?php if ($debug_ready) : ?>
+                    <?php $this->render_stat(__('Debug Ready', 'ffl-hub'), (string) ($stats['debug_ready_orders'] ?? 0)); ?>
+                <?php endif; ?>
             </div>
 
             <form method="get" action="" class="fflhub-sending-filter">
@@ -76,6 +80,13 @@ final class SendingPage
                         max="<?php echo esc_attr((string) SendingOrdersService::MAX_JOB_SCAN_LIMIT); ?>"
                         step="1"
                         value="<?php echo esc_attr((string) $job_scan_limit); ?>" />
+                </label>
+                <label class="fflhub-sending-debug-toggle">
+                    <input type="checkbox" name="debug_ready" value="1" <?php checked($debug_ready); ?> />
+                    <span>
+                        <strong><?php esc_html_e('Debug: pretend candidates are ready', 'ffl-hub'); ?></strong>
+                        <?php esc_html_e('Shows otherwise-unreceived dealer-fulfilled success orders as ready for UI testing only. No order meta, receiving events, labels, or statuses are changed.', 'ffl-hub'); ?>
+                    </span>
                 </label>
                 <?php submit_button(__('Refresh', 'ffl-hub'), 'secondary', '', false); ?>
             </form>
@@ -92,6 +103,15 @@ final class SendingPage
             : SendingOrdersService::DEFAULT_JOB_SCAN_LIMIT;
 
         return max(1, min(SendingOrdersService::MAX_JOB_SCAN_LIMIT, $limit));
+    }
+
+    private function read_bool(string $key): bool
+    {
+        $value = isset($_GET[$key])
+            ? strtolower(trim(sanitize_text_field(wp_unslash((string) $_GET[$key]))))
+            : '';
+
+        return in_array($value, ['1', 'true', 'yes', 'on'], true);
     }
 
     private function render_stat(string $label, string $value): void
@@ -132,10 +152,11 @@ final class SendingPage
     private function render_order_card(array $order): void
     {
         $has_label = !empty($order['has_active_label']);
+        $debug_ready = !empty($order['debug_ready']);
         $label_class = $has_label ? 'is-labeled' : 'needs-label';
         $label_text = $has_label ? __('Label purchased', 'ffl-hub') : __('Needs label', 'ffl-hub');
         ?>
-        <section class="fflhub-sending-card">
+        <section class="fflhub-sending-card <?php echo $debug_ready ? 'is-debug-ready' : ''; ?>">
             <header class="fflhub-sending-card-head">
                 <div>
                     <h2>
@@ -148,10 +169,21 @@ final class SendingPage
                         <span><?php echo esc_html((string) ($order['order_created_at'] ?? '')); ?></span>
                     </p>
                 </div>
-                <span class="fflhub-sending-pill <?php echo esc_attr($label_class); ?>">
-                    <?php echo esc_html($label_text); ?>
-                </span>
+                <div class="fflhub-sending-pills">
+                    <?php if ($debug_ready) : ?>
+                        <span class="fflhub-sending-pill is-debug"><?php esc_html_e('Debug Ready', 'ffl-hub'); ?></span>
+                    <?php endif; ?>
+                    <span class="fflhub-sending-pill <?php echo esc_attr($label_class); ?>">
+                        <?php echo esc_html($label_text); ?>
+                    </span>
+                </div>
             </header>
+
+            <?php if ($debug_ready) : ?>
+                <div class="fflhub-sending-debug-warning">
+                    <?php esc_html_e('Debug view only: this order is being shown as ready even though the received count has not satisfied the real receiving requirement.', 'ffl-hub'); ?>
+                </div>
+            <?php endif; ?>
 
             <div class="fflhub-sending-meta">
                 <div><span><?php esc_html_e('Ready At', 'ffl-hub'); ?></span><strong><?php echo esc_html($this->local_time((string) ($order['ready_at'] ?? ''))); ?></strong></div>
@@ -267,16 +299,24 @@ final class SendingPage
             .fflhub-sending-filter label{display:grid;gap:4px}
             .fflhub-sending-filter label span{font-weight:700}
             .fflhub-sending-filter input{width:130px}
+            .fflhub-sending-filter .fflhub-sending-debug-toggle{display:grid;grid-template-columns:auto minmax(260px,520px);align-items:start;gap:8px}
+            .fflhub-sending-filter .fflhub-sending-debug-toggle input{width:auto;margin-top:4px}
+            .fflhub-sending-filter .fflhub-sending-debug-toggle span{font-weight:400;color:#50575e}
+            .fflhub-sending-filter .fflhub-sending-debug-toggle strong{display:block;color:#1d2327}
             .fflhub-sending-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
             .fflhub-sending-card{background:#fff;border:1px solid #dcdcde;border-radius:10px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+            .fflhub-sending-card.is-debug-ready{border-color:#dba617;background:#fffdf5}
             .fflhub-sending-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;border-bottom:1px solid #f0f0f1;padding-bottom:12px;margin-bottom:12px}
             .fflhub-sending-card h2{margin:0;font-size:20px}
             .fflhub-sending-card h2 a{text-decoration:none}
             .fflhub-sending-card-head p{margin:4px 0 0;color:#50575e}
             .fflhub-sending-card-head p span{display:block;font-size:12px;color:#787c82;margin-top:2px}
+            .fflhub-sending-pills{display:flex;align-items:flex-end;flex-direction:column;gap:6px}
             .fflhub-sending-pill{display:inline-flex;align-items:center;white-space:nowrap;border-radius:999px;padding:4px 10px;font-size:12px;font-weight:800;text-transform:uppercase}
             .fflhub-sending-pill.needs-label{background:#fff4e5;color:#8a4b00}
             .fflhub-sending-pill.is-labeled{background:#e6f6ed;color:#146c43}
+            .fflhub-sending-pill.is-debug{background:#1d2327;color:#fff}
+            .fflhub-sending-debug-warning{background:#fff4e5;border:1px solid #f0c36d;border-radius:8px;padding:9px 10px;margin-bottom:12px;color:#5f4100;font-weight:700}
             .fflhub-sending-meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:12px}
             .fflhub-sending-meta div{background:#f6f7f7;border-radius:8px;padding:9px}
             .fflhub-sending-meta span{display:block;color:#646970;font-size:11px;text-transform:uppercase;font-weight:700}
@@ -288,7 +328,7 @@ final class SendingPage
             .fflhub-sending-labels{margin:0}
             .fflhub-sending-labels li{display:grid;grid-template-columns:1.2fr .9fr 1fr;gap:8px;margin:6px 0;align-items:center}
             .fflhub-sending-empty{background:#fff;border:1px dashed #c3c4c7;border-radius:8px;padding:18px;color:#646970}
-            @media (max-width:782px){.fflhub-sending-grid{grid-template-columns:1fr}.fflhub-sending-meta{grid-template-columns:1fr 1fr}.fflhub-sending-filter{display:block}.fflhub-sending-filter .button{margin-top:10px}}
+            @media (max-width:782px){.fflhub-sending-grid{grid-template-columns:1fr}.fflhub-sending-meta{grid-template-columns:1fr 1fr}.fflhub-sending-filter{display:block}.fflhub-sending-filter .button{margin-top:10px}.fflhub-sending-filter .fflhub-sending-debug-toggle{grid-template-columns:auto 1fr;margin-top:10px}}
         </style>
         <?php
     }
