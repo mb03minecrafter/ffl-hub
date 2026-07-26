@@ -166,11 +166,18 @@ final class SendingPage
         <form method="post" action="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>" class="fflhub-sending-packing-form">
             <?php wp_nonce_field('fflhub_sending_run_packing', 'fflhub_sending_packing_nonce'); ?>
             <input type="hidden" name="job_scan_limit" value="<?php echo esc_attr((string) $job_scan_limit); ?>" />
-            <?php if ($debug_ready) : ?>
-                <input type="hidden" name="debug_ready" value="1" />
-            <?php endif; ?>
-            <?php submit_button(__('Run Packing Algorithm For Ready Orders', 'ffl-hub'), 'primary', 'fflhub_sending_run_packing', false, ['disabled' => !$has_orders]); ?>
-            <span><?php esc_html_e('Read-only. Uses the current ready-order filter and current on-hand package presets; it does not buy labels or change order status.', 'ffl-hub'); ?></span>
+            <label class="fflhub-sending-packing-debug-toggle">
+                <input type="checkbox" name="debug_ready" value="1" <?php checked($debug_ready); ?> />
+                <span><?php esc_html_e('Include pretend-ready debug candidates', 'ffl-hub'); ?></span>
+            </label>
+            <?php submit_button(__('Run Packing Algorithm For Ready Orders', 'ffl-hub'), 'primary', 'fflhub_sending_run_packing', false); ?>
+            <span>
+                <?php
+                echo esc_html($has_orders
+                    ? __('Read-only. Uses this form\'s ready/debug setting and current on-hand package presets; it does not buy labels or change order status.', 'ffl-hub')
+                    : __('Read-only. If strict ready rows are empty, enable pretend-ready debug candidates here before running.', 'ffl-hub'));
+                ?>
+            </span>
         </form>
         <?php
     }
@@ -494,7 +501,10 @@ final class SendingPage
             .fflhub-sending-filter .fflhub-sending-debug-toggle span{font-weight:400;color:#50575e}
             .fflhub-sending-filter .fflhub-sending-debug-toggle strong{display:block;color:#1d2327}
             .fflhub-sending-packing-form{display:flex;align-items:center;gap:12px;background:#f6f7f7;border:1px solid #dcdcde;border-radius:8px;padding:12px;margin-bottom:16px}
+            .fflhub-sending-packing-debug-toggle{display:inline-flex;align-items:center;gap:7px;font-weight:700;white-space:nowrap}
+            .fflhub-sending-packing-debug-toggle input{margin:0}
             .fflhub-sending-packing-form span{color:#646970}
+            .fflhub-sending-packing-debug-toggle span{color:#1d2327}
             .fflhub-sending-packing-notice{margin:0 0 16px}
             .fflhub-sending-table-wrap{background:#fff;border:1px solid #dcdcde;border-radius:8px;overflow:auto}
             .fflhub-sending-table{border:0}
