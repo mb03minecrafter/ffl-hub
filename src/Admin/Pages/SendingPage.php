@@ -180,7 +180,7 @@ final class SendingPage
             $order['wave_status'] = is_array($active_row) ? (string) ($active_row['status'] ?? '') : '';
             $order['wave_fail_reason'] = is_array($failure_row) ? (string) ($failure_row['fail_reason'] ?? '') : '';
             $order['wave_failed_at'] = is_array($failure_row) ? (string) ($failure_row['updated_at'] ?? '') : '';
-            $order['wave_selectable'] = empty($order['has_active_label']) && empty($order['debug_ready']) && !is_array($active_row);
+            $order['wave_selectable'] = empty($order['has_active_label']) && !is_array($active_row);
         }
         unset($order);
 
@@ -417,7 +417,7 @@ final class SendingPage
             <div class="fflhub-sending-wave-toolbar">
                 <div>
                     <h2><?php esc_html_e('Ready Orders', 'ffl-hub'); ?></h2>
-                    <p><?php echo esc_html(sprintf(__('%d order(s) are selectable. Ready orders are selected by default unless already labeled, already in a wave, or shown only by debug mode.', 'ffl-hub'), $selectable)); ?></p>
+                    <p><?php echo esc_html(sprintf(__('%d order(s) are selectable. Ready orders are selected by default unless already labeled or already in a wave.', 'ffl-hub'), $selectable)); ?></p>
                 </div>
                 <?php submit_button(__('Wave Orders For Sending', 'ffl-hub'), 'primary', 'fflhub_order_waver_create_wave', false, $selectable > 0 ? [] : ['disabled' => 'disabled']); ?>
             </div>
