@@ -294,7 +294,7 @@ final class ShipStationOrderMeta
             $label['locally_deactivated'] = true;
             $label['local_deactivated_at'] = current_time('mysql', true);
             $label['local_deactivation_context'] = $context;
-            $label['status'] = 'local_inactive';
+            $label['provider_label_status_before_local_deactivation'] = (string) ($label['status'] ?? $label['label_status'] ?? '');
             $label['label_status'] = 'local_inactive';
             $changed = true;
         }

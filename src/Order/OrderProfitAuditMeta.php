@@ -761,6 +761,7 @@ final class OrderProfitAuditMeta
     private static function is_ignored_label(array $label): bool
     {
         $status = strtoupper(trim((string) ($label['status'] ?? '')));
+        $locally_deactivated = !empty($label['locally_deactivated']);
         if (!empty($label['voided'])) {
             return true;
         }
@@ -769,7 +770,7 @@ final class OrderProfitAuditMeta
             return true;
         }
 
-        if ($status !== '' && !in_array($status, ['PURCHASED', 'COMPLETED', 'LABEL_PURCHASED'], true)) {
+        if ($status !== '' && !in_array($status, ['PURCHASED', 'COMPLETED', 'LABEL_PURCHASED'], true) && !$locally_deactivated) {
             return true;
         }
 
