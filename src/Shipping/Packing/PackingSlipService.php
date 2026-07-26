@@ -29,6 +29,34 @@ final class PackingSlipService
      */
     public function generate_for_label(WC_Order $order, array $label, int $package_index = 0)
     {
+        $document = $this->document_context_for_label($order, $label, $package_index);
+        if (is_wp_error($document)) {
+            return $document;
+        }
+
+        return $this->generate_for_package($order, $document['package'], $document['destination'], $document['meta']);
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     * @return array{body:string,content_type:string,filename:string}|WP_Error
+     */
+    public function generate_zpl_for_label(WC_Order $order, array $label, int $package_index = 0)
+    {
+        $document = $this->document_context_for_label($order, $label, $package_index);
+        if (is_wp_error($document)) {
+            return $document;
+        }
+
+        return $this->generate_zpl_for_package($order, $document['package'], $document['destination'], $document['meta']);
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     * @return array{package:ShippingPackage,destination:array<string,mixed>,meta:array<string,mixed>}|WP_Error
+     */
+    private function document_context_for_label(WC_Order $order, array $label, int $package_index = 0)
+    {
         $snapshot = is_array($label['shipment_snapshot'] ?? null) ? $label['shipment_snapshot'] : [];
         $packages = isset($snapshot['packages']) && is_array($snapshot['packages'])
             ? array_values($snapshot['packages'])
@@ -67,14 +95,18 @@ final class PackingSlipService
 
         $package = ShippingPackage::from_array($package_row, $items);
 
-        return $this->generate_for_package($order, $package, $destination, [
-            'label_id' => (string) ($label['label_id'] ?? ''),
-            'tracking_number' => (string) ($label['tracking_number'] ?? ''),
-            'carrier' => (string) ($label['carrier_nickname'] ?? $label['carrier_friendly_name'] ?? $label['carrier_code'] ?? ''),
-            'service' => (string) ($label['service_name'] ?? $label['service_code'] ?? ''),
-            'package_index' => $package_index + 1,
-            'package_count' => $package_count,
-        ]);
+        return [
+            'package' => $package,
+            'destination' => $destination,
+            'meta' => [
+                'label_id' => (string) ($label['label_id'] ?? ''),
+                'tracking_number' => (string) ($label['tracking_number'] ?? ''),
+                'carrier' => (string) ($label['carrier_nickname'] ?? $label['carrier_friendly_name'] ?? $label['carrier_code'] ?? ''),
+                'service' => (string) ($label['service_name'] ?? $label['service_code'] ?? ''),
+                'package_index' => $package_index + 1,
+                'package_count' => $package_count,
+            ],
+        ];
     }
 
     /**
@@ -133,6 +165,32 @@ final class PackingSlipService
             ]),
             'content_type' => 'text/html; charset=UTF-8',
             'filename' => $filename,
+        ];
+    }
+
+    /**
+     * Generate a printer-native 4x6 Zebra label for the packing slip. This is
+     * the format we can later hand directly to PrintNode alongside carrier ZPL.
+     *
+     * @param array<string,mixed> $destination
+     * @param array<string,mixed> $meta
+     * @return array{body:string,content_type:string,filename:string}
+     */
+    public function generate_zpl_for_package(?WC_Order $order, ShippingPackage $package, array $destination, array $meta = []): array
+    {
+        $package_row = $package->to_array();
+        $order_number = $order instanceof WC_Order ? (string) $order->get_order_number() : 'PREVIEW';
+        $package_index = max(1, (int) ($meta['package_index'] ?? 1));
+
+        return [
+            'body' => $this->render_zpl($order, $package_row, $destination, [
+                ...$meta,
+                'order_number' => $order_number,
+                'package_index' => $package_index,
+                'package_count' => max(1, (int) ($meta['package_count'] ?? 1)),
+            ]),
+            'content_type' => 'application/vnd.zebra-zpl',
+            'filename' => 'packing-slip-order-' . sanitize_file_name($order_number) . '-package-' . $package_index . '.zpl',
         ];
     }
 
@@ -368,6 +426,103 @@ final class PackingSlipService
 
     /**
      * @param array<string,mixed> $package
+     * @param array<string,mixed> $destination
+     * @param array<string,mixed> $meta
+     */
+    private function render_zpl(?WC_Order $order, array $package, array $destination, array $meta): string
+    {
+        $brand = get_bloginfo('name') ?: 'Deerford Defense';
+        $package_title = $this->package_title($package);
+        $package_detail = $this->package_detail($package);
+        $ship_to_lines = $this->address_lines($destination);
+        $customer_lines = $this->customer_lines($order);
+        $items = is_array($package['items'] ?? null) ? $package['items'] : [];
+
+        $zpl = [
+            '^XA',
+            '^CI28',
+            '^PW812',
+            '^LL1218',
+            '^LH0,0',
+            '^PR4',
+            '^MD10',
+        ];
+
+        $zpl[] = '^FO24,24^GB764,160,4^FS';
+        $zpl[] = self::zpl_field(44, 42, 'PACK IN', 24, 24, 500, 1);
+        $zpl[] = self::zpl_field(44, 76, $package_title, 42, 42, 500, 2, 4);
+        if ($package_detail !== '') {
+            $zpl[] = self::zpl_field(44, 154, $package_detail, 20, 20, 500, 1);
+        }
+        $zpl[] = self::zpl_field(590, 42, $brand, 24, 24, 180, 3);
+
+        $zpl[] = '^FO24,204^GB234,86,3^FS';
+        $zpl[] = self::zpl_field(42, 220, 'ORDER', 20, 20, 180, 1);
+        $zpl[] = self::zpl_field(42, 248, '#' . (string) ($meta['order_number'] ?? 'PREVIEW'), 34, 34, 180, 1);
+
+        $zpl[] = '^FO276,204^GB150,86,3^FS';
+        $zpl[] = self::zpl_field(294, 220, 'PKG', 20, 20, 100, 1);
+        $zpl[] = self::zpl_field(294, 248, (string) ($meta['package_index'] ?? 1) . '/' . (string) ($meta['package_count'] ?? 1), 34, 34, 100, 1);
+
+        $zpl[] = '^FO444,204^GB344,86,3^FS';
+        $zpl[] = self::zpl_field(462, 220, trim((string) ($meta['carrier'] ?? '')) ?: 'TRACKING', 20, 20, 280, 1);
+        $zpl[] = self::zpl_field(462, 248, trim((string) ($meta['tracking_number'] ?? '')) ?: 'PENDING', 24, 24, 280, 1);
+
+        $zpl[] = '^FO24,318^GB764,176,3^FS';
+        $zpl[] = self::zpl_field(44, 336, 'SHIP TO', 22, 22, 720, 1);
+        $y = 368;
+        foreach (array_slice($ship_to_lines, 0, 5) as $line) {
+            $zpl[] = self::zpl_field(44, $y, $line, 28, 28, 720, 1);
+            $y += 30;
+        }
+
+        $zpl[] = '^FO24,518^GB764,112,3^FS';
+        $zpl[] = self::zpl_field(44, 536, 'CUSTOMER', 20, 20, 720, 1);
+        $y = 564;
+        foreach (array_slice($customer_lines, 0, 3) as $line) {
+            $zpl[] = self::zpl_field(44, $y, $line, 24, 24, 720, 1);
+            $y += 26;
+        }
+
+        $zpl[] = self::zpl_field(24, 660, 'ITEMS TO PACK', 28, 28, 740, 1);
+        $zpl[] = '^FO24,696^GB764,3,3^FS';
+        $zpl[] = self::zpl_field(38, 712, 'QTY', 22, 22, 70, 1);
+        $zpl[] = self::zpl_field(112, 712, 'ITEM', 22, 22, 438, 1);
+        $zpl[] = self::zpl_field(558, 712, 'SKU / UPC', 22, 22, 210, 1);
+        $zpl[] = '^FO24,744^GB764,3,3^FS';
+
+        $y = 766;
+        if (empty($items)) {
+            $zpl[] = self::zpl_field(44, $y, 'No package item assignments found.', 26, 26, 720, 2);
+        }
+
+        foreach (array_slice($items, 0, 6) as $item) {
+            $item = is_array($item) ? $item : [];
+            $quantity = (string) max(0, (int) ($item['quantity'] ?? 0));
+            $name = (string) ($item['name'] ?? 'Order item');
+            $sku = trim((string) ($item['sku'] ?? '')) ?: '-';
+            $upc = trim((string) ($item['upc'] ?? '')) ?: '-';
+
+            $zpl[] = self::zpl_field(44, $y, $quantity, 34, 34, 50, 1);
+            $zpl[] = self::zpl_field(112, $y, $name, 24, 24, 430, 2, 2);
+            $zpl[] = self::zpl_field(558, $y, $sku, 20, 20, 210, 1);
+            $zpl[] = self::zpl_field(558, $y + 24, $upc, 20, 20, 210, 1);
+            $zpl[] = '^FO24,' . (string) ($y + 54) . '^GB764,2,2^FS';
+            $y += 64;
+        }
+
+        if (count($items) > 6) {
+            $zpl[] = self::zpl_field(44, 1150, '+' . (string) (count($items) - 6) . ' more item rows not shown.', 22, 22, 720, 1);
+        }
+
+        $zpl[] = self::zpl_field(24, 1168, 'Generated ' . current_time('mysql'), 18, 18, 740, 1);
+        $zpl[] = '^XZ';
+
+        return implode("\n", $zpl) . "\n";
+    }
+
+    /**
+     * @param array<string,mixed> $package
      */
     private function package_title(array $package): string
     {
@@ -532,6 +687,33 @@ final class PackingSlipService
         }
 
         return rtrim(rtrim(number_format($number, 2, '.', ''), '0'), '.');
+    }
+
+    private static function zpl_field(int $x, int $y, string $text, int $height, int $width, int $block_width, int $max_lines = 1, int $line_spacing = 0): string
+    {
+        $text = self::zpl_data($text);
+        $block_width = max(40, $block_width);
+        $max_lines = max(1, $max_lines);
+
+        return '^FO' . $x . ',' . $y
+            . '^A0N,' . $height . ',' . $width
+            . '^FB' . $block_width . ',' . $max_lines . ',' . $line_spacing . ',L,0'
+            . '^FH_^FD' . $text . '^FS';
+    }
+
+    private static function zpl_data(string $text): string
+    {
+        $text = html_entity_decode(wp_strip_all_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = function_exists('remove_accents') ? remove_accents($text) : $text;
+        $text = preg_replace('/[^\x20-\x7E]/', ' ', $text) ?: '';
+        $text = preg_replace('/\s+/', ' ', $text) ?: '';
+        $text = trim($text);
+
+        return strtr($text, [
+            '_' => '_5F',
+            '^' => '_5E',
+            '~' => '_7E',
+        ]);
     }
 
     /**

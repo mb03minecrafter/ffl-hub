@@ -254,8 +254,14 @@ final class ShipStationOrderMetaBox
             echo '<div class="fflhub-ss-label-actions">';
             echo '<span class="fflhub-ss-price">$' . esc_html(number_format((float) ($label['total_cost'] ?? 0), 2)) . '</span>';
             if ($label_id !== '') {
-                echo '<a class="button button-primary" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::print_label_with_slip_url($order, $label_id)) . '">' . esc_html__('Print Label + Slip', 'ffl-hub') . '</a>';
-                echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, false)) . '">' . esc_html__('Label Only', 'ffl-hub') . '</a>';
+                $label_format = strtolower(trim((string) ($label['label_format'] ?? '')));
+                if ($label_format === 'zpl') {
+                    echo '<a class="button button-primary" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::print_label_with_slip_url($order, $label_id)) . '">' . esc_html__('Label + Slip ZPL', 'ffl-hub') . '</a>';
+                    echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, false)) . '">' . esc_html__('Label ZPL Only', 'ffl-hub') . '</a>';
+                } else {
+                    echo '<a class="button button-primary" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, false)) . '">' . esc_html__('Label Only', 'ffl-hub') . '</a>';
+                    echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::packing_slip_zpl_url($order, $label_id, 0)) . '">' . esc_html__('Packing Slip ZPL', 'ffl-hub') . '</a>';
+                }
                 echo '<a class="button" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, true)) . '">' . esc_html__('Download', 'ffl-hub') . '</a>';
                 if (!$is_inactive) {
                     echo '<button type="button" class="button fflhub-ss-void-label" data-label-id="' . esc_attr($label_id) . '">' . esc_html__('Void', 'ffl-hub') . '</button>';
