@@ -221,6 +221,7 @@ final class PackingSlipService
         $ship_to_lines = $this->address_lines($destination);
         $customer_lines = $this->customer_lines($order);
         $items = is_array($package['items'] ?? null) ? $package['items'] : [];
+        $item_density_class = count($items) > 4 ? ' is-dense' : '';
         $generated_at = current_time('mysql');
 
         ob_start();
@@ -232,49 +233,59 @@ final class PackingSlipService
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title><?php echo esc_html('Packing Slip - Order ' . (string) ($meta['order_number'] ?? 'PREVIEW')); ?></title>
     <style>
-        @page { size: Letter; margin: .35in; }
+        @page { size: 4in 6in; margin: 0; }
         * { box-sizing: border-box; }
-        body { margin: 0; background: #f1f1f1; color: #111; font-family: Arial, Helvetica, sans-serif; }
-        .fflhub-slip { width: 8.5in; min-height: 11in; margin: 0 auto; background: #fff; padding: .36in; }
-        .no-print { margin: 0 auto; width: 8.5in; padding: 10px 0; text-align: right; }
-        .no-print button { border: 1px solid #111; background: #111; color: #fff; border-radius: 4px; padding: 9px 14px; font-weight: 700; cursor: pointer; }
-        .slip-head { display: grid; grid-template-columns: minmax(0, 1fr) 2.1in; gap: .25in; align-items: start; border-bottom: 4px solid #111; padding-bottom: .18in; }
-        .package-name { margin: 0; font-size: 34px; line-height: 1; font-weight: 900; text-transform: uppercase; letter-spacing: 0; }
-        .package-detail { margin-top: 8px; font-size: 15px; font-weight: 700; color: #333; }
-        .logo-wrap { min-height: .8in; text-align: right; }
-        .logo-wrap img { max-width: 2in; max-height: .82in; object-fit: contain; }
-        .logo-fallback { display: inline-block; border: 2px solid #111; padding: 10px 12px; font-size: 20px; font-weight: 900; text-transform: uppercase; }
-        .meta-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: .18in 0; }
-        .meta-box { border: 2px solid #111; padding: 8px 10px; min-height: .62in; }
-        .meta-box span { display: block; font-size: 10px; font-weight: 800; text-transform: uppercase; color: #555; }
-        .meta-box strong { display: block; margin-top: 3px; font-size: 18px; line-height: 1.1; }
-        .address-grid { display: grid; grid-template-columns: 1.2fr .8fr; gap: .16in; margin-bottom: .2in; }
-        .address-card { border: 2px solid #111; padding: 12px; min-height: 1.35in; }
-        .address-card h2 { margin: 0 0 8px; font-size: 13px; line-height: 1; text-transform: uppercase; color: #555; }
-        .address-card address, .address-card .lines { margin: 0; font-style: normal; font-size: 20px; line-height: 1.22; font-weight: 800; }
-        .items-title { margin: .16in 0 .08in; font-size: 18px; text-transform: uppercase; }
+        html, body { width: 4in; min-height: 6in; margin: 0; }
+        body { background: #f1f1f1; color: #111; font-family: Arial, Helvetica, sans-serif; }
+        .fflhub-slip { width: 4in; min-height: 6in; margin: 0 auto; background: #fff; padding: .11in; overflow: hidden; }
+        .no-print { width: 4in; margin: 0 auto; padding: 8px 0; text-align: right; }
+        .no-print button { border: 1px solid #111; background: #111; color: #fff; border-radius: 4px; padding: 7px 10px; font-size: 12px; font-weight: 700; cursor: pointer; }
+        .slip-head { display: grid; grid-template-columns: minmax(0, 1fr) .85in; gap: .08in; align-items: start; border-bottom: 2px solid #111; padding-bottom: .06in; }
+        .pack-label { display: block; margin-bottom: 2px; font-size: 8px; line-height: 1; font-weight: 900; text-transform: uppercase; color: #555; }
+        .package-name { margin: 0; font-size: 18px; line-height: .95; font-weight: 900; text-transform: uppercase; letter-spacing: 0; overflow-wrap: anywhere; }
+        .package-detail { margin-top: 3px; font-size: 8.5px; line-height: 1.15; font-weight: 800; color: #333; overflow-wrap: anywhere; }
+        .logo-wrap { min-height: .38in; text-align: right; }
+        .logo-wrap img { max-width: .82in; max-height: .38in; object-fit: contain; }
+        .logo-fallback { display: inline-block; border: 1px solid #111; padding: 4px 5px; font-size: 9px; line-height: 1; font-weight: 900; text-transform: uppercase; }
+        .meta-row { display: grid; grid-template-columns: .75in .62in minmax(0, 1fr); gap: 4px; margin: .055in 0; }
+        .meta-box { border: 1.5px solid #111; padding: 4px 5px; min-height: .35in; overflow: hidden; }
+        .meta-box span { display: block; font-size: 6.5px; line-height: 1; font-weight: 900; text-transform: uppercase; color: #555; }
+        .meta-box strong { display: block; margin-top: 2px; font-size: 12px; line-height: 1.05; font-weight: 900; overflow-wrap: anywhere; }
+        .meta-box.is-tracking strong { font-size: 8.5px; line-height: 1.12; }
+        .address-grid { display: grid; grid-template-columns: 1fr; gap: 4px; margin-bottom: .055in; }
+        .address-card { border: 1.5px solid #111; padding: 5px 6px; }
+        .address-card h2 { margin: 0 0 3px; font-size: 7px; line-height: 1; text-transform: uppercase; color: #555; }
+        .address-card address, .address-card .lines { margin: 0; font-style: normal; font-size: 10px; line-height: 1.12; font-weight: 900; overflow-wrap: anywhere; }
+        .address-card.is-customer .lines { font-size: 8.5px; line-height: 1.1; font-weight: 800; }
+        .items-title { margin: .055in 0 .035in; font-size: 10px; line-height: 1; text-transform: uppercase; }
         .item-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-        .item-table th { border: 2px solid #111; background: #111; color: #fff; padding: 8px; font-size: 12px; text-align: left; text-transform: uppercase; }
-        .item-table td { border: 2px solid #111; padding: 10px 8px; vertical-align: top; }
-        .qty { width: .78in; text-align: center; }
-        .qty strong { display: block; font-size: 34px; line-height: 1; }
-        .item-name { font-size: 22px; line-height: 1.08; font-weight: 900; }
-        .item-sub { margin-top: 6px; font-size: 13px; line-height: 1.25; color: #333; font-weight: 700; }
-        .small-col { width: 1.45in; font-size: 16px; font-weight: 800; }
-        .preview-note { margin-top: .18in; border-left: 4px solid #2271b1; background: #f0f6fc; padding: 9px 11px; color: #1d2327; font-size: 13px; font-weight: 700; }
-        .footer { margin-top: .22in; display: flex; justify-content: space-between; gap: 12px; border-top: 2px solid #111; padding-top: 8px; color: #555; font-size: 11px; font-weight: 700; }
+        .item-table th { border: 1.5px solid #111; background: #111; color: #fff; padding: 4px 5px; font-size: 7px; line-height: 1; text-align: left; text-transform: uppercase; }
+        .item-table td { border: 1.5px solid #111; padding: 5px 5px; vertical-align: top; }
+        .qty { width: .42in; text-align: center; }
+        .qty strong { display: block; font-size: 20px; line-height: 1; }
+        .item-name { font-size: 11px; line-height: 1.08; font-weight: 900; overflow-wrap: anywhere; }
+        .item-sub { margin-top: 3px; font-size: 7.5px; line-height: 1.15; color: #333; font-weight: 800; overflow-wrap: anywhere; }
+        .small-col { width: .68in; font-size: 8.5px; line-height: 1.12; font-weight: 900; overflow-wrap: anywhere; }
+        .is-dense .item-table td { padding: 4px; }
+        .is-dense .qty strong { font-size: 17px; }
+        .is-dense .item-name { font-size: 9.5px; }
+        .is-dense .item-sub { font-size: 6.8px; }
+        .is-dense .small-col { font-size: 7.4px; }
+        .preview-note { margin-top: .045in; border-left: 3px solid #2271b1; background: #f0f6fc; padding: 4px 5px; color: #1d2327; font-size: 7.5px; line-height: 1.15; font-weight: 800; }
+        .footer { margin-top: .055in; display: flex; justify-content: space-between; gap: 6px; border-top: 1.5px solid #111; padding-top: 4px; color: #555; font-size: 6.8px; line-height: 1.1; font-weight: 800; }
         @media print {
             body { background: #fff; }
             .no-print { display: none; }
-            .fflhub-slip { width: auto; min-height: auto; margin: 0; padding: 0; }
+            .fflhub-slip { width: 4in; min-height: 6in; margin: 0; }
         }
     </style>
 </head>
 <body>
-    <div class="no-print"><button type="button" onclick="window.print()">Print Packing Slip</button></div>
-    <main class="fflhub-slip">
+    <div class="no-print"><button type="button" onclick="window.print()">Print 4x6 Packing Slip</button></div>
+    <main class="fflhub-slip<?php echo esc_attr($item_density_class); ?>">
         <header class="slip-head">
             <div>
+                <span class="pack-label">Pack In</span>
                 <h1 class="package-name"><?php echo esc_html($package_title); ?></h1>
                 <?php if ($package_detail !== '') : ?>
                     <div class="package-detail"><?php echo esc_html($package_detail); ?></div>
@@ -291,9 +302,8 @@ final class PackingSlipService
 
         <section class="meta-row">
             <div class="meta-box"><span>Order</span><strong>#<?php echo esc_html((string) ($meta['order_number'] ?? 'PREVIEW')); ?></strong></div>
-            <div class="meta-box"><span>Package</span><strong><?php echo esc_html((string) ($meta['package_index'] ?? 1)); ?> / <?php echo esc_html((string) ($meta['package_count'] ?? 1)); ?></strong></div>
-            <div class="meta-box"><span>Carrier</span><strong><?php echo esc_html(trim((string) ($meta['carrier'] ?? '')) ?: 'Pending'); ?></strong></div>
-            <div class="meta-box"><span>Tracking</span><strong><?php echo esc_html(trim((string) ($meta['tracking_number'] ?? '')) ?: 'Pending'); ?></strong></div>
+            <div class="meta-box"><span>Pkg</span><strong><?php echo esc_html((string) ($meta['package_index'] ?? 1)); ?>/<?php echo esc_html((string) ($meta['package_count'] ?? 1)); ?></strong></div>
+            <div class="meta-box is-tracking"><span><?php echo esc_html(trim((string) ($meta['carrier'] ?? '')) ?: 'Tracking'); ?></span><strong><?php echo esc_html(trim((string) ($meta['tracking_number'] ?? '')) ?: 'Pending'); ?></strong></div>
         </section>
 
         <section class="address-grid">
@@ -301,7 +311,7 @@ final class PackingSlipService
                 <h2>Ship To</h2>
                 <address><?php echo wp_kses_post(implode('<br>', array_map('esc_html', $ship_to_lines))); ?></address>
             </div>
-            <div class="address-card">
+            <div class="address-card is-customer">
                 <h2>Customer</h2>
                 <div class="lines"><?php echo wp_kses_post(implode('<br>', array_map('esc_html', $customer_lines))); ?></div>
             </div>

@@ -48,7 +48,7 @@ final class ShippingPackingSlipsPage
 
             <h1><?php esc_html_e('Packing Slips', 'ffl-hub'); ?></h1>
             <p class="description">
-                <?php esc_html_e('Preview the print-ready packing slip template used by FFLHub label packages. This page is read-only and does not buy labels or modify orders.', 'ffl-hub'); ?>
+                <?php esc_html_e('Preview the 4x6 print-ready packing slip template used by FFLHub label packages. This page is read-only and does not buy labels or modify orders.', 'ffl-hub'); ?>
             </p>
 
             <section class="fflhub-shipping-card">
@@ -96,7 +96,7 @@ final class ShippingPackingSlipsPage
                     <div>
                         <h2><?php esc_html_e('Slip Preview', 'ffl-hub'); ?></h2>
                         <p class="description">
-                            <?php esc_html_e('Use the print button inside the preview to check browser print layout.', 'ffl-hub'); ?>
+                            <?php esc_html_e('Use the print button inside the preview to check 4x6 browser print layout.', 'ffl-hub'); ?>
                         </p>
                     </div>
                 </div>
@@ -118,7 +118,7 @@ final class ShippingPackingSlipsPage
             .fflhub-packing-slip-form label{display:flex;flex-direction:column;gap:4px;font-weight:600}
             .fflhub-packing-slip-form label span{color:#50575e;font-size:12px}
             .fflhub-packing-slip-form input[type="number"]{width:180px}
-            .fflhub-packing-slip-preview{display:block;width:100%;min-height:980px;border:1px solid #dcdcde;border-radius:6px;background:#fff}
+            .fflhub-packing-slip-preview{display:block;width:100%;min-height:760px;border:1px solid #dcdcde;border-radius:6px;background:#f1f1f1}
         </style>
         <?php
     }
