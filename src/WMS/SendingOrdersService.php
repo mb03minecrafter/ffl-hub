@@ -203,6 +203,7 @@ final class SendingOrdersService
             'ready_at' => '',
             'ready_to_ship' => false,
             'debug_ready' => false,
+            'selected_package' => '',
         ];
     }
 

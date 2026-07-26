@@ -138,10 +138,27 @@ final class SendingPage
             return;
         }
         ?>
-        <div class="fflhub-sending-grid">
-            <?php foreach ($orders as $order) : ?>
-                <?php $this->render_order_card($order); ?>
-            <?php endforeach; ?>
+        <div class="fflhub-sending-table-wrap">
+            <table class="widefat striped fflhub-sending-table">
+                <thead>
+                    <tr>
+                        <th><?php esc_html_e('Order', 'ffl-hub'); ?></th>
+                        <th><?php esc_html_e('Customer', 'ffl-hub'); ?></th>
+                        <th><?php esc_html_e('Ready', 'ffl-hub'); ?></th>
+                        <th><?php esc_html_e('Received', 'ffl-hub'); ?></th>
+                        <th><?php esc_html_e('Selected Package', 'ffl-hub'); ?></th>
+                        <th><?php esc_html_e('Label', 'ffl-hub'); ?></th>
+                        <th><?php esc_html_e('Distributor / PO', 'ffl-hub'); ?></th>
+                        <th><?php esc_html_e('Items', 'ffl-hub'); ?></th>
+                        <th><?php esc_html_e('Action', 'ffl-hub'); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($orders as $order) : ?>
+                        <?php $this->render_order_row($order); ?>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
         </div>
         <?php
     }
@@ -149,116 +166,128 @@ final class SendingPage
     /**
      * @param array<string,mixed> $order
      */
-    private function render_order_card(array $order): void
+    private function render_order_row(array $order): void
     {
         $has_label = !empty($order['has_active_label']);
         $debug_ready = !empty($order['debug_ready']);
         $label_class = $has_label ? 'is-labeled' : 'needs-label';
         $label_text = $has_label ? __('Label purchased', 'ffl-hub') : __('Needs label', 'ffl-hub');
+        $selected_package = trim((string) ($order['selected_package'] ?? ''));
         ?>
-        <section class="fflhub-sending-card <?php echo $debug_ready ? 'is-debug-ready' : ''; ?>">
-            <header class="fflhub-sending-card-head">
-                <div>
-                    <h2>
-                        <a href="<?php echo esc_url((string) ($order['order_edit_url'] ?? '')); ?>">
-                            #<?php echo esc_html((string) ($order['order_number'] ?? $order['order_id'] ?? '')); ?>
-                        </a>
-                    </h2>
-                    <p>
-                        <?php echo esc_html((string) ($order['customer_name'] ?? __('Unknown customer', 'ffl-hub'))); ?>
-                        <span><?php echo esc_html((string) ($order['order_created_at'] ?? '')); ?></span>
-                    </p>
-                </div>
-                <div class="fflhub-sending-pills">
+        <tr class="<?php echo $debug_ready ? 'is-debug-ready' : ''; ?>">
+            <td class="fflhub-sending-order-cell">
+                <a class="fflhub-sending-order-link" href="<?php echo esc_url((string) ($order['order_edit_url'] ?? '')); ?>">
+                    #<?php echo esc_html((string) ($order['order_number'] ?? $order['order_id'] ?? '')); ?>
+                </a>
+                <span><?php echo esc_html((string) ($order['order_created_at'] ?? '')); ?></span>
+            </td>
+            <td>
+                <?php echo esc_html((string) ($order['customer_name'] ?? __('Unknown customer', 'ffl-hub'))); ?>
+                <span class="fflhub-sending-muted"><?php echo esc_html((string) ($order['order_status'] ?? '-')); ?></span>
+            </td>
+            <td>
+                <div class="fflhub-sending-stack">
+                    <strong><?php echo esc_html($this->local_time((string) ($order['ready_at'] ?? ''))); ?></strong>
+                    <span><?php echo esc_html((string) ($order['readiness_source'] ?? '-')); ?></span>
                     <?php if ($debug_ready) : ?>
                         <span class="fflhub-sending-pill is-debug"><?php esc_html_e('Debug Ready', 'ffl-hub'); ?></span>
                     <?php endif; ?>
-                    <span class="fflhub-sending-pill <?php echo esc_attr($label_class); ?>">
-                        <?php echo esc_html($label_text); ?>
+                </div>
+            </td>
+            <td>
+                <strong><?php echo esc_html((string) ((int) ($order['received_units'] ?? 0) . ' / ' . (int) ($order['expected_units'] ?? 0))); ?></strong>
+                <?php if ((int) ($order['remaining_units'] ?? 0) > 0) : ?>
+                    <span class="fflhub-sending-muted">
+                        <?php echo esc_html(sprintf(__('%d open', 'ffl-hub'), (int) ($order['remaining_units'] ?? 0))); ?>
                     </span>
-                </div>
-            </header>
-
-            <?php if ($debug_ready) : ?>
-                <div class="fflhub-sending-debug-warning">
-                    <?php esc_html_e('Debug view only: this order is being shown as ready even though the received count has not satisfied the real receiving requirement.', 'ffl-hub'); ?>
-                </div>
-            <?php endif; ?>
-
-            <div class="fflhub-sending-meta">
-                <div><span><?php esc_html_e('Ready At', 'ffl-hub'); ?></span><strong><?php echo esc_html($this->local_time((string) ($order['ready_at'] ?? ''))); ?></strong></div>
-                <div><span><?php esc_html_e('Order Status', 'ffl-hub'); ?></span><strong><?php echo esc_html((string) ($order['order_status'] ?? '-')); ?></strong></div>
-                <div><span><?php esc_html_e('Units', 'ffl-hub'); ?></span><strong><?php echo esc_html((string) ((int) ($order['received_units'] ?? 0) . ' / ' . (int) ($order['expected_units'] ?? 0))); ?></strong></div>
-                <div><span><?php esc_html_e('Source', 'ffl-hub'); ?></span><strong><?php echo esc_html((string) ($order['readiness_source'] ?? '-')); ?></strong></div>
-            </div>
-
-            <div class="fflhub-sending-section">
-                <h3><?php esc_html_e('Inbound Orders', 'ffl-hub'); ?></h3>
-                <p>
-                    <strong><?php esc_html_e('Distributors:', 'ffl-hub'); ?></strong>
-                    <?php echo esc_html($this->join_or_dash((array) ($order['distributors'] ?? []))); ?>
-                </p>
-                <p>
-                    <strong><?php esc_html_e('POs:', 'ffl-hub'); ?></strong>
-                    <?php echo esc_html($this->join_or_dash((array) ($order['merchant_pos'] ?? []))); ?>
-                </p>
-                <p>
-                    <strong><?php esc_html_e('Inbound Tracking:', 'ffl-hub'); ?></strong>
-                    <?php echo esc_html($this->join_or_dash((array) ($order['inbound_tracking_numbers'] ?? []))); ?>
-                </p>
-            </div>
-
-            <div class="fflhub-sending-section">
-                <h3><?php esc_html_e('Items', 'ffl-hub'); ?></h3>
-                <table class="widefat striped fflhub-sending-items">
-                    <thead>
-                        <tr>
-                            <th><?php esc_html_e('Item', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('UPC', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('Received', 'ffl-hub'); ?></th>
-                            <th><?php esc_html_e('FFL', 'ffl-hub'); ?></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ((array) ($order['items'] ?? []) as $item) : ?>
-                            <?php if (!is_array($item)) { continue; } ?>
-                            <tr>
-                                <td><?php echo esc_html((string) ($item['name'] ?? '')); ?></td>
-                                <td><code><?php echo esc_html((string) ($item['upc'] ?? '')); ?></code></td>
-                                <td><?php echo esc_html((string) ((int) ($item['received_qty'] ?? 0) . ' / ' . (int) ($item['expected_qty'] ?? 0))); ?></td>
-                                <td><?php echo !empty($item['ffl_required']) ? esc_html__('Yes', 'ffl-hub') : esc_html__('No', 'ffl-hub'); ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-
-            <div class="fflhub-sending-section">
-                <h3><?php esc_html_e('Outbound Label', 'ffl-hub'); ?></h3>
-                <?php if (empty($order['active_labels'])) : ?>
-                    <p><?php esc_html_e('No active FFL Hub shipping label is stored for this order yet.', 'ffl-hub'); ?></p>
-                <?php else : ?>
-                    <ul class="fflhub-sending-labels">
-                        <?php foreach ((array) $order['active_labels'] as $label) : ?>
-                            <?php if (!is_array($label)) { continue; } ?>
-                            <li>
-                                <strong><?php echo esc_html((string) ($label['service'] ?? __('Label', 'ffl-hub'))); ?></strong>
-                                <span><?php echo esc_html((string) ($label['carrier'] ?? '')); ?></span>
-                                <?php if (!empty($label['tracking_number'])) : ?>
-                                    <code><?php echo esc_html((string) $label['tracking_number']); ?></code>
-                                <?php endif; ?>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
                 <?php endif; ?>
-                <p>
-                    <a class="button button-primary" href="<?php echo esc_url((string) ($order['order_edit_url'] ?? '')); ?>">
-                        <?php esc_html_e('Open Order / Shipping Labels', 'ffl-hub'); ?>
-                    </a>
-                </p>
-            </div>
-        </section>
+            </td>
+            <td class="fflhub-sending-package-cell">
+                <?php echo $selected_package !== '' ? esc_html($selected_package) : ''; ?>
+            </td>
+            <td>
+                <span class="fflhub-sending-pill <?php echo esc_attr($label_class); ?>">
+                    <?php echo esc_html($label_text); ?>
+                </span>
+                <?php $this->render_label_summary((array) ($order['active_labels'] ?? [])); ?>
+            </td>
+            <td>
+                <div class="fflhub-sending-stack">
+                    <span><?php echo esc_html($this->join_or_dash((array) ($order['distributors'] ?? []))); ?></span>
+                    <span><?php echo esc_html($this->join_or_dash((array) ($order['merchant_pos'] ?? []))); ?></span>
+                </div>
+            </td>
+            <td>
+                <?php $this->render_items_summary((array) ($order['items'] ?? [])); ?>
+            </td>
+            <td>
+                <a class="button button-primary" href="<?php echo esc_url((string) ($order['order_edit_url'] ?? '')); ?>">
+                    <?php esc_html_e('Open', 'ffl-hub'); ?>
+                </a>
+            </td>
+        </tr>
         <?php
+    }
+
+    /**
+     * @param array<int,mixed> $items
+     */
+    private function render_items_summary(array $items): void
+    {
+        if (empty($items)) {
+            echo '<span class="fflhub-sending-muted">-</span>';
+            return;
+        }
+
+        echo '<ul class="fflhub-sending-mini-list">';
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $qty = (int) ($item['expected_qty'] ?? 0);
+            $name = (string) ($item['name'] ?? '');
+            $upc = (string) ($item['upc'] ?? '');
+            echo '<li>';
+            echo '<strong>' . esc_html((string) $qty . 'x') . '</strong> ';
+            echo esc_html($name);
+            if ($upc !== '') {
+                echo ' <code>' . esc_html($upc) . '</code>';
+            }
+            if (!empty($item['ffl_required'])) {
+                echo ' <span class="fflhub-sending-ffl-tag">' . esc_html__('FFL', 'ffl-hub') . '</span>';
+            }
+            echo '</li>';
+        }
+        echo '</ul>';
+    }
+
+    /**
+     * @param array<int,mixed> $labels
+     */
+    private function render_label_summary(array $labels): void
+    {
+        if (empty($labels)) {
+            return;
+        }
+
+        echo '<ul class="fflhub-sending-mini-list">';
+        foreach ($labels as $label) {
+            if (!is_array($label)) {
+                continue;
+            }
+
+            $service = trim((string) ($label['service'] ?? ''));
+            $carrier = trim((string) ($label['carrier'] ?? ''));
+            $tracking = trim((string) ($label['tracking_number'] ?? ''));
+            echo '<li>';
+            echo esc_html(trim($carrier . ' ' . $service));
+            if ($tracking !== '') {
+                echo ' <code>' . esc_html($tracking) . '</code>';
+            }
+            echo '</li>';
+        }
+        echo '</ul>';
     }
 
     /**
@@ -303,32 +332,25 @@ final class SendingPage
             .fflhub-sending-filter .fflhub-sending-debug-toggle input{width:auto;margin-top:4px}
             .fflhub-sending-filter .fflhub-sending-debug-toggle span{font-weight:400;color:#50575e}
             .fflhub-sending-filter .fflhub-sending-debug-toggle strong{display:block;color:#1d2327}
-            .fflhub-sending-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
-            .fflhub-sending-card{background:#fff;border:1px solid #dcdcde;border-radius:10px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-            .fflhub-sending-card.is-debug-ready{border-color:#dba617;background:#fffdf5}
-            .fflhub-sending-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;border-bottom:1px solid #f0f0f1;padding-bottom:12px;margin-bottom:12px}
-            .fflhub-sending-card h2{margin:0;font-size:20px}
-            .fflhub-sending-card h2 a{text-decoration:none}
-            .fflhub-sending-card-head p{margin:4px 0 0;color:#50575e}
-            .fflhub-sending-card-head p span{display:block;font-size:12px;color:#787c82;margin-top:2px}
-            .fflhub-sending-pills{display:flex;align-items:flex-end;flex-direction:column;gap:6px}
+            .fflhub-sending-table-wrap{background:#fff;border:1px solid #dcdcde;border-radius:8px;overflow:auto}
+            .fflhub-sending-table{border:0}
+            .fflhub-sending-table th{white-space:nowrap}
+            .fflhub-sending-table th,.fflhub-sending-table td{vertical-align:top}
+            .fflhub-sending-table tr.is-debug-ready td{background:#fffdf5}
+            .fflhub-sending-order-cell{min-width:120px}
+            .fflhub-sending-order-link{display:block;font-size:16px;font-weight:700;text-decoration:none}
+            .fflhub-sending-order-cell span,.fflhub-sending-muted{display:block;color:#646970;font-size:12px;margin-top:3px}
+            .fflhub-sending-stack{display:grid;gap:3px}
             .fflhub-sending-pill{display:inline-flex;align-items:center;white-space:nowrap;border-radius:999px;padding:4px 10px;font-size:12px;font-weight:800;text-transform:uppercase}
             .fflhub-sending-pill.needs-label{background:#fff4e5;color:#8a4b00}
             .fflhub-sending-pill.is-labeled{background:#e6f6ed;color:#146c43}
             .fflhub-sending-pill.is-debug{background:#1d2327;color:#fff}
-            .fflhub-sending-debug-warning{background:#fff4e5;border:1px solid #f0c36d;border-radius:8px;padding:9px 10px;margin-bottom:12px;color:#5f4100;font-weight:700}
-            .fflhub-sending-meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:12px}
-            .fflhub-sending-meta div{background:#f6f7f7;border-radius:8px;padding:9px}
-            .fflhub-sending-meta span{display:block;color:#646970;font-size:11px;text-transform:uppercase;font-weight:700}
-            .fflhub-sending-meta strong{display:block;margin-top:3px}
-            .fflhub-sending-section{border-top:1px solid #f0f0f1;padding-top:12px;margin-top:12px}
-            .fflhub-sending-section h3{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.02em;color:#3c434a}
-            .fflhub-sending-section p{margin:5px 0}
-            .fflhub-sending-items th,.fflhub-sending-items td{font-size:12px}
-            .fflhub-sending-labels{margin:0}
-            .fflhub-sending-labels li{display:grid;grid-template-columns:1.2fr .9fr 1fr;gap:8px;margin:6px 0;align-items:center}
+            .fflhub-sending-package-cell{min-width:140px}
+            .fflhub-sending-mini-list{margin:0;display:grid;gap:5px}
+            .fflhub-sending-mini-list li{margin:0}
+            .fflhub-sending-ffl-tag{display:inline-flex;border-radius:999px;background:#e5f0ff;color:#0a4b78;font-size:10px;font-weight:800;padding:1px 5px;vertical-align:middle}
             .fflhub-sending-empty{background:#fff;border:1px dashed #c3c4c7;border-radius:8px;padding:18px;color:#646970}
-            @media (max-width:782px){.fflhub-sending-grid{grid-template-columns:1fr}.fflhub-sending-meta{grid-template-columns:1fr 1fr}.fflhub-sending-filter{display:block}.fflhub-sending-filter .button{margin-top:10px}.fflhub-sending-filter .fflhub-sending-debug-toggle{grid-template-columns:auto 1fr;margin-top:10px}}
+            @media (max-width:782px){.fflhub-sending-filter{display:block}.fflhub-sending-filter .button{margin-top:10px}.fflhub-sending-filter .fflhub-sending-debug-toggle{grid-template-columns:auto 1fr;margin-top:10px}}
         </style>
         <?php
     }
