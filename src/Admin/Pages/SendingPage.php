@@ -32,6 +32,7 @@ final class SendingPage
     public function register(): void
     {
         add_action('admin_menu', [$this, 'register_menu_page']);
+        add_action('admin_post_fflhub_sending_download_easypost_packet', [$this, 'download_easypost_print_packet']);
     }
 
     public function register_menu_page(): void
@@ -51,10 +52,6 @@ final class SendingPage
         WMSAdminPage::ensure_access();
 
         $batch_action_result = null;
-        $download_error = $this->maybe_download_batch_print_packet();
-        if (is_wp_error($download_error)) {
-            $batch_action_result = $this->action_result_from_error($download_error);
-        }
 
         $job_scan_limit = $this->read_job_scan_limit();
         $debug_ready = $this->read_bool('debug_ready');
@@ -179,30 +176,30 @@ final class SendingPage
         return $nonce !== '' && wp_verify_nonce($nonce, 'fflhub_sending_batch_action');
     }
 
-    private function maybe_download_batch_print_packet(): ?WP_Error
+    public function download_easypost_print_packet(): void
     {
-        if (!$this->should_handle_batch_action()) {
-            return null;
-        }
+        WMSAdminPage::ensure_access();
 
-        $action = sanitize_key(wp_unslash((string) ($_POST['fflhub_sending_batch_action'] ?? '')));
-        if ($action !== 'download_easypost_print_packet') {
-            return null;
+        $nonce = isset($_POST['fflhub_sending_batch_nonce'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_sending_batch_nonce']))
+            : '';
+        if ($nonce === '' || !wp_verify_nonce($nonce, 'fflhub_sending_batch_action')) {
+            wp_die(esc_html__('Invalid EasyPost batch download request.', 'ffl-hub'));
         }
 
         $batch_id = $this->posted_batch_id();
         if ($batch_id <= 0) {
-            return new WP_Error('fflhub_sending_batch_missing_id', 'Missing EasyPost batch ID.');
+            wp_die(esc_html__('Missing EasyPost batch ID.', 'ffl-hub'));
         }
 
         $document = (new EasyPostBatchLabelService())->print_packet($batch_id);
         if (is_wp_error($document)) {
-            return $document;
+            wp_die(esc_html($document->get_error_message()));
         }
 
         $body = (string) ($document['body'] ?? '');
         if ($body === '') {
-            return new WP_Error('fflhub_sending_batch_empty_document', 'The EasyPost print packet was empty.');
+            wp_die(esc_html__('The EasyPost print packet was empty.', 'ffl-hub'));
         }
 
         nocache_headers();
@@ -472,9 +469,15 @@ final class SendingPage
         $confirm = $action === 'submit_buy_easypost_batch'
             ? __('This will submit/buy EasyPost labels for this prepared batch. Continue?', 'ffl-hub')
             : '';
+        $form_action = $action === 'download_easypost_print_packet'
+            ? admin_url('admin-post.php')
+            : admin_url('admin.php?page=' . self::PAGE_SLUG);
         ?>
-        <form method="post" action="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>">
+        <form method="post" action="<?php echo esc_url($form_action); ?>">
             <?php wp_nonce_field('fflhub_sending_batch_action', 'fflhub_sending_batch_nonce'); ?>
+            <?php if ($action === 'download_easypost_print_packet') : ?>
+                <input type="hidden" name="action" value="fflhub_sending_download_easypost_packet" />
+            <?php endif; ?>
             <input type="hidden" name="fflhub_sending_batch_action" value="<?php echo esc_attr($action); ?>" />
             <input type="hidden" name="batch_id" value="<?php echo esc_attr((string) $batch_id); ?>" />
             <button
