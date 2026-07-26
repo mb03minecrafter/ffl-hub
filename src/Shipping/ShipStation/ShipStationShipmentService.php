@@ -297,6 +297,10 @@ final class ShipStationShipmentService
             $input['package_items'] ?? [],
             isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : []
         );
+        $package_details = self::package_details_from_input(
+            $input['packages'] ?? [],
+            $package_items
+        );
         $duplicate_rate_groups = isset($normalized['duplicate_rate_groups']) && is_array($normalized['duplicate_rate_groups'])
             ? $normalized['duplicate_rate_groups']
             : [];
@@ -310,7 +314,8 @@ final class ShipStationShipmentService
             (string) ($normalized['shipment_id'] ?? ''),
             implode(', ', $request_ids),
             $package_items,
-            $duplicate_rate_groups
+            $duplicate_rate_groups,
+            $package_details
         );
 
         $result = [
@@ -393,6 +398,12 @@ final class ShipStationShipmentService
                     isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : []
                 );
             }
+            if (is_array($shipment_input) && array_key_exists('packages', $shipment_input)) {
+                $pending['package_details'] = self::package_details_from_input(
+                    $shipment_input['packages'],
+                    is_array($pending['package_items'] ?? null) ? $pending['package_items'] : []
+                );
+            }
             if (!is_array($rated)) {
                 $selected_rate = isset($input['selected_rate']) && is_array($input['selected_rate']) ? $input['selected_rate'] : [];
                 if ((string) ($selected_rate['rate_id'] ?? '') !== $rate_id) {
@@ -415,6 +426,7 @@ final class ShipStationShipmentService
                     'rates' => [$selected_rate],
                     'invalid_rates' => [],
                     'package_items' => $pending['package_items'] ?? [],
+                    'package_details' => $pending['package_details'] ?? [],
                 ];
             }
 
@@ -439,6 +451,9 @@ final class ShipStationShipmentService
                     $child_pending['shipment_id'] = (string) ($child_rated['shipment_id'] ?? '');
                     $child_pending['package_items'] = [
                         is_array($pending['package_items'][$package_index] ?? null) ? $pending['package_items'][$package_index] : [],
+                    ];
+                    $child_pending['package_details'] = [
+                        is_array($pending['package_details'][$package_index] ?? null) ? $pending['package_details'][$package_index] : [],
                     ];
 
                     $label = ShipStationOrderMeta::normalize_purchased_label(
@@ -2106,6 +2121,62 @@ final class ShipStationShipmentService
         }
 
         return $packages;
+    }
+
+    /**
+     * Save the UI/package DTO information we need for packing slips without
+     * sending that extra data to ShipStation or EasyPost.
+     *
+     * @param mixed $input
+     * @param array<int,array<int,array{item_id:int,quantity:int}>> $package_item_assignments
+     * @return array<int,array<string,mixed>>
+     */
+    private static function package_details_from_input($input, array $package_item_assignments): array
+    {
+        if (!is_array($input)) {
+            return [];
+        }
+
+        $details = [];
+        foreach (array_values($input) as $index => $row) {
+            if (!is_array($row)) {
+                $details[] = [];
+                continue;
+            }
+
+            $weight = is_array($row['weight'] ?? null) ? $row['weight'] : [];
+            $dimensions = is_array($row['dimensions'] ?? null) ? $row['dimensions'] : [];
+            $insured = is_array($row['insured_value'] ?? null) ? $row['insured_value'] : [];
+            $package_code = sanitize_text_field((string) ($row['package_code'] ?? 'package'));
+            $package_code = $package_code !== '' ? $package_code : 'package';
+
+            $details[] = [
+                'preset_id' => sanitize_key((string) ($row['preset_id'] ?? '')),
+                'preset_name' => sanitize_text_field((string) ($row['preset_name'] ?? '')),
+                'package_kind' => sanitize_key((string) ($row['package_kind'] ?? $row['kind'] ?? '')),
+                'package_code' => $package_code,
+                'content_weight_oz' => self::round_decimal(max(0.0, (float) ($row['content_weight_oz'] ?? 0)), 2),
+                'package_weight_oz' => self::round_decimal(max(0.0, (float) ($row['package_weight_oz'] ?? 0)), 2),
+                'auto_packed_shape' => !empty($row['auto_packed_shape']) ? 1 : 0,
+                'weight' => [
+                    'value' => self::round_decimal(max(0.0, (float) ($weight['value'] ?? 0)), 2),
+                    'unit' => self::choice((string) ($weight['unit'] ?? 'ounce'), ['ounce', 'pound', 'gram', 'kilogram'], 'ounce'),
+                ],
+                'dimensions' => [
+                    'unit' => self::choice((string) ($dimensions['unit'] ?? 'inch'), ['inch', 'centimeter'], 'inch'),
+                    'length' => self::round_decimal(max(0.0, (float) ($dimensions['length'] ?? 0)), 2),
+                    'width' => self::round_decimal(max(0.0, (float) ($dimensions['width'] ?? 0)), 2),
+                    'height' => self::round_decimal(max(0.0, (float) ($dimensions['height'] ?? 0)), 2),
+                ],
+                'insured_value' => [
+                    'currency' => strtolower(sanitize_text_field((string) ($insured['currency'] ?? 'usd'))),
+                    'amount' => self::round_decimal(max(0.0, (float) ($insured['amount'] ?? 0)), 2),
+                ],
+                'items' => is_array($package_item_assignments[$index] ?? null) ? $package_item_assignments[$index] : [],
+            ];
+        }
+
+        return $details;
     }
 
     /**

@@ -89,7 +89,8 @@ final class ShipStationOrderMeta
         string $shipment_id,
         string $rate_request_id,
         array $package_items = [],
-        array $duplicate_rate_groups = []
+        array $duplicate_rate_groups = [],
+        array $package_details = []
     ): void {
         $payload = [
             'created_at' => current_time('mysql', true),
@@ -98,6 +99,7 @@ final class ShipStationOrderMeta
             'shipment_id' => $shipment_id,
             'rate_request_id' => $rate_request_id,
             'package_items' => $package_items,
+            'package_details' => $package_details,
             'duplicate_rate_groups' => $duplicate_rate_groups,
             'rates' => $rates,
             'invalid_rates' => $invalid_rates,
@@ -213,6 +215,7 @@ final class ShipStationOrderMeta
             'ship_date' => (string) ($api_label['ship_date'] ?? ''),
             'shipment_snapshot' => $pending['shipment_snapshot'] ?? [],
             'package_items' => is_array($pending['package_items'] ?? null) ? $pending['package_items'] : [],
+            'package_details' => is_array($pending['package_details'] ?? null) ? $pending['package_details'] : [],
             'api_request_id' => $request_id,
             'voided' => !empty($api_label['voided']),
             'voided_at' => (string) ($api_label['voided_at'] ?? ''),

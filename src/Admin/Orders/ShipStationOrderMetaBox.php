@@ -253,6 +253,7 @@ final class ShipStationOrderMetaBox
             if ($label_id !== '') {
                 echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, false)) . '">' . esc_html__('Print / Open', 'ffl-hub') . '</a>';
                 echo '<a class="button" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, true)) . '">' . esc_html__('Download', 'ffl-hub') . '</a>';
+                $this->render_packing_slip_links($order, $label, $label_id);
                 if (!$is_voided) {
                     echo '<button type="button" class="button fflhub-ss-void-label" data-label-id="' . esc_attr($label_id) . '">' . esc_html__('Void', 'ffl-hub') . '</button>';
                 }
@@ -261,6 +262,46 @@ final class ShipStationOrderMetaBox
             echo '</div>';
         }
         echo '</div></section>';
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     */
+    private function render_packing_slip_links(WC_Order $order, array $label, string $label_id): void
+    {
+        $package_count = self::label_package_count($label);
+        echo '<div class="fflhub-ss-slip-actions">';
+        if ($package_count <= 1) {
+            echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::packing_slip_url($order, $label_id, 0)) . '">' . esc_html__('Packing Slip', 'ffl-hub') . '</a>';
+        } else {
+            for ($package_index = 0; $package_index < $package_count; $package_index++) {
+                echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::packing_slip_url($order, $label_id, $package_index)) . '">' . esc_html(sprintf(
+                    /* translators: %d is the package number. */
+                    __('Slip %d', 'ffl-hub'),
+                    $package_index + 1
+                )) . '</a>';
+            }
+        }
+        echo '</div>';
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     */
+    private static function label_package_count(array $label): int
+    {
+        $snapshot = is_array($label['shipment_snapshot'] ?? null) ? $label['shipment_snapshot'] : [];
+        $packages = isset($snapshot['packages']) && is_array($snapshot['packages'])
+            ? $snapshot['packages']
+            : [];
+        $details = isset($label['package_details']) && is_array($label['package_details'])
+            ? $label['package_details']
+            : [];
+        $items = isset($label['package_items']) && is_array($label['package_items'])
+            ? $label['package_items']
+            : [];
+
+        return max(1, count($packages), count($details), count($items));
     }
 
     /**

@@ -47,6 +47,8 @@
   function readPackages(panel) {
     var rows = [];
     panel.querySelectorAll('.fflhub-ss-package-row').forEach(function (row) {
+      var presetSelect = row.querySelector('.fflhub-ss-package-preset');
+      var preset = presetSelect && presetSelect.value ? packagePreset(panel, presetSelect.value) : null;
       var pkg = {
         weight: { unit: 'ounce' },
         dimensions: { unit: 'inch' },
@@ -59,6 +61,17 @@
         }
         setNested(pkg, field.dataset.field, value);
       });
+      if (presetSelect && presetSelect.value) {
+        pkg.preset_id = presetSelect.value;
+      }
+      if (preset) {
+        pkg.preset_name = preset.name || '';
+        pkg.package_kind = preset.kind || preset.type || '';
+      }
+      var contentWeight = numericInput(row, 'content');
+      var packageWeight = numericInput(row, 'package');
+      pkg.content_weight_oz = contentWeight ? Number(contentWeight.value || 0) : 0;
+      pkg.package_weight_oz = packageWeight ? Number(packageWeight.value || 0) : 0;
       if (row.dataset.fflhubAutoPackedShape === '1') {
         pkg.auto_packed_shape = true;
       }

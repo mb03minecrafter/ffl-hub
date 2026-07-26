@@ -77,6 +77,49 @@ final class ShippingPackage implements JsonSerializable
     }
 
     /**
+     * Rehydrate a package DTO from a saved UI/package snapshot.
+     *
+     * @param array<string,mixed> $package
+     * @param array<int,array<string,mixed>> $items
+     */
+    public static function from_array(array $package, array $items = []): self
+    {
+        $weight = is_array($package['weight'] ?? null) ? $package['weight'] : [];
+        $dimensions = is_array($package['dimensions'] ?? null) ? $package['dimensions'] : [];
+        $insured = is_array($package['insured_value'] ?? null) ? $package['insured_value'] : [];
+        $item_rows = !empty($items) ? $items : (is_array($package['items'] ?? null) ? $package['items'] : []);
+        $assignments = [];
+
+        foreach ($item_rows as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $assignment = ShippingPackageItemAssignment::from_packed_item_row($item);
+            if (($assignment->assignment_array()['item_id'] ?? 0) > 0 && ($assignment->assignment_array()['quantity'] ?? 0) > 0) {
+                $assignments[] = $assignment;
+            }
+        }
+
+        return new self(
+            (string) ($package['preset_id'] ?? ''),
+            (string) ($package['preset_name'] ?? ''),
+            (string) ($package['package_kind'] ?? $package['kind'] ?? 'box'),
+            (string) ($package['package_code'] ?? 'package'),
+            self::money((float) ($package['content_weight_oz'] ?? 0.0)),
+            self::money((float) ($package['package_weight_oz'] ?? 0.0)),
+            self::money((float) ($weight['value'] ?? 0.0)),
+            self::dimension((float) ($dimensions['length'] ?? 0.0)),
+            self::dimension((float) ($dimensions['width'] ?? 0.0)),
+            self::dimension((float) ($dimensions['height'] ?? 0.0)),
+            self::money((float) ($insured['amount'] ?? 0.0)),
+            strtolower(trim((string) ($insured['currency'] ?? 'usd'))) ?: 'usd',
+            $assignments,
+            is_array($package['packing'] ?? null) ? $package['packing'] : []
+        );
+    }
+
+    /**
      * @return array<int,array{item_id:int,quantity:int}>
      */
     public function assignment_array(): array

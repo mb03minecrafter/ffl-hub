@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Shipping\ShipStation;
 
 use FFLHub\FFL\Tables\FFLTable;
+use FFLHub\Shipping\Packing\PackingSlipService;
 use WC_Order;
 use WP_Error;
 use WP_REST_Request;
@@ -26,6 +27,7 @@ final class ShipStationRestController
         self::$ffl_table = $ffl_table;
         add_action('rest_api_init', [__CLASS__, 'register_routes']);
         add_action('admin_post_fflhub_shipstation_download_label', [__CLASS__, 'download_label']);
+        add_action('admin_post_fflhub_shipstation_packing_slip', [__CLASS__, 'packing_slip']);
     }
 
     public static function register_routes(): void
@@ -205,9 +207,64 @@ final class ShipStationRestController
         return add_query_arg($args, admin_url('admin-post.php'));
     }
 
+    public static function packing_slip(): void
+    {
+        if (!current_user_can('manage_woocommerce')) {
+            wp_die(esc_html__('You do not have permission to print this packing slip.', 'ffl-hub'), '', ['response' => 403]);
+        }
+
+        $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
+        $label_id = isset($_GET['label_id']) ? sanitize_text_field(wp_unslash((string) $_GET['label_id'])) : '';
+        $package_index = isset($_GET['package_index']) ? max(0, absint($_GET['package_index'])) : 0;
+        $nonce = isset($_GET['_wpnonce']) ? sanitize_text_field(wp_unslash((string) $_GET['_wpnonce'])) : '';
+        if ($order_id <= 0 || $label_id === '' || !wp_verify_nonce($nonce, self::packing_slip_nonce_action($order_id, $label_id, $package_index))) {
+            wp_die(esc_html__('Invalid packing slip request.', 'ffl-hub'), '', ['response' => 400]);
+        }
+
+        $order = wc_get_order($order_id);
+        if (!($order instanceof WC_Order)) {
+            wp_die(esc_html__('Order not found.', 'ffl-hub'), '', ['response' => 404]);
+        }
+
+        $label = ShipStationOrderMeta::find_label($order, $label_id);
+        if (!is_array($label)) {
+            wp_die(esc_html__('Shipping label not found.', 'ffl-hub'), '', ['response' => 404]);
+        }
+
+        $slip = (new PackingSlipService())->generate_for_label($order, $label, $package_index);
+        if (is_wp_error($slip)) {
+            wp_die(esc_html($slip->get_error_message()), '', ['response' => 500]);
+        }
+
+        nocache_headers();
+        header('Content-Type: ' . (string) ($slip['content_type'] ?? 'text/html; charset=UTF-8'));
+        header('Content-Disposition: inline; filename="' . sanitize_file_name((string) ($slip['filename'] ?? 'packing-slip.html')) . '"');
+        echo (string) ($slip['body'] ?? ''); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+        exit;
+    }
+
+    public static function packing_slip_url(WC_Order $order, string $label_id, int $package_index = 0): string
+    {
+        $order_id = (int) $order->get_id();
+        $package_index = max(0, $package_index);
+
+        return add_query_arg([
+            'action' => 'fflhub_shipstation_packing_slip',
+            'order_id' => $order_id,
+            'label_id' => $label_id,
+            'package_index' => $package_index,
+            '_wpnonce' => wp_create_nonce(self::packing_slip_nonce_action($order_id, $label_id, $package_index)),
+        ], admin_url('admin-post.php'));
+    }
+
     private static function download_nonce_action(int $order_id, string $label_id): string
     {
         return 'fflhub_shipstation_download_label_' . $order_id . '_' . $label_id;
+    }
+
+    private static function packing_slip_nonce_action(int $order_id, string $label_id, int $package_index): string
+    {
+        return 'fflhub_shipstation_packing_slip_' . $order_id . '_' . $label_id . '_' . $package_index;
     }
 
     /**

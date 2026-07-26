@@ -100,6 +100,7 @@ final class ShippingDashboardPage
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::SETTINGS_SLUG)); ?>"><?php esc_html_e('Settings', 'ffl-hub'); ?></a>
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::PACKAGE_PRESETS_SLUG)); ?>"><?php esc_html_e('Package Presets', 'ffl-hub'); ?></a>
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::PACKAGE_AUDIT_SLUG)); ?>"><?php esc_html_e('Package Audit', 'ffl-hub'); ?></a>
+                    <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::PACKING_SLIPS_SLUG)); ?>"><?php esc_html_e('Packing Slips', 'ffl-hub'); ?></a>
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::SHIP_FROM_SLUG)); ?>"><?php esc_html_e('Ship-From Locations', 'ffl-hub'); ?></a>
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::SHIPSTATION_SLUG)); ?>"><?php esc_html_e('ShipStation API', 'ffl-hub'); ?></a>
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . ShippingAdminPage::EASYPOST_SLUG)); ?>"><?php esc_html_e('EasyPost', 'ffl-hub'); ?></a>
