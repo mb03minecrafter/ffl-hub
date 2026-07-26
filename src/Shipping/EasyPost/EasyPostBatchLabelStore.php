@@ -25,6 +25,7 @@ final class EasyPostBatchLabelStore
     public const STATUS_LABEL_GENERATING = 'label_generating';
     public const STATUS_LABEL_GENERATED = 'label_generated';
     public const STATUS_LABELS_SAVED = 'labels_saved';
+    public const STATUS_PARTIAL_LABELS_SAVED = 'partial_labels_saved';
     public const STATUS_FAILED = 'failed';
 
     public static function table_name(): string

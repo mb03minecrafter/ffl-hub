@@ -298,12 +298,21 @@ final class SendingPage
                 (int) ($stats['packages_prepared'] ?? $batch['item_count'] ?? 0)
             );
         } elseif ($action === 'submit_buy_easypost_batch') {
-            $message = sprintf(
-                __('EasyPost batch #%1$d submitted/buy requested. Current status: %2$s. Labels saved: %3$d.', 'ffl-hub'),
-                (int) ($batch['id'] ?? 0),
-                $status,
-                (int) ($response['labels_saved'] ?? 0)
-            );
+            if ((string) ($response['fallback'] ?? '') === 'individual_shipments') {
+                $message = sprintf(
+                    __('EasyPost batch #%1$d could not be batch-bought, so FFL Hub bought the prepared shipments individually. Current status: %2$s. Labels saved: %3$d.', 'ffl-hub'),
+                    (int) ($batch['id'] ?? 0),
+                    $status,
+                    (int) ($response['labels_saved'] ?? 0)
+                );
+            } else {
+                $message = sprintf(
+                    __('EasyPost batch #%1$d submitted/buy requested. Current status: %2$s. Labels saved: %3$d.', 'ffl-hub'),
+                    (int) ($batch['id'] ?? 0),
+                    $status,
+                    (int) ($response['labels_saved'] ?? 0)
+                );
+            }
         } else {
             $message = sprintf(
                 __('EasyPost batch #%1$d refreshed. Current status: %2$s. Labels saved: %3$d.', 'ffl-hub'),
@@ -321,6 +330,9 @@ final class SendingPage
                     ': ' . (string) ($problem['message'] ?? '')
                 );
             }
+        }
+        foreach (array_slice((array) ($response['errors'] ?? []), 0, 8) as $error) {
+            $details[] = (string) $error;
         }
 
         return [

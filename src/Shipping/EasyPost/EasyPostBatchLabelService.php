@@ -223,9 +223,27 @@ final class EasyPostBatchLabelService
             ];
         }
 
+        $items = $this->merge_remote_shipments_into_items(
+            is_array($batch['items'] ?? null) ? $batch['items'] : [],
+            is_array($remote['shipments'] ?? null) ? $remote['shipments'] : []
+        );
+        if (!empty($items)) {
+            EasyPostBatchLabelStore::update($local_batch_id, [
+                'items_json' => $items,
+                'response_json' => $remote,
+                'status' => $this->local_status_from_easypost($remote_state),
+                'label_url' => (string) ($remote['label_url'] ?? ''),
+            ]);
+            $batch = EasyPostBatchLabelStore::get($local_batch_id) ?? array_merge($batch, ['items' => $items]);
+        }
+
         if ($remote_state === 'created') {
             $bought = $this->client->buy_batch($provider_batch_id);
             if (is_wp_error($bought)) {
+                if ($this->is_batch_postage_not_allowed($bought)) {
+                    return $this->buy_items_individually($local_batch_id, $batch, $provider_batch_id, $bought);
+                }
+
                 EasyPostBatchLabelStore::update($local_batch_id, [
                     'status' => EasyPostBatchLabelStore::STATUS_FAILED,
                     'error_message' => $bought->get_error_message(),
@@ -337,7 +355,19 @@ final class EasyPostBatchLabelService
                 continue;
             }
 
-            $shipment_id = trim((string) ($item['batch_shipment_id'] ?? ''));
+            $direct_label_url = trim((string) ($item['label_pdf_url'] ?? ''));
+            if ($direct_label_url !== '') {
+                $label_pdf = $this->client->download_label($direct_label_url);
+                if (is_wp_error($label_pdf)) {
+                    continue;
+                }
+
+                $documents[] = (string) ($label_pdf['body'] ?? '');
+                $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
+                continue;
+            }
+
+            $shipment_id = trim((string) ($item['purchased_shipment_id'] ?? $item['batch_shipment_id'] ?? ''));
             if ($shipment_id === '') {
                 continue;
             }
@@ -363,23 +393,7 @@ final class EasyPostBatchLabelService
             }
 
             $documents[] = (string) ($label_pdf['body'] ?? '');
-
-            $package = is_array($item['package'] ?? null) ? $item['package'] : [];
-            $package_items = is_array($item['package_items'] ?? null) ? $item['package_items'] : [];
-            $shipment_snapshot = is_array($item['shipment'] ?? null) ? $item['shipment'] : [];
-            $destination = is_array($shipment_snapshot['ship_to'] ?? null) ? $shipment_snapshot['ship_to'] : [];
-            $slip = $slip_service->generate_pdf_for_package(
-                $order,
-                ShippingPackage::from_array($package, $package_items),
-                $destination,
-                [
-                    'package_index' => ((int) ($item['package_index'] ?? 0)) + 1,
-                    'package_count' => $this->package_count_for_order((array) ($batch['items'] ?? []), (int) $order->get_id()),
-                ]
-            );
-            if (!is_wp_error($slip)) {
-                $documents[] = (string) ($slip['body'] ?? '');
-            }
+            $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
         }
 
         if (empty($documents)) {
@@ -393,6 +407,36 @@ final class EasyPostBatchLabelService
             $documents,
             'easypost-batch-' . (int) ($batch['id'] ?? $local_batch_id) . '-labels-and-packing-slips.pdf'
         );
+    }
+
+    /**
+     * @param string[] $documents
+     * @param array<string,mixed> $item
+     * @param array<int,array<string,mixed>> $batch_items
+     */
+    private function append_packing_slip_document(
+        array &$documents,
+        PackingSlipService $slip_service,
+        WC_Order $order,
+        array $item,
+        array $batch_items
+    ): void {
+        $package = is_array($item['package'] ?? null) ? $item['package'] : [];
+        $package_items = is_array($item['package_items'] ?? null) ? $item['package_items'] : [];
+        $shipment_snapshot = is_array($item['shipment'] ?? null) ? $item['shipment'] : [];
+        $destination = is_array($shipment_snapshot['ship_to'] ?? null) ? $shipment_snapshot['ship_to'] : [];
+        $slip = $slip_service->generate_pdf_for_package(
+            $order,
+            ShippingPackage::from_array($package, $package_items),
+            $destination,
+            [
+                'package_index' => ((int) ($item['package_index'] ?? 0)) + 1,
+                'package_count' => $this->package_count_for_order($batch_items, (int) $order->get_id()),
+            ]
+        );
+        if (!is_wp_error($slip)) {
+            $documents[] = (string) ($slip['body'] ?? '');
+        }
     }
 
     /**
@@ -639,6 +683,165 @@ final class EasyPostBatchLabelService
     }
 
     /**
+     * EasyPost can allow batch creation while refusing the batch-wide postage
+     * purchase for account/postage-risk reasons. In that case the prepared
+     * packages are still valid EasyPost Shipments with selected rates, so we can
+     * buy those shipments one by one and keep the WMS print packet flow moving.
+     *
+     * @param array<string,mixed> $batch
+     * @return array<string,mixed>|WP_Error
+     */
+    private function buy_items_individually(int $local_batch_id, array $batch, string $provider_batch_id, WP_Error $batch_error)
+    {
+        $items = is_array($batch['items'] ?? null) ? $batch['items'] : [];
+        if (empty($items)) {
+            return $batch_error;
+        }
+
+        $saved = 0;
+        $errors = [];
+        $package_counts = [];
+        foreach ($items as $item) {
+            $order_id = (int) (is_array($item) ? ($item['order_id'] ?? 0) : 0);
+            if ($order_id > 0) {
+                $package_counts[$order_id] = (int) ($package_counts[$order_id] ?? 0) + 1;
+            }
+        }
+
+        foreach ($items as &$item) {
+            if (!is_array($item) || !empty($item['label_saved'])) {
+                continue;
+            }
+
+            $order = wc_get_order((int) ($item['order_id'] ?? 0));
+            if (!($order instanceof WC_Order)) {
+                $item['label_error'] = 'Woo order could not be loaded.';
+                $errors[] = '#' . (string) ($item['order_number'] ?? $item['order_id'] ?? '-') . ': Woo order could not be loaded.';
+                continue;
+            }
+
+            $rate = is_array($item['rate'] ?? null) ? $item['rate'] : [];
+            $rate_id = trim((string) ($rate['rate_id'] ?? ''));
+            $shipment_id = trim((string) ($rate['shipment_id'] ?? $item['rated_shipment_id'] ?? ''));
+            if ($rate_id === '' || $shipment_id === '') {
+                $item['label_error'] = 'Prepared EasyPost shipment/rate ID was missing.';
+                $errors[] = '#' . (string) $order->get_order_number() . ': Prepared EasyPost shipment/rate ID was missing.';
+                continue;
+            }
+
+            $api_label = $this->provider->purchase_label_from_rate($rate_id, [
+                'shipment_id' => $shipment_id,
+                'label_format' => EasyPostOptions::label_format(),
+                'label_layout' => EasyPostOptions::label_layout(),
+                'confirmation' => EasyPostOptions::confirmation(),
+            ]);
+            if (is_wp_error($api_label)) {
+                $item['label_error'] = $api_label->get_error_message();
+                $errors[] = '#' . (string) $order->get_order_number() . ': ' . $api_label->get_error_message();
+                continue;
+            }
+
+            if ($this->save_api_label_for_item(
+                $item,
+                $order,
+                (array) $api_label,
+                $rate,
+                $provider_batch_id,
+                max(1, (int) ($package_counts[(int) $order->get_id()] ?? 1))
+            )) {
+                $item['batch_status'] = 'postage_purchased';
+                $item['batch_message'] = 'Purchased individually after EasyPost refused batch postage purchase.';
+                $item['batch_purchase_fallback'] = true;
+                $saved++;
+            }
+        }
+        unset($item);
+
+        $status = $this->all_items_have_saved_labels($items)
+            ? EasyPostBatchLabelStore::STATUS_LABELS_SAVED
+            : ($saved > 0 ? EasyPostBatchLabelStore::STATUS_PARTIAL_LABELS_SAVED : EasyPostBatchLabelStore::STATUS_FAILED);
+        $error_message = 'EasyPost refused batch postage purchase; individual shipment fallback was used.';
+        if (!empty($errors)) {
+            $error_message .= ' ' . implode(' ', array_slice($errors, 0, 6));
+        }
+
+        EasyPostBatchLabelStore::update($local_batch_id, [
+            'status' => $status,
+            'items_json' => $items,
+            'response_json' => [
+                'fallback' => 'individual_shipments',
+                'batch_purchase_error' => [
+                    'message' => $batch_error->get_error_message(),
+                    'data' => $batch_error->get_error_data(),
+                ],
+                'labels_saved' => $saved,
+                'errors' => $errors,
+            ],
+            'error_message' => $error_message,
+        ]);
+
+        return [
+            'batch' => EasyPostBatchLabelStore::get($local_batch_id),
+            'labels_saved' => $saved,
+            'fallback' => 'individual_shipments',
+            'message' => 'EasyPost refused the batch-wide postage purchase, so FFL Hub bought the prepared shipments individually.',
+            'errors' => $errors,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $api_label
+     * @param array<string,mixed> $rate
+     */
+    private function save_api_label_for_item(
+        array &$item,
+        WC_Order $order,
+        array $api_label,
+        array $rate,
+        string $provider_batch_id,
+        int $package_count
+    ): bool {
+        $pending = [
+            'shipment_snapshot' => is_array($item['shipment'] ?? null) ? $item['shipment'] : [],
+            'shipment_id' => (string) ($api_label['shipment_id'] ?? $item['batch_shipment_id'] ?? $item['rated_shipment_id'] ?? ''),
+            'rate_request_id' => (string) ($item['rate_request_id'] ?? ''),
+            'package_items' => [is_array($item['package_items'] ?? null) ? $item['package_items'] : []],
+            'package_details' => [is_array($item['package'] ?? null) ? $item['package'] : []],
+        ];
+        $label = ShipStationOrderMeta::normalize_purchased_label(
+            $api_label,
+            $rate,
+            $pending,
+            (string) ($rate['rate_id'] ?? ''),
+            (string) ($api_label['_fflhub_request_id'] ?? '')
+        );
+        $label['package_index'] = max(0, (int) ($item['package_index'] ?? 0));
+        $label['package_count'] = max(1, $package_count);
+        $label['easypost_batch_id'] = $provider_batch_id;
+        $label['easypost_batch_reference'] = (string) ($item['reference'] ?? '');
+
+        if ($this->order_has_label($order, (string) ($label['label_id'] ?? ''))) {
+            $item['label_saved'] = true;
+            $item['label_id'] = (string) ($label['label_id'] ?? '');
+            return false;
+        }
+
+        ShipStationOrderMeta::append_label($order, $label);
+        $order->add_order_note($this->purchase_note($label));
+        $this->maybe_update_status($order);
+        OrderProfitAuditMeta::recalculate_order($order, true);
+
+        $item['label_saved'] = true;
+        $item['label_id'] = (string) ($label['label_id'] ?? '');
+        $item['tracking_number'] = (string) ($label['tracking_number'] ?? $item['tracking_number'] ?? '');
+        $item['purchased_shipment_id'] = (string) ($api_label['shipment_id'] ?? $pending['shipment_id'] ?? '');
+        $downloads = is_array($api_label['label_download'] ?? null) ? $api_label['label_download'] : [];
+        $item['label_pdf_url'] = (string) ($downloads['pdf'] ?? $downloads['href'] ?? '');
+
+        return true;
+    }
+
+    /**
      * @param array<string,mixed> $remote
      */
     private function batch_has_purchased_shipments(array $remote): bool
@@ -683,6 +886,15 @@ final class EasyPostBatchLabelService
         }
 
         return is_array($remote) ? $remote : $this->client->retrieve_batch($provider_batch_id);
+    }
+
+    private function is_batch_postage_not_allowed(WP_Error $error): bool
+    {
+        $data = $error->get_error_data();
+        $raw = is_array($data) ? (string) ($data['raw_response'] ?? '') : '';
+
+        return stripos($raw, 'BATCH.POSTAGE.NOT_ALLOWED') !== false
+            || stripos($error->get_error_message(), 'BATCH.POSTAGE.NOT_ALLOWED') !== false;
     }
 
     /**
