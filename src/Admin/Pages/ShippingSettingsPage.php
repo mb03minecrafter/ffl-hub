@@ -81,6 +81,17 @@ final class ShippingSettingsPage
                                 </td>
                             </tr>
                             <tr>
+                                <th scope="row"><?php esc_html_e('Packing Slip Format', 'ffl-hub'); ?></th>
+                                <td>
+                                    <select name="shipping[packing_slip_format]">
+                                        <?php foreach (['pdf' => 'PDF', 'zpl' => 'ZPL'] as $value => $label) : ?>
+                                            <option value="<?php echo esc_attr($value); ?>" <?php selected((string) ($settings['packing_slip_format'] ?? 'pdf'), $value); ?>><?php echo esc_html($label); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <p class="description"><?php esc_html_e('PDF combines with PDF carrier labels for browser printing. ZPL combines with ZPL carrier labels for thermal/PrintNode output.', 'ffl-hub'); ?></p>
+                                </td>
+                            </tr>
+                            <tr>
                                 <th scope="row"><?php esc_html_e('Confirmation', 'ffl-hub'); ?></th>
                                 <td>
                                     <select name="shipping[confirmation]">
@@ -175,6 +186,7 @@ final class ShippingSettingsPage
         ShippingOptions::save_partial([
             'label_format' => $input['label_format'] ?? 'pdf',
             'label_layout' => $input['label_layout'] ?? '4x6',
+            'packing_slip_format' => $input['packing_slip_format'] ?? 'pdf',
             'confirmation' => $input['confirmation'] ?? 'delivery',
             'insurance_mode' => $input['insurance_mode'] ?? 'none',
             'after_purchase_status' => $input['after_purchase_status'] ?? '',

@@ -53,6 +53,20 @@ final class PackingSlipService
 
     /**
      * @param array<string,mixed> $label
+     * @return array{body:string,content_type:string,filename:string}|WP_Error
+     */
+    public function generate_pdf_for_label(WC_Order $order, array $label, int $package_index = 0)
+    {
+        $document = $this->document_context_for_label($order, $label, $package_index);
+        if (is_wp_error($document)) {
+            return $document;
+        }
+
+        return $this->generate_pdf_for_package($order, $document['package'], $document['destination'], $document['meta']);
+    }
+
+    /**
+     * @param array<string,mixed> $label
      * @return array{package:ShippingPackage,destination:array<string,mixed>,meta:array<string,mixed>}|WP_Error
      */
     private function document_context_for_label(WC_Order $order, array $label, int $package_index = 0)
@@ -191,6 +205,39 @@ final class PackingSlipService
             ]),
             'content_type' => 'application/vnd.zebra-zpl',
             'filename' => 'packing-slip-order-' . sanitize_file_name($order_number) . '-package-' . $package_index . '.zpl',
+        ];
+    }
+
+    /**
+     * Generate a real 4x6 PDF packing slip so PDF carrier labels can be merged
+     * with it into one two-page document.
+     *
+     * @param array<string,mixed> $destination
+     * @param array<string,mixed> $meta
+     * @return array{body:string,content_type:string,filename:string}|WP_Error
+     */
+    public function generate_pdf_for_package(?WC_Order $order, ShippingPackage $package, array $destination, array $meta = [])
+    {
+        if (!class_exists('\FPDF')) {
+            return new WP_Error(
+                'fflhub_packing_slip_pdf_missing_library',
+                'FPDF is not installed. Run composer install for setasign/fpdf.'
+            );
+        }
+
+        $package_row = $package->to_array();
+        $order_number = $order instanceof WC_Order ? (string) $order->get_order_number() : 'PREVIEW';
+        $package_index = max(1, (int) ($meta['package_index'] ?? 1));
+
+        return [
+            'body' => $this->render_pdf($order, $package_row, $destination, [
+                ...$meta,
+                'order_number' => $order_number,
+                'package_index' => $package_index,
+                'package_count' => max(1, (int) ($meta['package_count'] ?? 1)),
+            ]),
+            'content_type' => 'application/pdf',
+            'filename' => 'packing-slip-order-' . sanitize_file_name($order_number) . '-package-' . $package_index . '.pdf',
         ];
     }
 
@@ -523,6 +570,90 @@ final class PackingSlipService
 
     /**
      * @param array<string,mixed> $package
+     * @param array<string,mixed> $destination
+     * @param array<string,mixed> $meta
+     */
+    private function render_pdf(?WC_Order $order, array $package, array $destination, array $meta): string
+    {
+        $brand = get_bloginfo('name') ?: 'Deerford Defense';
+        $package_title = $this->package_title($package);
+        $package_detail = $this->package_detail($package);
+        $ship_to_lines = $this->address_lines($destination);
+        $customer_lines = $this->customer_lines($order);
+        $items = is_array($package['items'] ?? null) ? $package['items'] : [];
+
+        $pdf = new \FPDF('P', 'pt', [288, 432]);
+        $pdf->SetMargins(8, 8, 8);
+        $pdf->SetAutoPageBreak(false);
+        $pdf->AddPage();
+        $pdf->SetDrawColor(17, 17, 17);
+        $pdf->SetTextColor(17, 17, 17);
+
+        self::pdf_box($pdf, 8, 8, 272, 58);
+        self::pdf_text($pdf, 16, 16, 176, 'PACK IN', 7, 'B', 8, 1);
+        self::pdf_text($pdf, 16, 28, 176, $package_title, 14, 'B', 14, 2);
+        if ($package_detail !== '') {
+            self::pdf_text($pdf, 16, 56, 176, $package_detail, 6.5, 'B', 7, 1);
+        }
+        self::pdf_text($pdf, 204, 16, 66, $brand, 8, 'B', 9, 3);
+
+        self::pdf_box($pdf, 8, 74, 82, 36);
+        self::pdf_text($pdf, 14, 82, 70, 'ORDER', 6.5, 'B', 7, 1);
+        self::pdf_text($pdf, 14, 94, 70, '#' . (string) ($meta['order_number'] ?? 'PREVIEW'), 12, 'B', 12, 1);
+
+        self::pdf_box($pdf, 96, 74, 52, 36);
+        self::pdf_text($pdf, 102, 82, 42, 'PKG', 6.5, 'B', 7, 1);
+        self::pdf_text($pdf, 102, 94, 42, (string) ($meta['package_index'] ?? 1) . '/' . (string) ($meta['package_count'] ?? 1), 12, 'B', 12, 1);
+
+        self::pdf_box($pdf, 154, 74, 126, 36);
+        self::pdf_text($pdf, 160, 82, 114, trim((string) ($meta['carrier'] ?? '')) ?: 'TRACKING', 6.5, 'B', 7, 1);
+        self::pdf_text($pdf, 160, 94, 114, trim((string) ($meta['tracking_number'] ?? '')) ?: 'PENDING', 8, 'B', 9, 1);
+
+        self::pdf_box($pdf, 8, 118, 272, 70);
+        self::pdf_text($pdf, 16, 128, 254, 'SHIP TO', 7, 'B', 8, 1);
+        self::pdf_text($pdf, 16, 142, 254, implode("\n", array_slice($ship_to_lines, 0, 5)), 9, 'B', 10, 5);
+
+        self::pdf_box($pdf, 8, 196, 272, 48);
+        self::pdf_text($pdf, 16, 206, 254, 'CUSTOMER', 7, 'B', 8, 1);
+        self::pdf_text($pdf, 16, 220, 254, implode("\n", array_slice($customer_lines, 0, 3)), 8, 'B', 9, 3);
+
+        self::pdf_text($pdf, 8, 258, 272, 'ITEMS TO PACK', 10, 'B', 10, 1);
+        $pdf->Line(8, 274, 280, 274);
+        self::pdf_text($pdf, 14, 282, 26, 'QTY', 7, 'B', 8, 1);
+        self::pdf_text($pdf, 46, 282, 164, 'ITEM', 7, 'B', 8, 1);
+        self::pdf_text($pdf, 214, 282, 60, 'SKU / UPC', 7, 'B', 8, 1);
+        $pdf->Line(8, 296, 280, 296);
+
+        $y = 304;
+        if (empty($items)) {
+            self::pdf_text($pdf, 16, $y, 254, 'No package item assignments found.', 9, 'B', 10, 2);
+        }
+
+        foreach (array_slice($items, 0, 5) as $item) {
+            $item = is_array($item) ? $item : [];
+            $quantity = (string) max(0, (int) ($item['quantity'] ?? 0));
+            $name = (string) ($item['name'] ?? 'Order item');
+            $sku = trim((string) ($item['sku'] ?? '')) ?: '-';
+            $upc = trim((string) ($item['upc'] ?? '')) ?: '-';
+
+            self::pdf_text($pdf, 16, $y, 24, $quantity, 14, 'B', 14, 1);
+            self::pdf_text($pdf, 46, $y, 160, $name, 7.5, 'B', 8.5, 2);
+            self::pdf_text($pdf, 214, $y, 60, $sku . "\n" . $upc, 6.5, 'B', 7.5, 2);
+            $pdf->Line(8, $y + 34, 280, $y + 34);
+            $y += 40;
+        }
+
+        if (count($items) > 5) {
+            self::pdf_text($pdf, 16, 408, 254, '+' . (string) (count($items) - 5) . ' more item rows not shown.', 7, 'B', 8, 1);
+        }
+
+        self::pdf_text($pdf, 8, 420, 272, 'Generated ' . current_time('mysql'), 5.5, '', 6, 1);
+
+        return (string) $pdf->Output('S');
+    }
+
+    /**
+     * @param array<string,mixed> $package
      */
     private function package_title(array $package): string
     {
@@ -714,6 +845,64 @@ final class PackingSlipService
             '^' => '_5E',
             '~' => '_7E',
         ]);
+    }
+
+    private static function pdf_box(\FPDF $pdf, float $x, float $y, float $w, float $h): void
+    {
+        $pdf->Rect($x, $y, $w, $h);
+    }
+
+    private static function pdf_text(\FPDF $pdf, float $x, float $y, float $w, string $text, float $font_size, string $style = '', float $line_height = 8.0, int $max_lines = 1): void
+    {
+        $text = self::pdf_data($text);
+        $lines = self::pdf_lines($text, max(4, (int) floor($w / max(3.5, $font_size * 0.46))), $max_lines);
+        $pdf->SetFont('Arial', $style, $font_size);
+        $pdf->SetXY($x, $y);
+        $pdf->MultiCell($w, $line_height, implode("\n", $lines), 0, 'L');
+    }
+
+    private static function pdf_data(string $text): string
+    {
+        $text = html_entity_decode(wp_strip_all_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = function_exists('remove_accents') ? remove_accents($text) : $text;
+        $converted = function_exists('iconv') ? @iconv('UTF-8', 'ISO-8859-1//TRANSLIT//IGNORE', $text) : false;
+        $text = is_string($converted) ? $converted : $text;
+        $text = preg_replace('/[^\x09\x0A\x0D\x20-\x7E]/', ' ', $text) ?: '';
+        $text = preg_replace('/[ \t]+/', ' ', $text) ?: '';
+
+        return trim($text);
+    }
+
+    /**
+     * @return string[]
+     */
+    private static function pdf_lines(string $text, int $max_chars, int $max_lines): array
+    {
+        $raw_lines = preg_split('/\R+/', $text) ?: [];
+        $lines = [];
+        foreach ($raw_lines as $raw_line) {
+            $wrapped = explode("\n", wordwrap(trim((string) $raw_line), $max_chars, "\n", true));
+            foreach ($wrapped as $line) {
+                $line = trim($line);
+                if ($line === '') {
+                    continue;
+                }
+                $lines[] = $line;
+                if (count($lines) >= $max_lines) {
+                    break 2;
+                }
+            }
+        }
+
+        if (empty($lines)) {
+            return [''];
+        }
+
+        if (count($lines) === $max_lines && strlen($lines[$max_lines - 1]) >= $max_chars) {
+            $lines[$max_lines - 1] = rtrim(substr($lines[$max_lines - 1], 0, max(1, $max_chars - 3))) . '...';
+        }
+
+        return $lines;
     }
 
     /**

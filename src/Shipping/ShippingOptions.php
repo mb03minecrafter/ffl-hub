@@ -39,6 +39,7 @@ final class ShippingOptions
             'origin_residential' => 'no',
             'label_format' => 'pdf',
             'label_layout' => '4x6',
+            'packing_slip_format' => 'pdf',
             'confirmation' => 'delivery',
             'insurance_mode' => 'none',
             'after_purchase_status' => '',
@@ -114,6 +115,11 @@ final class ShippingOptions
     public static function label_layout(): string
     {
         return self::choice((string) (self::get_all()['label_layout'] ?? '4x6'), ['4x6', 'letter'], '4x6');
+    }
+
+    public static function packing_slip_format(): string
+    {
+        return self::choice((string) (self::get_all()['packing_slip_format'] ?? 'pdf'), ['pdf', 'zpl'], 'pdf');
     }
 
     public static function confirmation(): string
@@ -455,6 +461,7 @@ final class ShippingOptions
             'origin_residential' => self::choice((string) ($settings['origin_residential'] ?? 'no'), ['unknown', 'yes', 'no'], 'no'),
             'label_format' => self::choice(strtolower((string) ($settings['label_format'] ?? 'pdf')), ['pdf', 'png', 'zpl'], 'pdf'),
             'label_layout' => self::choice(strtolower((string) ($settings['label_layout'] ?? '4x6')), ['4x6', 'letter'], '4x6'),
+            'packing_slip_format' => self::choice(strtolower((string) ($settings['packing_slip_format'] ?? 'pdf')), ['pdf', 'zpl'], 'pdf'),
             'confirmation' => self::choice(
                 strtolower((string) ($settings['confirmation'] ?? 'delivery')),
                 ['none', 'delivery', 'signature', 'adult_signature', 'direct_signature'],

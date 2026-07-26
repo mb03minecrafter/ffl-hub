@@ -12,6 +12,8 @@
   },
   "require": {
     "dvdoug/boxpacker": "^4.2",
-    "lipseys/apiintegration": "1.2.2"
+    "lipseys/apiintegration": "1.2.2",
+    "setasign/fpdi": "^2.6",
+    "setasign/fpdf": "^1.8"
   }
 }

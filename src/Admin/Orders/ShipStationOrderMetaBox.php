@@ -5,6 +5,7 @@ namespace FFLHub\Admin\Orders;
 
 use FFLHub\Admin\Pages\ShippingAdminPage;
 use FFLHub\FFL\Tables\FFLTable;
+use FFLHub\Shipping\ShippingOptions;
 use FFLHub\Shipping\ShipStation\ShipStationRestController;
 use FFLHub\Shipping\ShipStation\ShipStationShipmentService;
 use WC_Order;
@@ -254,13 +255,20 @@ final class ShipStationOrderMetaBox
             echo '<div class="fflhub-ss-label-actions">';
             echo '<span class="fflhub-ss-price">$' . esc_html(number_format((float) ($label['total_cost'] ?? 0), 2)) . '</span>';
             if ($label_id !== '') {
-                $label_format = strtolower(trim((string) ($label['label_format'] ?? '')));
-                if ($label_format === 'zpl') {
+                $label_format = strtolower(trim((string) ($label['label_format'] ?? 'pdf'))) ?: 'pdf';
+                $slip_format = ShippingOptions::packing_slip_format();
+                if ($label_format === 'pdf' && $slip_format === 'pdf') {
+                    echo '<a class="button button-primary" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::print_label_with_slip_url($order, $label_id)) . '">' . esc_html__('Label + Slip PDF', 'ffl-hub') . '</a>';
+                    echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, false)) . '">' . esc_html__('Label PDF Only', 'ffl-hub') . '</a>';
+                } elseif ($label_format === 'zpl' && $slip_format === 'zpl') {
                     echo '<a class="button button-primary" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::print_label_with_slip_url($order, $label_id)) . '">' . esc_html__('Label + Slip ZPL', 'ffl-hub') . '</a>';
                     echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, false)) . '">' . esc_html__('Label ZPL Only', 'ffl-hub') . '</a>';
                 } else {
                     echo '<a class="button button-primary" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, false)) . '">' . esc_html__('Label Only', 'ffl-hub') . '</a>';
-                    echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url(ShipStationRestController::packing_slip_zpl_url($order, $label_id, 0)) . '">' . esc_html__('Packing Slip ZPL', 'ffl-hub') . '</a>';
+                    $slip_url = $slip_format === 'zpl'
+                        ? ShipStationRestController::packing_slip_zpl_url($order, $label_id, 0)
+                        : ShipStationRestController::packing_slip_pdf_url($order, $label_id, 0);
+                    echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url($slip_url) . '">' . esc_html($slip_format === 'zpl' ? __('Packing Slip ZPL', 'ffl-hub') : __('Packing Slip PDF', 'ffl-hub')) . '</a>';
                 }
                 echo '<a class="button" href="' . esc_url(ShipStationRestController::download_url($order, $label_id, true)) . '">' . esc_html__('Download', 'ffl-hub') . '</a>';
                 if (!$is_inactive) {

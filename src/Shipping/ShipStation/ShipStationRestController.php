@@ -4,7 +4,9 @@ declare(strict_types=1);
 namespace FFLHub\Shipping\ShipStation;
 
 use FFLHub\FFL\Tables\FFLTable;
+use FFLHub\Shipping\Packing\PdfDocumentService;
 use FFLHub\Shipping\Packing\PackingSlipService;
+use FFLHub\Shipping\ShippingOptions;
 use WC_Order;
 use WP_Error;
 use WP_REST_Request;
@@ -29,6 +31,7 @@ final class ShipStationRestController
         add_action('admin_post_fflhub_shipstation_download_label', [__CLASS__, 'download_label']);
         add_action('admin_post_fflhub_shipstation_print_label_with_slip', [__CLASS__, 'print_label_with_slip']);
         add_action('admin_post_fflhub_shipstation_packing_slip', [__CLASS__, 'packing_slip']);
+        add_action('admin_post_fflhub_shipstation_packing_slip_pdf', [__CLASS__, 'packing_slip_pdf']);
         add_action('admin_post_fflhub_shipstation_packing_slip_zpl', [__CLASS__, 'packing_slip_zpl']);
     }
 
@@ -256,10 +259,25 @@ final class ShipStationRestController
             wp_die(esc_html__('Shipping label not found.', 'ffl-hub'), '', ['response' => 404]);
         }
 
-        $format = strtolower(trim((string) ($label['label_format'] ?? 'pdf')));
-        if ($format !== 'zpl') {
+        $label_format = strtolower(trim((string) ($label['label_format'] ?? 'pdf'))) ?: 'pdf';
+        $slip_format = ShippingOptions::packing_slip_format();
+
+        if ($label_format === 'pdf' && $slip_format === 'pdf') {
+            $document = self::combined_pdf_document($order, $label, $label_id);
+            if (is_wp_error($document)) {
+                wp_die(esc_html($document->get_error_message()), '', ['response' => 500]);
+            }
+
+            nocache_headers();
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: inline; filename="' . sanitize_file_name((string) ($document['filename'] ?? 'label-and-packing-slip.pdf')) . '"');
+            echo (string) ($document['body'] ?? ''); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+            exit;
+        }
+
+        if ($label_format !== 'zpl' || $slip_format !== 'zpl') {
             wp_die(
-                esc_html__('Combined label + packing slip output is only available when the purchased carrier label is ZPL. Switch the global label format to ZPL for printer-native combined output.', 'ffl-hub'),
+                esc_html__('Combined label + packing slip output requires matching formats. Use PDF/PDF for browser printing or ZPL/ZPL for printer-native output.', 'ffl-hub'),
                 '',
                 ['response' => 400]
             );
@@ -337,6 +355,42 @@ final class ShipStationRestController
         exit;
     }
 
+    public static function packing_slip_pdf(): void
+    {
+        if (!current_user_can('manage_woocommerce')) {
+            wp_die(esc_html__('You do not have permission to print this packing slip.', 'ffl-hub'), '', ['response' => 403]);
+        }
+
+        $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
+        $label_id = isset($_GET['label_id']) ? sanitize_text_field(wp_unslash((string) $_GET['label_id'])) : '';
+        $package_index = isset($_GET['package_index']) ? max(0, absint($_GET['package_index'])) : 0;
+        $nonce = isset($_GET['_wpnonce']) ? sanitize_text_field(wp_unslash((string) $_GET['_wpnonce'])) : '';
+        if ($order_id <= 0 || $label_id === '' || !wp_verify_nonce($nonce, self::packing_slip_pdf_nonce_action($order_id, $label_id, $package_index))) {
+            wp_die(esc_html__('Invalid packing slip request.', 'ffl-hub'), '', ['response' => 400]);
+        }
+
+        $order = wc_get_order($order_id);
+        if (!($order instanceof WC_Order)) {
+            wp_die(esc_html__('Order not found.', 'ffl-hub'), '', ['response' => 404]);
+        }
+
+        $label = ShipStationOrderMeta::find_label($order, $label_id);
+        if (!is_array($label)) {
+            wp_die(esc_html__('Shipping label not found.', 'ffl-hub'), '', ['response' => 404]);
+        }
+
+        $slip = (new PackingSlipService())->generate_pdf_for_label($order, $label, $package_index);
+        if (is_wp_error($slip)) {
+            wp_die(esc_html($slip->get_error_message()), '', ['response' => 500]);
+        }
+
+        nocache_headers();
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: inline; filename="' . sanitize_file_name((string) ($slip['filename'] ?? 'packing-slip.pdf')) . '"');
+        echo (string) ($slip['body'] ?? ''); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+        exit;
+    }
+
     public static function packing_slip_zpl(): void
     {
         if (!current_user_can('manage_woocommerce')) {
@@ -387,6 +441,20 @@ final class ShipStationRestController
         ], admin_url('admin-post.php'));
     }
 
+    public static function packing_slip_pdf_url(WC_Order $order, string $label_id, int $package_index = 0): string
+    {
+        $order_id = (int) $order->get_id();
+        $package_index = max(0, $package_index);
+
+        return add_query_arg([
+            'action' => 'fflhub_shipstation_packing_slip_pdf',
+            'order_id' => $order_id,
+            'label_id' => $label_id,
+            'package_index' => $package_index,
+            '_wpnonce' => wp_create_nonce(self::packing_slip_pdf_nonce_action($order_id, $label_id, $package_index)),
+        ], admin_url('admin-post.php'));
+    }
+
     public static function packing_slip_zpl_url(WC_Order $order, string $label_id, int $package_index = 0): string
     {
         $order_id = (int) $order->get_id();
@@ -399,6 +467,63 @@ final class ShipStationRestController
             'package_index' => $package_index,
             '_wpnonce' => wp_create_nonce(self::packing_slip_zpl_nonce_action($order_id, $label_id, $package_index)),
         ], admin_url('admin-post.php'));
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     * @return array{body:string,content_type:string,filename:string}|WP_Error
+     */
+    private static function combined_pdf_document(WC_Order $order, array $label, string $label_id)
+    {
+        $download = self::service()->download_label($order, $label_id);
+        if (is_wp_error($download)) {
+            return $download;
+        }
+
+        $carrier_pdf = (string) ($download['body'] ?? '');
+        if (trim($carrier_pdf) === '' || strpos(ltrim($carrier_pdf), '%PDF') !== 0) {
+            return new WP_Error('fflhub_shipstation_label_not_pdf', 'The saved carrier label did not look like a PDF.');
+        }
+
+        $slip_pdfs = self::packing_slip_pdf_documents($order, $label);
+        if (is_wp_error($slip_pdfs)) {
+            return $slip_pdfs;
+        }
+
+        return (new PdfDocumentService())->combine(
+            array_merge([$carrier_pdf], $slip_pdfs),
+            'label-and-packing-slip-order-' . (string) $order->get_order_number() . '.pdf'
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     * @return array<int,string>|WP_Error
+     */
+    private static function packing_slip_pdf_documents(WC_Order $order, array $label)
+    {
+        $service = new PackingSlipService();
+        $package_count = self::label_package_count($label);
+        $documents = [];
+
+        for ($package_index = 0; $package_index < $package_count; $package_index++) {
+            $slip = $service->generate_pdf_for_label($order, $label, $package_index);
+            if (is_wp_error($slip)) {
+                return $slip;
+            }
+
+            $pdf = (string) ($slip['body'] ?? '');
+            if (trim($pdf) === '' || strpos(ltrim($pdf), '%PDF') !== 0) {
+                return new WP_Error(
+                    'fflhub_packing_slip_render_failed',
+                    'The packing slip could not be rendered as PDF.'
+                );
+            }
+
+            $documents[] = $pdf;
+        }
+
+        return $documents;
     }
 
     /**
@@ -450,24 +575,6 @@ final class ShipStationRestController
         return max(1, count($packages), count($details), count($items));
     }
 
-    private static function extract_packing_slip_page(string $html): string
-    {
-        if (preg_match('/<main\b[^>]*class="[^"]*\bfflhub-slip\b[^"]*"[^>]*>.*?<\/main>/is', $html, $matches)) {
-            return (string) $matches[0];
-        }
-
-        return '';
-    }
-
-    private static function extract_packing_slip_css(string $html): string
-    {
-        if (preg_match('/<style\b[^>]*>(.*?)<\/style>/is', $html, $matches)) {
-            return (string) $matches[1];
-        }
-
-        return '';
-    }
-
     private static function download_nonce_action(int $order_id, string $label_id): string
     {
         return 'fflhub_shipstation_download_label_' . $order_id . '_' . $label_id;
@@ -481,6 +588,11 @@ final class ShipStationRestController
     private static function packing_slip_nonce_action(int $order_id, string $label_id, int $package_index): string
     {
         return 'fflhub_shipstation_packing_slip_' . $order_id . '_' . $label_id . '_' . $package_index;
+    }
+
+    private static function packing_slip_pdf_nonce_action(int $order_id, string $label_id, int $package_index): string
+    {
+        return 'fflhub_shipstation_packing_slip_pdf_' . $order_id . '_' . $label_id . '_' . $package_index;
     }
 
     private static function packing_slip_zpl_nonce_action(int $order_id, string $label_id, int $package_index): string
