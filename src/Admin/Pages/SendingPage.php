@@ -40,8 +40,8 @@ final class SendingPage
     {
         add_submenu_page(
             WMSAdminPage::MENU_SLUG,
-            __('Sending', 'ffl-hub'),
-            __('Sending', 'ffl-hub'),
+            __('Order Waver', 'ffl-hub'),
+            __('Order Waver', 'ffl-hub'),
             WMSAdminPage::CAPABILITY,
             self::PAGE_SLUG,
             [$this, 'render_page']
@@ -75,9 +75,9 @@ final class SendingPage
         ?>
         <div class="wrap fflhub-sending-page">
             <?php $this->render_styles(); ?>
-            <h1><?php esc_html_e('Sending', 'ffl-hub'); ?></h1>
+            <h1><?php esc_html_e('Order Waver', 'ffl-hub'); ?></h1>
             <p class="description">
-                <?php esc_html_e('Read-only queue of orders whose dealer-fulfilled items have been received and are ready for packing or shipping-label work.', 'ffl-hub'); ?>
+                <?php esc_html_e('Read-only Order Waver queue of orders whose dealer-fulfilled items have been received and are ready for packing or shipping-label work.', 'ffl-hub'); ?>
             </p>
 
             <div class="fflhub-sending-stats">
@@ -206,7 +206,7 @@ final class SendingPage
             default:
                 return [
                     'type' => 'error',
-                    'message' => __('Unknown Sending batch action.', 'ffl-hub'),
+                    'message' => __('Unknown Order Waver batch action.', 'ffl-hub'),
                     'details' => [],
                 ];
         }

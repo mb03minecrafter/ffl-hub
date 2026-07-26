@@ -105,7 +105,7 @@ final class PrintNodeSettingsPage
                         <div>
                             <h2><?php esc_html_e('Printer', 'ffl-hub'); ?></h2>
                             <p class="description">
-                                <?php esc_html_e('Refresh after installing or signing into the PrintNode desktop client. The selected printer receives label/slip jobs from the Sending page.', 'ffl-hub'); ?>
+                                <?php esc_html_e('Refresh after installing or signing into the PrintNode desktop client. The selected printer receives label/slip jobs from Order Waver.', 'ffl-hub'); ?>
                             </p>
                         </div>
                         <?php submit_button(__('Save and Refresh Printers', 'ffl-hub'), 'secondary', 'fflhub_printnode_refresh_printers', false); ?>
