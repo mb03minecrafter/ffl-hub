@@ -424,11 +424,6 @@
   grid-template-columns: repeat(5, minmax(120px, 1fr)) auto;
 }
 
-.fflhub-receiving-fastbound-form.is-dispose {
-  grid-template-columns: minmax(240px, 360px) auto;
-  justify-content: start;
-}
-
 .fflhub-receiving-fastbound-form label {
   display: grid;
   gap: 6px;

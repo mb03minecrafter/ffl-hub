@@ -39,7 +39,6 @@ final class ReceivingPage
         add_action('wp_ajax_fflhub_receiving_get_shipment', [$this, 'ajax_get_shipment']);
         add_action('wp_ajax_fflhub_receiving_scan_product', [$this, 'ajax_scan_product']);
         add_action('wp_ajax_fflhub_receiving_fastbound_acquire', [$this, 'ajax_fastbound_acquire']);
-        add_action('wp_ajax_fflhub_receiving_fastbound_dispose', [$this, 'ajax_fastbound_dispose']);
         add_action('wp_ajax_fflhub_receiving_debug_complete', [$this, 'ajax_debug_complete']);
         add_action('wp_ajax_fflhub_receiving_history', [$this, 'ajax_history']);
     }
@@ -213,17 +212,6 @@ final class ReceivingPage
                 'model' => $this->request_text('model'),
                 'caliber' => $this->request_text('caliber'),
                 'firearm_type' => $this->request_text('firearm_type'),
-            ]
-        ));
-    }
-
-    public function ajax_fastbound_dispose(): void
-    {
-        $this->assert_ajax_access();
-        $this->send($this->fastbound_service()->dispose_event(
-            $this->request_int('event_id'),
-            [
-                'destination_ffl_number' => $this->request_text('destination_ffl_number'),
             ]
         ));
     }

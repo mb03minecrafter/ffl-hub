@@ -273,7 +273,7 @@
         '<div class="fflhub-receiving-fastbound-head">' +
           '<div>' +
             '<h3>FastBound Bound Book</h3>' +
-            '<p>Acquire each serialized item when it is received, then dispose it when the order is packed for the selected FFL.</p>' +
+            '<p>Acquire each serialized item when it is received. Disposition belongs to the shipping workflow after the order is packed.</p>' +
           '</div>' +
           (!configured ? '<strong class="fflhub-receiving-fastbound-warning">FastBound settings incomplete</strong>' : '') +
         '</div>' +
@@ -291,7 +291,6 @@
     var contacts = fastbound && fastbound.source_contacts ? fastbound.source_contacts : [];
     var sourceDisabled = !configured || !contacts.length;
     var acquireDisabled = sourceDisabled ? ' disabled' : '';
-    var disposeDisabled = !configured ? ' disabled' : '';
 
     var statusText = disposed
       ? 'Disposed'
@@ -309,13 +308,9 @@
           '<button type="button" class="button button-primary" data-fastbound-acquire' + acquireDisabled + '>Confirm Acquisition</button>' +
         '</div>';
     } else if (!disposed) {
-      body =
-        '<div class="fflhub-receiving-fastbound-form is-dispose">' +
-          '<label><span>Destination FFL #</span><input type="text" value="' + esc(event.destination_ffl_number || '') + '" data-fastbound-destination-ffl /></label>' +
-          '<button type="button" class="button button-primary" data-fastbound-dispose' + disposeDisabled + '>Confirm Disposition</button>' +
-        '</div>';
+      body = '<p class="fflhub-receiving-muted">Acquired in FastBound. Disposition will be handled from the shipping/packing workflow.</p>';
     } else {
-      body = '<p class="fflhub-receiving-muted">Acquisition and disposition are complete for this serial number.</p>';
+      body = '<p class="fflhub-receiving-muted">This serial number was already disposed in FastBound.</p>';
     }
 
     return '' +
@@ -701,45 +696,6 @@
     });
   }
 
-  function fastBoundDispose($button) {
-    var $card = $button.closest('[data-fastbound-event]');
-    var eventId = Number($card.data('fastbound-event') || 0);
-    var ffl = $.trim($card.find('[data-fastbound-destination-ffl]').val() || '');
-    if (!eventId || state.busy) {
-      return;
-    }
-    if (!ffl) {
-      setFeedback('Enter the destination FFL number before disposition.', 'error');
-      beep('error');
-      $card.find('[data-fastbound-destination-ffl]').trigger('focus');
-      return;
-    }
-    if (!window.confirm('Commit this FastBound disposition to the destination FFL?')) {
-      return;
-    }
-
-    state.busy = true;
-    $button.prop('disabled', true);
-    setFeedback('Committing FastBound disposition...', 'info');
-    post('fflhub_receiving_fastbound_dispose', {
-      event_id: eventId,
-      destination_ffl_number: ffl
-    }).then(function (payload) {
-      if (payload.ok) {
-        setFeedback(payload.message || 'FastBound disposition committed.', 'success');
-        beep('success');
-      } else {
-        setFeedback(payload.message || 'FastBound disposition failed.', 'error');
-        beep('error');
-      }
-
-      refreshCurrentShipment();
-    }).always(function () {
-      state.busy = false;
-      $button.prop('disabled', false);
-    });
-  }
-
   function refreshHistory() {
     post('fflhub_receiving_history', {}).then(function (payload) {
       var rows = (payload.history || []).map(function (row) {
@@ -795,9 +751,6 @@
     $(document).on('click', '[data-receiving-debug-complete]', debugCompleteShipment);
     $(document).on('click', '[data-fastbound-acquire]', function () {
       fastBoundAcquire($(this));
-    });
-    $(document).on('click', '[data-fastbound-dispose]', function () {
-      fastBoundDispose($(this));
     });
     $(document).on('input change', '[data-receiving-upc-input]', updateSerialFieldState);
     $(document).on('keydown', '[data-receiving-upc-input]', function (event) {
