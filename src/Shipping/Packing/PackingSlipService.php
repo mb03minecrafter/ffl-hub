@@ -609,27 +609,27 @@ final class PackingSlipService
         self::pdf_text($pdf, 160, 82, 114, trim((string) ($meta['carrier'] ?? '')) ?: 'TRACKING', 6.5, 'B', 7, 1);
         self::pdf_text($pdf, 160, 94, 114, trim((string) ($meta['tracking_number'] ?? '')) ?: 'PENDING', 8, 'B', 9, 1);
 
-        self::pdf_box($pdf, 8, 118, 272, 70);
-        self::pdf_text($pdf, 16, 128, 254, 'SHIP TO', 7, 'B', 8, 1);
-        self::pdf_text($pdf, 16, 142, 254, implode("\n", array_slice($ship_to_lines, 0, 5)), 9, 'B', 10, 5);
+        self::pdf_box($pdf, 8, 118, 272, 68);
+        self::pdf_text($pdf, 16, 127, 254, 'SHIP TO', 7, 'B', 8, 1);
+        self::pdf_text($pdf, 16, 140, 254, implode("\n", array_slice($ship_to_lines, 0, 5)), 8.5, 'B', 9.2, 5);
 
-        self::pdf_box($pdf, 8, 196, 272, 48);
-        self::pdf_text($pdf, 16, 206, 254, 'CUSTOMER', 7, 'B', 8, 1);
-        self::pdf_text($pdf, 16, 220, 254, implode("\n", array_slice($customer_lines, 0, 3)), 8, 'B', 9, 3);
+        self::pdf_box($pdf, 8, 192, 272, 58);
+        self::pdf_text($pdf, 16, 201, 254, 'CUSTOMER', 7, 'B', 8, 1);
+        self::pdf_text($pdf, 16, 214, 254, implode("\n", array_slice($customer_lines, 0, 3)), 7.8, 'B', 8.6, 3);
 
-        self::pdf_text($pdf, 8, 258, 272, 'ITEMS TO PACK', 10, 'B', 10, 1);
-        $pdf->Line(8, 274, 280, 274);
-        self::pdf_text($pdf, 14, 282, 26, 'QTY', 7, 'B', 8, 1);
-        self::pdf_text($pdf, 46, 282, 164, 'ITEM', 7, 'B', 8, 1);
-        self::pdf_text($pdf, 214, 282, 60, 'SKU / UPC', 7, 'B', 8, 1);
-        $pdf->Line(8, 296, 280, 296);
+        self::pdf_text($pdf, 8, 260, 272, 'ITEMS TO PACK', 10, 'B', 10, 1);
+        $pdf->Line(8, 276, 280, 276);
+        self::pdf_text($pdf, 14, 284, 26, 'QTY', 7, 'B', 8, 1);
+        self::pdf_text($pdf, 46, 284, 164, 'ITEM', 7, 'B', 8, 1);
+        self::pdf_text($pdf, 214, 284, 60, 'SKU / UPC', 7, 'B', 8, 1);
+        $pdf->Line(8, 298, 280, 298);
 
-        $y = 304;
+        $y = 306;
         if (empty($items)) {
             self::pdf_text($pdf, 16, $y, 254, 'No package item assignments found.', 9, 'B', 10, 2);
         }
 
-        foreach (array_slice($items, 0, 5) as $item) {
+        foreach (array_slice($items, 0, 3) as $item) {
             $item = is_array($item) ? $item : [];
             $quantity = (string) max(0, (int) ($item['quantity'] ?? 0));
             $name = (string) ($item['name'] ?? 'Order item');
@@ -637,17 +637,17 @@ final class PackingSlipService
             $upc = trim((string) ($item['upc'] ?? '')) ?: '-';
 
             self::pdf_text($pdf, 16, $y, 24, $quantity, 14, 'B', 14, 1);
-            self::pdf_text($pdf, 46, $y, 160, $name, 7.5, 'B', 8.5, 2);
-            self::pdf_text($pdf, 214, $y, 60, $sku . "\n" . $upc, 6.5, 'B', 7.5, 2);
-            $pdf->Line(8, $y + 34, 280, $y + 34);
-            $y += 40;
+            self::pdf_text($pdf, 46, $y, 160, $name, 7.2, 'B', 8.2, 2);
+            self::pdf_text($pdf, 214, $y, 60, $sku . "\n" . $upc, 6.2, 'B', 7.2, 2);
+            $pdf->Line(8, $y + 31, 280, $y + 31);
+            $y += 36;
         }
 
-        if (count($items) > 5) {
-            self::pdf_text($pdf, 16, 408, 254, '+' . (string) (count($items) - 5) . ' more item rows not shown.', 7, 'B', 8, 1);
+        if (count($items) > 3) {
+            self::pdf_text($pdf, 16, 411, 254, '+' . (string) (count($items) - 3) . ' more item rows not shown.', 7, 'B', 8, 1);
         }
 
-        self::pdf_text($pdf, 8, 420, 272, 'Generated ' . current_time('mysql'), 5.5, '', 6, 1);
+        self::pdf_text($pdf, 8, 424, 272, 'Generated ' . current_time('mysql'), 5.5, '', 6, 1);
 
         return (string) $pdf->Output('S');
     }
