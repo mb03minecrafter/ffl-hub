@@ -352,11 +352,10 @@ final class PackingSlipService
         .logo-wrap { min-height: .38in; text-align: right; }
         .logo-wrap img { max-width: .82in; max-height: .38in; object-fit: contain; }
         .logo-fallback { display: inline-block; border: 1px solid #111; padding: 4px 5px; font-size: 9px; line-height: 1; font-weight: 900; text-transform: uppercase; }
-        .meta-row { display: grid; grid-template-columns: .75in .62in minmax(0, 1fr); gap: 4px; margin: .055in 0; }
+        .meta-row { display: grid; grid-template-columns: .75in .62in; gap: 4px; margin: .055in 0; }
         .meta-box { border: 1.5px solid #111; padding: 4px 5px; min-height: .35in; overflow: hidden; }
         .meta-box span { display: block; font-size: 6.5px; line-height: 1; font-weight: 900; text-transform: uppercase; color: #555; }
         .meta-box strong { display: block; margin-top: 2px; font-size: 12px; line-height: 1.05; font-weight: 900; overflow-wrap: anywhere; }
-        .meta-box.is-tracking strong { font-size: 8.5px; line-height: 1.12; }
         .address-grid { display: grid; grid-template-columns: 1fr; gap: 4px; margin-bottom: .055in; }
         .address-card { border: 1.5px solid #111; padding: 5px 6px; }
         .address-card h2 { margin: 0 0 3px; font-size: 7px; line-height: 1; text-transform: uppercase; color: #555; }
@@ -408,7 +407,6 @@ final class PackingSlipService
         <section class="meta-row">
             <div class="meta-box"><span>Order</span><strong>#<?php echo esc_html((string) ($meta['order_number'] ?? 'PREVIEW')); ?></strong></div>
             <div class="meta-box"><span>Pkg</span><strong><?php echo esc_html((string) ($meta['package_index'] ?? 1)); ?>/<?php echo esc_html((string) ($meta['package_count'] ?? 1)); ?></strong></div>
-            <div class="meta-box is-tracking"><span><?php echo esc_html(trim((string) ($meta['carrier'] ?? '')) ?: 'Tracking'); ?></span><strong><?php echo esc_html(trim((string) ($meta['tracking_number'] ?? '')) ?: 'Pending'); ?></strong></div>
         </section>
 
         <section class="address-grid">
@@ -511,10 +509,6 @@ final class PackingSlipService
         $zpl[] = self::zpl_field(294, 220, 'PKG', 20, 20, 100, 1);
         $zpl[] = self::zpl_field(294, 248, (string) ($meta['package_index'] ?? 1) . '/' . (string) ($meta['package_count'] ?? 1), 34, 34, 100, 1);
 
-        $zpl[] = '^FO444,204^GB344,86,3^FS';
-        $zpl[] = self::zpl_field(462, 220, trim((string) ($meta['carrier'] ?? '')) ?: 'TRACKING', 20, 20, 280, 1);
-        $zpl[] = self::zpl_field(462, 248, trim((string) ($meta['tracking_number'] ?? '')) ?: 'PENDING', 24, 24, 280, 1);
-
         $zpl[] = '^FO24,318^GB764,176,3^FS';
         $zpl[] = self::zpl_field(44, 336, 'SHIP TO', 22, 22, 720, 1);
         $y = 368;
@@ -604,10 +598,6 @@ final class PackingSlipService
         self::pdf_box($pdf, 96, 74, 52, 36);
         self::pdf_text($pdf, 102, 82, 42, 'PKG', 6.5, 'B', 7, 1);
         self::pdf_text($pdf, 102, 94, 42, (string) ($meta['package_index'] ?? 1) . '/' . (string) ($meta['package_count'] ?? 1), 12, 'B', 12, 1);
-
-        self::pdf_box($pdf, 154, 74, 126, 36);
-        self::pdf_text($pdf, 160, 82, 114, trim((string) ($meta['carrier'] ?? '')) ?: 'TRACKING', 6.5, 'B', 7, 1);
-        self::pdf_text($pdf, 160, 94, 114, trim((string) ($meta['tracking_number'] ?? '')) ?: 'PENDING', 8, 'B', 9, 1);
 
         self::pdf_box($pdf, 8, 118, 272, 68);
         self::pdf_text($pdf, 16, 127, 254, 'SHIP TO', 7, 'B', 8, 1);

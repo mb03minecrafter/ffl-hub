@@ -102,6 +102,9 @@ use FFLHub\Shipping\ShipStation\ShipStationRestController;
 use FFLHub\Shipping\EasyPost\EasyPostRestController;
 use FFLHub\Shipping\Wordpress\ShippingRegistrar;
 use FFLHub\Util\ActionSchedulerWebRunnerGuard;
+use FFLHub\WMS\OrderWaverLabelCronService;
+use FFLHub\WMS\OrderWaverPackingCronService;
+use FFLHub\WMS\OrderWaverStore;
 
 /**
  * Main plugin bootstrapper for FFL Hub.
@@ -176,6 +179,8 @@ final class Plugin
     private MailPoetAutoConfirmCronService $mailpoet_auto_confirm_cron_service;
     private GunDealsFeedCronService $gundeals_feed_cron_service;
     private GunMadeFeedCronService $gunmade_feed_cron_service;
+    private OrderWaverPackingCronService $order_waver_packing_cron_service;
+    private OrderWaverLabelCronService $order_waver_label_cron_service;
 
     public static function instance(): self
     {
@@ -227,6 +232,11 @@ final class Plugin
         $this->gunmade_feed_cron_service->register();
         self::cleanup_gundeals_analytics_tables_once();
 
+        $this->order_waver_packing_cron_service = new OrderWaverPackingCronService();
+        $this->order_waver_packing_cron_service->register();
+        $this->order_waver_label_cron_service = new OrderWaverLabelCronService();
+        $this->order_waver_label_cron_service->register();
+
         ShippingRegistrar::init();
         ShipStationRestController::init($this->ffl_table);
         EasyPostRestController::init();
@@ -252,6 +262,7 @@ final class Plugin
             ProductBestOffersStore::ensure_schema();
             ReceivingEventsStore::ensure_schema();
             ReceivingTestShipmentStore::ensure_schema();
+            OrderWaverStore::ensure_schema();
             AdminMenuOrder::init();
             WPCronWarning::init();
 
@@ -541,6 +552,7 @@ final class Plugin
         DistributorOffersStore::ensure_schema();
         ProductBestOffersStore::ensure_schema();
         ReceivingEventsStore::ensure_schema();
+        OrderWaverStore::ensure_schema();
         self::ensure_quote_email_jobs_table();
         $quote_email_jobs_cron = new QuoteEmailJobsCronService();
         $quote_email_jobs_cron->on_activation();
@@ -565,6 +577,10 @@ final class Plugin
         $gundeals_feed_cron->on_activation();
         $gunmade_feed_cron = new GunMadeFeedCronService();
         $gunmade_feed_cron->on_activation();
+        $order_waver_packing_cron = new OrderWaverPackingCronService();
+        $order_waver_packing_cron->on_activation();
+        $order_waver_label_cron = new OrderWaverLabelCronService();
+        $order_waver_label_cron->on_activation();
         self::cleanup_gundeals_analytics_tables_once(true);
     }
 
@@ -586,6 +602,10 @@ final class Plugin
         $gundeals_feed_cron->on_deactivation();
         $gunmade_feed_cron = new GunMadeFeedCronService();
         $gunmade_feed_cron->on_deactivation();
+        $order_waver_packing_cron = new OrderWaverPackingCronService();
+        $order_waver_packing_cron->on_deactivation();
+        $order_waver_label_cron = new OrderWaverLabelCronService();
+        $order_waver_label_cron->on_deactivation();
     }
 
     private static function cleanup_gundeals_analytics_tables_once(bool $force = false): void

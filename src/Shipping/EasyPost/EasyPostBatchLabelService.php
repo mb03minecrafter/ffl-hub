@@ -162,6 +162,140 @@ final class EasyPostBatchLabelService
     }
 
     /**
+     * Prepare an EasyPost local batch from packages that were already selected
+     * by the Order Waver packing worker.
+     *
+     * This is intentionally separate from prepare_from_ready_orders(): the new
+     * wave pipeline needs packing to be its own durable stage, then label buying
+     * should use the exact package assignments that were stored for the wave.
+     *
+     * @param array<int,array<string,mixed>> $packed_orders
+     * @return array<string,mixed>|WP_Error
+     */
+    public function prepare_from_packed_wave_orders(array $packed_orders, string $reference = '')
+    {
+        if (!EasyPostOptions::is_enabled()) {
+            return new WP_Error('fflhub_easypost_batch_disabled', 'EasyPost is not enabled.');
+        }
+
+        if (!$this->client->has_api_key()) {
+            return new WP_Error('fflhub_easypost_batch_missing_key', 'EasyPost API key is not configured.');
+        }
+
+        $started = microtime(true);
+        $items = [];
+        $problems = [];
+        $orders_seen = 0;
+        $orders_with_labels = 0;
+
+        foreach ($packed_orders as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $order_id = (int) ($row['order_id'] ?? 0);
+            if ($order_id <= 0) {
+                continue;
+            }
+
+            $orders_seen++;
+            $order = wc_get_order($order_id);
+            if (!($order instanceof WC_Order)) {
+                $problems[] = [
+                    'order_id' => $order_id,
+                    'message' => 'Woo order could not be loaded.',
+                ];
+                continue;
+            }
+
+            if (ShipStationOrderMeta::has_active_label($order)) {
+                $orders_with_labels++;
+                $problems[] = [
+                    'order_id' => $order_id,
+                    'order_number' => (string) $order->get_order_number(),
+                    'message' => 'Order already has an active FFL Hub label.',
+                ];
+                continue;
+            }
+
+            $packages = isset($row['packages']) && is_array($row['packages'])
+                ? array_values($row['packages'])
+                : [];
+            $package_items = isset($row['package_items']) && is_array($row['package_items'])
+                ? array_values($row['package_items'])
+                : [];
+
+            if (empty($packages)) {
+                $problems[] = [
+                    'order_id' => $order_id,
+                    'order_number' => (string) $order->get_order_number(),
+                    'message' => 'Wave order has no packed package assignments.',
+                ];
+                continue;
+            }
+
+            $order_items = [];
+            $order_failed = false;
+            foreach ($packages as $index => $package) {
+                if (!is_array($package)) {
+                    continue;
+                }
+
+                $item_assignments = is_array($package_items[$index] ?? null) ? $package_items[$index] : [];
+                $prepared = $this->prepare_package($order, $package, $item_assignments, $index);
+                if (is_wp_error($prepared)) {
+                    $order_failed = true;
+                    $problems[] = [
+                        'order_id' => $order_id,
+                        'order_number' => (string) $order->get_order_number(),
+                        'package_index' => $index,
+                        'message' => $prepared->get_error_message(),
+                    ];
+                    break;
+                }
+
+                $prepared['wave_batch_id'] = (int) ($row['batch_id'] ?? 0);
+                $prepared['wave_order_row_id'] = (int) ($row['id'] ?? 0);
+                $order_items[] = $prepared;
+            }
+
+            if (!$order_failed && !empty($order_items)) {
+                array_push($items, ...$order_items);
+            }
+        }
+
+        if (empty($items)) {
+            return new WP_Error(
+                'fflhub_easypost_batch_no_items',
+                'No wave package assignments could be prepared for EasyPost batch purchase.',
+                ['problems' => $problems]
+            );
+        }
+
+        $reference = trim($reference) !== '' ? substr(sanitize_text_field($reference), 0, 120) : $this->batch_reference();
+        $local_id = EasyPostBatchLabelStore::create_prepared($reference, $items, [
+            'problems' => $problems,
+            'stats' => [
+                'orders_seen' => $orders_seen,
+                'orders_with_labels' => $orders_with_labels,
+                'packages_prepared' => count($items),
+                'runtime_ms' => $this->elapsed_ms($started),
+            ],
+        ]);
+
+        return [
+            'batch' => EasyPostBatchLabelStore::get($local_id),
+            'problems' => $problems,
+            'stats' => [
+                'orders_seen' => $orders_seen,
+                'orders_with_labels' => $orders_with_labels,
+                'packages_prepared' => count($items),
+                'runtime_ms' => $this->elapsed_ms($started),
+            ],
+        ];
+    }
+
+    /**
      * @return array<string,mixed>|WP_Error
      */
     public function submit_or_buy(int $local_batch_id)
