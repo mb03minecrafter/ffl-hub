@@ -6,6 +6,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+use FFLHub\Admin\AdminMenuOrder;
 use FFLHub\Admin\Orders\OrderPlacementMetaBox;
 use FFLHub\Admin\Orders\AuthorizeNetOrderRescueButton;
 use FFLHub\Admin\Orders\OrderBoxPackingMetaBox;
@@ -247,6 +248,7 @@ final class Plugin
             ProductBestOffersStore::ensure_schema();
             ReceivingEventsStore::ensure_schema();
             ReceivingTestShipmentStore::ensure_schema();
+            AdminMenuOrder::init();
             WPCronWarning::init();
 
             $this->admin_page = new AdminPage($this->distributor_handler);
