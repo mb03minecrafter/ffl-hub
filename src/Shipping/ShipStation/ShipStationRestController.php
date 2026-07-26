@@ -27,6 +27,7 @@ final class ShipStationRestController
         self::$ffl_table = $ffl_table;
         add_action('rest_api_init', [__CLASS__, 'register_routes']);
         add_action('admin_post_fflhub_shipstation_download_label', [__CLASS__, 'download_label']);
+        add_action('admin_post_fflhub_shipstation_print_label_with_slip', [__CLASS__, 'print_label_with_slip']);
         add_action('admin_post_fflhub_shipstation_packing_slip', [__CLASS__, 'packing_slip']);
     }
 
@@ -231,6 +232,62 @@ final class ShipStationRestController
         return add_query_arg($args, admin_url('admin-post.php'));
     }
 
+    public static function print_label_with_slip(): void
+    {
+        if (!current_user_can('manage_woocommerce')) {
+            wp_die(esc_html__('You do not have permission to print this label.', 'ffl-hub'), '', ['response' => 403]);
+        }
+
+        $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
+        $label_id = isset($_GET['label_id']) ? sanitize_text_field(wp_unslash((string) $_GET['label_id'])) : '';
+        $nonce = isset($_GET['_wpnonce']) ? sanitize_text_field(wp_unslash((string) $_GET['_wpnonce'])) : '';
+        if ($order_id <= 0 || $label_id === '' || !wp_verify_nonce($nonce, self::print_label_with_slip_nonce_action($order_id, $label_id))) {
+            wp_die(esc_html__('Invalid label print request.', 'ffl-hub'), '', ['response' => 400]);
+        }
+
+        $order = wc_get_order($order_id);
+        if (!($order instanceof WC_Order)) {
+            wp_die(esc_html__('Order not found.', 'ffl-hub'), '', ['response' => 404]);
+        }
+
+        $label = ShipStationOrderMeta::find_label($order, $label_id);
+        if (!is_array($label)) {
+            wp_die(esc_html__('Shipping label not found.', 'ffl-hub'), '', ['response' => 404]);
+        }
+
+        $format = strtolower(trim((string) ($label['label_format'] ?? 'pdf')));
+        if ($format === 'zpl') {
+            wp_die(
+                esc_html__('Combined label + packing slip printing needs PDF or image labels. Use the label download for ZPL printer output.', 'ffl-hub'),
+                '',
+                ['response' => 400]
+            );
+        }
+
+        $slips = self::packing_slip_documents($order, $label);
+        if (is_wp_error($slips)) {
+            wp_die(esc_html($slips->get_error_message()), '', ['response' => 500]);
+        }
+
+        nocache_headers();
+        header('Content-Type: text/html; charset=UTF-8');
+        header('Content-Disposition: inline; filename="' . sanitize_file_name('label-and-packing-slip-order-' . $order->get_order_number() . '.html') . '"');
+        echo self::render_label_with_slips_html($order, $label, $label_id, $slips); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+        exit;
+    }
+
+    public static function print_label_with_slip_url(WC_Order $order, string $label_id): string
+    {
+        $order_id = (int) $order->get_id();
+
+        return add_query_arg([
+            'action' => 'fflhub_shipstation_print_label_with_slip',
+            'order_id' => $order_id,
+            'label_id' => $label_id,
+            '_wpnonce' => wp_create_nonce(self::print_label_with_slip_nonce_action($order_id, $label_id)),
+        ], admin_url('admin-post.php'));
+    }
+
     public static function packing_slip(): void
     {
         if (!current_user_can('manage_woocommerce')) {
@@ -281,9 +338,165 @@ final class ShipStationRestController
         ], admin_url('admin-post.php'));
     }
 
+    /**
+     * @param array<string,mixed> $label
+     * @return array{css:string,pages:array<int,string>}|WP_Error
+     */
+    private static function packing_slip_documents(WC_Order $order, array $label)
+    {
+        $service = new PackingSlipService();
+        $package_count = self::label_package_count($label);
+        $css = '';
+        $pages = [];
+
+        for ($package_index = 0; $package_index < $package_count; $package_index++) {
+            $slip = $service->generate_for_label($order, $label, $package_index);
+            if (is_wp_error($slip)) {
+                return $slip;
+            }
+
+            $html = (string) ($slip['body'] ?? '');
+            if ($css === '') {
+                $css = self::extract_packing_slip_css($html);
+            }
+
+            $page = self::extract_packing_slip_page($html);
+            if ($page === '') {
+                return new WP_Error(
+                    'fflhub_packing_slip_render_failed',
+                    'The packing slip could not be rendered for the combined print page.'
+                );
+            }
+
+            $pages[] = $page;
+        }
+
+        return [
+            'css' => $css,
+            'pages' => $pages,
+        ];
+    }
+
+    /**
+     * @param array{css:string,pages:array<int,string>} $packing_slips
+     */
+    private static function render_label_with_slips_html(WC_Order $order, array $label, string $label_id, array $packing_slips): string
+    {
+        $label_url = self::download_url($order, $label_id, false);
+        $label_format = strtolower(trim((string) ($label['label_format'] ?? 'pdf')));
+        $is_image = in_array($label_format, ['png', 'jpg', 'jpeg', 'gif', 'webp'], true);
+        $order_number = (string) $order->get_order_number();
+        $title = 'Label + Packing Slip - Order ' . $order_number;
+        $slip_css = (string) ($packing_slips['css'] ?? '');
+        $packing_slip_pages = is_array($packing_slips['pages'] ?? null) ? $packing_slips['pages'] : [];
+
+        ob_start();
+        ?>
+<!doctype html>
+<html <?php language_attributes(); ?>>
+<head>
+    <meta charset="<?php bloginfo('charset'); ?>" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title><?php echo esc_html($title); ?></title>
+    <style>
+        <?php echo $slip_css; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+        @page { size: 4in 6in; margin: 0; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; background: #f1f1f1; color: #111; }
+        .fflhub-combined-toolbar { position: sticky; top: 0; z-index: 5; display: flex; justify-content: center; gap: 8px; padding: 8px; background: #fff; border-bottom: 1px solid #dcdcde; }
+        .fflhub-combined-toolbar button,
+        .fflhub-combined-toolbar a { border: 1px solid #111; border-radius: 4px; padding: 7px 10px; font: 700 12px/1 Arial, Helvetica, sans-serif; text-decoration: none; cursor: pointer; }
+        .fflhub-combined-toolbar button { background: #111; color: #fff; }
+        .fflhub-combined-toolbar a { background: #fff; color: #111; }
+        .fflhub-label-page { width: 4in; height: 6in; margin: 0 auto; background: #fff; overflow: hidden; page-break-after: always; break-after: page; }
+        .fflhub-label-page object,
+        .fflhub-label-page iframe,
+        .fflhub-label-page img { display: block; width: 4in; height: 6in; border: 0; object-fit: contain; }
+        .fflhub-label-fallback { padding: .2in; font: 700 13px/1.35 Arial, Helvetica, sans-serif; }
+        body.fflhub-combined-print .fflhub-slip { page-break-after: always; break-after: page; }
+        body.fflhub-combined-print .fflhub-slip:last-child { page-break-after: auto; break-after: auto; }
+        @media print {
+            html, body { width: 4in; background: #fff; }
+            .fflhub-combined-toolbar,
+            .no-print { display: none !important; }
+            .fflhub-label-page,
+            .fflhub-slip { margin: 0; }
+        }
+    </style>
+</head>
+<body class="fflhub-combined-print">
+    <div class="fflhub-combined-toolbar no-print">
+        <button type="button" onclick="window.print()"><?php esc_html_e('Print Label + Packing Slip', 'ffl-hub'); ?></button>
+        <a href="<?php echo esc_url($label_url); ?>" target="_blank" rel="noopener"><?php esc_html_e('Open Label Only', 'ffl-hub'); ?></a>
+    </div>
+
+    <section class="fflhub-label-page" aria-label="<?php echo esc_attr__('Shipping label', 'ffl-hub'); ?>">
+        <?php if ($is_image) : ?>
+            <img src="<?php echo esc_url($label_url); ?>" alt="<?php echo esc_attr__('Shipping label', 'ffl-hub'); ?>" />
+        <?php else : ?>
+            <object data="<?php echo esc_url($label_url); ?>" type="application/pdf">
+                <iframe src="<?php echo esc_url($label_url); ?>" title="<?php echo esc_attr__('Shipping label', 'ffl-hub'); ?>"></iframe>
+                <div class="fflhub-label-fallback">
+                    <?php esc_html_e('The label PDF could not be embedded. Open the label-only link above, then print the packing slip page from this window.', 'ffl-hub'); ?>
+                </div>
+            </object>
+        <?php endif; ?>
+    </section>
+
+    <?php foreach ($packing_slip_pages as $page) : ?>
+        <?php echo $page; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+    <?php endforeach; ?>
+</body>
+</html>
+        <?php
+        return trim((string) ob_get_clean());
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     */
+    private static function label_package_count(array $label): int
+    {
+        $snapshot = is_array($label['shipment_snapshot'] ?? null) ? $label['shipment_snapshot'] : [];
+        $packages = isset($snapshot['packages']) && is_array($snapshot['packages'])
+            ? $snapshot['packages']
+            : [];
+        $details = isset($label['package_details']) && is_array($label['package_details'])
+            ? $label['package_details']
+            : [];
+        $items = isset($label['package_items']) && is_array($label['package_items'])
+            ? $label['package_items']
+            : [];
+
+        return max(1, count($packages), count($details), count($items));
+    }
+
+    private static function extract_packing_slip_page(string $html): string
+    {
+        if (preg_match('/<main\b[^>]*class="[^"]*\bfflhub-slip\b[^"]*"[^>]*>.*?<\/main>/is', $html, $matches)) {
+            return (string) $matches[0];
+        }
+
+        return '';
+    }
+
+    private static function extract_packing_slip_css(string $html): string
+    {
+        if (preg_match('/<style\b[^>]*>(.*?)<\/style>/is', $html, $matches)) {
+            return (string) $matches[1];
+        }
+
+        return '';
+    }
+
     private static function download_nonce_action(int $order_id, string $label_id): string
     {
         return 'fflhub_shipstation_download_label_' . $order_id . '_' . $label_id;
+    }
+
+    private static function print_label_with_slip_nonce_action(int $order_id, string $label_id): string
+    {
+        return 'fflhub_shipstation_print_label_with_slip_' . $order_id . '_' . $label_id;
     }
 
     private static function packing_slip_nonce_action(int $order_id, string $label_id, int $package_index): string
