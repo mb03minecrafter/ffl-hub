@@ -41,10 +41,10 @@ final class ZandersCreditLimitPage
     public function register_menu_page(): void
     {
         add_submenu_page(
-            AdminPage::get_page_slug(),
+            DistributorOrderingAdminPage::MENU_SLUG,
             __('Zanders Credit Limit', 'ffl-hub'),
             __('Zanders Credit Limit', 'ffl-hub'),
-            'manage_options',
+            DistributorOrderingAdminPage::CAPABILITY,
             self::PAGE_SLUG,
             [$this, 'render_page']
         );

@@ -20,6 +20,7 @@ use FFLHub\Admin\Pages\DavidsonsFailedJobsPage;
 use FFLHub\Admin\Pages\DealerBatchOptimizerPage;
 use FFLHub\Admin\Pages\DealerFulfilledJobsPage;
 use FFLHub\Admin\Pages\DistributorBatchQueuePage;
+use FFLHub\Admin\Pages\DistributorOrderingAdminPage;
 use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\EasyPostSettingsPage;
 use FFLHub\Admin\Pages\FastBoundIntegrationSettingsPage;
@@ -126,6 +127,7 @@ final class Plugin
     public DistributorProductsPage $distributor_products_page;
     public DealerBatchOptimizerPage $dealer_batch_optimizer_page;
     public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
+    public DistributorOrderingAdminPage $distributor_ordering_admin_page;
     public ReceivingPage $receiving_page;
     public ReceivingTestLabelsPage $receiving_test_labels_page;
     public FastBoundIntegrationSettingsPage $fastbound_integration_settings_page;
@@ -247,6 +249,9 @@ final class Plugin
 
             $this->admin_page = new AdminPage($this->distributor_handler);
             $this->admin_page->register();
+
+            $this->distributor_ordering_admin_page = new DistributorOrderingAdminPage();
+            $this->distributor_ordering_admin_page->register();
 
             $this->distributor_products_page = new DistributorProductsPage($this->distributor_handler);
             $this->distributor_products_page->register();

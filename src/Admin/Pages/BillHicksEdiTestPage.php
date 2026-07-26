@@ -49,10 +49,10 @@ final class BillHicksEdiTestPage
     public function register_menu_page(): void
     {
         add_submenu_page(
-            AdminPage::get_page_slug(),
+            DistributorOrderingAdminPage::MENU_SLUG,
             __('Bill Hicks EDI Test Orders', 'ffl-hub'),
             __('Bill Hicks EDI Tests', 'ffl-hub'),
-            'manage_options',
+            DistributorOrderingAdminPage::CAPABILITY,
             self::PAGE_SLUG,
             [$this, 'render_page']
         );

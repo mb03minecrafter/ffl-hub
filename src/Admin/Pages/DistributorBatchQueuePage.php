@@ -82,10 +82,10 @@ final class DistributorBatchQueuePage
     public function register_menu_page(): void
     {
         add_submenu_page(
-            AdminPage::get_page_slug(),
+            DistributorOrderingAdminPage::MENU_SLUG,
             $this->page_title,
             $this->menu_title,
-            'manage_options',
+            DistributorOrderingAdminPage::CAPABILITY,
             $this->page_slug,
             [$this, 'render_page']
         );

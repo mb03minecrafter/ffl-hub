@@ -46,10 +46,10 @@ final class DealerBatchOptimizerPage
     public function register_menu_page(): void
     {
         add_submenu_page(
-            AdminPage::get_page_slug(),
+            DistributorOrderingAdminPage::MENU_SLUG,
             __('Dealer Batch Optimizer', 'ffl-hub'),
             __('Dealer Batch Optimizer', 'ffl-hub'),
-            'manage_options',
+            DistributorOrderingAdminPage::CAPABILITY,
             self::PAGE_SLUG,
             [$this, 'render_page']
         );
