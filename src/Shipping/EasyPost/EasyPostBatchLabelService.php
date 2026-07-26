@@ -355,6 +355,11 @@ final class EasyPostBatchLabelService
                 continue;
             }
 
+            $order = wc_get_order((int) ($item['order_id'] ?? 0));
+            if (!($order instanceof WC_Order)) {
+                continue;
+            }
+
             $direct_label_url = trim((string) ($item['label_pdf_url'] ?? ''));
             if ($direct_label_url !== '') {
                 $label_pdf = $this->client->download_label($direct_label_url);
@@ -369,11 +374,6 @@ final class EasyPostBatchLabelService
 
             $shipment_id = trim((string) ($item['purchased_shipment_id'] ?? $item['batch_shipment_id'] ?? ''));
             if ($shipment_id === '') {
-                continue;
-            }
-
-            $order = wc_get_order((int) ($item['order_id'] ?? 0));
-            if (!($order instanceof WC_Order)) {
                 continue;
             }
 
