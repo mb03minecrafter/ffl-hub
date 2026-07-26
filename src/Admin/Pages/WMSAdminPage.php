@@ -68,7 +68,11 @@ final class WMSAdminPage
                 </a>
                 <a class="fflhub-wms-card" href="<?php echo esc_url(admin_url('admin.php?page=fflhub-sending')); ?>">
                     <strong><?php esc_html_e('Order Waver', 'ffl-hub'); ?></strong>
-                    <span><?php esc_html_e('Review orders whose dealer-fulfilled items are received and ready for packing or outbound labels.', 'ffl-hub'); ?></span>
+                    <span><?php esc_html_e('Select received dealer-fulfilled orders into outbound waves and monitor packing/label automation.', 'ffl-hub'); ?></span>
+                </a>
+                <a class="fflhub-wms-card" href="<?php echo esc_url(admin_url('admin.php?page=fflhub-wms-sending')); ?>">
+                    <strong><?php esc_html_e('Sending', 'ffl-hub'); ?></strong>
+                    <span><?php esc_html_e('Print finished label and packing-slip batches for orders that are ready to leave the warehouse.', 'ffl-hub'); ?></span>
                 </a>
                 <a class="fflhub-wms-card" href="<?php echo esc_url(admin_url('admin.php?page=fflhub-receiving-test-labels')); ?>">
                     <strong><?php esc_html_e('Receiving Test Labels', 'ffl-hub'); ?></strong>

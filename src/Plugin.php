@@ -34,6 +34,7 @@ use FFLHub\Admin\Pages\PrintNodeSettingsPage;
 use FFLHub\Admin\Pages\ReceivingPage;
 use FFLHub\Admin\Pages\ReceivingTestLabelsPage;
 use FFLHub\Admin\Pages\SendingPage;
+use FFLHub\Admin\Pages\SendingReadyPage;
 use FFLHub\Admin\Pages\MonthlyProfitAuditPage;
 use FFLHub\Admin\Products\ProductDistributorColumns;
 use FFLHub\Admin\Pages\RSRBatchQueuePage;
@@ -138,6 +139,7 @@ final class Plugin
     public ReceivingPage $receiving_page;
     public ReceivingTestLabelsPage $receiving_test_labels_page;
     public SendingPage $sending_page;
+    public SendingReadyPage $sending_ready_page;
     public FastBoundIntegrationSettingsPage $fastbound_integration_settings_page;
     public CheckoutActivityPage $checkout_activity_page;
     public BillHicksEdiTestPage $bill_hicks_edi_test_page;
@@ -286,6 +288,9 @@ final class Plugin
 
             $this->sending_page = new SendingPage($this->distributor_handler->ordering_jobs_table);
             $this->sending_page->register();
+
+            $this->sending_ready_page = new SendingReadyPage();
+            $this->sending_ready_page->register();
 
             $this->receiving_test_labels_page = new ReceivingTestLabelsPage();
             $this->receiving_test_labels_page->register();

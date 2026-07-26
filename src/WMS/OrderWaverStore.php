@@ -475,6 +475,63 @@ KEY stage_created_at (stage, created_at)
     }
 
     /**
+     * @return array<string,mixed>|null
+     */
+    public static function batch_with_details(int $batch_id, int $log_limit = 10): ?array
+    {
+        $batch = self::get_batch($batch_id);
+        if (!is_array($batch)) {
+            return null;
+        }
+
+        $batch['orders'] = self::orders_for_batch($batch_id);
+        $batch['logs'] = self::logs_for_batch($batch_id, $log_limit);
+
+        return $batch;
+    }
+
+    /**
+     * Batches whose labels have been saved are ready for the outbound Sending
+     * station. These are the only wave batches that should expose the PrintNode
+     * print button.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public static function ready_to_send_batches(int $limit = 30): array
+    {
+        global $wpdb;
+
+        self::ensure_schema();
+        $limit = max(1, min(100, $limit));
+        $statuses = [
+            self::BATCH_STATUS_LABELS_SAVED,
+            self::BATCH_STATUS_PARTIAL_LABELS_SAVED,
+        ];
+        $placeholders = implode(',', array_fill(0, count($statuses), '%s'));
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                'SELECT * FROM ' . self::batches_table_name() . "
+                 WHERE status IN ({$placeholders})
+                   AND easypost_batch_id > 0
+                 ORDER BY labels_at DESC, id DESC
+                 LIMIT %d",
+                ...array_merge($statuses, [$limit])
+            ),
+            ARRAY_A
+        );
+
+        $batches = array_values(array_map([self::class, 'hydrate_batch'], is_array($rows) ? $rows : []));
+        foreach ($batches as &$batch) {
+            $batch_id = (int) ($batch['id'] ?? 0);
+            $batch['orders'] = self::orders_for_batch($batch_id);
+            $batch['logs'] = self::logs_for_batch($batch_id, 6);
+        }
+        unset($batch);
+
+        return $batches;
+    }
+
+    /**
      * @return array<int,array<string,mixed>>
      */
     public static function logs_for_batch(int $batch_id, int $limit = 10): array
