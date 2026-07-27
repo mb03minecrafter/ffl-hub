@@ -160,7 +160,14 @@ final class PrintNodeSettingsPage
                                 <th scope="row"><label for="fflhub-printnode-job-delay"><?php esc_html_e('Delay Between Jobs', 'ffl-hub'); ?></label></th>
                                 <td>
                                     <input id="fflhub-printnode-job-delay" type="number" min="0" max="3600" step="1" name="printnode[job_delay_seconds]" value="<?php echo esc_attr((string) $settings['job_delay_seconds']); ?>" />
-                                    <p class="description"><?php esc_html_e('Seconds to wait before the next queued PrintNode document becomes eligible to print. The worker submits one due document per run, so the real gap may be longer if Action Scheduler only runs once per minute.', 'ffl-hub'); ?></p>
+                                    <p class="description"><?php esc_html_e('Seconds the worker waits between actual PrintNode submissions during one background queue run.', 'ffl-hub'); ?></p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th scope="row"><label for="fflhub-printnode-max-jobs"><?php esc_html_e('Max Jobs Per Queue Run', 'ffl-hub'); ?></label></th>
+                                <td>
+                                    <input id="fflhub-printnode-max-jobs" type="number" min="1" max="20" step="1" name="printnode[max_jobs_per_queue_run]" value="<?php echo esc_attr((string) $settings['max_jobs_per_queue_run']); ?>" />
+                                    <p class="description"><?php esc_html_e('Maximum PrintNode documents one Action Scheduler wakeup may submit. Use this with the delay setting to avoid overheating the printer while still printing more than one job per minute.', 'ffl-hub'); ?></p>
                                 </td>
                             </tr>
                             <tr>

@@ -12,9 +12,9 @@ if (!defined('ABSPATH')) {
 /**
  * Background worker for throttled PrintNode output.
  *
- * It intentionally submits at most one print job per run. The per-document
- * available_at timestamp, plus the recurring Action Scheduler cadence, prevents
- * a batch from hammering the thermal printer all at once.
+ * It submits a small timed burst per run. The service sleeps between due jobs
+ * inside the background worker, so one cron wakeup can print several documents
+ * without hammering the thermal printer all at once.
  */
 final class PrintNodePrintQueueCronService extends AbstractCronService
 {
@@ -37,6 +37,6 @@ final class PrintNodePrintQueueCronService extends AbstractCronService
 
     public function run(): void
     {
-        (new PrintNodePrintQueueService())->process_one_due_job();
+        (new PrintNodePrintQueueService())->process_due_jobs_for_window();
     }
 }

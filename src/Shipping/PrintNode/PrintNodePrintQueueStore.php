@@ -319,6 +319,28 @@ KEY order_id (order_id)
         return (int) $stats['pending'];
     }
 
+    public static function next_queued_available_timestamp(): ?int
+    {
+        global $wpdb;
+
+        self::ensure_schema();
+        $available_at = $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT available_at FROM ' . self::table_name() . ' WHERE status = %s ORDER BY available_at ASC, id ASC LIMIT 1',
+                self::STATUS_QUEUED
+            )
+        );
+
+        $available_at = is_string($available_at) ? trim($available_at) : '';
+        if ($available_at === '') {
+            return null;
+        }
+
+        $timestamp = strtotime($available_at . ' UTC');
+
+        return $timestamp !== false ? (int) $timestamp : null;
+    }
+
     /**
      * @param array<string,mixed> $row
      * @return array<string,mixed>
