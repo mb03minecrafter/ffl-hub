@@ -61,7 +61,7 @@ final class ShipStationShipmentService
         $order_items = (new OrderBoxPackingService())->dealer_fulfilled_order_items_for_labels($order);
 
         $destination = $requires_ffl
-            ? $this->destination_from_ffl($receiving_ffl)
+            ? $this->destination_from_ffl($order, $receiving_ffl)
             : $this->destination_from_order($order);
 
         $context = [
@@ -1366,15 +1366,16 @@ final class ShipStationShipmentService
      * @param array<string,mixed>|null $ffl
      * @return array<string,mixed>
      */
-    private function destination_from_ffl(?array $ffl): array
+    private function destination_from_ffl(WC_Order $order, ?array $ffl): array
     {
         $premise = isset($ffl['premise']) && is_array($ffl['premise']) ? $ffl['premise'] : [];
+        $ffl_name = (string) ($ffl['name'] ?? 'Receiving FFL');
 
         return [
-            'name' => (string) ($ffl['name'] ?? 'Receiving FFL'),
+            'name' => $this->customer_name_for_label($order),
             'phone' => (string) ($ffl['phone'] ?? ''),
             'email' => '',
-            'company_name' => (string) ($ffl['name'] ?? ''),
+            'company_name' => $ffl_name,
             'address_line1' => (string) ($premise['street'] ?? ''),
             'address_line2' => '',
             'address_line3' => '',
@@ -1384,6 +1385,21 @@ final class ShipStationShipmentService
             'country_code' => 'US',
             'address_residential_indicator' => 'no',
         ];
+    }
+
+    private function customer_name_for_label(WC_Order $order): string
+    {
+        $billing = trim((string) $order->get_billing_first_name() . ' ' . (string) $order->get_billing_last_name());
+        if ($billing !== '') {
+            return $billing;
+        }
+
+        $shipping = trim((string) $order->get_shipping_first_name() . ' ' . (string) $order->get_shipping_last_name());
+        if ($shipping !== '') {
+            return $shipping;
+        }
+
+        return 'Customer';
     }
 
     /**
