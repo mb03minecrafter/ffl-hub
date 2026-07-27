@@ -10,6 +10,7 @@ use FFLHub\Shipping\ShipStation\ShipStationOrderMeta;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Receiving\ReceivingEventsStore;
 use FFLHub\WMS\OrderWaverStore;
+use FFLHub\WMS\WMSShipmentConfirmationService;
 use WC_Order;
 use WC_Order_Item_Product;
 use WC_Product;
@@ -34,6 +35,7 @@ final class SendingReadyPage
     {
         add_action('admin_menu', [$this, 'register_menu_page']);
         add_action('wp_ajax_fflhub_wms_sending_print_package', [$this, 'ajax_print_package']);
+        add_action('wp_ajax_fflhub_wms_sending_confirm_package', [$this, 'ajax_confirm_package']);
     }
 
     public function register_menu_page(): void
@@ -157,6 +159,40 @@ final class SendingReadyPage
             'queued_count' => (int) ($print['queued_count'] ?? 0),
             'run_key' => (string) ($print['run_key'] ?? ''),
         ]);
+    }
+
+    public function ajax_confirm_package(): void
+    {
+        WMSAdminPage::ensure_access();
+
+        $nonce = isset($_POST['fflhub_wms_sending_confirm_nonce'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_wms_sending_confirm_nonce']))
+            : '';
+        if ($nonce === '' || !wp_verify_nonce($nonce, 'fflhub_wms_sending_confirm_package')) {
+            wp_send_json_error([
+                'message' => 'Invalid shipment confirmation request.',
+            ], 400);
+        }
+
+        $scans_json = isset($_POST['scans_json']) ? wp_unslash((string) $_POST['scans_json']) : '[]';
+        $scans = json_decode($scans_json, true);
+        $result = (new WMSShipmentConfirmationService())->confirm_package([
+            'wave_batch_id' => isset($_POST['wave_batch_id']) ? (int) sanitize_text_field(wp_unslash((string) $_POST['wave_batch_id'])) : 0,
+            'easypost_batch_id' => isset($_POST['easypost_batch_id']) ? (int) sanitize_text_field(wp_unslash((string) $_POST['easypost_batch_id'])) : 0,
+            'order_id' => isset($_POST['order_id']) ? (int) sanitize_text_field(wp_unslash((string) $_POST['order_id'])) : 0,
+            'package_index' => isset($_POST['package_index']) ? (int) sanitize_text_field(wp_unslash((string) $_POST['package_index'])) : 0,
+            'scans' => is_array($scans) ? $scans : [],
+        ]);
+
+        if (is_wp_error($result)) {
+            wp_send_json_error([
+                'message' => $result->get_error_message(),
+                'code' => $result->get_error_code(),
+                'data' => $result->get_error_data(),
+            ], 500);
+        }
+
+        wp_send_json_success($result);
     }
 
     /**
@@ -491,6 +527,7 @@ final class SendingReadyPage
                 continue;
             }
             $expected[] = [
+                'itemId' => (int) ($item['item_id'] ?? 0),
                 'upc' => $this->normalize_upc((string) ($item['upc'] ?? '')),
                 'name' => (string) ($item['name'] ?? ''),
                 'quantity' => max(1, (int) ($item['quantity'] ?? 1)),
@@ -500,10 +537,17 @@ final class SendingReadyPage
         }
         $expected_json = wp_json_encode($expected);
         $has_ffl = !empty($package['has_ffl_required']);
+        $debug_ready = !empty($package['debug_ready']);
         ?>
         <section
             class="fflhub-pack-card"
             data-package-position="<?php echo esc_attr((string) $position); ?>"
+            data-wave-batch-id="<?php echo esc_attr((string) ($package['wave_batch_id'] ?? 0)); ?>"
+            data-easypost-batch-id="<?php echo esc_attr((string) ($package['easypost_batch_id'] ?? 0)); ?>"
+            data-order-id="<?php echo esc_attr((string) ($package['order_id'] ?? 0)); ?>"
+            data-package-index="<?php echo esc_attr((string) ($package['package_index'] ?? 0)); ?>"
+            data-confirm-nonce="<?php echo esc_attr(wp_create_nonce('fflhub_wms_sending_confirm_package')); ?>"
+            data-debug-ready="<?php echo esc_attr($debug_ready ? '1' : '0'); ?>"
             data-expected="<?php echo esc_attr(is_string($expected_json) ? $expected_json : '[]'); ?>">
             <div class="fflhub-pack-card-head">
                 <div>
@@ -601,6 +645,11 @@ final class SendingReadyPage
                 <button type="button" class="button button-primary fflhub-pack-record">
                     <?php esc_html_e('Record Scan', 'ffl-hub'); ?>
                 </button>
+                <?php if ($debug_ready) : ?>
+                    <button type="button" class="button fflhub-pack-debug-fill">
+                        <?php esc_html_e('Debug Fake Scan', 'ffl-hub'); ?>
+                    </button>
+                <?php endif; ?>
                 <button type="button" class="button fflhub-pack-confirm" disabled>
                     <?php esc_html_e('Confirm Shipment', 'ffl-hub'); ?>
                 </button>
@@ -683,6 +732,7 @@ final class SendingReadyPage
                     'package_detail' => $this->package_detail((array) $package),
                     'items' => $items,
                     'has_ffl_required' => $has_ffl,
+                    'debug_ready' => !empty($row['debug_ready']),
                 ];
             }
         }
@@ -946,7 +996,7 @@ final class SendingReadyPage
     {
         $status = trim($status) !== '' ? trim($status) : 'unknown';
         $class = 'is-neutral';
-        if (in_array($status, ['printed', OrderWaverStore::ORDER_STATUS_LABEL_SAVED, OrderWaverStore::BATCH_STATUS_LABELS_SAVED], true)) {
+        if (in_array($status, ['printed', OrderWaverStore::ORDER_STATUS_LABEL_SAVED, OrderWaverStore::ORDER_STATUS_SHIPPED, OrderWaverStore::BATCH_STATUS_LABELS_SAVED], true)) {
             $class = 'is-good';
         } elseif (strpos($status, 'error') !== false || strpos($status, 'failed') !== false) {
             $class = 'is-bad';
@@ -1147,6 +1197,7 @@ final class SendingReadyPage
                         card.classList.toggle('is-upcoming', index > activeIndex && !isDone);
                         card.querySelectorAll('input, button').forEach(function (field) {
                             if (field.classList.contains('fflhub-pack-confirm')) {
+                                field.disabled = !isActive || !card.classList.contains('is-complete') || isDone || field.hasAttribute('data-confirming');
                                 return;
                             }
                             if (field.classList.contains('fflhub-pack-print')) {
@@ -1177,6 +1228,7 @@ final class SendingReadyPage
                     var expected = parseExpected(card).map(function (row, index) {
                         return {
                             index: index,
+                            itemId: parseInt(row.itemId || row.item_id || 0, 10) || 0,
                             upc: normalizeUpc(row.upc),
                             name: String(row.name || ''),
                             quantity: Math.max(1, parseInt(row.quantity || 1, 10)),
@@ -1192,11 +1244,13 @@ final class SendingReadyPage
                     var printForm = card.querySelector('.fflhub-pack-docs form');
                     var recordButton = card.querySelector('.fflhub-pack-record');
                     var confirmButton = card.querySelector('.fflhub-pack-confirm');
+                    var debugFillButton = card.querySelector('.fflhub-pack-debug-fill');
                     var message = card.querySelector('.fflhub-pack-message');
                     var log = card.querySelector('.fflhub-pack-log');
                     var pendingFflRow = null;
                     var upcTimer = null;
                     var serialTimer = null;
+                    var acceptedScans = [];
 
                     card.querySelectorAll('.fflhub-pack-print').forEach(function (button) {
                         if (button.disabled) {
@@ -1296,7 +1350,7 @@ final class SendingReadyPage
                             }
                         });
                         if (confirmButton) {
-                            confirmButton.disabled = !complete;
+                            confirmButton.disabled = !complete || !card.classList.contains('is-active') || card.classList.contains('is-done') || confirmButton.hasAttribute('data-confirming');
                         }
                         card.classList.toggle('is-complete', complete);
                         if (complete && !card.classList.contains('is-done')) {
@@ -1351,6 +1405,11 @@ final class SendingReadyPage
                         if (row.fflRequired) {
                             row.scannedSerials.push(serial);
                         }
+                        acceptedScans.push({
+                            item_id: row.itemId,
+                            upc: row.upc,
+                            serial: row.fflRequired ? serial : ''
+                        });
                         addLog(row, row.fflRequired ? serial : '');
                         setMessage('Scan accepted.', 'good');
                         if (upcInput) {
@@ -1409,6 +1468,21 @@ final class SendingReadyPage
                             }
                         });
                     }
+                    if (debugFillButton) {
+                        debugFillButton.addEventListener('click', function () {
+                            if (!card.classList.contains('is-active') || card.classList.contains('is-done')) {
+                                return;
+                            }
+
+                            expected.forEach(function (row) {
+                                while (row.scanned < row.quantity) {
+                                    var serial = row.fflRequired ? (row.serials[row.scanned] || row.serials[0] || 'DEBUG') : '';
+                                    acceptRow(row, serial);
+                                }
+                            });
+                            setMessage('Debug scans filled. Confirm shipment to send a debug fulfillment email only.', 'good');
+                        });
+                    }
                     if (upcInput) {
                         upcInput.addEventListener('keydown', function (event) {
                             if (event.key === 'Enter') {
@@ -1452,19 +1526,55 @@ final class SendingReadyPage
                                 return;
                             }
 
-                            card.classList.add('is-done');
-                            card.classList.remove('is-active');
-                            setMessage('Package confirmed locally. Shipment completion is not wired yet.', 'good');
+                            var data = new FormData();
+                            data.append('action', 'fflhub_wms_sending_confirm_package');
+                            data.append('fflhub_wms_sending_confirm_nonce', card.getAttribute('data-confirm-nonce') || '');
+                            data.append('wave_batch_id', card.getAttribute('data-wave-batch-id') || '0');
+                            data.append('easypost_batch_id', card.getAttribute('data-easypost-batch-id') || '0');
+                            data.append('order_id', card.getAttribute('data-order-id') || '0');
+                            data.append('package_index', card.getAttribute('data-package-index') || '0');
+                            data.append('scans_json', JSON.stringify(acceptedScans));
 
-                            var next = cards.findIndex(function (candidate, index) {
-                                return index > cardIndex && !candidate.classList.contains('is-done');
+                            var originalText = confirmButton.textContent;
+                            confirmButton.disabled = true;
+                            confirmButton.setAttribute('data-confirming', '1');
+                            confirmButton.textContent = 'Confirming...';
+                            setMessage('Confirming package and sending fulfillment email.', 'working');
+
+                            window.fetch(window.ajaxurl, {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                body: data
+                            }).then(function (response) {
+                                return response.json();
+                            }).then(function (payload) {
+                                if (!payload || !payload.success) {
+                                    throw new Error(payload && payload.data && payload.data.message ? payload.data.message : 'Shipment confirmation failed.');
+                                }
+
+                                card.classList.add('is-done');
+                                card.classList.remove('is-active');
+                                setMessage(payload.data && payload.data.message ? payload.data.message : 'Package confirmed.', 'good');
+                                card.querySelectorAll('input, button').forEach(function (field) {
+                                    field.disabled = true;
+                                });
+
+                                var next = cards.findIndex(function (candidate, index) {
+                                    return index > cardIndex && !candidate.classList.contains('is-done');
+                                });
+                                if (next === -1) {
+                                    setMessage('All packages in this wave have been handled.', 'good');
+                                    return;
+                                }
+
+                                setActiveCard(next);
+                            }).catch(function (error) {
+                                setMessage(error && error.message ? error.message : 'Shipment confirmation failed.', 'bad');
+                                confirmButton.disabled = false;
+                            }).finally(function () {
+                                confirmButton.removeAttribute('data-confirming');
+                                confirmButton.textContent = originalText;
                             });
-                            if (next === -1) {
-                                setMessage('All packages in this wave are packed locally. The final shipment action is the next thing to wire.', 'good');
-                                return;
-                            }
-
-                            setActiveCard(next);
                         });
                     }
 
@@ -1523,12 +1633,12 @@ final class SendingReadyPage
             .fflhub-pack-step{display:inline-flex;align-items:center;border-radius:999px;background:#eef3f0;color:#17462a;font-size:12px;font-weight:800;text-transform:uppercase;padding:4px 10px}
             .fflhub-pack-docs{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
             .fflhub-pack-docs form{margin:0}
-            .fflhub-pack-print,.fflhub-pack-confirm,.fflhub-pack-record{min-height:38px;font-weight:800}
+            .fflhub-pack-print,.fflhub-pack-confirm,.fflhub-pack-record,.fflhub-pack-debug-fill{min-height:38px;font-weight:800}
             .fflhub-pack-ffl-warning{border-left:4px solid #b32d2e;background:#fcf0f1;color:#5f1516;padding:12px;margin:12px 0;font-size:14px}
             .fflhub-pack-items{margin-top:12px}
             .fflhub-pack-items th{white-space:nowrap}
             .fflhub-pack-items code{font-size:13px}
-            .fflhub-pack-scan-panel{display:grid;grid-template-columns:minmax(240px,1fr) minmax(240px,1fr) auto auto;gap:10px;align-items:end;margin-top:14px;background:#f6f7f7;border:1px solid #dcdcde;border-radius:8px;padding:12px}
+            .fflhub-pack-scan-panel{display:grid;grid-template-columns:minmax(240px,1fr) minmax(240px,1fr) auto auto auto;gap:10px;align-items:end;margin-top:14px;background:#f6f7f7;border:1px solid #dcdcde;border-radius:8px;padding:12px}
             .fflhub-pack-scan-panel label span{display:block;font-size:12px;font-weight:800;text-transform:uppercase;color:#646970;margin-bottom:4px}
             .fflhub-pack-scan-panel input{width:100%}
             .fflhub-pack-scan-panel input:focus{border-color:#146c43;box-shadow:0 0 0 1px #146c43}

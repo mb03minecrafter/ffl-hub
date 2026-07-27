@@ -33,6 +33,7 @@ final class OrderWaverStore
     public const ORDER_STATUS_PACKING_FAILED = 'packing_failed';
     public const ORDER_STATUS_LABEL_SAVED = 'label_saved';
     public const ORDER_STATUS_LABEL_FAILED = 'label_failed';
+    public const ORDER_STATUS_SHIPPED = 'shipped';
 
     /**
      * Wave order statuses that should prevent the same Woo order from being
