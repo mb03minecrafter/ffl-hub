@@ -765,10 +765,12 @@ final class OrderBoxPackingService
             $dealer_units += $pack_qty;
 
             $measurements = $this->shipping_measurements_for_product($product, $state_row);
+            $ffl_required = self::boolish($state_row['ffl_required'] ?? null, false);
             $order_items[] = [
                 ...$this->order_item_summary($order_item, $product),
                 'item_id' => (int) $order_item->get_id(),
                 'quantity' => $pack_qty,
+                'ffl_required' => $ffl_required ? 1 : 0,
                 'weight_oz' => $measurements['weight_oz'],
                 'length_in' => $measurements['length_in'],
                 'width_in' => $measurements['width_in'],
@@ -794,6 +796,7 @@ final class OrderBoxPackingService
                     $upc,
                     (string) $product->get_sku(),
                     (string) $order_item->get_name(),
+                    $ffl_required,
                     (float) $measurements['length_in'],
                     (float) $measurements['width_in'],
                     (float) $measurements['height_in'],
@@ -1197,6 +1200,7 @@ final class OrderBoxPackingService
             'upc' => $product instanceof WC_Product ? $this->upc_for_product($product, $state_row) : '',
             'sku' => $product instanceof WC_Product ? (string) $product->get_sku() : '',
             'name' => (string) $item->get_name(),
+            'ffl_required' => self::boolish($state_row['ffl_required'] ?? null, false) ? 1 : 0,
         ];
     }
 

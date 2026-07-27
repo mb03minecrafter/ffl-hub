@@ -314,7 +314,7 @@ final class EasyPostShippingProvider implements ShippingProviderInterface
         $options = [
             'label_format' => strtoupper(EasyPostOptions::label_format()),
             'label_size' => EasyPostOptions::label_layout() === '4x6' ? '4x6' : '8.5x11',
-            'delivery_confirmation' => self::delivery_confirmation((string) ($shipment['confirmation'] ?? EasyPostOptions::confirmation())),
+            'delivery_confirmation' => self::delivery_confirmation_option((string) ($shipment['confirmation'] ?? EasyPostOptions::confirmation())),
         ];
 
         if (trim((string) ($shipment['external_order_id'] ?? '')) !== '') {
@@ -336,11 +336,11 @@ final class EasyPostShippingProvider implements ShippingProviderInterface
         return array_filter([
             'label_format' => in_array($format, ['PDF', 'PNG', 'ZPL', 'EPL2'], true) ? $format : 'PDF',
             'label_size' => $layout === '4x6' ? '4x6' : '8.5x11',
-            'delivery_confirmation' => self::delivery_confirmation((string) ($payload['confirmation'] ?? EasyPostOptions::confirmation())),
+            'delivery_confirmation' => self::delivery_confirmation_option((string) ($payload['confirmation'] ?? EasyPostOptions::confirmation())),
         ], static fn($value): bool => $value !== '' && $value !== null);
     }
 
-    private static function delivery_confirmation(string $confirmation): string
+    public static function delivery_confirmation_option(string $confirmation): string
     {
         $map = [
             'none' => 'NO_SIGNATURE',

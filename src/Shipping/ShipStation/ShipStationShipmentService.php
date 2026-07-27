@@ -14,6 +14,7 @@ use FFLHub\Shipping\EasyPost\EasyPostOptions;
 use FFLHub\Shipping\EasyPost\EasyPostShippingProvider;
 use FFLHub\Shipping\Packing\OrderBoxPackingService;
 use FFLHub\Shipping\Providers\ShippingProviderInterface;
+use FFLHub\Shipping\ShippingConfirmationPolicy;
 use FFLHub\Shipping\ShippingOptions;
 use FFLHub\Util\DebugLogUtil;
 use WC_Order;
@@ -659,6 +660,11 @@ final class ShipStationShipmentService
             'adult_signature',
             'direct_signature',
         ], ShipStationOptions::confirmation());
+        $confirmation = ShippingConfirmationPolicy::confirmation_for_package_assignments(
+            $confirmation,
+            $package_items,
+            $order_items
+        );
 
         $ship_date = sanitize_text_field((string) ($input['ship_date'] ?? gmdate('Y-m-d')));
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $ship_date)) {

@@ -681,7 +681,12 @@ final class EasyPostBatchLabelService
 
         $raw = is_array($response['raw'] ?? null) ? $response['raw'] : [];
         $reference = substr('fflhub-' . (int) $order->get_id() . '-p' . ($package_index + 1) . '-' . time(), 0, 50);
-        $batch_shipment = $this->batch_shipment_from_rate($raw, $rate, $reference);
+        $batch_shipment = $this->batch_shipment_from_rate(
+            $raw,
+            $rate,
+            $reference,
+            (string) ($shipment['confirmation'] ?? EasyPostOptions::confirmation())
+        );
         if (is_wp_error($batch_shipment)) {
             return $batch_shipment;
         }
@@ -740,7 +745,7 @@ final class EasyPostBatchLabelService
      * @param array<string,mixed> $rate
      * @return array<string,mixed>|WP_Error
      */
-    private function batch_shipment_from_rate(array $shipment, array $rate, string $reference)
+    private function batch_shipment_from_rate(array $shipment, array $rate, string $reference, string $confirmation)
     {
         $from_id = (string) ($shipment['from_address']['id'] ?? '');
         $to_id = (string) ($shipment['to_address']['id'] ?? '');
@@ -756,7 +761,7 @@ final class EasyPostBatchLabelService
             );
         }
 
-        return [
+        $batch_shipment = [
             'reference' => $reference,
             'from_address' => ['id' => $from_id],
             'to_address' => ['id' => $to_id],
@@ -765,6 +770,14 @@ final class EasyPostBatchLabelService
             'carrier' => $carrier,
             'carrier_accounts' => [$carrier_account],
         ];
+        $delivery_confirmation = EasyPostShippingProvider::delivery_confirmation_option($confirmation);
+        if ($delivery_confirmation !== 'NO_SIGNATURE') {
+            $batch_shipment['options'] = [
+                'delivery_confirmation' => $delivery_confirmation,
+            ];
+        }
+
+        return $batch_shipment;
     }
 
     /**
@@ -941,7 +954,7 @@ final class EasyPostBatchLabelService
                 'shipment_id' => $shipment_id,
                 'label_format' => EasyPostOptions::label_format(),
                 'label_layout' => EasyPostOptions::label_layout(),
-                'confirmation' => EasyPostOptions::confirmation(),
+                'confirmation' => (string) ($item['shipment']['confirmation'] ?? EasyPostOptions::confirmation()),
             ]);
             if (is_wp_error($api_label)) {
                 $item['label_error'] = $api_label->get_error_message();
