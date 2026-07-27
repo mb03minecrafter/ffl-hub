@@ -84,6 +84,19 @@ final class WMSFallbackFulfillment
         return $this->meta[$key] ?? ($single ? '' : []);
     }
 
+    public function get_meta_data(): array
+    {
+        $fields = [];
+        foreach ($this->meta as $key => $value) {
+            $fields[] = (object) [
+                'key' => $key,
+                'value' => $value,
+            ];
+        }
+
+        return $fields;
+    }
+
     public function get_date_deleted(): ?string
     {
         return null;
@@ -615,12 +628,12 @@ final class WMSShipmentConfirmationService
 
     private function send_fulfillment_email(WC_Order $order, object $fulfillment, bool $debug_ready, string $debug_recipient): bool
     {
-        if (function_exists('WC') && WC()) {
-            WC()->mailer();
-        }
+        $mailer = function_exists('WC') && WC() ? WC()->mailer() : null;
 
         $recipient_filter = null;
         $enabled_filter = null;
+        $details_hook_added = false;
+        $meta_hook_added = false;
         if ($debug_ready) {
             $recipient_filter = static function ($recipient, $object, $email) use ($debug_recipient) {
                 return $debug_recipient;
@@ -632,14 +645,25 @@ final class WMSShipmentConfirmationService
             add_filter('woocommerce_email_enabled_customer_fulfillment_created', $enabled_filter, 10, 3);
         }
 
-        try {
-            if ($debug_ready) {
-                return $this->trigger_fulfillment_email_directly($order, $fulfillment);
-            }
+        if (is_object($mailer) && method_exists($mailer, 'fulfillment_details') && !has_action('woocommerce_email_fulfillment_details', [$mailer, 'fulfillment_details'])) {
+            add_action('woocommerce_email_fulfillment_details', [$mailer, 'fulfillment_details'], 10, 5);
+            $details_hook_added = true;
+        }
 
-            do_action('woocommerce_fulfillment_created_notification', $order->get_id(), $fulfillment, $order);
-            return true;
+        if (is_object($mailer) && method_exists($mailer, 'fulfillment_meta') && !has_action('woocommerce_email_fulfillment_meta', [$mailer, 'fulfillment_meta'])) {
+            add_action('woocommerce_email_fulfillment_meta', [$mailer, 'fulfillment_meta'], 30, 4);
+            $meta_hook_added = true;
+        }
+
+        try {
+            return $this->trigger_fulfillment_email_directly($order, $fulfillment);
         } finally {
+            if ($details_hook_added && is_object($mailer)) {
+                remove_action('woocommerce_email_fulfillment_details', [$mailer, 'fulfillment_details'], 10);
+            }
+            if ($meta_hook_added && is_object($mailer)) {
+                remove_action('woocommerce_email_fulfillment_meta', [$mailer, 'fulfillment_meta'], 30);
+            }
             if ($recipient_filter !== null) {
                 remove_filter('woocommerce_email_recipient_customer_fulfillment_created', $recipient_filter, 10);
             }
