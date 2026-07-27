@@ -628,12 +628,26 @@ final class WMSShipmentConfirmationService
 
     private function send_fulfillment_email(WC_Order $order, object $fulfillment, bool $debug_ready, string $debug_recipient): bool
     {
-        $mailer = function_exists('WC') && WC() ? WC()->mailer() : null;
+        if (!function_exists('WC') || !WC()) {
+            return false;
+        }
+
+        $mailer = WC()->mailer();
+        $emails = is_object($mailer) && method_exists($mailer, 'get_emails') ? $mailer->get_emails() : [];
+        $fulfillment_email_registered = false;
+        foreach ($emails as $email) {
+            if (is_object($email) && (string) ($email->id ?? '') === 'customer_fulfillment_created') {
+                $fulfillment_email_registered = true;
+                break;
+            }
+        }
+
+        if (!$fulfillment_email_registered || !has_action('woocommerce_fulfillment_created_notification')) {
+            return false;
+        }
 
         $recipient_filter = null;
         $enabled_filter = null;
-        $details_hook_added = false;
-        $meta_hook_added = false;
         if ($debug_ready) {
             $recipient_filter = static function ($recipient, $object, $email) use ($debug_recipient) {
                 return $debug_recipient;
@@ -645,25 +659,10 @@ final class WMSShipmentConfirmationService
             add_filter('woocommerce_email_enabled_customer_fulfillment_created', $enabled_filter, 10, 3);
         }
 
-        if (is_object($mailer) && method_exists($mailer, 'fulfillment_details') && !has_action('woocommerce_email_fulfillment_details', [$mailer, 'fulfillment_details'])) {
-            add_action('woocommerce_email_fulfillment_details', [$mailer, 'fulfillment_details'], 10, 5);
-            $details_hook_added = true;
-        }
-
-        if (is_object($mailer) && method_exists($mailer, 'fulfillment_meta') && !has_action('woocommerce_email_fulfillment_meta', [$mailer, 'fulfillment_meta'])) {
-            add_action('woocommerce_email_fulfillment_meta', [$mailer, 'fulfillment_meta'], 30, 4);
-            $meta_hook_added = true;
-        }
-
         try {
-            return $this->trigger_fulfillment_email_directly($order, $fulfillment);
+            do_action('woocommerce_fulfillment_created_notification', $order->get_id(), $fulfillment, $order);
+            return true;
         } finally {
-            if ($details_hook_added && is_object($mailer)) {
-                remove_action('woocommerce_email_fulfillment_details', [$mailer, 'fulfillment_details'], 10);
-            }
-            if ($meta_hook_added && is_object($mailer)) {
-                remove_action('woocommerce_email_fulfillment_meta', [$mailer, 'fulfillment_meta'], 30);
-            }
             if ($recipient_filter !== null) {
                 remove_filter('woocommerce_email_recipient_customer_fulfillment_created', $recipient_filter, 10);
             }
@@ -671,51 +670,6 @@ final class WMSShipmentConfirmationService
                 remove_filter('woocommerce_email_enabled_customer_fulfillment_created', $enabled_filter, 10);
             }
         }
-    }
-
-    private function trigger_fulfillment_email_directly(WC_Order $order, object $fulfillment): bool
-    {
-        $email = $this->woo_fulfillment_email();
-        if (!is_object($email) || !method_exists($email, 'trigger')) {
-            return false;
-        }
-
-        $email->trigger($order->get_id(), $fulfillment, $order);
-        return true;
-    }
-
-    private function woo_fulfillment_email(): ?object
-    {
-        if (function_exists('WC') && WC()) {
-            $emails = WC()->mailer()->get_emails();
-            foreach ($emails as $email) {
-                if (is_object($email) && (string) ($email->id ?? '') === 'customer_fulfillment_created') {
-                    return $email;
-                }
-            }
-        }
-
-        if (!class_exists('WC_Email_Customer_Fulfillment_Created', false)) {
-            $path = '';
-            if (function_exists('WC') && WC() && method_exists(WC(), 'plugin_path')) {
-                $path = trailingslashit(WC()->plugin_path()) . 'includes/emails/class-wc-email-customer-fulfillment-created.php';
-            } elseif (defined('WC_PLUGIN_FILE')) {
-                $path = plugin_dir_path(WC_PLUGIN_FILE) . 'includes/emails/class-wc-email-customer-fulfillment-created.php';
-            }
-
-            if ($path !== '' && is_readable($path)) {
-                $loaded = require $path;
-                if (is_object($loaded) && (string) ($loaded->id ?? '') === 'customer_fulfillment_created') {
-                    return $loaded;
-                }
-            }
-        }
-
-        if (class_exists('WC_Email_Customer_Fulfillment_Created')) {
-            return new \WC_Email_Customer_Fulfillment_Created();
-        }
-
-        return null;
     }
 
     private function all_packages_confirmed(WC_Order $order, int $wave_batch_id, int $easypost_batch_id): bool
