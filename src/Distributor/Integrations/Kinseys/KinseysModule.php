@@ -75,6 +75,13 @@ final class KinseysModule implements DistributorModuleInterface
                 'description' => 'Optional source label Kinsey\'s uses for troubleshooting.',
                 'default' => 'FFLHub',
             ],
+            'ffl_document_email_to' => [
+                'label' => 'FFL Document Email Recipients',
+                'type' => 'text',
+                'placeholder' => 'firearms@example.com',
+                'description' => 'Recipients used by the FFL Documents Required page when emailing uploaded FFL copies for Kinsey\'s direct-ship firearm orders. Multiple emails can be separated by commas.',
+                'default' => '',
+            ],
         ];
     }
 

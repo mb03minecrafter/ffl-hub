@@ -75,6 +75,11 @@ final class DistributorOrderingAdminPage
                     'description' => __('Distributor shipment tracking rows after dealer-fulfilled orders are placed.', 'ffl-hub'),
                 ],
                 [
+                    'label' => __('FFL Documents Required', 'ffl-hub'),
+                    'slug' => 'fflhub-ffl-documents-required',
+                    'description' => __('Upload and email receiving FFL copies for Sports South and Kinsey\'s drop-ship firearm orders.', 'ffl-hub'),
+                ],
+                [
                     'label' => __("Davidson's Manual Order Status", 'ffl-hub'),
                     'slug' => 'fflhub-davidsons-manual-order-status',
                     'description' => __('Manual Davidson\'s PO entry and completion workflow.', 'ffl-hub'),

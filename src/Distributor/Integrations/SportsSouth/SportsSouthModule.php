@@ -132,6 +132,13 @@ final class SportsSouthModule implements DistributorModuleInterface
                 'description' => 'Send Insurance=True on Sports South order headers.',
                 'default' => '0',
             ],
+            'ffl_document_email_to' => [
+                'label' => 'FFL Document Email Recipients',
+                'type' => 'text',
+                'placeholder' => 'fulfillment@sportssouth.biz',
+                'description' => 'Recipients used by the FFL Documents Required page when emailing uploaded FFL copies for Sports South direct-ship firearm orders. Multiple emails can be separated by commas.',
+                'default' => 'fulfillment@sportssouth.biz',
+            ],
             'dealer_batch_enabled' => [
                 'label' => 'Enable Sports South Dealer Batch Queue',
                 'type' => 'checkbox',
