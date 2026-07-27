@@ -133,11 +133,10 @@ final class SendingReadyPage
         }
 
         OrderWaverStore::log($wave_batch_id, 0, 'info', 'print_queued', sprintf(
-            'Queued %d PrintNode job(s) for EasyPost batch #%d with a %d second delay and max %d job(s) per run.',
+            'Queued %d PrintNode job(s) for EasyPost batch #%d with a %d second delay.',
             (int) ($result['queued_count'] ?? 0),
             $easypost_batch_id,
-            (int) ($result['delay_seconds'] ?? 0),
-            (int) ($result['max_jobs_per_run'] ?? 0)
+            (int) ($result['delay_seconds'] ?? 0)
         ), [
             'run_key' => (string) ($result['run_key'] ?? ''),
             'queue_job_ids' => $result['queue_job_ids'] ?? [],
@@ -282,12 +281,6 @@ final class SendingReadyPage
                 (int) ($print['delay_seconds'] ?? 0)
             )) . '</span>';
         }
-        if (isset($print['max_jobs_per_run'])) {
-            echo '<span class="fflhub-sending-ready-muted">' . esc_html(sprintf(
-                __('Max per run: %d job(s)', 'ffl-hub'),
-                (int) ($print['max_jobs_per_run'] ?? 0)
-            )) . '</span>';
-        }
         echo '<span class="fflhub-sending-ready-muted">' . esc_html($this->local_time((string) ($print['updated_at'] ?? $print['queued_at'] ?? ''))) . '</span>';
 
         foreach (array_slice((array) ($print['errors'] ?? []), 0, 3) as $error) {
@@ -387,10 +380,9 @@ final class SendingReadyPage
                 <strong>
                     <?php
                     echo esc_html(sprintf(
-                        __('Queued %1$d PrintNode job(s) with a %2$d second delay and max %3$d job(s) per queue run.', 'ffl-hub'),
+                        __('Queued %1$d PrintNode job(s) with a %2$d second delay between jobs.', 'ffl-hub'),
                         (int) ($print['queued_count'] ?? 0),
-                        (int) ($print['delay_seconds'] ?? 0),
-                        (int) ($print['max_jobs_per_run'] ?? 0)
+                        (int) ($print['delay_seconds'] ?? 0)
                     ));
                     ?>
                 </strong>

@@ -28,7 +28,6 @@ final class PrintNodeOptions
             'default_printer_id' => '',
             'copies' => '1',
             'job_delay_seconds' => '20',
-            'max_jobs_per_queue_run' => '3',
             'expire_after_seconds' => '86400',
             'fit_to_page' => '0',
             'printers' => [],
@@ -52,7 +51,6 @@ final class PrintNodeOptions
         $merged['default_printer_id'] = sanitize_text_field((string) ($merged['default_printer_id'] ?? ''));
         $merged['copies'] = (string) max(1, min(10, (int) ($merged['copies'] ?? 1)));
         $merged['job_delay_seconds'] = (string) max(0, min(3600, (int) ($merged['job_delay_seconds'] ?? 20)));
-        $merged['max_jobs_per_queue_run'] = (string) max(1, min(20, (int) ($merged['max_jobs_per_queue_run'] ?? 3)));
         $merged['expire_after_seconds'] = (string) max(60, min(604800, (int) ($merged['expire_after_seconds'] ?? 86400)));
         $merged['fit_to_page'] = !empty($merged['fit_to_page']) ? '1' : '0';
         $merged['printers'] = self::sanitize_printers($merged['printers'] ?? []);
@@ -73,7 +71,6 @@ final class PrintNodeOptions
             'default_printer_id' => sanitize_text_field((string) ($input['default_printer_id'] ?? '')),
             'copies' => (string) max(1, min(10, (int) ($input['copies'] ?? 1))),
             'job_delay_seconds' => (string) max(0, min(3600, (int) ($input['job_delay_seconds'] ?? 20))),
-            'max_jobs_per_queue_run' => (string) max(1, min(20, (int) ($input['max_jobs_per_queue_run'] ?? 3))),
             'expire_after_seconds' => (string) max(60, min(604800, (int) ($input['expire_after_seconds'] ?? 86400))),
             'fit_to_page' => !empty($input['fit_to_page']) ? '1' : '0',
             'printers' => self::sanitize_printers($current['printers'] ?? []),
@@ -173,11 +170,6 @@ final class PrintNodeOptions
     public static function job_delay_seconds(): int
     {
         return max(0, min(3600, (int) (self::get_all()['job_delay_seconds'] ?? 20)));
-    }
-
-    public static function max_jobs_per_queue_run(): int
-    {
-        return max(1, min(20, (int) (self::get_all()['max_jobs_per_queue_run'] ?? 3)));
     }
 
     public static function expire_after_seconds(): int

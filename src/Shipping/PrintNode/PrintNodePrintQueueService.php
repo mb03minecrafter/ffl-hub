@@ -15,15 +15,12 @@ if (!defined('ABSPATH')) {
 /**
  * Builds and drains the PrintNode queue.
  *
- * The Sending page queues every label/slip document immediately. The Action
- * Scheduler worker calls process_one_due_job(), which submits exactly one due
- * document to PrintNode. That gives the printer a cooling gap between jobs.
+ * The Sending page queues every label/slip document immediately. A WP-CLI
+ * worker should drain this queue continuously so the delay between jobs is
+ * real wall-clock time instead of "whatever cron happened to do today."
  */
 final class PrintNodePrintQueueService
 {
-    private const DEFAULT_WORKER_WINDOW_SECONDS = 55;
-    private const ABSOLUTE_MAX_JOBS_PER_WORKER_RUN = 20;
-
     private PrintNodeClient $client;
     private EasyPostBatchLabelService $batch_service;
     private PdfDocumentService $pdf_service;
@@ -89,7 +86,6 @@ final class PrintNodePrintQueueService
         $this->update_batch_print_status($batch_id, (string) $queued['run_key'], [
             'queued_at' => current_time('mysql', true),
             'delay_seconds' => $delay,
-            'max_jobs_per_run' => PrintNodeOptions::max_jobs_per_queue_run(),
             'printer_id' => PrintNodeOptions::default_printer_id(),
             'queued_job_ids' => $queued['job_ids'],
             'queue_errors' => $errors,
@@ -100,7 +96,6 @@ final class PrintNodePrintQueueService
             'run_key' => (string) $queued['run_key'],
             'printer_id' => PrintNodeOptions::default_printer_id(),
             'delay_seconds' => $delay,
-            'max_jobs_per_run' => PrintNodeOptions::max_jobs_per_queue_run(),
             'queued_count' => (int) $queued['queued_count'],
             'queue_job_ids' => $queued['job_ids'],
             'errors' => $errors,
@@ -169,74 +164,69 @@ final class PrintNodePrintQueueService
     }
 
     /**
-     * @return array{processed:int,printed:int,failed:int,waited_seconds:int,max_jobs:int,results:array<int,array<string,mixed>>}
+     * @return array{processed:int,printed:int,failed:int,idle_loops:int,waited_seconds:int,started_at:int,stopped_at:int}
      */
-    public function process_due_jobs_for_window(int $max_seconds = self::DEFAULT_WORKER_WINDOW_SECONDS): array
+    public function run_worker_loop(int $idle_sleep_seconds = 1, int $max_runtime_seconds = 0, bool $verbose = false): array
     {
-        $max_seconds = max(1, min(120, $max_seconds));
-        $deadline = time() + $max_seconds;
+        $idle_sleep_seconds = max(1, min(60, $idle_sleep_seconds));
+        $max_runtime_seconds = max(0, $max_runtime_seconds);
+        $started = time();
+        $deadline = $max_runtime_seconds > 0 ? $started + $max_runtime_seconds : 0;
         $processed = 0;
         $printed = 0;
         $failed = 0;
+        $idle_loops = 0;
         $waited = 0;
-        $results = [];
-        $delay_seconds = PrintNodeOptions::job_delay_seconds();
-        $max_jobs = min(self::ABSOLUTE_MAX_JOBS_PER_WORKER_RUN, PrintNodeOptions::max_jobs_per_queue_run());
 
-        while (time() <= $deadline && $processed < $max_jobs) {
+        while (true) {
+            if ($deadline > 0 && time() >= $deadline) {
+                break;
+            }
+
             $result = $this->process_one_due_job();
             if (is_array($result)) {
                 $processed++;
-                $results[] = $result;
                 if ((string) ($result['status'] ?? '') === PrintNodePrintQueueStore::STATUS_PRINTED) {
                     $printed++;
                 } else {
                     $failed++;
                 }
 
-                if (
-                    (string) ($result['status'] ?? '') === PrintNodePrintQueueStore::STATUS_PRINTED
-                    && $processed < $max_jobs
-                ) {
-                    $next_available = PrintNodePrintQueueStore::next_queued_available_timestamp();
-                    if ($next_available === null) {
+                if ($verbose && class_exists('\WP_CLI')) {
+                    \WP_CLI::log(sprintf(
+                        '[%s] %s job_id=%d title=%s',
+                        gmdate('Y-m-d H:i:s'),
+                        (string) ($result['status'] ?? 'processed'),
+                        (int) ($result['job_id'] ?? 0),
+                        (string) ($result['title'] ?? ($result['error'] ?? ''))
+                    ));
+                }
+
+                $delay_seconds = PrintNodeOptions::job_delay_seconds();
+                if ($delay_seconds > 0) {
+                    $sleep_seconds = $this->bounded_sleep_seconds($delay_seconds, $deadline);
+                    if ($sleep_seconds <= 0) {
                         break;
                     }
 
-                    $sleep_seconds = max(0, $next_available - time());
-                    if ($delay_seconds > 0) {
-                        $sleep_seconds = max($sleep_seconds, $delay_seconds);
-                    }
-
-                    if ($sleep_seconds > 0) {
-                        if (time() + $sleep_seconds > $deadline) {
-                            break;
-                        }
-
-                        sleep($sleep_seconds);
-                        $waited += $sleep_seconds;
-                    }
+                    sleep($sleep_seconds);
+                    $waited += $sleep_seconds;
                 }
                 continue;
             }
 
             $next_available = PrintNodePrintQueueStore::next_queued_available_timestamp();
-            if ($next_available === null) {
-                break;
+            $sleep_seconds = $idle_sleep_seconds;
+            if ($next_available !== null) {
+                $sleep_seconds = max(1, min($idle_sleep_seconds, $next_available - time()));
             }
 
-            $sleep_seconds = $next_available - time();
+            $sleep_seconds = $this->bounded_sleep_seconds($sleep_seconds, $deadline);
             if ($sleep_seconds <= 0) {
-                continue;
-            }
-
-            if (time() + $sleep_seconds > $deadline) {
                 break;
             }
 
-            // This sleep happens inside the Action Scheduler worker, not inside
-            // the admin request. It lets one cron wakeup release several print
-            // jobs while still giving the thermal printer a cooldown gap.
+            $idle_loops++;
             sleep($sleep_seconds);
             $waited += $sleep_seconds;
         }
@@ -245,9 +235,10 @@ final class PrintNodePrintQueueService
             'processed' => $processed,
             'printed' => $printed,
             'failed' => $failed,
+            'idle_loops' => $idle_loops,
             'waited_seconds' => $waited,
-            'max_jobs' => $max_jobs,
-            'results' => $results,
+            'started_at' => $started,
+            'stopped_at' => time(),
         ];
     }
 
@@ -353,5 +344,15 @@ final class PrintNodePrintQueueService
         }
 
         return (string) ($normalized['body'] ?? '');
+    }
+
+    private function bounded_sleep_seconds(int $sleep_seconds, int $deadline): int
+    {
+        $sleep_seconds = max(0, $sleep_seconds);
+        if ($deadline <= 0) {
+            return $sleep_seconds;
+        }
+
+        return max(0, min($sleep_seconds, $deadline - time()));
     }
 }

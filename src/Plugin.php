@@ -101,7 +101,6 @@ use FFLHub\Settings\Options;
 use FFLHub\Settings\SettingsRegistrar;
 use FFLHub\Shipping\ShipStation\ShipStationRestController;
 use FFLHub\Shipping\EasyPost\EasyPostRestController;
-use FFLHub\Shipping\PrintNode\PrintNodePrintQueueCronService;
 use FFLHub\Shipping\PrintNode\PrintNodePrintQueueStore;
 use FFLHub\Shipping\Wordpress\ShippingRegistrar;
 use FFLHub\Util\ActionSchedulerWebRunnerGuard;
@@ -185,7 +184,6 @@ final class Plugin
     private GunMadeFeedCronService $gunmade_feed_cron_service;
     private OrderWaverPackingCronService $order_waver_packing_cron_service;
     private OrderWaverLabelCronService $order_waver_label_cron_service;
-    private PrintNodePrintQueueCronService $printnode_print_queue_cron_service;
 
     public static function instance(): self
     {
@@ -241,8 +239,6 @@ final class Plugin
         $this->order_waver_packing_cron_service->register();
         $this->order_waver_label_cron_service = new OrderWaverLabelCronService();
         $this->order_waver_label_cron_service->register();
-        $this->printnode_print_queue_cron_service = new PrintNodePrintQueueCronService();
-        $this->printnode_print_queue_cron_service->register();
 
         ShippingRegistrar::init();
         ShipStationRestController::init($this->ffl_table);
