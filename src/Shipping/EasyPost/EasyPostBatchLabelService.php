@@ -305,6 +305,10 @@ final class EasyPostBatchLabelService
             return new WP_Error('fflhub_easypost_batch_missing', 'Could not find that local EasyPost batch.');
         }
 
+        if ($this->batch_needs_individual_signature_purchase($batch)) {
+            return $this->buy_items_individually_for_signature($local_batch_id, $batch);
+        }
+
         $provider_batch_id = trim((string) ($batch['provider_batch_id'] ?? ''));
         if ($provider_batch_id === '') {
             $shipments = [];
@@ -993,9 +997,64 @@ final class EasyPostBatchLabelService
      */
     private function buy_items_individually(int $local_batch_id, array $batch, string $provider_batch_id, WP_Error $batch_error)
     {
+        return $this->buy_items_individually_with_reason(
+            $local_batch_id,
+            $batch,
+            $provider_batch_id !== '' ? $provider_batch_id : 'individual-' . $local_batch_id,
+            'EasyPost refused batch postage purchase; individual shipment fallback was used.',
+            'Purchased individually after EasyPost refused batch postage purchase.',
+            [
+                'fallback' => 'individual_shipments',
+                'batch_purchase_error' => [
+                    'message' => $batch_error->get_error_message(),
+                    'data' => $batch_error->get_error_data(),
+                ],
+            ]
+        );
+    }
+
+    /**
+     * EasyPost batch shipment copies can lose delivery-confirmation semantics
+     * for USPS labels. FFL packages must never risk silently dropping signature
+     * confirmation, so those waves buy their already-rated Shipments directly.
+     *
+     * @param array<string,mixed> $batch
+     * @return array<string,mixed>|WP_Error
+     */
+    private function buy_items_individually_for_signature(int $local_batch_id, array $batch)
+    {
+        return $this->buy_items_individually_with_reason(
+            $local_batch_id,
+            $batch,
+            'individual-' . $local_batch_id,
+            'Signature-required packages are purchased individually so EasyPost receives delivery confirmation on the shipment buy request.',
+            'Purchased individually because this wave contains a signature-required package.',
+            [
+                'fallback' => 'individual_shipments',
+                'reason' => 'signature_required',
+            ]
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $batch
+     * @param array<string,mixed> $response_context
+     * @return array<string,mixed>|WP_Error
+     */
+    private function buy_items_individually_with_reason(
+        int $local_batch_id,
+        array $batch,
+        string $provider_batch_id,
+        string $error_message_prefix,
+        string $item_success_message,
+        array $response_context
+    ) {
         $items = is_array($batch['items'] ?? null) ? $batch['items'] : [];
         if (empty($items)) {
-            return $batch_error;
+            return new WP_Error(
+                'fflhub_easypost_individual_empty_batch',
+                'No prepared EasyPost package items were available to buy individually.'
+            );
         }
 
         $saved = 0;
@@ -1050,7 +1109,7 @@ final class EasyPostBatchLabelService
                 max(1, (int) ($package_counts[(int) $order->get_id()] ?? 1))
             )) {
                 $item['batch_status'] = 'postage_purchased';
-                $item['batch_message'] = 'Purchased individually after EasyPost refused batch postage purchase.';
+                $item['batch_message'] = $item_success_message;
                 $item['batch_purchase_fallback'] = true;
                 $saved++;
             }
@@ -1060,23 +1119,19 @@ final class EasyPostBatchLabelService
         $status = $this->all_items_have_saved_labels($items)
             ? EasyPostBatchLabelStore::STATUS_LABELS_SAVED
             : ($saved > 0 ? EasyPostBatchLabelStore::STATUS_PARTIAL_LABELS_SAVED : EasyPostBatchLabelStore::STATUS_FAILED);
-        $error_message = 'EasyPost refused batch postage purchase; individual shipment fallback was used.';
+        $error_message = $error_message_prefix;
         if (!empty($errors)) {
             $error_message .= ' ' . implode(' ', array_slice($errors, 0, 6));
         }
 
+        $response_context['labels_saved'] = $saved;
+        $response_context['errors'] = $errors;
+
         EasyPostBatchLabelStore::update($local_batch_id, [
+            'provider_batch_id' => $provider_batch_id,
             'status' => $status,
             'items_json' => $items,
-            'response_json' => [
-                'fallback' => 'individual_shipments',
-                'batch_purchase_error' => [
-                    'message' => $batch_error->get_error_message(),
-                    'data' => $batch_error->get_error_data(),
-                ],
-                'labels_saved' => $saved,
-                'errors' => $errors,
-            ],
+            'response_json' => $response_context,
             'error_message' => $error_message,
         ]);
 
@@ -1084,9 +1139,28 @@ final class EasyPostBatchLabelService
             'batch' => EasyPostBatchLabelStore::get($local_batch_id),
             'labels_saved' => $saved,
             'fallback' => 'individual_shipments',
-            'message' => 'EasyPost refused the batch-wide postage purchase, so FFL Hub bought the prepared shipments individually.',
+            'message' => $error_message_prefix,
             'errors' => $errors,
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $batch
+     */
+    private function batch_needs_individual_signature_purchase(array $batch): bool
+    {
+        foreach ((array) ($batch['items'] ?? []) as $item) {
+            if (!is_array($item) || !empty($item['label_saved'])) {
+                continue;
+            }
+
+            $confirmation = (string) ($item['shipment']['confirmation'] ?? EasyPostOptions::confirmation());
+            if (EasyPostShippingProvider::delivery_confirmation_option($confirmation) !== 'NO_SIGNATURE') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
