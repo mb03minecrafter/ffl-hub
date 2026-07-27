@@ -107,7 +107,7 @@ use FFLHub\Util\ActionSchedulerWebRunnerGuard;
 use FFLHub\WMS\OrderWaverLabelCronService;
 use FFLHub\WMS\OrderWaverPackingCronService;
 use FFLHub\WMS\OrderWaverStore;
-use FFLHub\Woo\Emails\FulfillmentEmailTemplates;
+use FFLHub\Woo\Emails\FulfillmentEmailContent;
 
 /**
  * Main plugin bootstrapper for FFL Hub.
@@ -210,7 +210,7 @@ final class Plugin
         CollectionCarouselBlock::init();
         BlogPostCarouselBlock::init();
         GunMadeFeedEndpoint::init();
-        FulfillmentEmailTemplates::init();
+        FulfillmentEmailContent::init();
 
         $this->ffl_table_schema = new FFLSchema();
 
