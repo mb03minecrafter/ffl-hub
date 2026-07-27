@@ -3,7 +3,6 @@ declare(strict_types=1);
 
 namespace FFLHub\WMS;
 
-use Automattic\WooCommerce\Internal\Fulfillments\Fulfillment;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Receiving\ReceivingEventsStore;
 use FFLHub\Shipping\ShipStation\ShipStationOrderMeta;
@@ -14,6 +13,90 @@ use WP_Error;
 
 if (!defined('ABSPATH')) {
     exit;
+}
+
+/**
+ * Minimal fulfillment-shaped object used when Woo's DB-backed fulfillment
+ * feature is unavailable but its email template can still render tracking.
+ */
+final class WMSFallbackFulfillment
+{
+    /** @var array<int,array{item_id:int,qty:int}> */
+    private array $items = [];
+
+    /** @var array<string,mixed> */
+    private array $meta = [];
+
+    private ?string $entity_type = null;
+    private ?string $entity_id = null;
+    private ?string $status = null;
+    private ?string $date_fulfilled = null;
+    private bool $locked = false;
+
+    public function get_id(): int
+    {
+        return 0;
+    }
+
+    public function set_entity_type(?string $entity_type): void
+    {
+        $this->entity_type = $entity_type;
+    }
+
+    public function set_entity_id(?string $entity_id): void
+    {
+        $this->entity_id = $entity_id;
+    }
+
+    public function set_items(array $items): void
+    {
+        $this->items = array_values($items);
+    }
+
+    public function get_items(): array
+    {
+        return $this->items;
+    }
+
+    public function set_status(?string $status): void
+    {
+        $this->status = $status;
+    }
+
+    public function set_date_fulfilled(string $date_fulfilled): void
+    {
+        $this->date_fulfilled = $date_fulfilled;
+        $this->meta['_date_fulfilled'] = $date_fulfilled;
+    }
+
+    public function add_meta_data(string $key, $value, bool $unique = false): void
+    {
+        if ($unique || !isset($this->meta[$key])) {
+            $this->meta[$key] = $value;
+            return;
+        }
+
+        $this->meta[$key] = array_merge((array) $this->meta[$key], [$value]);
+    }
+
+    public function get_meta(string $key, bool $single = true)
+    {
+        return $this->meta[$key] ?? ($single ? '' : []);
+    }
+
+    public function get_date_deleted(): ?string
+    {
+        return null;
+    }
+
+    public function set_locked(bool $locked, string $message = ''): void
+    {
+        $this->locked = $locked;
+        $this->meta['_is_locked'] = $locked;
+        if ($message !== '') {
+            $this->meta['_lock_message'] = $message;
+        }
+    }
 }
 
 /**
@@ -109,7 +192,8 @@ final class WMSShipmentConfirmationService
         }
 
         $fulfillment_id = 0;
-        if (!$debug_ready) {
+        $has_real_fulfillment_record = $this->is_real_fulfillment_record($fulfillment);
+        if (!$debug_ready && $has_real_fulfillment_record) {
             $fulfillment->save();
             $fulfillment_id = (int) $fulfillment->get_id();
             if ($fulfillment_id <= 0) {
@@ -439,14 +523,10 @@ final class WMSShipmentConfirmationService
     /**
      * @param array<int,array<string,mixed>> $expected
      * @param array<string,mixed> $label
-     * @return Fulfillment|WP_Error
+     * @return object|WP_Error
      */
     private function build_fulfillment(WC_Order $order, array $expected, array $label, bool $debug_ready)
     {
-        if (!class_exists(Fulfillment::class)) {
-            return new WP_Error('fflhub_wms_confirm_no_fulfillment_api', 'WooCommerce fulfillment records are not available.');
-        }
-
         $items = [];
         foreach ($expected as $row) {
             $item_id = (int) ($row['item_id'] ?? 0);
@@ -473,7 +553,11 @@ final class WMSShipmentConfirmationService
         }
 
         $provider = $this->shipment_provider($label);
-        $fulfillment = new Fulfillment();
+        $fulfillment = $this->new_woo_fulfillment();
+        if (!is_object($fulfillment)) {
+            $fulfillment = new WMSFallbackFulfillment();
+        }
+
         $fulfillment->set_entity_type(WC_Order::class);
         $fulfillment->set_entity_id((string) $order->get_id());
         $fulfillment->set_items(array_values($items));
@@ -491,7 +575,45 @@ final class WMSShipmentConfirmationService
         return $fulfillment;
     }
 
-    private function send_fulfillment_email(WC_Order $order, Fulfillment $fulfillment, bool $debug_ready, string $debug_recipient): bool
+    /**
+     * @return object|null
+     */
+    private function new_woo_fulfillment(): ?object
+    {
+        foreach ($this->woo_fulfillment_classes() as $class) {
+            if (!class_exists($class)) {
+                continue;
+            }
+
+            try {
+                return new $class();
+            } catch (\Throwable $exception) {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return string[]
+     */
+    private function woo_fulfillment_classes(): array
+    {
+        return [
+            'Automattic\\WooCommerce\\Admin\\Features\\Fulfillments\\Fulfillment',
+            'Automattic\\WooCommerce\\Internal\\Fulfillments\\Fulfillment',
+        ];
+    }
+
+    private function is_real_fulfillment_record(object $fulfillment): bool
+    {
+        return in_array(get_class($fulfillment), $this->woo_fulfillment_classes(), true)
+            && method_exists($fulfillment, 'save')
+            && method_exists($fulfillment, 'get_id');
+    }
+
+    private function send_fulfillment_email(WC_Order $order, object $fulfillment, bool $debug_ready, string $debug_recipient): bool
     {
         if (function_exists('WC') && WC()) {
             WC()->mailer();
@@ -527,7 +649,7 @@ final class WMSShipmentConfirmationService
         }
     }
 
-    private function trigger_fulfillment_email_directly(WC_Order $order, Fulfillment $fulfillment): bool
+    private function trigger_fulfillment_email_directly(WC_Order $order, object $fulfillment): bool
     {
         if (!function_exists('WC') || !WC()) {
             return false;
