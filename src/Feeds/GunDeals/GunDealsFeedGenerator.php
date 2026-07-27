@@ -254,7 +254,10 @@ final class GunDealsFeedGenerator
                 p.post_title AS title,
                 p.post_name AS slug,
                 '' AS sku,
-                ps.stock_status AS stock_status,
+                CASE
+                    WHEN COALESCE(ps.local_stock_override_qty, 0) > 0 THEN 'instock'
+                    ELSE ps.stock_status
+                END AS stock_status,
                 CAST(COALESCE(ps.public_sale_price, ps.public_regular_price, ps.computed_sell_price) AS CHAR) AS price,
                 CAST(ps.public_regular_price AS CHAR) AS regular_price,
                 CAST(ps.public_sale_price AS CHAR) AS sale_price,
@@ -293,8 +296,10 @@ final class GunDealsFeedGenerator
               AND p.post_status = 'publish'
               AND ps.upc <> ''
               AND ps.enabled = 1
-              AND ps.stock_status = 'instock'
-              AND ps.qty > 0
+              AND (
+                    (ps.stock_status = 'instock' AND ps.qty > 0)
+                    OR COALESCE(ps.local_stock_override_qty, 0) > 0
+              )
               AND NOT EXISTS (
                   SELECT 1
                   FROM {$term_relationships} tr_vis

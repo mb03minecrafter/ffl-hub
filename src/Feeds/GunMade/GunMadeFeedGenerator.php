@@ -169,8 +169,14 @@ final class GunMadeFeedGenerator
                 ps.distributor_id AS source,
                 ps.distributor_product_id,
                 ps.distributor_sku,
-                ps.stock_status,
-                ps.qty,
+                CASE
+                    WHEN COALESCE(ps.local_stock_override_qty, 0) > 0 THEN 'instock'
+                    ELSE ps.stock_status
+                END AS stock_status,
+                CASE
+                    WHEN COALESCE(ps.local_stock_override_qty, 0) > 0 THEN ps.local_stock_override_qty
+                    ELSE ps.qty
+                END AS qty,
                 ps.manufacturer_norm AS manufacturer_name,
                 CAST(ps.computed_sell_price AS CHAR) AS computed_sell_price,
                 CAST(ps.public_regular_price AS CHAR) AS public_regular_price,
@@ -201,8 +207,10 @@ final class GunMadeFeedGenerator
               AND p.post_status = 'publish'
               AND ps.upc <> ''
               AND ps.enabled = 1
-              AND ps.stock_status = 'instock'
-              AND ps.qty > 0
+              AND (
+                    (ps.stock_status = 'instock' AND ps.qty > 0)
+                    OR COALESCE(ps.local_stock_override_qty, 0) > 0
+              )
               AND NOT EXISTS (
                   SELECT 1
                   FROM {$term_relationships} tr_vis
