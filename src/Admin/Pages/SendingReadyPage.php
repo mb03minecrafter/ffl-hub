@@ -580,6 +580,10 @@ final class SendingReadyPage
         $debug_ready = !empty($package['debug_ready']);
         $destination_ffl_number = $this->destination_ffl_number($order);
         $destination_ffl_label = $this->destination_ffl_label($order);
+        $tracking_number = trim((string) ($package['tracking_number'] ?? ''));
+        if ($tracking_number === '' && $debug_ready) {
+            $tracking_number = 'DEBUG-TRACKING';
+        }
         ?>
         <section
             class="fflhub-pack-card"
@@ -593,6 +597,7 @@ final class SendingReadyPage
             data-has-ffl="<?php echo esc_attr($has_ffl ? '1' : '0'); ?>"
             data-destination-ffl-number="<?php echo esc_attr($destination_ffl_number); ?>"
             data-destination-ffl-label="<?php echo esc_attr($destination_ffl_label); ?>"
+            data-tracking-number="<?php echo esc_attr($tracking_number); ?>"
             data-expected="<?php echo esc_attr(is_string($expected_json) ? $expected_json : '[]'); ?>">
             <div class="fflhub-pack-card-head">
                 <div>
@@ -610,6 +615,11 @@ final class SendingReadyPage
                         <?php endif; ?>
                     </p>
                     <span class="fflhub-sending-ready-muted"><?php echo esc_html((string) ($package['package_detail'] ?? '')); ?></span>
+                    <?php if ($tracking_number !== '') : ?>
+                        <span class="fflhub-sending-ready-muted">
+                            <?php echo esc_html(sprintf(__('Tracking: %s', 'ffl-hub'), $tracking_number)); ?>
+                        </span>
+                    <?php endif; ?>
                 </div>
                 <div class="fflhub-pack-docs">
                     <form method="post" action="<?php echo esc_url($this->packing_url((int) ($package['wave_batch_id'] ?? 0))); ?>">
@@ -689,6 +699,19 @@ final class SendingReadyPage
                 <label class="fflhub-pack-serial-wrap is-hidden">
                     <span><?php esc_html_e('Serial Number', 'ffl-hub'); ?></span>
                     <input type="text" class="regular-text fflhub-pack-serial" autocomplete="off" disabled />
+                </label>
+                <label class="fflhub-pack-tracking-wrap">
+                    <span><?php esc_html_e('Scan Shipping Label', 'ffl-hub'); ?></span>
+                    <input
+                        type="text"
+                        class="regular-text fflhub-pack-tracking"
+                        inputmode="text"
+                        autocomplete="off"
+                        disabled
+                        placeholder="<?php esc_attr_e('Enabled after item scans', 'ffl-hub'); ?>" />
+                    <small>
+                        <?php echo esc_html($tracking_number !== '' ? sprintf(__('Expected %s', 'ffl-hub'), $tracking_number) : __('No tracking saved for this package', 'ffl-hub')); ?>
+                    </small>
                 </label>
                 <button type="button" class="button button-primary fflhub-pack-record">
                     <?php esc_html_e('Record Scan', 'ffl-hub'); ?>
@@ -782,6 +805,8 @@ final class SendingReadyPage
                     'items' => $items,
                     'has_ffl_required' => $has_ffl,
                     'debug_ready' => $debug_ready,
+                    'tracking_number' => (string) ($label['tracking_number'] ?? $label['tracking'] ?? ''),
+                    'carrier_code' => (string) ($label['carrier_code'] ?? ''),
                 ];
             }
         }
@@ -1260,6 +1285,50 @@ final class SendingReadyPage
                     return String(value || '').trim().toUpperCase();
                 }
 
+                function normalizeTracking(value) {
+                    return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '');
+                }
+
+                function trackingCandidates(value) {
+                    var raw = String(value || '').trim();
+                    var payload = raw.replace(/[\u001d\u001e\u0004\t\r\n]/g, '029');
+                    var compact = normalizeTracking(payload);
+                    var candidates = compact ? [compact] : [];
+                    var fedexMatch = payload.match(/(?:^|029)31Z(96[0-9]{20,})(?:029|$)/i);
+                    var upsMatch = compact.match(/1Z[A-Z0-9]{16}/i);
+
+                    if (fedexMatch && fedexMatch[1]) {
+                        candidates.push(String(fedexMatch[1]).slice(-12));
+                    }
+                    if (/^96[0-9]{20,}$/.test(compact)) {
+                        candidates.push(compact.slice(-12));
+                    }
+                    if (upsMatch && upsMatch[0]) {
+                        candidates.push(String(upsMatch[0]).toUpperCase());
+                    }
+
+                    return candidates.filter(function (candidate, index, all) {
+                        return candidate && all.indexOf(candidate) === index;
+                    });
+                }
+
+                function trackingMatches(scanned, expected) {
+                    var expectedNorm = normalizeTracking(expected);
+                    if (!expectedNorm) {
+                        return false;
+                    }
+
+                    return trackingCandidates(scanned).some(function (candidate) {
+                        if (candidate === expectedNorm) {
+                            return true;
+                        }
+                        if (candidate.indexOf(expectedNorm) !== -1) {
+                            return true;
+                        }
+                        return candidate.length >= 10 && expectedNorm.indexOf(candidate) !== -1;
+                    });
+                }
+
                 function parseExpected(card) {
                     try {
                         return JSON.parse(card.getAttribute('data-expected') || '[]');
@@ -1282,6 +1351,10 @@ final class SendingReadyPage
                             }
                             if (field.classList.contains('fflhub-pack-print')) {
                                 field.disabled = !isActive || field.hasAttribute('data-print-disabled');
+                                return;
+                            }
+                            if (field.classList.contains('fflhub-pack-tracking')) {
+                                field.disabled = !isActive || !card.classList.contains('is-complete') || isDone || field.hasAttribute('data-confirming');
                                 return;
                             }
                             if (!field.classList.contains('fflhub-pack-serial')) {
@@ -1320,6 +1393,7 @@ final class SendingReadyPage
                     });
                     var upcInput = card.querySelector('.fflhub-pack-upc');
                     var serialInput = card.querySelector('.fflhub-pack-serial');
+                    var trackingInput = card.querySelector('.fflhub-pack-tracking');
                     var serialWrap = card.querySelector('.fflhub-pack-serial-wrap');
                     var printForm = card.querySelector('.fflhub-pack-docs form');
                     var recordButton = card.querySelector('.fflhub-pack-record');
@@ -1330,6 +1404,7 @@ final class SendingReadyPage
                     var pendingFflRow = null;
                     var upcTimer = null;
                     var serialTimer = null;
+                    var trackingTimer = null;
                     var acceptedScans = [];
 
                     card.querySelectorAll('.fflhub-pack-print').forEach(function (button) {
@@ -1419,6 +1494,7 @@ final class SendingReadyPage
                     }
 
                     function redraw() {
+                        var wasComplete = card.classList.contains('is-complete');
                         var complete = expected.length > 0;
                         expected.forEach(function (row) {
                             var count = card.querySelector('[data-packed-count="' + row.index + '"]');
@@ -1432,9 +1508,20 @@ final class SendingReadyPage
                         if (confirmButton) {
                             confirmButton.disabled = !complete || !card.classList.contains('is-active') || card.classList.contains('is-done') || confirmButton.hasAttribute('data-confirming');
                         }
+                        if (trackingInput) {
+                            trackingInput.disabled = !complete || !card.classList.contains('is-active') || card.classList.contains('is-done') || trackingInput.hasAttribute('data-confirming');
+                            if (!complete) {
+                                trackingInput.value = '';
+                            }
+                        }
                         card.classList.toggle('is-complete', complete);
                         if (complete && !card.classList.contains('is-done')) {
-                            setMessage('Package checks are complete. Confirm shipment to move to the next package.', 'good');
+                            setMessage('Package checks are complete. Scan this package shipping label to confirm shipment.', 'good');
+                            if (!wasComplete && trackingInput && !trackingInput.disabled) {
+                                setTimeout(function () {
+                                    trackingInput.focus();
+                                }, 120);
+                            }
                         }
                     }
 
@@ -1539,6 +1626,131 @@ final class SendingReadyPage
                         acceptRow(result.row, serial);
                     }
 
+                    function clickedFastBoundConfirmation() {
+                        if (card.getAttribute('data-has-ffl') !== '1' || card.getAttribute('data-debug-ready') === '1') {
+                            return true;
+                        }
+
+                        var fflLabel = card.getAttribute('data-destination-ffl-label') || card.getAttribute('data-destination-ffl-number') || 'the selected FFL';
+                        var serialLines = acceptedScans.filter(function (scan) {
+                            return !!normalizeSerial(scan.serial);
+                        }).map(function (scan) {
+                            return '- ' + normalizeSerial(scan.serial) + ' / ' + (scan.upc || 'UPC missing');
+                        });
+                        var prompt = 'Confirm FastBound disposition to ' + fflLabel + '?';
+                        if (serialLines.length) {
+                            prompt += "\n\nSerialized item(s):\n" + serialLines.join("\n");
+                        }
+                        prompt += "\n\nThis will dispose the scanned firearm(s) in FastBound before the order is marked shipped.";
+                        if (!window.confirm(prompt)) {
+                            setMessage('FastBound disposition confirmation cancelled. Shipment was not confirmed.', 'bad');
+                            return false;
+                        }
+
+                        return true;
+                    }
+
+                    function confirmShipment(fastboundConfirmed) {
+                        if (!confirmButton || confirmButton.hasAttribute('data-confirming')) {
+                            return;
+                        }
+                        if (!card.classList.contains('is-complete')) {
+                            setMessage('Finish scanning package items before confirming shipment.', 'bad');
+                            return;
+                        }
+
+                        var data = new FormData();
+                        data.append('action', 'fflhub_wms_sending_confirm_package');
+                        data.append('fflhub_wms_sending_confirm_nonce', card.getAttribute('data-confirm-nonce') || '');
+                        data.append('wave_batch_id', card.getAttribute('data-wave-batch-id') || '0');
+                        data.append('easypost_batch_id', card.getAttribute('data-easypost-batch-id') || '0');
+                        data.append('order_id', card.getAttribute('data-order-id') || '0');
+                        data.append('package_index', card.getAttribute('data-package-index') || '0');
+                        data.append('debug_mode', card.getAttribute('data-debug-ready') === '1' ? '1' : '0');
+                        data.append('fastbound_disposition_confirmed', fastboundConfirmed ? '1' : '0');
+                        data.append('scans_json', JSON.stringify(acceptedScans));
+
+                        var originalText = confirmButton.textContent;
+                        confirmButton.disabled = true;
+                        confirmButton.setAttribute('data-confirming', '1');
+                        if (trackingInput) {
+                            trackingInput.disabled = true;
+                            trackingInput.setAttribute('data-confirming', '1');
+                        }
+                        confirmButton.textContent = 'Confirming...';
+                        setMessage('Confirming package and sending fulfillment email.', 'working');
+
+                        window.fetch(window.ajaxurl, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            body: data
+                        }).then(function (response) {
+                            return response.json();
+                        }).then(function (payload) {
+                            if (!payload || !payload.success) {
+                                throw new Error(payload && payload.data && payload.data.message ? payload.data.message : 'Shipment confirmation failed.');
+                            }
+
+                            card.classList.add('is-done');
+                            card.classList.remove('is-active');
+                            setMessage(payload.data && payload.data.message ? payload.data.message : 'Package confirmed.', 'good');
+                            card.querySelectorAll('input, button').forEach(function (field) {
+                                field.disabled = true;
+                            });
+
+                            var next = cards.findIndex(function (candidate, index) {
+                                return index > cardIndex && !candidate.classList.contains('is-done');
+                            });
+                            if (next === -1) {
+                                setMessage('All packages in this wave have been handled.', 'good');
+                                return;
+                            }
+
+                            setActiveCard(next);
+                        }).catch(function (error) {
+                            setMessage(error && error.message ? error.message : 'Shipment confirmation failed.', 'bad');
+                            confirmButton.disabled = false;
+                            if (trackingInput && card.classList.contains('is-complete') && card.classList.contains('is-active')) {
+                                trackingInput.disabled = false;
+                                trackingInput.focus();
+                            }
+                        }).finally(function () {
+                            confirmButton.removeAttribute('data-confirming');
+                            confirmButton.textContent = originalText;
+                            if (trackingInput) {
+                                trackingInput.removeAttribute('data-confirming');
+                            }
+                        });
+                    }
+
+                    function recordTrackingScan() {
+                        if (!card.classList.contains('is-active') || card.classList.contains('is-done')) {
+                            return;
+                        }
+                        if (!card.classList.contains('is-complete')) {
+                            setMessage('Scan every package item before scanning the shipping label.', 'bad');
+                            return;
+                        }
+
+                        var expectedTracking = card.getAttribute('data-tracking-number') || '';
+                        var scannedTracking = trackingInput ? trackingInput.value : '';
+                        if (!normalizeTracking(expectedTracking)) {
+                            setMessage('No tracking number is saved for this package, so the label scan cannot confirm it.', 'bad');
+                            return;
+                        }
+                        if (!trackingMatches(scannedTracking, expectedTracking)) {
+                            setMessage('Shipping label scan did not match tracking ' + expectedTracking + '.', 'bad');
+                            return;
+                        }
+
+                        if (card.getAttribute('data-has-ffl') === '1' && card.getAttribute('data-debug-ready') !== '1') {
+                            setMessage('Shipping label matched. Treating this scan as FastBound disposition confirmation.', 'working');
+                        } else {
+                            setMessage('Shipping label matched. Confirming shipment.', 'working');
+                        }
+                        confirmShipment(card.getAttribute('data-has-ffl') === '1' && card.getAttribute('data-debug-ready') !== '1');
+                    }
+
                     if (recordButton) {
                         recordButton.addEventListener('click', function () {
                             if (pendingFflRow) {
@@ -1600,83 +1812,31 @@ final class SendingReadyPage
                             }, 220);
                         });
                     }
+                    if (trackingInput) {
+                        trackingInput.addEventListener('keydown', function (event) {
+                            if (event.key === 'Enter') {
+                                event.preventDefault();
+                                recordTrackingScan();
+                            }
+                        });
+                        trackingInput.addEventListener('input', function () {
+                            window.clearTimeout(trackingTimer);
+                            trackingTimer = window.setTimeout(function () {
+                                var expectedTracking = card.getAttribute('data-tracking-number') || '';
+                                var scannedTracking = trackingInput.value;
+                                if (trackingMatches(scannedTracking, expectedTracking)) {
+                                    recordTrackingScan();
+                                }
+                            }, 300);
+                        });
+                    }
                     if (confirmButton) {
                         confirmButton.addEventListener('click', function () {
-                            if (confirmButton.disabled) {
+                            if (confirmButton.disabled || !clickedFastBoundConfirmation()) {
                                 return;
                             }
 
-                            var fastboundConfirmed = false;
-                            if (card.getAttribute('data-has-ffl') === '1' && card.getAttribute('data-debug-ready') !== '1') {
-                                var fflLabel = card.getAttribute('data-destination-ffl-label') || card.getAttribute('data-destination-ffl-number') || 'the selected FFL';
-                                var serialLines = acceptedScans.filter(function (scan) {
-                                    return !!normalizeSerial(scan.serial);
-                                }).map(function (scan) {
-                                    return '- ' + normalizeSerial(scan.serial) + ' / ' + (scan.upc || 'UPC missing');
-                                });
-                                var prompt = 'Confirm FastBound disposition to ' + fflLabel + '?';
-                                if (serialLines.length) {
-                                    prompt += "\n\nSerialized item(s):\n" + serialLines.join("\n");
-                                }
-                                prompt += "\n\nThis will dispose the scanned firearm(s) in FastBound before the order is marked shipped.";
-                                if (!window.confirm(prompt)) {
-                                    setMessage('FastBound disposition confirmation cancelled. Shipment was not confirmed.', 'bad');
-                                    return;
-                                }
-                                fastboundConfirmed = true;
-                            }
-
-                            var data = new FormData();
-                            data.append('action', 'fflhub_wms_sending_confirm_package');
-                            data.append('fflhub_wms_sending_confirm_nonce', card.getAttribute('data-confirm-nonce') || '');
-                            data.append('wave_batch_id', card.getAttribute('data-wave-batch-id') || '0');
-                            data.append('easypost_batch_id', card.getAttribute('data-easypost-batch-id') || '0');
-                            data.append('order_id', card.getAttribute('data-order-id') || '0');
-                            data.append('package_index', card.getAttribute('data-package-index') || '0');
-                            data.append('debug_mode', card.getAttribute('data-debug-ready') === '1' ? '1' : '0');
-                            data.append('fastbound_disposition_confirmed', fastboundConfirmed ? '1' : '0');
-                            data.append('scans_json', JSON.stringify(acceptedScans));
-
-                            var originalText = confirmButton.textContent;
-                            confirmButton.disabled = true;
-                            confirmButton.setAttribute('data-confirming', '1');
-                            confirmButton.textContent = 'Confirming...';
-                            setMessage('Confirming package and sending fulfillment email.', 'working');
-
-                            window.fetch(window.ajaxurl, {
-                                method: 'POST',
-                                credentials: 'same-origin',
-                                body: data
-                            }).then(function (response) {
-                                return response.json();
-                            }).then(function (payload) {
-                                if (!payload || !payload.success) {
-                                    throw new Error(payload && payload.data && payload.data.message ? payload.data.message : 'Shipment confirmation failed.');
-                                }
-
-                                card.classList.add('is-done');
-                                card.classList.remove('is-active');
-                                setMessage(payload.data && payload.data.message ? payload.data.message : 'Package confirmed.', 'good');
-                                card.querySelectorAll('input, button').forEach(function (field) {
-                                    field.disabled = true;
-                                });
-
-                                var next = cards.findIndex(function (candidate, index) {
-                                    return index > cardIndex && !candidate.classList.contains('is-done');
-                                });
-                                if (next === -1) {
-                                    setMessage('All packages in this wave have been handled.', 'good');
-                                    return;
-                                }
-
-                                setActiveCard(next);
-                            }).catch(function (error) {
-                                setMessage(error && error.message ? error.message : 'Shipment confirmation failed.', 'bad');
-                                confirmButton.disabled = false;
-                            }).finally(function () {
-                                confirmButton.removeAttribute('data-confirming');
-                                confirmButton.textContent = originalText;
-                            });
+                            confirmShipment(card.getAttribute('data-has-ffl') === '1' && card.getAttribute('data-debug-ready') !== '1');
                         });
                     }
 
@@ -1741,9 +1901,10 @@ final class SendingReadyPage
             .fflhub-pack-items{margin-top:12px}
             .fflhub-pack-items th{white-space:nowrap}
             .fflhub-pack-items code{font-size:13px}
-            .fflhub-pack-scan-panel{display:grid;grid-template-columns:minmax(240px,1fr) minmax(240px,1fr) auto auto auto;gap:10px;align-items:end;margin-top:14px;background:#f6f7f7;border:1px solid #dcdcde;border-radius:8px;padding:12px}
+            .fflhub-pack-scan-panel{display:grid;grid-template-columns:minmax(180px,1fr) minmax(200px,1fr) minmax(240px,1.2fr) auto auto auto;gap:10px;align-items:end;margin-top:14px;background:#f6f7f7;border:1px solid #dcdcde;border-radius:8px;padding:12px}
             .fflhub-pack-scan-panel label span{display:block;font-size:12px;font-weight:800;text-transform:uppercase;color:#646970;margin-bottom:4px}
             .fflhub-pack-scan-panel input{width:100%}
+            .fflhub-pack-scan-panel small{display:block;color:#646970;font-size:11px;margin-top:4px}
             .fflhub-pack-scan-panel input:focus{border-color:#146c43;box-shadow:0 0 0 1px #146c43}
             .fflhub-pack-serial-wrap.is-hidden{display:none}
             .fflhub-pack-message{min-height:20px;margin-top:10px;font-weight:700}
