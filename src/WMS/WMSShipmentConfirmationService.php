@@ -3,8 +3,10 @@ declare(strict_types=1);
 
 namespace FFLHub\WMS;
 
+use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Receiving\ReceivingEventsStore;
+use FFLHub\Receiving\ReceivingFastBoundService;
 use FFLHub\Shipping\ShipStation\ShipStationOrderMeta;
 use WC_Order;
 use WC_Order_Item_Product;
@@ -199,6 +201,16 @@ final class WMSShipmentConfirmationService
             return $validated;
         }
 
+        $dispositions = $this->dispose_fastbound_items(
+            $order,
+            $validated['scans'],
+            $debug_ready,
+            !empty($request['fastbound_disposition_confirmed'])
+        );
+        if (is_wp_error($dispositions)) {
+            return $dispositions;
+        }
+
         $fulfillment = $this->build_fulfillment($order, $expected, $label, $debug_ready);
         if (is_wp_error($fulfillment)) {
             return $fulfillment;
@@ -247,6 +259,7 @@ final class WMSShipmentConfirmationService
             'tracking_url' => (string) ($label['tracking_url'] ?? ''),
             'fulfillment_id' => $fulfillment_id,
             'scans' => $validated['scans'],
+            'fastbound_dispositions' => $dispositions,
             'confirmed_at' => $confirmed_at,
             'confirmed_by' => get_current_user_id(),
         ];
@@ -262,6 +275,7 @@ final class WMSShipmentConfirmationService
             'package_index' => $package_index,
             'fulfillment_id' => $fulfillment_id,
             'tracking_number' => (string) ($label['tracking_number'] ?? ''),
+            'fastbound_dispositions' => $dispositions,
         ]);
 
         $order_completed = false;
@@ -508,6 +522,97 @@ final class WMSShipmentConfirmationService
         }
 
         return ['scans' => $accepted];
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $scans
+     * @return array<int,array<string,mixed>>|WP_Error
+     */
+    private function dispose_fastbound_items(WC_Order $order, array $scans, bool $debug_ready, bool $operator_confirmed)
+    {
+        $serial_scans = array_values(array_filter($scans, static function (array $scan): bool {
+            return trim((string) ($scan['serial'] ?? '')) !== '';
+        }));
+        if (empty($serial_scans)) {
+            return [];
+        }
+
+        if ($debug_ready) {
+            $debug = [];
+            foreach ($serial_scans as $scan) {
+                $debug[] = [
+                    'debug' => true,
+                    'item_id' => (int) ($scan['item_id'] ?? 0),
+                    'serial' => (string) ($scan['serial'] ?? ''),
+                    'message' => 'Debug packing skipped FastBound disposition.',
+                ];
+            }
+            return $debug;
+        }
+
+        if (!$operator_confirmed) {
+            return new WP_Error(
+                'fflhub_wms_confirm_fastbound_not_confirmed',
+                'Confirm the FastBound disposition before completing this FFL shipment.'
+            );
+        }
+
+        $destination_ffl = FFLRowMapper::normalize_ffl_number((string) $order->get_meta('fflhub_receiving_ffl_number', true));
+        if ($destination_ffl === '') {
+            return new WP_Error(
+                'fflhub_wms_confirm_missing_destination_ffl',
+                'This FFL shipment is missing the destination FFL number, so FastBound disposition cannot be created.'
+            );
+        }
+
+        $events = new ReceivingEventsStore();
+        $fastbound = new ReceivingFastBoundService($events);
+        $out = [];
+
+        foreach ($serial_scans as $scan) {
+            $item_id = absint($scan['item_id'] ?? 0);
+            $serial = $this->normalize_serial((string) ($scan['serial'] ?? ''));
+            if ($item_id <= 0 || $serial === '') {
+                continue;
+            }
+
+            $event = $events->accepted_event_for_order_item_serial($item_id, $serial);
+            if (!is_array($event)) {
+                return new WP_Error(
+                    'fflhub_wms_confirm_receiving_event_missing',
+                    sprintf('No accepted receiving event was found for serial %s, so FastBound disposition cannot be created.', $serial)
+                );
+            }
+
+            $result = $fastbound->dispose_event((int) ($event['id'] ?? 0), [
+                'destination_ffl_number' => $destination_ffl,
+            ]);
+            if (empty($result['ok'])) {
+                return new WP_Error(
+                    (string) ($result['code'] ?? 'fflhub_wms_confirm_fastbound_dispose_failed'),
+                    sprintf(
+                        'FastBound disposition failed for serial %1$s: %2$s',
+                        $serial,
+                        (string) ($result['message'] ?? 'Unknown FastBound error.')
+                    ),
+                    $result
+                );
+            }
+
+            $public_event = is_array($result['event'] ?? null) ? $result['event'] : [];
+            $out[] = [
+                'event_id' => (int) ($event['id'] ?? 0),
+                'item_id' => $item_id,
+                'serial' => $serial,
+                'destination_ffl_number' => $destination_ffl,
+                'code' => (string) ($result['code'] ?? ''),
+                'message' => (string) ($result['message'] ?? ''),
+                'fastbound_disposition_id' => (string) ($public_event['fastbound_disposition_id'] ?? ''),
+                'fastbound_disposition_contact_id' => (string) ($public_event['fastbound_disposition_contact_id'] ?? ''),
+            ];
+        }
+
+        return $out;
     }
 
     /**

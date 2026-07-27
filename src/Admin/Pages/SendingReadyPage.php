@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Admin\Pages;
 
+use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\Shipping\EasyPost\EasyPostBatchLabelStore;
 use FFLHub\Shipping\PrintNode\PrintNodeOptions;
 use FFLHub\Shipping\PrintNode\PrintNodePrintQueueService;
@@ -182,6 +183,8 @@ final class SendingReadyPage
             'order_id' => isset($_POST['order_id']) ? (int) sanitize_text_field(wp_unslash((string) $_POST['order_id'])) : 0,
             'package_index' => isset($_POST['package_index']) ? (int) sanitize_text_field(wp_unslash((string) $_POST['package_index'])) : 0,
             'debug_mode' => isset($_POST['debug_mode']) && (string) sanitize_text_field(wp_unslash((string) $_POST['debug_mode'])) === '1',
+            'fastbound_disposition_confirmed' => isset($_POST['fastbound_disposition_confirmed'])
+                && (string) sanitize_text_field(wp_unslash((string) $_POST['fastbound_disposition_confirmed'])) === '1',
             'scans' => is_array($scans) ? $scans : [],
         ]);
 
@@ -575,6 +578,8 @@ final class SendingReadyPage
         $expected_json = wp_json_encode($expected);
         $has_ffl = !empty($package['has_ffl_required']);
         $debug_ready = !empty($package['debug_ready']);
+        $destination_ffl_number = $this->destination_ffl_number($order);
+        $destination_ffl_label = $this->destination_ffl_label($order);
         ?>
         <section
             class="fflhub-pack-card"
@@ -585,6 +590,9 @@ final class SendingReadyPage
             data-package-index="<?php echo esc_attr((string) ($package['package_index'] ?? 0)); ?>"
             data-confirm-nonce="<?php echo esc_attr(wp_create_nonce('fflhub_wms_sending_confirm_package')); ?>"
             data-debug-ready="<?php echo esc_attr($debug_ready ? '1' : '0'); ?>"
+            data-has-ffl="<?php echo esc_attr($has_ffl ? '1' : '0'); ?>"
+            data-destination-ffl-number="<?php echo esc_attr($destination_ffl_number); ?>"
+            data-destination-ffl-label="<?php echo esc_attr($destination_ffl_label); ?>"
             data-expected="<?php echo esc_attr(is_string($expected_json) ? $expected_json : '[]'); ?>">
             <div class="fflhub-pack-card-head">
                 <div>
@@ -628,7 +636,10 @@ final class SendingReadyPage
             <?php if ($has_ffl) : ?>
                 <div class="fflhub-pack-ffl-warning">
                     <strong><?php esc_html_e('FFL required package.', 'ffl-hub'); ?></strong>
-                    <?php esc_html_e('Put a copy of our FFL in this package before sealing it. Scan the UPC and the matching received serial number for every firearm.', 'ffl-hub'); ?>
+                    <?php esc_html_e('Put a copy of our FFL in this package before sealing it. Scan the UPC and the matching received serial number for every firearm, then confirm the FastBound disposition before shipment.', 'ffl-hub'); ?>
+                    <?php if ($destination_ffl_label !== '') : ?>
+                        <span><?php echo esc_html(sprintf(__('Disposition destination: %s', 'ffl-hub'), $destination_ffl_label)); ?></span>
+                    <?php endif; ?>
                 </div>
             <?php endif; ?>
 
@@ -1192,6 +1203,37 @@ final class SendingReadyPage
         return wp_date('M j, Y g:i a', $timestamp);
     }
 
+    private function destination_ffl_number(?WC_Order $order): string
+    {
+        if (!$order instanceof WC_Order) {
+            return '';
+        }
+
+        return FFLRowMapper::normalize_ffl_number((string) $order->get_meta('fflhub_receiving_ffl_number', true));
+    }
+
+    private function destination_ffl_label(?WC_Order $order): string
+    {
+        if (!$order instanceof WC_Order) {
+            return '';
+        }
+
+        $structured = $order->get_meta('fflhub_receiving_ffl', true);
+        $name = is_array($structured)
+            ? trim((string) ($structured['license_name'] ?? $structured['name'] ?? $structured['company'] ?? ''))
+            : '';
+        $number = $this->destination_ffl_number($order);
+
+        if ($name !== '' && $number !== '') {
+            return $name . ' / ' . $number;
+        }
+        if ($name !== '') {
+            return $name;
+        }
+
+        return $number;
+    }
+
     private function render_stat(string $label, string $value): void
     {
         ?>
@@ -1564,6 +1606,26 @@ final class SendingReadyPage
                                 return;
                             }
 
+                            var fastboundConfirmed = false;
+                            if (card.getAttribute('data-has-ffl') === '1' && card.getAttribute('data-debug-ready') !== '1') {
+                                var fflLabel = card.getAttribute('data-destination-ffl-label') || card.getAttribute('data-destination-ffl-number') || 'the selected FFL';
+                                var serialLines = acceptedScans.filter(function (scan) {
+                                    return !!normalizeSerial(scan.serial);
+                                }).map(function (scan) {
+                                    return '- ' + normalizeSerial(scan.serial) + ' / ' + (scan.upc || 'UPC missing');
+                                });
+                                var prompt = 'Confirm FastBound disposition to ' + fflLabel + '?';
+                                if (serialLines.length) {
+                                    prompt += "\n\nSerialized item(s):\n" + serialLines.join("\n");
+                                }
+                                prompt += "\n\nThis will dispose the scanned firearm(s) in FastBound before the order is marked shipped.";
+                                if (!window.confirm(prompt)) {
+                                    setMessage('FastBound disposition confirmation cancelled. Shipment was not confirmed.', 'bad');
+                                    return;
+                                }
+                                fastboundConfirmed = true;
+                            }
+
                             var data = new FormData();
                             data.append('action', 'fflhub_wms_sending_confirm_package');
                             data.append('fflhub_wms_sending_confirm_nonce', card.getAttribute('data-confirm-nonce') || '');
@@ -1572,6 +1634,7 @@ final class SendingReadyPage
                             data.append('order_id', card.getAttribute('data-order-id') || '0');
                             data.append('package_index', card.getAttribute('data-package-index') || '0');
                             data.append('debug_mode', card.getAttribute('data-debug-ready') === '1' ? '1' : '0');
+                            data.append('fastbound_disposition_confirmed', fastboundConfirmed ? '1' : '0');
                             data.append('scans_json', JSON.stringify(acceptedScans));
 
                             var originalText = confirmButton.textContent;
@@ -1674,6 +1737,7 @@ final class SendingReadyPage
             .fflhub-pack-docs form{margin:0}
             .fflhub-pack-print,.fflhub-pack-confirm,.fflhub-pack-record,.fflhub-pack-debug-fill{min-height:38px;font-weight:800}
             .fflhub-pack-ffl-warning{border-left:4px solid #b32d2e;background:#fcf0f1;color:#5f1516;padding:12px;margin:12px 0;font-size:14px}
+            .fflhub-pack-ffl-warning span{display:block;margin-top:6px;font-weight:800}
             .fflhub-pack-items{margin-top:12px}
             .fflhub-pack-items th{white-space:nowrap}
             .fflhub-pack-items code{font-size:13px}

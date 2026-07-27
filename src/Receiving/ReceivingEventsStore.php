@@ -158,7 +158,7 @@ final class ReceivingEventsStore
         global $wpdb;
 
         $shipment_key = trim($shipment_key);
-        $serial_number = trim($serial_number);
+        $serial_number = ReceivingShipmentService::normalize_serial($serial_number);
         if ($shipment_key === '' || $serial_number === '') {
             return false;
         }
@@ -399,6 +399,42 @@ final class ReceivingEventsStore
         }
 
         return $out;
+    }
+
+    /**
+     * Sending/disposition needs the exact receiving event that captured a
+     * firearm serial, because that row stores the FastBound acquisition item ID.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function accepted_event_for_order_item_serial(int $order_item_id, string $serial_number): ?array
+    {
+        global $wpdb;
+
+        $order_item_id = absint($order_item_id);
+        $serial_number = ReceivingShipmentService::normalize_serial($serial_number);
+        if ($order_item_id <= 0 || $serial_number === '') {
+            return null;
+        }
+
+        self::ensure_schema();
+
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT *
+                 FROM " . self::table_name() . "
+                 WHERE result = 'accepted'
+                   AND order_item_id = %d
+                   AND serial_number = %s
+                 ORDER BY id ASC
+                 LIMIT 1",
+                $order_item_id,
+                $serial_number
+            ),
+            ARRAY_A
+        );
+
+        return is_array($row) ? $row : null;
     }
 
     /**
