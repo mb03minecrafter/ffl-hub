@@ -578,6 +578,85 @@ final class EasyPostBatchLabelService
     }
 
     /**
+     * Return only the shipping label and packing slip for one packed package in
+     * an EasyPost wave. The WMS packing station uses this for package-by-package
+     * PrintNode output so the operator can print exactly what they are packing,
+     * instead of reprinting the whole wave.
+     *
+     * @return array<int,array{title:string,body:string,force_4x6:bool,kind:string,order_id:int,order_number:string,package_index:int}>|WP_Error
+     */
+    public function print_documents_for_package(int $local_batch_id, int $order_id, int $package_index)
+    {
+        $batch = EasyPostBatchLabelStore::get($local_batch_id);
+        if (!is_array($batch)) {
+            return new WP_Error('fflhub_easypost_batch_missing', 'Could not find that local EasyPost batch.');
+        }
+
+        $order = wc_get_order($order_id);
+        if (!($order instanceof WC_Order)) {
+            return new WP_Error('fflhub_easypost_batch_order_missing', 'Could not load the Woo order for that package.');
+        }
+
+        $documents = [];
+        $slip_service = new PackingSlipService();
+        $package_index = max(0, $package_index);
+        foreach ((array) ($batch['items'] ?? []) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            if ((int) ($item['order_id'] ?? 0) !== $order_id || max(0, (int) ($item['package_index'] ?? 0)) !== $package_index) {
+                continue;
+            }
+
+            $direct_label_url = trim((string) ($item['label_pdf_url'] ?? ''));
+            if ($direct_label_url !== '') {
+                $label_pdf = $this->client->download_label($direct_label_url);
+                if (is_wp_error($label_pdf)) {
+                    return $label_pdf;
+                }
+
+                $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''), $order, $item);
+                $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
+                break;
+            }
+
+            $shipment_id = trim((string) ($item['purchased_shipment_id'] ?? $item['batch_shipment_id'] ?? ''));
+            if ($shipment_id === '') {
+                continue;
+            }
+
+            $shipment = $this->client->retrieve_shipment($shipment_id);
+            if (is_wp_error($shipment)) {
+                return $shipment;
+            }
+
+            $label_url = $this->label_pdf_url_from_shipment($shipment);
+            if ($label_url === '') {
+                continue;
+            }
+
+            $label_pdf = $this->client->download_label($label_url);
+            if (is_wp_error($label_pdf)) {
+                return $label_pdf;
+            }
+
+            $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''), $order, $item);
+            $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
+            break;
+        }
+
+        if (empty($documents)) {
+            return new WP_Error(
+                'fflhub_easypost_package_no_print_documents',
+                'No purchased shipment label PDF was available for that package yet.'
+            );
+        }
+
+        return $documents;
+    }
+
+    /**
      * @param array<int,array{title:string,body:string,force_4x6:bool,kind:string,order_id:int,order_number:string,package_index:int}> $documents
      * @param array<string,mixed> $item
      * @param array<int,array<string,mixed>> $batch_items

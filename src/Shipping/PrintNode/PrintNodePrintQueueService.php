@@ -103,6 +103,82 @@ final class PrintNodePrintQueueService
     }
 
     /**
+     * Queue one package's carrier label followed by its packing slip. The WMS
+     * packing station calls this while the operator is working package by
+     * package, so the printer only receives the documents for the active box or
+     * envelope instead of the entire wave.
+     *
+     * @return array<string,mixed>|WP_Error
+     */
+    public function queue_easypost_package(int $batch_id, int $order_id, int $package_index)
+    {
+        $configured = $this->configured_error();
+        if (is_wp_error($configured)) {
+            return $configured;
+        }
+
+        $documents = $this->batch_service->print_documents_for_package($batch_id, $order_id, $package_index);
+        if (is_wp_error($documents)) {
+            return $documents;
+        }
+
+        $printable = [];
+        $errors = [];
+        foreach ($documents as $document) {
+            if (!is_array($document)) {
+                continue;
+            }
+
+            $body = $this->document_body_for_printnode($document);
+            if (is_wp_error($body)) {
+                $errors[] = (string) ($document['title'] ?? 'Document') . ': ' . $body->get_error_message();
+                continue;
+            }
+
+            $document['body'] = $body;
+            $printable[] = $document;
+        }
+
+        if (empty($printable)) {
+            return new WP_Error(
+                'fflhub_printnode_no_queueable_documents',
+                'No PrintNode documents could be queued for that package.',
+                ['errors' => $errors]
+            );
+        }
+
+        $delay = PrintNodeOptions::job_delay_seconds();
+        $queued = PrintNodePrintQueueStore::enqueue_documents(
+            $batch_id,
+            PrintNodeOptions::default_printer_id(),
+            $printable,
+            $delay
+        );
+
+        $this->update_batch_print_status($batch_id, (string) $queued['run_key'], [
+            'queued_at' => current_time('mysql', true),
+            'delay_seconds' => $delay,
+            'printer_id' => PrintNodeOptions::default_printer_id(),
+            'queued_job_ids' => $queued['job_ids'],
+            'queue_errors' => $errors,
+            'single_package_print' => [
+                'order_id' => $order_id,
+                'package_index' => max(0, $package_index),
+            ],
+        ]);
+
+        return [
+            'batch' => EasyPostBatchLabelStore::get($batch_id),
+            'run_key' => (string) $queued['run_key'],
+            'printer_id' => PrintNodeOptions::default_printer_id(),
+            'delay_seconds' => $delay,
+            'queued_count' => (int) $queued['queued_count'],
+            'queue_job_ids' => $queued['job_ids'],
+            'errors' => $errors,
+        ];
+    }
+
+    /**
      * @return array<string,mixed>|null
      */
     public function process_one_due_job(): ?array

@@ -7,7 +7,6 @@ use FFLHub\Shipping\EasyPost\EasyPostBatchLabelStore;
 use FFLHub\Shipping\PrintNode\PrintNodeOptions;
 use FFLHub\Shipping\PrintNode\PrintNodePrintQueueService;
 use FFLHub\Shipping\ShipStation\ShipStationOrderMeta;
-use FFLHub\Shipping\ShipStation\ShipStationRestController;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Receiving\ReceivingEventsStore;
 use FFLHub\WMS\OrderWaverStore;
@@ -34,6 +33,7 @@ final class SendingReadyPage
     public function register(): void
     {
         add_action('admin_menu', [$this, 'register_menu_page']);
+        add_action('wp_ajax_fflhub_wms_sending_print_package', [$this, 'ajax_print_package']);
     }
 
     public function register_menu_page(): void
@@ -55,7 +55,9 @@ final class SendingReadyPage
         EasyPostBatchLabelStore::ensure_schema();
 
         $print_result = null;
-        if ($this->should_print_batch()) {
+        if ($this->should_print_package()) {
+            $print_result = $this->handle_print_package();
+        } elseif ($this->should_print_batch()) {
             $print_result = $this->handle_print_batch();
         }
 
@@ -111,6 +113,52 @@ final class SendingReadyPage
         return $nonce !== '' && wp_verify_nonce($nonce, 'fflhub_wms_sending_print_batch');
     }
 
+    private function should_print_package(): bool
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['fflhub_wms_sending_print_package'])) {
+            return false;
+        }
+
+        $nonce = isset($_POST['fflhub_wms_sending_package_nonce'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_wms_sending_package_nonce']))
+            : '';
+
+        return $nonce !== '' && wp_verify_nonce($nonce, 'fflhub_wms_sending_print_package');
+    }
+
+    public function ajax_print_package(): void
+    {
+        WMSAdminPage::ensure_access();
+
+        $nonce = isset($_POST['fflhub_wms_sending_package_nonce'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['fflhub_wms_sending_package_nonce']))
+            : '';
+        if ($nonce === '' || !wp_verify_nonce($nonce, 'fflhub_wms_sending_print_package')) {
+            wp_send_json_error([
+                'message' => 'Invalid package print request.',
+            ], 400);
+        }
+
+        $result = $this->handle_print_package();
+        if (is_wp_error($result)) {
+            wp_send_json_error([
+                'message' => $result->get_error_message(),
+                'code' => $result->get_error_code(),
+                'data' => $result->get_error_data(),
+            ], 500);
+        }
+
+        $print = is_array($result['print_result'] ?? null) ? $result['print_result'] : [];
+        wp_send_json_success([
+            'message' => sprintf(
+                'Queued %d PrintNode job(s) for this package.',
+                (int) ($print['queued_count'] ?? 0)
+            ),
+            'queued_count' => (int) ($print['queued_count'] ?? 0),
+            'run_key' => (string) ($print['run_key'] ?? ''),
+        ]);
+    }
+
     /**
      * @return array<string,mixed>|WP_Error
      */
@@ -150,6 +198,69 @@ final class SendingReadyPage
             $easypost_batch_id,
             (int) ($result['delay_seconds'] ?? 0)
         ), [
+            'run_key' => (string) ($result['run_key'] ?? ''),
+            'queue_job_ids' => $result['queue_job_ids'] ?? [],
+            'errors' => $result['errors'] ?? [],
+        ]);
+
+        return [
+            'wave_batch' => $batch,
+            'print_result' => $result,
+        ];
+    }
+
+    /**
+     * @return array<string,mixed>|WP_Error
+     */
+    private function handle_print_package()
+    {
+        $wave_batch_id = isset($_POST['wave_batch_id'])
+            ? max(0, (int) sanitize_text_field(wp_unslash((string) $_POST['wave_batch_id'])))
+            : 0;
+        $easypost_batch_id = isset($_POST['easypost_batch_id'])
+            ? max(0, (int) sanitize_text_field(wp_unslash((string) $_POST['easypost_batch_id'])))
+            : 0;
+        $order_id = isset($_POST['order_id'])
+            ? max(0, (int) sanitize_text_field(wp_unslash((string) $_POST['order_id'])))
+            : 0;
+        $package_index = isset($_POST['package_index'])
+            ? max(0, (int) sanitize_text_field(wp_unslash((string) $_POST['package_index'])))
+            : 0;
+
+        if ($wave_batch_id <= 0 || $easypost_batch_id <= 0 || $order_id <= 0) {
+            return new WP_Error('fflhub_sending_package_print_missing_ids', 'Package print request was missing a batch, order, or package id.');
+        }
+
+        $batch = OrderWaverStore::batch_with_details($wave_batch_id, 8);
+        if (!is_array($batch)) {
+            return new WP_Error('fflhub_sending_missing_wave_batch', 'Could not find that sending wave batch.');
+        }
+
+        $status = (string) ($batch['status'] ?? '');
+        if (!in_array($status, [OrderWaverStore::BATCH_STATUS_LABELS_SAVED, OrderWaverStore::BATCH_STATUS_PARTIAL_LABELS_SAVED], true)) {
+            return new WP_Error('fflhub_sending_batch_not_ready', 'That wave batch is not ready for Sending yet.');
+        }
+
+        if ((int) ($batch['easypost_batch_id'] ?? 0) !== $easypost_batch_id) {
+            return new WP_Error('fflhub_sending_package_print_batch_mismatch', 'Package print request did not match the wave batch label record.');
+        }
+
+        $result = (new PrintNodePrintQueueService())->queue_easypost_package($easypost_batch_id, $order_id, $package_index);
+        if (is_wp_error($result)) {
+            OrderWaverStore::log($wave_batch_id, $order_id, 'error', 'package_print_queue_failed', $result->get_error_message(), [
+                'easypost_batch_id' => $easypost_batch_id,
+                'package_index' => $package_index,
+                'error_code' => $result->get_error_code(),
+                'error_data' => $result->get_error_data(),
+            ]);
+            return $result;
+        }
+
+        OrderWaverStore::log($wave_batch_id, $order_id, 'info', 'package_print_queued', sprintf(
+            'Queued package %d label and packing slip for PrintNode.',
+            $package_index + 1
+        ), [
+            'easypost_batch_id' => $easypost_batch_id,
             'run_key' => (string) ($result['run_key'] ?? ''),
             'queue_job_ids' => $result['queue_job_ids'] ?? [],
             'errors' => $result['errors'] ?? [],
@@ -341,7 +452,7 @@ final class SendingReadyPage
                     </a>
                     <h2><?php echo esc_html(sprintf(__('Packing Wave Batch #%d', 'ffl-hub'), $wave_batch_id)); ?></h2>
                     <p class="description">
-                        <?php esc_html_e('Print the package documents, scan every item UPC, and match firearm serials before confirming. Shipment confirmation is intentionally disabled until the next implementation step.', 'ffl-hub'); ?>
+                        <?php esc_html_e('Work one package at a time. Print its label and slip, pack the highlighted box, scan each UPC, and scan the serial only when the package contains a firearm.', 'ffl-hub'); ?>
                     </p>
                 </div>
                 <div class="fflhub-pack-toolbar-summary">
@@ -392,11 +503,15 @@ final class SendingReadyPage
         ?>
         <section
             class="fflhub-pack-card"
+            data-package-position="<?php echo esc_attr((string) $position); ?>"
             data-expected="<?php echo esc_attr(is_string($expected_json) ? $expected_json : '[]'); ?>">
             <div class="fflhub-pack-card-head">
                 <div>
-                    <span class="fflhub-pack-step"><?php echo esc_html(sprintf(__('Package %d', 'ffl-hub'), $position)); ?></span>
-                    <h3><?php echo esc_html((string) ($package['package_title'] ?? __('Package', 'ffl-hub'))); ?></h3>
+                    <span class="fflhub-pack-step"><?php echo esc_html(sprintf(__('Step %d', 'ffl-hub'), $position)); ?></span>
+                    <h3>
+                        <span><?php esc_html_e('Pack In:', 'ffl-hub'); ?></span>
+                        <?php echo esc_html((string) ($package['package_title'] ?? __('Package', 'ffl-hub'))); ?>
+                    </h3>
                     <p>
                         <?php if ($order instanceof WC_Order) : ?>
                             <a href="<?php echo esc_url($order->get_edit_order_url()); ?>">
@@ -408,20 +523,23 @@ final class SendingReadyPage
                     <span class="fflhub-sending-ready-muted"><?php echo esc_html((string) ($package['package_detail'] ?? '')); ?></span>
                 </div>
                 <div class="fflhub-pack-docs">
-                    <?php if ((string) ($package['label_url'] ?? '') !== '') : ?>
-                        <a class="button button-primary" href="<?php echo esc_url((string) $package['label_url']); ?>" target="_blank" rel="noopener">
-                            <?php esc_html_e('Print Label', 'ffl-hub'); ?>
-                        </a>
-                    <?php endif; ?>
-                    <?php if ((string) ($package['packing_slip_url'] ?? '') !== '') : ?>
-                        <a class="button" href="<?php echo esc_url((string) $package['packing_slip_url']); ?>" target="_blank" rel="noopener">
-                            <?php esc_html_e('Print Slip', 'ffl-hub'); ?>
-                        </a>
-                    <?php endif; ?>
-                    <?php if ((string) ($package['combined_url'] ?? '') !== '') : ?>
-                        <a class="button" href="<?php echo esc_url((string) $package['combined_url']); ?>" target="_blank" rel="noopener">
-                            <?php esc_html_e('Label + Slip', 'ffl-hub'); ?>
-                        </a>
+                    <form method="post" action="<?php echo esc_url($this->packing_url((int) ($package['wave_batch_id'] ?? 0))); ?>">
+                        <?php wp_nonce_field('fflhub_wms_sending_print_package', 'fflhub_wms_sending_package_nonce'); ?>
+                        <input type="hidden" name="wave_batch_id" value="<?php echo esc_attr((string) ($package['wave_batch_id'] ?? 0)); ?>" />
+                        <input type="hidden" name="easypost_batch_id" value="<?php echo esc_attr((string) ($package['easypost_batch_id'] ?? 0)); ?>" />
+                        <input type="hidden" name="order_id" value="<?php echo esc_attr((string) ($package['order_id'] ?? 0)); ?>" />
+                        <input type="hidden" name="package_index" value="<?php echo esc_attr((string) ($package['package_index'] ?? 0)); ?>" />
+                        <button
+                            type="submit"
+                            class="button button-primary fflhub-pack-print"
+                            name="fflhub_wms_sending_print_package"
+                            value="1"
+                            <?php disabled(!PrintNodeOptions::configured()); ?>>
+                            <?php esc_html_e('Print Label + Slip', 'ffl-hub'); ?>
+                        </button>
+                    </form>
+                    <?php if (!PrintNodeOptions::configured()) : ?>
+                        <span class="fflhub-sending-ready-muted"><?php esc_html_e('Configure PrintNode first.', 'ffl-hub'); ?></span>
                     <?php endif; ?>
                 </div>
             </div>
@@ -476,9 +594,9 @@ final class SendingReadyPage
                     <span><?php esc_html_e('Scan UPC', 'ffl-hub'); ?></span>
                     <input type="text" class="regular-text fflhub-pack-upc" inputmode="numeric" autocomplete="off" />
                 </label>
-                <label>
+                <label class="fflhub-pack-serial-wrap is-hidden">
                     <span><?php esc_html_e('Serial Number', 'ffl-hub'); ?></span>
-                    <input type="text" class="regular-text fflhub-pack-serial" autocomplete="off" />
+                    <input type="text" class="regular-text fflhub-pack-serial" autocomplete="off" disabled />
                 </label>
                 <button type="button" class="button button-primary fflhub-pack-record">
                     <?php esc_html_e('Record Scan', 'ffl-hub'); ?>
@@ -550,21 +668,21 @@ final class SendingReadyPage
                     ? $package_items[$index]
                     : $this->first_array((array) ($label['package_items'] ?? []));
                 $items = $this->hydrated_package_items($order, (array) $assignments, $received_serials, !empty($row['debug_ready']));
-                $label_id = (string) ($label['label_id'] ?? '');
                 $has_ffl = false;
                 foreach ($items as $item) {
                     $has_ffl = $has_ffl || !empty($item['ffl_required']);
                 }
 
                 $out[] = [
+                    'wave_batch_id' => (int) ($batch['id'] ?? 0),
+                    'easypost_batch_id' => (int) ($batch['easypost_batch_id'] ?? 0),
+                    'order_id' => (int) $order->get_id(),
+                    'package_index' => $index,
                     'order' => $order,
                     'package_title' => $this->package_title((array) $package, $index),
                     'package_detail' => $this->package_detail((array) $package),
                     'items' => $items,
                     'has_ffl_required' => $has_ffl,
-                    'label_url' => $label_id !== '' ? ShipStationRestController::download_url($order, $label_id, false) : '',
-                    'packing_slip_url' => $label_id !== '' ? ShipStationRestController::packing_slip_pdf_url($order, $label_id, 0) : '',
-                    'combined_url' => $label_id !== '' ? ShipStationRestController::print_label_with_slip_url($order, $label_id) : '',
                 ];
             }
         }
@@ -1001,6 +1119,9 @@ final class SendingReadyPage
         ?>
         <script>
             (function () {
+                var cards = Array.prototype.slice.call(document.querySelectorAll('.fflhub-pack-card'));
+                var activeIndex = 0;
+
                 function normalizeUpc(value) {
                     return String(value || '').replace(/\D+/g, '');
                 }
@@ -1017,7 +1138,42 @@ final class SendingReadyPage
                     }
                 }
 
-                document.querySelectorAll('.fflhub-pack-card').forEach(function (card) {
+                function setActiveCard(nextIndex) {
+                    activeIndex = Math.max(0, Math.min(cards.length - 1, nextIndex));
+                    cards.forEach(function (card, index) {
+                        var isDone = card.classList.contains('is-done');
+                        var isActive = index === activeIndex && !isDone;
+                        card.classList.toggle('is-active', isActive);
+                        card.classList.toggle('is-upcoming', index > activeIndex && !isDone);
+                        card.querySelectorAll('input, button').forEach(function (field) {
+                            if (field.classList.contains('fflhub-pack-confirm')) {
+                                return;
+                            }
+                            if (field.classList.contains('fflhub-pack-print')) {
+                                field.disabled = !isActive || field.hasAttribute('data-print-disabled');
+                                return;
+                            }
+                            if (!field.classList.contains('fflhub-pack-serial')) {
+                                field.disabled = !isActive;
+                            }
+                        });
+                    });
+
+                    var active = cards[activeIndex];
+                    if (!active || active.classList.contains('is-done')) {
+                        return;
+                    }
+
+                    active.scrollIntoView({behavior: 'smooth', block: 'start'});
+                    var upcInput = active.querySelector('.fflhub-pack-upc');
+                    if (upcInput) {
+                        setTimeout(function () {
+                            upcInput.focus();
+                        }, 200);
+                    }
+                }
+
+                cards.forEach(function (card, cardIndex) {
                     var expected = parseExpected(card).map(function (row, index) {
                         return {
                             index: index,
@@ -1032,10 +1188,21 @@ final class SendingReadyPage
                     });
                     var upcInput = card.querySelector('.fflhub-pack-upc');
                     var serialInput = card.querySelector('.fflhub-pack-serial');
+                    var serialWrap = card.querySelector('.fflhub-pack-serial-wrap');
+                    var printForm = card.querySelector('.fflhub-pack-docs form');
                     var recordButton = card.querySelector('.fflhub-pack-record');
                     var confirmButton = card.querySelector('.fflhub-pack-confirm');
                     var message = card.querySelector('.fflhub-pack-message');
                     var log = card.querySelector('.fflhub-pack-log');
+                    var pendingFflRow = null;
+                    var upcTimer = null;
+                    var serialTimer = null;
+
+                    card.querySelectorAll('.fflhub-pack-print').forEach(function (button) {
+                        if (button.disabled) {
+                            button.setAttribute('data-print-disabled', '1');
+                        }
+                    });
 
                     function setMessage(text, type) {
                         if (!message) {
@@ -1043,6 +1210,78 @@ final class SendingReadyPage
                         }
                         message.textContent = text || '';
                         message.className = 'fflhub-pack-message ' + (type ? 'is-' + type : '');
+                    }
+
+                    if (printForm) {
+                        printForm.addEventListener('submit', function (event) {
+                            if (!window.ajaxurl || !card.classList.contains('is-active')) {
+                                return;
+                            }
+
+                            event.preventDefault();
+                            var button = printForm.querySelector('.fflhub-pack-print');
+                            var originalText = button ? button.textContent : '';
+                            var data = new FormData(printForm);
+                            data.append('action', 'fflhub_wms_sending_print_package');
+
+                            if (button) {
+                                button.disabled = true;
+                                button.textContent = 'Queueing...';
+                            }
+                            setMessage('Queueing label and packing slip through PrintNode.', 'working');
+
+                            window.fetch(window.ajaxurl, {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                body: data
+                            }).then(function (response) {
+                                return response.json();
+                            }).then(function (payload) {
+                                if (!payload || !payload.success) {
+                                    throw new Error(payload && payload.data && payload.data.message ? payload.data.message : 'PrintNode queue failed.');
+                                }
+                                setMessage(payload.data && payload.data.message ? payload.data.message : 'PrintNode package documents queued.', 'good');
+                            }).catch(function (error) {
+                                setMessage(error && error.message ? error.message : 'PrintNode queue failed.', 'bad');
+                            }).finally(function () {
+                                if (button) {
+                                    button.disabled = false;
+                                    button.textContent = originalText;
+                                }
+                                setActiveCard(activeIndex);
+                            });
+                        });
+                    }
+
+                    function showSerial(row) {
+                        pendingFflRow = row;
+                        if (serialWrap) {
+                            serialWrap.classList.remove('is-hidden');
+                        }
+                        if (serialInput) {
+                            serialInput.disabled = false;
+                            serialInput.value = '';
+                            serialInput.focus();
+                        }
+                        if (upcInput) {
+                            upcInput.disabled = true;
+                        }
+                        setMessage('UPC matched. Scan the firearm serial number now.', 'working');
+                    }
+
+                    function hideSerial() {
+                        pendingFflRow = null;
+                        if (serialWrap) {
+                            serialWrap.classList.add('is-hidden');
+                        }
+                        if (serialInput) {
+                            serialInput.value = '';
+                            serialInput.disabled = true;
+                        }
+                        if (upcInput && card.classList.contains('is-active') && !card.classList.contains('is-done')) {
+                            upcInput.disabled = false;
+                            upcInput.focus();
+                        }
                     }
 
                     function redraw() {
@@ -1060,9 +1299,12 @@ final class SendingReadyPage
                             confirmButton.disabled = !complete;
                         }
                         card.classList.toggle('is-complete', complete);
+                        if (complete && !card.classList.contains('is-done')) {
+                            setMessage('Package checks are complete. Confirm shipment to move to the next package.', 'good');
+                        }
                     }
 
-                    function targetForScan(upc, serial) {
+                    function targetForUpc(upc) {
                         var candidates = expected.filter(function (row) {
                             return row.upc === upc && row.scanned < row.quantity;
                         });
@@ -1077,18 +1319,19 @@ final class SendingReadyPage
                             return {row: candidates[0]};
                         }
 
+                        return {row: fflCandidates[0], needsSerial: true};
+                    }
+
+                    function targetForSerial(row, serial) {
                         if (!serial) {
                             return {error: 'This is an FFL item. Scan or enter the serial number too.'};
                         }
 
-                        for (var i = 0; i < fflCandidates.length; i++) {
-                            var row = fflCandidates[i];
-                            if (!row.serials.length) {
-                                return {error: 'No received serial is saved for this FFL item, so packing cannot be confirmed yet.'};
-                            }
-                            if (row.serials.indexOf(serial) !== -1 && row.scannedSerials.indexOf(serial) === -1) {
-                                return {row: row};
-                            }
+                        if (!row.serials.length) {
+                            return {error: 'No received serial is saved for this FFL item, so packing cannot be confirmed yet.'};
+                        }
+                        if (row.serials.indexOf(serial) !== -1 && row.scannedSerials.indexOf(serial) === -1) {
+                            return {row: row};
                         }
 
                         return {error: 'Serial number does not match the received serial for this package.'};
@@ -1103,21 +1346,7 @@ final class SendingReadyPage
                         log.insertBefore(entry, log.firstChild);
                     }
 
-                    function recordScan() {
-                        var upc = normalizeUpc(upcInput ? upcInput.value : '');
-                        var serial = normalizeSerial(serialInput ? serialInput.value : '');
-                        if (!upc) {
-                            setMessage('Scan or enter a UPC first.', 'bad');
-                            return;
-                        }
-
-                        var result = targetForScan(upc, serial);
-                        if (result.error) {
-                            setMessage(result.error, 'bad');
-                            return;
-                        }
-
-                        var row = result.row;
+                    function acceptRow(row, serial) {
                         row.scanned++;
                         if (row.fflRequired) {
                             row.scannedSerials.push(serial);
@@ -1128,34 +1357,124 @@ final class SendingReadyPage
                             upcInput.value = '';
                             upcInput.focus();
                         }
-                        if (serialInput) {
-                            serialInput.value = '';
-                        }
+                        hideSerial();
                         redraw();
                     }
 
-                    if (recordButton) {
-                        recordButton.addEventListener('click', recordScan);
-                    }
-                    [upcInput, serialInput].forEach(function (input) {
-                        if (!input) {
+                    function recordUpcScan() {
+                        if (!card.classList.contains('is-active') || card.classList.contains('is-done')) {
                             return;
                         }
-                        input.addEventListener('keydown', function (event) {
-                            if (event.key === 'Enter') {
-                                event.preventDefault();
-                                recordScan();
+                        var upc = normalizeUpc(upcInput ? upcInput.value : '');
+                        if (!upc) {
+                            setMessage('Scan or enter a UPC first.', 'bad');
+                            return;
+                        }
+
+                        var result = targetForUpc(upc);
+                        if (result.error) {
+                            setMessage(result.error, 'bad');
+                            return;
+                        }
+
+                        if (result.needsSerial) {
+                            showSerial(result.row);
+                            return;
+                        }
+
+                        acceptRow(result.row, '');
+                    }
+
+                    function recordSerialScan() {
+                        if (!pendingFflRow) {
+                            return;
+                        }
+
+                        var serial = normalizeSerial(serialInput ? serialInput.value : '');
+                        var result = targetForSerial(pendingFflRow, serial);
+                        if (result.error) {
+                            setMessage(result.error, 'bad');
+                            return;
+                        }
+
+                        acceptRow(result.row, serial);
+                    }
+
+                    if (recordButton) {
+                        recordButton.addEventListener('click', function () {
+                            if (pendingFflRow) {
+                                recordSerialScan();
+                            } else {
+                                recordUpcScan();
                             }
                         });
-                    });
+                    }
+                    if (upcInput) {
+                        upcInput.addEventListener('keydown', function (event) {
+                            if (event.key === 'Enter') {
+                                event.preventDefault();
+                                recordUpcScan();
+                            }
+                        });
+                        upcInput.addEventListener('input', function () {
+                            window.clearTimeout(upcTimer);
+                            upcTimer = window.setTimeout(function () {
+                                var upc = normalizeUpc(upcInput.value);
+                                var exact = expected.filter(function (row) {
+                                    return row.upc === upc && row.scanned < row.quantity;
+                                });
+                                if (upc.length >= 8 && exact.length === 1) {
+                                    recordUpcScan();
+                                }
+                            }, 180);
+                        });
+                    }
+                    if (serialInput) {
+                        serialInput.addEventListener('keydown', function (event) {
+                            if (event.key === 'Enter') {
+                                event.preventDefault();
+                                recordSerialScan();
+                            }
+                        });
+                        serialInput.addEventListener('input', function () {
+                            window.clearTimeout(serialTimer);
+                            serialTimer = window.setTimeout(function () {
+                                var serial = normalizeSerial(serialInput.value);
+                                if (pendingFflRow && serial && pendingFflRow.serials.indexOf(serial) !== -1) {
+                                    recordSerialScan();
+                                }
+                            }, 220);
+                        });
+                    }
                     if (confirmButton) {
                         confirmButton.addEventListener('click', function () {
-                            setMessage('Shipment confirmation is not wired yet. This button is intentionally a no-op for now.', 'good');
+                            if (confirmButton.disabled) {
+                                return;
+                            }
+
+                            card.classList.add('is-done');
+                            card.classList.remove('is-active');
+                            setMessage('Package confirmed locally. Shipment completion is not wired yet.', 'good');
+
+                            var next = cards.findIndex(function (candidate, index) {
+                                return index > cardIndex && !candidate.classList.contains('is-done');
+                            });
+                            if (next === -1) {
+                                setMessage('All packages in this wave are packed locally. The final shipment action is the next thing to wire.', 'good');
+                                return;
+                            }
+
+                            setActiveCard(next);
                         });
                     }
 
+                    hideSerial();
                     redraw();
                 });
+
+                if (cards.length) {
+                    setActiveCard(0);
+                }
             }());
         </script>
         <?php
@@ -1192,23 +1511,32 @@ final class SendingReadyPage
             .fflhub-pack-toolbar h2{margin:10px 0 4px}
             .fflhub-pack-toolbar-summary{display:grid;gap:6px;text-align:right;min-width:160px}
             .fflhub-pack-list{display:grid;gap:16px}
-            .fflhub-pack-card{background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-            .fflhub-pack-card.is-complete{border-color:#2c8a4b;box-shadow:0 0 0 1px rgba(44,138,75,.18)}
+            .fflhub-pack-card{background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04);transition:border-color .16s ease,box-shadow .16s ease,opacity .16s ease}
+            .fflhub-pack-card.is-active{border-color:#146c43;box-shadow:0 0 0 3px rgba(20,108,67,.16),0 6px 18px rgba(0,0,0,.08)}
+            .fflhub-pack-card.is-upcoming{opacity:.52}
+            .fflhub-pack-card.is-done{border-color:#2c8a4b;background:#f7fcf9}
+            .fflhub-pack-card.is-complete:not(.is-done){border-color:#2c8a4b;box-shadow:0 0 0 2px rgba(44,138,75,.18)}
             .fflhub-pack-card-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:12px}
-            .fflhub-pack-card-head h3{font-size:22px;line-height:1.2;margin:2px 0 4px}
+            .fflhub-pack-card-head h3{font-size:24px;line-height:1.2;margin:2px 0 4px}
+            .fflhub-pack-card-head h3 span{display:block;font-size:12px;text-transform:uppercase;color:#646970;letter-spacing:0;font-weight:800;margin-bottom:2px}
             .fflhub-pack-card-head p{margin:0;color:#50575e}
             .fflhub-pack-step{display:inline-flex;align-items:center;border-radius:999px;background:#eef3f0;color:#17462a;font-size:12px;font-weight:800;text-transform:uppercase;padding:4px 10px}
             .fflhub-pack-docs{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+            .fflhub-pack-docs form{margin:0}
+            .fflhub-pack-print,.fflhub-pack-confirm,.fflhub-pack-record{min-height:38px;font-weight:800}
             .fflhub-pack-ffl-warning{border-left:4px solid #b32d2e;background:#fcf0f1;color:#5f1516;padding:12px;margin:12px 0;font-size:14px}
             .fflhub-pack-items{margin-top:12px}
             .fflhub-pack-items th{white-space:nowrap}
             .fflhub-pack-items code{font-size:13px}
-            .fflhub-pack-scan-panel{display:grid;grid-template-columns:minmax(190px,1fr) minmax(190px,1fr) auto auto;gap:10px;align-items:end;margin-top:14px}
+            .fflhub-pack-scan-panel{display:grid;grid-template-columns:minmax(240px,1fr) minmax(240px,1fr) auto auto;gap:10px;align-items:end;margin-top:14px;background:#f6f7f7;border:1px solid #dcdcde;border-radius:8px;padding:12px}
             .fflhub-pack-scan-panel label span{display:block;font-size:12px;font-weight:800;text-transform:uppercase;color:#646970;margin-bottom:4px}
             .fflhub-pack-scan-panel input{width:100%}
+            .fflhub-pack-scan-panel input:focus{border-color:#146c43;box-shadow:0 0 0 1px #146c43}
+            .fflhub-pack-serial-wrap.is-hidden{display:none}
             .fflhub-pack-message{min-height:20px;margin-top:10px;font-weight:700}
             .fflhub-pack-message.is-good{color:#146c43}
             .fflhub-pack-message.is-bad{color:#8a2424}
+            .fflhub-pack-message.is-working{color:#8a4b00}
             .fflhub-pack-log{margin:10px 0 0 20px;max-height:130px;overflow:auto;color:#50575e}
             @media (max-width:960px){
                 .fflhub-pack-toolbar,.fflhub-pack-card-head{display:block}
