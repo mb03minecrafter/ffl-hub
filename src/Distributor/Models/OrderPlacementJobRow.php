@@ -261,7 +261,25 @@ final class OrderPlacementJobRow
     /** @return string[] */
     public function external_order_ids(): array
     {
-        return self::decode_string_list_json($this->external_order_ids_json);
+        $ids = self::decode_string_list_json($this->external_order_ids_json);
+        $single = $this->external_order_id_or_empty();
+        if ($single !== '') {
+            $ids[] = $single;
+        }
+
+        $seen = [];
+        $unique = [];
+        foreach ($ids as $id) {
+            $id = trim((string) $id);
+            if ($id === '' || isset($seen[$id])) {
+                continue;
+            }
+
+            $seen[$id] = true;
+            $unique[] = $id;
+        }
+
+        return $unique;
     }
 
     /** @return string[] */

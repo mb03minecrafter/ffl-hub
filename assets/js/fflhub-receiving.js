@@ -350,14 +350,18 @@
         '</div>' +
         renderProducts(shipment) +
         renderDebugOverrideButton() +
-        '<button type="button" class="button button-primary button-hero" data-receiving-start-scan>Start Scanning Products</button>' +
       '</div>'
     );
 
     renderScanPane(shipment);
     renderCompletePane(shipment);
-    setStep(shipment.complete ? 'complete' : 'review');
+    setStep(shipment.complete ? 'complete' : 'scan');
     beep(shipment.complete ? 'complete' : 'ready');
+    if (!shipment.complete) {
+      window.setTimeout(function () {
+        $('[data-receiving-upc-input]').trigger('focus');
+      }, 120);
+    }
   }
 
   function renderScanPane(shipment, lastResult) {
@@ -740,12 +744,6 @@
           beep('error');
         }
       });
-    });
-    $(document).on('click', '[data-receiving-start-scan]', function () {
-      setStep('scan');
-      window.setTimeout(function () {
-        $('[data-receiving-upc-input]').trigger('focus');
-      }, 50);
     });
     $(document).on('click', '[data-receiving-upc-submit]', scanProduct);
     $(document).on('click', '[data-receiving-debug-complete]', debugCompleteShipment);

@@ -111,7 +111,7 @@ final class ReceivingPage
                     <div class="fflhub-receiving-step-number">1</div>
                     <div class="fflhub-receiving-step-body">
                         <h2><?php esc_html_e('Identify Shipment', 'ffl-hub'); ?></h2>
-                        <p><?php esc_html_e('Scan a tracking barcode or manually enter the distributor PO/order number.', 'ffl-hub'); ?></p>
+                        <p><?php esc_html_e('Scan a tracking barcode or manually enter the FFLHub PO or distributor external order ID.', 'ffl-hub'); ?></p>
                         <label class="fflhub-receiving-debug-toggle">
                             <input type="checkbox" value="1" data-receiving-debug-old />
                             <span>
@@ -130,10 +130,10 @@ final class ReceivingPage
                             </label>
 
                             <label class="fflhub-receiving-field">
-                                <span><?php esc_html_e('Manual PO / Distributor Order', 'ffl-hub'); ?></span>
+                                <span><?php esc_html_e('Manual PO / External Order ID', 'ffl-hub'); ?></span>
                                 <input type="text" inputmode="text" autocomplete="off" data-receiving-po-input />
                                 <button type="button" class="button" data-receiving-po-submit>
-                                    <?php esc_html_e('Find PO', 'ffl-hub'); ?>
+                                    <?php esc_html_e('Find PO / ID', 'ffl-hub'); ?>
                                 </button>
                             </label>
                         </div>

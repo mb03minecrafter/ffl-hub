@@ -83,21 +83,22 @@ final class ReceivingShipmentService
      */
     public function lookup_by_po(string $raw_po): array
     {
-        $needle = strtoupper(trim($raw_po));
+        $needle = $this->normalize_lookup_identifier($raw_po);
         if ($needle === '') {
             return $this->error('empty_po', __('Enter an FFLHub PO or distributor order number.', 'ffl-hub'));
         }
 
         $matches = [];
         foreach ($this->recent_shipments(true) as $shipment) {
-            $po = strtoupper(trim((string) ($shipment['merchant_po'] ?? '')));
-            $external_ids = array_map('strtoupper', (array) ($shipment['external_order_ids'] ?? []));
-            if ($po === $needle || in_array($needle, $external_ids, true)) {
-                $matches[$shipment['shipment_key']] = $shipment;
+            foreach ($this->shipment_lookup_ids($shipment) as $candidate) {
+                if ($this->normalize_lookup_identifier($candidate) === $needle) {
+                    $matches[$shipment['shipment_key']] = $shipment;
+                    break;
+                }
             }
         }
 
-        return $this->lookup_result(array_values($matches), 'po_not_found', __('PO number was not found in dealer shipment tracker rows.', 'ffl-hub'));
+        return $this->lookup_result(array_values($matches), 'po_not_found', __('PO or distributor order ID was not found in dealer shipment tracker rows.', 'ffl-hub'));
     }
 
     /**
@@ -429,6 +430,35 @@ final class ReceivingShipmentService
             'ok' => true,
             'shipment' => $shipment,
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @return string[]
+     */
+    private function shipment_lookup_ids(array $shipment): array
+    {
+        $ids = [];
+        $po = trim((string) ($shipment['merchant_po'] ?? ''));
+        if ($po !== '') {
+            $ids[] = $po;
+        }
+
+        foreach ((array) ($shipment['external_order_ids'] ?? []) as $id) {
+            $id = trim((string) $id);
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    private function normalize_lookup_identifier(string $value): string
+    {
+        $normalized = strtoupper(trim($value));
+        $normalized = preg_replace('/[^A-Z0-9]+/', '', $normalized);
+        return is_string($normalized) ? $normalized : '';
     }
 
     /**
