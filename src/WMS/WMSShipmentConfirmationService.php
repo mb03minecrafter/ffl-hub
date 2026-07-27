@@ -61,7 +61,8 @@ final class WMSShipmentConfirmationService
             return new WP_Error('fflhub_wms_confirm_missing_wave_order', 'That order is not part of this wave batch.');
         }
 
-        $debug_ready = !empty($wave_order['debug_ready']);
+        $debug_requested = !empty($request['debug_mode']) && (current_user_can('manage_woocommerce') || current_user_can('manage_options'));
+        $debug_ready = !empty($wave_order['debug_ready']) || $debug_requested;
         $order_status = (string) ($wave_order['status'] ?? '');
         if (!$debug_ready && !in_array($order_status, [OrderWaverStore::ORDER_STATUS_LABEL_SAVED, OrderWaverStore::ORDER_STATUS_SHIPPED], true)) {
             return new WP_Error('fflhub_wms_confirm_order_not_ready', 'That order does not have saved labels ready for shipment confirmation.');

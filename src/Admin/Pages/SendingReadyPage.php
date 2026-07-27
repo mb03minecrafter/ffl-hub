@@ -181,6 +181,7 @@ final class SendingReadyPage
             'easypost_batch_id' => isset($_POST['easypost_batch_id']) ? (int) sanitize_text_field(wp_unslash((string) $_POST['easypost_batch_id'])) : 0,
             'order_id' => isset($_POST['order_id']) ? (int) sanitize_text_field(wp_unslash((string) $_POST['order_id'])) : 0,
             'package_index' => isset($_POST['package_index']) ? (int) sanitize_text_field(wp_unslash((string) $_POST['package_index'])) : 0,
+            'debug_mode' => isset($_POST['debug_mode']) && (string) sanitize_text_field(wp_unslash((string) $_POST['debug_mode'])) === '1',
             'scans' => is_array($scans) ? $scans : [],
         ]);
 
@@ -392,6 +393,9 @@ final class SendingReadyPage
                     <a class="button" href="<?php echo esc_url($this->packing_url($wave_batch_id)); ?>">
                         <?php esc_html_e('Start Packing', 'ffl-hub'); ?>
                     </a>
+                    <a class="button" href="<?php echo esc_url($this->packing_url($wave_batch_id, true)); ?>">
+                        <?php esc_html_e('Debug Packing', 'ffl-hub'); ?>
+                    </a>
                 </div>
                 <form method="post" action="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>">
                     <?php wp_nonce_field('fflhub_wms_sending_print_batch', 'fflhub_wms_sending_nonce'); ?>
@@ -433,6 +437,7 @@ final class SendingReadyPage
             return new WP_Error('fflhub_sending_pack_batch_invalid', 'Invalid packing batch request.');
         }
 
+        $debug_pack = $this->debug_pack_requested();
         $batch = OrderWaverStore::batch_with_details($wave_batch_id, 10);
         if (!is_array($batch)) {
             return new WP_Error('fflhub_sending_pack_batch_missing', 'Could not find that wave batch.');
@@ -444,17 +449,34 @@ final class SendingReadyPage
         }
 
         $decorated = $this->decorate_batches([$batch]);
+        if (isset($decorated[0]) && is_array($decorated[0])) {
+            $decorated[0]['debug_pack_mode'] = $debug_pack;
+        }
 
         return $decorated[0] ?? $batch;
     }
 
-    private function packing_url(int $wave_batch_id): string
+    private function packing_url(int $wave_batch_id, bool $debug_pack = false): string
     {
-        return add_query_arg([
+        $args = [
             'page' => self::PAGE_SLUG,
             'packing_batch' => $wave_batch_id,
             '_wpnonce' => wp_create_nonce('fflhub_wms_sending_pack_batch_' . $wave_batch_id),
-        ], admin_url('admin.php'));
+        ];
+        if ($debug_pack) {
+            $args['debug_pack'] = '1';
+        }
+
+        return add_query_arg($args, admin_url('admin.php'));
+    }
+
+    private function debug_pack_requested(): bool
+    {
+        $value = isset($_GET['debug_pack'])
+            ? strtolower(trim(sanitize_text_field(wp_unslash((string) $_GET['debug_pack']))))
+            : '';
+
+        return in_array($value, ['1', 'true', 'yes', 'on'], true);
     }
 
     /**
@@ -478,7 +500,8 @@ final class SendingReadyPage
     private function render_packing_workflow(array $batch): void
     {
         $wave_batch_id = (int) ($batch['id'] ?? 0);
-        $packages = $this->packing_packages_for_batch($batch);
+        $debug_pack_mode = !empty($batch['debug_pack_mode']);
+        $packages = $this->packing_packages_for_batch($batch, $debug_pack_mode);
         ?>
         <div class="fflhub-pack-workflow">
             <div class="fflhub-pack-toolbar">
@@ -486,10 +509,24 @@ final class SendingReadyPage
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>">
                         <?php esc_html_e('Back to Sending', 'ffl-hub'); ?>
                     </a>
+                    <?php if (!$debug_pack_mode) : ?>
+                        <a class="button" href="<?php echo esc_url($this->packing_url($wave_batch_id, true)); ?>">
+                            <?php esc_html_e('Switch to Debug Packing', 'ffl-hub'); ?>
+                        </a>
+                    <?php endif; ?>
                     <h2><?php echo esc_html(sprintf(__('Packing Wave Batch #%d', 'ffl-hub'), $wave_batch_id)); ?></h2>
                     <p class="description">
                         <?php esc_html_e('Work one package at a time. Print its label and slip, pack the highlighted box, scan each UPC, and scan the serial only when the package contains a firearm.', 'ffl-hub'); ?>
                     </p>
+                    <?php if ($debug_pack_mode) : ?>
+                        <div class="notice notice-warning inline fflhub-sending-ready-notice fflhub-pack-debug-notice">
+                            <p>
+                                <strong><?php esc_html_e('Debug packing mode is on.', 'ffl-hub'); ?></strong>
+                                <?php esc_html_e('Fake scans are available and confirmation sends the Woo fulfillment email to you only. Orders will not be completed.', 'ffl-hub'); ?>
+                                <a href="<?php echo esc_url($this->packing_url($wave_batch_id)); ?>"><?php esc_html_e('Switch to live packing', 'ffl-hub'); ?></a>
+                            </p>
+                        </div>
+                    <?php endif; ?>
                 </div>
                 <div class="fflhub-pack-toolbar-summary">
                     <?php $this->render_status_pill((string) ($batch['status'] ?? '')); ?>
@@ -664,7 +701,7 @@ final class SendingReadyPage
      * @param array<string,mixed> $batch
      * @return array<int,array<string,mixed>>
      */
-    private function packing_packages_for_batch(array $batch): array
+    private function packing_packages_for_batch(array $batch, bool $debug_pack_mode = false): array
     {
         $provider_batch_id = (string) ($batch['easypost']['provider_batch_id'] ?? '');
         $order_rows = is_array($batch['orders'] ?? null) ? $batch['orders'] : [];
@@ -716,7 +753,8 @@ final class SendingReadyPage
                 $assignments = is_array($package_items[$index] ?? null)
                     ? $package_items[$index]
                     : $this->first_array((array) ($label['package_items'] ?? []));
-                $items = $this->hydrated_package_items($order, (array) $assignments, $received_serials, !empty($row['debug_ready']));
+                $debug_ready = !empty($row['debug_ready']) || $debug_pack_mode;
+                $items = $this->hydrated_package_items($order, (array) $assignments, $received_serials, $debug_ready);
                 $has_ffl = false;
                 foreach ($items as $item) {
                     $has_ffl = $has_ffl || !empty($item['ffl_required']);
@@ -732,7 +770,7 @@ final class SendingReadyPage
                     'package_detail' => $this->package_detail((array) $package),
                     'items' => $items,
                     'has_ffl_required' => $has_ffl,
-                    'debug_ready' => !empty($row['debug_ready']),
+                    'debug_ready' => $debug_ready,
                 ];
             }
         }
@@ -1533,6 +1571,7 @@ final class SendingReadyPage
                             data.append('easypost_batch_id', card.getAttribute('data-easypost-batch-id') || '0');
                             data.append('order_id', card.getAttribute('data-order-id') || '0');
                             data.append('package_index', card.getAttribute('data-package-index') || '0');
+                            data.append('debug_mode', card.getAttribute('data-debug-ready') === '1' ? '1' : '0');
                             data.append('scans_json', JSON.stringify(acceptedScans));
 
                             var originalText = confirmButton.textContent;
