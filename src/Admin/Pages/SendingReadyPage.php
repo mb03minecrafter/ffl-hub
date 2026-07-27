@@ -4,8 +4,8 @@ declare(strict_types=1);
 namespace FFLHub\Admin\Pages;
 
 use FFLHub\Shipping\EasyPost\EasyPostBatchLabelStore;
-use FFLHub\Shipping\PrintNode\PrintNodeBatchPrintService;
 use FFLHub\Shipping\PrintNode\PrintNodeOptions;
+use FFLHub\Shipping\PrintNode\PrintNodePrintQueueService;
 use FFLHub\WMS\OrderWaverStore;
 use WC_Order;
 use WP_Error;
@@ -122,9 +122,9 @@ final class SendingReadyPage
             return new WP_Error('fflhub_sending_missing_easypost_batch', 'That wave batch does not have an EasyPost batch id.');
         }
 
-        $result = (new PrintNodeBatchPrintService())->print_easypost_batch($easypost_batch_id);
+        $result = (new PrintNodePrintQueueService())->queue_easypost_batch($easypost_batch_id);
         if (is_wp_error($result)) {
-            OrderWaverStore::log($wave_batch_id, 0, 'error', 'print_failed', $result->get_error_message(), [
+            OrderWaverStore::log($wave_batch_id, 0, 'error', 'print_queue_failed', $result->get_error_message(), [
                 'easypost_batch_id' => $easypost_batch_id,
                 'error_code' => $result->get_error_code(),
                 'error_data' => $result->get_error_data(),
@@ -132,12 +132,14 @@ final class SendingReadyPage
             return $result;
         }
 
-        OrderWaverStore::log($wave_batch_id, 0, 'info', 'printed', sprintf(
-            'Submitted %d PrintNode job(s) for EasyPost batch #%d.',
-            (int) ($result['jobs_submitted'] ?? 0),
-            $easypost_batch_id
+        OrderWaverStore::log($wave_batch_id, 0, 'info', 'print_queued', sprintf(
+            'Queued %d PrintNode job(s) for EasyPost batch #%d with a %d second delay.',
+            (int) ($result['queued_count'] ?? 0),
+            $easypost_batch_id,
+            (int) ($result['delay_seconds'] ?? 0)
         ), [
-            'print_jobs' => $result['print_jobs'] ?? [],
+            'run_key' => (string) ($result['run_key'] ?? ''),
+            'queue_job_ids' => $result['queue_job_ids'] ?? [],
             'errors' => $result['errors'] ?? [],
         ]);
 
@@ -209,7 +211,10 @@ final class SendingReadyPage
     {
         $wave_batch_id = (int) ($batch['id'] ?? 0);
         $easypost_batch_id = (int) ($batch['easypost_batch_id'] ?? 0);
-        $can_print = PrintNodeOptions::configured() && $easypost_batch_id > 0;
+        $print = (array) ($batch['printnode_last_print'] ?? []);
+        $has_pending_print = (int) ($print['pending_count'] ?? 0) > 0
+            && in_array((string) ($print['status'] ?? ''), ['queued', 'printing', 'printing_with_errors'], true);
+        $can_print = PrintNodeOptions::configured() && $easypost_batch_id > 0 && !$has_pending_print;
         ?>
         <tr>
             <td>
@@ -233,11 +238,13 @@ final class SendingReadyPage
                         name="fflhub_wms_sending_print_batch"
                         value="1"
                         <?php disabled(!$can_print); ?>
-                        onclick="return confirm('<?php echo esc_js(__('Print all labels and packing slips for this sending batch?', 'ffl-hub')); ?>');">
+                        onclick="return confirm('<?php echo esc_js(__('Queue all labels and packing slips for throttled PrintNode printing?', 'ffl-hub')); ?>');">
                         <?php esc_html_e('Print Batch', 'ffl-hub'); ?>
                     </button>
                 </form>
-                <?php if (!$can_print) : ?>
+                <?php if ($has_pending_print) : ?>
+                    <span class="fflhub-sending-ready-muted"><?php esc_html_e('Print run already queued.', 'ffl-hub'); ?></span>
+                <?php elseif (!$can_print) : ?>
                     <span class="fflhub-sending-ready-muted"><?php esc_html_e('Configure PrintNode first.', 'ffl-hub'); ?></span>
                 <?php endif; ?>
             </td>
@@ -255,15 +262,26 @@ final class SendingReadyPage
             return;
         }
 
+        $status = (string) ($print['status'] ?? 'queued');
+        $queued = (int) ($print['queued_count'] ?? 0);
         $submitted = (int) ($print['submitted_count'] ?? 0);
+        $pending = (int) ($print['pending_count'] ?? 0);
         $errors = (int) ($print['error_count'] ?? 0);
-        $this->render_status_pill($errors > 0 ? 'printed_with_errors' : 'printed');
+        $this->render_status_pill($status);
         echo '<span class="fflhub-sending-ready-muted">' . esc_html(sprintf(
-            __('%1$d job(s), %2$d error(s)', 'ffl-hub'),
+            __('%1$d queued, %2$d printed, %3$d pending, %4$d error(s)', 'ffl-hub'),
+            $queued,
             $submitted,
+            $pending,
             $errors
         )) . '</span>';
-        echo '<span class="fflhub-sending-ready-muted">' . esc_html($this->local_time((string) ($print['submitted_at'] ?? ''))) . '</span>';
+        if (isset($print['delay_seconds'])) {
+            echo '<span class="fflhub-sending-ready-muted">' . esc_html(sprintf(
+                __('Delay: %d second(s) between queued jobs', 'ffl-hub'),
+                (int) ($print['delay_seconds'] ?? 0)
+            )) . '</span>';
+        }
+        echo '<span class="fflhub-sending-ready-muted">' . esc_html($this->local_time((string) ($print['updated_at'] ?? $print['queued_at'] ?? ''))) . '</span>';
 
         foreach (array_slice((array) ($print['errors'] ?? []), 0, 3) as $error) {
             echo '<span class="fflhub-sending-ready-error">' . esc_html((string) $error) . '</span>';
@@ -362,8 +380,9 @@ final class SendingReadyPage
                 <strong>
                     <?php
                     echo esc_html(sprintf(
-                        __('Submitted %d PrintNode print job(s).', 'ffl-hub'),
-                        (int) ($print['jobs_submitted'] ?? 0)
+                        __('Queued %1$d PrintNode job(s) with a %2$d second delay between jobs.', 'ffl-hub'),
+                        (int) ($print['queued_count'] ?? 0),
+                        (int) ($print['delay_seconds'] ?? 0)
                     ));
                     ?>
                 </strong>
@@ -398,7 +417,7 @@ final class SendingReadyPage
             $class = 'is-good';
         } elseif (strpos($status, 'error') !== false || strpos($status, 'failed') !== false) {
             $class = 'is-bad';
-        } elseif (in_array($status, ['not_printed', OrderWaverStore::BATCH_STATUS_PARTIAL_LABELS_SAVED], true)) {
+        } elseif (in_array($status, ['not_printed', 'queued', 'printing', 'printing_with_errors', OrderWaverStore::BATCH_STATUS_PARTIAL_LABELS_SAVED], true)) {
             $class = 'is-working';
         }
 

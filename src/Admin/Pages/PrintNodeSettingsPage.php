@@ -157,6 +157,13 @@ final class PrintNodeSettingsPage
                                 </td>
                             </tr>
                             <tr>
+                                <th scope="row"><label for="fflhub-printnode-job-delay"><?php esc_html_e('Delay Between Jobs', 'ffl-hub'); ?></label></th>
+                                <td>
+                                    <input id="fflhub-printnode-job-delay" type="number" min="0" max="3600" step="1" name="printnode[job_delay_seconds]" value="<?php echo esc_attr((string) $settings['job_delay_seconds']); ?>" />
+                                    <p class="description"><?php esc_html_e('Seconds to wait before the next queued PrintNode document becomes eligible to print. The worker submits one due document per run, so the real gap may be longer if Action Scheduler only runs once per minute.', 'ffl-hub'); ?></p>
+                                </td>
+                            </tr>
+                            <tr>
                                 <th scope="row"><label for="fflhub-printnode-expire-after"><?php esc_html_e('Expire After Seconds', 'ffl-hub'); ?></label></th>
                                 <td>
                                     <input id="fflhub-printnode-expire-after" type="number" min="60" max="604800" step="60" name="printnode[expire_after_seconds]" value="<?php echo esc_attr((string) $settings['expire_after_seconds']); ?>" />
