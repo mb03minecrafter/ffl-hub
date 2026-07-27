@@ -3,8 +3,8 @@
  * Order fulfillment details table shown in emails.
  *
  * FFL Hub override of WooCommerce's fulfillment details template. The stock
- * template includes a "My Account > Orders" paragraph, but this store does not
- * use customer accounts.
+ * template includes an account orders paragraph, but this store does not use
+ * customer accounts.
  *
  * @see https://woocommerce.com/document/template-structure/
  * @package FFLHub\Templates\Emails

@@ -9,10 +9,10 @@ if (!defined('ABSPATH')) {
 /**
  * Routes selected WooCommerce fulfillment email templates through FFL Hub.
  *
- * Woo's stock fulfillment details template tells customers to visit
- * "My Account > Orders". Deerford intentionally avoids customer accounts, so
- * we override only the fulfillment details templates and leave the surrounding
- * Woo email shell, tracking fields, item table, and product images untouched.
+ * Woo's stock fulfillment details template sends customers to an account
+ * orders page. Deerford intentionally avoids customer accounts, so we override
+ * only the fulfillment details templates and leave the surrounding Woo email
+ * shell, tracking fields, item table, and product images untouched.
  */
 final class FulfillmentEmailTemplates
 {
