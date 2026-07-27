@@ -1350,7 +1350,7 @@ final class SendingReadyPage
                                 return;
                             }
                             if (field.classList.contains('fflhub-pack-print')) {
-                                field.disabled = !isActive || field.hasAttribute('data-print-disabled');
+                                field.disabled = !isActive || field.hasAttribute('data-print-disabled') || field.hasAttribute('data-printing');
                                 return;
                             }
                             if (field.classList.contains('fflhub-pack-tracking')) {
@@ -1375,6 +1375,9 @@ final class SendingReadyPage
                             upcInput.focus();
                         }, 200);
                     }
+                    setTimeout(function () {
+                        active.dispatchEvent(new CustomEvent('fflhubPackCardActivated'));
+                    }, 350);
                 }
 
                 cards.forEach(function (card, cardIndex) {
@@ -1421,6 +1424,54 @@ final class SendingReadyPage
                         message.className = 'fflhub-pack-message ' + (type ? 'is-' + type : '');
                     }
 
+                    function queuePackagePrint(autoQueued) {
+                        if (!printForm || !window.ajaxurl || !card.classList.contains('is-active') || card.classList.contains('is-done')) {
+                            return;
+                        }
+
+                        var button = printForm.querySelector('.fflhub-pack-print');
+                        if (button && (button.hasAttribute('data-print-disabled') || button.hasAttribute('data-printing'))) {
+                            return;
+                        }
+                        if (autoQueued && card.hasAttribute('data-auto-print-queued')) {
+                            return;
+                        }
+                        card.setAttribute('data-auto-print-queued', '1');
+
+                        var originalText = button ? button.textContent : '';
+                        var data = new FormData(printForm);
+                        data.append('action', 'fflhub_wms_sending_print_package');
+
+                        if (button) {
+                            button.disabled = true;
+                            button.setAttribute('data-printing', '1');
+                            button.textContent = 'Queueing...';
+                        }
+                        setMessage(autoQueued ? 'Auto-queueing label and packing slip through PrintNode.' : 'Queueing label and packing slip through PrintNode.', 'working');
+
+                        window.fetch(window.ajaxurl, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            body: data
+                        }).then(function (response) {
+                            return response.json();
+                        }).then(function (payload) {
+                            if (!payload || !payload.success) {
+                                throw new Error(payload && payload.data && payload.data.message ? payload.data.message : 'PrintNode queue failed.');
+                            }
+                            setMessage(payload.data && payload.data.message ? payload.data.message : 'PrintNode package documents queued.', 'good');
+                        }).catch(function (error) {
+                            setMessage(error && error.message ? error.message : 'PrintNode queue failed.', 'bad');
+                        }).finally(function () {
+                            if (button) {
+                                button.removeAttribute('data-printing');
+                                button.disabled = false;
+                                button.textContent = originalText;
+                            }
+                            setActiveCard(activeIndex);
+                        });
+                    }
+
                     if (printForm) {
                         printForm.addEventListener('submit', function (event) {
                             if (!window.ajaxurl || !card.classList.contains('is-active')) {
@@ -1428,37 +1479,12 @@ final class SendingReadyPage
                             }
 
                             event.preventDefault();
-                            var button = printForm.querySelector('.fflhub-pack-print');
-                            var originalText = button ? button.textContent : '';
-                            var data = new FormData(printForm);
-                            data.append('action', 'fflhub_wms_sending_print_package');
-
-                            if (button) {
-                                button.disabled = true;
-                                button.textContent = 'Queueing...';
-                            }
-                            setMessage('Queueing label and packing slip through PrintNode.', 'working');
-
-                            window.fetch(window.ajaxurl, {
-                                method: 'POST',
-                                credentials: 'same-origin',
-                                body: data
-                            }).then(function (response) {
-                                return response.json();
-                            }).then(function (payload) {
-                                if (!payload || !payload.success) {
-                                    throw new Error(payload && payload.data && payload.data.message ? payload.data.message : 'PrintNode queue failed.');
-                                }
-                                setMessage(payload.data && payload.data.message ? payload.data.message : 'PrintNode package documents queued.', 'good');
-                            }).catch(function (error) {
-                                setMessage(error && error.message ? error.message : 'PrintNode queue failed.', 'bad');
-                            }).finally(function () {
-                                if (button) {
-                                    button.disabled = false;
-                                    button.textContent = originalText;
-                                }
-                                setActiveCard(activeIndex);
-                            });
+                            queuePackagePrint(false);
+                        });
+                        card.addEventListener('fflhubPackCardActivated', function () {
+                            window.setTimeout(function () {
+                                queuePackagePrint(true);
+                            }, 250);
                         });
                     }
 
@@ -1772,7 +1798,7 @@ final class SendingReadyPage
                                     acceptRow(row, serial);
                                 }
                             });
-                            setMessage('Debug scans filled. Confirm shipment to send a debug fulfillment email only.', 'good');
+                            setMessage('Debug scans filled. Scan the shipping label to send a debug fulfillment email only.', 'good');
                         });
                     }
                     if (upcInput) {
