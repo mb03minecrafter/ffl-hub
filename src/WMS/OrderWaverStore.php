@@ -105,6 +105,7 @@ order_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
 order_number VARCHAR(60) NOT NULL DEFAULT '',
 status VARCHAR(40) NOT NULL DEFAULT '',
 fail_reason TEXT NULL,
+debug_ready TINYINT(1) UNSIGNED NOT NULL DEFAULT 0,
 packages_json LONGTEXT NULL,
 package_items_json LONGTEXT NULL,
 packing_slips_json LONGTEXT NULL,
@@ -139,7 +140,7 @@ KEY stage_created_at (stage, created_at)
     }
 
     /**
-     * @param array<int,array{order_id:int,order_number:string}> $orders
+     * @param array<int,array{order_id:int,order_number:string,debug_ready?:bool|int}> $orders
      */
     public static function create_batch(array $orders, int $created_by = 0): int
     {
@@ -197,6 +198,7 @@ KEY stage_created_at (stage, created_at)
                 'order_number' => sanitize_text_field((string) ($row['order_number'] ?? '')),
                 'status' => self::ORDER_STATUS_QUEUED,
                 'fail_reason' => '',
+                'debug_ready' => !empty($row['debug_ready']) ? 1 : 0,
                 'packages_json' => '',
                 'package_items_json' => '',
                 'packing_slips_json' => '',
@@ -210,6 +212,7 @@ KEY stage_created_at (stage, created_at)
                 '%s',
                 '%s',
                 '%s',
+                '%d',
                 '%s',
                 '%s',
                 '%s',
@@ -330,6 +333,7 @@ KEY stage_created_at (stage, created_at)
         $allowed = [
             'status' => '%s',
             'fail_reason' => '%s',
+            'debug_ready' => '%d',
             'packages_json' => '%s',
             'package_items_json' => '%s',
             'packing_slips_json' => '%s',
@@ -701,6 +705,7 @@ KEY stage_created_at (stage, created_at)
             'order_number' => (string) ($row['order_number'] ?? ''),
             'status' => (string) ($row['status'] ?? ''),
             'fail_reason' => (string) ($row['fail_reason'] ?? ''),
+            'debug_ready' => !empty($row['debug_ready']),
             'packages' => is_array($packages) ? $packages : [],
             'package_items' => is_array($package_items) ? $package_items : [],
             'packing_slips' => is_array($packing_slips) ? $packing_slips : [],

@@ -317,6 +317,7 @@ final class ReceivingShipmentService
                         continue;
                     }
 
+                    $serial_required = !empty($product['serial_required']) || !empty($allocation['serial_required']) || !empty($allocation['ffl_required']);
                     $this->events->insert_event([
                         'shipment_key' => $shipment_key,
                         'job_id' => (int) ($allocation['job_id'] ?? 0),
@@ -328,6 +329,7 @@ final class ReceivingShipmentService
                         'tracking_number' => (string) ($shipment['primary_tracking'] ?? ''),
                         'product_id' => (int) ($allocation['product_id'] ?? ($product['product_id'] ?? 0)),
                         'upc' => (string) $upc,
+                        'serial_number' => $serial_required ? 'DEBUG' : '',
                         'quantity' => $remaining,
                         'result' => 'accepted',
                         'exception_status' => 'debug_override',

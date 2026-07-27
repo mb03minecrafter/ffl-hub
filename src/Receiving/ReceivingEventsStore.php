@@ -351,6 +351,57 @@ final class ReceivingEventsStore
     }
 
     /**
+     * Return the accepted firearm serials already captured during receiving,
+     * keyed by Woo order item. WMS sending uses this to print the exact serial
+     * on the outbound packing slip without making the packing service know how
+     * receiving shipments are scanned.
+     *
+     * @param int[] $order_item_ids
+     * @return array<int,string[]>
+     */
+    public function accepted_serials_by_order_item_ids(array $order_item_ids): array
+    {
+        global $wpdb;
+
+        $order_item_ids = array_values(array_unique(array_filter(array_map('absint', $order_item_ids))));
+        if (empty($order_item_ids)) {
+            return [];
+        }
+
+        self::ensure_schema();
+
+        $placeholders = implode(',', array_fill(0, count($order_item_ids), '%d'));
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT order_item_id, serial_number, quantity
+                 FROM " . self::table_name() . "
+                 WHERE result = 'accepted'
+                   AND order_item_id IN ({$placeholders})
+                   AND serial_number <> ''
+                 ORDER BY id ASC",
+                ...$order_item_ids
+            ),
+            ARRAY_A
+        );
+
+        $out = [];
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            $item_id = absint($row['order_item_id'] ?? 0);
+            $serial = trim((string) ($row['serial_number'] ?? ''));
+            if ($item_id <= 0 || $serial === '') {
+                continue;
+            }
+
+            $quantity = max(1, (int) ($row['quantity'] ?? 1));
+            for ($i = 0; $i < $quantity; $i++) {
+                $out[$item_id][] = $serial;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * @return array<int,array<string,mixed>>
      */
     public function recent_events(string $shipment_key, int $limit = 50): array

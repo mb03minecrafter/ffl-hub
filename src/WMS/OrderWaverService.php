@@ -5,6 +5,7 @@ namespace FFLHub\WMS;
 
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
+use FFLHub\Receiving\ReceivingEventsStore;
 use FFLHub\Shipping\DTO\ShippingPackage;
 use FFLHub\Shipping\EasyPost\EasyPostBatchLabelService;
 use FFLHub\Shipping\EasyPost\EasyPostBatchLabelStore;
@@ -78,6 +79,7 @@ final class OrderWaverService
             $orders[] = [
                 'order_id' => $order_id,
                 'order_number' => (string) ($row['order_number'] ?? $order_id),
+                'debug_ready' => !empty($row['debug_ready']) ? 1 : 0,
             ];
         }
 
@@ -329,6 +331,7 @@ final class OrderWaverService
         $package_items = isset($packed['package_items']) && is_array($packed['package_items'])
             ? array_values($packed['package_items'])
             : [];
+        $package_items = $this->attach_received_serials_to_package_items($package_items, !empty($wave_order['debug_ready']));
 
         if (empty($packages)) {
             return $this->mark_packing_failed($wave_order, 'Packing succeeded but no label package rows were produced.');
@@ -362,12 +365,126 @@ final class OrderWaverService
                     'weight_oz' => (float) ($package['weight_oz'] ?? $package['weight'] ?? 0),
                 ];
             }, $packages),
+            'serialized_item_rows' => $this->serialized_package_item_count($package_items),
         ]);
 
         return [
             'ok' => true,
             'packages' => count($packages),
         ];
+    }
+
+    /**
+     * Accepted receiving events are the source of truth for firearm serials.
+     * The packer only knows Woo order item IDs and quantities, so this step
+     * decorates each package assignment with the serials captured for that
+     * order item before the packing slip is generated or the label is saved.
+     *
+     * @param array<int,array<int,array<string,mixed>>> $package_items
+     * @return array<int,array<int,array<string,mixed>>>
+     */
+    private function attach_received_serials_to_package_items(array $package_items, bool $debug_ready): array
+    {
+        $item_ids = [];
+        foreach ($package_items as $rows) {
+            foreach (is_array($rows) ? $rows : [] as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                $item_id = absint($row['item_id'] ?? $row['order_item_id'] ?? 0);
+                if ($item_id > 0) {
+                    $item_ids[] = $item_id;
+                }
+            }
+        }
+
+        $remaining_serials = (new ReceivingEventsStore())->accepted_serials_by_order_item_ids($item_ids);
+        $out = [];
+
+        foreach ($package_items as $package_index => $rows) {
+            $out[$package_index] = [];
+            foreach (is_array($rows) ? $rows : [] as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                $item_id = absint($row['item_id'] ?? $row['order_item_id'] ?? 0);
+                $quantity = max(0, (int) ($row['quantity'] ?? 0));
+                $ffl_required = $this->truthy($row['ffl_required'] ?? null);
+                $serials = [];
+
+                if ($item_id > 0 && !empty($remaining_serials[$item_id])) {
+                    $serials = array_splice($remaining_serials[$item_id], 0, max(1, $quantity));
+                }
+
+                if (empty($serials) && $debug_ready && $ffl_required && $quantity > 0) {
+                    $serials = array_fill(0, $quantity, 'DEBUG');
+                }
+
+                $serials = $this->clean_serials($serials);
+                if (!empty($serials)) {
+                    $row['serial_numbers'] = $serials;
+                    $row['serial_number'] = $this->serials_label($serials);
+                }
+
+                $out[$package_index][] = $row;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param array<int,array<int,array<string,mixed>>> $package_items
+     */
+    private function serialized_package_item_count(array $package_items): int
+    {
+        $count = 0;
+        foreach ($package_items as $rows) {
+            foreach (is_array($rows) ? $rows : [] as $row) {
+                if (is_array($row) && $this->truthy($row['ffl_required'] ?? null)) {
+                    $count++;
+                }
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * @param mixed[] $serials
+     * @return string[]
+     */
+    private function clean_serials(array $serials): array
+    {
+        $out = [];
+        foreach ($serials as $serial) {
+            $serial = trim(sanitize_text_field((string) $serial));
+            if ($serial !== '') {
+                $out[] = $serial;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param string[] $serials
+     */
+    private function serials_label(array $serials): string
+    {
+        $serials = $this->clean_serials($serials);
+        if (empty($serials)) {
+            return '';
+        }
+
+        $unique = array_values(array_unique($serials));
+        if (count($unique) === 1) {
+            return $unique[0];
+        }
+
+        return implode(', ', $unique);
     }
 
     /**
@@ -606,6 +723,18 @@ final class OrderWaverService
         $messages = array_values(array_unique($messages));
 
         return !empty($messages) ? implode(' | ', $messages) : 'No package preset could pack this order.';
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function truthy($value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'on'], true);
     }
 
     private function elapsed_ms(float $started): float

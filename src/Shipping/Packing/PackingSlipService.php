@@ -279,8 +279,9 @@ final class PackingSlipService
             $order_item = $order->get_item($item_id);
             $product = $order_item instanceof WC_Order_Item_Product ? $order_item->get_product() : null;
             $product = $product instanceof WC_Product ? $product : null;
+            $source = array_replace($fallback, $assignment);
 
-            $name = trim((string) ($fallback['name'] ?? ''));
+            $name = trim((string) ($source['name'] ?? ''));
             if ($name === '' && $order_item instanceof WC_Order_Item_Product) {
                 $name = (string) $order_item->get_name();
             }
@@ -288,18 +289,18 @@ final class PackingSlipService
                 $name = 'Order item #' . $item_id;
             }
 
-            $sku = trim((string) ($fallback['sku'] ?? ''));
+            $sku = trim((string) ($source['sku'] ?? ''));
             if ($sku === '' && $product instanceof WC_Product) {
                 $sku = (string) $product->get_sku();
             }
 
-            $upc = trim((string) ($fallback['upc'] ?? ''));
+            $upc = trim((string) ($source['upc'] ?? ''));
             if ($upc === '' && $product instanceof WC_Product && method_exists($product, 'get_global_unique_id')) {
                 $upc = trim((string) $product->get_global_unique_id('edit'));
             }
 
             $rows[] = [
-                ...$fallback,
+                ...$source,
                 'item_id' => $item_id,
                 'quantity' => $quantity,
                 'order_quantity' => $order_item instanceof WC_Order_Item_Product ? max(0, (int) $order_item->get_quantity()) : $quantity,
@@ -436,6 +437,7 @@ final class PackingSlipService
                 <?php endif; ?>
                 <?php foreach ($items as $item) : ?>
                     <?php $item = is_array($item) ? $item : []; ?>
+                    <?php $serial_label = self::serial_label_from_item($item); ?>
                     <tr>
                         <td class="qty"><strong><?php echo esc_html((string) max(0, (int) ($item['quantity'] ?? 0))); ?></strong></td>
                         <td>
@@ -444,6 +446,9 @@ final class PackingSlipService
                                 Order item #<?php echo esc_html((string) absint($item['item_id'] ?? $item['order_item_id'] ?? 0)); ?>
                                 <?php if (!empty($item['order_quantity'])) : ?>
                                     | Order qty <?php echo esc_html((string) max(0, (int) $item['order_quantity'])); ?>
+                                <?php endif; ?>
+                                <?php if ($serial_label !== '') : ?>
+                                    <br>Serial <?php echo esc_html($serial_label); ?>
                                 <?php endif; ?>
                             </div>
                         </td>
@@ -543,9 +548,11 @@ final class PackingSlipService
             $name = (string) ($item['name'] ?? 'Order item');
             $sku = trim((string) ($item['sku'] ?? '')) ?: '-';
             $upc = trim((string) ($item['upc'] ?? '')) ?: '-';
+            $serial = self::serial_label_from_item($item);
+            $item_text = $serial !== '' ? ($name . "\nSN: " . $serial) : $name;
 
             $zpl[] = self::zpl_field(44, $y, $quantity, 34, 34, 50, 1);
-            $zpl[] = self::zpl_field(112, $y, $name, 24, 24, 430, 2, 2);
+            $zpl[] = self::zpl_field(112, $y, $item_text, 22, 22, 430, 3, 1);
             $zpl[] = self::zpl_field(558, $y, $sku, 20, 20, 210, 1);
             $zpl[] = self::zpl_field(558, $y + 24, $upc, 20, 20, 210, 1);
             $zpl[] = '^FO24,' . (string) ($y + 54) . '^GB764,2,2^FS';
@@ -625,9 +632,11 @@ final class PackingSlipService
             $name = (string) ($item['name'] ?? 'Order item');
             $sku = trim((string) ($item['sku'] ?? '')) ?: '-';
             $upc = trim((string) ($item['upc'] ?? '')) ?: '-';
+            $serial = self::serial_label_from_item($item);
+            $item_text = $serial !== '' ? ($name . "\nSN: " . $serial) : $name;
 
             self::pdf_text($pdf, 16, $y, 24, $quantity, 14, 'B', 14, 1);
-            self::pdf_text($pdf, 46, $y, 160, $name, 7.2, 'B', 8.2, 2);
+            self::pdf_text($pdf, 46, $y, 160, $item_text, 6.8, 'B', 7.4, 3);
             self::pdf_text($pdf, 214, $y, 60, $sku . "\n" . $upc, 6.2, 'B', 7.2, 2);
             $pdf->Line(8, $y + 31, 280, $y + 31);
             $y += 36;
@@ -808,6 +817,35 @@ final class PackingSlipService
         }
 
         return rtrim(rtrim(number_format($number, 2, '.', ''), '0'), '.');
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     */
+    private static function serial_label_from_item(array $item): string
+    {
+        $serials = [];
+        $raw_serials = $item['serial_numbers'] ?? [];
+        if (is_array($raw_serials)) {
+            foreach ($raw_serials as $serial) {
+                $serial = trim((string) $serial);
+                if ($serial !== '') {
+                    $serials[] = $serial;
+                }
+            }
+        }
+
+        $single = trim((string) ($item['serial_number'] ?? ''));
+        if ($single !== '') {
+            $serials[] = $single;
+        }
+
+        $serials = array_values(array_unique($serials));
+        if (empty($serials)) {
+            return '';
+        }
+
+        return implode(', ', $serials);
     }
 
     private static function zpl_field(int $x, int $y, string $text, int $height, int $width, int $block_width, int $max_lines = 1, int $line_spacing = 0): string
