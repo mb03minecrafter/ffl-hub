@@ -513,6 +513,7 @@ KEY stage_created_at (stage, created_at)
                 'SELECT * FROM ' . self::batches_table_name() . "
                  WHERE status IN ({$placeholders})
                    AND easypost_batch_id > 0
+                   AND label_saved_count > 0
                  ORDER BY labels_at DESC, id DESC
                  LIMIT %d",
                 ...array_merge($statuses, [$limit])
@@ -523,7 +524,7 @@ KEY stage_created_at (stage, created_at)
         $batches = array_values(array_map([self::class, 'hydrate_batch'], is_array($rows) ? $rows : []));
         foreach ($batches as &$batch) {
             $batch_id = (int) ($batch['id'] ?? 0);
-            $batch['orders'] = self::orders_for_batch($batch_id);
+            $batch['orders'] = self::orders_for_batch($batch_id, [self::ORDER_STATUS_LABEL_SAVED]);
             $batch['logs'] = self::logs_for_batch($batch_id, 6);
         }
         unset($batch);
