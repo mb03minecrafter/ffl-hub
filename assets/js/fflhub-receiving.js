@@ -134,6 +134,34 @@
     return !!product && Number(product.serial_required || product.ffl_required || 0) === 1 && Number(product.remaining_qty || 0) > 0;
   }
 
+  function hasPendingFastBoundAcquisition(shipment) {
+    var fastbound = shipment && shipment.fastbound ? shipment.fastbound : {};
+    if (Number(fastbound.enabled || 0) !== 1 || Number(fastbound.configured || 0) !== 1) {
+      return false;
+    }
+
+    return (shipment && shipment.scan_history ? shipment.scan_history : []).some(function (event) {
+      return event.result === 'accepted' && event.serial_number && !event.fastbound_acquisition_item_id;
+    });
+  }
+
+  function focusPendingFastBoundAcquisition() {
+    var $field = $('[data-fastbound-event]').filter(function () {
+      return !$(this).hasClass('is-acquired') && !$(this).hasClass('is-disposed');
+    }).first().find('[data-fastbound-source-contact], [data-fastbound-manufacturer], [data-fastbound-model], [data-fastbound-caliber], [data-fastbound-firearm-type], [data-fastbound-acquire]').filter(':enabled:visible').first();
+
+    if ($field.length) {
+      $field.trigger('focus');
+      return true;
+    }
+
+    return false;
+  }
+
+  function isFastBoundInteractionTarget(element) {
+    return $(element).closest('[data-fastbound-event], .fflhub-receiving-fastbound').length > 0;
+  }
+
   function updateSerialFieldState() {
     var $upc = $('[data-receiving-upc-input]');
     var $serial = $('[data-receiving-serial-input]');
@@ -377,6 +405,10 @@
     beep(shipment.complete ? 'complete' : 'ready');
     if (!shipment.complete) {
       window.setTimeout(function () {
+        if (hasPendingFastBoundAcquisition(shipment) && focusPendingFastBoundAcquisition()) {
+          return;
+        }
+
         $('[data-receiving-upc-input]').trigger('focus');
       }, 120);
     }
@@ -888,7 +920,7 @@
     $(document).on('blur', '[data-receiving-upc-input]', function () {
       if (state.shipment && !state.shipment.complete) {
         window.setTimeout(function () {
-          if ($(document.activeElement).is('[data-receiving-serial-input], [data-receiving-upc-submit]')) {
+          if ($(document.activeElement).is('[data-receiving-serial-input], [data-receiving-upc-submit]') || isFastBoundInteractionTarget(document.activeElement)) {
             return;
           }
           $('[data-receiving-upc-input]').trigger('focus');
