@@ -479,7 +479,7 @@
   border-radius: 6px;
   display: grid;
   gap: 6px;
-  grid-template-columns: 140px 1fr 170px;
+  grid-template-columns: 140px 1fr 170px auto;
   padding: 10px 12px;
 }
 
@@ -524,6 +524,11 @@
   margin: 0;
 }
 
+.fflhub-receiving-history-head p {
+  color: #667085;
+  margin: 4px 0 0;
+}
+
 .fflhub-receiving-history-row {
   align-items: center;
   border-top: 1px solid #edf2f7;
@@ -531,6 +536,51 @@
   gap: 10px;
   grid-template-columns: 1.4fr 120px 90px 170px;
   padding: 10px 0;
+}
+
+.fflhub-receiving-correct-serial {
+  white-space: nowrap;
+}
+
+.fflhub-receiving-serial-blocked {
+  color: #b42318;
+  display: block;
+  font-weight: 700;
+  margin-top: 6px;
+}
+
+.fflhub-receiving-event-action {
+  text-align: right;
+}
+
+.fflhub-receiving-serial-corrections {
+  margin-top: -4px;
+}
+
+.fflhub-receiving-serial-row {
+  align-items: center;
+  border-top: 1px solid #edf2f7;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 1.6fr) minmax(150px, 0.7fr) minmax(120px, 0.6fr) minmax(170px, 0.8fr) auto;
+  padding: 12px 0;
+}
+
+.fflhub-receiving-serial-row:first-child {
+  border-top: 0;
+}
+
+.fflhub-receiving-serial-row strong,
+.fflhub-receiving-serial-row b {
+  color: #111827;
+  display: block;
+}
+
+.fflhub-receiving-serial-row span {
+  color: #667085;
+  display: block;
+  font-size: 12px;
+  margin-top: 2px;
 }
 
 @media (max-width: 900px) {
@@ -546,8 +596,13 @@
   .fflhub-receiving-fastbound-summary,
   .fflhub-receiving-complete-grid,
   .fflhub-receiving-event,
-  .fflhub-receiving-history-row {
+  .fflhub-receiving-history-row,
+  .fflhub-receiving-serial-row {
     grid-template-columns: 1fr;
+  }
+
+  .fflhub-receiving-event-action {
+    text-align: left;
   }
 
   .fflhub-receiving-fastbound-head {

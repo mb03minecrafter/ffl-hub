@@ -173,6 +173,23 @@
       '</div>';
   }
 
+  function correctionButton(event) {
+    if (Number(event.serial_correction_allowed || 0) !== 1) {
+      return event.serial_correction_blocked_reason
+        ? '<small class="fflhub-receiving-serial-blocked">' + esc(event.serial_correction_blocked_reason) + '</small>'
+        : '';
+    }
+
+    return '' +
+      '<button type="button" class="button button-small fflhub-receiving-correct-serial" ' +
+        'data-receiving-correct-serial ' +
+        'data-event-id="' + esc(event.id || '') + '" ' +
+        'data-old-serial="' + esc(event.serial_number || '') + '" ' +
+        'data-fastbound-confirm="' + (Number(event.serial_correction_requires_fastbound_confirm || 0) === 1 ? '1' : '0') + '">' +
+        'Correct Serial' +
+      '</button>';
+  }
+
   function shipmentTitle(shipment) {
     var tracking = (shipment.tracking_numbers || []).join(', ');
     return [
@@ -325,6 +342,7 @@
             '<b>' + esc(statusText) + '</b>' +
             (event.fastbound_acquisition_item_id ? '<small>Item ' + esc(event.fastbound_acquisition_item_id) + '</small>' : '') +
             (event.fastbound_disposition_id ? '<small>Disposition ' + esc(event.fastbound_disposition_id) + '</small>' : '') +
+            correctionButton(event) +
           '</div>' +
         '</div>' +
         (event.fastbound_error ? '<div class="fflhub-receiving-fastbound-error">' + esc(event.fastbound_error) + '</div>' : '') +
@@ -466,6 +484,7 @@
             '<strong>' + esc(event.upc || event.exception_status || event.result) + '</strong>' +
             '<span>' + esc(event.message || '') + (event.serial_number ? ' Serial ' + esc(event.serial_number) : '') + '</span>' +
             '<small>' + esc(event.received_at || '') + '</small>' +
+            (event.serial_number ? '<span class="fflhub-receiving-event-action">' + correctionButton(event) + '</span>' : '') +
           '</div>';
         }).join('') +
       '</div>';
@@ -667,6 +686,104 @@
     });
   }
 
+  function refreshRecentSerials() {
+    post('fflhub_receiving_recent_serials', {}).then(function (payload) {
+      var rows = (payload.events || []).map(function (event) {
+        var title = event.product_name || ('UPC ' + (event.upc || ''));
+        var productLink = event.product_edit_url
+          ? '<a href="' + esc(event.product_edit_url) + '" target="_blank" rel="noopener noreferrer">' + esc(title) + '</a>'
+          : esc(title);
+        var orderLink = event.order_edit_url
+          ? '<a href="' + esc(event.order_edit_url) + '" target="_blank" rel="noopener noreferrer">Order #' + esc(event.order_number || event.order_id) + '</a>'
+          : (event.order_id ? 'Order #' + esc(event.order_number || event.order_id) : '');
+        var fastbound = event.fastbound_acquisition_item_id
+          ? 'Acquired'
+          : (event.fastbound_status || 'Not acquired');
+        if (event.fastbound_disposition_id) {
+          fastbound = 'Disposed';
+        }
+
+        return '' +
+          '<div class="fflhub-receiving-serial-row">' +
+            '<div>' +
+              '<strong>' + productLink + '</strong>' +
+              '<span>UPC ' + esc(event.upc || '') + (orderLink ? ' | ' + orderLink : '') + '</span>' +
+            '</div>' +
+            '<div><span>Serial</span><b>' + esc(event.serial_number || '') + '</b></div>' +
+            '<div><span>FastBound</span><b>' + esc(fastbound) + '</b></div>' +
+            '<div><span>Received</span><b>' + esc(event.received_at || '') + '</b></div>' +
+            '<div>' + correctionButton(event) + '</div>' +
+          '</div>';
+      }).join('');
+
+      $('[data-receiving-serials]').html(rows || '<p>No serialized scans found yet.</p>');
+    });
+  }
+
+  function correctSerial($button) {
+    var eventId = Number($button.data('event-id') || 0);
+    var oldSerial = String($button.data('old-serial') || '');
+    var needsFastboundConfirm = String($button.data('fastbound-confirm') || '') === '1';
+    if (!eventId || state.busy) {
+      return;
+    }
+
+    var newSerial = window.prompt('Correct serial for receiving event #' + eventId + '.\nCurrent serial: ' + oldSerial + '\n\nEnter the corrected serial number:', oldSerial);
+    if (newSerial === null) {
+      return;
+    }
+    newSerial = $.trim(newSerial);
+    if (!newSerial || newSerial === oldSerial) {
+      setFeedback('No serial correction was made.', 'info');
+      return;
+    }
+
+    var note = window.prompt('Reason for correction / quick note:', 'Scanner typo corrected during receiving.');
+    if (note === null) {
+      return;
+    }
+
+    var confirmed = false;
+    if (needsFastboundConfirm) {
+      confirmed = window.confirm('This item is already acquired in FastBound. Correct the serial in FastBound first, then click OK to confirm FFLHub can mirror the corrected value locally.');
+      if (!confirmed) {
+        setFeedback('FastBound-acquired serial correction cancelled.', 'info');
+        return;
+      }
+    }
+
+    state.busy = true;
+    $button.prop('disabled', true);
+    setFeedback('Correcting serial...', 'info');
+    post('fflhub_receiving_correct_serial', {
+      event_id: eventId,
+      serial_number: newSerial,
+      note: note,
+      fastbound_manual_confirmed: confirmed ? '1' : '0'
+    }).then(function (payload) {
+      if (payload.ok) {
+        setFeedback(payload.message || 'Serial corrected.', 'success');
+        beep('success');
+        refreshCurrentShipment();
+        refreshHistory();
+        refreshRecentSerials();
+        if (payload.wave_updates && Number(payload.wave_updates.slips_may_need_reprint || 0) > 0) {
+          window.alert('Serial corrected. One or more active WMS packing slips may already contain the old serial, so reprint/re-wave that package before shipping.');
+        }
+        return;
+      }
+
+      setFeedback(payload.message || 'Serial correction failed.', 'error');
+      beep('error');
+      if (payload.requires_fastbound_manual_confirm) {
+        window.alert(payload.message || 'FastBound manual confirmation is required.');
+      }
+    }).always(function () {
+      state.busy = false;
+      $button.prop('disabled', false);
+    });
+  }
+
   function fastBoundAcquire($button) {
     var $card = $button.closest('[data-fastbound-event]');
     var eventId = Number($card.data('fastbound-event') || 0);
@@ -787,6 +904,10 @@
       $('[data-receiving-tracking-input]').trigger('focus');
     });
     $(document).on('click', '[data-receiving-history-refresh]', refreshHistory);
+    $(document).on('click', '[data-receiving-serials-refresh]', refreshRecentSerials);
+    $(document).on('click', '[data-receiving-correct-serial]', function () {
+      correctSerial($(this));
+    });
     $(document).on('click', '[data-receiving-mute]', function () {
       state.muted = !state.muted;
       if (window.localStorage) {
@@ -805,5 +926,6 @@
     $('[data-receiving-mute]').text(state.muted ? 'Enable Sounds' : 'Mute Sounds');
     $('[data-receiving-tracking-input]').trigger('focus');
     refreshHistory();
+    refreshRecentSerials();
   });
 })(jQuery);

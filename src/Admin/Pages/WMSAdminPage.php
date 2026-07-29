@@ -66,6 +66,10 @@ final class WMSAdminPage
                     <strong><?php esc_html_e('Receiving', 'ffl-hub'); ?></strong>
                     <span><?php esc_html_e('Scan inbound distributor shipments, receive items, and acquire serialized firearms into FastBound.', 'ffl-hub'); ?></span>
                 </a>
+                <a class="fflhub-wms-card" href="<?php echo esc_url(admin_url('admin.php?page=fflhub-receiving-local-stock')); ?>">
+                    <strong><?php esc_html_e('Receiving (Local Stock)', 'ffl-hub'); ?></strong>
+                    <span><?php esc_html_e('Scan unassigned inventory, acquire serials, then stock it locally or assign it to a local-stock order row.', 'ffl-hub'); ?></span>
+                </a>
                 <a class="fflhub-wms-card" href="<?php echo esc_url(admin_url('admin.php?page=fflhub-sending')); ?>">
                     <strong><?php esc_html_e('Order Waver', 'ffl-hub'); ?></strong>
                     <span><?php esc_html_e('Select received dealer-fulfilled orders into outbound waves and monitor packing/label automation.', 'ffl-hub'); ?></span>

@@ -8,8 +8,12 @@ use WC_Order_Item_Product;
 
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Distributor\Models\OrderPlacementJobPatch;
+use FFLHub\Distributor\Services\OfferSync\ProductBestOfferSelectionService;
+use FFLHub\Distributor\Services\OfferSync\ProductStateBestOfferApplyService;
+use FFLHub\Distributor\Services\OfferSync\ProductStateWooApplyService;
 use FFLHub\Distributor\Services\Orders\Cron\DealerBatchCronRegistry;
 use FFLHub\Distributor\Services\Orders\Jobs\Lifecycle\OrderPlacementJobLifeCycle;
+use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobsRepository;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementJobWriter;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementKeys;
 use FFLHub\Distributor\Services\Orders\Jobs\OrderPlacementPipelineMetaStore;
@@ -18,6 +22,7 @@ use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementProductUtil;
 use FFLHub\Distributor\Services\Orders\Jobs\Util\OrderPlacementTimeUtil;
 use FFLHub\Distributor\Services\Routing\DealerFulfillmentRoutingPlanner;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
+use FFLHub\Inventory\LocalStockUnitStore;
 use FFLHub\Settings\Options;
 use FFLHub\Util\DebugLogUtil;
 
@@ -221,7 +226,10 @@ final class OrderingOrchestratorService
         /** @var array<int,int> $local_available_by_product */
         $local_available_by_product = [];
 
-        /** @var array<int,array{product_id:int,qty:int,product_name:string,upc:string}> $local_stock_decrements */
+        /** @var array<string,int> $local_ledger_available_by_upc */
+        $local_ledger_available_by_upc = [];
+
+        /** @var array<int,array{product_id:int,qty:int,legacy_qty:int,ledger_qty:int,product_name:string,upc:string}> $local_stock_decrements */
         $local_stock_decrements = [];
 
         $seen = [
@@ -293,14 +301,24 @@ final class OrderingOrchestratorService
 
             $line_qty_for_routing = $qty;
             $state_local_qty = ProductStateStore::get_local_stock_override_qty_from_row($state_row);
-            $local_enabled = $state_local_qty > 0;
+            $ledger_local_qty = 0;
+            if ($upc !== '') {
+                if (!isset($local_ledger_available_by_upc[$upc])) {
+                    $local_ledger_available_by_upc[$upc] = LocalStockUnitStore::available_qty_for_upc($upc);
+                }
+                $ledger_local_qty = max(0, (int) ($local_ledger_available_by_upc[$upc] ?? 0));
+            }
+            $local_enabled = ($state_local_qty + $ledger_local_qty) > 0;
             if ($local_enabled) {
                 if (!isset($local_available_by_product[$product_id])) {
                     $local_available_by_product[$product_id] = $state_local_qty;
                 }
 
-                $available_local_qty = max(0, (int) ($local_available_by_product[$product_id] ?? 0));
-                $local_take_qty = min($line_qty_for_routing, $available_local_qty);
+                $available_legacy_qty = max(0, (int) ($local_available_by_product[$product_id] ?? 0));
+                $available_ledger_qty = max(0, (int) ($local_ledger_available_by_upc[$upc] ?? 0));
+                $ledger_take_qty = min($line_qty_for_routing, $available_ledger_qty);
+                $legacy_take_qty = min(max(0, $line_qty_for_routing - $ledger_take_qty), $available_legacy_qty);
+                $local_take_qty = $ledger_take_qty + $legacy_take_qty;
                 if ($local_take_qty > 0) {
                     $local_line_key = (string) $product_id . '|' . (string) (!empty($ffl_required) ? 1 : 0);
                     if (!isset($local_stock_lines[$local_line_key])) {
@@ -319,13 +337,20 @@ final class OrderingOrchestratorService
                         $local_stock_decrements[$product_id] = [
                             'product_id'   => $product_id,
                             'qty'          => 0,
+                            'legacy_qty'   => 0,
+                            'ledger_qty'   => 0,
                             'product_name' => $line_name,
                             'upc'          => $line_upc,
                         ];
                     }
                     $local_stock_decrements[$product_id]['qty'] += $local_take_qty;
+                    $local_stock_decrements[$product_id]['legacy_qty'] += $legacy_take_qty;
+                    $local_stock_decrements[$product_id]['ledger_qty'] += $ledger_take_qty;
 
-                    $local_available_by_product[$product_id] = $available_local_qty - $local_take_qty;
+                    $local_available_by_product[$product_id] = $available_legacy_qty - $legacy_take_qty;
+                    if ($upc !== '') {
+                        $local_ledger_available_by_upc[$upc] = $available_ledger_qty - $ledger_take_qty;
+                    }
                     $line_qty_for_routing -= $local_take_qty;
                     $seen['local_fulfilled']++;
 
@@ -737,18 +762,43 @@ final class OrderingOrchestratorService
                 }
 
                 $result_lines = [];
+                $allocation_failed = false;
+                $changed_local_upcs = [];
+                $job_row = OrderPlacementJobsRepository::get_job_for_order($this->jobs_table, $order, $job_key_norm);
+                $job_id = $job_row ? (int) $job_row->id : 0;
+
                 foreach ($decrements as $row) {
                     if (!is_array($row)) {
                         continue;
                     }
 
                     $product_id = isset($row['product_id']) ? (int) $row['product_id'] : 0;
-                    $qty = isset($row['qty']) ? (int) $row['qty'] : 0;
-                    $result_lines[] = $this->decrement_local_stock_for_product($product_id, $qty);
+                    $legacy_qty = isset($row['legacy_qty']) ? (int) $row['legacy_qty'] : (int) ($row['qty'] ?? 0);
+                    $ledger_qty = isset($row['ledger_qty']) ? (int) $row['ledger_qty'] : 0;
+                    $upc = OrderPlacementProductUtil::normalize_upc((string) ($row['upc'] ?? ''));
+
+                    if ($legacy_qty > 0) {
+                        $result_lines[] = $this->decrement_local_stock_for_product($product_id, $legacy_qty);
+                    }
+
+                    if ($ledger_qty > 0) {
+                        $changed_local_upcs[] = $upc;
+                        $ledger_result = $this->allocate_local_stock_units_for_order(
+                            $order,
+                            $job_id,
+                            $upc,
+                            $product_id,
+                            $ledger_qty
+                        );
+                        $result_lines[] = $ledger_result;
+                        if (empty($ledger_result['ok'])) {
+                            $allocation_failed = true;
+                        }
+                    }
                 }
 
                 $result = [
-                    'type'    => 'local_stock_override',
+                    'type'    => 'local_stock',
                     'message' => self::LOCAL_STOCK_RESULT_MESSAGE,
                     'lines'   => $result_lines,
                 ];
@@ -763,6 +813,31 @@ final class OrderingOrchestratorService
                     ->with_field('place_result_json', $result_json);
 
                 OrderPlacementJobWriter::apply_patch_for_order($this->jobs_table, $order, $job_key_norm, $patch);
+
+                if (!empty($changed_local_upcs)) {
+                    $result['offer_pipeline'] = $this->propagate_local_stock_offer_changes($changed_local_upcs);
+                    $result_json = wp_json_encode($result);
+                    if (!is_string($result_json) || $result_json === '') {
+                        $result_json = '{}';
+                    }
+                    OrderPlacementJobWriter::apply_patch_for_order(
+                        $this->jobs_table,
+                        $order,
+                        $job_key_norm,
+                        OrderPlacementJobPatch::empty()->with_field('place_result_json', $result_json)
+                    );
+                }
+
+                if ($allocation_failed) {
+                    OrderPlacementJobLifeCycle::mark_job_failed(
+                        $this->jobs_table,
+                        $order,
+                        $job_key_norm,
+                        'Local stock ledger allocation failed.'
+                    );
+                    continue;
+                }
+
                 OrderPlacementJobLifeCycle::mark_job_success($this->jobs_table, $order, $job_key_norm);
 
                 $this->log_ctx('local_stock_job_completed', [
@@ -780,6 +855,116 @@ final class OrderingOrchestratorService
                 ]);
             }
         }
+    }
+
+    /**
+     * Allocate real unit-ledger inventory to the local-stock job that is being
+     * completed. The receiving event attached to each unit is updated by the
+     * store, which is what lets WMS Sending find the serial later.
+     *
+     * @return array<string,mixed>
+     */
+    private function allocate_local_stock_units_for_order(WC_Order $order, int $job_id, string $upc, int $product_id, int $qty): array
+    {
+        $out = [
+            'type' => 'local_stock_ledger',
+            'ok' => false,
+            'product_id' => $product_id,
+            'upc' => $upc,
+            'qty' => max(0, $qty),
+            'job_id' => $job_id,
+            'order_item_id' => 0,
+            'status' => 'skipped',
+        ];
+
+        if ($job_id <= 0 || $upc === '' || $qty <= 0) {
+            $out['status'] = 'invalid_input';
+            return $out;
+        }
+
+        $order_item_id = $this->order_item_id_for_upc($order, $upc);
+        if ($order_item_id <= 0) {
+            $out['status'] = 'order_item_not_found';
+            return $out;
+        }
+
+        $out['order_item_id'] = $order_item_id;
+        $allocation = LocalStockUnitStore::allocate_units_to_order(
+            $upc,
+            $qty,
+            (int) $order->get_id(),
+            $order_item_id,
+            $job_id
+        );
+
+        $out['allocation'] = $allocation;
+        if (empty($allocation['ok'])) {
+            $out['status'] = (string) ($allocation['code'] ?? 'allocation_failed');
+            $out['error'] = (string) ($allocation['message'] ?? 'Local stock allocation failed.');
+            return $out;
+        }
+
+        $out['ok'] = true;
+        $out['status'] = 'ok';
+
+        return $out;
+    }
+
+    private function order_item_id_for_upc(WC_Order $order, string $upc): int
+    {
+        $upc = OrderPlacementProductUtil::normalize_upc($upc);
+        if ($upc === '') {
+            return 0;
+        }
+
+        foreach ($order->get_items('line_item') as $item_id => $item) {
+            if (!($item instanceof WC_Order_Item_Product)) {
+                continue;
+            }
+
+            $product = $item->get_product();
+            if (!($product instanceof WC_Product)) {
+                continue;
+            }
+
+            $candidate = method_exists($product, 'get_global_unique_id')
+                ? OrderPlacementProductUtil::normalize_upc((string) $product->get_global_unique_id())
+                : '';
+            if ($candidate === '') {
+                $state = ProductStateStore::get_row_for_product($product);
+                $candidate = is_array($state)
+                    ? OrderPlacementProductUtil::normalize_upc((string) ($state['upc'] ?? ''))
+                    : '';
+            }
+
+            if ($candidate === $upc) {
+                return (int) $item_id;
+            }
+        }
+
+        return 0;
+    }
+
+    /**
+     * @param string[] $upcs
+     * @return array<string,mixed>
+     */
+    private function propagate_local_stock_offer_changes(array $upcs): array
+    {
+        $upcs = array_values(array_unique(array_filter(array_map(
+            static fn($upc): string => OrderPlacementProductUtil::normalize_upc((string) $upc),
+            $upcs
+        ))));
+
+        foreach ($upcs as $upc) {
+            LocalStockUnitStore::sync_offer_for_upc($upc);
+        }
+
+        return [
+            'best_offer_selection' => ProductBestOfferSelectionService::refresh_changed_upcs(),
+            'product_state_best_offer_apply' => ProductStateBestOfferApplyService::apply_changed_best_offers(),
+            'product_state_woo_apply' => ProductStateWooApplyService::apply_changed_product_state(),
+        ];
     }
 
     /**

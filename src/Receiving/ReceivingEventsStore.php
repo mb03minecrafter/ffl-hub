@@ -155,6 +155,11 @@ final class ReceivingEventsStore
 
     public function accepted_serial_exists(string $shipment_key, string $serial_number): bool
     {
+        return $this->accepted_serial_exists_except($shipment_key, $serial_number, 0);
+    }
+
+    public function accepted_serial_exists_except(string $shipment_key, string $serial_number, int $excluded_event_id): bool
+    {
         global $wpdb;
 
         $shipment_key = trim($shipment_key);
@@ -172,9 +177,11 @@ final class ReceivingEventsStore
                  WHERE shipment_key = %s
                    AND serial_number = %s
                    AND result = 'accepted'
+                   AND id <> %d
                  LIMIT 1",
                 $shipment_key,
-                $serial_number
+                $serial_number,
+                max(0, $excluded_event_id)
             )
         );
 
@@ -284,6 +291,32 @@ final class ReceivingEventsStore
             $row,
             ['id' => $event_id],
             $formats,
+            ['%d']
+        );
+
+        return $updated !== false;
+    }
+
+    public function update_serial_number(int $event_id, string $new_serial_number, string $message): bool
+    {
+        global $wpdb;
+
+        $event_id = absint($event_id);
+        $new_serial_number = ReceivingShipmentService::normalize_serial($new_serial_number);
+        if ($event_id <= 0 || $new_serial_number === '') {
+            return false;
+        }
+
+        self::ensure_schema();
+
+        $updated = $wpdb->update(
+            self::table_name(),
+            [
+                'serial_number' => $this->text($new_serial_number, 128),
+                'message' => $this->text($message, 1000),
+            ],
+            ['id' => $event_id],
+            ['%s', '%s'],
             ['%d']
         );
 
@@ -454,6 +487,33 @@ final class ReceivingEventsStore
                  ORDER BY id DESC
                  LIMIT %d",
                 $shipment_key,
+                $limit
+            ),
+            ARRAY_A
+        );
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    public function recent_serialized_events(int $limit = 25): array
+    {
+        global $wpdb;
+
+        $limit = max(1, min(100, $limit));
+
+        self::ensure_schema();
+
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT *
+                 FROM " . self::table_name() . "
+                 WHERE result = 'accepted'
+                   AND serial_number <> ''
+                 ORDER BY id DESC
+                 LIMIT %d",
                 $limit
             ),
             ARRAY_A

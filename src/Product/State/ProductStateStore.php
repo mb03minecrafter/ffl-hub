@@ -755,6 +755,80 @@ final class ProductStateStore
     }
 
     /**
+     * Increment the product_state local-stock override for local receiving.
+     *
+     * This is the inverse of decrement_local_stock_override_qty_for_product().
+     * It marks the state row dirty so the Woo apply service can immediately
+     * push the new available quantity back onto the Woo product.
+     *
+     * @return array{ok:bool,status:string,product_id:int,before:?int,after:?int,updated:int,error?:string}
+     */
+    public static function increment_local_stock_override_qty_for_product(WC_Product $product, int $qty): array
+    {
+        global $wpdb;
+
+        $out = [
+            'ok' => false,
+            'status' => 'skipped',
+            'product_id' => 0,
+            'before' => null,
+            'after' => null,
+            'updated' => 0,
+        ];
+
+        $qty = max(0, $qty);
+        if ($qty < 1 || !$wpdb) {
+            return $out;
+        }
+
+        $row = self::get_row_for_product($product);
+        if (!is_array($row)) {
+            $out['status'] = 'missing_product_state';
+            return $out;
+        }
+
+        $product_id = (int) ($row['product_id'] ?? 0);
+        if ($product_id <= 0) {
+            $out['status'] = 'invalid_product_state_product_id';
+            return $out;
+        }
+
+        $before = self::get_local_stock_override_qty_from_row($row);
+        $after = $before + $qty;
+
+        $out['product_id'] = $product_id;
+        $out['before'] = $before;
+        $out['after'] = $after;
+
+        $updated = $wpdb->update(
+            self::table_name(),
+            [
+                'local_stock_override_qty' => $after,
+                'updated_at' => current_time('mysql'),
+                'has_changed' => 1,
+            ],
+            ['product_id' => $product_id],
+            ['%d', '%s', '%d'],
+            ['%d']
+        );
+
+        if ($updated === false) {
+            $out['status'] = 'update_failed';
+            $out['error'] = (string) $wpdb->last_error;
+            return $out;
+        }
+
+        self::clear_product_cache($product_id);
+        self::clear_product_cache((int) $product->get_id());
+
+        $out['ok'] = true;
+        $out['status'] = 'ok';
+        $out['updated'] = (int) $updated;
+
+        return $out;
+    }
+
+    /**
      * Decrement the product_state local-stock override for the row represented by
      * this Woo product. Variations intentionally reuse get_row_for_product() so a
      * parent-backed state row is decremented in the same way it is read.

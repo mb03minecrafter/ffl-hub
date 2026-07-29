@@ -1,0 +1,257 @@
+.fflhub-local-receiving-page {
+    max-width: 1280px;
+}
+
+.fflhub-local-receiving-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-start;
+    margin-bottom: 18px;
+}
+
+.fflhub-local-receiving-header h1 {
+    margin-bottom: 4px;
+}
+
+.fflhub-local-receiving-header p {
+    margin: 0;
+    color: #646970;
+    max-width: 820px;
+}
+
+.fflhub-local-receiving-app {
+    display: grid;
+    gap: 16px;
+}
+
+.fflhub-local-card {
+    background: #fff;
+    border: 1px solid #dcdcde;
+    border-radius: 8px;
+    padding: 18px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.fflhub-local-card-head {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    margin-bottom: 16px;
+}
+
+.fflhub-local-card-head h2 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.fflhub-local-card-head p {
+    margin: 3px 0 0;
+    color: #646970;
+}
+
+.fflhub-local-step {
+    display: inline-grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    background: #0a5c36;
+    color: #fff;
+    font-weight: 700;
+    flex: 0 0 auto;
+}
+
+.fflhub-local-field {
+    display: grid;
+    gap: 6px;
+    font-weight: 600;
+}
+
+.fflhub-local-field span {
+    color: #1d2327;
+}
+
+.fflhub-local-field input,
+.fflhub-local-field select {
+    width: 100%;
+    min-height: 40px;
+}
+
+.fflhub-local-scan-grid {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(240px, 1fr) auto;
+    gap: 12px;
+    align-items: end;
+}
+
+.fflhub-local-scan-grid .button {
+    min-height: 40px;
+}
+
+[data-serial-wrap] {
+    opacity: 0.45;
+}
+
+[data-serial-wrap].is-active {
+    opacity: 1;
+}
+
+.fflhub-local-feedback {
+    min-height: 22px;
+    margin-top: 12px;
+    font-weight: 600;
+}
+
+.fflhub-local-feedback.is-ok {
+    color: #0a5c36;
+}
+
+.fflhub-local-feedback.is-error {
+    color: #b32d2e;
+}
+
+.fflhub-local-feedback.is-working {
+    color: #135e96;
+}
+
+.fflhub-local-scanned,
+.fflhub-local-matches {
+    margin-top: 14px;
+}
+
+.fflhub-local-empty {
+    border: 1px dashed #c3c4c7;
+    border-radius: 6px;
+    padding: 16px;
+    color: #646970;
+    background: #f6f7f7;
+}
+
+.fflhub-local-table th,
+.fflhub-local-table td {
+    vertical-align: middle;
+}
+
+.fflhub-local-table code {
+    font-size: 12px;
+}
+
+.fflhub-local-row-actions {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.fflhub-local-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: #ffe8a3;
+    color: #5b3f00;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.fflhub-local-muted {
+    color: #646970;
+}
+
+.fflhub-local-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 2px 4px 2px 0;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: #e7f2ec;
+    color: #0a5c36;
+    font-weight: 700;
+}
+
+.fflhub-local-chip button {
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-weight: 700;
+    line-height: 1;
+    padding: 0;
+}
+
+.fflhub-local-firearm-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(150px, 1fr));
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid #dcdcde;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    background: #fbfbfc;
+}
+
+.fflhub-local-firearm-title {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.fflhub-local-firearm-row label {
+    display: grid;
+    gap: 5px;
+    font-weight: 600;
+}
+
+.fflhub-local-firearm-row input {
+    width: 100%;
+}
+
+.fflhub-local-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.fflhub-local-assign-button {
+    margin-top: 12px !important;
+}
+
+.fflhub-local-result {
+    margin-top: 14px;
+}
+
+.fflhub-local-result-box {
+    border-radius: 8px;
+    padding: 12px;
+    border: 1px solid #c3c4c7;
+    background: #f6f7f7;
+}
+
+.fflhub-local-result-box.is-ok {
+    border-color: #8bc59b;
+    background: #eff8f1;
+}
+
+.fflhub-local-result-box.is-error {
+    border-color: #e19999;
+    background: #fcf0f1;
+}
+
+.fflhub-local-result-box pre {
+    max-height: 260px;
+    overflow: auto;
+    margin: 10px 0 0;
+    white-space: pre-wrap;
+}
+
+@media (max-width: 900px) {
+    .fflhub-local-scan-grid,
+    .fflhub-local-firearm-row {
+        grid-template-columns: 1fr;
+    }
+
+    .fflhub-local-row-actions {
+        text-align: left;
+    }
+}

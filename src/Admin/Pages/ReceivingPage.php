@@ -6,6 +6,8 @@ namespace FFLHub\Admin\Pages;
 use FFLHub\Distributor\Services\Orders\Tables\OrderPlacementJobsTable;
 use FFLHub\Receiving\ReceivingEventsStore;
 use FFLHub\Receiving\ReceivingFastBoundService;
+use FFLHub\Receiving\ReceivingSerialCorrectionService;
+use FFLHub\Receiving\ReceivingSerialCorrectionsStore;
 use FFLHub\Receiving\ReceivingShipmentService;
 
 if (!defined('ABSPATH')) {
@@ -41,6 +43,8 @@ final class ReceivingPage
         add_action('wp_ajax_fflhub_receiving_fastbound_acquire', [$this, 'ajax_fastbound_acquire']);
         add_action('wp_ajax_fflhub_receiving_debug_complete', [$this, 'ajax_debug_complete']);
         add_action('wp_ajax_fflhub_receiving_history', [$this, 'ajax_history']);
+        add_action('wp_ajax_fflhub_receiving_recent_serials', [$this, 'ajax_recent_serials']);
+        add_action('wp_ajax_fflhub_receiving_correct_serial', [$this, 'ajax_correct_serial']);
     }
 
     public function register_menu_page(): void
@@ -92,6 +96,7 @@ final class ReceivingPage
         }
 
         ReceivingEventsStore::ensure_schema();
+        ReceivingSerialCorrectionsStore::ensure_schema();
         ?>
         <div class="wrap fflhub-receiving-page">
             <div class="fflhub-receiving-header">
@@ -167,6 +172,19 @@ final class ReceivingPage
                     </div>
                     <div data-receiving-history></div>
                 </section>
+
+                <section class="fflhub-receiving-history fflhub-receiving-serial-corrections">
+                    <div class="fflhub-receiving-history-head">
+                        <div>
+                            <h2><?php esc_html_e('Recent Serialized Scans', 'ffl-hub'); ?></h2>
+                            <p><?php esc_html_e('Correct a scanned serial before outbound disposition. FastBound-acquired rows require manual FastBound confirmation.', 'ffl-hub'); ?></p>
+                        </div>
+                        <button type="button" class="button" data-receiving-serials-refresh>
+                            <?php esc_html_e('Refresh', 'ffl-hub'); ?>
+                        </button>
+                    </div>
+                    <div data-receiving-serials></div>
+                </section>
             </div>
         </div>
         <?php
@@ -228,6 +246,23 @@ final class ReceivingPage
         $this->send($this->service()->recent_history());
     }
 
+    public function ajax_recent_serials(): void
+    {
+        $this->assert_ajax_access();
+        $this->send($this->serial_correction_service()->recent_serialized_events(25));
+    }
+
+    public function ajax_correct_serial(): void
+    {
+        $this->assert_ajax_access();
+        $this->send($this->serial_correction_service()->correct_serial(
+            $this->request_int('event_id'),
+            $this->request_text('serial_number'),
+            $this->request_textarea('note'),
+            $this->request_bool('fastbound_manual_confirmed')
+        ));
+    }
+
     private function service(): ReceivingShipmentService
     {
         return new ReceivingShipmentService($this->jobs_table, null, $this->request_bool('debug_include_old'));
@@ -236,6 +271,11 @@ final class ReceivingPage
     private function fastbound_service(): ReceivingFastBoundService
     {
         return new ReceivingFastBoundService();
+    }
+
+    private function serial_correction_service(): ReceivingSerialCorrectionService
+    {
+        return new ReceivingSerialCorrectionService();
     }
 
     private function send(array $payload): void
@@ -256,6 +296,13 @@ final class ReceivingPage
     {
         return isset($_POST[$key])
             ? sanitize_text_field(wp_unslash((string) $_POST[$key]))
+            : '';
+    }
+
+    private function request_textarea(string $key): string
+    {
+        return isset($_POST[$key])
+            ? sanitize_textarea_field(wp_unslash((string) $_POST[$key]))
             : '';
     }
 

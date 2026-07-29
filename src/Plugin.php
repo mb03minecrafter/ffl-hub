@@ -32,6 +32,7 @@ use FFLHub\Admin\Pages\MapPolicyPage;
 use FFLHub\Admin\Pages\ProductStateBulkPricingPage;
 use FFLHub\Admin\Pages\ProductStatePage;
 use FFLHub\Admin\Pages\PrintNodeSettingsPage;
+use FFLHub\Admin\Pages\ReceivingLocalStockPage;
 use FFLHub\Admin\Pages\ReceivingPage;
 use FFLHub\Admin\Pages\ReceivingTestLabelsPage;
 use FFLHub\Admin\Pages\SendingPage;
@@ -88,6 +89,7 @@ use FFLHub\Feeds\GunMade\GunMadeFeedEndpoint;
 use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
+use FFLHub\Inventory\LocalStockUnitStore;
 use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Order\WooShippingLabelCostSync;
 use FFLHub\Product\CategoryInstaller;
@@ -97,6 +99,7 @@ use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Product\Tables\QuoteEmailJobsSchema;
 use FFLHub\Product\Tables\QuoteEmailJobsTable;
 use FFLHub\Receiving\ReceivingEventsStore;
+use FFLHub\Receiving\ReceivingSerialCorrectionsStore;
 use FFLHub\Receiving\ReceivingTestShipmentStore;
 use FFLHub\Settings\Options;
 use FFLHub\Settings\SettingsRegistrar;
@@ -140,6 +143,7 @@ final class Plugin
     public DealerFulfilledJobsPage $dealer_fulfilled_jobs_page;
     public DistributorOrderingAdminPage $distributor_ordering_admin_page;
     public ReceivingPage $receiving_page;
+    public ReceivingLocalStockPage $receiving_local_stock_page;
     public ReceivingTestLabelsPage $receiving_test_labels_page;
     public SendingPage $sending_page;
     public SendingReadyPage $sending_ready_page;
@@ -268,7 +272,9 @@ final class Plugin
             DistributorOffersStore::ensure_schema();
             ProductBestOffersStore::ensure_schema();
             ReceivingEventsStore::ensure_schema();
+            ReceivingSerialCorrectionsStore::ensure_schema();
             ReceivingTestShipmentStore::ensure_schema();
+            LocalStockUnitStore::ensure_schema();
             OrderWaverStore::ensure_schema();
             PrintNodePrintQueueStore::ensure_schema();
             AdminMenuOrder::init();
@@ -291,6 +297,9 @@ final class Plugin
 
             $this->receiving_page = new ReceivingPage($this->distributor_handler->ordering_jobs_table);
             $this->receiving_page->register();
+
+            $this->receiving_local_stock_page = new ReceivingLocalStockPage($this->distributor_handler->ordering_jobs_table);
+            $this->receiving_local_stock_page->register();
 
             $this->sending_page = new SendingPage($this->distributor_handler->ordering_jobs_table);
             $this->sending_page->register();
@@ -569,6 +578,7 @@ final class Plugin
         DistributorOffersStore::ensure_schema();
         ProductBestOffersStore::ensure_schema();
         ReceivingEventsStore::ensure_schema();
+        ReceivingSerialCorrectionsStore::ensure_schema();
         OrderWaverStore::ensure_schema();
         self::ensure_quote_email_jobs_table();
         $quote_email_jobs_cron = new QuoteEmailJobsCronService();

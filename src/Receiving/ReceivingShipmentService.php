@@ -1200,6 +1200,10 @@ final class ReceivingShipmentService
             $user = get_user_by('id', (int) ($event['wp_user_id'] ?? 0));
             $product = $this->event_product((int) ($event['product_id'] ?? 0));
             $order = $this->event_order((int) ($event['order_id'] ?? 0));
+            $serial = ReceivingShipmentService::normalize_serial((string) ($event['serial_number'] ?? ''));
+            $fastbound_status = strtolower(trim((string) ($event['fastbound_status'] ?? '')));
+            $acquired = trim((string) ($event['fastbound_acquisition_item_id'] ?? '')) !== '';
+            $disposed = trim((string) ($event['fastbound_disposition_id'] ?? '')) !== '' || $fastbound_status === 'disposed';
             $out[] = [
                 'id' => (int) ($event['id'] ?? 0),
                 'received_at' => (string) ($event['received_at'] ?? ''),
@@ -1214,7 +1218,7 @@ final class ReceivingShipmentService
                 'order_item_id' => (int) ($event['order_item_id'] ?? 0),
                 'result' => (string) ($event['result'] ?? ''),
                 'exception_status' => (string) ($event['exception_status'] ?? ''),
-                'serial_number' => (string) ($event['serial_number'] ?? ''),
+                'serial_number' => $serial,
                 'message' => (string) ($event['message'] ?? ''),
                 'fastbound_status' => (string) ($event['fastbound_status'] ?? ''),
                 'fastbound_error' => (string) ($event['fastbound_error'] ?? ''),
@@ -1228,6 +1232,9 @@ final class ReceivingShipmentService
                 'fastbound_firearm_type' => (string) ($event['fastbound_firearm_type'] ?? ''),
                 'fastbound_acquired_at' => (string) ($event['fastbound_acquired_at'] ?? ''),
                 'fastbound_disposed_at' => (string) ($event['fastbound_disposed_at'] ?? ''),
+                'serial_correction_allowed' => ((string) ($event['result'] ?? '') === 'accepted' && $serial !== '' && !$disposed) ? 1 : 0,
+                'serial_correction_requires_fastbound_confirm' => ($acquired && !$disposed) ? 1 : 0,
+                'serial_correction_blocked_reason' => $disposed ? 'Already disposed in FastBound' : '',
             ];
         }
 
