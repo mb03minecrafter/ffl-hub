@@ -15,6 +15,7 @@ if (!defined('ABSPATH')) {
 final class MonthlyProfitAuditPage
 {
     private const PAGE_SLUG = 'fflhub-monthly-profit-audit';
+    private const COUNTED_ORDER_STATUSES = ['wc-processing', 'wc-completed'];
 
     public function register(): void
     {
@@ -92,7 +93,7 @@ final class MonthlyProfitAuditPage
         $end = $start->modify('first day of next month');
         $ids = wc_get_orders([
             'type' => 'shop_order',
-            'status' => array_keys(wc_get_order_statuses()),
+            'status' => self::COUNTED_ORDER_STATUSES,
             'date_created' => $start->getTimestamp() . '...' . ($end->getTimestamp() - 1),
             'limit' => -1,
             'return' => 'ids',
