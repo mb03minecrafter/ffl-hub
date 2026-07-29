@@ -212,8 +212,9 @@ final class ShipStationOrderMeta
             'label_layout' => (string) ($api_label['label_layout'] ?? ShipStationOptions::label_layout()),
             'label_url' => $label_url,
             'label_download' => $label_download,
-            'status' => (string) ($api_label['status'] ?? 'completed'),
-            'label_status' => (string) ($api_label['status'] ?? 'completed'),
+            'status' => self::normalized_billing_status((string) ($api_label['status'] ?? 'completed')),
+            'label_status' => self::normalized_billing_status((string) ($api_label['status'] ?? 'completed')),
+            'provider_label_status' => (string) ($api_label['status'] ?? ''),
             'purchased_at' => current_time('mysql', true),
             'created' => (string) ($api_label['created_at'] ?? current_time('mysql', true)),
             'ship_date' => (string) ($api_label['ship_date'] ?? ''),
@@ -392,5 +393,21 @@ final class ShipStationOrderMeta
     private static function money(float $value): string
     {
         return number_format($value, 4, '.', '');
+    }
+
+    private static function normalized_billing_status(string $status): string
+    {
+        $normalized = strtolower(trim($status));
+        if ($normalized === '' || in_array($normalized, ['purchased', 'completed', 'label_purchased'], true)) {
+            return $normalized !== '' ? $normalized : 'completed';
+        }
+
+        // EasyPost purchased Shipments usually move immediately into carrier
+        // tracking states. Those are still billable labels for audit purposes.
+        if (in_array($normalized, ['unknown', 'pre_transit', 'in_transit', 'out_for_delivery', 'delivered', 'available_for_pickup', 'return_to_sender'], true)) {
+            return 'purchased';
+        }
+
+        return $normalized;
     }
 }

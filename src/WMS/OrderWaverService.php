@@ -5,6 +5,7 @@ namespace FFLHub\WMS;
 
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
+use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Receiving\ReceivingEventsStore;
 use FFLHub\Shipping\DTO\ShippingPackage;
 use FFLHub\Shipping\EasyPost\EasyPostBatchLabelService;
@@ -642,6 +643,10 @@ final class OrderWaverService
                     'fail_reason' => '',
                     'label_count' => $saved,
                 ]);
+                $order = wc_get_order($order_id);
+                if ($order instanceof WC_Order) {
+                    OrderProfitAuditMeta::recalculate_order($order, true);
+                }
                 OrderWaverStore::log($batch_id, $order_id, 'info', 'label_saved', sprintf('%d label(s) saved to order.', $saved));
                 continue;
             }

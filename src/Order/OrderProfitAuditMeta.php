@@ -762,15 +762,34 @@ final class OrderProfitAuditMeta
     {
         $status = strtoupper(trim((string) ($label['status'] ?? '')));
         $locally_deactivated = !empty($label['locally_deactivated']);
+        if ($locally_deactivated) {
+            return true;
+        }
+
         if (!empty($label['voided'])) {
             return true;
         }
 
-        if (in_array($status, ['PURCHASE_ERROR', 'ANONYMIZED'], true)) {
+        if (in_array($status, ['PURCHASE_ERROR', 'ANONYMIZED', 'VOIDED', 'ERROR', 'CANCELLED', 'CANCELED', 'INACTIVE', 'LOCAL_INACTIVE', 'LOCALLY_DEACTIVATED'], true)) {
             return true;
         }
 
-        if ($status !== '' && !in_array($status, ['PURCHASED', 'COMPLETED', 'LABEL_PURCHASED'], true) && !$locally_deactivated) {
+        // EasyPost saves purchased labels from retrieved shipments after the
+        // carrier has already assigned a tracking lifecycle state. Those states
+        // are still real purchased labels and must count against profit.
+        $billable_statuses = [
+            'PURCHASED',
+            'COMPLETED',
+            'LABEL_PURCHASED',
+            'UNKNOWN',
+            'PRE_TRANSIT',
+            'IN_TRANSIT',
+            'OUT_FOR_DELIVERY',
+            'DELIVERED',
+            'AVAILABLE_FOR_PICKUP',
+            'RETURN_TO_SENDER',
+        ];
+        if ($status !== '' && !in_array($status, $billable_statuses, true)) {
             return true;
         }
 
