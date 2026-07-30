@@ -250,9 +250,10 @@ final class ShipOutdoorsClient
             /*
              * ShipOutdoors currently returns UPS labels as landscape GIF
              * images. A thermal 4x6 printer expects the label body to be
-             * portrait on a 4x6 page, so rotate the image before wrapping it
-             * as a PDF. Without this, PrintNode receives a horizontal label
-             * that gets scaled and clipped by the printer driver.
+             * portrait on a 4x6 page, so rotate the image clockwise before
+             * wrapping it as a PDF. Without this, PrintNode receives a
+             * horizontal label that gets scaled and clipped by the printer
+             * driver.
              */
             if ($width_px > $height_px) {
                 $rotated = $this->rotated_label_image_path($path, $image_type);
@@ -327,7 +328,7 @@ final class ShipOutdoorsClient
 
         try {
             $white = imagecolorallocate($source, 255, 255, 255);
-            $rotated = imagerotate($source, 90, $white);
+            $rotated = imagerotate($source, 270, $white);
             if (!$rotated) {
                 return new WP_Error('fflhub_shipoutdoors_image_rotate_failed', 'ShipOutdoors label image could not be rotated.');
             }
