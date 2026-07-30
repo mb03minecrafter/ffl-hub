@@ -20,6 +20,8 @@ final class ShipOutdoorsClient
 {
     private const BASE_URL = 'https://api.shipoutdoors.com/gun-shipper';
     private const TIMEOUT_SEC = 45;
+    private const LABEL_TRIM_WHITE_THRESHOLD = 248;
+    private const LABEL_TRIM_PADDING_PX = 16;
 
     private string $api_key;
 
@@ -327,8 +329,19 @@ final class ShipOutdoorsClient
         }
 
         try {
-            $white = imagecolorallocate($source, 255, 255, 255);
-            $rotated = imagerotate($source, 270, $white);
+            /*
+             * ShipOutdoors' "original size" UPS images can include a large
+             * white gutter to the right of the actual carrier label. If we
+             * rotate and scale that whole canvas, the printable label becomes
+             * visibly undersized on a 4x6 thermal label. Trim only the outer
+             * near-white border first, keeping a small padding so barcodes
+             * still have breathing room.
+             */
+            $trimmed = $this->trimmed_label_image($source);
+            $label_image = $trimmed ?: $source;
+
+            $white = imagecolorallocate($label_image, 255, 255, 255);
+            $rotated = imagerotate($label_image, 270, $white);
             if (!$rotated) {
                 return new WP_Error('fflhub_shipoutdoors_image_rotate_failed', 'ShipOutdoors label image could not be rotated.');
             }
@@ -352,10 +365,119 @@ final class ShipOutdoorsClient
             if (is_resource($source) || $source instanceof \GdImage) {
                 imagedestroy($source);
             }
+            if (isset($trimmed) && $trimmed && (is_resource($trimmed) || $trimmed instanceof \GdImage)) {
+                imagedestroy($trimmed);
+            }
             if (isset($rotated) && (is_resource($rotated) || $rotated instanceof \GdImage)) {
                 imagedestroy($rotated);
             }
         }
+    }
+
+    /**
+     * @param resource|\GdImage $source
+     * @return resource|\GdImage|null
+     */
+    private function trimmed_label_image($source)
+    {
+        if (!function_exists('imagecreatetruecolor') || !function_exists('imagecopy')) {
+            return null;
+        }
+
+        $bounds = $this->label_content_bounds($source);
+        if ($bounds === null) {
+            return null;
+        }
+
+        $source_width = imagesx($source);
+        $source_height = imagesy($source);
+        $padding = self::LABEL_TRIM_PADDING_PX;
+        $left = max(0, $bounds['left'] - $padding);
+        $top = max(0, $bounds['top'] - $padding);
+        $right = min($source_width - 1, $bounds['right'] + $padding);
+        $bottom = min($source_height - 1, $bounds['bottom'] + $padding);
+        $crop_width = $right - $left + 1;
+        $crop_height = $bottom - $top + 1;
+
+        if ($crop_width >= $source_width && $crop_height >= $source_height) {
+            return null;
+        }
+
+        $trimmed = imagecreatetruecolor($crop_width, $crop_height);
+        if (!$trimmed) {
+            return null;
+        }
+
+        $white = imagecolorallocate($trimmed, 255, 255, 255);
+        imagefill($trimmed, 0, 0, $white);
+        if (!imagecopy($trimmed, $source, 0, 0, $left, $top, $crop_width, $crop_height)) {
+            imagedestroy($trimmed);
+            return null;
+        }
+
+        return $trimmed;
+    }
+
+    /**
+     * @param resource|\GdImage $image
+     * @return array{left:int,top:int,right:int,bottom:int}|null
+     */
+    private function label_content_bounds($image): ?array
+    {
+        $width = imagesx($image);
+        $height = imagesy($image);
+        $left = $width;
+        $top = $height;
+        $right = -1;
+        $bottom = -1;
+
+        for ($y = 0; $y < $height; $y++) {
+            for ($x = 0; $x < $width; $x++) {
+                if ($this->label_pixel_is_near_white($image, $x, $y)) {
+                    continue;
+                }
+
+                if ($x < $left) {
+                    $left = $x;
+                }
+                if ($x > $right) {
+                    $right = $x;
+                }
+                if ($y < $top) {
+                    $top = $y;
+                }
+                if ($y > $bottom) {
+                    $bottom = $y;
+                }
+            }
+        }
+
+        if ($right < $left || $bottom < $top) {
+            return null;
+        }
+
+        return [
+            'left' => $left,
+            'top' => $top,
+            'right' => $right,
+            'bottom' => $bottom,
+        ];
+    }
+
+    /**
+     * @param resource|\GdImage $image
+     */
+    private function label_pixel_is_near_white($image, int $x, int $y): bool
+    {
+        $color = imagecolorat($image, $x, $y);
+        $rgba = imagecolorsforindex($image, $color);
+        $red = (int) ($rgba['red'] ?? 255);
+        $green = (int) ($rgba['green'] ?? 255);
+        $blue = (int) ($rgba['blue'] ?? 255);
+
+        return $red >= self::LABEL_TRIM_WHITE_THRESHOLD
+            && $green >= self::LABEL_TRIM_WHITE_THRESHOLD
+            && $blue >= self::LABEL_TRIM_WHITE_THRESHOLD;
     }
 
     private function fpdf_image_type(string $content_type, string $body): string
