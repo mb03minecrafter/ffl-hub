@@ -112,7 +112,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
             $request['notificationEmail'] = $email;
         }
 
-        $request['returnLabelOriginalSize'] = false;
+        $request['returnLabelOriginalSize'] = ShipOutdoorsOptions::return_label_original_size();
 
         $result = $this->client->submit_shipment($request);
         if (is_wp_error($result)) {

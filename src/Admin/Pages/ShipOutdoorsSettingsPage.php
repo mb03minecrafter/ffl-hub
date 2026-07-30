@@ -90,6 +90,23 @@ final class ShipOutdoorsSettingsPage
                                     </p>
                                 </td>
                             </tr>
+                            <tr>
+                                <th scope="row"><?php esc_html_e('Original Label Size', 'ffl-hub'); ?></th>
+                                <td>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            name="shipoutdoors[return_label_original_size]"
+                                            value="1"
+                                            <?php checked(ShipOutdoorsOptions::return_label_original_size()); ?>
+                                        />
+                                        <?php esc_html_e('Ask ShipOutdoors for the original label image size when buying labels.', 'ffl-hub'); ?>
+                                    </label>
+                                    <p class="description">
+                                        <?php esc_html_e('ShipOutdoors documents this as returnLabelOriginalSize. Leave enabled while testing whether their unscaled label image prints sharper.', 'ffl-hub'); ?>
+                                    </p>
+                                </td>
+                            </tr>
                         </tbody>
                     </table>
                 </section>

@@ -29,6 +29,7 @@ final class ShipOutdoorsOptions
             'enabled' => '0',
             'production_api_key' => '',
             'notification_email' => '',
+            'return_label_original_size' => '1',
         ];
     }
 
@@ -55,6 +56,7 @@ final class ShipOutdoorsOptions
             'enabled' => !empty($input['enabled']) ? '1' : '0',
             'production_api_key' => $clear_api_key ? '' : (string) ($current['production_api_key'] ?? ''),
             'notification_email' => sanitize_email((string) ($input['notification_email'] ?? '')),
+            'return_label_original_size' => !empty($input['return_label_original_size']) ? '1' : '0',
         ];
 
         $posted_key = trim((string) ($input['production_api_key'] ?? ''));
@@ -138,6 +140,11 @@ final class ShipOutdoorsOptions
     public static function notification_email(): string
     {
         return sanitize_email((string) (self::get_all()['notification_email'] ?? ''));
+    }
+
+    public static function return_label_original_size(): bool
+    {
+        return ((string) (self::get_all()['return_label_original_size'] ?? '1')) === '1';
     }
 
     /**
