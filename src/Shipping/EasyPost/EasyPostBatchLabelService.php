@@ -792,18 +792,61 @@ final class EasyPostBatchLabelService
         }
 
         if ($package_requires_ffl && ShipOutdoorsOptions::configured()) {
-            return $this->prepare_shipoutdoors_package($order, $shipment, $package, $package_items, $package_index);
+            return $this->prepare_shipoutdoors_package($order, $shipment, $package, $package_items, $package_index, true);
         }
 
-        if (!EasyPostOptions::is_enabled() || !$this->client->has_api_key()) {
+        $candidates = [];
+        $errors = [];
+
+        if (EasyPostOptions::is_enabled() && $this->client->has_api_key()) {
+            $prepared = $this->prepare_easypost_package($order, $shipment, $package, $package_items, $package_index, $package_requires_ffl);
+            if (is_wp_error($prepared)) {
+                $errors[] = 'EasyPost: ' . $prepared->get_error_message();
+            } else {
+                $candidates[] = $prepared;
+            }
+        } elseif ($package_requires_ffl || !ShipOutdoorsOptions::configured()) {
+            $errors[] = $package_requires_ffl
+                ? 'EasyPost: not enabled or configured for fallback FFL rating.'
+                : 'EasyPost: not enabled or configured.';
+        }
+
+        // ShipOutdoors can also rate non-FFL UPS packages. For non-FFL waves we
+        // compare it against EasyPost and only leave the EasyPost batch path
+        // when ShipOutdoors is actually cheaper.
+        if (!$package_requires_ffl && ShipOutdoorsOptions::configured()) {
+            $prepared = $this->prepare_shipoutdoors_package($order, $shipment, $package, $package_items, $package_index, false);
+            if (is_wp_error($prepared)) {
+                $errors[] = 'ShipOutdoors: ' . $prepared->get_error_message();
+            } else {
+                $candidates[] = $prepared;
+            }
+        }
+
+        if (empty($candidates)) {
             return new WP_Error(
-                'fflhub_easypost_batch_provider_unavailable',
-                $package_requires_ffl
-                    ? 'This FFL package needs a firearm-capable provider. Configure ShipOutdoors or enable EasyPost with a usable non-UPS/FedEx rate.'
-                    : 'EasyPost is not enabled or configured for this non-FFL package.'
+                'fflhub_shipping_batch_no_provider_rate',
+                implode(' ', $errors) ?: 'No enabled shipping provider returned a usable rate for this package.'
             );
         }
 
+        return $this->cheapest_prepared_package($candidates);
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @param array<string,mixed> $package
+     * @param array<int,array<string,mixed>> $package_items
+     * @return array<string,mixed>|WP_Error
+     */
+    private function prepare_easypost_package(
+        WC_Order $order,
+        array $shipment,
+        array $package,
+        array $package_items,
+        int $package_index,
+        bool $package_requires_ffl
+    ) {
         $response = $this->provider->get_rates(['shipment' => $shipment]);
         if (is_wp_error($response)) {
             return $response;
@@ -868,7 +911,8 @@ final class EasyPostBatchLabelService
         array $shipment,
         array $package,
         array $package_items,
-        int $package_index
+        int $package_index,
+        bool $package_requires_ffl
     ) {
         $provider = new ShipOutdoorsShippingProvider(new ShipOutdoorsClient());
         $response = $provider->get_rates([
@@ -882,9 +926,14 @@ final class EasyPostBatchLabelService
         $rates = isset($response['rate_response']['rates']) && is_array($response['rate_response']['rates'])
             ? array_values($response['rate_response']['rates'])
             : [];
-        $rate = $this->choose_rate($rates, true);
+        $rate = $this->choose_rate($rates, $package_requires_ffl);
         if (!is_array($rate)) {
-            return new WP_Error('fflhub_shipoutdoors_batch_no_rate', 'ShipOutdoors returned no usable non-banned UPS firearm rate for this package.');
+            return new WP_Error(
+                'fflhub_shipoutdoors_batch_no_rate',
+                $package_requires_ffl
+                    ? 'ShipOutdoors returned no usable non-banned UPS firearm rate for this package.'
+                    : 'ShipOutdoors returned no usable non-banned UPS rate for this package.'
+            );
         }
 
         $reference = substr('fflhub-' . (int) $order->get_id() . '-p' . ($package_index + 1) . '-' . time(), 0, 50);
@@ -910,6 +959,40 @@ final class EasyPostBatchLabelService
             'label_saved' => false,
             'label_id' => '',
         ];
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $candidates
+     * @return array<string,mixed>
+     */
+    private function cheapest_prepared_package(array $candidates): array
+    {
+        usort($candidates, static function (array $a, array $b): int {
+            $a_rate = is_array($a['rate'] ?? null) ? $a['rate'] : [];
+            $b_rate = is_array($b['rate'] ?? null) ? $b['rate'] : [];
+
+            $by_total = ((float) ($a_rate['total_amount'] ?? 0.0)) <=> ((float) ($b_rate['total_amount'] ?? 0.0));
+            if ($by_total !== 0) {
+                return $by_total;
+            }
+
+            // Exact ties stay on EasyPost when possible, because that preserves
+            // the normal EasyPost batch purchase path.
+            $a_provider = (string) ($a['provider_id'] ?? $a_rate['provider_id'] ?? '');
+            $b_provider = (string) ($b['provider_id'] ?? $b_rate['provider_id'] ?? '');
+            if ($a_provider !== $b_provider) {
+                if ($a_provider === 'easypost') {
+                    return -1;
+                }
+                if ($b_provider === 'easypost') {
+                    return 1;
+                }
+            }
+
+            return strcmp((string) ($a_rate['service_type'] ?? ''), (string) ($b_rate['service_type'] ?? ''));
+        });
+
+        return $candidates[0];
     }
 
     /**

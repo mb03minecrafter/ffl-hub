@@ -764,7 +764,7 @@ final class ShipStationShipmentService
             }
         }
 
-        if (!empty($context['requires_ffl']) && ShipOutdoorsOptions::is_enabled()) {
+        if (ShipOutdoorsOptions::is_enabled()) {
             $shipoutdoors = $this->rate_shipoutdoors_provider($shipment, $context, $package_items);
             if (is_wp_error($shipoutdoors)) {
                 $provider_errors[] = [
