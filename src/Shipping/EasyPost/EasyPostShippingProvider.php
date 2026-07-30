@@ -333,11 +333,38 @@ final class EasyPostShippingProvider implements ShippingProviderInterface
         $format = strtoupper(sanitize_text_field((string) ($payload['label_format'] ?? EasyPostOptions::label_format())));
         $layout = sanitize_text_field((string) ($payload['label_layout'] ?? EasyPostOptions::label_layout()));
 
+        $confirmation = (string) ($payload['confirmation'] ?? EasyPostOptions::confirmation());
+        $rate = is_array($payload['rate'] ?? null) ? $payload['rate'] : [];
+        if (self::rate_is_usps($rate)) {
+            $confirmation = 'delivery';
+        }
+
         return array_filter([
             'label_format' => in_array($format, ['PDF', 'PNG', 'ZPL', 'EPL2'], true) ? $format : 'PDF',
             'label_size' => $layout === '4x6' ? '4x6' : '8.5x11',
-            'delivery_confirmation' => self::delivery_confirmation_option((string) ($payload['confirmation'] ?? EasyPostOptions::confirmation())),
+            'delivery_confirmation' => self::delivery_confirmation_option($confirmation),
         ], static fn($value): bool => $value !== '' && $value !== null);
+    }
+
+    /**
+     * EasyPost USPS labels should never request a signature add-on for FFL Hub.
+     * Firearm-capable UPS remains handled by ShipOutdoors; ordinary EasyPost
+     * UPS/FedEx rates are hidden for FFL packages before purchase.
+     *
+     * @param array<string,mixed> $rate
+     */
+    public static function rate_is_usps(array $rate): bool
+    {
+        $text = strtolower(implode(' ', [
+            (string) ($rate['carrier_code'] ?? ''),
+            (string) ($rate['carrier'] ?? ''),
+            (string) ($rate['carrier_nickname'] ?? ''),
+            (string) ($rate['carrier_friendly_name'] ?? ''),
+            (string) ($rate['service_code'] ?? ''),
+            (string) ($rate['service_type'] ?? ''),
+        ]));
+
+        return strpos($text, 'usps') !== false || strpos($text, 'stamps') !== false;
     }
 
     public static function delivery_confirmation_option(string $confirmation): string

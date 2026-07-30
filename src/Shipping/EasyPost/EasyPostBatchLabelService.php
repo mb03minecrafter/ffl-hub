@@ -847,7 +847,8 @@ final class EasyPostBatchLabelService
         int $package_index,
         bool $package_requires_ffl
     ) {
-        $response = $this->provider->get_rates(['shipment' => $shipment]);
+        $shipment_for_rates = self::easypost_shipment_for_rate_request($shipment, $package_requires_ffl);
+        $response = $this->provider->get_rates(['shipment' => $shipment_for_rates]);
         if (is_wp_error($response)) {
             return $response;
         }
@@ -871,7 +872,7 @@ final class EasyPostBatchLabelService
             $raw,
             $rate,
             $reference,
-            (string) ($shipment['confirmation'] ?? EasyPostOptions::confirmation())
+            (string) ($shipment_for_rates['confirmation'] ?? EasyPostOptions::confirmation())
         );
         if (is_wp_error($batch_shipment)) {
             return $batch_shipment;
@@ -884,7 +885,7 @@ final class EasyPostBatchLabelService
             'reference' => $reference,
             'package' => $package,
             'package_items' => $package_items,
-            'shipment' => $shipment,
+            'shipment' => $shipment_for_rates,
             'rated_shipment_id' => (string) ($response['shipment_id'] ?? $raw['id'] ?? ''),
             'rate' => $rate,
             'rate_request_id' => (string) ($response['_fflhub_request_id'] ?? ''),
@@ -1027,6 +1028,36 @@ final class EasyPostBatchLabelService
     }
 
     /**
+     * EasyPost USPS can still be compared for FFL packages, but USPS should not
+     * receive a signature add-on. EasyPost UPS/FedEx firearm rates are filtered
+     * before selection, and ShipOutdoors owns firearm-capable UPS labels.
+     *
+     * @param array<string,mixed> $shipment
+     * @return array<string,mixed>
+     */
+    private static function easypost_shipment_for_rate_request(array $shipment, bool $package_requires_ffl): array
+    {
+        if ($package_requires_ffl) {
+            $shipment['confirmation'] = 'delivery';
+        }
+
+        return $shipment;
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @param array<string,mixed> $rate
+     */
+    private static function easypost_confirmation_for_rate(array $shipment, array $rate): string
+    {
+        if (EasyPostShippingProvider::rate_is_usps($rate)) {
+            return 'delivery';
+        }
+
+        return (string) ($shipment['confirmation'] ?? EasyPostOptions::confirmation());
+    }
+
+    /**
      * @param array<string,mixed> $shipment
      * @param array<string,mixed> $rate
      * @return array<string,mixed>|WP_Error
@@ -1056,7 +1087,9 @@ final class EasyPostBatchLabelService
             'carrier' => $carrier,
             'carrier_accounts' => [$carrier_account],
         ];
-        $delivery_confirmation = EasyPostShippingProvider::delivery_confirmation_option($confirmation);
+        $delivery_confirmation = EasyPostShippingProvider::delivery_confirmation_option(
+            self::easypost_confirmation_for_rate(['confirmation' => $confirmation], $rate)
+        );
         if ($delivery_confirmation !== 'NO_SIGNATURE') {
             $batch_shipment['options'] = [
                 'delivery_confirmation' => $delivery_confirmation,
@@ -1219,9 +1252,9 @@ final class EasyPostBatchLabelService
     }
 
     /**
-     * EasyPost batch shipment copies can lose delivery-confirmation semantics
-     * for USPS labels. FFL packages must never risk silently dropping signature
-     * confirmation, so those waves buy their already-rated Shipments directly.
+     * EasyPost batch shipment copies can lose delivery-confirmation semantics.
+     * Non-USPS packages that still request confirmation are purchased directly
+     * so EasyPost receives that option on the shipment buy request.
      *
      * @param array<string,mixed> $batch
      * @return array<string,mixed>|WP_Error
@@ -1232,8 +1265,8 @@ final class EasyPostBatchLabelService
             $local_batch_id,
             $batch,
             'individual-' . $local_batch_id,
-            'Signature-required packages are purchased individually so EasyPost receives delivery confirmation on the shipment buy request.',
-            'Purchased individually because this wave contains a signature-required package.',
+            'Signature-required non-USPS packages are purchased individually so EasyPost receives delivery confirmation on the shipment buy request.',
+            'Purchased individually because this wave contains a signature-required non-USPS package.',
             [
                 'fallback' => 'individual_shipments',
                 'reason' => 'signature_required',
@@ -1334,7 +1367,11 @@ final class EasyPostBatchLabelService
                     'shipment_id' => $shipment_id,
                     'label_format' => EasyPostOptions::label_format(),
                     'label_layout' => EasyPostOptions::label_layout(),
-                    'confirmation' => (string) ($item['shipment']['confirmation'] ?? EasyPostOptions::confirmation()),
+                    'confirmation' => self::easypost_confirmation_for_rate(
+                        is_array($item['shipment'] ?? null) ? $item['shipment'] : [],
+                        $rate
+                    ),
+                    'rate' => $rate,
                 ]);
             }
             if (is_wp_error($api_label)) {
@@ -1397,7 +1434,18 @@ final class EasyPostBatchLabelService
                 continue;
             }
 
-            $confirmation = (string) ($item['shipment']['confirmation'] ?? EasyPostOptions::confirmation());
+            $rate = is_array($item['rate'] ?? null) ? $item['rate'] : [];
+            if ($this->provider_id_for_item($item, $rate) !== 'easypost') {
+                continue;
+            }
+            if (EasyPostShippingProvider::rate_is_usps($rate)) {
+                continue;
+            }
+
+            $confirmation = self::easypost_confirmation_for_rate(
+                is_array($item['shipment'] ?? null) ? $item['shipment'] : [],
+                $rate
+            );
             if (EasyPostShippingProvider::delivery_confirmation_option($confirmation) !== 'NO_SIGNATURE') {
                 return true;
             }

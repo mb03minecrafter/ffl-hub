@@ -750,7 +750,7 @@ final class ShipStationShipmentService
         }
 
         if (EasyPostOptions::is_enabled()) {
-            $easypost = $this->rate_easypost_provider($shipment);
+            $easypost = $this->rate_easypost_provider($shipment, !empty($context['requires_ffl']));
             if (is_wp_error($easypost)) {
                 $provider_errors[] = [
                     'provider' => 'EasyPost',
@@ -876,8 +876,9 @@ final class ShipStationShipmentService
      * @param array<string,mixed> $shipment
      * @return array{normalized:array<string,mixed>,request_id:string}|WP_Error
      */
-    private function rate_easypost_provider(array $shipment)
+    private function rate_easypost_provider(array $shipment, bool $requires_ffl = false)
     {
+        $shipment = self::easypost_shipment_for_rate_request($shipment, $requires_ffl);
         $packages = isset($shipment['packages']) && is_array($shipment['packages']) ? array_values($shipment['packages']) : [];
         if (count($packages) > 1) {
             return $this->rate_easypost_multi_package_provider($shipment, $packages);
@@ -1022,6 +1023,37 @@ final class ShipStationShipmentService
         }
 
         return $single;
+    }
+
+    /**
+     * EasyPost USPS is allowed for FFL packages, but we no longer want any USPS
+     * signature add-on. Since ordinary EasyPost UPS/FedEx rates are hidden for
+     * FFL packages and ShipOutdoors handles firearm UPS, it is safe to request
+     * EasyPost's FFL package rates without a signature confirmation.
+     *
+     * @param array<string,mixed> $shipment
+     * @return array<string,mixed>
+     */
+    private static function easypost_shipment_for_rate_request(array $shipment, bool $requires_ffl): array
+    {
+        if ($requires_ffl) {
+            $shipment['confirmation'] = 'delivery';
+        }
+
+        return $shipment;
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @param array<string,mixed> $rate
+     */
+    private static function easypost_confirmation_for_rate(array $shipment, array $rate): string
+    {
+        if (EasyPostShippingProvider::rate_is_usps($rate)) {
+            return 'delivery';
+        }
+
+        return (string) ($shipment['confirmation'] ?? EasyPostOptions::confirmation());
     }
 
     /**
@@ -1285,7 +1317,8 @@ final class ShipStationShipmentService
                 'shipment_id' => (string) ($rated['shipment_id'] ?? ''),
                 'label_format' => EasyPostOptions::label_format(),
                 'label_layout' => EasyPostOptions::label_layout(),
-                'confirmation' => (string) ($current_shipment['confirmation'] ?? EasyPostOptions::confirmation()),
+                'confirmation' => self::easypost_confirmation_for_rate($current_shipment, $rated),
+                'rate' => $rated,
                 'insurance' => self::easypost_insurance_amount($current_shipment),
             ]);
         }
@@ -1427,7 +1460,8 @@ final class ShipStationShipmentService
                 'shipment_id' => (string) ($child_rate['shipment_id'] ?? ''),
                 'label_format' => EasyPostOptions::label_format(),
                 'label_layout' => EasyPostOptions::label_layout(),
-                'confirmation' => (string) ($current_shipment['confirmation'] ?? EasyPostOptions::confirmation()),
+                'confirmation' => self::easypost_confirmation_for_rate($current_shipment, $child_rate),
+                'rate' => $child_rate,
                 'insurance' => self::easypost_insurance_amount($single_shipment),
             ]);
             if (is_wp_error($response)) {
