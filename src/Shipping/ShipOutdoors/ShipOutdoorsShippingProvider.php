@@ -203,7 +203,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
         $insured = is_array($package['insured_value'] ?? null) ? $package['insured_value'] : [];
 
         $external_order_id = trim((string) ($shipment['external_order_id'] ?? ''));
-        $invoice_number = $external_order_id !== '' ? substr($external_order_id . '-P' . ($index + 1), 0, 30) : '';
+        $invoice_number = $external_order_id !== '' ? self::invoice_number($external_order_id, $index) : '';
 
         return array_filter([
             'weight' => self::package_weight_pounds($weight),
@@ -298,6 +298,14 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
     private static function is_residential(array $address): bool
     {
         return strtolower(trim((string) ($address['address_residential_indicator'] ?? 'unknown'))) === 'yes';
+    }
+
+    private static function invoice_number(string $external_order_id, int $index): string
+    {
+        $invoice_number = preg_replace('/[^A-Za-z0-9]/', '', $external_order_id . 'P' . ($index + 1));
+        $invoice_number = is_string($invoice_number) ? $invoice_number : '';
+
+        return substr($invoice_number, 0, 30);
     }
 
     private static function signature_type(string $confirmation, bool $package_requires_ffl): int

@@ -791,13 +791,13 @@ final class EasyPostBatchLabelService
             return $shipment;
         }
 
-        if ($package_requires_ffl && ShipOutdoorsOptions::configured()) {
-            return $this->prepare_shipoutdoors_package($order, $shipment, $package, $package_items, $package_index, true);
-        }
-
         $candidates = [];
         $errors = [];
 
+        // EasyPost is still valid for FFL packages when the chosen rate is a
+        // USPS rate. choose_rate() filters ordinary EasyPost UPS/FedEx
+        // firearm rates below, so we can compare USPS against ShipOutdoors UPS
+        // instead of blindly forcing every FFL package to ShipOutdoors.
         if (EasyPostOptions::is_enabled() && $this->client->has_api_key()) {
             $prepared = $this->prepare_easypost_package($order, $shipment, $package, $package_items, $package_index, $package_requires_ffl);
             if (is_wp_error($prepared)) {
@@ -807,15 +807,15 @@ final class EasyPostBatchLabelService
             }
         } elseif ($package_requires_ffl || !ShipOutdoorsOptions::configured()) {
             $errors[] = $package_requires_ffl
-                ? 'EasyPost: not enabled or configured for fallback FFL rating.'
+                ? 'EasyPost: not enabled or configured for USPS FFL rating.'
                 : 'EasyPost: not enabled or configured.';
         }
 
-        // ShipOutdoors can also rate non-FFL UPS packages. For non-FFL waves we
-        // compare it against EasyPost and only leave the EasyPost batch path
-        // when ShipOutdoors is actually cheaper.
-        if (!$package_requires_ffl && ShipOutdoorsOptions::configured()) {
-            $prepared = $this->prepare_shipoutdoors_package($order, $shipment, $package, $package_items, $package_index, false);
+        // ShipOutdoors rates both FFL and non-FFL packages. It is no longer the
+        // automatic FFL winner; the prepared package with the lowest valid rate
+        // wins, with EasyPost only winning exact ties.
+        if (ShipOutdoorsOptions::configured()) {
+            $prepared = $this->prepare_shipoutdoors_package($order, $shipment, $package, $package_items, $package_index, $package_requires_ffl);
             if (is_wp_error($prepared)) {
                 $errors[] = 'ShipOutdoors: ' . $prepared->get_error_message();
             } else {

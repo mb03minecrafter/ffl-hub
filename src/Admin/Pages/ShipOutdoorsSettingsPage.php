@@ -67,7 +67,7 @@ final class ShipOutdoorsSettingsPage
                                 <td>
                                     <label>
                                         <input type="checkbox" name="shipoutdoors[enabled]" value="1" <?php checked(ShipOutdoorsOptions::is_enabled()); ?> />
-                                        <?php esc_html_e('Enable ShipOutdoors as the firearm UPS provider for FFL Hub shipping labels.', 'ffl-hub'); ?>
+                                        <?php esc_html_e('Enable ShipOutdoors UPS rates for FFL Hub shipping labels.', 'ffl-hub'); ?>
                                     </label>
                                     <p class="description">
                                         <?php esc_html_e('ShipOutdoors has no sandbox. Keep this disabled until you are ready to rate and buy production labels.', 'ffl-hub'); ?>
@@ -115,7 +115,7 @@ final class ShipOutdoorsSettingsPage
             <section class="fflhub-shipping-card">
                 <h2><?php esc_html_e('Implementation Notes', 'ffl-hub'); ?></h2>
                 <p>
-                    <?php esc_html_e('ShipOutdoors is only used for FFL-required packages. EasyPost UPS and FedEx rates are hidden for those packages so firearm labels do not accidentally use a normal parcel account.', 'ffl-hub'); ?>
+                    <?php esc_html_e('FFL packages compare EasyPost USPS rates against ShipOutdoors UPS rates. EasyPost UPS and FedEx rates are hidden for those packages so firearm labels do not accidentally use a normal parcel account.', 'ffl-hub'); ?>
                 </p>
             </section>
         </div>
