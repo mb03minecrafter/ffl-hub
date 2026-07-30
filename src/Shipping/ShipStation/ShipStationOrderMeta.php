@@ -14,6 +14,8 @@ if (!defined('ABSPATH')) {
  */
 final class ShipStationOrderMeta
 {
+    private const LARGE_LABEL_DOCUMENT_BYTES = 10000;
+
     public const META_LABELS = '_fflhub_ss_labels';
     public const META_PENDING_RATES = '_fflhub_ss_pending_rates';
 
@@ -317,7 +319,7 @@ final class ShipStationOrderMeta
     {
         foreach (self::labels($order) as $label) {
             if ((string) ($label['label_id'] ?? '') === $label_id) {
-                return $label;
+                return self::hydrate_label_document_from_latest_meta($order, $label);
             }
         }
 
@@ -351,7 +353,67 @@ final class ShipStationOrderMeta
      */
     private static function save_labels(WC_Order $order, array $labels): void
     {
-        $order->update_meta_data(self::META_LABELS, array_values($labels));
+        $order->update_meta_data(self::META_LABELS, self::labels_for_collection_storage($labels));
+    }
+
+    /**
+     * HPOS order meta is not a good home for embedded carrier label documents.
+     * ShipOutdoors returns the 4x6 label as a base64 token; storing that token
+     * once in the latest-label fields is fine, but duplicating it inside the
+     * canonical label collection can exceed the meta row size and drop the
+     * entire collection. The collection only needs tracking, package assignment,
+     * provider, and cost data for WMS/accounting, so large documents are stored
+     * separately and reattached for latest-label downloads.
+     *
+     * @param array<int,array<string,mixed>> $labels
+     * @return array<int,array<string,mixed>>
+     */
+    private static function labels_for_collection_storage(array $labels): array
+    {
+        $out = [];
+        foreach ($labels as $label) {
+            if (!is_array($label)) {
+                continue;
+            }
+
+            $label_url = (string) ($label['label_url'] ?? '');
+            $download = is_array($label['label_download'] ?? null) ? $label['label_download'] : [];
+            $download_json = !empty($download) ? (wp_json_encode($download) ?: '') : '';
+            if (strlen($label_url) > self::LARGE_LABEL_DOCUMENT_BYTES || strlen($download_json) > self::LARGE_LABEL_DOCUMENT_BYTES) {
+                unset($label['label_url'], $label['label_download']);
+                $label['label_document_stored_separately'] = true;
+            }
+
+            $out[] = $label;
+        }
+
+        return array_values($out);
+    }
+
+    /**
+     * @param array<string,mixed> $label
+     * @return array<string,mixed>
+     */
+    private static function hydrate_label_document_from_latest_meta(WC_Order $order, array $label): array
+    {
+        $label_id = (string) ($label['label_id'] ?? '');
+        if ($label_id === '' || $label_id !== (string) $order->get_meta(self::META_LABEL_ID, true)) {
+            return $label;
+        }
+
+        $label_url = (string) $order->get_meta(self::META_LABEL_URL, true);
+        if ($label_url === '') {
+            return $label;
+        }
+
+        $format = strtolower((string) ($label['label_format'] ?? $order->get_meta(self::META_LABEL_FORMAT, true) ?: ShipStationOptions::label_format()));
+        $label['label_url'] = $label_url;
+        $label['label_download'] = [
+            ($format !== '' ? $format : 'pdf') => $label_url,
+            'href' => $label_url,
+        ];
+
+        return $label;
     }
 
     /**
