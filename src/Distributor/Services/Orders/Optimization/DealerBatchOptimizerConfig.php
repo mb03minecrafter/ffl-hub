@@ -15,6 +15,8 @@ final class DealerBatchOptimizerConfig
 {
     public const DEALER_BATCH_OPTION_PREFIX = 'fflhub_dealer_batch_global';
     public const OPTIMIZER_OPTION_PREFIX = 'fflhub_dealer_batch_optimizer';
+    private const PAID_BATCH_ROLLOVER_DEFAULTS_VERSION_OPTION = 'fflhub_dealer_batch_optimizer_paid_rollover_defaults_version';
+    private const PAID_BATCH_ROLLOVER_DEFAULTS_VERSION = '2';
 
     public const DEFAULT_DISPATCH_TIME = '17:00';
     public const DEFAULT_LOW_STOCK_THRESHOLD = 3;
@@ -32,9 +34,7 @@ final class DealerBatchOptimizerConfig
         'rsr'          => 10.0,
         'sports_south' => 8.95,
     ];
-    private const DEFAULT_PAID_BATCH_ROLLOVER_ENABLED_BY_DISTRIBUTOR = [
-        'cssi' => true,
-    ];
+    private const DEFAULT_PAID_BATCH_ROLLOVER_ENABLED = true;
     private const MANUAL_ONLY_OPTIMIZER_DISTRIBUTORS = [];
 
     private function __construct()
@@ -213,7 +213,7 @@ final class DealerBatchOptimizerConfig
             return false;
         }
 
-        $default = !empty(self::DEFAULT_PAID_BATCH_ROLLOVER_ENABLED_BY_DISTRIBUTOR[$dist_id]);
+        $default = self::DEFAULT_PAID_BATCH_ROLLOVER_ENABLED;
 
         return self::truthy(
             get_option(self::paid_batch_rollover_enabled_option_name($dist_id), $default ? '1' : '0'),
@@ -368,9 +368,11 @@ final class DealerBatchOptimizerConfig
             self::add_default(self::shipping_penalty_option_name((string) $dist_id), '0');
             self::add_default(
                 self::paid_batch_rollover_enabled_option_name((string) $dist_id),
-                !empty(self::DEFAULT_PAID_BATCH_ROLLOVER_ENABLED_BY_DISTRIBUTOR[self::normalize_dist_id((string) $dist_id)]) ? '1' : '0'
+                self::DEFAULT_PAID_BATCH_ROLLOVER_ENABLED ? '1' : '0'
             );
         }
+
+        self::migrate_paid_batch_rollover_defaults_once();
     }
 
     /**
@@ -422,6 +424,28 @@ final class DealerBatchOptimizerConfig
         if (get_option($name, null) === null) {
             add_option($name, $value, '', false);
         }
+    }
+
+    private static function migrate_paid_batch_rollover_defaults_once(): void
+    {
+        if ((string) get_option(self::PAID_BATCH_ROLLOVER_DEFAULTS_VERSION_OPTION, '') === self::PAID_BATCH_ROLLOVER_DEFAULTS_VERSION) {
+            return;
+        }
+
+        foreach (self::optimizer_distributor_ids() as $dist_id) {
+            $dist_id = self::normalize_dist_id((string) $dist_id);
+            if ($dist_id === '') {
+                continue;
+            }
+
+            update_option(
+                self::paid_batch_rollover_enabled_option_name($dist_id),
+                self::DEFAULT_PAID_BATCH_ROLLOVER_ENABLED ? '1' : '0',
+                false
+            );
+        }
+
+        update_option(self::PAID_BATCH_ROLLOVER_DEFAULTS_VERSION_OPTION, self::PAID_BATCH_ROLLOVER_DEFAULTS_VERSION, false);
     }
 
     private static function normalize_dist_id(string $dist_id): string

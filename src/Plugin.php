@@ -211,6 +211,7 @@ final class Plugin
         // Always-on bootstrap
         // -----------------------------------------------------------------
         SettingsRegistrar::init();
+        DealerBatchOptimizerConfig::init_defaults();
         ActionSchedulerWebRunnerGuard::init();
         ProductCollectionRewrite::init();
         BrandArchiveHeroBlock::init();
