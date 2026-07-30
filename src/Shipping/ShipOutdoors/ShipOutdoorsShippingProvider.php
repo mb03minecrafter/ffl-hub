@@ -303,10 +303,14 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
     private static function signature_type(string $confirmation, bool $package_requires_ffl): int
     {
         $confirmation = strtolower(trim($confirmation));
-        if ($confirmation === 'adult_signature') {
+
+        // ShipOutdoors rejects firearm shipments unless the package requests
+        // Adult Signature, so firearm/FFL packages override the shared label
+        // confirmation preference.
+        if ($package_requires_ffl || $confirmation === 'adult_signature') {
             return 1;
         }
-        if ($confirmation === 'signature' || $confirmation === 'direct_signature' || $package_requires_ffl) {
+        if ($confirmation === 'signature' || $confirmation === 'direct_signature') {
             return 2;
         }
         if ($confirmation === 'none' || $confirmation === 'delivery') {
