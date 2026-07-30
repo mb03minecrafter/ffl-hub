@@ -177,6 +177,12 @@
   color: #111827;
 }
 
+.fflhub-ffl-picker__dealer-legal-name {
+  margin-top: 0.08rem;
+  font-size: 0.72rem;
+  color: #6b7280;
+}
+
 .fflhub-ffl-picker__dealer-address {
   margin-top: 0.15rem;
   font-size: 0.78rem;

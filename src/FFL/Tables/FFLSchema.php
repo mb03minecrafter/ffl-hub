@@ -51,6 +51,7 @@ final class FFLSchema
     {
         return [
             'license_name',
+            'business_name',
             'premise_street',
             'premise_city',
             'premise_state',
@@ -79,6 +80,7 @@ final class FFLSchema
             'ffl_number'     => 'VARCHAR(64) NOT NULL',
             'ffl_expiration' => 'DATE NULL',
             'license_name'   => 'VARCHAR(255) NOT NULL',
+            'business_name'  => 'VARCHAR(255) NULL',
             'premise_street' => 'VARCHAR(255) NOT NULL',
             'premise_city'   => 'VARCHAR(128) NOT NULL',
             'premise_state'  => 'CHAR(2) NOT NULL',

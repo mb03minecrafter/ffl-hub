@@ -94,6 +94,8 @@
     return {
       ffl_number: apiFFL.ffl_number,
       name: apiFFL.name || "",
+      license_name: apiFFL.license_name || "",
+      business_name: apiFFL.business_name || "",
       street: street,
       city: city,
       state: state,
@@ -158,6 +160,16 @@
         const nameEl = document.createElement("strong");
         nameEl.textContent = dealer.name || dealer.ffl_number;
 
+        const legalNameEl = document.createElement("div");
+        legalNameEl.className = "fflhub-ffl-picker__dealer-legal-name";
+        if (
+          dealer.license_name &&
+          dealer.name &&
+          dealer.license_name.toUpperCase() !== dealer.name.toUpperCase()
+        ) {
+          legalNameEl.textContent = dealer.license_name;
+        }
+
         const addrEl = document.createElement("div");
         addrEl.className = "fflhub-ffl-picker__dealer-address";
         addrEl.textContent = formatAddress(dealer);
@@ -168,7 +180,9 @@
           dealer.ffl_number + (dealer.phone ? " | " + dealer.phone : "");
 
         li.appendChild(nameEl);
-        li.appendChild(document.createElement("br"));
+        if (legalNameEl.textContent) {
+          li.appendChild(legalNameEl);
+        }
         li.appendChild(addrEl);
         li.appendChild(metaEl);
 

@@ -28,11 +28,13 @@ final class FFLRowMapper
      *
      * Public shape:
      *   [
-     *     'ffl_number' => string,
-     *     'name'       => string,
-     *     'premise'    => ['street','city','state','zip'],
-     *     'mailing'    => ['street','city','state','zip'],
-     *     'phone'      => string,
+     *     'ffl_number'    => string,
+     *     'name'          => string, // business/trade name when present, otherwise legal license name
+     *     'license_name'  => string,
+     *     'business_name' => string,
+     *     'premise'       => ['street','city','state','zip'],
+     *     'mailing'       => ['street','city','state','zip'],
+     *     'phone'         => string,
      *   ]
      *
      * @param array<string,mixed> $row Raw DB row.
@@ -40,22 +42,28 @@ final class FFLRowMapper
      */
     public static function to_public(array $row): array
     {
+        $license_name  = (string) ($row['license_name'] ?? '');
+        $business_name = (string) ($row['business_name'] ?? '');
+        $display_name  = trim($business_name) !== '' ? $business_name : $license_name;
+
         return [
-            'ffl_number' => (string) ($row['ffl_number'] ?? ''),
-            'name'       => (string) ($row['license_name'] ?? ''),
-            'premise'    => [
+            'ffl_number'    => (string) ($row['ffl_number'] ?? ''),
+            'name'          => $display_name,
+            'license_name'  => $license_name,
+            'business_name' => $business_name,
+            'premise'       => [
                 'street' => (string) ($row['premise_street'] ?? ''),
                 'city'   => (string) ($row['premise_city'] ?? ''),
                 'state'  => (string) ($row['premise_state'] ?? ''),
                 'zip'    => (string) ($row['premise_zip'] ?? ''),
             ],
-            'mailing'    => [
+            'mailing'       => [
                 'street' => (string) ($row['mail_street'] ?? ''),
                 'city'   => (string) ($row['mail_city'] ?? ''),
                 'state'  => (string) ($row['mail_state'] ?? ''),
                 'zip'    => (string) ($row['mail_zip'] ?? ''),
             ],
-            'phone'      => (string) ($row['voice_phone'] ?? ''),
+            'phone'         => (string) ($row['voice_phone'] ?? ''),
         ];
     }
 

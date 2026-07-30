@@ -119,6 +119,10 @@ final class FFLParser
             'VOICE_PHONE',
         ];
 
+        $optional = [
+            'BUSINESS_NAME',
+        ];
+
         $missing = array_values(array_filter($required, static fn($k) => !isset($idx[$k])));
         if (!empty($missing)) {
             self::log('parse_csv(): missing required header columns', [
@@ -159,6 +163,9 @@ final class FFLParser
             $source = [];
             foreach ($required as $field) {
                 $source[$field] = $get($cols, $idx, $field);
+            }
+            foreach ($optional as $field) {
+                $source[$field] = isset($idx[$field]) ? $get($cols, $idx, $field) : '';
             }
 
             $row = $this->normalize_row($source);
@@ -280,6 +287,7 @@ final class FFLParser
             'ffl_number'     => implode('-', $ffl_number_parts),
             'ffl_expiration' => $this->normalize_atf_expiration($get('LIC_XPRDTE')),
             'license_name'   => $license_name,
+            'business_name'  => $get('BUSINESS_NAME'),
             'premise_street' => $premise_street,
             'premise_city'   => $premise_city,
             'premise_state'  => $premise_state,

@@ -33,6 +33,7 @@ final class FFLRepository
     ffl_number,
     ffl_expiration,
     license_name,
+    business_name,
     premise_street,
     premise_city,
     premise_state,
@@ -96,7 +97,7 @@ final class FFLRepository
             "SELECT " . self::SELECT_COLUMNS . "
              FROM {$table_name}
              WHERE premise_zip LIKE %s OR mail_zip LIKE %s
-             ORDER BY premise_state, premise_city, license_name
+             ORDER BY premise_state, premise_city, COALESCE(NULLIF(business_name, ''), license_name), license_name
              LIMIT %d",
             $like,
             $like,
@@ -180,8 +181,8 @@ final class FFLRepository
     /**
      * Bulk upsert normalized rows parsed from an ATF export.
      *
-     * Expected keys per row (12 columns):
-     * - ffl_number, ffl_expiration, license_name
+     * Expected keys per row (13 columns):
+     * - ffl_number, ffl_expiration, license_name, business_name
      * - premise_street, premise_city, premise_state, premise_zip
      * - mail_street, mail_city, mail_state, mail_zip
      * - voice_phone
@@ -217,9 +218,9 @@ final class FFLRepository
             $values       = [];
 
             foreach ($batch as $row) {
-                // 12 columns per row.
+                // 13 columns per row.
                 // For ffl_expiration (DATE NULL): we pass either a YYYY-MM-DD string or NULL.
-                $placeholders[] = '( %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s )';
+                $placeholders[] = '( %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s )';
 
                 $values[] = (string) ($row['ffl_number'] ?? '');
 
@@ -228,6 +229,7 @@ final class FFLRepository
                 $values[] = ($exp !== '' ? $exp : null);
 
                 $values[] = (string) ($row['license_name'] ?? '');
+                $values[] = (string) ($row['business_name'] ?? '');
 
                 $values[] = (string) ($row['premise_street'] ?? '');
                 $values[] = (string) ($row['premise_city'] ?? '');
@@ -259,7 +261,7 @@ final class FFLRepository
 
             $sql = "
             INSERT INTO {$table_name}
-                ( ffl_number, ffl_expiration, license_name,
+                ( ffl_number, ffl_expiration, license_name, business_name,
                   premise_street, premise_city, premise_state, premise_zip,
                   mail_street, mail_city, mail_state, mail_zip,
                   voice_phone )
@@ -267,6 +269,7 @@ final class FFLRepository
             ON DUPLICATE KEY UPDATE
                 ffl_expiration = VALUES(ffl_expiration),
                 license_name   = VALUES(license_name),
+                business_name  = VALUES(business_name),
                 premise_street = VALUES(premise_street),
                 premise_city   = VALUES(premise_city),
                 premise_state  = VALUES(premise_state),

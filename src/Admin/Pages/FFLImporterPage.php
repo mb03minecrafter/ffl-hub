@@ -183,6 +183,7 @@ final class FFLImporterPage
                             <tr>
                                 <th>FFL #</th>
                                 <th>License Name</th>
+                                <th>Business Name</th>
                                 <th>Premise Address</th>
                                 <th>City / State / ZIP</th>
                                 <th>Phone</th>
@@ -193,7 +194,8 @@ final class FFLImporterPage
                                 <?php $premise = is_array($ffl['premise'] ?? null) ? $ffl['premise'] : []; ?>
                                 <tr>
                                     <td><?php echo esc_html((string) ($ffl['ffl_number'] ?? '')); ?></td>
-                                    <td><?php echo esc_html((string) ($ffl['name'] ?? '')); ?></td>
+                                    <td><?php echo esc_html((string) ($ffl['license_name'] ?? $ffl['name'] ?? '')); ?></td>
+                                    <td><?php echo esc_html((string) ($ffl['business_name'] ?? '')); ?></td>
                                     <td><?php echo esc_html((string) ($premise['street'] ?? '')); ?></td>
                                     <td>
                                         <?php
@@ -301,6 +303,8 @@ final class FFLImporterPage
         ]);
 
         try {
+            $this->table->createTables();
+
             $parser = new FFLParser();
             $rows   = $parser->parse($contents);
 
