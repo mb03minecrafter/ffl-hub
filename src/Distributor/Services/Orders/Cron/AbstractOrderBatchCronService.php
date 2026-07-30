@@ -142,6 +142,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             'priority_rows' => 0,
             'scheduled_rows' => 0,
             'deferred_post_window_rows' => 0,
+            'deferred_paid_batch_rows' => 0,
             'failed_rows' => 0,
             'skipped_suspended' => 0,
             'dispatch_due' => 0,
@@ -445,6 +446,8 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
 
             $scheduled_candidates = $batch_candidates;
             $deferred_candidates = [];
+            $paid_batch_rollover_candidates = [];
+            $paid_batch_rollover_context = [];
             if ($dispatch_due && !$force_flush && !empty($batch_candidates)) {
                 [$scheduled_candidates, $deferred_candidates] = $this->split_scheduled_candidates_for_current_window($batch_candidates);
                 if (!empty($deferred_candidates)) {
@@ -453,12 +456,30 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             }
             $run_stats['deferred_post_window_rows'] = count($deferred_candidates);
 
+            if ($dispatch_due && !$force_flush && !empty($scheduled_candidates)) {
+                [
+                    $scheduled_candidates,
+                    $paid_batch_rollover_candidates,
+                    $paid_batch_rollover_context,
+                ] = $this->split_scheduled_candidates_for_paid_batch_rollover($scheduled_candidates);
+
+                if (!empty($paid_batch_rollover_candidates)) {
+                    $this->defer_paid_batch_rollover_candidates(
+                        $paid_batch_rollover_candidates,
+                        $paid_batch_rollover_context
+                    );
+                }
+            }
+            $run_stats['deferred_paid_batch_rows'] = count($paid_batch_rollover_candidates);
+
             $this->log_ctx('batch_gate', [
                 'run_id' => $run_id,
                 'priority_rows' => count($priority_candidates),
                 'scheduled_rows' => count($batch_candidates),
                 'scheduled_ready_rows' => count($scheduled_candidates),
                 'deferred_post_window_rows' => count($deferred_candidates),
+                'deferred_paid_batch_rows' => count($paid_batch_rollover_candidates),
+                'paid_batch_rollover' => $paid_batch_rollover_context,
                 'priority_flushed_rows' => $priority_flushed_rows,
                 'force_flush' => $force_flush ? 1 : 0,
                 'dispatch_due' => $dispatch_due ? 1 : 0,
@@ -495,6 +516,8 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                 $run_status = 'priority_flushed';
             } elseif ($scheduled_flushed_rows > 0) {
                 $run_status = 'scheduled_flushed';
+            } elseif ($dispatch_due && !empty($paid_batch_rollover_candidates) && empty($scheduled_candidates)) {
+                $run_status = 'paid_batch_rollover_deferred';
             } elseif ($dispatch_due && empty($scheduled_candidates) && !empty($batch_candidates)) {
                 $run_status = 'post_window_deferred';
             } elseif (!$dispatch_due && !empty($batch_candidates)) {
@@ -2202,6 +2225,97 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
     }
 
     /**
+     * Hold a below-threshold scheduled dealer batch until the next dispatch day.
+     *
+     * This intentionally runs after the low-stock priority split. If an item is
+     * stock-risky, the priority branch flushes it immediately and this freight
+     * savings hold never sees it.
+     *
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $scheduled_candidates
+     * @return array{
+     *   0:array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}>,
+     *   1:array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}>,
+     *   2:array<string,mixed>
+     * }
+     */
+    private function split_scheduled_candidates_for_paid_batch_rollover(array $scheduled_candidates): array
+    {
+        $dist_id = $this->get_distributor_id();
+        $context = [
+            'enabled' => 0,
+            'reason' => 'not_applicable',
+            'dist_id' => $dist_id,
+        ];
+
+        if ($this->is_ca_relay_mode()) {
+            $context['reason'] = 'ca_relay';
+            return [$scheduled_candidates, [], $context];
+        }
+
+        if (!DealerBatchOptimizerConfig::paid_batch_rollover_enabled($dist_id)) {
+            $context['reason'] = 'disabled';
+            return [$scheduled_candidates, [], $context];
+        }
+
+        $max_rollovers = DealerBatchOptimizerConfig::paid_batch_rollover_max_days();
+        if ($max_rollovers <= 0) {
+            $context['reason'] = 'max_days_zero';
+            return [$scheduled_candidates, [], $context];
+        }
+
+        $threshold = DealerBatchOptimizerConfig::free_shipping_threshold($dist_id);
+        if ($threshold <= 0.0) {
+            $context['reason'] = 'no_threshold';
+            return [$scheduled_candidates, [], $context];
+        }
+
+        $batch_total = round($this->dealer_batch_distributor_cost_total($scheduled_candidates), 2);
+        $remaining = round(max(0.0, $threshold - $batch_total), 2);
+        $context = [
+            'enabled' => 1,
+            'reason' => 'evaluated',
+            'dist_id' => $dist_id,
+            'batch_total' => $batch_total,
+            'free_shipping_threshold' => round($threshold, 2),
+            'remaining_to_free_shipping' => $remaining,
+            'max_rollovers' => $max_rollovers,
+        ];
+
+        if ($batch_total <= 0.0) {
+            $context['reason'] = 'no_batch_total';
+            return [$scheduled_candidates, [], $context];
+        }
+
+        if ($batch_total >= $threshold) {
+            $context['reason'] = 'threshold_met';
+            return [$scheduled_candidates, [], $context];
+        }
+
+        $ready = [];
+        $deferred = [];
+        foreach ($scheduled_candidates as $entry) {
+            $job = $entry['job'] ?? null;
+            if (!($job instanceof OrderPlacementJobRow)) {
+                $ready[] = $entry;
+                continue;
+            }
+
+            if ($this->paid_batch_rollover_count($job) >= $max_rollovers) {
+                $ready[] = $entry;
+                continue;
+            }
+
+            $deferred[] = $entry;
+        }
+
+        $context['reason'] = !empty($deferred) ? 'below_threshold' : 'rollover_limit_reached';
+        $context['ready_rows'] = count($ready);
+        $context['deferred_rows'] = count($deferred);
+
+        return [$ready, $deferred, $context];
+    }
+
+    /**
      * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $candidates
      */
     private function defer_candidates_until_next_dispatch_window(array $candidates, ?string $next_dispatch_utc = null): void
@@ -2230,6 +2344,88 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
                     ->with_next_run_at_mysql($next_dispatch_utc)
             );
         }
+    }
+
+    /**
+     * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $candidates
+     * @param array<string,mixed> $context
+     */
+    private function defer_paid_batch_rollover_candidates(array $candidates, array $context): void
+    {
+        if (empty($candidates)) {
+            return;
+        }
+
+        $next_dispatch_utc = $this->next_dispatch_boundary_utc_mysql();
+        $reason = sprintf(
+            'Deferred to next dispatch: %s dealer batch subtotal $%s is below the $%s free-shipping threshold.',
+            $this->get_distributor_id(),
+            number_format((float) ($context['batch_total'] ?? 0.0), 2, '.', ''),
+            number_format((float) ($context['free_shipping_threshold'] ?? 0.0), 2, '.', '')
+        );
+
+        foreach ($candidates as $entry) {
+            $job = $entry['job'] ?? null;
+            if (!($job instanceof OrderPlacementJobRow)) {
+                continue;
+            }
+
+            $payload_json = $this->paid_batch_rollover_payload_json($job, $context, $next_dispatch_utc);
+
+            OrderPlacementJobWriter::apply_patch(
+                $this->jobs_table,
+                (int) $job->order_id,
+                (string) $job->job_key_norm(),
+                OrderPlacementJobPatch::empty()
+                    ->with_status(OrderPlacementKeys::JOB_STATUS_BATCH_PENDING)
+                    ->with_next_run_at_mysql($next_dispatch_utc)
+                    ->with_last_step('place')
+                    ->with_last_error($reason)
+                    ->with_last_codes(['PAID_BATCH_ROLLOVER_DEFERRED'])
+                    ->with_field('payload_json', $payload_json)
+            );
+        }
+    }
+
+    private function paid_batch_rollover_count(OrderPlacementJobRow $job): int
+    {
+        $payload = $job->payload();
+        $rollover = $payload['dealer_batch_rollover'] ?? [];
+        if (!is_array($rollover)) {
+            return 0;
+        }
+
+        return max(0, (int) ($rollover['paid_shipping_defer_count'] ?? 0));
+    }
+
+    /**
+     * @param array<string,mixed> $context
+     */
+    private function paid_batch_rollover_payload_json(
+        OrderPlacementJobRow $job,
+        array $context,
+        string $next_dispatch_utc
+    ): string {
+        $payload = $job->payload();
+        $rollover = $payload['dealer_batch_rollover'] ?? [];
+        if (!is_array($rollover)) {
+            $rollover = [];
+        }
+
+        $rollover['paid_shipping_defer_count'] = $this->paid_batch_rollover_count($job) + 1;
+        $rollover['max_paid_shipping_defer_days'] = max(0, (int) ($context['max_rollovers'] ?? 0));
+        $rollover['last_reason'] = (string) ($context['reason'] ?? 'below_threshold');
+        $rollover['last_deferred_at_utc'] = OrderPlacementTimeUtil::now_mysql_utc();
+        $rollover['last_deferred_until_utc'] = trim($next_dispatch_utc);
+        $rollover['last_batch_total'] = $this->money4((float) ($context['batch_total'] ?? 0.0));
+        $rollover['free_shipping_threshold'] = $this->money4((float) ($context['free_shipping_threshold'] ?? 0.0));
+        $rollover['remaining_to_free_shipping'] = $this->money4((float) ($context['remaining_to_free_shipping'] ?? 0.0));
+        $rollover['dist_id'] = $this->get_distributor_id();
+
+        $payload['dealer_batch_rollover'] = $rollover;
+
+        $json = wp_json_encode($payload);
+        return is_string($json) && $json !== '' ? $json : '{}';
     }
 
     private function next_dispatch_boundary_utc_mysql(): string

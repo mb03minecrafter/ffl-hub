@@ -131,6 +131,10 @@ final class DealerBatchOptimizerPage
                         <td><?php esc_html_e('Maximum number of pending rows a distributor batch cron pulls in one run after optimization has had a chance to move rows.', 'ffl-hub'); ?></td>
                     </tr>
                     <tr>
+                        <td><strong><?php esc_html_e('Paid batch rollover max days', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('How many dispatch days an enabled distributor may defer a below-threshold scheduled batch before it must ship anyway. Force flush and low-stock priority rows bypass this hold.', 'ffl-hub'); ?></td>
+                    </tr>
+                    <tr>
                         <td><strong><?php esc_html_e('Force flush token', 'ffl-hub'); ?></strong></td>
                         <td><?php esc_html_e('Requests a one-pass force flush. Each dealer-batch distributor can consume the token once, selecting queued rows regardless of future run time and bypassing the dispatch clock and weekend hold.', 'ffl-hub'); ?></td>
                     </tr>
@@ -141,6 +145,10 @@ final class DealerBatchOptimizerPage
                     <tr>
                         <td><strong><?php esc_html_e('Estimated paid inbound shipping cost', 'ffl-hub'); ?></strong></td>
                         <td><?php esc_html_e('Estimated inbound freight cost when that distributor has an active below-threshold batch. Empty distributors are not counted. If left at zero, known distributors use conservative defaults such as Bill Hicks $15, RSR $10, and Sports South $8.95.', 'ffl-hub'); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php esc_html_e('Rollover below threshold', 'ffl-hub'); ?></strong></td>
+                        <td><?php esc_html_e('When enabled for a distributor, a scheduled non-priority batch below that distributor\'s free-shipping threshold is moved to the next dispatch window instead of being submitted immediately, up to the configured max days.', 'ffl-hub'); ?></td>
                     </tr>
                 </tbody>
             </table>
@@ -228,6 +236,10 @@ final class DealerBatchOptimizerPage
             DealerBatchOptimizerConfig::dealer_batch_option_name('max_rows_per_run'),
             (string) DealerBatchOptimizerConfig::DEFAULT_MAX_ROWS_PER_RUN
         ));
+        $paid_batch_rollover_max_days = max(0, (int) $this->text_post(
+            DealerBatchOptimizerConfig::dealer_batch_option_name('paid_batch_rollover_max_days'),
+            (string) DealerBatchOptimizerConfig::DEFAULT_PAID_BATCH_ROLLOVER_MAX_DAYS
+        ));
         $force_flush = $this->checkbox_post(DealerBatchOptimizerConfig::dealer_batch_option_name('force_flush'));
 
         update_option(DealerBatchOptimizerConfig::dealer_batch_option_name('enabled'), $enabled, false);
@@ -236,6 +248,7 @@ final class DealerBatchOptimizerPage
         update_option(DealerBatchOptimizerConfig::dealer_batch_option_name('low_stock_threshold'), (string) $low_stock_threshold, false);
         update_option(DealerBatchOptimizerConfig::dealer_batch_option_name('retry_delay_seconds'), (string) $retry_delay_seconds, false);
         update_option(DealerBatchOptimizerConfig::dealer_batch_option_name('max_rows_per_run'), (string) $max_rows_per_run, false);
+        update_option(DealerBatchOptimizerConfig::dealer_batch_option_name('paid_batch_rollover_max_days'), (string) $paid_batch_rollover_max_days, false);
         if ($force_flush === '1') {
             DealerBatchOptimizerConfig::mark_force_flush_requested();
         } else {
@@ -245,8 +258,10 @@ final class DealerBatchOptimizerPage
         foreach (DealerBatchOptimizerConfig::optimizer_distributor_ids() as $dist_id) {
             $threshold_option = DealerBatchOptimizerConfig::free_shipping_threshold_option_name((string) $dist_id);
             $penalty_option = DealerBatchOptimizerConfig::shipping_penalty_option_name((string) $dist_id);
+            $rollover_option = DealerBatchOptimizerConfig::paid_batch_rollover_enabled_option_name((string) $dist_id);
             update_option($threshold_option, $this->money_post($threshold_option), false);
             update_option($penalty_option, $this->money_post($penalty_option), false);
+            update_option($rollover_option, $this->checkbox_post($rollover_option), false);
         }
 
         $this->redirect_with_notice('success', __('Dealer batch optimizer settings updated.', 'ffl-hub'));
@@ -260,6 +275,7 @@ final class DealerBatchOptimizerPage
         $low_stock_threshold = DealerBatchOptimizerConfig::low_stock_threshold();
         $retry_delay_seconds = DealerBatchOptimizerConfig::retry_delay_seconds();
         $max_rows_per_run = DealerBatchOptimizerConfig::max_rows_per_run();
+        $paid_batch_rollover_max_days = DealerBatchOptimizerConfig::paid_batch_rollover_max_days();
         $force_flush = DealerBatchOptimizerConfig::force_flush_requested();
         ?>
         <form method="post" action="" style="max-width: 1100px;">
@@ -288,6 +304,10 @@ final class DealerBatchOptimizerPage
                 <tr><th scope="row"><?php esc_html_e('Max rows per run', 'ffl-hub'); ?></th><td>
                     <input type="number" min="1" step="1" class="small-text" name="<?php echo esc_attr(DealerBatchOptimizerConfig::dealer_batch_option_name('max_rows_per_run')); ?>" value="<?php echo esc_attr((string) $max_rows_per_run); ?>" />
                 </td></tr>
+                <tr><th scope="row"><?php esc_html_e('Paid batch rollover max days', 'ffl-hub'); ?></th><td>
+                    <input type="number" min="0" step="1" class="small-text" name="<?php echo esc_attr(DealerBatchOptimizerConfig::dealer_batch_option_name('paid_batch_rollover_max_days')); ?>" value="<?php echo esc_attr((string) $paid_batch_rollover_max_days); ?>" />
+                    <p class="description"><?php esc_html_e('Set to 1 to let enabled distributors hold a below-threshold scheduled batch until the next dispatch day, then force it through if it is still below threshold.', 'ffl-hub'); ?></p>
+                </td></tr>
                 <tr><th scope="row"><?php esc_html_e('Force flush token', 'ffl-hub'); ?></th><td>
                     <input type="hidden" name="<?php echo esc_attr(DealerBatchOptimizerConfig::dealer_batch_option_name('force_flush')); ?>" value="0" />
                     <label><input type="checkbox" name="<?php echo esc_attr(DealerBatchOptimizerConfig::dealer_batch_option_name('force_flush')); ?>" value="1" <?php checked($force_flush); ?> /> <?php esc_html_e('Request one force flush pass for each dealer-batch distributor.', 'ffl-hub'); ?></label>
@@ -295,17 +315,25 @@ final class DealerBatchOptimizerPage
             </tbody></table>
 
             <h2><?php esc_html_e('Free Shipping Thresholds', 'ffl-hub'); ?></h2>
-            <table class="widefat striped" style="max-width: 760px;">
-                <thead><tr><th><?php esc_html_e('Distributor', 'ffl-hub'); ?></th><th><?php esc_html_e('Free shipping threshold', 'ffl-hub'); ?></th><th><?php esc_html_e('Estimated paid inbound shipping cost', 'ffl-hub'); ?></th></tr></thead>
+            <table class="widefat striped" style="max-width: 980px;">
+                <thead><tr><th><?php esc_html_e('Distributor', 'ffl-hub'); ?></th><th><?php esc_html_e('Free shipping threshold', 'ffl-hub'); ?></th><th><?php esc_html_e('Estimated paid inbound shipping cost', 'ffl-hub'); ?></th><th><?php esc_html_e('Rollover below threshold', 'ffl-hub'); ?></th></tr></thead>
                 <tbody>
                     <?php foreach (DealerBatchOptimizerConfig::optimizer_distributor_ids() as $dist_id) :
                         $threshold_option = DealerBatchOptimizerConfig::free_shipping_threshold_option_name((string) $dist_id);
                         $penalty_option = DealerBatchOptimizerConfig::shipping_penalty_option_name((string) $dist_id);
+                        $rollover_option = DealerBatchOptimizerConfig::paid_batch_rollover_enabled_option_name((string) $dist_id);
                     ?>
                         <tr>
                             <td><strong><?php echo esc_html((string) $dist_id); ?></strong></td>
                             <td><input type="number" min="0" step="0.01" name="<?php echo esc_attr($threshold_option); ?>" value="<?php echo esc_attr((string) DealerBatchOptimizerConfig::free_shipping_threshold((string) $dist_id)); ?>" /></td>
                             <td><input type="number" min="0" step="0.01" name="<?php echo esc_attr($penalty_option); ?>" value="<?php echo esc_attr((string) DealerBatchOptimizerConfig::shipping_penalty((string) $dist_id)); ?>" /></td>
+                            <td>
+                                <input type="hidden" name="<?php echo esc_attr($rollover_option); ?>" value="0" />
+                                <label>
+                                    <input type="checkbox" name="<?php echo esc_attr($rollover_option); ?>" value="1" <?php checked(DealerBatchOptimizerConfig::paid_batch_rollover_enabled((string) $dist_id)); ?> />
+                                    <?php esc_html_e('Defer once before paying inbound freight', 'ffl-hub'); ?>
+                                </label>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
@@ -415,6 +443,16 @@ final class DealerBatchOptimizerPage
                                 <?php echo esc_html(sprintf(__('Est. inbound: %s', 'ffl-hub'), $this->format_money($paid_shipping))); ?>
                             <?php endif; ?>
                         </div>
+                        <?php if ($has_rows && $threshold > 0.0 && !$is_free) : ?>
+                            <div style="margin-top:4px;color:#50575e;font-size:12px;">
+                                <?php
+                                $rollover_text = !empty($group['rollover_enabled'])
+                                    ? sprintf(__('Rollover enabled: max %d day(s)', 'ffl-hub'), (int) ($group['rollover_max_days'] ?? 0))
+                                    : __('Rollover disabled', 'ffl-hub');
+                                echo esc_html($rollover_text);
+                                ?>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 <?php endforeach; ?>
             </div>
@@ -600,6 +638,8 @@ final class DealerBatchOptimizerPage
                 'total_qty' => 0,
                 'subtotal' => 0.0,
                 'threshold' => DealerBatchOptimizerConfig::free_shipping_threshold($dist_id),
+                'rollover_enabled' => DealerBatchOptimizerConfig::paid_batch_rollover_enabled($dist_id),
+                'rollover_max_days' => DealerBatchOptimizerConfig::paid_batch_rollover_max_days(),
                 'estimated_paid_shipping' => 0.0,
                 'remaining_to_free' => 0.0,
                 'rows' => [],
