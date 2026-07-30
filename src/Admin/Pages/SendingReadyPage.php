@@ -615,6 +615,11 @@ final class SendingReadyPage
                         <?php endif; ?>
                     </p>
                     <span class="fflhub-sending-ready-muted"><?php echo esc_html((string) ($package['package_detail'] ?? '')); ?></span>
+                    <?php if (trim((string) ($package['provider_label'] ?? $package['carrier_code'] ?? '')) !== '') : ?>
+                        <span class="fflhub-sending-ready-muted">
+                            <?php echo esc_html(trim((string) ($package['provider_label'] ?? '') . ' ' . (string) ($package['carrier_code'] ?? '') . ' ' . (string) ($package['service_name'] ?? ''))); ?>
+                        </span>
+                    <?php endif; ?>
                     <?php if ($tracking_number !== '') : ?>
                         <span class="fflhub-sending-ready-muted">
                             <?php echo esc_html(sprintf(__('Tracking: %s', 'ffl-hub'), $tracking_number)); ?>
@@ -761,6 +766,9 @@ final class SendingReadyPage
             if (!is_array($row)) {
                 continue;
             }
+            if ((string) ($row['status'] ?? '') === OrderWaverStore::ORDER_STATUS_SHIPPED) {
+                continue;
+            }
 
             $order = wc_get_order((int) ($row['order_id'] ?? 0));
             if (!($order instanceof WC_Order)) {
@@ -807,6 +815,8 @@ final class SendingReadyPage
                     'debug_ready' => $debug_ready,
                     'tracking_number' => (string) ($label['tracking_number'] ?? $label['tracking'] ?? ''),
                     'carrier_code' => (string) ($label['carrier_code'] ?? ''),
+                    'provider_label' => (string) ($label['provider_label'] ?? $label['provider_id'] ?? ''),
+                    'service_name' => (string) ($label['service_name'] ?? $label['service_code'] ?? ''),
                 ];
             }
         }
@@ -995,15 +1005,42 @@ final class SendingReadyPage
             return;
         }
 
-        echo '<strong>EasyPost #' . esc_html((string) ((int) ($easypost['id'] ?? 0))) . '</strong>';
+        echo '<strong>' . esc_html__('Label Batch #', 'ffl-hub') . esc_html((string) ((int) ($easypost['id'] ?? 0))) . '</strong>';
         $this->render_status_pill((string) ($easypost['status'] ?? ''));
         if ((string) ($easypost['provider_batch_id'] ?? '') !== '') {
             echo '<code>' . esc_html((string) ($easypost['provider_batch_id'] ?? '')) . '</code>';
+        }
+        $providers = $this->label_batch_provider_summary($easypost);
+        if ($providers !== '') {
+            echo '<span class="fflhub-sending-ready-muted">' . esc_html($providers) . '</span>';
         }
         echo '<span class="fflhub-sending-ready-muted">' . esc_html(sprintf(
             __('%d package item(s)', 'ffl-hub'),
             (int) ($easypost['item_count'] ?? 0)
         )) . '</span>';
+    }
+
+    /**
+     * @param array<string,mixed> $easypost
+     */
+    private function label_batch_provider_summary(array $easypost): string
+    {
+        $providers = [];
+        foreach ((array) ($easypost['items'] ?? []) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $rate = is_array($item['rate'] ?? null) ? $item['rate'] : [];
+            $provider = trim((string) ($item['provider_label'] ?? $rate['provider_label'] ?? $item['provider_id'] ?? ''));
+            $carrier = trim((string) ($rate['carrier_code'] ?? ''));
+            $service = trim((string) ($rate['service_type'] ?? ''));
+            $key = trim($provider . ($carrier !== '' ? ' ' . $carrier : '') . ($service !== '' ? ' ' . $service : ''));
+            if ($key !== '') {
+                $providers[$key] = true;
+            }
+        }
+
+        return implode(' / ', array_keys($providers));
     }
 
     /**

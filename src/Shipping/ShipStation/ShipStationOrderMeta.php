@@ -351,7 +351,7 @@ final class ShipStationOrderMeta
      */
     private static function save_labels(WC_Order $order, array $labels): void
     {
-        $order->update_meta_data(self::META_LABELS, wp_json_encode($labels));
+        $order->update_meta_data(self::META_LABELS, array_values($labels));
     }
 
     /**
