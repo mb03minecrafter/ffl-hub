@@ -243,13 +243,35 @@ final class ShipOutdoorsClient
                 return new WP_Error('fflhub_shipoutdoors_label_temp_failed', 'Could not write a temporary ShipOutdoors label file.');
             }
 
+            $size = @getimagesize($path);
+            $width_px = max(1.0, (float) ($size[0] ?? 288));
+            $height_px = max(1.0, (float) ($size[1] ?? 432));
+
+            /*
+             * ShipOutdoors currently returns UPS labels as landscape GIF
+             * images. A thermal 4x6 printer expects the label body to be
+             * portrait on a 4x6 page, so rotate the image before wrapping it
+             * as a PDF. Without this, PrintNode receives a horizontal label
+             * that gets scaled and clipped by the printer driver.
+             */
+            if ($width_px > $height_px) {
+                $rotated = $this->rotated_label_image_path($path, $image_type);
+                if (!is_wp_error($rotated)) {
+                    if (is_string($path) && $path !== '' && file_exists($path)) {
+                        @unlink($path);
+                    }
+
+                    $path = (string) ($rotated['path'] ?? $path);
+                    $image_type = (string) ($rotated['image_type'] ?? $image_type);
+                    $width_px = max(1.0, (float) ($rotated['width'] ?? $width_px));
+                    $height_px = max(1.0, (float) ($rotated['height'] ?? $height_px));
+                }
+            }
+
             $pdf = new \FPDF('P', 'pt', [288, 432]);
             $pdf->SetAutoPageBreak(false);
             $pdf->AddPage();
 
-            $size = @getimagesize($path);
-            $width_px = max(1.0, (float) ($size[0] ?? 288));
-            $height_px = max(1.0, (float) ($size[1] ?? 432));
             $scale = min(288.0 / $width_px, 432.0 / $height_px);
             $draw_width = $width_px * $scale;
             $draw_height = $height_px * $scale;
@@ -269,6 +291,68 @@ final class ShipOutdoorsClient
         } finally {
             if (is_string($path) && $path !== '' && file_exists($path)) {
                 @unlink($path);
+            }
+        }
+    }
+
+    /**
+     * Rotate image labels into portrait and save them as PNG for reliable FPDF
+     * embedding. ShipOutdoors label images are simple black-on-white carrier
+     * labels, so PNG is a safe intermediate format and avoids GIF rotation
+     * edge cases in FPDF.
+     *
+     * @return array{path:string,image_type:string,width:float,height:float}|WP_Error
+     */
+    private function rotated_label_image_path(string $path, string $image_type)
+    {
+        if (!function_exists('imagerotate') || !function_exists('imagepng')) {
+            return new WP_Error(
+                'fflhub_shipoutdoors_image_rotate_unavailable',
+                'ShipOutdoors label image could not be rotated on this server.'
+            );
+        }
+
+        $source = null;
+        if ($image_type === 'GIF' && function_exists('imagecreatefromgif')) {
+            $source = @imagecreatefromgif($path);
+        } elseif ($image_type === 'PNG' && function_exists('imagecreatefrompng')) {
+            $source = @imagecreatefrompng($path);
+        } elseif ($image_type === 'JPEG' && function_exists('imagecreatefromjpeg')) {
+            $source = @imagecreatefromjpeg($path);
+        }
+
+        if (!$source) {
+            return new WP_Error('fflhub_shipoutdoors_image_rotate_failed', 'ShipOutdoors label image could not be opened for rotation.');
+        }
+
+        try {
+            $white = imagecolorallocate($source, 255, 255, 255);
+            $rotated = imagerotate($source, 90, $white);
+            if (!$rotated) {
+                return new WP_Error('fflhub_shipoutdoors_image_rotate_failed', 'ShipOutdoors label image could not be rotated.');
+            }
+
+            $rotated_path = wp_tempnam('fflhub-shipoutdoors-label-portrait.png');
+            if (!is_string($rotated_path) || $rotated_path === '') {
+                return new WP_Error('fflhub_shipoutdoors_label_temp_failed', 'Could not create a temporary rotated ShipOutdoors label file.');
+            }
+
+            if (!imagepng($rotated, $rotated_path)) {
+                return new WP_Error('fflhub_shipoutdoors_label_temp_failed', 'Could not write a temporary rotated ShipOutdoors label file.');
+            }
+
+            return [
+                'path' => $rotated_path,
+                'image_type' => 'PNG',
+                'width' => (float) imagesx($rotated),
+                'height' => (float) imagesy($rotated),
+            ];
+        } finally {
+            if (is_resource($source) || $source instanceof \GdImage) {
+                imagedestroy($source);
+            }
+            if (isset($rotated) && (is_resource($rotated) || $rotated instanceof \GdImage)) {
+                imagedestroy($rotated);
             }
         }
     }
