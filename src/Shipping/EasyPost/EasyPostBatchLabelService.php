@@ -13,6 +13,10 @@ use FFLHub\Shipping\ShipStation\ShipStationOptions;
 use FFLHub\Shipping\ShipStation\ShipStationOrderMeta;
 use FFLHub\Shipping\ShipStation\ShipStationShipmentService;
 use FFLHub\Shipping\ShippingOptions;
+use FFLHub\Shipping\ShippingProviderPolicy;
+use FFLHub\Shipping\ShipOutdoors\ShipOutdoorsClient;
+use FFLHub\Shipping\ShipOutdoors\ShipOutdoorsOptions;
+use FFLHub\Shipping\ShipOutdoors\ShipOutdoorsShippingProvider;
 use WC_Order;
 use WP_Error;
 
@@ -21,14 +25,14 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Prepares and submits EasyPost batch labels for the WMS Sending queue.
+ * Prepares and submits provider-backed label batches for the WMS Sending queue.
  *
  * The per-order shipping UI remains the source of truth for shipment building:
  * this service uses ShipStationShipmentService to auto-pack, validate package
  * assignments, resolve FFL destinations, and build provider-neutral shipment
- * payloads. The batch-specific work is limited to choosing EasyPost rates,
- * submitting a Batch, refreshing async state, and saving purchased labels back
- * into the same order meta used by single-label purchases.
+ * payloads. The batch-specific work is limited to choosing provider rates,
+ * buying labels, and saving purchased labels back into the same order meta used
+ * by single-label purchases.
  */
 final class EasyPostBatchLabelService
 {
@@ -46,18 +50,28 @@ final class EasyPostBatchLabelService
         $this->shipment_service = $shipment_service ?? new ShipStationShipmentService(new FFLTable(new FFLSchema()));
     }
 
+    private function has_any_label_provider(): bool
+    {
+        return (EasyPostOptions::is_enabled() && $this->client->has_api_key())
+            || ShipOutdoorsOptions::configured();
+    }
+
+    private function missing_label_provider_error(): WP_Error
+    {
+        return new WP_Error(
+            'fflhub_shipping_batch_provider_missing',
+            'Enable EasyPost or ShipOutdoors with an API key before preparing WMS label batches.'
+        );
+    }
+
     /**
      * @param array<int,array<string,mixed>> $ready_orders
      * @return array<string,mixed>|WP_Error
      */
     public function prepare_from_ready_orders(array $ready_orders)
     {
-        if (!EasyPostOptions::is_enabled()) {
-            return new WP_Error('fflhub_easypost_batch_disabled', 'EasyPost is not enabled.');
-        }
-
-        if (!$this->client->has_api_key()) {
-            return new WP_Error('fflhub_easypost_batch_missing_key', 'EasyPost API key is not configured.');
+        if (!$this->has_any_label_provider()) {
+            return $this->missing_label_provider_error();
         }
 
         $started = microtime(true);
@@ -132,8 +146,8 @@ final class EasyPostBatchLabelService
 
         if (empty($items)) {
             return new WP_Error(
-                'fflhub_easypost_batch_no_items',
-                'No ready order packages could be prepared for EasyPost batch purchase.',
+                'fflhub_shipping_batch_no_items',
+                'No ready order packages could be prepared for label purchase.',
                 ['problems' => $problems]
             );
         }
@@ -174,12 +188,8 @@ final class EasyPostBatchLabelService
      */
     public function prepare_from_packed_wave_orders(array $packed_orders, string $reference = '')
     {
-        if (!EasyPostOptions::is_enabled()) {
-            return new WP_Error('fflhub_easypost_batch_disabled', 'EasyPost is not enabled.');
-        }
-
-        if (!$this->client->has_api_key()) {
-            return new WP_Error('fflhub_easypost_batch_missing_key', 'EasyPost API key is not configured.');
+        if (!$this->has_any_label_provider()) {
+            return $this->missing_label_provider_error();
         }
 
         $started = microtime(true);
@@ -266,8 +276,8 @@ final class EasyPostBatchLabelService
 
         if (empty($items)) {
             return new WP_Error(
-                'fflhub_easypost_batch_no_items',
-                'No wave package assignments could be prepared for EasyPost batch purchase.',
+                'fflhub_shipping_batch_no_items',
+                'No wave package assignments could be prepared for label purchase.',
                 ['problems' => $problems]
             );
         }
@@ -303,6 +313,10 @@ final class EasyPostBatchLabelService
         $batch = EasyPostBatchLabelStore::get($local_batch_id);
         if (!is_array($batch)) {
             return new WP_Error('fflhub_easypost_batch_missing', 'Could not find that local EasyPost batch.');
+        }
+
+        if ($this->batch_needs_individual_provider_purchase($batch)) {
+            return $this->buy_items_individually_for_provider_mix($local_batch_id, $batch);
         }
 
         if ($this->batch_needs_individual_signature_purchase($batch)) {
@@ -537,7 +551,7 @@ final class EasyPostBatchLabelService
 
             $direct_label_url = trim((string) ($item['label_pdf_url'] ?? ''));
             if ($direct_label_url !== '') {
-                $label_pdf = $this->client->download_label($direct_label_url);
+                $label_pdf = $this->download_direct_label_document($item, $direct_label_url);
                 if (is_wp_error($label_pdf)) {
                     continue;
                 }
@@ -615,7 +629,7 @@ final class EasyPostBatchLabelService
 
             $direct_label_url = trim((string) ($item['label_pdf_url'] ?? ''));
             if ($direct_label_url !== '') {
-                $label_pdf = $this->client->download_label($direct_label_url);
+                $label_pdf = $this->download_direct_label_document($item, $direct_label_url);
                 if (is_wp_error($label_pdf)) {
                     return $label_pdf;
                 }
@@ -658,6 +672,33 @@ final class EasyPostBatchLabelService
         }
 
         return $documents;
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     * @return array{body:string,content_type:string,filename:string}|WP_Error
+     */
+    private function download_direct_label_document(array $item, string $url)
+    {
+        $rate = is_array($item['rate'] ?? null) ? $item['rate'] : [];
+        $provider_id = $this->provider_id_for_item($item, $rate);
+        $document = $provider_id === 'shipoutdoors'
+            ? (new ShipOutdoorsShippingProvider(new ShipOutdoorsClient()))->download_label($url)
+            : $this->client->download_label($url);
+        if (is_wp_error($document)) {
+            return $document;
+        }
+
+        $body = (string) ($document['body'] ?? '');
+        $content_type = strtolower((string) ($document['content_type'] ?? ''));
+        if (strpos(ltrim($body), '%PDF') !== 0 && strpos($content_type, 'pdf') === false) {
+            return new WP_Error(
+                'fflhub_shipping_direct_label_not_pdf',
+                'The purchased label is not available as a PDF document for packet printing.'
+            );
+        }
+
+        return $document;
     }
 
     /**
@@ -737,6 +778,7 @@ final class EasyPostBatchLabelService
      */
     private function prepare_package(WC_Order $order, array $package, array $package_items, int $package_index)
     {
+        $package_requires_ffl = ShippingProviderPolicy::package_items_require_ffl($package_items);
         $shipment = $this->shipment_service->shipment_for_packages(
             $order,
             [$package],
@@ -749,6 +791,19 @@ final class EasyPostBatchLabelService
             return $shipment;
         }
 
+        if ($package_requires_ffl && ShipOutdoorsOptions::configured()) {
+            return $this->prepare_shipoutdoors_package($order, $shipment, $package, $package_items, $package_index);
+        }
+
+        if (!EasyPostOptions::is_enabled() || !$this->client->has_api_key()) {
+            return new WP_Error(
+                'fflhub_easypost_batch_provider_unavailable',
+                $package_requires_ffl
+                    ? 'This FFL package needs a firearm-capable provider. Configure ShipOutdoors or enable EasyPost with a usable non-UPS/FedEx rate.'
+                    : 'EasyPost is not enabled or configured for this non-FFL package.'
+            );
+        }
+
         $response = $this->provider->get_rates(['shipment' => $shipment]);
         if (is_wp_error($response)) {
             return $response;
@@ -757,9 +812,14 @@ final class EasyPostBatchLabelService
         $rates = isset($response['rate_response']['rates']) && is_array($response['rate_response']['rates'])
             ? array_values($response['rate_response']['rates'])
             : [];
-        $rate = $this->choose_rate($rates);
+        $rate = $this->choose_rate($rates, $package_requires_ffl);
         if (!is_array($rate)) {
-            return new WP_Error('fflhub_easypost_batch_no_rate', 'EasyPost returned no usable non-banned rate for this package.');
+            return new WP_Error(
+                'fflhub_easypost_batch_no_rate',
+                $package_requires_ffl
+                    ? 'EasyPost returned no usable non-banned, non-UPS/FedEx rate for this FFL package.'
+                    : 'EasyPost returned no usable non-banned rate for this package.'
+            );
         }
 
         $raw = is_array($response['raw'] ?? null) ? $response['raw'] : [];
@@ -785,7 +845,64 @@ final class EasyPostBatchLabelService
             'rated_shipment_id' => (string) ($response['shipment_id'] ?? $raw['id'] ?? ''),
             'rate' => $rate,
             'rate_request_id' => (string) ($response['_fflhub_request_id'] ?? ''),
+            'provider_id' => 'easypost',
+            'provider_label' => 'EasyPost',
             'batch_shipment' => $batch_shipment,
+            'batch_shipment_id' => '',
+            'batch_status' => 'prepared',
+            'batch_message' => '',
+            'tracking_number' => '',
+            'label_saved' => false,
+            'label_id' => '',
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @param array<string,mixed> $package
+     * @param array<int,array<string,mixed>> $package_items
+     * @return array<string,mixed>|WP_Error
+     */
+    private function prepare_shipoutdoors_package(
+        WC_Order $order,
+        array $shipment,
+        array $package,
+        array $package_items,
+        int $package_index
+    ) {
+        $provider = new ShipOutdoorsShippingProvider(new ShipOutdoorsClient());
+        $response = $provider->get_rates([
+            'shipment' => $shipment,
+            'package_items' => [$package_items],
+        ]);
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        $rates = isset($response['rate_response']['rates']) && is_array($response['rate_response']['rates'])
+            ? array_values($response['rate_response']['rates'])
+            : [];
+        $rate = $this->choose_rate($rates, true);
+        if (!is_array($rate)) {
+            return new WP_Error('fflhub_shipoutdoors_batch_no_rate', 'ShipOutdoors returned no usable non-banned UPS firearm rate for this package.');
+        }
+
+        $reference = substr('fflhub-' . (int) $order->get_id() . '-p' . ($package_index + 1) . '-' . time(), 0, 50);
+
+        return [
+            'provider_id' => 'shipoutdoors',
+            'provider_label' => 'ShipOutdoors',
+            'order_id' => (int) $order->get_id(),
+            'order_number' => (string) $order->get_order_number(),
+            'package_index' => $package_index,
+            'reference' => $reference,
+            'package' => $package,
+            'package_items' => $package_items,
+            'shipment' => $shipment,
+            'rated_shipment_id' => (string) ($response['shipment_id'] ?? ''),
+            'rate' => $rate,
+            'rate_request_id' => (string) ($response['_fflhub_request_id'] ?? ''),
+            'batch_shipment' => [],
             'batch_shipment_id' => '',
             'batch_status' => 'prepared',
             'batch_message' => '',
@@ -799,11 +916,14 @@ final class EasyPostBatchLabelService
      * @param array<int,array<string,mixed>> $rates
      * @return array<string,mixed>|null
      */
-    private function choose_rate(array $rates): ?array
+    private function choose_rate(array $rates, bool $package_requires_ffl = false): ?array
     {
         $usable = [];
         foreach ($rates as $rate) {
             if (!is_array($rate) || ShippingOptions::rate_service_is_banned($rate)) {
+                continue;
+            }
+            if ($package_requires_ffl && ShippingProviderPolicy::rate_is_blocked_for_ffl_package($rate)) {
                 continue;
             }
             if ((string) ($rate['rate_id'] ?? '') === '' || (float) ($rate['total_amount'] ?? 0) <= 0.0) {
@@ -960,6 +1080,8 @@ final class EasyPostBatchLabelService
             );
             $label['package_index'] = max(0, (int) ($item['package_index'] ?? 0));
             $label['package_count'] = max(1, (int) ($package_counts[(int) $order->get_id()] ?? 1));
+            $label['label_batch_id'] = $provider_batch_id;
+            $label['label_batch_reference'] = (string) ($item['reference'] ?? '');
             $label['easypost_batch_id'] = $provider_batch_id;
             $label['easypost_batch_reference'] = (string) ($item['reference'] ?? '');
 
@@ -1037,6 +1159,29 @@ final class EasyPostBatchLabelService
     }
 
     /**
+     * ShipOutdoors is a direct firearm-label purchase API, not an EasyPost
+     * Shipment or Batch. Any wave containing those packages bypasses EasyPost
+     * batch creation and buys each prepared package with its own provider.
+     *
+     * @param array<string,mixed> $batch
+     * @return array<string,mixed>|WP_Error
+     */
+    private function buy_items_individually_for_provider_mix(int $local_batch_id, array $batch)
+    {
+        return $this->buy_items_individually_with_reason(
+            $local_batch_id,
+            $batch,
+            'individual-' . $local_batch_id,
+            'Mixed-provider packages are purchased individually so each prepared package uses the provider it was rated with.',
+            'Purchased individually with the prepared shipping provider.',
+            [
+                'fallback' => 'individual_shipments',
+                'reason' => 'provider_mix',
+            ]
+        );
+    }
+
+    /**
      * @param array<string,mixed> $batch
      * @param array<string,mixed> $response_context
      * @return array<string,mixed>|WP_Error
@@ -1080,20 +1225,35 @@ final class EasyPostBatchLabelService
             }
 
             $rate = is_array($item['rate'] ?? null) ? $item['rate'] : [];
+            $provider_id = $this->provider_id_for_item($item, $rate);
             $rate_id = trim((string) ($rate['rate_id'] ?? ''));
-            $shipment_id = trim((string) ($rate['shipment_id'] ?? $item['rated_shipment_id'] ?? ''));
-            if ($rate_id === '' || $shipment_id === '') {
-                $item['label_error'] = 'Prepared EasyPost shipment/rate ID was missing.';
-                $errors[] = '#' . (string) $order->get_order_number() . ': Prepared EasyPost shipment/rate ID was missing.';
+            if ($rate_id === '') {
+                $item['label_error'] = 'Prepared shipment rate ID was missing.';
+                $errors[] = '#' . (string) $order->get_order_number() . ': Prepared shipment rate ID was missing.';
                 continue;
             }
 
-            $api_label = $this->provider->purchase_label_from_rate($rate_id, [
-                'shipment_id' => $shipment_id,
-                'label_format' => EasyPostOptions::label_format(),
-                'label_layout' => EasyPostOptions::label_layout(),
-                'confirmation' => (string) ($item['shipment']['confirmation'] ?? EasyPostOptions::confirmation()),
-            ]);
+            if ($provider_id === 'shipoutdoors') {
+                $api_label = (new ShipOutdoorsShippingProvider(new ShipOutdoorsClient()))->purchase_label_from_rate($rate_id, [
+                    'shipment' => is_array($item['shipment'] ?? null) ? $item['shipment'] : [],
+                    'rated' => $rate,
+                    'package_items' => [is_array($item['package_items'] ?? null) ? $item['package_items'] : []],
+                ]);
+            } else {
+                $shipment_id = trim((string) ($rate['shipment_id'] ?? $item['rated_shipment_id'] ?? ''));
+                if ($shipment_id === '') {
+                    $item['label_error'] = 'Prepared EasyPost shipment/rate ID was missing.';
+                    $errors[] = '#' . (string) $order->get_order_number() . ': Prepared EasyPost shipment/rate ID was missing.';
+                    continue;
+                }
+
+                $api_label = $this->provider->purchase_label_from_rate($rate_id, [
+                    'shipment_id' => $shipment_id,
+                    'label_format' => EasyPostOptions::label_format(),
+                    'label_layout' => EasyPostOptions::label_layout(),
+                    'confirmation' => (string) ($item['shipment']['confirmation'] ?? EasyPostOptions::confirmation()),
+                ]);
+            }
             if (is_wp_error($api_label)) {
                 $item['label_error'] = $api_label->get_error_message();
                 $errors[] = '#' . (string) $order->get_order_number() . ': ' . $api_label->get_error_message();
@@ -1164,6 +1324,35 @@ final class EasyPostBatchLabelService
     }
 
     /**
+     * @param array<string,mixed> $batch
+     */
+    private function batch_needs_individual_provider_purchase(array $batch): bool
+    {
+        foreach ((array) ($batch['items'] ?? []) as $item) {
+            if (!is_array($item) || !empty($item['label_saved'])) {
+                continue;
+            }
+
+            $rate = is_array($item['rate'] ?? null) ? $item['rate'] : [];
+            if ($this->provider_id_for_item($item, $rate) !== 'easypost') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     * @param array<string,mixed> $rate
+     */
+    private function provider_id_for_item(array $item, array $rate = []): string
+    {
+        $provider_id = sanitize_key((string) ($item['provider_id'] ?? $rate['provider_id'] ?? 'easypost'));
+        return $provider_id !== '' ? $provider_id : 'easypost';
+    }
+
+    /**
      * @param array<string,mixed> $api_label
      * @param array<string,mixed> $rate
      */
@@ -1191,6 +1380,8 @@ final class EasyPostBatchLabelService
         );
         $label['package_index'] = max(0, (int) ($item['package_index'] ?? 0));
         $label['package_count'] = max(1, $package_count);
+        $label['label_batch_id'] = $provider_batch_id;
+        $label['label_batch_reference'] = (string) ($item['reference'] ?? '');
         $label['easypost_batch_id'] = $provider_batch_id;
         $label['easypost_batch_reference'] = (string) ($item['reference'] ?? '');
 
@@ -1337,12 +1528,13 @@ final class EasyPostBatchLabelService
      */
     private function purchase_note(array $label): string
     {
-        $carrier = trim((string) ($label['carrier_nickname'] ?? $label['carrier_friendly_name'] ?? $label['carrier_code'] ?? 'EasyPost'));
+        $provider = trim((string) ($label['provider_label'] ?? 'Shipping provider'));
+        $carrier = trim((string) ($label['carrier_nickname'] ?? $label['carrier_friendly_name'] ?? $label['carrier_code'] ?? $provider));
         $service = trim((string) ($label['service_name'] ?? $label['service_code'] ?? ''));
         $tracking = trim((string) ($label['tracking_number'] ?? ''));
         $cost = trim((string) ($label['total_cost'] ?? '0.0000'));
 
-        $parts = ["FFL Hub EasyPost batch label purchased via {$carrier}"];
+        $parts = ["FFL Hub {$provider} batch label purchased via {$carrier}"];
         if ($service !== '') {
             $parts[] = "service {$service}";
         }
@@ -1360,7 +1552,7 @@ final class EasyPostBatchLabelService
     {
         $status = ShipStationOptions::after_purchase_status();
         if ($status !== '') {
-            $order->update_status($status, 'FFL Hub EasyPost batch shipping label purchased.');
+            $order->update_status($status, 'FFL Hub batch shipping label purchased.');
         }
     }
 

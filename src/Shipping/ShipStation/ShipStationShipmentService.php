@@ -16,6 +16,10 @@ use FFLHub\Shipping\Packing\OrderBoxPackingService;
 use FFLHub\Shipping\Providers\ShippingProviderInterface;
 use FFLHub\Shipping\ShippingConfirmationPolicy;
 use FFLHub\Shipping\ShippingOptions;
+use FFLHub\Shipping\ShippingProviderPolicy;
+use FFLHub\Shipping\ShipOutdoors\ShipOutdoorsClient;
+use FFLHub\Shipping\ShipOutdoors\ShipOutdoorsOptions;
+use FFLHub\Shipping\ShipOutdoors\ShipOutdoorsShippingProvider;
 use FFLHub\Util\DebugLogUtil;
 use WC_Order;
 use WC_Order_Item_Product;
@@ -65,7 +69,7 @@ final class ShipStationShipmentService
             : $this->destination_from_order($order);
 
         $context = [
-            'enabled' => ShipStationOptions::is_enabled() || EasyPostOptions::is_enabled(),
+            'enabled' => ShipStationOptions::is_enabled() || EasyPostOptions::is_enabled() || ShipOutdoorsOptions::is_enabled(),
             'mode' => ShipStationOptions::mode(),
             'api_key_source' => ShipStationOptions::api_key_source(),
             'api_key_mask' => ShipStationOptions::api_key_mask(),
@@ -81,6 +85,12 @@ final class ShipStationShipmentService
                     'mode' => EasyPostOptions::mode(),
                     'api_key_source' => EasyPostOptions::api_key_source(),
                     'api_key_mask' => EasyPostOptions::api_key_mask(),
+                ],
+                'shipoutdoors' => [
+                    'enabled' => ShipOutdoorsOptions::is_enabled(),
+                    'mode' => 'production',
+                    'api_key_source' => ShipOutdoorsOptions::api_key_source(),
+                    'api_key_mask' => ShipOutdoorsOptions::api_key_mask(),
                 ],
             ],
             'requires_ffl' => $requires_ffl,
@@ -186,7 +196,7 @@ final class ShipStationShipmentService
      */
     public function validate_address(array $input)
     {
-        if (!ShipStationOptions::is_enabled() && !EasyPostOptions::is_enabled()) {
+        if (!ShipStationOptions::is_enabled() && !EasyPostOptions::is_enabled() && !ShipOutdoorsOptions::is_enabled()) {
             return new WP_Error('fflhub_shipping_providers_disabled', 'No FFL Hub shipping providers are enabled.', ['status' => 400]);
         }
 
@@ -204,6 +214,8 @@ final class ShipStationShipmentService
             $provider = $this->provider;
         } elseif (EasyPostOptions::is_enabled()) {
             $provider = new EasyPostShippingProvider(new EasyPostClient());
+        } elseif (ShipOutdoorsOptions::is_enabled()) {
+            $provider = new ShipOutdoorsShippingProvider(new ShipOutdoorsClient());
         } else {
             $provider = $this->provider;
         }
@@ -295,7 +307,7 @@ final class ShipStationShipmentService
      */
     public function rate_order(WC_Order $order, array $input)
     {
-        if (!ShipStationOptions::is_enabled() && !EasyPostOptions::is_enabled()) {
+        if (!ShipStationOptions::is_enabled() && !EasyPostOptions::is_enabled() && !ShipOutdoorsOptions::is_enabled()) {
             return new WP_Error('fflhub_shipping_providers_disabled', 'No FFL Hub shipping providers are enabled.', ['status' => 400]);
         }
 
@@ -309,7 +321,11 @@ final class ShipStationShipmentService
             return $shipment;
         }
 
-        $provider_results = $this->rate_enabled_providers($order, $shipment, $context);
+        $package_items = self::package_item_assignments_from_input(
+            $input['package_items'] ?? [],
+            isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : []
+        );
+        $provider_results = $this->rate_enabled_providers($order, $shipment, $context, $package_items);
         if (is_wp_error($provider_results)) {
             return $provider_results;
         }
@@ -318,10 +334,6 @@ final class ShipStationShipmentService
         $request_ids = $provider_results['request_ids'];
         $provider_errors = $provider_results['provider_errors'];
         $shipment_hash = self::shipment_hash($shipment);
-        $package_items = self::package_item_assignments_from_input(
-            $input['package_items'] ?? [],
-            isset($context['order_items']) && is_array($context['order_items']) ? $context['order_items'] : []
-        );
         $package_details = self::package_details_from_input(
             $input['packages'] ?? [],
             $package_items
@@ -456,7 +468,7 @@ final class ShipStationShipmentService
             }
 
             $provider_id = self::rate_provider_id($rated);
-            $response = $this->purchase_rate_with_provider($provider_id, $rate_id, $rated, $current_shipment);
+            $response = $this->purchase_rate_with_provider($provider_id, $rate_id, $rated, $current_shipment, $pending, $context);
             if (is_wp_error($response)) {
                 return $response;
             }
@@ -543,9 +555,7 @@ final class ShipStationShipmentService
                 return new WP_Error('fflhub_shipstation_label_not_active', 'That label is already voided or inactive.', ['status' => 409]);
             }
 
-            $provider = strpos($label_id, 'easypost|') === 0
-                ? new EasyPostShippingProvider(new EasyPostClient())
-                : $this->provider;
+            $provider = $this->provider_for_label_id($label_id, (string) ($label['provider_id'] ?? ''));
             $response = $provider->void_label($label_id);
             if (is_wp_error($response)) {
                 return $response;
@@ -631,9 +641,10 @@ final class ShipStationShipmentService
             return new WP_Error('fflhub_shipstation_label_url_missing', 'The saved label has no download URL.', ['status' => 404]);
         }
 
-        $provider = strpos((string) ($label['label_id'] ?? ''), 'easypost|') === 0
-            ? new EasyPostShippingProvider(new EasyPostClient())
-            : $this->provider;
+        $provider = $this->provider_for_label_id(
+            (string) ($label['label_id'] ?? ''),
+            (string) ($label['provider_id'] ?? '')
+        );
 
         return $provider->download_label($url);
     }
@@ -712,7 +723,7 @@ final class ShipStationShipmentService
      * @param array<string,mixed> $context
      * @return array{normalized:array<string,mixed>,request_ids:string[],provider_errors:array<int,array<string,string>>}|WP_Error
      */
-    private function rate_enabled_providers(WC_Order $order, array $shipment, array $context)
+    private function rate_enabled_providers(WC_Order $order, array $shipment, array $context, array $package_items = [])
     {
         $combined = [
             'shipment_id' => '',
@@ -731,7 +742,7 @@ final class ShipStationShipmentService
                     'message' => $shipstation->get_error_message(),
                 ];
             } else {
-                $combined = self::merge_normalized_rate_result($combined, $shipstation['normalized'], 'shipstation', $shipment);
+                $combined = self::merge_normalized_rate_result($combined, $shipstation['normalized'], 'shipstation', $shipment, !empty($context['requires_ffl']));
                 if ((string) ($shipstation['request_id'] ?? '') !== '') {
                     $request_ids[] = 'shipstation:' . (string) $shipstation['request_id'];
                 }
@@ -746,9 +757,24 @@ final class ShipStationShipmentService
                     'message' => $easypost->get_error_message(),
                 ];
             } else {
-                $combined = self::merge_normalized_rate_result($combined, $easypost['normalized'], 'easypost', $shipment);
+                $combined = self::merge_normalized_rate_result($combined, $easypost['normalized'], 'easypost', $shipment, !empty($context['requires_ffl']));
                 if ((string) ($easypost['request_id'] ?? '') !== '') {
                     $request_ids[] = 'easypost:' . (string) $easypost['request_id'];
+                }
+            }
+        }
+
+        if (!empty($context['requires_ffl']) && ShipOutdoorsOptions::is_enabled()) {
+            $shipoutdoors = $this->rate_shipoutdoors_provider($shipment, $context, $package_items);
+            if (is_wp_error($shipoutdoors)) {
+                $provider_errors[] = [
+                    'provider' => 'ShipOutdoors',
+                    'message' => $shipoutdoors->get_error_message(),
+                ];
+            } else {
+                $combined = self::merge_normalized_rate_result($combined, $shipoutdoors['normalized'], 'shipoutdoors', $shipment, false);
+                if ((string) ($shipoutdoors['request_id'] ?? '') !== '') {
+                    $request_ids[] = 'shipoutdoors:' . (string) $shipoutdoors['request_id'];
                 }
             }
         }
@@ -961,6 +987,28 @@ final class ShipStationShipmentService
 
     /**
      * @param array<string,mixed> $shipment
+     * @param array<string,mixed> $context
+     * @return array{normalized:array<string,mixed>,request_id:string}|WP_Error
+     */
+    private function rate_shipoutdoors_provider(array $shipment, array $context, array $package_items = [])
+    {
+        $provider = new ShipOutdoorsShippingProvider(new ShipOutdoorsClient());
+        $response = $provider->get_rates([
+            'shipment' => $shipment,
+            'package_items' => $this->rich_package_items_for_shipment($shipment, $context, $package_items),
+        ]);
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        return [
+            'normalized' => $this->normalize_rate_response($response),
+            'request_id' => (string) ($response['_fflhub_request_id'] ?? ''),
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
      * @param array<string,mixed> $package
      * @return array<string,mixed>
      */
@@ -1140,7 +1188,7 @@ final class ShipStationShipmentService
      * @param array<string,mixed> $next
      * @return array<string,mixed>
      */
-    private static function merge_normalized_rate_result(array $combined, array $next, string $provider_id, array $shipment): array
+    private static function merge_normalized_rate_result(array $combined, array $next, string $provider_id, array $shipment, bool $requires_ffl = false): array
     {
         $package_filtered_rates = [];
         $rates = self::filter_rates_to_selected_package_codes(
@@ -1148,6 +1196,7 @@ final class ShipStationShipmentService
             $shipment,
             $package_filtered_rates
         );
+        $ffl_filtered_rates = [];
 
         foreach ($rates as $rate) {
             if (!is_array($rate)) {
@@ -1155,11 +1204,15 @@ final class ShipStationShipmentService
             }
             $rate['provider_id'] = self::rate_provider_id($rate, $provider_id);
             $rate['provider_label'] = self::provider_label($rate['provider_id']);
+            if ($requires_ffl && ShippingProviderPolicy::rate_is_blocked_for_ffl_package($rate)) {
+                $ffl_filtered_rates[] = ShippingProviderPolicy::blocked_ffl_rate_summary($rate);
+                continue;
+            }
             $combined['rates'][] = $rate;
         }
 
         $invalid_rates = isset($next['invalid_rates']) && is_array($next['invalid_rates']) ? $next['invalid_rates'] : [];
-        foreach (array_merge($invalid_rates, $package_filtered_rates) as $invalid) {
+        foreach (array_merge($invalid_rates, $package_filtered_rates, $ffl_filtered_rates) as $invalid) {
             if (!is_array($invalid)) {
                 continue;
             }
@@ -1198,7 +1251,15 @@ final class ShipStationShipmentService
 
     private static function provider_label(string $provider_id): string
     {
-        return $provider_id === 'easypost' ? 'EasyPost' : 'ShipStation';
+        if ($provider_id === 'easypost') {
+            return 'EasyPost';
+        }
+
+        if ($provider_id === 'shipoutdoors') {
+            return 'ShipOutdoors';
+        }
+
+        return 'ShipStation';
     }
 
     /**
@@ -1206,7 +1267,14 @@ final class ShipStationShipmentService
      * @param array<string,mixed> $current_shipment
      * @return array<string,mixed>|WP_Error
      */
-    private function purchase_rate_with_provider(string $provider_id, string $rate_id, array $rated, array $current_shipment)
+    private function purchase_rate_with_provider(
+        string $provider_id,
+        string $rate_id,
+        array $rated,
+        array $current_shipment,
+        array $pending = [],
+        array $context = []
+    )
     {
         if ($provider_id === 'easypost') {
             if (!empty($rated['child_rates']) && is_array($rated['child_rates'])) {
@@ -1222,6 +1290,18 @@ final class ShipStationShipmentService
             ]);
         }
 
+        if ($provider_id === 'shipoutdoors') {
+            return (new ShipOutdoorsShippingProvider(new ShipOutdoorsClient()))->purchase_label_from_rate($rate_id, [
+                'shipment' => $current_shipment,
+                'rated' => $rated,
+                'package_items' => $this->rich_package_items_for_shipment(
+                    $current_shipment,
+                    $context,
+                    is_array($pending['package_items'] ?? null) ? $pending['package_items'] : []
+                ),
+            ]);
+        }
+
         return $this->provider->purchase_label_from_rate($rate_id, [
             'test_label' => ShipStationOptions::mode() === 'sandbox',
             'label_format' => ShipStationOptions::label_format(),
@@ -1230,6 +1310,96 @@ final class ShipStationShipmentService
             'validate_address' => 'no_validation',
             'display_scheme' => 'label',
         ]);
+    }
+
+    private function provider_for_label_id(string $label_id, string $provider_id = ''): ShippingProviderInterface
+    {
+        $provider_id = sanitize_key($provider_id);
+        if ($provider_id === '' || $provider_id === 'shipstation') {
+            if (strpos($label_id, 'easypost|') === 0) {
+                $provider_id = 'easypost';
+            } elseif (strpos($label_id, 'shipoutdoors|') === 0) {
+                $provider_id = 'shipoutdoors';
+            }
+        }
+
+        if ($provider_id === 'easypost') {
+            return new EasyPostShippingProvider(new EasyPostClient());
+        }
+
+        if ($provider_id === 'shipoutdoors') {
+            return new ShipOutdoorsShippingProvider(new ShipOutdoorsClient());
+        }
+
+        return $this->provider;
+    }
+
+    /**
+     * Expand package item assignments back into product/order context for
+     * providers that need to know whether a package contains firearms.
+     *
+     * @param array<string,mixed> $shipment
+     * @param array<string,mixed> $context
+     * @param array<int,array<int,array<string,mixed>>> $package_item_assignments
+     * @return array<int,array<int,array<string,mixed>>>
+     */
+    private function rich_package_items_for_shipment(array $shipment, array $context, array $package_item_assignments = []): array
+    {
+        $order_items = isset($context['order_items']) && is_array($context['order_items'])
+            ? array_values($context['order_items'])
+            : [];
+        $by_item_id = [];
+        foreach ($order_items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $item_id = absint($item['item_id'] ?? $item['order_item_id'] ?? 0);
+            if ($item_id > 0) {
+                $by_item_id[$item_id] = $item;
+            }
+        }
+
+        if (empty($package_item_assignments)) {
+            $packages = isset($shipment['packages']) && is_array($shipment['packages'])
+                ? array_values($shipment['packages'])
+                : [];
+            if (count($packages) === 1 && !empty($order_items)) {
+                $package_item_assignments = [array_map(static function (array $item): array {
+                    return [
+                        'item_id' => absint($item['item_id'] ?? $item['order_item_id'] ?? 0),
+                        'quantity' => max(0, (int) ($item['quantity'] ?? 0)),
+                    ];
+                }, $order_items)];
+            }
+        }
+
+        $out = [];
+        foreach ($package_item_assignments as $package_rows) {
+            $rich_rows = [];
+            foreach ((array) $package_rows as $assignment) {
+                if (!is_array($assignment)) {
+                    continue;
+                }
+
+                $item_id = absint($assignment['item_id'] ?? $assignment['order_item_id'] ?? 0);
+                $quantity = max(0, (int) ($assignment['quantity'] ?? 0));
+                if ($item_id <= 0 || $quantity <= 0) {
+                    continue;
+                }
+
+                $rich_rows[] = [
+                    ...(isset($by_item_id[$item_id]) && is_array($by_item_id[$item_id]) ? $by_item_id[$item_id] : []),
+                    ...$assignment,
+                    'item_id' => $item_id,
+                    'quantity' => $quantity,
+                ];
+            }
+
+            $out[] = $rich_rows;
+        }
+
+        return $out;
     }
 
     /**

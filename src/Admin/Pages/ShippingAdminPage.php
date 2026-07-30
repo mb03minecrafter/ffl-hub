@@ -21,6 +21,7 @@ final class ShippingAdminPage
     public const PACKING_SLIPS_SLUG = 'fflhub-shipping-packing-slips';
     public const SHIP_FROM_SLUG = 'fflhub-shipping-ship-from';
     public const EASYPOST_SLUG = 'fflhub-shipping-easypost';
+    public const SHIPOUTDOORS_SLUG = 'fflhub-shipping-shipoutdoors';
     public const SHIPSTATION_SLUG = 'fflhub-shipping-shipstation';
     public const PRINTNODE_SLUG = 'fflhub-shipping-printnode';
 

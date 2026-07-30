@@ -46,6 +46,7 @@ use FFLHub\Admin\Pages\ShippingPackagePresetsPage;
 use FFLHub\Admin\Pages\ShippingPackingSlipsPage;
 use FFLHub\Admin\Pages\ShippingSettingsPage;
 use FFLHub\Admin\Pages\ShippingShipFromLocationsPage;
+use FFLHub\Admin\Pages\ShipOutdoorsSettingsPage;
 use FFLHub\Admin\Pages\ShipStationSettingsPage;
 use FFLHub\Admin\Pages\WMSAdminPage;
 use FFLHub\Admin\Pages\ZandersCreditLimitPage;
@@ -168,6 +169,7 @@ final class Plugin
     public ShippingPackingSlipsPage $shipping_packing_slips_page;
     public ShippingShipFromLocationsPage $shipping_ship_from_locations_page;
     public EasyPostSettingsPage $easypost_settings_page;
+    public ShipOutdoorsSettingsPage $shipoutdoors_settings_page;
     public ShipStationSettingsPage $shipstation_settings_page;
     public PrintNodeSettingsPage $printnode_settings_page;
     public WMSAdminPage $wms_admin_page;
@@ -388,6 +390,9 @@ final class Plugin
 
             $this->easypost_settings_page = new EasyPostSettingsPage();
             $this->easypost_settings_page->register();
+
+            $this->shipoutdoors_settings_page = new ShipOutdoorsSettingsPage();
+            $this->shipoutdoors_settings_page->register();
 
             $this->shipstation_settings_page = new ShipStationSettingsPage();
             $this->shipstation_settings_page->register();
