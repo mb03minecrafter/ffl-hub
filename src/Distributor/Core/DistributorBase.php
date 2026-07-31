@@ -1150,6 +1150,32 @@ abstract class DistributorBase implements DistributorInterface
         return null;
     }
 
+    /**
+     * Whether this distributor can poll shipment info for a specific lane.
+     *
+     * Default to true because most integrations either support the lookup or
+     * safely return null from get_shipment_by_po(). Distributor-specific limits
+     * belong in the distributor class, not in the polling cron.
+     */
+    public function supports_shipment_polling_for_lane(string $lane): bool
+    {
+        return true;
+    }
+
+    /**
+     * Fetch shipment information when the caller already knows the order lane.
+     *
+     * The plain PO lookup stays as the compatibility path, but some
+     * distributors use different credentials/accounts for dealer-fulfilled vs
+     * drop-ship orders. Shipping pollers should call this method when they have
+     * the persisted job row lane instead of asking the distributor to infer it
+     * from an opaque PO string.
+     */
+    public function get_shipment_by_po_for_lane(string $po_number, string $lane): ?DistributorShipment
+    {
+        return $this->get_shipment_by_po($po_number);
+    }
+
 
     /**
      * Normalize shipment carrier/service string to a standard carrier name.

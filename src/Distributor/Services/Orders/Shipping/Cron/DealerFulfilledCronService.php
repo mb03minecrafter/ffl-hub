@@ -184,19 +184,6 @@ final class DealerFulfilledCronService extends AbstractCronService
                 continue;
             }
 
-            // Some distributors only expose API tracking for drop-ship orders.
-            if (in_array(strtolower(trim($dist_id)), ['orion', 'zanders'], true)) {
-                $stats['skipped_distributor_no_dealer_tracking']++;
-                $this->log_ctx('skip_distributor_for_dealer_poll', [
-                    'order_id' => $order_id,
-                    'job_key'  => $job_key,
-                    'dist_id'  => $dist_id,
-                    'lane'     => $lane,
-                    'po'       => $po,
-                ]);
-                continue;
-            }
-
             if ($po === '') {
                 $stats['skipped_no_po']++;
                 $this->log_ctx('skip_no_po', [
@@ -240,6 +227,18 @@ final class DealerFulfilledCronService extends AbstractCronService
                 continue;
             }
 
+            if (!$dist->supports_shipment_polling_for_lane($lane)) {
+                $stats['skipped_distributor_no_dealer_tracking']++;
+                $this->log_ctx('skip_distributor_for_dealer_poll', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'lane'     => $lane,
+                    'po'       => $po,
+                ]);
+                continue;
+            }
+
             $stats['polled']++;
 
             // Touch pacing timestamp
@@ -262,11 +261,12 @@ final class DealerFulfilledCronService extends AbstractCronService
             $shipment = null;
             try {
                 $t0 = microtime(true);
-                $shipment = $dist->get_shipment_by_po($po);
+                $shipment = $dist->get_shipment_by_po_for_lane($po, $lane);
                 $this->log_ctx('shipment_lookup_done', [
                     'order_id'    => $order_id,
                     'job_key'     => $job_key,
                     'dist_id'     => $dist_id,
+                    'lane'        => $lane,
                     'po'          => $po,
                     'elapsed_ms'  => (int) round((microtime(true) - $t0) * 1000),
                     'found'       => (bool) $shipment,

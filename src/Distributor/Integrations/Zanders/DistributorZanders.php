@@ -784,6 +784,11 @@ class DistributorZanders extends DistributorBase
 
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
     {
+        return $this->get_shipment_by_po_for_lane($po_number, self::infer_lane_from_po($po_number));
+    }
+
+    public function get_shipment_by_po_for_lane(string $po_number, string $lane): ?DistributorShipment
+    {
         $po_number = trim((string) $po_number);
         if ($po_number === '') {
             return null;
@@ -797,14 +802,16 @@ class DistributorZanders extends DistributorBase
         $testing       = $this->is_testing_mode();
         $orders_client = $this->make_orders_client();
 
-        // Use PO encoding to select the correct credential lane.
-        $lane = self::infer_lane_from_po($po_number);
-        $this->log('Shipment poll: inferred lane', ['po' => $po_number, 'lane' => $lane, 'external_ids' => $external_ids]);
+        // Use the persisted job lane when the poller has it. Zanders batch POs
+        // can be aggregate strings, and a single job may carry multiple Zanders
+        // order ids, so PO inference is only a compatibility fallback.
+        $lane = self::normalize_shipment_lane($lane, $po_number);
+        $this->log('Shipment poll: selected lane', ['po' => $po_number, 'lane' => $lane, 'external_ids' => $external_ids]);
 
         $auth = $this->get_zanders_auth_for_lane($lane);
         $this->log('Shipment poll: auth selection', [
             'po'              => $po_number,
-            'inferred_lane'   => $lane,
+            'selected_lane'   => $lane,
             'auth_lane'       => (string) ($auth['lane'] ?? ''),
             'username_key'    => (string) ($auth['username_key'] ?? ''),
             'password_key'    => (string) ($auth['password_key'] ?? ''),
@@ -909,6 +916,16 @@ class DistributorZanders extends DistributorBase
         }
 
         return null;
+    }
+
+    private static function normalize_shipment_lane(string $lane, string $po_number): string
+    {
+        $lane = strtolower(trim((string) $lane));
+        if (in_array($lane, ['dealer_fulfilled', 'direct_ship_ffl', 'direct_ship_non_ffl'], true)) {
+            return $lane;
+        }
+
+        return self::infer_lane_from_po($po_number);
     }
 
     private static function mask_value_for_log(string $value): string
@@ -1577,18 +1594,18 @@ class DistributorZanders extends DistributorBase
             return [];
         }
 
+        $ids = [];
+
         foreach ($rows as $r) {
             if (!is_array($r)) {
                 continue;
             }
 
-            // 1) Highest priority: external_order_id
             $single = trim((string) ($r['external_order_id'] ?? ''));
             if ($single !== '') {
-                return [$single];
+                $ids[] = $single;
             }
 
-            // 2) Next: external_order_ids_json
             $ids_json = trim((string) ($r['external_order_ids_json'] ?? ''));
             if ($ids_json !== '') {
                 $decoded = json_decode($ids_json, true);
@@ -1596,13 +1613,12 @@ class DistributorZanders extends DistributorBase
                     foreach ($decoded as $id) {
                         $id = trim((string) $id);
                         if ($id !== '') {
-                            return [$id];
+                            $ids[] = $id;
                         }
                     }
                 }
             }
 
-            // 3) Lowest: place_result_json.ext_ids
             $place_json = trim((string) ($r['place_result_json'] ?? ''));
             if ($place_json !== '') {
                 $p = json_decode($place_json, true);
@@ -1610,14 +1626,14 @@ class DistributorZanders extends DistributorBase
                     foreach ($p['ext_ids'] as $id) {
                         $id = trim((string) $id);
                         if ($id !== '') {
-                            return [$id];
+                            $ids[] = $id;
                         }
                     }
                 }
             }
         }
 
-        return [];
+        return array_values(array_unique($ids));
     }
 }
 

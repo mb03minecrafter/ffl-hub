@@ -148,4 +148,19 @@ interface DistributorInterface
      * Returns null if the shipment is not yet known or not supported.
      */
     public function get_shipment_by_po(string $po_number): ?DistributorShipment;
+
+    /**
+     * Whether this distributor can poll shipment info for a specific order lane.
+     *
+     * Most distributors use one account for every lane. Distributors with lane
+     * limitations can opt out without the polling cron hardcoding distributor ids.
+     */
+    public function supports_shipment_polling_for_lane(string $lane): bool;
+
+    /**
+     * Fetch shipment info when the persisted order lane is already known.
+     *
+     * Most distributors ignore the lane and delegate to get_shipment_by_po().
+     */
+    public function get_shipment_by_po_for_lane(string $po_number, string $lane): ?DistributorShipment;
 }

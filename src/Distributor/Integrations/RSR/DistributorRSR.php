@@ -690,15 +690,23 @@ class DistributorRSR extends DistributorBase
 
     public function get_shipment_by_po(string $po_number): ?DistributorShipment
     {
+        return $this->get_shipment_by_po_for_lane($po_number, self::infer_lane_from_po($po_number));
+    }
+
+    public function get_shipment_by_po_for_lane(string $po_number, string $lane): ?DistributorShipment
+    {
         $po_number = trim((string) $po_number);
         if ($po_number === '') {
             return null;
         }
 
-        // Match placement credential routing by lane:
+        // Match placement credential routing by the persisted job lane when
+        // available. RSR batch POs are aggregate IDs and do not always carry a
+        // reliable lane suffix, so falling back to PO inference can route
+        // dealer-fulfilled tracking lookups through the dropship account.
         // - dealer_fulfilled PO => main creds
         // - direct_ship_* PO     => dropship creds
-        $lane = self::infer_lane_from_po($po_number);
+        $lane = self::normalize_shipment_lane($lane, $po_number);
         $auth_purpose = ($lane === 'dealer_fulfilled') ? 'dealer_fulfilled' : 'ordering';
 
         $auth = $this->get_rsr_auth_payload($auth_purpose);
@@ -851,6 +859,16 @@ class DistributorRSR extends DistributorBase
                 'warehouses'         => $warehouses,
             ]
         );
+    }
+
+    private static function normalize_shipment_lane(string $lane, string $po_number): string
+    {
+        $lane = strtolower(trim($lane));
+        if (in_array($lane, ['dealer_fulfilled', 'direct_ship_ffl', 'direct_ship_non_ffl'], true)) {
+            return $lane;
+        }
+
+        return self::infer_lane_from_po($po_number);
     }
 
     /**

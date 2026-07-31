@@ -96,6 +96,7 @@ final class ShippingCronService extends AbstractCronService
             'skipped_suspended'  => 0,
             'skipped_disabled'   => 0,
             'skipped_no_lookup'  => 0,
+            'skipped_unsupported_lane' => 0,
             'skipped_ca_relay'   => 0,
             'touch_failed'       => 0,
             'shipment_none'      => 0,
@@ -151,12 +152,14 @@ final class ShippingCronService extends AbstractCronService
             $order_id = (int) ($job->order_id ?? 0);
             $job_key  = OrderPlacementKeysUtil::normalize_job_key((string) ($job->job_key ?? ''));
             $dist_id  = (string) ($job->dist_id ?? '');
+            $lane     = (string) ($job->lane ?? '');
             $po       = (string) ($job->merchant_po ?? '');
 
             $this->log_ctx('job_candidate', [
                 'order_id' => $order_id,
                 'job_key'  => $job_key,
                 'dist_id'  => $dist_id,
+                'lane'     => $lane,
                 'po'       => $po,
                 'last_shipping_poll_at' => $job->last_shipping_poll_at ?? null,
                 'shipped_at'            => $job->shipped_at ?? null,
@@ -227,6 +230,18 @@ final class ShippingCronService extends AbstractCronService
                 continue;
             }
 
+            if (!$dist->supports_shipment_polling_for_lane($lane)) {
+                $stats['skipped_unsupported_lane']++;
+                $this->log_ctx('skip_unsupported_shipment_lane', [
+                    'order_id' => $order_id,
+                    'job_key'  => $job_key,
+                    'dist_id'  => $dist_id,
+                    'lane'     => $lane,
+                    'po'       => $po,
+                ]);
+                continue;
+            }
+
             $stats['polled']++;
 
             // Touch pacing timestamp
@@ -249,11 +264,12 @@ final class ShippingCronService extends AbstractCronService
             $shipment = null;
             try {
                 $t0 = microtime(true);
-                $shipment = $dist->get_shipment_by_po($po);
+                $shipment = $dist->get_shipment_by_po_for_lane($po, $lane);
                 $this->log_ctx('shipment_lookup_done', [
                     'order_id'    => $order_id,
                     'job_key'     => $job_key,
                     'dist_id'     => $dist_id,
+                    'lane'        => $lane,
                     'po'          => $po,
                     'elapsed_ms'  => (int) round((microtime(true) - $t0) * 1000),
                     'found'       => (bool) $shipment,
