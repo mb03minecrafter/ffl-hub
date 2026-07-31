@@ -49,8 +49,8 @@ final class ShipStationSettingsPage
         $cache = ShipStationOptions::api_key_source() !== 'none' ? (new ShipStationCarrierCache())->get(false) : [];
         $carriers = !is_wp_error($cache) && is_array($cache['carriers'] ?? null) ? $cache['carriers'] : [];
         $cache_error = is_wp_error($cache) ? $cache->get_error_message() : (string) ($cache['error'] ?? '');
-        $enabled_ids = ShipStationOptions::enabled_carrier_ids();
-        $firearm_ids = ShipStationOptions::firearm_carrier_ids();
+        $enabled_ids = $this->selection_for_current_cache(ShipStationOptions::enabled_carrier_ids(), $carriers);
+        $firearm_ids = $this->selection_for_current_cache(ShipStationOptions::firearm_carrier_ids(), $carriers);
         ?>
         <div class="wrap fflhub-shipstation-settings">
             <?php ShippingAdminPage::render_styles(); ?>
@@ -141,6 +141,16 @@ final class ShipStationSettingsPage
             ? wp_unslash($_POST['shipstation'])
             : [];
         $input = is_array($input) ? $input : [];
+        $previous_mode = ShipStationOptions::mode();
+        $posted_mode = in_array((string) ($input['mode'] ?? 'sandbox'), ['sandbox', 'production'], true)
+            ? (string) $input['mode']
+            : 'sandbox';
+        $mode_changed = $posted_mode !== $previous_mode;
+        if ($mode_changed) {
+            $input['enabled_carrier_ids'] = [];
+            $input['firearm_carrier_ids'] = [];
+        }
+
         $clear_keys = [];
         if (isset($_POST['shipstation_clear_sandbox_api_key'])) {
             $clear_keys[] = 'sandbox';
@@ -150,10 +160,12 @@ final class ShipStationSettingsPage
         }
         ShipStationOptions::save($input, $clear_keys);
 
-        if (isset($_POST['fflhub_shipstation_refresh_carriers'])) {
+        if ($mode_changed || isset($_POST['fflhub_shipstation_refresh_carriers'])) {
             $cache = (new ShipStationCarrierCache(new ShipStationClient()))->refresh();
             if (is_wp_error($cache)) {
                 $this->store_result('error', 'ShipStation connection failed: ' . $cache->get_error_message());
+            } elseif ($mode_changed) {
+                $this->store_result('success', 'ShipStation API settings saved. Mode changed to ' . ucfirst($posted_mode) . '. Carriers refreshed: ' . count((array) ($cache['carriers'] ?? [])) . '.');
             } else {
                 $this->store_result('success', 'ShipStation connection succeeded. Carriers refreshed: ' . count((array) ($cache['carriers'] ?? [])) . '.');
             }
@@ -240,6 +252,40 @@ final class ShipStationSettingsPage
         }
 
         echo '</tbody></table>';
+    }
+
+    /**
+     * Carrier selections belong to one ShipStation mode/account. When the saved
+     * IDs do not exist in the current cache, show the same fallback the runtime
+     * uses instead of rendering a page where every current carrier looks off.
+     *
+     * @param string[] $selected_ids
+     * @param array<int,array<string,mixed>> $carriers
+     * @return string[]
+     */
+    private function selection_for_current_cache(array $selected_ids, array $carriers): array
+    {
+        if (empty($selected_ids) || empty($carriers)) {
+            return $selected_ids;
+        }
+
+        $known_ids = [];
+        foreach ($carriers as $carrier) {
+            if (!is_array($carrier)) {
+                continue;
+            }
+            $id = (string) ($carrier['carrier_id'] ?? '');
+            if ($id !== '') {
+                $known_ids[] = $id;
+            }
+        }
+
+        if (empty($known_ids)) {
+            return $selected_ids;
+        }
+
+        $current = array_values(array_intersect($selected_ids, array_unique($known_ids)));
+        return empty($current) ? [] : $current;
     }
 
     /**

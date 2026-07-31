@@ -109,9 +109,7 @@ final class ShipStationCarrierCache
             return [];
         }
 
-        $enabled_ids = ShipStationOptions::enabled_carrier_ids();
-        $firearm_ids = ShipStationOptions::firearm_carrier_ids();
-        $out = [];
+        $available = [];
 
         foreach (($cache['carriers'] ?? []) as $carrier) {
             if (!is_array($carrier)) {
@@ -132,6 +130,21 @@ final class ShipStationCarrierCache
                 continue;
             }
 
+            $available[] = $carrier;
+        }
+
+        $known_ids = [];
+        foreach ($available as $carrier) {
+            $known_ids[] = (string) ($carrier['carrier_id'] ?? '');
+        }
+        $known_ids = array_values(array_filter(array_unique($known_ids)));
+
+        $enabled_ids = self::selection_for_current_cache(ShipStationOptions::enabled_carrier_ids(), $known_ids);
+        $firearm_ids = self::selection_for_current_cache(ShipStationOptions::firearm_carrier_ids(), $known_ids);
+        $out = [];
+
+        foreach ($available as $carrier) {
+            $carrier_id = (string) ($carrier['carrier_id'] ?? '');
             if (!empty($enabled_ids) && !in_array($carrier_id, $enabled_ids, true)) {
                 continue;
             }
@@ -153,6 +166,25 @@ final class ShipStationCarrierCache
         }
 
         return $out;
+    }
+
+    /**
+     * ShipStation carrier IDs are account/environment specific. If every saved
+     * selection is stale for the active cache, treat it like no explicit
+     * selection instead of filtering all carriers out.
+     *
+     * @param string[] $selected_ids
+     * @param string[] $known_ids
+     * @return string[]
+     */
+    private static function selection_for_current_cache(array $selected_ids, array $known_ids): array
+    {
+        if (empty($selected_ids) || empty($known_ids)) {
+            return $selected_ids;
+        }
+
+        $current = array_values(array_intersect($selected_ids, $known_ids));
+        return empty($current) ? [] : $current;
     }
 
     /**
