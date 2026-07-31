@@ -333,39 +333,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
      */
     private static function package_contents(array $package_items): int
     {
-        $package_requires_ffl = self::package_requires_ffl($package_items);
-        $text = strtolower(implode(' ', array_map(static function ($row): string {
-            return is_array($row)
-                ? implode(' ', [
-                    (string) ($row['name'] ?? ''),
-                    (string) ($row['sku'] ?? ''),
-                    (string) ($row['upc'] ?? ''),
-                    (string) ($row['category'] ?? ''),
-                ])
-                : '';
-        }, $package_items)));
-
-        if (strpos($text, 'ammo') !== false || strpos($text, 'ammunition') !== false) {
-            return 3;
-        }
-
-        // Accessory names often include firearm words, e.g. "pistol light".
-        // Only send ShipOutdoors firearm package contents when product state
-        // says the package actually contains an FFL-required item.
-        if (!$package_requires_ffl) {
-            return 4;
-        }
-
-        if (
-            strpos($text, 'pistol') !== false
-            || strpos($text, 'handgun') !== false
-            || strpos($text, 'revolver') !== false
-            || strpos($text, 'derringer') !== false
-        ) {
-            return 1;
-        }
-
-        return 2;
+        return self::package_requires_ffl($package_items) ? 2 : 4;
     }
 
     /**
