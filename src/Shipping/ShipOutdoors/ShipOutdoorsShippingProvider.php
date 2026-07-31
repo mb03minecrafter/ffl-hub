@@ -79,6 +79,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
      */
     public function get_rates(array $payload)
     {
+        $package_type = self::normalized_package_type_from_payload($payload);
         $request = $this->request_from_payload($payload, null);
         if (is_wp_error($request)) {
             return $request;
@@ -89,7 +90,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
             return $result;
         }
 
-        return self::normalized_rate_response($result, $request);
+        return self::normalized_rate_response($result, $request, $package_type);
     }
 
     /**
@@ -214,7 +215,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
             'insuredValue' => max(0, (int) round((float) ($insured['amount'] ?? 0))),
             'signatureType' => self::signature_type((string) ($shipment['confirmation'] ?? ShipOutdoorsOptions::confirmation()), ShippingProviderPolicy::package_items_require_ffl($package_items)),
             'packageContents' => self::package_contents($package_items),
-            'packageType' => 2,
+            'packageType' => self::shipoutdoors_package_type($package),
             'additionalInfo' => $external_order_id !== '' ? substr('Order ' . $external_order_id, 0, 50) : '',
             'invoiceNumber' => $invoice_number,
         ], static fn($value): bool => $value !== '' && $value !== null);
@@ -338,11 +339,80 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
     }
 
     /**
+     * ShipOutdoors uses numeric UPS package types, while FFL Hub stores
+     * provider-neutral package codes. Thick envelopes are tested as Mail
+     * Innovations parcels so padded mailers can surface those rates when the
+     * ShipOutdoors account supports them.
+     *
+     * @param array<string,mixed> $package
+     */
+    private static function shipoutdoors_package_type(array $package): int
+    {
+        $code = self::package_code($package);
+        if (in_array($code, ['large_envelope_or_flat', 'mail_innovations_flat', 'flats'], true)) {
+            return 12;
+        }
+
+        if (in_array($code, ['thick_envelope', 'mail_innovations_parcel', 'mail_innovations_parcels', 'parcel', 'parcels'], true)) {
+            return 13;
+        }
+
+        if (in_array($code, ['bpm', 'bound_printed_matter', 'mail_innovations_bpm'], true)) {
+            return 14;
+        }
+
+        if ($code === 'tube') {
+            return 3;
+        }
+
+        return 2;
+    }
+
+    /**
+     * @param array<string,mixed> $package
+     */
+    private static function package_code(array $package): string
+    {
+        $code = strtolower(trim(str_replace(['-', ' '], '_', (string) ($package['package_code'] ?? 'package'))));
+        return $code !== '' ? $code : 'package';
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     */
+    private static function normalized_package_type_from_payload(array $payload): string
+    {
+        $shipment = isset($payload['shipment']) && is_array($payload['shipment'])
+            ? $payload['shipment']
+            : $payload;
+        $packages = isset($shipment['packages']) && is_array($shipment['packages']) ? array_values($shipment['packages']) : [];
+        $codes = [];
+
+        foreach ($packages as $package) {
+            if (!is_array($package)) {
+                continue;
+            }
+
+            $code = self::package_code($package);
+            if ($code !== '') {
+                $codes[] = $code;
+            }
+        }
+
+        $codes = array_values(array_unique($codes));
+        if (count($codes) === 1) {
+            return $codes[0];
+        }
+
+        return '';
+    }
+
+    /**
      * @param array<string,mixed> $result
      * @param array<string,mixed> $request
      * @return array<string,mixed>
      */
-    private static function normalized_rate_response(array $result, array $request): array
+    private static function normalized_rate_response(array $result, array $request, string $package_type = ''): array
     {
         $rates = [];
         $invalid = [];
@@ -363,7 +433,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
                 continue;
             }
 
-            $rates[] = self::normalized_rate($rate, $request);
+            $rates[] = self::normalized_rate($rate, $request, $package_type);
         }
 
         usort($rates, static function (array $a, array $b): int {
@@ -393,7 +463,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
      * @param array<string,mixed> $request
      * @return array<string,mixed>
      */
-    private static function normalized_rate(array $rate, array $request): array
+    private static function normalized_rate(array $rate, array $request, string $package_type = ''): array
     {
         $service_code = (int) ($rate['serviceCode'] ?? $rate['service_code'] ?? 0);
         $price = max(0.0, (float) ($rate['price'] ?? 0));
@@ -411,7 +481,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
             'carrier_friendly_name' => 'UPS',
             'service_code' => (string) $service_code,
             'service_type' => (string) ($rate['description'] ?? self::SERVICE_CODES[$service_code] ?? 'UPS'),
-            'package_type' => 'package',
+            'package_type' => $package_type,
             'shipping_amount' => self::round_decimal($price, 4),
             'insurance_amount' => 0.0,
             'confirmation_amount' => 0.0,
