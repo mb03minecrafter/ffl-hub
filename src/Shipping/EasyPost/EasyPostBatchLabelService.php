@@ -549,46 +549,19 @@ final class EasyPostBatchLabelService
                 continue;
             }
 
-            $direct_label_url = trim((string) ($item['label_pdf_url'] ?? ''));
-            if ($direct_label_url !== '') {
-                $label_pdf = $this->download_direct_label_document($item, $direct_label_url);
-                if (is_wp_error($label_pdf)) {
-                    continue;
-                }
-
-                $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''), $order, $item);
-                $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
+            $label_document = $this->label_print_document_for_item($order, $item);
+            if (is_wp_error($label_document)) {
                 continue;
             }
 
-            $shipment_id = trim((string) ($item['purchased_shipment_id'] ?? $item['batch_shipment_id'] ?? ''));
-            if ($shipment_id === '') {
-                continue;
-            }
-
-            $shipment = $this->client->retrieve_shipment($shipment_id);
-            if (is_wp_error($shipment)) {
-                continue;
-            }
-
-            $label_url = $this->label_pdf_url_from_shipment($shipment);
-            if ($label_url === '') {
-                continue;
-            }
-
-            $label_pdf = $this->client->download_label($label_url);
-            if (is_wp_error($label_pdf)) {
-                continue;
-            }
-
-            $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''), $order, $item);
+            $documents[] = $label_document;
             $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
         }
 
         if (empty($documents)) {
             return new WP_Error(
                 'fflhub_easypost_batch_no_print_documents',
-                'No purchased shipment label PDFs were available for this batch yet.'
+                'No purchased shipment label documents were available for this batch yet.'
             );
         }
 
@@ -627,39 +600,12 @@ final class EasyPostBatchLabelService
                 continue;
             }
 
-            $direct_label_url = trim((string) ($item['label_pdf_url'] ?? ''));
-            if ($direct_label_url !== '') {
-                $label_pdf = $this->download_direct_label_document($item, $direct_label_url);
-                if (is_wp_error($label_pdf)) {
-                    return $label_pdf;
-                }
-
-                $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''), $order, $item);
-                $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
-                break;
+            $label_document = $this->label_print_document_for_item($order, $item);
+            if (is_wp_error($label_document)) {
+                return $label_document;
             }
 
-            $shipment_id = trim((string) ($item['purchased_shipment_id'] ?? $item['batch_shipment_id'] ?? ''));
-            if ($shipment_id === '') {
-                continue;
-            }
-
-            $shipment = $this->client->retrieve_shipment($shipment_id);
-            if (is_wp_error($shipment)) {
-                return $shipment;
-            }
-
-            $label_url = $this->label_pdf_url_from_shipment($shipment);
-            if ($label_url === '') {
-                continue;
-            }
-
-            $label_pdf = $this->client->download_label($label_url);
-            if (is_wp_error($label_pdf)) {
-                return $label_pdf;
-            }
-
-            $documents[] = $this->label_pdf_document((string) ($label_pdf['body'] ?? ''), $order, $item);
+            $documents[] = $label_document;
             $this->append_packing_slip_document($documents, $slip_service, $order, $item, (array) ($batch['items'] ?? []));
             break;
         }
@@ -667,7 +613,7 @@ final class EasyPostBatchLabelService
         if (empty($documents)) {
             return new WP_Error(
                 'fflhub_easypost_package_no_print_documents',
-                'No purchased shipment label PDF was available for that package yet.'
+                'No purchased shipment label document was available for that package yet.'
             );
         }
 
@@ -689,16 +635,206 @@ final class EasyPostBatchLabelService
             return $document;
         }
 
-        $body = (string) ($document['body'] ?? '');
-        $content_type = strtolower((string) ($document['content_type'] ?? ''));
-        if (strpos(ltrim($body), '%PDF') !== 0 && strpos($content_type, 'pdf') === false) {
-            return new WP_Error(
-                'fflhub_shipping_direct_label_not_pdf',
-                'The purchased label is not available as a PDF document for packet printing.'
-            );
+        return $document;
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     * @return array{title:string,body:string,force_4x6:bool,kind:string,order_id:int,order_number:string,package_index:int}|WP_Error
+     */
+    private function label_print_document_for_item(WC_Order $order, array $item)
+    {
+        $source = $this->label_document_source_for_item($order, $item);
+        if (is_wp_error($source)) {
+            return $source;
         }
 
-        return $document;
+        $document = $this->download_direct_label_document($item, (string) ($source['url'] ?? ''));
+        if (is_wp_error($document)) {
+            return $document;
+        }
+
+        $body = (string) ($document['body'] ?? '');
+        $content_type = strtolower((string) ($document['content_type'] ?? ''));
+        if ($this->document_is_pdf($body, $content_type)) {
+            return $this->label_pdf_document($body, $order, $item);
+        }
+
+        if ($this->document_is_image($body, $content_type)) {
+            $converted = (new PdfDocumentService())->image_to_four_by_six_pdf(
+                $body,
+                $content_type,
+                sanitize_file_name($this->print_document_title('Shipping Label', $order, $item) . '.pdf')
+            );
+            if (is_wp_error($converted)) {
+                return $converted;
+            }
+
+            return $this->label_pdf_document((string) ($converted['body'] ?? ''), $order, $item);
+        }
+
+        return new WP_Error(
+            'fflhub_shipping_label_document_not_printable',
+            'The purchased label is not available as a printable PDF or image document.'
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     * @return array{url:string,format:string}|WP_Error
+     */
+    private function label_document_source_for_item(WC_Order $order, array $item)
+    {
+        $source = $this->label_document_source_from_payload($item);
+        if ($source['url'] !== '') {
+            return $source;
+        }
+
+        $saved_label = $this->saved_order_label_for_item($order, $item);
+        if (is_array($saved_label)) {
+            $source = $this->label_document_source_from_payload($saved_label);
+            if ($source['url'] !== '') {
+                return $source;
+            }
+        }
+
+        $shipment_id = trim((string) ($item['purchased_shipment_id'] ?? $item['batch_shipment_id'] ?? ''));
+        if ($shipment_id !== '' && $this->provider_id_for_item($item, is_array($item['rate'] ?? null) ? $item['rate'] : []) === 'easypost') {
+            $shipment = $this->client->retrieve_shipment($shipment_id);
+            if (is_wp_error($shipment)) {
+                return $shipment;
+            }
+
+            $source = $this->label_document_source_from_shipment($shipment);
+            if ($source['url'] !== '') {
+                return $source;
+            }
+        }
+
+        return new WP_Error(
+            'fflhub_shipping_label_document_missing',
+            'The saved shipping label did not include a downloadable print document.'
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     * @return array{url:string,format:string}
+     */
+    private function label_document_source_from_payload(array $payload): array
+    {
+        $downloads = is_array($payload['label_download'] ?? null) ? $payload['label_download'] : [];
+        $format = strtolower((string) ($payload['label_format'] ?? ''));
+        $legacy_pdf_url = trim((string) ($payload['label_pdf_url'] ?? ''));
+        $label_url = trim((string) ($payload['label_url'] ?? ''));
+        $label_document_url = trim((string) ($payload['label_document_url'] ?? ''));
+
+        $candidates = [];
+        if (trim((string) ($downloads['pdf'] ?? '')) !== '') {
+            $candidates[] = ['url' => trim((string) $downloads['pdf']), 'format' => 'pdf'];
+        }
+        if ($format !== '' && trim((string) ($downloads[$format] ?? '')) !== '') {
+            $candidates[] = ['url' => trim((string) $downloads[$format]), 'format' => $format];
+        }
+        if ($legacy_pdf_url !== '') {
+            $candidates[] = ['url' => $legacy_pdf_url, 'format' => ''];
+        }
+        if ($label_url !== '') {
+            $candidates[] = ['url' => $label_url, 'format' => $format];
+        }
+        if ($label_document_url !== '') {
+            $candidates[] = ['url' => $label_document_url, 'format' => $format];
+        }
+        foreach (['png', 'jpg', 'jpeg', 'gif', 'zpl', 'epl2', 'href'] as $key) {
+            if (trim((string) ($downloads[$key] ?? '')) !== '') {
+                $candidates[] = ['url' => trim((string) $downloads[$key]), 'format' => $key === 'href' ? $format : $key];
+            }
+        }
+
+        foreach ($candidates as $candidate) {
+            if ((string) ($candidate['url'] ?? '') !== '') {
+                return [
+                    'url' => (string) $candidate['url'],
+                    'format' => (string) ($candidate['format'] ?? ''),
+                ];
+            }
+        }
+
+        return ['url' => '', 'format' => ''];
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     * @return array{url:string,format:string}
+     */
+    private function label_document_source_from_shipment(array $shipment): array
+    {
+        $postage_label = is_array($shipment['postage_label'] ?? null) ? $shipment['postage_label'] : [];
+        $format = strtolower((string) ($postage_label['label_file_type'] ?? ''));
+        if (trim((string) ($postage_label['label_pdf_url'] ?? '')) !== '') {
+            return ['url' => trim((string) $postage_label['label_pdf_url']), 'format' => 'pdf'];
+        }
+        if (trim((string) ($postage_label['label_url'] ?? '')) !== '') {
+            return ['url' => trim((string) $postage_label['label_url']), 'format' => $format];
+        }
+        if (trim((string) ($postage_label['label_zpl_url'] ?? '')) !== '') {
+            return ['url' => trim((string) $postage_label['label_zpl_url']), 'format' => 'zpl'];
+        }
+
+        return ['url' => '', 'format' => ''];
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     * @return array<string,mixed>|null
+     */
+    private function saved_order_label_for_item(WC_Order $order, array $item): ?array
+    {
+        $label_id = trim((string) ($item['label_id'] ?? ''));
+        if ($label_id !== '') {
+            $label = ShipStationOrderMeta::find_label($order, $label_id);
+            if (is_array($label)) {
+                return $label;
+            }
+        }
+
+        $package_index = max(0, (int) ($item['package_index'] ?? 0));
+        $batch_id = trim((string) ($item['easypost_batch_id'] ?? $item['label_batch_id'] ?? ''));
+        $reference = trim((string) ($item['reference'] ?? ''));
+        $tracking = trim((string) ($item['tracking_number'] ?? ''));
+        foreach (ShipStationOrderMeta::labels($order) as $label) {
+            if (!is_array($label) || !ShipStationOrderMeta::label_is_active($label)) {
+                continue;
+            }
+            if (max(0, (int) ($label['package_index'] ?? 0)) !== $package_index) {
+                continue;
+            }
+            if ($batch_id !== '' && in_array($batch_id, [(string) ($label['easypost_batch_id'] ?? ''), (string) ($label['label_batch_id'] ?? '')], true)) {
+                return ShipStationOrderMeta::find_label($order, (string) ($label['label_id'] ?? '')) ?? $label;
+            }
+            if ($reference !== '' && $reference === (string) ($label['easypost_batch_reference'] ?? $label['label_batch_reference'] ?? '')) {
+                return ShipStationOrderMeta::find_label($order, (string) ($label['label_id'] ?? '')) ?? $label;
+            }
+            if ($tracking !== '' && $tracking === (string) ($label['tracking_number'] ?? $label['tracking'] ?? '')) {
+                return ShipStationOrderMeta::find_label($order, (string) ($label['label_id'] ?? '')) ?? $label;
+            }
+        }
+
+        return null;
+    }
+
+    private function document_is_pdf(string $body, string $content_type): bool
+    {
+        return strpos(ltrim($body), '%PDF') === 0 || str_contains($content_type, 'pdf');
+    }
+
+    private function document_is_image(string $body, string $content_type): bool
+    {
+        if (str_contains($content_type, 'image/')) {
+            return true;
+        }
+
+        return is_array(@getimagesizefromstring($body));
     }
 
     /**
@@ -1200,10 +1336,13 @@ final class EasyPostBatchLabelService
             $label['label_batch_reference'] = (string) ($item['reference'] ?? '');
             $label['easypost_batch_id'] = $provider_batch_id;
             $label['easypost_batch_reference'] = (string) ($item['reference'] ?? '');
+            $this->copy_label_document_fields_to_item($item, $api_label, $label);
 
             if ($this->order_has_label($order, (string) ($label['label_id'] ?? ''))) {
                 $item['label_saved'] = true;
                 $item['label_id'] = (string) ($label['label_id'] ?? '');
+                $item['tracking_number'] = (string) ($label['tracking_number'] ?? $item['tracking_number'] ?? '');
+                $item['purchased_shipment_id'] = $shipment_id;
                 continue;
             }
 
@@ -1214,6 +1353,8 @@ final class EasyPostBatchLabelService
 
             $item['label_saved'] = true;
             $item['label_id'] = (string) ($label['label_id'] ?? '');
+            $item['tracking_number'] = (string) ($label['tracking_number'] ?? $item['tracking_number'] ?? '');
+            $item['purchased_shipment_id'] = $shipment_id;
             $saved++;
         }
         unset($item);
@@ -1515,10 +1656,13 @@ final class EasyPostBatchLabelService
         $label['label_batch_reference'] = (string) ($item['reference'] ?? '');
         $label['easypost_batch_id'] = $provider_batch_id;
         $label['easypost_batch_reference'] = (string) ($item['reference'] ?? '');
+        $this->copy_label_document_fields_to_item($item, $api_label, $label);
 
         if ($this->order_has_label($order, (string) ($label['label_id'] ?? ''))) {
             $item['label_saved'] = true;
             $item['label_id'] = (string) ($label['label_id'] ?? '');
+            $item['tracking_number'] = (string) ($label['tracking_number'] ?? $item['tracking_number'] ?? '');
+            $item['purchased_shipment_id'] = (string) ($api_label['shipment_id'] ?? $pending['shipment_id'] ?? '');
             return false;
         }
 
@@ -1531,10 +1675,35 @@ final class EasyPostBatchLabelService
         $item['label_id'] = (string) ($label['label_id'] ?? '');
         $item['tracking_number'] = (string) ($label['tracking_number'] ?? $item['tracking_number'] ?? '');
         $item['purchased_shipment_id'] = (string) ($api_label['shipment_id'] ?? $pending['shipment_id'] ?? '');
-        $downloads = is_array($api_label['label_download'] ?? null) ? $api_label['label_download'] : [];
-        $item['label_pdf_url'] = (string) ($downloads['pdf'] ?? $downloads['href'] ?? '');
 
         return true;
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     * @param array<string,mixed> $api_label
+     * @param array<string,mixed> $label
+     */
+    private function copy_label_document_fields_to_item(array &$item, array $api_label, array $label): void
+    {
+        $downloads = is_array($api_label['label_download'] ?? null)
+            ? $api_label['label_download']
+            : (is_array($label['label_download'] ?? null) ? $label['label_download'] : []);
+        $format = strtolower((string) ($api_label['label_format'] ?? $label['label_format'] ?? ''));
+        $label_url = trim((string) ($api_label['label_url'] ?? $label['label_url'] ?? ''));
+        if ($format !== '' && trim((string) ($downloads[$format] ?? '')) !== '') {
+            $label_url = trim((string) $downloads[$format]);
+        }
+        if ($label_url === '' && trim((string) ($downloads['href'] ?? '')) !== '') {
+            $label_url = trim((string) $downloads['href']);
+        }
+
+        $item['label_format'] = $format;
+        $item['label_layout'] = (string) ($api_label['label_layout'] ?? $label['label_layout'] ?? '');
+        $item['label_url'] = $label_url;
+        $item['label_document_url'] = $label_url;
+        $item['label_download'] = $downloads;
+        $item['label_pdf_url'] = trim((string) ($downloads['pdf'] ?? ''));
     }
 
     /**
@@ -1624,25 +1793,6 @@ final class EasyPostBatchLabelService
         }
 
         return max(1, $count);
-    }
-
-    /**
-     * @param array<string,mixed> $shipment
-     */
-    private function label_pdf_url_from_shipment(array $shipment): string
-    {
-        $postage_label = is_array($shipment['postage_label'] ?? null) ? $shipment['postage_label'] : [];
-        $url = trim((string) ($postage_label['label_pdf_url'] ?? ''));
-        if ($url !== '') {
-            return $url;
-        }
-
-        $format = strtolower((string) ($postage_label['label_file_type'] ?? ''));
-        if (strpos($format, 'pdf') !== false) {
-            return trim((string) ($postage_label['label_url'] ?? ''));
-        }
-
-        return '';
     }
 
     private function order_has_label(WC_Order $order, string $label_id): bool
