@@ -584,6 +584,12 @@ final class SendingReadyPage
         if ($tracking_number === '' && $debug_ready) {
             $tracking_number = 'DEBUG-TRACKING';
         }
+        $tracking_aliases = $this->tracking_scan_aliases($tracking_number, (array) $package);
+        $tracking_aliases_json = wp_json_encode($tracking_aliases);
+        $tracking_display = !empty($tracking_aliases)
+            ? implode(' / ', $tracking_aliases)
+            : $tracking_number;
+        $is_smartpost = $this->is_smartpost_package((array) $package);
         ?>
         <section
             class="fflhub-pack-card"
@@ -598,6 +604,10 @@ final class SendingReadyPage
             data-destination-ffl-number="<?php echo esc_attr($destination_ffl_number); ?>"
             data-destination-ffl-label="<?php echo esc_attr($destination_ffl_label); ?>"
             data-tracking-number="<?php echo esc_attr($tracking_number); ?>"
+            data-tracking-aliases="<?php echo esc_attr(is_string($tracking_aliases_json) ? $tracking_aliases_json : '[]'); ?>"
+            data-smartpost="<?php echo esc_attr($is_smartpost ? '1' : '0'); ?>"
+            data-carrier-code="<?php echo esc_attr((string) ($package['carrier_code'] ?? '')); ?>"
+            data-service-code="<?php echo esc_attr((string) ($package['service_code'] ?? '')); ?>"
             data-expected="<?php echo esc_attr(is_string($expected_json) ? $expected_json : '[]'); ?>">
             <div class="fflhub-pack-card-head">
                 <div>
@@ -622,7 +632,7 @@ final class SendingReadyPage
                     <?php endif; ?>
                     <?php if ($tracking_number !== '') : ?>
                         <span class="fflhub-sending-ready-muted">
-                            <?php echo esc_html(sprintf(__('Tracking: %s', 'ffl-hub'), $tracking_number)); ?>
+                            <?php echo esc_html(sprintf(__('Tracking: %s', 'ffl-hub'), $tracking_display)); ?>
                         </span>
                     <?php endif; ?>
                 </div>
@@ -715,7 +725,7 @@ final class SendingReadyPage
                         disabled
                         placeholder="<?php esc_attr_e('Enabled after item scans', 'ffl-hub'); ?>" />
                     <small>
-                        <?php echo esc_html($tracking_number !== '' ? sprintf(__('Expected %s', 'ffl-hub'), $tracking_number) : __('No tracking saved for this package', 'ffl-hub')); ?>
+                        <?php echo esc_html($tracking_number !== '' ? sprintf(__('Expected %s', 'ffl-hub'), $tracking_display) : __('No tracking saved for this package', 'ffl-hub')); ?>
                     </small>
                 </label>
                 <button type="button" class="button button-primary fflhub-pack-record">
@@ -816,6 +826,7 @@ final class SendingReadyPage
                     'tracking_number' => (string) ($label['tracking_number'] ?? $label['tracking'] ?? ''),
                     'carrier_code' => (string) ($label['carrier_code'] ?? ''),
                     'provider_label' => (string) ($label['provider_label'] ?? $label['provider_id'] ?? ''),
+                    'service_code' => (string) ($label['service_code'] ?? ''),
                     'service_name' => (string) ($label['service_name'] ?? $label['service_code'] ?? ''),
                 ];
             }
@@ -1174,6 +1185,47 @@ final class SendingReadyPage
     }
 
     /**
+     * @param array<string,mixed> $package
+     * @return string[]
+     */
+    private function tracking_scan_aliases(string $tracking_number, array $package): array
+    {
+        $normalized = preg_replace('/[^A-Z0-9]+/', '', strtoupper(trim($tracking_number)));
+        if (!is_string($normalized) || $normalized === '') {
+            return [];
+        }
+
+        $aliases = [$normalized];
+        $digits = preg_replace('/\D+/', '', $normalized);
+        if (is_string($digits) && $digits !== '' && $this->is_smartpost_package($package)) {
+            if (strlen($digits) === 20 && !str_starts_with($digits, '92')) {
+                $aliases[] = '92' . $digits;
+            } elseif (strlen($digits) === 22 && str_starts_with($digits, '92')) {
+                $aliases[] = substr($digits, 2);
+            }
+        }
+
+        return array_values(array_unique(array_filter(array_map('strval', $aliases))));
+    }
+
+    /**
+     * @param array<string,mixed> $package
+     */
+    private function is_smartpost_package(array $package): bool
+    {
+        $haystack = strtoupper(implode(' ', [
+            (string) ($package['carrier_code'] ?? ''),
+            (string) ($package['service_code'] ?? ''),
+            (string) ($package['service_name'] ?? ''),
+            (string) ($package['provider_label'] ?? ''),
+        ]));
+
+        return str_contains($haystack, 'SMART_POST')
+            || str_contains($haystack, 'SMARTPOST')
+            || str_contains($haystack, 'GROUND ECONOMY');
+    }
+
+    /**
      * @param mixed $value
      */
     private function number_label($value): string
@@ -1349,21 +1401,56 @@ final class SendingReadyPage
                     });
                 }
 
-                function trackingMatches(scanned, expected) {
-                    var expectedNorm = normalizeTracking(expected);
-                    if (!expectedNorm) {
+                function parseTrackingAliases(card) {
+                    var aliases = [];
+                    try {
+                        aliases = JSON.parse(card.getAttribute('data-tracking-aliases') || '[]');
+                    } catch (error) {
+                        aliases = [];
+                    }
+
+                    aliases.push(card.getAttribute('data-tracking-number') || '');
+                    return aliases.map(normalizeTracking).filter(function (alias, index, all) {
+                        return alias && all.indexOf(alias) === index;
+                    });
+                }
+
+                function trackingLabelForMessage(card) {
+                    var aliases = parseTrackingAliases(card);
+                    return aliases.length ? aliases.join(' / ') : normalizeTracking(card.getAttribute('data-tracking-number') || '');
+                }
+
+                function smartPostFallbackMatches(scanned, card) {
+                    if (card.getAttribute('data-smartpost') !== '1') {
+                        return false;
+                    }
+
+                    var compact = normalizeTracking(scanned);
+                    if (!compact) {
+                        return false;
+                    }
+
+                    return /^96[0-9]{20,}$/.test(compact)
+                        || /(?:^|029)31Z96[0-9]{20,}(?:029|$)/i.test(String(scanned || '').replace(/[\u001d\u001e\u0004\t\r\n]/g, '029'));
+                }
+
+                function trackingMatches(scanned, card) {
+                    var expectedAliases = parseTrackingAliases(card);
+                    if (!expectedAliases.length) {
                         return false;
                     }
 
                     return trackingCandidates(scanned).some(function (candidate) {
-                        if (candidate === expectedNorm) {
-                            return true;
-                        }
-                        if (candidate.indexOf(expectedNorm) !== -1) {
-                            return true;
-                        }
-                        return candidate.length >= 10 && expectedNorm.indexOf(candidate) !== -1;
-                    });
+                        return expectedAliases.some(function (expectedNorm) {
+                            if (candidate === expectedNorm) {
+                                return true;
+                            }
+                            if (candidate.indexOf(expectedNorm) !== -1) {
+                                return true;
+                            }
+                            return candidate.length >= 10 && expectedNorm.indexOf(candidate) !== -1;
+                        });
+                    }) || smartPostFallbackMatches(scanned, card);
                 }
 
                 function parseExpected(card) {
@@ -1795,13 +1882,13 @@ final class SendingReadyPage
                             return;
                         }
 
-                        var expectedTracking = card.getAttribute('data-tracking-number') || '';
+                        var expectedTracking = trackingLabelForMessage(card);
                         var scannedTracking = trackingInput ? trackingInput.value : '';
                         if (!normalizeTracking(expectedTracking)) {
                             setMessage('No tracking number is saved for this package, so the label scan cannot confirm it.', 'bad');
                             return;
                         }
-                        if (!trackingMatches(scannedTracking, expectedTracking)) {
+                        if (!trackingMatches(scannedTracking, card)) {
                             setMessage('Shipping label scan did not match tracking ' + expectedTracking + '.', 'bad');
                             return;
                         }
@@ -1885,9 +1972,8 @@ final class SendingReadyPage
                         trackingInput.addEventListener('input', function () {
                             window.clearTimeout(trackingTimer);
                             trackingTimer = window.setTimeout(function () {
-                                var expectedTracking = card.getAttribute('data-tracking-number') || '';
                                 var scannedTracking = trackingInput.value;
-                                if (trackingMatches(scannedTracking, expectedTracking)) {
+                                if (trackingMatches(scannedTracking, card)) {
                                     recordTrackingScan();
                                 }
                             }, 300);
