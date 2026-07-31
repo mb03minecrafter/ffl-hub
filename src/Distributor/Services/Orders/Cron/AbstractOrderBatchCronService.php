@@ -2229,7 +2229,9 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
      *
      * This intentionally runs after the low-stock priority split. If an item is
      * stock-risky, the priority branch flushes it immediately and this freight
-     * savings hold never sees it.
+     * savings hold never sees it. Normal scheduled rows keep rolling until the
+     * batch reaches the distributor's free-shipping threshold or an operator uses
+     * force flush.
      *
      * @param array<int,array{job:OrderPlacementJobRow,order:WC_Order,lines:array<int,DistributorOrderLine>}> $scheduled_candidates
      * @return array{
@@ -2257,12 +2259,6 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             return [$scheduled_candidates, [], $context];
         }
 
-        $max_rollovers = DealerBatchOptimizerConfig::paid_batch_rollover_max_days();
-        if ($max_rollovers <= 0) {
-            $context['reason'] = 'max_days_zero';
-            return [$scheduled_candidates, [], $context];
-        }
-
         $threshold = DealerBatchOptimizerConfig::free_shipping_threshold($dist_id);
         if ($threshold <= 0.0) {
             $context['reason'] = 'no_threshold';
@@ -2278,7 +2274,7 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             'batch_total' => $batch_total,
             'free_shipping_threshold' => round($threshold, 2),
             'remaining_to_free_shipping' => $remaining,
-            'max_rollovers' => $max_rollovers,
+            'hold_policy' => 'until_threshold_or_force_flush',
         ];
 
         if ($batch_total <= 0.0) {
@@ -2291,28 +2287,11 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
             return [$scheduled_candidates, [], $context];
         }
 
-        $ready = [];
-        $deferred = [];
-        foreach ($scheduled_candidates as $entry) {
-            $job = $entry['job'] ?? null;
-            if (!($job instanceof OrderPlacementJobRow)) {
-                $ready[] = $entry;
-                continue;
-            }
+        $context['reason'] = 'below_threshold';
+        $context['ready_rows'] = 0;
+        $context['deferred_rows'] = count($scheduled_candidates);
 
-            if ($this->paid_batch_rollover_count($job) >= $max_rollovers) {
-                $ready[] = $entry;
-                continue;
-            }
-
-            $deferred[] = $entry;
-        }
-
-        $context['reason'] = !empty($deferred) ? 'below_threshold' : 'rollover_limit_reached';
-        $context['ready_rows'] = count($ready);
-        $context['deferred_rows'] = count($deferred);
-
-        return [$ready, $deferred, $context];
+        return [[], $scheduled_candidates, $context];
     }
 
     /**
@@ -2413,7 +2392,8 @@ abstract class AbstractOrderBatchCronService extends AbstractCronService
         }
 
         $rollover['paid_shipping_defer_count'] = $this->paid_batch_rollover_count($job) + 1;
-        $rollover['max_paid_shipping_defer_days'] = max(0, (int) ($context['max_rollovers'] ?? 0));
+        $rollover['hold_policy'] = (string) ($context['hold_policy'] ?? 'until_threshold_or_force_flush');
+        unset($rollover['max_paid_shipping_defer_days']);
         $rollover['last_reason'] = (string) ($context['reason'] ?? 'below_threshold');
         $rollover['last_deferred_at_utc'] = OrderPlacementTimeUtil::now_mysql_utc();
         $rollover['last_deferred_until_utc'] = trim($next_dispatch_utc);

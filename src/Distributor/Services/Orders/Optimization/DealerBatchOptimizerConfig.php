@@ -22,7 +22,6 @@ final class DealerBatchOptimizerConfig
     public const DEFAULT_LOW_STOCK_THRESHOLD = 3;
     public const DEFAULT_RETRY_DELAY_SECONDS = 300;
     public const DEFAULT_MAX_ROWS_PER_RUN = 200;
-    public const DEFAULT_PAID_BATCH_ROLLOVER_MAX_DAYS = 1;
 
     private const FORCE_FLUSH_TTL_SECONDS = 3600;
     private const DEFAULT_FREE_SHIPPING_THRESHOLD = 1000.0;
@@ -107,14 +106,6 @@ final class DealerBatchOptimizerConfig
         return max(1, (int) get_option(
             self::dealer_batch_option_name('max_rows_per_run'),
             self::DEFAULT_MAX_ROWS_PER_RUN
-        ));
-    }
-
-    public static function paid_batch_rollover_max_days(): int
-    {
-        return max(0, (int) get_option(
-            self::dealer_batch_option_name('paid_batch_rollover_max_days'),
-            (string) self::DEFAULT_PAID_BATCH_ROLLOVER_MAX_DAYS
         ));
     }
 
@@ -354,7 +345,6 @@ final class DealerBatchOptimizerConfig
         self::add_default(self::dealer_batch_option_name('low_stock_threshold'), (string) self::DEFAULT_LOW_STOCK_THRESHOLD);
         self::add_default(self::dealer_batch_option_name('retry_delay_seconds'), (string) self::DEFAULT_RETRY_DELAY_SECONDS);
         self::add_default(self::dealer_batch_option_name('max_rows_per_run'), (string) self::DEFAULT_MAX_ROWS_PER_RUN);
-        self::add_default(self::dealer_batch_option_name('paid_batch_rollover_max_days'), (string) self::DEFAULT_PAID_BATCH_ROLLOVER_MAX_DAYS);
         self::add_default(self::dealer_batch_option_name('force_flush'), '0');
         self::add_default(self::dealer_batch_option_name('last_scheduled_flush_at_utc'), '');
         self::add_default(self::optimizer_option_name('enabled'), '0');
