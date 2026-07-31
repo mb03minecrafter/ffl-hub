@@ -45,6 +45,60 @@ final class ShippingProviderPolicy
     }
 
     /**
+     * @param array<int,array<string,mixed>> $order_items
+     */
+    public static function order_items_require_ffl(array $order_items): bool
+    {
+        return self::package_items_require_ffl($order_items);
+    }
+
+    /**
+     * @param array<int,array<int,array<string,mixed>>> $package_item_assignments
+     * @param array<int,array<string,mixed>>            $order_items
+     */
+    public static function package_assignments_require_ffl(array $package_item_assignments, array $order_items): bool
+    {
+        foreach ($package_item_assignments as $package_items) {
+            if (self::package_assignment_requires_ffl(is_array($package_items) ? $package_items : [], $order_items)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Package assignment rows may either include ffl_required directly or point
+     * back to order item rows that include ffl_required. No product names,
+     * categories, shipment metadata, or FFL address metadata are considered.
+     *
+     * @param array<int,array<string,mixed>> $package_items
+     * @param array<int,array<string,mixed>> $order_items
+     */
+    public static function package_assignment_requires_ffl(array $package_items, array $order_items): bool
+    {
+        $ffl_item_ids = self::ffl_item_id_map($order_items);
+
+        foreach ($package_items as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            if (self::truthy($row['ffl_required'] ?? null)) {
+                return true;
+            }
+
+            $item_id = absint($row['item_id'] ?? $row['order_item_id'] ?? 0);
+            $quantity = max(0, (int) ($row['quantity'] ?? 0));
+            if ($item_id > 0 && $quantity > 0 && !empty($ffl_item_ids[$item_id])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @param array<string,mixed> $rate
      * @return array<string,mixed>
      */
@@ -84,6 +138,27 @@ final class ShippingProviderPolicy
         }
 
         return '';
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $order_items
+     * @return array<int,bool>
+     */
+    private static function ffl_item_id_map(array $order_items): array
+    {
+        $out = [];
+        foreach ($order_items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $item_id = absint($item['item_id'] ?? $item['order_item_id'] ?? 0);
+            if ($item_id > 0 && self::truthy($item['ffl_required'] ?? null)) {
+                $out[$item_id] = true;
+            }
+        }
+
+        return $out;
     }
 
     /**

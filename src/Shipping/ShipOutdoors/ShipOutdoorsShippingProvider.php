@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace FFLHub\Shipping\ShipOutdoors;
 
 use FFLHub\Shipping\Providers\ShippingProviderInterface;
+use FFLHub\Shipping\ShippingProviderPolicy;
 use WP_Error;
 
 if (!defined('ABSPATH')) {
@@ -211,7 +212,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
             'width' => self::positive_ceiled_dimension($dims['width'] ?? 0),
             'height' => self::positive_ceiled_dimension($dims['height'] ?? 0),
             'insuredValue' => max(0, (int) round((float) ($insured['amount'] ?? 0))),
-            'signatureType' => self::signature_type((string) ($shipment['confirmation'] ?? ShipOutdoorsOptions::confirmation()), self::package_requires_ffl($package_items)),
+            'signatureType' => self::signature_type((string) ($shipment['confirmation'] ?? ShipOutdoorsOptions::confirmation()), ShippingProviderPolicy::package_items_require_ffl($package_items)),
             'packageContents' => self::package_contents($package_items),
             'packageType' => 2,
             'additionalInfo' => $external_order_id !== '' ? substr('Order ' . $external_order_id, 0, 50) : '',
@@ -333,21 +334,7 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
      */
     private static function package_contents(array $package_items): int
     {
-        return self::package_requires_ffl($package_items) ? 2 : 4;
-    }
-
-    /**
-     * @param array<int,array<string,mixed>> $package_items
-     */
-    private static function package_requires_ffl(array $package_items): bool
-    {
-        foreach ($package_items as $row) {
-            if (is_array($row) && self::truthy($row['ffl_required'] ?? null)) {
-                return true;
-            }
-        }
-
-        return false;
+        return ShippingProviderPolicy::package_items_require_ffl($package_items) ? 2 : 4;
     }
 
     /**
@@ -580,21 +567,6 @@ final class ShipOutdoorsShippingProvider implements ShippingProviderInterface
         }
 
         return trim((string) $parts[1]);
-    }
-
-    /**
-     * @param mixed $value
-     */
-    private static function truthy($value): bool
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-        if (is_numeric($value)) {
-            return (int) $value !== 0;
-        }
-
-        return in_array(strtolower(trim((string) $value)), ['1', 'yes', 'true', 'on'], true);
     }
 
     private static function round_decimal(float $value, int $precision): float

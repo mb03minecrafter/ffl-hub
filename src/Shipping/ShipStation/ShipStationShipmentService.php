@@ -7,7 +7,6 @@ use FFLHub\FFL\Data\FFLRepository;
 use FFLHub\FFL\Data\FFLRowMapper;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Order\OrderProfitAuditMeta;
-use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Shipping\DTO\ShippingPackage;
 use FFLHub\Shipping\EasyPost\EasyPostClient;
 use FFLHub\Shipping\EasyPost\EasyPostOptions;
@@ -23,7 +22,6 @@ use FFLHub\Shipping\ShipOutdoors\ShipOutdoorsShippingProvider;
 use FFLHub\Util\DebugLogUtil;
 use WC_Order;
 use WC_Order_Item_Product;
-use WC_Product;
 use WP_Error;
 
 if (!defined('ABSPATH')) {
@@ -60,9 +58,9 @@ final class ShipStationShipmentService
      */
     public function build_context(WC_Order $order)
     {
-        $requires_ffl = $this->order_requires_ffl($order);
-        $receiving_ffl = $requires_ffl ? $this->receiving_ffl_snapshot($order) : null;
         $order_items = (new OrderBoxPackingService())->dealer_fulfilled_order_items_for_labels($order);
+        $requires_ffl = ShippingProviderPolicy::order_items_require_ffl($order_items);
+        $receiving_ffl = $requires_ffl ? $this->receiving_ffl_snapshot($order) : null;
 
         $destination = $requires_ffl
             ? $this->destination_from_ffl($order, $receiving_ffl)
@@ -1524,30 +1522,6 @@ final class ShipStationShipmentService
         return array_values(array_unique($ids));
     }
 
-    private function order_requires_ffl(WC_Order $order): bool
-    {
-        if (trim((string) $order->get_meta('fflhub_receiving_ffl_number', true)) !== '') {
-            return true;
-        }
-
-        if (self::truthy($order->get_meta('_fflhub_requires_ffl', true))) {
-            return true;
-        }
-
-        foreach ($order->get_items('line_item') as $item) {
-            if (!($item instanceof WC_Order_Item_Product)) {
-                continue;
-            }
-
-            $product = $item->get_product();
-            if ($product instanceof WC_Product && ProductStateStore::get_ffl_required_for_product($product)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     /**
      * @return array<string,mixed>|null
      */
@@ -2840,15 +2814,6 @@ final class ShipStationShipmentService
     private static function round_decimal(float $value, int $precision): float
     {
         return (float) number_format($value, $precision, '.', '');
-    }
-
-    private static function truthy($value): bool
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        return in_array(strtolower(trim((string) $value)), ['1', 'yes', 'true', 'on'], true);
     }
 
     /**
