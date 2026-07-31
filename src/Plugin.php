@@ -26,6 +26,7 @@ use FFLHub\Admin\Pages\DistributorProductsPage;
 use FFLHub\Admin\Pages\EasyPostSettingsPage;
 use FFLHub\Admin\Pages\FastBoundIntegrationSettingsPage;
 use FFLHub\Admin\Pages\FFLDocumentsRequiredPage;
+use FFLHub\Admin\Pages\FailedPlaceOrderJobsPage;
 use FFLHub\Admin\Pages\FFLImporterPage;
 use FFLHub\Admin\Pages\LipseysCreditLimitPage;
 use FFLHub\Admin\Pages\MapPolicyPage;
@@ -150,6 +151,7 @@ final class Plugin
     public SendingReadyPage $sending_ready_page;
     public FastBoundIntegrationSettingsPage $fastbound_integration_settings_page;
     public FFLDocumentsRequiredPage $ffl_documents_required_page;
+    public FailedPlaceOrderJobsPage $failed_place_order_jobs_page;
     public CheckoutActivityPage $checkout_activity_page;
     public BillHicksEdiTestPage $bill_hicks_edi_test_page;
     public DavidsonsFailedJobsPage $davidsons_failed_jobs_page;
@@ -327,6 +329,9 @@ final class Plugin
                 $this->ffl_table
             );
             $this->ffl_documents_required_page->register();
+
+            $this->failed_place_order_jobs_page = new FailedPlaceOrderJobsPage($this->distributor_handler->ordering_jobs_table);
+            $this->failed_place_order_jobs_page->register();
 
             $this->dealer_batch_optimizer_page = new DealerBatchOptimizerPage(
                 $this->distributor_handler->ordering_jobs_table,

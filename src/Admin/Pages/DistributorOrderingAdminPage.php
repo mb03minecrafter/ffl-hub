@@ -80,6 +80,11 @@ final class DistributorOrderingAdminPage
                     'description' => __('Upload and email receiving FFL copies for Sports South and Kinsey\'s drop-ship firearm orders.', 'ffl-hub'),
                 ],
                 [
+                    'label' => __('Failed Place Order Jobs', 'ffl-hub'),
+                    'slug' => 'fflhub-failed-place-order-jobs',
+                    'description' => __('Read-only triage view for failed FFL Hub distributor placement rows.', 'ffl-hub'),
+                ],
+                [
                     'label' => __("Davidson's Manual Order Status", 'ffl-hub'),
                     'slug' => 'fflhub-davidsons-manual-order-status',
                     'description' => __('Manual Davidson\'s PO entry and completion workflow.', 'ffl-hub'),

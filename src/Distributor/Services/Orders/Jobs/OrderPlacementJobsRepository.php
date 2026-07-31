@@ -965,4 +965,97 @@ final class OrderPlacementJobsRepository
 
         return $out;
     }
+
+    /**
+     * Select failed placement job rows for admin triage.
+     *
+     * @param OrderPlacementJobsTable $jobs_table Table manager instance.
+     * @param int                     $limit      Max rows to return.
+     * @param string                  $dist_id    Optional distributor filter.
+     * @param string                  $lane       Optional lane filter.
+     * @param string                  $last_step  Optional last_step filter.
+     * @param int                     $order_id   Optional Woo order id filter.
+     * @return OrderPlacementJobRow[] List of failed job DTOs.
+     */
+    public static function find_failed_jobs(
+        OrderPlacementJobsTable $jobs_table,
+        int $limit,
+        string $dist_id = '',
+        string $lane = '',
+        string $last_step = '',
+        int $order_id = 0
+    ): array {
+        global $wpdb;
+
+        $table = $jobs_table->get_table_name();
+        if (!is_string($table) || $table === '') {
+            return [];
+        }
+
+        $where = ['status = %s'];
+        $args = [OrderPlacementKeys::JOB_STATUS_FAILED];
+
+        $dist_id = OrderPlacementKeysUtil::normalize_dist_id((string) $dist_id);
+        if ($dist_id !== '') {
+            $where[] = 'dist_id = %s';
+            $args[] = $dist_id;
+        }
+
+        $lane = OrderPlacementKeysUtil::normalize_lane((string) $lane);
+        if ($lane !== '' && OrderPlacementKeysUtil::is_valid_lane($lane)) {
+            $where[] = 'lane = %s';
+            $args[] = $lane;
+        }
+
+        $last_step = strtolower(trim((string) $last_step));
+        if (in_array($last_step, ['validate', 'place', 'shipping'], true)) {
+            $where[] = 'last_step = %s';
+            $args[] = $last_step;
+        }
+
+        $order_id = (int) $order_id;
+        if ($order_id > 0) {
+            $where[] = 'order_id = %d';
+            $args[] = $order_id;
+        }
+
+        $limit = max(1, (int) $limit);
+        $args[] = $limit;
+
+        $sql = $wpdb->prepare(
+            "
+            SELECT
+                id, order_id, job_key, dist_id, lane, status,
+                attempts, created_at, updated_at,
+                action_id, next_run_at,
+                last_step, last_error, last_codes_json,
+                done_at,
+                payload_json, validate_result_json, place_result_json,
+                merchant_po, external_order_ids_json, external_order_id,
+                shipped_at, tracking_numbers_json, invoice_numbers_json,
+                last_shipping_poll_at, shipping_service, shipping_weight, shipment_raw_json
+            FROM {$table}
+            WHERE " . implode(' AND ', $where) . "
+            ORDER BY
+                updated_at DESC,
+                id DESC
+            LIMIT %d
+            ",
+            ...$args
+        );
+
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $out[] = new OrderPlacementJobRow($row);
+            }
+        }
+
+        return $out;
+    }
 }
