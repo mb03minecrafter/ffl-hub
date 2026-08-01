@@ -1222,6 +1222,7 @@ final class EasyPostBatchLabelService
             'service' => $service,
             'carrier' => $carrier,
             'carrier_accounts' => [$carrier_account],
+            'insurance' => self::easypost_insurance_amount($shipment),
         ];
         $delivery_confirmation = EasyPostShippingProvider::delivery_confirmation_option(
             self::easypost_confirmation_for_rate(['confirmation' => $confirmation], $rate)
@@ -1233,6 +1234,28 @@ final class EasyPostBatchLabelService
         }
 
         return $batch_shipment;
+    }
+
+    /**
+     * @param array<string,mixed> $shipment
+     */
+    private static function easypost_insurance_amount(array $shipment): string
+    {
+        if (EasyPostOptions::insurance_mode() !== 'declared_value') {
+            return '0.00';
+        }
+
+        $total = 0.0;
+        foreach ((array) ($shipment['packages'] ?? []) as $package) {
+            if (!is_array($package)) {
+                continue;
+            }
+
+            $insured = is_array($package['insured_value'] ?? null) ? $package['insured_value'] : [];
+            $total += max(0.0, (float) ($insured['amount'] ?? 0));
+        }
+
+        return number_format($total, 2, '.', '');
     }
 
     /**

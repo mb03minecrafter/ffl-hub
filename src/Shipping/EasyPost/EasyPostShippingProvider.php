@@ -102,6 +102,9 @@ final class EasyPostShippingProvider implements ShippingProviderInterface
 
         $options = self::label_options($payload);
         $insurance = trim((string) ($payload['insurance'] ?? ''));
+        if ($insurance === '') {
+            $insurance = '0.00';
+        }
         $result = $this->client->buy_shipment($shipment_id, $rate_id, $options, $insurance);
         if (is_wp_error($result)) {
             return $result;
