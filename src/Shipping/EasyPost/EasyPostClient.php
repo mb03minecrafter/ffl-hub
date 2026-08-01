@@ -3,6 +3,11 @@ declare(strict_types=1);
 
 namespace FFLHub\Shipping\EasyPost;
 
+use EasyPost\EasyPostClient as OfficialEasyPostClient;
+use EasyPost\EasyPostObject;
+use EasyPost\Exception\Api\ApiException;
+use EasyPost\Exception\General\EasyPostException;
+use Throwable;
 use WP_Error;
 
 if (!defined('ABSPATH')) {
@@ -10,18 +15,20 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Thin WordPress HTTP API wrapper for EasyPost API v2.
+ * Adapter around the official EasyPost PHP client.
  *
- * EasyPost uses HTTP Basic Auth where the API key is the username and the
- * password is blank. This class owns auth, JSON decoding, and consistent
- * WP_Error shaping; callers own order/business policy.
+ * FFL Hub's shipping services already consume plain arrays and WP_Error
+ * instances, so this class keeps that local contract while delegating API calls
+ * to easypost/easypost-php.
  */
 final class EasyPostClient
 {
-    private const BASE_URL = 'https://api.easypost.com/v2';
     private const TIMEOUT_SEC = 30;
 
     private string $api_key;
+    private ?OfficialEasyPostClient $client = null;
+    private string $last_request_id = '';
+    private int $last_status = 0;
 
     public function __construct(?string $api_key = null)
     {
@@ -40,15 +47,17 @@ final class EasyPostClient
      */
     public function carrier_metadata(array $carriers = [], array $types = [])
     {
-        $query = [];
-        if (!empty($carriers)) {
-            $query['carriers'] = implode(',', array_values(array_filter(array_map('sanitize_key', $carriers))));
-        }
-        if (!empty($types)) {
-            $query['types'] = implode(',', array_values(array_filter(array_map('sanitize_key', $types))));
-        }
+        $carriers = array_values(array_filter(array_map('sanitize_key', $carriers)));
+        $types = array_values(array_filter(array_map('sanitize_key', $types)));
 
-        return $this->request('GET', '/metadata/carriers', null, $query);
+        return $this->sdk_call('carrier_metadata', function (OfficialEasyPostClient $client) use ($carriers, $types): array {
+            return [
+                'carriers' => $client->carrierMetadata->retrieve(
+                    !empty($carriers) ? $carriers : null,
+                    !empty($types) ? $types : null
+                ),
+            ];
+        });
     }
 
     /**
@@ -57,7 +66,7 @@ final class EasyPostClient
      */
     public function create_address(array $address)
     {
-        return $this->request('POST', '/addresses', ['address' => $address]);
+        return $this->sdk_call('create_address', fn (OfficialEasyPostClient $client) => $client->address->create($address));
     }
 
     /**
@@ -66,7 +75,7 @@ final class EasyPostClient
      */
     public function create_shipment(array $shipment)
     {
-        return $this->request('POST', '/shipments', ['shipment' => $shipment]);
+        return $this->sdk_call('create_shipment', fn (OfficialEasyPostClient $client) => $client->shipment->create($shipment));
     }
 
     /**
@@ -79,7 +88,7 @@ final class EasyPostClient
             return new WP_Error('fflhub_easypost_missing_shipment_id', 'Missing EasyPost shipment ID.');
         }
 
-        return $this->request('GET', '/shipments/' . rawurlencode($shipment_id));
+        return $this->sdk_call('retrieve_shipment', fn (OfficialEasyPostClient $client) => $client->shipment->retrieve($shipment_id));
     }
 
     /**
@@ -101,7 +110,7 @@ final class EasyPostClient
             $batch['reference'] = $reference;
         }
 
-        return $this->request('POST', '/batches', ['batch' => $batch]);
+        return $this->sdk_call('create_batch', fn (OfficialEasyPostClient $client) => $client->batch->create($batch));
     }
 
     /**
@@ -114,7 +123,7 @@ final class EasyPostClient
             return new WP_Error('fflhub_easypost_missing_batch_id', 'Missing EasyPost batch ID.');
         }
 
-        return $this->request('GET', '/batches/' . rawurlencode($batch_id));
+        return $this->sdk_call('retrieve_batch', fn (OfficialEasyPostClient $client) => $client->batch->retrieve($batch_id));
     }
 
     /**
@@ -127,7 +136,7 @@ final class EasyPostClient
             return new WP_Error('fflhub_easypost_missing_batch_id', 'Missing EasyPost batch ID.');
         }
 
-        return $this->request('POST', '/batches/' . rawurlencode($batch_id) . '/buy');
+        return $this->sdk_call('buy_batch', fn (OfficialEasyPostClient $client) => $client->batch->buy($batch_id));
     }
 
     /**
@@ -145,9 +154,9 @@ final class EasyPostClient
             $format = 'PDF';
         }
 
-        return $this->request('POST', '/batches/' . rawurlencode($batch_id) . '/label', [
+        return $this->sdk_call('create_batch_label', fn (OfficialEasyPostClient $client) => $client->batch->label($batch_id, [
             'file_format' => $format,
-        ]);
+        ]));
     }
 
     /**
@@ -177,7 +186,7 @@ final class EasyPostClient
             $payload['insurance'] = $insurance;
         }
 
-        return $this->request('POST', '/shipments/' . rawurlencode($shipment_id) . '/buy', $payload);
+        return $this->sdk_call('buy_shipment', fn (OfficialEasyPostClient $client) => $client->shipment->buy($shipment_id, $payload));
     }
 
     /**
@@ -199,12 +208,10 @@ final class EasyPostClient
             return new WP_Error('fflhub_easypost_missing_refund_fields', 'Missing EasyPost carrier or tracking code.');
         }
 
-        return $this->request('POST', '/refunds', [
-            'refund' => [
-                'carrier' => $carrier,
-                'tracking_codes' => $codes,
-            ],
-        ]);
+        return $this->sdk_call('refund_tracking_codes', fn (OfficialEasyPostClient $client) => $client->refund->create([
+            'carrier' => $carrier,
+            'tracking_codes' => $codes,
+        ]));
     }
 
     /**
@@ -254,60 +261,125 @@ final class EasyPostClient
     }
 
     /**
-     * @param array<string,mixed>|null $body
-     * @param array<string,mixed> $query
-     * @return array<string,mixed>|WP_Error
+     * @return OfficialEasyPostClient|WP_Error
      */
-    private function request(string $method, string $path, ?array $body = null, array $query = [])
+    private function sdk()
     {
         if ($this->api_key === '') {
             return new WP_Error('fflhub_easypost_missing_api_key', 'EasyPost API key is not configured.');
         }
 
-        $url = rtrim(self::BASE_URL, '/') . '/' . ltrim($path, '/');
-        if (!empty($query)) {
-            $url = add_query_arg($query, $url);
+        if ($this->client instanceof OfficialEasyPostClient) {
+            return $this->client;
         }
 
-        $args = [
-            'method' => strtoupper($method),
-            'headers' => [
-                'Authorization' => 'Basic ' . base64_encode($this->api_key . ':'),
-                'Content-Type' => 'application/json',
-                'Accept' => 'application/json',
-            ],
-            'timeout' => self::TIMEOUT_SEC,
-            'redirection' => 3,
-        ];
+        $this->client = new OfficialEasyPostClient($this->api_key, self::TIMEOUT_SEC);
+        $this->client->subscribeToResponseHook(function (array $args): void {
+            $this->capture_response_context($args);
+        });
 
-        if ($body !== null) {
-            $args['body'] = wp_json_encode($body);
+        return $this->client;
+    }
+
+    /**
+     * @return array<string,mixed>|WP_Error
+     */
+    private function sdk_call(string $operation, callable $callback)
+    {
+        $client = $this->sdk();
+        if (is_wp_error($client)) {
+            return $client;
         }
 
-        $response = wp_remote_request($url, $args);
-        if (is_wp_error($response) && strtoupper($method) === 'GET') {
-            $response = wp_remote_request($url, $args);
+        $this->last_request_id = '';
+        $this->last_status = 0;
+
+        try {
+            $result = $callback($client);
+            $normalized = $this->normalize_sdk_value($result);
+            if (!is_array($normalized)) {
+                $normalized = ['result' => $normalized];
+            }
+
+            $this->attach_response_context($normalized);
+            return $normalized;
+        } catch (ApiException $exception) {
+            return $this->api_exception($exception);
+        } catch (EasyPostException $exception) {
+            return new WP_Error(
+                'fflhub_easypost_sdk_error',
+                $exception->getMessage() !== '' ? $exception->getMessage() : 'EasyPost SDK request failed.',
+                [
+                    'operation' => $operation,
+                    'status' => $this->last_status,
+                    'request_id' => $this->last_request_id,
+                ]
+            );
+        } catch (Throwable $exception) {
+            return new WP_Error(
+                'fflhub_easypost_sdk_error',
+                $exception->getMessage() !== '' ? $exception->getMessage() : 'EasyPost SDK request failed.',
+                [
+                    'operation' => $operation,
+                    'status' => $this->last_status,
+                    'request_id' => $this->last_request_id,
+                ]
+            );
         }
-        if (is_wp_error($response)) {
-            return $this->http_error($response);
+    }
+
+    /**
+     * @param array<string,mixed> $args
+     */
+    private function capture_response_context(array $args): void
+    {
+        $this->last_status = max(0, (int) ($args['http_status'] ?? 0));
+        $headers = is_array($args['headers'] ?? null) ? $args['headers'] : [];
+
+        foreach ($headers as $name => $value) {
+            if (strtolower((string) $name) !== 'x-request-id') {
+                continue;
+            }
+
+            if (is_array($value)) {
+                $value = reset($value);
+            }
+
+            $this->last_request_id = trim((string) $value);
+            break;
+        }
+    }
+
+    /**
+     * @param array<string,mixed> $value
+     */
+    private function attach_response_context(array &$value): void
+    {
+        if ($this->last_status > 0) {
+            $value['_fflhub_status'] = $this->last_status;
         }
 
-        $status = (int) wp_remote_retrieve_response_code($response);
-        $request_id = (string) wp_remote_retrieve_header($response, 'x-request-id');
-        $raw_body = (string) wp_remote_retrieve_body($response);
-        $decoded = $raw_body !== '' ? json_decode($raw_body, true) : [];
-        if (!is_array($decoded)) {
-            $decoded = [];
+        if ($this->last_request_id !== '') {
+            $value['_fflhub_request_id'] = $this->last_request_id;
+        }
+    }
+
+    private function normalize_sdk_value(mixed $value): mixed
+    {
+        if ($value instanceof EasyPostObject) {
+            return $value->__toArray(true);
         }
 
-        if ($status < 200 || $status >= 300) {
-            return $this->api_error($decoded, $status, $request_id, $raw_body);
+        if (is_array($value)) {
+            $normalized = [];
+            foreach ($value as $key => $entry) {
+                $normalized[$key] = $this->normalize_sdk_value($entry);
+            }
+
+            return $normalized;
         }
 
-        $decoded['_fflhub_status'] = $status;
-        $decoded['_fflhub_request_id'] = $request_id;
-
-        return $decoded;
+        return $value;
     }
 
     private function http_error(WP_Error $error): WP_Error
@@ -319,39 +391,23 @@ final class EasyPostClient
         );
     }
 
-    /**
-     * @param array<string,mixed> $decoded
-     */
-    private function api_error(array $decoded, int $status, string $request_id, string $raw_body): WP_Error
+    private function api_exception(ApiException $exception): WP_Error
     {
-        $error = is_array($decoded['error'] ?? null) ? $decoded['error'] : [];
-        $messages = [];
-        if (trim((string) ($error['message'] ?? '')) !== '') {
-            $messages[] = trim((string) $error['message']);
-        }
-        if (trim((string) ($decoded['message'] ?? '')) !== '') {
-            $messages[] = trim((string) $decoded['message']);
-        }
+        $status = (int) ($exception->getHttpStatus() ?? $this->last_status);
+        $request_id = $this->last_request_id;
+        $raw_body = trim((string) ($exception->getHttpBody() ?? ''));
+        $errors = is_array($exception->errors ?? null) ? $exception->errors : [];
 
-        $details = [];
-        foreach ((array) ($error['errors'] ?? []) as $entry) {
-            if (!is_array($entry)) {
-                continue;
-            }
-            $message = trim((string) ($entry['message'] ?? $entry['reason'] ?? $entry['field'] ?? ''));
-            if ($message !== '') {
-                $messages[] = $message;
-            }
-            $details[] = $entry;
+        $message = trim($exception->getMessage());
+        if ($message === '') {
+            $message = $status > 0
+                ? 'EasyPost API request failed with HTTP ' . $status . '.'
+                : 'EasyPost API request failed.';
         }
-
-        $message = $messages[0] ?? ('EasyPost API request failed with HTTP ' . $status . '.');
         if ($request_id !== '') {
             $message .= ' Request ID: ' . $request_id . '.';
         }
-
-        $raw_body = trim($raw_body);
-        if ($raw_body !== '' && empty($details)) {
+        if ($raw_body !== '' && empty($errors)) {
             $message .= ' Response: ' . substr($raw_body, 0, 500);
         }
 
@@ -361,8 +417,9 @@ final class EasyPostClient
             [
                 'status' => $status,
                 'request_id' => $request_id,
-                'errors' => $details,
+                'errors' => $errors,
                 'raw_response' => substr($raw_body, 0, 1000),
+                'code' => (string) ($exception->code ?? ''),
             ]
         );
     }

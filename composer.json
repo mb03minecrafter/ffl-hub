@@ -15,6 +15,7 @@
     "lipseys/apiintegration": "1.2.2",
     "setasign/fpdi": "^2.6",
     "setasign/fpdf": "^1.8",
-    "printnode/printnode-php": "dev-master"
+    "printnode/printnode-php": "dev-master",
+    "easypost/easypost-php": "^8.8"
   }
 }
