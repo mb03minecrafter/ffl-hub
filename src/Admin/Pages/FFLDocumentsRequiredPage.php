@@ -632,7 +632,7 @@ final class FFLDocumentsRequiredPage
 
             $rows[] = [
                 'upc' => $upc,
-                'qty' => max(1, (int) $line->qty),
+                'qty' => max(1, (int) $line->quantity),
                 'name' => (string) ($names_by_upc[$upc] ?? ''),
             ];
         }
