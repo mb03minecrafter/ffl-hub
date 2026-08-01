@@ -319,6 +319,10 @@ final class EasyPostBatchLabelService
             return $this->buy_items_individually_for_provider_mix($local_batch_id, $batch);
         }
 
+        if ($this->batch_needs_individual_easypost_purchase($batch)) {
+            return $this->buy_items_individually_for_easypost($local_batch_id, $batch);
+        }
+
         if ($this->batch_needs_individual_signature_purchase($batch)) {
             return $this->buy_items_individually_for_signature($local_batch_id, $batch);
         }
@@ -1459,6 +1463,48 @@ final class EasyPostBatchLabelService
                 'reason' => 'provider_mix',
             ]
         );
+    }
+
+    /**
+     * EasyPost batch postage can apply account/default insurance even when the
+     * batch shipment payload includes insurance=0.00. Direct shipment buy honors
+     * the explicit zero insurance value, so use direct buys for EasyPost waves.
+     *
+     * @param array<string,mixed> $batch
+     * @return array<string,mixed>|WP_Error
+     */
+    private function buy_items_individually_for_easypost(int $local_batch_id, array $batch)
+    {
+        return $this->buy_items_individually_with_reason(
+            $local_batch_id,
+            $batch,
+            'individual-' . $local_batch_id,
+            'EasyPost packages are purchased individually so EasyPost honors the explicit zero-insurance label request.',
+            'Purchased individually so EasyPost does not add default insurance.',
+            [
+                'fallback' => 'individual_shipments',
+                'reason' => 'easypost_no_insurance',
+            ]
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $batch
+     */
+    private function batch_needs_individual_easypost_purchase(array $batch): bool
+    {
+        foreach ((array) ($batch['items'] ?? []) as $item) {
+            if (!is_array($item) || !empty($item['label_saved'])) {
+                continue;
+            }
+
+            $rate = is_array($item['rate'] ?? null) ? $item['rate'] : [];
+            if ($this->provider_id_for_item($item, $rate) === 'easypost') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
