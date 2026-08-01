@@ -92,6 +92,7 @@ use FFLHub\FFL\API\FFLApi;
 use FFLHub\FFL\Tables\FFLSchema;
 use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Inventory\LocalStockUnitStore;
+use FFLHub\Monitoring\SentryBrowserConfig;
 use FFLHub\Order\OrderProfitAuditMeta;
 use FFLHub\Order\WooShippingLabelCostSync;
 use FFLHub\Product\CategoryInstaller;
@@ -213,6 +214,7 @@ final class Plugin
         // Always-on bootstrap
         // -----------------------------------------------------------------
         SettingsRegistrar::init();
+        SentryBrowserConfig::init();
         DealerBatchOptimizerConfig::init_defaults();
         ActionSchedulerWebRunnerGuard::init();
         ProductCollectionRewrite::init();
