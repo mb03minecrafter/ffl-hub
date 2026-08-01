@@ -16,11 +16,6 @@ final class SentryBrowserConfig
     {
         add_filter('wp_sentry_public_options', [__CLASS__, 'filter_public_options']);
         add_action('wp_enqueue_scripts', [__CLASS__, 'enqueue_browser_hook'], 1);
-        add_action('wp_enqueue_scripts', [__CLASS__, 'dequeue_unneeded_checkout_address_validation'], 100);
-        add_action('enqueue_block_assets', [__CLASS__, 'dequeue_unneeded_checkout_address_validation'], 100);
-        add_action('wp_print_scripts', [__CLASS__, 'dequeue_unneeded_checkout_address_validation'], 1);
-        add_action('wp_print_footer_scripts', [__CLASS__, 'dequeue_unneeded_checkout_address_validation'], 1);
-        add_action('wp_print_styles', [__CLASS__, 'dequeue_unneeded_checkout_address_validation'], 1);
     }
 
     /**
@@ -74,20 +69,6 @@ final class SentryBrowserConfig
         }
 
         wp_add_inline_script('wp-sentry-browser', self::browser_hook_script(), 'before');
-    }
-
-    public static function dequeue_unneeded_checkout_address_validation(): void
-    {
-        if (!self::is_checkout_context()) {
-            return;
-        }
-
-        wp_dequeue_script('woocommerce-shipping-checkout-address-validation');
-        wp_deregister_script('woocommerce-shipping-checkout-address-validation');
-        wp_dequeue_script('wcshipping-checkout');
-        wp_deregister_script('wcshipping-checkout');
-        wp_dequeue_style('wcshipping-checkout');
-        wp_deregister_style('wcshipping-checkout');
     }
 
     /**
