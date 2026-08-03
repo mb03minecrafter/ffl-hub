@@ -428,13 +428,16 @@ final class OrderPlacementJobsRepository
     }
 
     /**
-     * Returns true if all SUCCESS jobs for the order have at least one tracking number.
+     * Returns true if every order placement job has been resolved with tracking.
+     *
+     * Manual rows are allowed here because dealer-fulfilled tracking updates can
+     * attach tracking without changing the row status to success.
      *
      * @param OrderPlacementJobsTable $jobs_table Table manager instance.
      * @param int                     $order_id   Woo order ID.
-     * @return bool True if total_success_jobs > 0 and shipped_count >= total_success_jobs.
+     * @return bool True when every job is success/manual and has real tracking.
      */
-    public static function are_all_success_jobs_shipped(OrderPlacementJobsTable $jobs_table, int $order_id): bool
+    public static function are_all_order_jobs_shipped(OrderPlacementJobsTable $jobs_table, int $order_id): bool
     {
         global $wpdb;
 
@@ -448,26 +451,71 @@ final class OrderPlacementJobsRepository
             return false;
         }
 
-        $sql = $wpdb->prepare(
-            "
-            SELECT COUNT(*) AS total,
-                   SUM(CASE WHEN tracking_numbers_json IS NOT NULL AND tracking_numbers_json <> '' THEN 1 ELSE 0 END) AS shipped
-            FROM {$table}
-            WHERE order_id = %d AND status = %s
-            ",
-            $order_id,
-            OrderPlacementKeys::JOB_STATUS_SUCCESS
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "
+                SELECT status, tracking_numbers_json
+                FROM {$table}
+                WHERE order_id = %d
+                ",
+                $order_id
+            ),
+            ARRAY_A
         );
 
-        $row = $wpdb->get_row($sql, ARRAY_A);
-        if (!is_array($row)) {
+        if (!is_array($rows) || empty($rows)) {
             return false;
         }
 
-        $total   = (int) ($row['total'] ?? 0);
-        $shipped = (int) ($row['shipped'] ?? 0);
+        $terminal_statuses = [
+            OrderPlacementKeys::JOB_STATUS_SUCCESS,
+            OrderPlacementKeys::JOB_STATUS_MANUAL,
+        ];
 
-        return ($total > 0 && $shipped >= $total);
+        foreach ($rows as $row) {
+            $status = strtolower(trim((string) ($row['status'] ?? '')));
+            if (!in_array($status, $terminal_statuses, true)) {
+                return false;
+            }
+
+            if (!self::tracking_numbers_json_has_real_value($row['tracking_numbers_json'] ?? null)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Backward-compatible wrapper for older callers.
+     *
+     * The old implementation only looked at success rows, which let mixed orders
+     * complete while a manual dealer-fulfilled row was still unresolved.
+     */
+    public static function are_all_success_jobs_shipped(OrderPlacementJobsTable $jobs_table, int $order_id): bool
+    {
+        return self::are_all_order_jobs_shipped($jobs_table, $order_id);
+    }
+
+    private static function tracking_numbers_json_has_real_value($tracking_numbers_json): bool
+    {
+        $tracking_numbers_json = trim((string) $tracking_numbers_json);
+        if ($tracking_numbers_json === '' || $tracking_numbers_json === '[]') {
+            return false;
+        }
+
+        $decoded = json_decode($tracking_numbers_json, true);
+        if (!is_array($decoded)) {
+            return false;
+        }
+
+        foreach ($decoded as $tracking_number) {
+            if (is_scalar($tracking_number) && trim((string) $tracking_number) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

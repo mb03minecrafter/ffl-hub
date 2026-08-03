@@ -1367,7 +1367,7 @@ final class OrderPlacementMetaBox
         $did_complete_order = false;
         if ($updated > 0) {
             try {
-                $all_shipped = OrderPlacementJobsRepository::are_all_success_jobs_shipped($this->jobs_table, $order_id);
+                $all_shipped = OrderPlacementJobsRepository::are_all_order_jobs_shipped($this->jobs_table, $order_id);
                 if ($all_shipped && $order->has_status(['processing', 'on-hold'])) {
                     $order->update_status('completed', 'FFL Hub: all distributor jobs have tracking numbers (manual dealer-fulfilled update).');
                     $did_complete_order = true;

@@ -378,7 +378,7 @@ final class ShippingCronService extends AbstractCronService
 
             // Complete order if all shipped
             try {
-                $all_shipped = OrderPlacementJobsRepository::are_all_success_jobs_shipped($this->jobs_table, $order_id);
+                $all_shipped = OrderPlacementJobsRepository::are_all_order_jobs_shipped($this->jobs_table, $order_id);
                 $this->log_ctx('complete_check', [
                     'order_id'    => $order_id,
                     'all_shipped' => (bool) $all_shipped,
