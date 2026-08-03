@@ -79,6 +79,8 @@ use FFLHub\Distributor\Services\Orders\Cron\CSSIDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\DavidsonsDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\LipseysDealerBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\OrionCaRelayBatchCronService;
+use FFLHub\Distributor\Services\Orders\Cron\OrionDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\SportsSouthCaRelayBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\SportsSouthDealerBatchCronService;
 use FFLHub\Distributor\Services\Orders\Cron\ZandersCaRelayBatchCronService;
@@ -515,6 +517,19 @@ final class Plugin
                 'cron_hook' => LipseysDealerBatchCronService::CRON_HOOK,
             ],
             [
+                'page_slug' => 'fflhub-orion-dealer-batch-queue',
+                'menu_title' => 'Orion Dealer Batch Queue',
+                'page_title' => 'Orion Dealer Batch Queue',
+                'description' => 'Per-line-item UPC queue view for Orion dealer-fulfilled rows on Processing orders.',
+                'dist_id' => 'orion',
+                'dist_label' => 'Orion',
+                'mode' => 'dealer',
+                'mode_label' => 'Dealer Batch',
+                'option_prefix' => 'fflhub_orion_dealer_batch',
+                'field_prefix' => 'fflhub_orion_dealer_batch_page',
+                'cron_hook' => OrionDealerBatchCronService::CRON_HOOK,
+            ],
+            [
                 'page_slug' => 'fflhub-zanders-dealer-batch-queue',
                 'menu_title' => 'Zanders Dealer Batch Queue',
                 'page_title' => 'Zanders Dealer Batch Queue',
@@ -552,6 +567,19 @@ final class Plugin
                 'option_prefix' => 'fflhub_lipseys_ca_relay_batch',
                 'field_prefix' => 'fflhub_lipseys_ca_relay_batch_page',
                 'cron_hook' => LipseysCaRelayBatchCronService::CRON_HOOK,
+            ],
+            [
+                'page_slug' => 'fflhub-orion-ca-relay-batch-queue',
+                'menu_title' => 'Orion CA Relay Batch Queue',
+                'page_title' => 'Orion CA Relay Batch Queue',
+                'description' => 'Per-line-item UPC queue view for Orion non-FFL CA relay rows on Processing orders.',
+                'dist_id' => 'orion',
+                'dist_label' => 'Orion',
+                'mode' => 'ca_relay',
+                'mode_label' => 'CA Relay Batch',
+                'option_prefix' => 'fflhub_orion_ca_relay_batch',
+                'field_prefix' => 'fflhub_orion_ca_relay_batch_page',
+                'cron_hook' => OrionCaRelayBatchCronService::CRON_HOOK,
             ],
             [
                 'page_slug' => 'fflhub-zanders-ca-relay-batch-queue',

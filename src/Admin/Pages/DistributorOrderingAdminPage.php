@@ -58,6 +58,11 @@ final class DistributorOrderingAdminPage
                     'description' => __("Lipsey's dealer-fulfilled batch rows and force-run controls.", 'ffl-hub'),
                 ],
                 [
+                    'label' => __('Orion Dealer Batch Queue', 'ffl-hub'),
+                    'slug' => 'fflhub-orion-dealer-batch-queue',
+                    'description' => __('Orion dealer-fulfilled batch rows and force-run controls.', 'ffl-hub'),
+                ],
+                [
                     'label' => __('Zanders Dealer Batch Queue', 'ffl-hub'),
                     'slug' => 'fflhub-zanders-dealer-batch-queue',
                     'description' => __('Zanders dealer-fulfilled batch rows and force-run controls.', 'ffl-hub'),
@@ -110,6 +115,11 @@ final class DistributorOrderingAdminPage
                     'label' => __("Lipsey's CA Relay Batch Queue", 'ffl-hub'),
                     'slug' => 'fflhub-lipseys-ca-relay-batch-queue',
                     'description' => __("Lipsey's non-FFL California relay rows.", 'ffl-hub'),
+                ],
+                [
+                    'label' => __('Orion CA Relay Batch Queue', 'ffl-hub'),
+                    'slug' => 'fflhub-orion-ca-relay-batch-queue',
+                    'description' => __('Orion non-FFL California relay rows.', 'ffl-hub'),
                 ],
                 [
                     'label' => __('Zanders CA Relay Batch Queue', 'ffl-hub'),
