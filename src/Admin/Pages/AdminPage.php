@@ -1893,6 +1893,8 @@ class AdminPage
             'pretty_random_email_quotes_enabled' => Options::get_pretty_random_email_quotes_enabled() ? '1' : '0',
             'gundeals_feed_enabled' => Options::get_gundeals_feed_enabled() ? '1' : '0',
             'gundeals_no_email_no_add_to_cart_discount_percent' => (string) Options::get_gundeals_no_email_no_add_to_cart_discount_percent(),
+            'gundeals_holosun_hidden_map_discount_enabled' => Options::get_gundeals_holosun_hidden_map_discount_enabled() ? '1' : '0',
+            'gundeals_holosun_hidden_map_discount_amount' => (string) Options::get_gundeals_holosun_hidden_map_discount_amount(),
             'gunmade_feed_enabled' => Options::get_gunmade_feed_enabled() ? '1' : '0',
             'prefer_dropship_best_offers_enabled' => Options::get_prefer_dropship_best_offers_enabled() ? '1' : '0',
             'public_brand_name' => Options::get_public_brand_name(),
@@ -1969,6 +1971,13 @@ class AdminPage
         $gundeals_no_email_no_add_to_cart_discount_percent = (string) (
             $settings['gundeals_no_email_no_add_to_cart_discount_percent']
             ?? Options::default_gundeals_no_email_no_add_to_cart_discount_percent()
+        );
+        $gundeals_holosun_hidden_map_discount_enabled = (
+            (string) ($settings['gundeals_holosun_hidden_map_discount_enabled'] ?? '0') === '1'
+        );
+        $gundeals_holosun_hidden_map_discount_amount = (string) (
+            $settings['gundeals_holosun_hidden_map_discount_amount']
+            ?? Options::default_gundeals_holosun_hidden_map_discount_amount()
         );
         $gunmade_feed_enabled = ((string) ($settings['gunmade_feed_enabled'] ?? '1') === '1');
         $prefer_dropship_best_offers_enabled = ((string) ($settings['prefer_dropship_best_offers_enabled'] ?? '1') === '1');
@@ -2295,6 +2304,36 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'For no-email/no-add-to-cart MAP products, reduce the MAP submitted to Gun.deals by this percentage and mark the feed price as hidden by MAP.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_gundeals_holosun_hidden_map_discount_enabled"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Holosun hidden MAP dollar reduction', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_gundeals_holosun_hidden_map_discount_enabled" value="0" />
+                    <input
+                        id="fflhub_gundeals_holosun_hidden_map_discount_enabled"
+                        name="fflhub_gundeals_holosun_hidden_map_discount_enabled"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($gundeals_holosun_hidden_map_discount_enabled); ?> />
+                    <input
+                        id="fflhub_gundeals_holosun_hidden_map_discount_amount"
+                        name="fflhub_gundeals_holosun_hidden_map_discount_amount"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        class="fflhub-field-input"
+                        value="<?php echo esc_attr($gundeals_holosun_hidden_map_discount_amount); ?>" />
+                    <span class="fflhub-field-suffix">$</span>
+                    <p class="description">
+                        <?php esc_html_e(
+                            'When enabled, subtract this dollar amount from Holosun Gun.deals feed prices only when the row is hidden by MAP.',
                             'ffl-hub'
                         ); ?>
                     </p>

@@ -19,6 +19,7 @@ final class GunDealsFeedGenerator
     private const XML_NAMESPACE = 'https://api.gunengine.com/ingest/XMLSchema/feed/v2/offers';
     private const FREE_SHIPPING_LABEL = 'FREE SHIPPING';
     private const COMPETITOR_FEE_LABEL = 'NO SALES TAX/FEES';
+    private const HOLOSUN_SHIPPING_SUFFIX = 'De Leon Sucks';
     private const PRICE_HIDE_EMAIL_FOR_QUOTE = 'Email Form for Best Price';
     private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price';
     private const PRICE_HIDE_MAP = 'Map';
@@ -332,7 +333,7 @@ final class GunDealsFeedGenerator
         $product_id = (int) ($source_row['product_id'] ?? 0);
         $actual_price = $this->resolve_price_from_row($source_row);
         $price_hide = $this->resolve_price_hide_from_row($source_row);
-        $feed_price = $this->resolve_feed_price($actual_price, $source_row);
+        $feed_price = $this->resolve_feed_price($actual_price, $source_row, $price_hide);
         $shipping_charge = $actual_price > 0.0 ? $this->customer_shipping_charge_for_row($source_row, $actual_price) : 0.0;
 
         $row = [
@@ -345,7 +346,7 @@ final class GunDealsFeedGenerator
             'price' => $feed_price > 0.0 ? number_format($feed_price, 2, '.', '') : '',
             'price_hide' => $price_hide,
             'stock_status' => $this->clean_text((string) ($source_row['stock_status'] ?? '')),
-            'shipping_info' => $this->format_shipping_info($shipping_charge),
+            'shipping_info' => $this->format_shipping_info($shipping_charge, $source_row),
             'shipping_charge' => number_format(max(0.0, $shipping_charge), 2, '.', ''),
             'included' => false,
             'skip_reason' => '',
@@ -453,18 +454,31 @@ final class GunDealsFeedGenerator
     /**
      * @param array<string,mixed> $row
      */
-    private function resolve_feed_price(float $actual_price, array $row): float
+    private function resolve_feed_price(float $actual_price, array $row, string $price_hide): float
     {
         if ($actual_price <= 0.0) {
             return 0.0;
         }
 
+        $feed_price = $actual_price;
+
         if ($this->is_no_email_no_add_to_cart_policy_row($row)) {
             $discount_fraction = Options::get_gundeals_no_email_no_add_to_cart_discount_percent() / 100.0;
-            return max(0.01, $actual_price * (1.0 - $discount_fraction));
+            $feed_price = max(0.01, $feed_price * (1.0 - $discount_fraction));
         }
 
-        return $actual_price;
+        if (
+            $price_hide !== ''
+            && $this->is_holosun_row($row)
+            && Options::get_gundeals_holosun_hidden_map_discount_enabled()
+        ) {
+            $discount_amount = Options::get_gundeals_holosun_hidden_map_discount_amount();
+            if ($discount_amount > 0.0) {
+                $feed_price = max(0.01, $feed_price - $discount_amount);
+            }
+        }
+
+        return $feed_price;
     }
 
     /**
@@ -640,13 +654,42 @@ final class GunDealsFeedGenerator
         );
     }
 
-    private function format_shipping_info(float $shipping_charge): string
+    /**
+     * @param array<string,mixed> $row
+     */
+    private function format_shipping_info(float $shipping_charge, array $row): string
     {
         $shipping = $shipping_charge <= 0.0001
             ? self::FREE_SHIPPING_LABEL
             : '$' . number_format($shipping_charge, 2, '.', '') . ' Shipping';
 
-        return $shipping . ' | ' . self::COMPETITOR_FEE_LABEL;
+        return $shipping . ' | ' . $this->shipping_info_suffix_for_row($row);
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    private function shipping_info_suffix_for_row(array $row): string
+    {
+        if ($this->is_holosun_row($row)) {
+            return self::HOLOSUN_SHIPPING_SUFFIX;
+        }
+
+        return self::COMPETITOR_FEE_LABEL;
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    private function is_holosun_row(array $row): bool
+    {
+        $brand = strtolower(trim((string) ($row['brand'] ?? '')));
+        if ($brand !== '' && strpos($brand, 'holosun') !== false) {
+            return true;
+        }
+
+        $title = strtolower(trim((string) ($row['title'] ?? '')));
+        return $title !== '' && strpos($title, 'holosun') !== false;
     }
 
     private function free_shipping_cost_threshold(float $profit_net_total, float $max_profit_spend_percent): float

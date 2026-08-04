@@ -149,6 +149,26 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_gundeals_holosun_hidden_map_discount_enabled() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_non_negative_decimal_string'],
+                'default'           => (string) Options::default_gundeals_holosun_hidden_map_discount_amount(),
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_GUNMADE_FEED_ENABLED,
             [
                 'type'              => 'string',

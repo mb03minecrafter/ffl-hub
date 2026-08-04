@@ -49,6 +49,8 @@ final class Options
     public const OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = 'fflhub_pretty_random_email_quotes_enabled';
     public const OPTION_GUNDEALS_FEED_ENABLED         = 'fflhub_gundeals_feed_enabled';
     public const OPTION_GUNDEALS_NO_EMAIL_NO_ADD_TO_CART_DISCOUNT_PERCENT = 'fflhub_gundeals_no_email_no_add_to_cart_discount_percent';
+    public const OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED = 'fflhub_gundeals_holosun_hidden_map_discount_enabled';
+    public const OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT = 'fflhub_gundeals_holosun_hidden_map_discount_amount';
     public const OPTION_GUNMADE_FEED_ENABLED          = 'fflhub_gunmade_feed_enabled';
     public const OPTION_PREFER_DROPSHIP_BEST_OFFERS_ENABLED = 'fflhub_prefer_dropship_best_offers_enabled';
     public const OPTION_PUBLIC_BRAND_NAME             = 'fflhub_public_brand_name';
@@ -114,6 +116,8 @@ final class Options
     private const DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = true;
     private const DEFAULT_GUNDEALS_FEED_ENABLED         = true;
     private const DEFAULT_GUNDEALS_NO_EMAIL_NO_ADD_TO_CART_DISCOUNT_PERCENT = 5.0;
+    private const DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED = false;
+    private const DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT = 0.0;
     private const DEFAULT_GUNMADE_FEED_ENABLED          = true;
     private const DEFAULT_PREFER_DROPSHIP_BEST_OFFERS_ENABLED = true;
     private const DEFAULT_PUBLIC_BRAND_NAME             = '';
@@ -293,6 +297,16 @@ final class Options
     public static function default_gundeals_no_email_no_add_to_cart_discount_percent(): float
     {
         return self::DEFAULT_GUNDEALS_NO_EMAIL_NO_ADD_TO_CART_DISCOUNT_PERCENT;
+    }
+
+    public static function default_gundeals_holosun_hidden_map_discount_enabled(): bool
+    {
+        return self::DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED;
+    }
+
+    public static function default_gundeals_holosun_hidden_map_discount_amount(): float
+    {
+        return self::DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT;
     }
 
     public static function default_gunmade_feed_enabled(): bool
@@ -504,6 +518,20 @@ final class Options
             add_option(
                 self::OPTION_GUNDEALS_NO_EMAIL_NO_ADD_TO_CART_DISCOUNT_PERCENT,
                 (string) self::DEFAULT_GUNDEALS_NO_EMAIL_NO_ADD_TO_CART_DISCOUNT_PERCENT
+            );
+        }
+
+        if (get_option(self::OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED, null) === null) {
+            add_option(
+                self::OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED,
+                self::DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED ? '1' : '0'
+            );
+        }
+
+        if (get_option(self::OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT, null) === null) {
+            add_option(
+                self::OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT,
+                (string) self::DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT
             );
         }
 
@@ -1141,6 +1169,22 @@ final class Options
         );
 
         return min(100.0, self::to_non_negative_float($value));
+    }
+
+    public static function get_gundeals_holosun_hidden_map_discount_enabled(): bool
+    {
+        return ((string) get_option(
+            self::OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED,
+            self::DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED ? '1' : '0'
+        )) === '1';
+    }
+
+    public static function get_gundeals_holosun_hidden_map_discount_amount(): float
+    {
+        return self::to_non_negative_float(get_option(
+            self::OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT,
+            (string) self::DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT
+        ));
     }
 
     public static function get_gunmade_feed_enabled(): bool
