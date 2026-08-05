@@ -54,6 +54,7 @@ final class GunDealsFeedGenerator
             'elapsed_ms' => 0,
             'xml_bytes' => 0,
             'feed_enabled' => Options::get_gundeals_feed_enabled() ? 1 : 0,
+            'single_offer_mode_enabled' => Options::get_gundeals_single_offer_mode_enabled() ? 1 : 0,
             'product_state_usps_shipping' => Options::get_use_product_state_usps_shipping() ? 1 : 0,
         ];
 
@@ -99,6 +100,28 @@ final class GunDealsFeedGenerator
         $writer->startDocument('1.0', 'UTF-8');
         $writer->setIndent(true);
         $writer->startElementNS(null, 'offers', self::XML_NAMESPACE);
+
+        if ($summary['single_offer_mode_enabled']) {
+            $row = $this->single_offer_mode_row();
+            $this->write_offer($writer, $row);
+            $this->write_debug_row($debug, $row);
+            $summary['products_scanned'] = 1;
+            $summary['offers_written'] = 1;
+            $summary['warnings'][] = 'Gun.deals single offer mode enabled; generated only the fixed reinstatement offer.';
+            $writer->endElement();
+            $writer->endDocument();
+            $writer->flush();
+            fclose($debug);
+
+            return $this->finalize_generated_feed(
+                $xml_tmp,
+                $debug_tmp,
+                $summary_tmp,
+                $paths,
+                $summary,
+                $started
+            );
+        }
 
         if (!$summary['feed_enabled']) {
             $summary['warnings'][] = 'Gun.deals feed disabled in FFL Hub settings; generated empty offers feed.';
@@ -382,6 +405,33 @@ final class GunDealsFeedGenerator
         $row['included'] = true;
 
         return $row;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function single_offer_mode_row(): array
+    {
+        return [
+            'product_id' => 0,
+            'title' => 'Glock 19 Gen 6 9mm 4.02" 15-Round ORS Pistol',
+            'sku' => '',
+            'upc' => '764503068256',
+            'brand' => 'GLOCK',
+            'category' => '',
+            'price' => '564.99',
+            'price_hide' => self::PRICE_HIDE_EMAIL_FOR_QUOTE,
+            'stock_status' => 'instock',
+            'shipping_info' => '$19.11 Shipping | ' . self::COMPETITOR_FEE_LABEL,
+            'shipping_charge' => '19.11',
+            'included' => true,
+            'skip_reason' => '',
+            'product_url' => 'https://deerforddefense.com/product/glock-19-gen-6-9mm-4-02-15-round-ors-pistol-764503068256/?utm_source=gundeals',
+            'image_url' => '',
+            'source' => 'single_offer_mode',
+            'last_stock_update' => gmdate('c'),
+            'firearm_model' => 'Glock 19 Gen 6',
+        ];
     }
 
     /**
@@ -957,6 +1007,12 @@ final class GunDealsFeedGenerator
 
         if ((string) $row['image_url'] !== '') {
             $this->write_text_element($writer, 'imageUrl', (string) $row['image_url']);
+        }
+
+        if ((string) ($row['firearm_model'] ?? '') !== '') {
+            $writer->startElement('firearm');
+            $this->write_text_element($writer, 'model', (string) $row['firearm_model']);
+            $writer->endElement();
         }
 
         $writer->endElement();

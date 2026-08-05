@@ -139,6 +139,16 @@ final class SettingsRegistrar
 
         register_setting(
             $group,
+            Options::OPTION_GUNDEALS_SINGLE_OFFER_MODE_ENABLED,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
+                'default'           => Options::default_gundeals_single_offer_mode_enabled() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
             Options::OPTION_GUNDEALS_NO_EMAIL_NO_ADD_TO_CART_DISCOUNT_PERCENT,
             [
                 'type'              => 'string',

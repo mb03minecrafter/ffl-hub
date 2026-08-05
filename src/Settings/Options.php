@@ -48,6 +48,7 @@ final class Options
     public const OPTION_TEST_ORDER_DEBUG_ENABLED      = 'fflhub_test_order_debug_enabled';
     public const OPTION_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = 'fflhub_pretty_random_email_quotes_enabled';
     public const OPTION_GUNDEALS_FEED_ENABLED         = 'fflhub_gundeals_feed_enabled';
+    public const OPTION_GUNDEALS_SINGLE_OFFER_MODE_ENABLED = 'fflhub_gundeals_single_offer_mode_enabled';
     public const OPTION_GUNDEALS_NO_EMAIL_NO_ADD_TO_CART_DISCOUNT_PERCENT = 'fflhub_gundeals_no_email_no_add_to_cart_discount_percent';
     public const OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED = 'fflhub_gundeals_holosun_hidden_map_discount_enabled';
     public const OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT = 'fflhub_gundeals_holosun_hidden_map_discount_amount';
@@ -115,6 +116,7 @@ final class Options
     private const DEFAULT_TEST_ORDER_DEBUG_ENABLED      = true;
     private const DEFAULT_PRETTY_RANDOM_EMAIL_QUOTES_ENABLED = true;
     private const DEFAULT_GUNDEALS_FEED_ENABLED         = true;
+    private const DEFAULT_GUNDEALS_SINGLE_OFFER_MODE_ENABLED = false;
     private const DEFAULT_GUNDEALS_NO_EMAIL_NO_ADD_TO_CART_DISCOUNT_PERCENT = 5.0;
     private const DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_ENABLED = false;
     private const DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT = 0.0;
@@ -292,6 +294,11 @@ final class Options
     public static function default_gundeals_feed_enabled(): bool
     {
         return self::DEFAULT_GUNDEALS_FEED_ENABLED;
+    }
+
+    public static function default_gundeals_single_offer_mode_enabled(): bool
+    {
+        return self::DEFAULT_GUNDEALS_SINGLE_OFFER_MODE_ENABLED;
     }
 
     public static function default_gundeals_no_email_no_add_to_cart_discount_percent(): float
@@ -512,6 +519,13 @@ final class Options
 
         if (get_option(self::OPTION_GUNDEALS_FEED_ENABLED, null) === null) {
             add_option(self::OPTION_GUNDEALS_FEED_ENABLED, self::DEFAULT_GUNDEALS_FEED_ENABLED ? '1' : '0');
+        }
+
+        if (get_option(self::OPTION_GUNDEALS_SINGLE_OFFER_MODE_ENABLED, null) === null) {
+            add_option(
+                self::OPTION_GUNDEALS_SINGLE_OFFER_MODE_ENABLED,
+                self::DEFAULT_GUNDEALS_SINGLE_OFFER_MODE_ENABLED ? '1' : '0'
+            );
         }
 
         if (get_option(self::OPTION_GUNDEALS_NO_EMAIL_NO_ADD_TO_CART_DISCOUNT_PERCENT, null) === null) {
@@ -1158,6 +1172,14 @@ final class Options
         return ((string) get_option(
             self::OPTION_GUNDEALS_FEED_ENABLED,
             self::DEFAULT_GUNDEALS_FEED_ENABLED ? '1' : '0'
+        )) === '1';
+    }
+
+    public static function get_gundeals_single_offer_mode_enabled(): bool
+    {
+        return ((string) get_option(
+            self::OPTION_GUNDEALS_SINGLE_OFFER_MODE_ENABLED,
+            self::DEFAULT_GUNDEALS_SINGLE_OFFER_MODE_ENABLED ? '1' : '0'
         )) === '1';
     }
 
