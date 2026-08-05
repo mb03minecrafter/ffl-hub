@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 
 use FFLHub\Distributor\Core\DistributorRegistry;
 use FFLHub\Distributor\Contracts\DistributorModuleInterface;
+use FFLHub\Distributor\Services\OfferSync\GlobalNonDropshipOfferDisableService;
 use FFLHub\Distributor\Services\OfferSync\ProductStateMapPolicyRefreshService;
 
 /**
@@ -194,6 +195,16 @@ final class SettingsRegistrar
                 'type'              => 'string',
                 'sanitize_callback' => [__CLASS__, 'sanitize_checkbox'],
                 'default'           => Options::default_prefer_dropship_best_offers_enabled() ? '1' : '0',
+            ]
+        );
+
+        register_setting(
+            $group,
+            Options::OPTION_DISABLE_NON_DROPSHIP_OFFERS_ENABLED,
+            [
+                'type'              => 'string',
+                'sanitize_callback' => [__CLASS__, 'sanitize_disable_non_dropship_offers_enabled'],
+                'default'           => Options::default_disable_non_dropship_offers_enabled() ? '1' : '0',
             ]
         );
 
@@ -756,6 +767,28 @@ final class SettingsRegistrar
     public static function sanitize_checkbox($value): string
     {
         return ((string) $value === '1') ? '1' : '0';
+    }
+
+    /**
+     * When the global non-dropship kill switch is turned on, immediately mark
+     * affected offer UPCs dirty and run the standard offer -> product_state ->
+     * Woo propagation chain.
+     *
+     * @param mixed $value
+     */
+    public static function sanitize_disable_non_dropship_offers_enabled($value): string
+    {
+        $sanitized = self::sanitize_checkbox($value);
+        $previous = (string) get_option(
+            Options::OPTION_DISABLE_NON_DROPSHIP_OFFERS_ENABLED,
+            Options::default_disable_non_dropship_offers_enabled() ? '1' : '0'
+        );
+
+        if ($sanitized === '1' && $previous !== '1') {
+            GlobalNonDropshipOfferDisableService::disable_existing_non_dropship_offers(true);
+        }
+
+        return $sanitized;
     }
 
     /**

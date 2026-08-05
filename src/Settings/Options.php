@@ -54,6 +54,7 @@ final class Options
     public const OPTION_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT = 'fflhub_gundeals_holosun_hidden_map_discount_amount';
     public const OPTION_GUNMADE_FEED_ENABLED          = 'fflhub_gunmade_feed_enabled';
     public const OPTION_PREFER_DROPSHIP_BEST_OFFERS_ENABLED = 'fflhub_prefer_dropship_best_offers_enabled';
+    public const OPTION_DISABLE_NON_DROPSHIP_OFFERS_ENABLED = 'fflhub_disable_non_dropship_offers_enabled';
     public const OPTION_PUBLIC_BRAND_NAME             = 'fflhub_public_brand_name';
     public const OPTION_QUOTE_EMAIL_REP_NAMES         = 'fflhub_quote_email_rep_names';
     public const OPTION_QUOTE_EMAIL_TEAM_SIGNATURE    = 'fflhub_quote_email_team_signature';
@@ -122,6 +123,7 @@ final class Options
     private const DEFAULT_GUNDEALS_HOLOSUN_HIDDEN_MAP_DISCOUNT_AMOUNT = 0.0;
     private const DEFAULT_GUNMADE_FEED_ENABLED          = true;
     private const DEFAULT_PREFER_DROPSHIP_BEST_OFFERS_ENABLED = true;
+    private const DEFAULT_DISABLE_NON_DROPSHIP_OFFERS_ENABLED = false;
     private const DEFAULT_PUBLIC_BRAND_NAME             = '';
     private const DEFAULT_QUOTE_EMAIL_REP_NAMES         = '';
     private const DEFAULT_QUOTE_EMAIL_TEAM_SIGNATURE    = '';
@@ -324,6 +326,11 @@ final class Options
     public static function default_prefer_dropship_best_offers_enabled(): bool
     {
         return self::DEFAULT_PREFER_DROPSHIP_BEST_OFFERS_ENABLED;
+    }
+
+    public static function default_disable_non_dropship_offers_enabled(): bool
+    {
+        return self::DEFAULT_DISABLE_NON_DROPSHIP_OFFERS_ENABLED;
     }
 
     public static function default_public_brand_name(): string
@@ -551,6 +558,13 @@ final class Options
 
         if (get_option(self::OPTION_GUNMADE_FEED_ENABLED, null) === null) {
             add_option(self::OPTION_GUNMADE_FEED_ENABLED, self::DEFAULT_GUNMADE_FEED_ENABLED ? '1' : '0');
+        }
+
+        if (get_option(self::OPTION_DISABLE_NON_DROPSHIP_OFFERS_ENABLED, null) === null) {
+            add_option(
+                self::OPTION_DISABLE_NON_DROPSHIP_OFFERS_ENABLED,
+                self::DEFAULT_DISABLE_NON_DROPSHIP_OFFERS_ENABLED ? '1' : '0'
+            );
         }
 
         if (get_option(self::OPTION_PUBLIC_BRAND_NAME, null) === null) {
@@ -1222,6 +1236,14 @@ final class Options
         return ((string) get_option(
             self::OPTION_PREFER_DROPSHIP_BEST_OFFERS_ENABLED,
             self::DEFAULT_PREFER_DROPSHIP_BEST_OFFERS_ENABLED ? '1' : '0'
+        )) === '1';
+    }
+
+    public static function get_disable_non_dropship_offers_enabled(): bool
+    {
+        return ((string) get_option(
+            self::OPTION_DISABLE_NON_DROPSHIP_OFFERS_ENABLED,
+            self::DEFAULT_DISABLE_NON_DROPSHIP_OFFERS_ENABLED ? '1' : '0'
         )) === '1';
     }
 

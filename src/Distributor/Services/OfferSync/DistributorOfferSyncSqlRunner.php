@@ -5,6 +5,7 @@ namespace FFLHub\Distributor\Services\OfferSync;
 
 use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Product\State\ProductStateStore;
+use FFLHub\Settings\Options;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -49,7 +50,7 @@ final class DistributorOfferSyncSqlRunner
         $live_table_label = $map->live_table_label();
         $live_table = $map->source_live_table();
         $alias = $map->source_alias();
-        $source_columns = $map->source_columns();
+        $source_columns = self::apply_global_non_dropship_enabled_rule($map->source_columns());
 
         if ($live_table === '') {
             $result['errors'][] = "A valid {$live_table_label} product table is required.";
@@ -286,10 +287,48 @@ final class DistributorOfferSyncSqlRunner
             throw new \RuntimeException($map->label() . ' distributor offers inventory update failed: ' . (string) $wpdb->last_error);
         }
 
+        $global_non_dropship_disabled = 0;
+        if (Options::get_disable_non_dropship_offers_enabled()) {
+            $global_non_dropship_disabled = GlobalNonDropshipOfferDisableService::disable_existing_non_dropship_offers_for_distributor(
+                $map->distributor_id()
+            );
+        }
+
         return [
             'rows' => is_numeric($updated) ? (int) $updated : 0,
+            'global_non_dropship_disabled_rows' => $global_non_dropship_disabled,
             'elapsed_ms' => (microtime(true) - $started) * 1000.0,
         ];
+    }
+
+    /**
+     * When the global dropship-only setting is enabled, keep source mapping
+     * otherwise identical but force normalized non-dropship offers disabled.
+     *
+     * @param array<string,string> $source_columns
+     * @return array<string,string>
+     */
+    private static function apply_global_non_dropship_enabled_rule(array $source_columns): array
+    {
+        if (!Options::get_disable_non_dropship_offers_enabled()) {
+            return $source_columns;
+        }
+
+        if (empty($source_columns['dropship_enabled'])) {
+            return $source_columns;
+        }
+
+        $dropship_enabled_expr = '(' . $source_columns['dropship_enabled'] . ')';
+        $enabled_expr = '(' . ($source_columns['enabled'] ?? '1') . ')';
+
+        $source_columns['enabled'] = "
+            CASE
+                WHEN COALESCE({$dropship_enabled_expr}, 0) = 1 THEN {$enabled_expr}
+                ELSE 0
+            END
+        ";
+
+        return $source_columns;
     }
 
     public static function table_exists_by_name(string $table): bool

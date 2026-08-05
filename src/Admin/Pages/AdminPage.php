@@ -1898,6 +1898,7 @@ class AdminPage
             'gundeals_holosun_hidden_map_discount_amount' => (string) Options::get_gundeals_holosun_hidden_map_discount_amount(),
             'gunmade_feed_enabled' => Options::get_gunmade_feed_enabled() ? '1' : '0',
             'prefer_dropship_best_offers_enabled' => Options::get_prefer_dropship_best_offers_enabled() ? '1' : '0',
+            'disable_non_dropship_offers_enabled' => Options::get_disable_non_dropship_offers_enabled() ? '1' : '0',
             'public_brand_name' => Options::get_public_brand_name(),
             'quote_email_rep_names' => Options::get_quote_email_rep_names_text(),
             'quote_email_team_signature' => Options::get_quote_email_team_signature(),
@@ -1985,6 +1986,9 @@ class AdminPage
         );
         $gunmade_feed_enabled = ((string) ($settings['gunmade_feed_enabled'] ?? '1') === '1');
         $prefer_dropship_best_offers_enabled = ((string) ($settings['prefer_dropship_best_offers_enabled'] ?? '1') === '1');
+        $disable_non_dropship_offers_enabled = (
+            (string) ($settings['disable_non_dropship_offers_enabled'] ?? '0') === '1'
+        );
         $public_brand_name = (string) ($settings['public_brand_name'] ?? Options::default_public_brand_name());
         $quote_email_rep_names = (string) ($settings['quote_email_rep_names'] ?? Options::default_quote_email_rep_names());
         $quote_email_team_signature = (string) ($settings['quote_email_team_signature'] ?? Options::default_quote_email_team_signature());
@@ -2401,6 +2405,27 @@ class AdminPage
                     <p class="description">
                         <?php esc_html_e(
                             'Enabled: best-offer selection prefers in-stock dropship offers before comparing landed cost. Disabled: best-offer selection ignores dropship preference and falls back to stock status, then landed cost.',
+                            'ffl-hub'
+                        ); ?>
+                    </p>
+                </div>
+
+                <div class="fflhub-field-row">
+                    <label
+                        for="fflhub_disable_non_dropship_offers_enabled"
+                        class="fflhub-field-label">
+                        <?php esc_html_e('Disable non-dropship offers', 'ffl-hub'); ?>
+                    </label>
+                    <input type="hidden" name="fflhub_disable_non_dropship_offers_enabled" value="0" />
+                    <input
+                        id="fflhub_disable_non_dropship_offers_enabled"
+                        name="fflhub_disable_non_dropship_offers_enabled"
+                        type="checkbox"
+                        value="1"
+                        <?php checked($disable_non_dropship_offers_enabled); ?> />
+                    <p class="description">
+                        <?php esc_html_e(
+                            'When enabled, normalized distributor offers that are not dropship-enabled are marked disabled and dirty so best-offer, product_state, and WooCommerce values can move away from dealer-fulfilled rows. Local stock rows are not disabled.',
                             'ffl-hub'
                         ); ?>
                     </p>

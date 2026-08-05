@@ -6,6 +6,7 @@ namespace FFLHub\Distributor\Services\OfferSync;
 use FFLHub\Distributor\Models\DistributorOffer;
 use FFLHub\Distributor\Models\DistributorProductPayload;
 use FFLHub\Distributor\Offers\DistributorOffersStore;
+use FFLHub\Settings\Options;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -112,6 +113,15 @@ final class DistributorLookupOfferIngestService
         $msrp = self::positive_float($payload->msrp ?? null);
         $sku = trim((string) ($payload->sku ?? ''));
         $now = current_time('mysql');
+        $dropship_enabled = !empty($payload->dropship_enabled) ? 1 : 0;
+        $enabled = 1;
+        if (
+            Options::get_disable_non_dropship_offers_enabled()
+            && $dist_id !== 'local_stock'
+            && $dropship_enabled !== 1
+        ) {
+            $enabled = 0;
+        }
 
         return [
             'upc' => $upc,
@@ -128,8 +138,8 @@ final class DistributorLookupOfferIngestService
             'msrp' => $msrp,
             'ffl_required' => !empty($payload->ffl_required) ? 1 : 0,
             'sot_required' => !empty($payload->sot_required) ? 1 : 0,
-            'dropship_enabled' => !empty($payload->dropship_enabled) ? 1 : 0,
-            'enabled' => 1,
+            'dropship_enabled' => $dropship_enabled,
+            'enabled' => $enabled,
             'has_changed' => 1,
             'shipping_weight_oz' => self::non_negative_float($payload->shipping_weight ?? null),
             'shipping_length_in' => self::non_negative_float($payload->shipping_length_in ?? null),

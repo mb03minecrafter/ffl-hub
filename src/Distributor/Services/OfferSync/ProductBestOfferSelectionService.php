@@ -68,6 +68,7 @@ final class ProductBestOfferSelectionService
         $temp_table = 'tmp_fflhub_best_offer_dirty_upcs';
         $map_table = 'tmp_fflhub_best_offer_dirty_maps';
         $shipping_measurements_table = 'tmp_fflhub_best_offer_dirty_shipping_measurements';
+        $regulatory_flags_table = 'tmp_fflhub_best_offer_dirty_regulatory_flags';
         $charset = $wpdb->get_charset_collate();
         $lock_allows_offer_sql = static function (string $offer_alias): string {
             return "(
@@ -83,10 +84,12 @@ final class ProductBestOfferSelectionService
         $result['temp_table'] = $temp_table;
         $result['map_temp_table'] = $map_table;
         $result['shipping_measurements_temp_table'] = $shipping_measurements_table;
+        $result['regulatory_flags_temp_table'] = $regulatory_flags_table;
 
         $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$temp_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$map_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$shipping_measurements_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$regulatory_flags_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $created = $wpdb->query("
             CREATE TEMPORARY TABLE {$temp_table} (
@@ -130,6 +133,21 @@ final class ProductBestOfferSelectionService
         if ($shipping_measurements_created === false) {
             $result['ok'] = false;
             $result['errors'][] = 'Failed to create dirty UPC shipping measurement temp table: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $regulatory_flags_created = $wpdb->query("
+            CREATE TEMPORARY TABLE {$regulatory_flags_table} (
+                upc VARCHAR(32) NOT NULL,
+                ffl_required TINYINT(1) NOT NULL DEFAULT 0,
+                sot_required TINYINT(1) NOT NULL DEFAULT 0,
+                PRIMARY KEY (upc)
+            ) ENGINE=MEMORY {$charset}
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        if ($regulatory_flags_created === false) {
+            $result['ok'] = false;
+            $result['errors'][] = 'Failed to create dirty UPC regulatory flag temp table: ' . (string) $wpdb->last_error;
             return self::finish_result($result, $started);
         }
 
@@ -329,6 +347,37 @@ final class ProductBestOfferSelectionService
         $result['shipping_weight_rows'] = is_numeric($shipping_weight_rows) ? (int) $shipping_weight_rows : 0;
         $result['shipping_dimension_rows'] = is_numeric($shipping_dimension_rows) ? (int) $shipping_dimension_rows : 0;
 
+        // Regulatory flags describe the product, not just the currently
+        // winning offer. Preserve them even when every offer is disabled or
+        // locked out, so a no-offer firearm does not become non-serialized.
+        $t_regulatory_flags = microtime(true);
+        $regulatory_flags_inserted = $wpdb->query("
+            INSERT INTO {$regulatory_flags_table} (upc, ffl_required, sot_required)
+            SELECT
+                d.upc,
+                MAX(CASE WHEN COALESCE(o.ffl_required, 0) = 1 THEN 1 ELSE 0 END) AS ffl_required,
+                MAX(CASE WHEN COALESCE(o.sot_required, 0) = 1 THEN 1 ELSE 0 END) AS sot_required
+            FROM {$temp_table} d
+            INNER JOIN {$product_state_table} ps
+                ON ps.upc = d.upc
+               AND ps.status = 'active'
+            INNER JOIN {$offers_table} o
+                ON o.upc = d.upc
+            GROUP BY d.upc
+            HAVING ffl_required = 1
+                OR sot_required = 1
+        "); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $result['regulatory_flags_elapsed_ms'] = number_format((microtime(true) - $t_regulatory_flags) * 1000.0, 2, '.', '');
+        if ($regulatory_flags_inserted === false) {
+            $result['ok'] = false;
+            $result['errors'][] = 'Failed to build dirty UPC regulatory flag lookup: ' . (string) $wpdb->last_error;
+            return self::finish_result($result, $started);
+        }
+
+        $regulatory_flag_rows = $wpdb->get_var("SELECT COUNT(*) FROM {$regulatory_flags_table}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $result['regulatory_flag_rows'] = is_numeric($regulatory_flag_rows) ? (int) $regulatory_flag_rows : 0;
+
         $best_offer_changed_sql = "
             NOT ({$best_offers_table}.product_id <=> VALUES(product_id))
             OR NOT ({$best_offers_table}.upc <=> VALUES(upc))
@@ -422,8 +471,8 @@ final class ProductBestOfferSelectionService
                     ELSE dm.map_price
                 END AS map_price,
                 COALESCE(NULLIF(o.msrp, 0), dm.msrp) AS msrp,
-                COALESCE(o.ffl_required, 0) AS ffl_required,
-                COALESCE(o.sot_required, 0) AS sot_required,
+                GREATEST(COALESCE(o.ffl_required, 0), COALESCE(rf.ffl_required, 0)) AS ffl_required,
+                GREATEST(COALESCE(o.sot_required, 0), COALESCE(rf.sot_required, 0)) AS sot_required,
                 CASE
                     WHEN o.upc IS NULL THEN 0
                     ELSE o.dropship_enabled
@@ -490,6 +539,8 @@ final class ProductBestOfferSelectionService
                 ON dm.upc = ps.upc
             LEFT JOIN {$shipping_measurements_table} sm
                 ON sm.upc = ps.upc
+            LEFT JOIN {$regulatory_flags_table} rf
+                ON rf.upc = ps.upc
             LEFT JOIN {$offers_table} o
                 ON o.upc = ps.upc
                AND o.enabled = 1

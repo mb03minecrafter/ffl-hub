@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace FFLHub\Product\State;
 
+use FFLHub\Distributor\Offers\DistributorOffersStore;
 use FFLHub\Product\ProductMeta;
 use FFLHub\Settings\Options;
 use WC_Product;
@@ -23,6 +24,9 @@ final class ProductStateStore
 
     /** @var array<string,array<string,mixed>|null> */
     private static array $row_cache_by_upc = [];
+
+    /** @var array<string,bool> */
+    private static array $known_offer_ffl_required_by_upc = [];
 
     public static function table_name(): string
     {
@@ -696,11 +700,16 @@ final class ProductStateStore
     public static function get_ffl_required_for_product(WC_Product $product): bool
     {
         $row = self::get_row_for_product($product);
-        if (!self::row_is_active($row)) {
-            return false;
+        if (self::row_is_active($row) && ((int) ($row['ffl_required'] ?? 0) === 1)) {
+            return true;
         }
 
-        return ((int) ($row['ffl_required'] ?? 0) === 1);
+        $upc = is_array($row) ? self::normalize_upc((string) ($row['upc'] ?? '')) : '';
+        if ($upc === '' && method_exists($product, 'get_global_unique_id')) {
+            $upc = self::normalize_upc((string) $product->get_global_unique_id('edit'));
+        }
+
+        return self::known_offer_ffl_required_for_upc($upc);
     }
 
     public static function get_local_stock_override_qty_for_product(int $product_id): ?int
@@ -1990,6 +1999,37 @@ final class ProductStateStore
 
         $value = trim((string) $value);
         return ($value === '') ? null : $value;
+    }
+
+    private static function known_offer_ffl_required_for_upc(string $upc): bool
+    {
+        global $wpdb;
+
+        $upc = self::normalize_upc($upc);
+        if ($upc === '' || !$wpdb) {
+            return false;
+        }
+
+        if (array_key_exists($upc, self::$known_offer_ffl_required_by_upc)) {
+            return self::$known_offer_ffl_required_by_upc[$upc];
+        }
+
+        if (!DistributorOffersStore::table_exists()) {
+            self::$known_offer_ffl_required_by_upc[$upc] = false;
+            return false;
+        }
+
+        $offers_table = DistributorOffersStore::table_name();
+        $found = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT 1 FROM {$offers_table} WHERE upc = %s AND COALESCE(ffl_required, 0) = 1 LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $upc
+            )
+        );
+
+        self::$known_offer_ffl_required_by_upc[$upc] = !empty($found);
+
+        return self::$known_offer_ffl_required_by_upc[$upc];
     }
 
     /**
