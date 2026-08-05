@@ -19,7 +19,6 @@ final class GunDealsFeedGenerator
     private const XML_NAMESPACE = 'https://api.gunengine.com/ingest/XMLSchema/feed/v2/offers';
     private const FREE_SHIPPING_LABEL = 'FREE SHIPPING';
     private const COMPETITOR_FEE_LABEL = 'NO SALES TAX/FEES';
-    private const HOLOSUN_SHIPPING_SUFFIX = 'De Leon Sucks';
     private const PRICE_HIDE_EMAIL_FOR_QUOTE = 'Email Form for Best Price';
     private const PRICE_HIDE_ADD_TO_CART = 'Add To Cart For Best Price';
     private const PRICE_HIDE_MAP = 'Map';
@@ -346,7 +345,7 @@ final class GunDealsFeedGenerator
             'price' => $feed_price > 0.0 ? number_format($feed_price, 2, '.', '') : '',
             'price_hide' => $price_hide,
             'stock_status' => $this->clean_text((string) ($source_row['stock_status'] ?? '')),
-            'shipping_info' => $this->format_shipping_info($shipping_charge, $source_row),
+            'shipping_info' => $this->format_shipping_info($shipping_charge),
             'shipping_charge' => number_format(max(0.0, $shipping_charge), 2, '.', ''),
             'included' => false,
             'skip_reason' => '',
@@ -654,28 +653,13 @@ final class GunDealsFeedGenerator
         );
     }
 
-    /**
-     * @param array<string,mixed> $row
-     */
-    private function format_shipping_info(float $shipping_charge, array $row): string
+    private function format_shipping_info(float $shipping_charge): string
     {
         $shipping = $shipping_charge <= 0.0001
             ? self::FREE_SHIPPING_LABEL
             : '$' . number_format($shipping_charge, 2, '.', '') . ' Shipping';
 
-        return $shipping . ' | ' . $this->shipping_info_suffix_for_row($row);
-    }
-
-    /**
-     * @param array<string,mixed> $row
-     */
-    private function shipping_info_suffix_for_row(array $row): string
-    {
-        if ($this->is_holosun_row($row)) {
-            return self::HOLOSUN_SHIPPING_SUFFIX;
-        }
-
-        return self::COMPETITOR_FEE_LABEL;
+        return $shipping . ' | ' . self::COMPETITOR_FEE_LABEL;
     }
 
     /**
