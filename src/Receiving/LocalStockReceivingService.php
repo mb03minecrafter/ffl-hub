@@ -436,7 +436,7 @@ final class LocalStockReceivingService
             return [];
         }
 
-        $ffl_required = ((int) ($state['ffl_required'] ?? 0)) === 1;
+        $ffl_required = ProductStateStore::get_ffl_required_for_product($product);
 
         $legacy_local_qty = ProductStateStore::get_local_stock_override_qty_from_row($state);
         $ledger_local_qty = LocalStockUnitStore::available_qty_for_upc($upc);
