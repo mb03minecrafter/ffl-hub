@@ -710,8 +710,8 @@ final class OrderBoxPackingService
      */
     private function dealer_fulfilled_items_for_order(WC_Order $order): array
     {
-        $job_quantities = $this->dealer_fulfilled_job_upc_quantities($order);
-        $has_job_routing = !empty($job_quantities);
+        $job_items = $this->dealer_fulfilled_job_upc_map($order);
+        $has_job_routing = !empty($job_items);
         $items = [];
         $order_items = [];
         $ignored = [];
@@ -737,11 +737,15 @@ final class OrderBoxPackingService
             }
 
             $pack_qty = 0;
+            $job_item = null;
             if ($has_job_routing) {
-                $remaining = $upc !== '' ? (int) ($job_quantities[$upc] ?? 0) : 0;
+                $job_item = ($upc !== '' && isset($job_items[$upc]) && is_array($job_items[$upc]))
+                    ? $job_items[$upc]
+                    : null;
+                $remaining = is_array($job_item) ? (int) ($job_item['quantity'] ?? 0) : 0;
                 $pack_qty = max(0, min($qty, $remaining));
                 if ($pack_qty > 0) {
-                    $job_quantities[$upc] = max(0, $remaining - $pack_qty);
+                    $job_items[$upc]['quantity'] = max(0, $remaining - $pack_qty);
                 }
             } else {
                 $lane = $this->order_item_lane($order_item);
@@ -765,7 +769,9 @@ final class OrderBoxPackingService
             $dealer_units += $pack_qty;
 
             $measurements = $this->shipping_measurements_for_product($product, $state_row);
-            $ffl_required = ProductStateStore::get_ffl_required_for_product($product);
+            $ffl_required = $has_job_routing && is_array($job_item)
+                ? !empty($job_item['ffl_required'])
+                : ProductStateStore::get_ffl_required_for_product($product);
             $order_items[] = [
                 ...$this->order_item_summary($order_item, $product),
                 'item_id' => (int) $order_item->get_id(),
@@ -825,9 +831,9 @@ final class OrderBoxPackingService
      * truthful source for what needs dealer packing. They reflect checkout lane
      * routing and any later dealer-batch optimizer move.
      *
-     * @return array<string,int> normalized UPC => quantity
+     * @return array<string,array{quantity:int,ffl_required:bool}> normalized UPC => immutable job line state
      */
-    private function dealer_fulfilled_job_upc_quantities(WC_Order $order): array
+    private function dealer_fulfilled_job_upc_map(WC_Order $order): array
     {
         global $wpdb;
 
@@ -842,7 +848,7 @@ final class OrderBoxPackingService
             return [];
         }
 
-        $quantities = [];
+        $items = [];
         foreach (OrderPlacementJobsRepository::get_jobs_index($jobs_table, $order) as $job_key) {
             $job = OrderPlacementJobsRepository::get_job_for_order($jobs_table, $order, $job_key);
             if ($job === null || !OrderPlacementKeysUtil::is_dealer_fulfilled_lane($job->lane_norm())) {
@@ -859,11 +865,19 @@ final class OrderBoxPackingService
                     continue;
                 }
 
-                $quantities[$upc] = (int) ($quantities[$upc] ?? 0) + max(1, (int) $line->quantity);
+                if (!isset($items[$upc])) {
+                    $items[$upc] = [
+                        'quantity' => 0,
+                        'ffl_required' => false,
+                    ];
+                }
+
+                $items[$upc]['quantity'] = (int) $items[$upc]['quantity'] + max(1, (int) $line->quantity);
+                $items[$upc]['ffl_required'] = !empty($items[$upc]['ffl_required']) || (bool) $line->ffl_required;
             }
         }
 
-        return $quantities;
+        return $items;
     }
 
     /**
