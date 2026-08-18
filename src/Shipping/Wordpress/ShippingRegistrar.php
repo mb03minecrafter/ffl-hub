@@ -107,6 +107,10 @@ class ShippingRegistrar
             return $rates;
         }
 
+        if (($package['phoenix_package_type'] ?? '') === 'phoenix') {
+            return $rates;
+        }
+
         $package_type = isset($package['fflhub_package_type']) ? (string) $package['fflhub_package_type'] : '';
         if ($package_type === '') {
             $package_type = self::detect_package_type($package);
