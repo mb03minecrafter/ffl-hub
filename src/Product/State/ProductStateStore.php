@@ -699,6 +699,10 @@ final class ProductStateStore
 
     public static function get_ffl_required_for_product(WC_Product $product): bool
     {
+        if (self::is_phoenix_managed_product($product)) {
+            return false;
+        }
+
         $row = self::get_row_for_product($product);
         if (self::row_is_active($row) && ((int) ($row['ffl_required'] ?? 0) === 1)) {
             return true;
@@ -710,6 +714,43 @@ final class ProductStateStore
         }
 
         return self::known_offer_ffl_required_for_upc($upc);
+    }
+
+    private static function is_phoenix_managed_product(WC_Product $product): bool
+    {
+        if (self::product_has_phoenix_meta($product)) {
+            return true;
+        }
+
+        $parent_id = (int) $product->get_parent_id();
+        if ($parent_id <= 0 || !function_exists('wc_get_product')) {
+            return false;
+        }
+
+        $parent = wc_get_product($parent_id);
+        return $parent instanceof WC_Product && self::product_has_phoenix_meta($parent);
+    }
+
+    private static function product_has_phoenix_meta(WC_Product $product): bool
+    {
+        if (self::truthy($product->get_meta('_phoenix_managed', true, 'edit'))) {
+            return true;
+        }
+
+        foreach ([
+            '_phoenix_cart_line_contract_json',
+            '_phoenix_product_state_upc',
+            '_phoenix_upc',
+            '_phoenix_public_price',
+            '_phoenix_backend_price',
+        ] as $meta_key) {
+            $value = $product->get_meta($meta_key, true, 'edit');
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static function get_local_stock_override_qty_for_product(int $product_id): ?int
@@ -2022,7 +2063,7 @@ final class ProductStateStore
         $offers_table = DistributorOffersStore::table_name();
         $found = $wpdb->get_var(
             $wpdb->prepare(
-                "SELECT 1 FROM {$offers_table} WHERE upc = %s AND COALESCE(ffl_required, 0) = 1 LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                "SELECT 1 FROM {$offers_table} WHERE upc = %s AND COALESCE(ffl_required, 0) = 1 AND COALESCE(enabled, 0) = 1 LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $upc
             )
         );
