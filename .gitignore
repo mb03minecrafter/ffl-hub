@@ -6,6 +6,7 @@ Thumbs.db
 
 # Logs
 *.log
+*.bak-*
 
 # Dependencies (pick what applies)
 vendor/
