@@ -5,6 +5,7 @@ namespace FFLHub\Shipping\Wordpress;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use FFLHub\Shipping\Methods\FFLHubShippingMethod;
+use FFLHub\Shipping\PhoenixProductShippingMeta;
 
 if (!defined('ABSPATH')) exit;
 
@@ -33,7 +34,7 @@ class ShippingRegistrar
 
     /**
      * Split mixed carts into two shipping packages:
-     * - fflhub: products managed by FFLHub (have primary distributor meta)
+     * - fflhub: products managed by legacy Product State or Phoenix product meta
      * - external: everything else (e.g. Printify)
      *
      * This allows shipping to be additive across packages.
@@ -58,8 +59,7 @@ class ShippingRegistrar
                 $product = $item['data'] ?? null;
 
                 if ($product instanceof \WC_Product) {
-                    $dist_id = ProductStateStore::get_primary_distributor_for_product($product);
-                    if ($dist_id !== '') {
+                    if (self::is_fflhub_product($product)) {
                         $fflhub_contents[$item_key] = $item;
                         continue;
                     }
@@ -221,13 +221,21 @@ class ShippingRegistrar
                 continue;
             }
 
-            $dist_id = ProductStateStore::get_primary_distributor_for_product($product);
-            if ($dist_id !== '') {
+            if (self::is_fflhub_product($product)) {
                 return 'fflhub';
             }
         }
 
         return 'external';
+    }
+
+    private static function is_fflhub_product(\WC_Product $product): bool
+    {
+        if (PhoenixProductShippingMeta::is_managed_product($product)) {
+            return true;
+        }
+
+        return ProductStateStore::get_primary_distributor_for_product($product) !== '';
     }
 
     /**

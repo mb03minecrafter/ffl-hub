@@ -111,6 +111,10 @@ class MapPriceVisibility
      */
     private static function is_out_of_stock_for_quote(WC_Product $product): bool
     {
+        if (self::is_phoenix_managed_product($product, null)) {
+            return !$product->is_in_stock();
+        }
+
         $state_product_id = self::state_product_id($product, null);
         if ($state_product_id <= 0) {
             return true;
@@ -537,6 +541,10 @@ class MapPriceVisibility
 
     private static function has_product_level_map_policy_requirements(WC_Product $product, ?WC_Product $parent = null): bool
     {
+        if (self::is_phoenix_managed_product($product, $parent)) {
+            return self::map_price_for_product($product, $parent) !== null;
+        }
+
         $state_product_id = self::state_product_id($product, $parent);
         return $state_product_id > 0
             && ProductStateStore::get_map_applicable_for_product($state_product_id)
@@ -555,6 +563,10 @@ class MapPriceVisibility
 
     private static function map_price_for_product(WC_Product $product, ?WC_Product $parent = null): ?float
     {
+        if (self::is_phoenix_managed_product($product, $parent)) {
+            return self::positive_meta_price($product, $parent, '_phoenix_map_price');
+        }
+
         $state_product_id = self::state_product_id($product, $parent);
         if ($state_product_id <= 0 || !ProductStateStore::get_map_applicable_for_product($state_product_id)) {
             return null;
@@ -716,6 +728,11 @@ class MapPriceVisibility
      */
     private static function public_prices_for_product(WC_Product $product, ?WC_Product $parent = null): ?array
     {
+        $phoenix_prices = self::phoenix_public_prices_for_product($product, $parent);
+        if ($phoenix_prices !== null) {
+            return $phoenix_prices;
+        }
+
         $state_product_id = self::state_product_id($product, $parent);
         if ($state_product_id <= 0) {
             return null;
@@ -742,6 +759,12 @@ class MapPriceVisibility
 
     private static function sell_price_for_map_check(WC_Product $product, ?WC_Product $parent = null): ?float
     {
+        if (self::is_phoenix_managed_product($product, $parent)) {
+            return self::positive_meta_price($product, $parent, '_phoenix_backend_price')
+                ?? self::positive_meta_price($product, $parent, '_phoenix_public_price')
+                ?? self::positive_product_price($product->get_price('edit'));
+        }
+
         $state_product_id = self::state_product_id($product, $parent);
         if ($state_product_id <= 0) {
             return null;
@@ -775,6 +798,113 @@ class MapPriceVisibility
         return function_exists('wc_format_decimal')
             ? wc_format_decimal($price, function_exists('wc_get_price_decimals') ? wc_get_price_decimals() : 2)
             : (string) $price;
+    }
+
+    /**
+     * @return array{regular:float,sale:?float,active:float}|null
+     */
+    private static function phoenix_public_prices_for_product(WC_Product $product, ?WC_Product $parent = null): ?array
+    {
+        if (!self::is_phoenix_managed_product($product, $parent)) {
+            return null;
+        }
+
+        $source = self::phoenix_meta_source_product($product, $parent) ?? $product;
+        $active = self::positive_meta_price($product, $parent, '_phoenix_public_price')
+            ?? self::positive_product_price($source->get_price('edit'));
+        $regular = self::positive_product_price($source->get_regular_price('edit')) ?? $active;
+        $sale = self::positive_product_price($source->get_sale_price('edit'));
+
+        if ($active === null && $regular === null && $sale === null) {
+            return null;
+        }
+
+        if ($regular === null) {
+            $regular = $active ?? $sale;
+        }
+
+        if ($active === null) {
+            $active = ($sale !== null && $regular !== null && $sale < $regular) ? $sale : $regular;
+        }
+
+        if ($regular === null || $active === null) {
+            return null;
+        }
+
+        if ($sale !== null && $sale >= $regular) {
+            $sale = null;
+        }
+
+        return [
+            'regular' => $regular,
+            'sale' => $sale,
+            'active' => $active,
+        ];
+    }
+
+    private static function is_phoenix_managed_product(WC_Product $product, ?WC_Product $parent = null): bool
+    {
+        return self::phoenix_meta_source_product($product, $parent) instanceof WC_Product;
+    }
+
+    private static function phoenix_meta_source_product(WC_Product $product, ?WC_Product $parent = null): ?WC_Product
+    {
+        if (self::has_phoenix_meta($product)) {
+            return $product;
+        }
+
+        if ($parent instanceof WC_Product && self::has_phoenix_meta($parent)) {
+            return $parent;
+        }
+
+        if (method_exists($product, 'get_parent_id')) {
+            $parent_id = (int) $product->get_parent_id();
+            if ($parent_id > 0 && function_exists('wc_get_product')) {
+                $parent_product = wc_get_product($parent_id);
+                if ($parent_product instanceof WC_Product && self::has_phoenix_meta($parent_product)) {
+                    return $parent_product;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static function has_phoenix_meta(WC_Product $product): bool
+    {
+        return self::trimmed_product_meta($product, '_phoenix_upc') !== ''
+            || self::trimmed_product_meta($product, '_phoenix_source_offer_id') !== ''
+            || self::trimmed_product_meta($product, '_phoenix_public_price') !== '';
+    }
+
+    private static function positive_meta_price(WC_Product $product, ?WC_Product $parent, string $key): ?float
+    {
+        $source = self::phoenix_meta_source_product($product, $parent);
+        if (!($source instanceof WC_Product)) {
+            return null;
+        }
+
+        return self::positive_product_price(self::trimmed_product_meta($source, $key));
+    }
+
+    private static function positive_product_price($value): ?float
+    {
+        if (!is_scalar($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        if ($normalized === '' || !is_numeric($normalized)) {
+            return null;
+        }
+
+        $price = (float) $normalized;
+        return $price > 0.0 ? $price : null;
+    }
+
+    private static function trimmed_product_meta(WC_Product $product, string $key): string
+    {
+        return trim((string) $product->get_meta($key, true, 'edit'));
     }
 
     private static function state_product_id(WC_Product $product, ?WC_Product $parent = null): int
@@ -1349,6 +1479,11 @@ class MapPriceVisibility
 
     private static function map_policy_for_product(WC_Product $product, ?WC_Product $parent = null): string
     {
+        $phoenix_policy = self::phoenix_map_policy_for_product($product, $parent);
+        if ($phoenix_policy !== null) {
+            return $phoenix_policy;
+        }
+
         $state_product_id = self::state_product_id($product, $parent);
         if ($state_product_id <= 0) {
             return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
@@ -1364,6 +1499,27 @@ class MapPriceVisibility
         }
 
         return Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE;
+    }
+
+    private static function phoenix_map_policy_for_product(WC_Product $product, ?WC_Product $parent = null): ?string
+    {
+        if (!self::is_phoenix_managed_product($product, $parent)) {
+            return null;
+        }
+
+        $source = self::phoenix_meta_source_product($product, $parent);
+        if (!($source instanceof WC_Product)) {
+            return null;
+        }
+
+        $policy = strtolower(self::trimmed_product_meta($source, '_phoenix_map_display_policy'));
+        return match ($policy) {
+            'none' => self::MAP_POLICY_NONE,
+            'email_quote_required' => Options::MAP_POLICY_EMAIL_FOR_QUOTE,
+            'strict_map' => Options::MAP_POLICY_NO_EMAIL_NO_ADD_TO_CART,
+            'add_to_cart_for_price' => Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE,
+            default => Options::MAP_POLICY_ADD_TO_CART_FOR_PRICE,
+        };
     }
 
 }

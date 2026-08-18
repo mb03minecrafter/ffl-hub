@@ -10,6 +10,8 @@ use FFLHub\FFL\Tables\FFLTable;
 use FFLHub\Product\State\ProductStateStore;
 use FFLHub\Settings\Options;
 use FFLHub\Shipping\CustomerShippingCostPolicy;
+use FFLHub\Shipping\PhoenixProductShippingMeta;
+use FFLHub\Shipping\PhoenixShippingPlanBridge;
 use FFLHub\Shipping\USPS\USPSRateHelper;
 use FFLHub\Util\DebugLogUtil;
 use WC_Shipping_Method;
@@ -164,8 +166,13 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $routing_lines = [];
         $line_debug_rows = [];
         $local_available_by_product = [];
+        $phoenix_lines = [];
+        $phoenix_by_dist = [];
+        $phoenix_customer_chargeable_shipping_cost_total = 0.0;
+        $phoenix_shipping_cost_total = 0.0;
 
-        // Cart-level profit (net after fee) across ALL FFLHub items in this package
+        // Legacy cart-level profit. Phoenix-managed lines use their synced
+        // product shipping charge instead of the old profit-waiver rule.
         $profit_net_total = 0.0;
 
         foreach (($package['contents'] ?? []) as $item_key => $item) {
@@ -182,6 +189,36 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             }
 
             $product_id = method_exists($product, 'get_id') ? (int) $product->get_id() : 0;
+
+            $phoenix_line = PhoenixProductShippingMeta::line_for_product($product, $qty, $fallback_ship);
+            if (is_array($phoenix_line)) {
+                $phoenix_line['line_id'] = (string) $item_key;
+                $phoenix_line['line_revenue'] = isset($item['line_total']) ? (float) $item['line_total'] : 0.0;
+                $phoenix_lines[] = $phoenix_line;
+                $phoenix_customer_chargeable_shipping_cost_total += max(
+                    0.0,
+                    (float) ($phoenix_line['customer_shipping_charge_total'] ?? 0.0)
+                );
+                PhoenixShippingPlanBridge::add_line_to_by_dist($phoenix_by_dist, $phoenix_line);
+
+                $this->log_debug(
+                    sprintf(
+                        'PHOENIX LINE product=%d dist=%s qty=%d ffl=%d route=%s recovery=%s customer_unit=%s customer_total=%s source_ship_unit=%s charge_source=%s',
+                        (int) ($phoenix_line['product_id'] ?? $product_id),
+                        (string) ($phoenix_line['dist_id'] ?? ''),
+                        (int) ($phoenix_line['qty'] ?? $qty),
+                        !empty($phoenix_line['ffl_required']) ? 1 : 0,
+                        (string) ($phoenix_line['fulfillment_method'] ?? ''),
+                        (string) ($phoenix_line['shipping_recovery_policy'] ?? ''),
+                        $this->fmt_money((float) ($phoenix_line['customer_shipping_unit_charge'] ?? 0.0)),
+                        $this->fmt_money((float) ($phoenix_line['customer_shipping_charge_total'] ?? 0.0)),
+                        $this->fmt_money((float) ($phoenix_line['source_shipping_unit_cost'] ?? 0.0)),
+                        (string) ($phoenix_line['customer_shipping_charge_source'] ?? '')
+                    )
+                );
+
+                continue;
+            }
 
             $state_row = ProductStateStore::get_row_for_product($product);
             $state_status = is_array($state_row) ? strtolower(trim((string) ($state_row['status'] ?? ''))) : '';
@@ -336,6 +373,8 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                 'price_recovered_dealer_outbound_shipping' => (float) $fixed_profit_shipping_coverage['dealer_outbound'],
             ];
         }
+
+        $phoenix_shipping_cost_total = PhoenixShippingPlanBridge::sum_by_dist_cost($phoenix_by_dist);
 
         // 1) Compute optimal shipping cost-to-you from routing planner
         $plan = DealerFulfillmentRoutingPlanner::find_cheapest_plan(
@@ -564,6 +603,34 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $plan['customer_chargeable_by_dist'] = (array) ($customer_shipping['by_dist'] ?? []);
         $plan['customer_free_shipping_product_applied'] = $customer_free_shipping_product_applied ? 1 : 0;
 
+        $legacy_shipping_cost_total = $shipping_cost_total;
+        $legacy_customer_chargeable_shipping_cost_total = $customer_chargeable_shipping_cost_total;
+        $legacy_profit_net_total = $profit_net_total;
+
+        if (!empty($phoenix_lines)) {
+            $plan = PhoenixShippingPlanBridge::merge_plan(
+                $plan,
+                $phoenix_lines,
+                $phoenix_by_dist,
+                $phoenix_shipping_cost_total,
+                $phoenix_customer_chargeable_shipping_cost_total
+            );
+            $by_dist = (isset($plan['by_dist']) && is_array($plan['by_dist'])) ? $plan['by_dist'] : [];
+            $shipping_cost_total += $phoenix_shipping_cost_total;
+            $customer_chargeable_shipping_cost_total += $phoenix_customer_chargeable_shipping_cost_total;
+            $plan['total_cost'] = $shipping_cost_total;
+            $plan['customer_chargeable_shipping_cost_total'] = $customer_chargeable_shipping_cost_total;
+
+            $this->log_debug(
+                sprintf(
+                    'PHOENIX SUMMARY lines=%d source_shipping_total=%s customer_chargeable_total=%s',
+                    count($phoenix_lines),
+                    $this->fmt_money($phoenix_shipping_cost_total),
+                    $this->fmt_money($phoenix_customer_chargeable_shipping_cost_total)
+                )
+            );
+        }
+
         $this->log_debug(
             sprintf(
                 'OUTBOUND dealer_home wt_oz=%.2f dims=%s zip=%s source=%s cost=%s | dealer_ffl wt_oz=%.2f dims=%s zip=%s source=%s cost=%s',
@@ -612,13 +679,13 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $customer_charge = 0.0;
         $free_shipping_max_profit_spend_percent = Options::get_free_shipping_max_profit_spend_percent();
         $free_threshold = $this->free_shipping_cost_threshold(
-            (float) $profit_net_total,
+            (float) $legacy_profit_net_total,
             $free_shipping_max_profit_spend_percent
         );
-        $profit_after_free_shipping = (float) $profit_net_total - (float) $shipping_cost_total;
+        $profit_after_free_shipping = (float) $legacy_profit_net_total - (float) $legacy_shipping_cost_total;
         $profit_based_free_shipping_applies = $this->should_apply_profit_based_free_shipping(
-            (float) $profit_net_total,
-            (float) $shipping_cost_total,
+            (float) $legacy_profit_net_total,
+            (float) $legacy_shipping_cost_total,
             $free_shipping_max_profit_spend_percent
         );
         $free_shipping_coupon_codes = $this->applied_free_shipping_coupon_codes();
@@ -627,10 +694,11 @@ class FFLHubShippingMethod extends WC_Shipping_Method
         $plan['free_shipping_profit_rule'] = [
             'max_profit_spend_percent' => $free_shipping_max_profit_spend_percent,
             'minimum_profit_after_free_shipping' => self::MIN_PROFIT_AFTER_FREE_SHIPPING,
-            'profit_net_total' => (float) $profit_net_total,
+            'profit_net_total' => (float) $legacy_profit_net_total,
             'shipping_cost_threshold' => $free_threshold,
             'profit_after_free_shipping' => $profit_after_free_shipping,
             'matched' => $profit_based_free_shipping_applies ? 1 : 0,
+            'scope' => 'legacy_product_state_lines_only',
         ];
         $plan['free_shipping_coupon_rule'] = [
             'matched' => $free_shipping_coupon_applied ? 1 : 0,
@@ -638,16 +706,22 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             'charge_before_coupon' => 0.0,
         ];
 
-        if ($customer_chargeable_shipping_cost_total <= 0.0) {
-            $customer_charge = 0.0;
-            $this->log_debug('RULE customer_chargeable_shipping_cost_total=0 so customer_charge=$0.00');
+        $customer_charge = $phoenix_customer_chargeable_shipping_cost_total;
+        if ($legacy_customer_chargeable_shipping_cost_total <= 0.0) {
+            $this->log_debug(
+                sprintf(
+                    'RULE legacy_customer_chargeable_shipping_cost_total=0 phoenix_customer_charge=%s',
+                    $this->fmt_money($phoenix_customer_chargeable_shipping_cost_total)
+                )
+            );
         } else {
             $this->log_debug(
                 sprintf(
-                    'RULE profit_net_total=%s shipping_cost_total=%s customer_chargeable_shipping_cost_total=%s max_profit_spend_pct=%.2f min_profit_after_free=%s free_threshold=%s profit_after_free=%s',
-                    $this->fmt_money($profit_net_total),
-                    $this->fmt_money($shipping_cost_total),
-                    $this->fmt_money($customer_chargeable_shipping_cost_total),
+                    'RULE legacy_profit_net_total=%s legacy_shipping_cost_total=%s legacy_customer_chargeable_shipping_cost_total=%s phoenix_customer_chargeable=%s max_profit_spend_pct=%.2f min_profit_after_free=%s free_threshold=%s profit_after_free=%s',
+                    $this->fmt_money($legacy_profit_net_total),
+                    $this->fmt_money($legacy_shipping_cost_total),
+                    $this->fmt_money($legacy_customer_chargeable_shipping_cost_total),
+                    $this->fmt_money($phoenix_customer_chargeable_shipping_cost_total),
                     $free_shipping_max_profit_spend_percent,
                     $this->fmt_money(self::MIN_PROFIT_AFTER_FREE_SHIPPING),
                     $this->fmt_money($free_threshold),
@@ -656,10 +730,9 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             );
 
             if ($profit_based_free_shipping_applies) {
-                $customer_charge = 0.0;
-                $this->log_debug('RULE free_shipping=yes basis=economic_shipping_cost_profit_spend_setting');
+                $this->log_debug('RULE free_shipping=yes basis=legacy_economic_shipping_cost_profit_spend_setting');
             } else {
-                $charge_basis_shipping_cost = $customer_chargeable_shipping_cost_total;
+                $charge_basis_shipping_cost = $legacy_customer_chargeable_shipping_cost_total;
                 if ($ca_surcharge > 0.0) {
                     $charge_basis_shipping_cost += $ca_surcharge;
                     $this->log_debug(
@@ -671,12 +744,12 @@ class FFLHubShippingMethod extends WC_Shipping_Method
                     );
                 }
 
-                $customer_charge = $charge_basis_shipping_cost;
+                $customer_charge += $charge_basis_shipping_cost;
                 $this->log_debug(
                     sprintf(
-                        'RULE free_shipping=no customer_charge=%s net_shipping_cost=%s basis_shipping_cost=%s charge_basis=%s',
+                        'RULE free_shipping=no customer_charge=%s legacy_net_shipping_cost=%s total_shipping_cost=%s charge_basis=%s',
                         $this->fmt_money($customer_charge),
-                        $this->fmt_money($customer_chargeable_shipping_cost_total),
+                        $this->fmt_money($legacy_customer_chargeable_shipping_cost_total),
                         $this->fmt_money($shipping_cost_total),
                         $this->fmt_money($charge_basis_shipping_cost)
                     )
@@ -727,6 +800,11 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $plan_version = (($dealer_home_source === 'usps_api') || ($dealer_ffl_source === 'usps_api'))
                 ? 'dealer_fulfilled_v2_usps_outbound'
                 : 'dealer_fulfilled_v1';
+        }
+        if (!empty($phoenix_lines)) {
+            $plan_version = empty($line_debug_rows)
+                ? 'phoenix_meta_v1'
+                : $plan_version . '_phoenix_meta_v1';
         }
 
         $this->add_rate([
@@ -1406,6 +1484,10 @@ class FFLHubShippingMethod extends WC_Shipping_Method
             $product = $item['data'] ?? null;
             if (! $product instanceof WC_Product) {
                 continue;
+            }
+
+            if (PhoenixProductShippingMeta::is_managed_product($product)) {
+                return true;
             }
 
             $state_row = ProductStateStore::get_row_for_product($product);
