@@ -185,6 +185,9 @@ class MapPriceVisibility
         if (!($product instanceof WC_Product)) {
             return $price_html;
         }
+        if (self::is_phoenix_managed_product($product, null)) {
+            return $price_html;
+        }
 
         if (self::in_cart_flow()) {
             return $price_html;
@@ -211,6 +214,9 @@ class MapPriceVisibility
         }
 
         $parent_product = ($parent instanceof WC_Product) ? $parent : null;
+        if (self::is_phoenix_managed_product($variation, $parent_product)) {
+            return $data;
+        }
 
         if (self::should_show_map_price($variation, $parent_product)) {
             return self::apply_map_price_to_variation($data, $variation, $parent_product);
@@ -237,6 +243,9 @@ class MapPriceVisibility
         if (!($product instanceof WC_Product)) {
             return $offer;
         }
+        if (self::is_phoenix_managed_product($product, null)) {
+            return $offer;
+        }
 
         if (self::should_show_map_price($product, null)) {
             return self::apply_map_price_to_structured_offer($offer, $product, null);
@@ -254,6 +263,9 @@ class MapPriceVisibility
     {
         $product = self::current_product_for_quote();
         if (!($product instanceof WC_Product)) {
+            return;
+        }
+        if (self::is_phoenix_managed_product($product, null)) {
             return;
         }
         if (!self::is_email_for_quote_policy($product, null)) {
@@ -280,6 +292,9 @@ class MapPriceVisibility
         if (!($product instanceof WC_Product)) {
             return $block_content;
         }
+        if (self::is_phoenix_managed_product($product, null)) {
+            return $block_content;
+        }
         if (!self::is_email_for_quote_policy($product, null)) {
             return $block_content;
         }
@@ -291,6 +306,9 @@ class MapPriceVisibility
     {
         $product = self::current_product_for_quote();
         if (!($product instanceof WC_Product)) {
+            return;
+        }
+        if (self::is_phoenix_managed_product($product, null)) {
             return;
         }
         if (!self::is_email_for_quote_policy($product, null)) {
@@ -319,6 +337,9 @@ class MapPriceVisibility
     {
         $product = self::current_product_for_quote();
         if (!($product instanceof WC_Product)) {
+            return;
+        }
+        if (self::is_phoenix_managed_product($product, null)) {
             return;
         }
         if (!self::is_email_for_quote_policy($product, null)) {
@@ -398,6 +419,9 @@ class MapPriceVisibility
 
         $product = wc_get_product($product_id);
         if (!($product instanceof WC_Product)) {
+            self::redirect_with_quote_status($redirect_url, 'invalid_request');
+        }
+        if (self::is_phoenix_managed_product($product, null)) {
             self::redirect_with_quote_status($redirect_url, 'invalid_request');
         }
         if (self::is_out_of_stock_for_quote($product)) {
