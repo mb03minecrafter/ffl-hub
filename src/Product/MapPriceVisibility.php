@@ -1021,7 +1021,7 @@ class MapPriceVisibility
 
         if ($status === 'success') {
             $class .= ' is-success';
-            $message = __('Thanks, your quote request was submitted. Check your inbox shortly for your private checkout link.', 'ffl-hub');
+            $message = __('Thanks, your quote request was submitted. Check your inbox shortly for your private checkout link. If you don\'t see it, check your spam or junk folder.', 'ffl-hub');
         } else {
             $class .= ' is-error';
             if ($status === 'missing_fields') {
