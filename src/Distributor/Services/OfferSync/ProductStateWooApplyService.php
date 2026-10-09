@@ -100,10 +100,34 @@ final class ProductStateWooApplyService
             }
 
             try {
-                $changed = self::apply_row_to_product($product, $row);
-                if ($changed) {
-                    $product->save();
-                    $result['woo_products_saved']++;
+                $old_stock_qty = max(0, (int) $product->get_stock_quantity('edit'));
+                $changed_properties = self::apply_row_to_product($product, $row);
+                if (!empty($changed_properties)) {
+                    if (self::is_stock_quantity_only_change($changed_properties)) {
+                        $new_stock_qty = max(0, (int) $product->get_stock_quantity('edit'));
+                        $updated_stock = wc_update_product_stock($product, $new_stock_qty, 'set', true);
+
+                        if ($updated_stock === false) {
+                            throw new \RuntimeException('WooCommerce could not update the product stock quantity.');
+                        }
+
+                        $result['woo_stock_quantities_updated_directly']++;
+
+                        if (self::stock_quantity_change_requires_cache_purge($product, $old_stock_qty, $new_stock_qty)) {
+                            do_action(
+                                'fflhub_product_inventory_display_changed',
+                                $product_id,
+                                $old_stock_qty,
+                                $new_stock_qty,
+                                self::stock_display_format(),
+                                self::low_stock_amount($product)
+                            );
+                            $result['stock_display_cache_purges_requested']++;
+                        }
+                    } else {
+                        $product->save();
+                        $result['woo_products_saved']++;
+                    }
                 }
 
                 if (self::mark_row_synced($product_id)) {
@@ -125,16 +149,17 @@ final class ProductStateWooApplyService
 
     /**
      * @param array<string,mixed> $row
+     * @return string[]
      */
-    private static function apply_row_to_product(WC_Product $product, array $row): bool
+    private static function apply_row_to_product(WC_Product $product, array $row): array
     {
-        $changed = false;
+        $changed_properties = [];
         $upc = self::string_value($row['upc'] ?? '');
 
         if ($upc !== '' && method_exists($product, 'set_global_unique_id')) {
             if ((string) $product->get_global_unique_id('edit') !== $upc) {
                 $product->set_global_unique_id($upc);
-                $changed = true;
+                $changed_properties['global_unique_id'] = true;
             }
         }
 
@@ -150,12 +175,12 @@ final class ProductStateWooApplyService
 
         if ((string) $product->get_regular_price('edit') !== $regular) {
             $product->set_regular_price($regular);
-            $changed = true;
+            $changed_properties['regular_price'] = true;
         }
 
         if ((string) $product->get_sale_price('edit') !== $sale) {
             $product->set_sale_price($sale);
-            $changed = true;
+            $changed_properties['sale_price'] = true;
         }
 
         $qty = self::desired_stock_qty($row);
@@ -163,28 +188,75 @@ final class ProductStateWooApplyService
 
         if ((bool) $product->get_manage_stock('edit') !== true) {
             $product->set_manage_stock(true);
-            $changed = true;
+            $changed_properties['manage_stock'] = true;
         }
 
         if ((int) $product->get_stock_quantity('edit') !== $qty) {
             $product->set_stock_quantity($qty);
-            $changed = true;
+            $changed_properties['stock_quantity'] = true;
         }
 
         if ((string) $product->get_stock_status('edit') !== $stock_status) {
             $product->set_stock_status($stock_status);
-            $changed = true;
+            $changed_properties['stock_status'] = true;
         }
 
-        $changed = DistributorProductHelper::sync_woo_shipping_from_fflhub_values(
+        if (DistributorProductHelper::sync_woo_shipping_from_fflhub_values(
             $product,
             $row['shipping_weight_oz'] ?? '',
             $row['shipping_length_in'] ?? '',
             $row['shipping_width_in'] ?? '',
             $row['shipping_height_in'] ?? ''
-        ) || $changed;
+        )) {
+            $changed_properties['shipping'] = true;
+        }
 
-        return $changed;
+        return array_keys($changed_properties);
+    }
+
+    /**
+     * @param string[] $changed_properties
+     */
+    private static function is_stock_quantity_only_change(array $changed_properties): bool
+    {
+        return count($changed_properties) === 1 && $changed_properties[0] === 'stock_quantity';
+    }
+
+    private static function stock_quantity_change_requires_cache_purge(
+        WC_Product $product,
+        int $old_stock_qty,
+        int $new_stock_qty
+    ): bool {
+        if ($old_stock_qty === $new_stock_qty) {
+            return false;
+        }
+
+        $stock_format = self::stock_display_format();
+        if ($stock_format === 'no_amount') {
+            return false;
+        }
+
+        if ($stock_format !== 'low_amount') {
+            return true;
+        }
+
+        $low_stock_amount = self::low_stock_amount($product);
+
+        return $old_stock_qty <= $low_stock_amount || $new_stock_qty <= $low_stock_amount;
+    }
+
+    private static function stock_display_format(): string
+    {
+        return (string) get_option('woocommerce_stock_format', '');
+    }
+
+    private static function low_stock_amount(WC_Product $product): int
+    {
+        if (function_exists('wc_get_low_stock_amount')) {
+            return max(0, (int) wc_get_low_stock_amount($product));
+        }
+
+        return max(0, (int) get_option('woocommerce_notify_low_stock_amount', 2));
     }
 
     /**
@@ -273,6 +345,8 @@ final class ProductStateWooApplyService
             'product_state_rows_found' => 0,
             'products_processed' => 0,
             'woo_products_saved' => 0,
+            'woo_stock_quantities_updated_directly' => 0,
+            'stock_display_cache_purges_requested' => 0,
             'product_state_flags_cleared' => 0,
             'skipped_missing_state' => 0,
             'failed_products' => 0,
